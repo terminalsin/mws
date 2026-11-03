@@ -22,6 +22,7 @@ mod aliases;
 mod code;
 mod config_ops;
 mod esm;
+mod function_url;
 mod functions;
 mod handler;
 mod invoke;
@@ -111,6 +112,9 @@ impl Lambda {
 #[async_trait::async_trait]
 impl Service for Lambda {
     fn recognizes(&self, request: &HttpRequest) -> bool {
+        if function_url::target(request).is_some() {
+            return true;
+        }
         // `/2015-03-31/functions/...`, `/2018-10-31/layers/...` and the
         // other dated Lambda resources.
         let path = request.uri().path();
@@ -129,6 +133,9 @@ impl Service for Lambda {
     }
 
     async fn handle(&self, ctx: RequestContext, request: HttpRequest) -> HttpResponse {
+        if let Some((id, path)) = function_url::target(&request) {
+            return self.serve_function_url(&ctx, &request, &id, &path).await;
+        }
         self.observe(&ctx);
         if let Some(response) = self.serve_code_download(&ctx, &request) {
             return response;
@@ -137,7 +144,7 @@ impl Service for Lambda {
     }
 
     fn accepts_unsigned(&self, request: &HttpRequest) -> bool {
-        code::is_download(request)
+        code::is_download(request) || function_url::target(request).is_some()
     }
 
     fn render_error(&self, request_id: &str, error: &ServiceError) -> HttpResponse {

@@ -239,3 +239,84 @@ async fn sqs_event_source_mapping_delivers_batches() {
     assert_eq!(waiting[&QueueAttributeName::ApproximateNumberOfMessages], "1");
     mws.stop().await;
 }
+
+#[tokio::test]
+async fn filter_criteria_drop_records_that_do_not_match() {
+    let mws = Mws::start().await;
+    let cfg = mws.root_sdk_config().await;
+    let iam = aws_sdk_iam::Client::new(&cfg);
+    let sqs = aws_sdk_sqs::Client::new(&cfg);
+    let lambda = aws_sdk_lambda::Client::new(&cfg);
+    let role = iam.create_role().role_name("poller").assume_role_policy_document(TRUST).send().await.unwrap();
+    iam.put_role_policy()
+        .role_name("poller")
+        .policy_name("sqs")
+        .policy_document(r#"{"Version":"2012-10-17","Statement":[{"Effect":"Allow","Action":"sqs:*","Resource":"*"}]}"#)
+        .send()
+        .await
+        .unwrap();
+    let (jobs_url, jobs_arn) = queue(&sqs, "jobs", &[]).await;
+    let (out_url, _) = queue(&sqs, "out", &[]).await;
+    lambda
+        .create_function()
+        .function_name("worker")
+        .runtime(Runtime::Python312)
+        .role(role.role().unwrap().arn())
+        .handler("app.handler")
+        .code(FunctionCode::builder().zip_file(Blob::new(zip(&[("app.py", HANDLER)]))).build())
+        .send()
+        .await
+        .unwrap();
+
+    let criteria = |pattern: &str| {
+        aws_sdk_lambda::types::FilterCriteria::builder()
+            .filters(aws_sdk_lambda::types::Filter::builder().pattern(pattern).build())
+            .build()
+    };
+    let e = lambda
+        .create_event_source_mapping()
+        .function_name("worker")
+        .event_source_arn(&jobs_arn)
+        .filter_criteria(criteria("{not json"))
+        .send()
+        .await
+        .unwrap_err()
+        .into_service_error();
+    assert_eq!(e.to_string(), "InvalidParameterValueException: Invalid filter pattern definition.");
+
+    lambda
+        .create_event_source_mapping()
+        .function_name("worker")
+        .event_source_arn(&jobs_arn)
+        .filter_criteria(criteria(r#"{"body":{"kind":["order"]}}"#))
+        .send()
+        .await
+        .unwrap();
+    for body in [r#"{"kind":"refund"}"#, "plain text", r#"{"kind":"order","id":7}"#] {
+        sqs.send_message().queue_url(&jobs_url).message_body(body).send().await.unwrap();
+    }
+    let seen = drain(&sqs, &out_url, 1).await;
+    assert_eq!(seen.len(), 1, "{seen:?}");
+    let v: serde_json::Value = serde_json::from_str(&seen[0]).unwrap();
+    assert_eq!(v["body"], r#"{"kind":"order","id":7}"#);
+    // Filtered-out messages are deleted, not left for later.
+    for _ in 0..20 {
+        let attrs = sqs
+            .get_queue_attributes()
+            .queue_url(&jobs_url)
+            .attribute_names(QueueAttributeName::All)
+            .send()
+            .await
+            .unwrap()
+            .attributes
+            .unwrap();
+        if attrs[&QueueAttributeName::ApproximateNumberOfMessages] == "0"
+            && attrs[&QueueAttributeName::ApproximateNumberOfMessagesNotVisible] == "0"
+        {
+            mws.stop().await;
+            return;
+        }
+        tokio::time::sleep(Duration::from_millis(250)).await;
+    }
+    panic!("filtered messages were not deleted");
+}

@@ -167,6 +167,26 @@ impl Sns {
         }
     }
 
+    fn attempt<'a>(
+        &self,
+        origin: &'a Origin,
+        sub: &'a Subscription,
+        success: bool,
+        status_code: u16,
+        provider_response: String,
+        attempts: u32,
+    ) -> crate::status_log::Attempt<'a> {
+        crate::status_log::Attempt {
+            topic_arn: &origin.topic_arn,
+            protocol: &sub.protocol,
+            destination: &sub.endpoint,
+            success,
+            status_code,
+            provider_response,
+            attempts,
+        }
+    }
+
     fn raw(sub: &Subscription) -> bool {
         sub.attributes.get("RawMessageDelivery").is_some_and(|v| v.eq_ignore_ascii_case("true"))
     }
@@ -187,7 +207,23 @@ impl Sns {
                     source_arn: Some(&origin.topic_arn),
                     payload: event.to_string().into_bytes(),
                 };
-                if let Err(e) = lambda.invoke_event_as_service(ctx, inv) {
+                let outcome = lambda.invoke_event_as_service(ctx, inv);
+                let (success, status_code, response) = match &outcome {
+                    Ok(()) => (true, 202, json!({"lambdaRequestId": uuid::Uuid::new_v4().to_string()})),
+                    Err(mws_lambda::ServiceInvokeError::NotFound) => (
+                        false,
+                        404,
+                        json!({"ErrorCode": "ResourceNotFoundException", "ErrorMessage": "Function not found"}),
+                    ),
+                    Err(mws_lambda::ServiceInvokeError::AccessDenied) => {
+                        (false, 403, json!({"ErrorCode": "AccessDeniedException", "ErrorMessage": "Access denied"}))
+                    }
+                    Err(mws_lambda::ServiceInvokeError::Failed(m)) => {
+                        (false, 500, json!({"ErrorCode": "ServiceException", "ErrorMessage": m}))
+                    }
+                };
+                self.log_delivery(ctx, msg, self.attempt(origin, sub, success, status_code, response.to_string(), 1));
+                if let Err(e) = outcome {
                     tracing::warn!(subscription = %sub.arn, "SNS could not invoke {}: {e}", sub.endpoint);
                     self.redrive(ctx, origin, sub, msg);
                 }
@@ -199,9 +235,17 @@ impl Sns {
                     let env = self.envelope(ctx, origin, sub, msg, &body).to_string();
                     self.queue_message(origin, &sub.endpoint, env, msg, false)
                 };
-                if let Err(e) = self.send_to_queue(message) {
-                    tracing::warn!(subscription = %sub.arn, "SNS could not deliver to {}: {e}", sub.endpoint);
-                    self.redrive(ctx, origin, sub, msg);
+                match self.send_to_queue(message) {
+                    Ok(id) => {
+                        let response = json!({"sqsRequestId": "Unrecorded", "sqsMessageId": id}).to_string();
+                        self.log_delivery(ctx, msg, self.attempt(origin, sub, true, 200, response, 1));
+                    }
+                    Err(e) => {
+                        let response = json!({"ErrorCode": "AccessDenied", "ErrorMessage": e}).to_string();
+                        self.log_delivery(ctx, msg, self.attempt(origin, sub, false, 403, response, 1));
+                        tracing::warn!(subscription = %sub.arn, "SNS could not deliver to {}: {e}", sub.endpoint);
+                        self.redrive(ctx, origin, sub, msg);
+                    }
                 }
             }
             "http" | "https" => {
@@ -281,6 +325,9 @@ impl Sns {
                 let platform =
                     st.applications.get(&endpoint.application_arn).map(|a| a.platform.clone()).unwrap_or_default();
                 st.outbox.platform(platform_message(msg, &endpoint, &platform, Some(&origin.topic_arn)));
+                drop(st);
+                let response = json!({"messageId": uuid::Uuid::new_v4().to_string()}).to_string();
+                self.log_delivery(ctx, msg, self.attempt(origin, sub, true, 200, response, 1));
             }
             _ => {
                 tracing::warn!(subscription = %sub.arn, "MWS does not deliver to {} subscriptions", sub.protocol);
@@ -361,17 +408,35 @@ impl Sns {
         let sns = self.clone();
         tokio::spawn(async move {
             let attempts = 1 + policy.retries;
+            let mut last = (0u16, String::new());
+            let mut made = 0;
             for attempt in 0..attempts {
                 if attempt > 0 {
                     tokio::time::sleep(policy.delay).await;
                 }
+                made += 1;
                 match crate::webhook::post(&sub.endpoint, &headers, &policy.content_type, payload.as_bytes()).await {
-                    Ok(status) if (200..300).contains(&status) => return,
-                    Ok(status) if (400..500).contains(&status) && !matches!(status, 404 | 408 | 429) => break,
-                    Ok(status) => tracing::debug!(endpoint = %sub.endpoint, "HTTP delivery answered {status}"),
-                    Err(e) => tracing::debug!(endpoint = %sub.endpoint, "HTTP delivery failed: {e}"),
+                    Ok(status) if (200..300).contains(&status) => {
+                        let a = sns.attempt(&origin, &sub, true, status, "Accepted".into(), made);
+                        sns.log_delivery(&ctx, &msg, a);
+                        return;
+                    }
+                    Ok(status) if (400..500).contains(&status) && !matches!(status, 404 | 408 | 429) => {
+                        last = (status, format!("Response status code {status}"));
+                        break;
+                    }
+                    Ok(status) => {
+                        last = (status, format!("Response status code {status}"));
+                        tracing::debug!(endpoint = %sub.endpoint, "HTTP delivery answered {status}")
+                    }
+                    Err(e) => {
+                        last = (0, e.to_string());
+                        tracing::debug!(endpoint = %sub.endpoint, "HTTP delivery failed: {e}")
+                    }
                 }
             }
+            let a = sns.attempt(&origin, &sub, false, last.0, last.1, made);
+            sns.log_delivery(&ctx, &msg, a);
             sns.redrive(&ctx, &origin, &sub, &msg);
         });
     }

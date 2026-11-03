@@ -129,6 +129,7 @@ impl Logs {
         self.authorize_group(ctx, "PutLogEvents", &g, Some(&input.log_stream_name), ConditionContext::new())?;
         let accepted = self.store_events(&g, &input.log_stream_name, input.log_events, now_ms(ctx))?;
         self.tails.publish(&g, &input.log_stream_name, &accepted.stored);
+        self.forward(Some(ctx), &g, &input.log_stream_name, &accepted.stored);
         let mut response = accepted.response;
         if let Some(entity) = &input.entity {
             let attrs = entity.key_attributes.as_ref().map_or(0, |a| a.len());

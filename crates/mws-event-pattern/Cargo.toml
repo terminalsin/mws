@@ -1,0 +1,9 @@
+[package]
+name = "mws-event-pattern"
+description = "The AWS event pattern language (EventBridge rules, Lambda event filtering, Pipes): validation and matching against JSON events."
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+serde_json.workspace = true
