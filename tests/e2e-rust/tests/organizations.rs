@@ -503,3 +503,21 @@ async fn organizations_access_report_shows_member_activity() {
     let iam_detail = report.access_details().iter().find(|d| d.service_namespace() == "iam").unwrap();
     assert_eq!(iam_detail.entity_path(), Some(member_path.as_str()));
 }
+
+#[tokio::test]
+async fn access_key_info_names_member_accounts() {
+    let o = org().await;
+    let account = o.create_account("keys").await;
+    let member = o.member_config(&account).await;
+    let member_iam = aws_sdk_iam::Client::new(&member);
+    member_iam.create_user().user_name("svc").send().await.unwrap();
+    let key = member_iam.create_access_key().user_name("svc").send().await.unwrap();
+    let akid = key.access_key().unwrap().access_key_id().to_string();
+    let sts = aws_sdk_sts::Client::new(&o.admin);
+    let info = sts.get_access_key_info().access_key_id(&akid).send().await.unwrap();
+    assert_eq!(info.account(), Some(account.as_str()));
+    use aws_credential_types::provider::ProvideCredentials;
+    let session_key = member.credentials_provider().unwrap().provide_credentials().await.unwrap();
+    let info = sts.get_access_key_info().access_key_id(session_key.access_key_id()).send().await.unwrap();
+    assert_eq!(info.account(), Some(account.as_str()));
+}

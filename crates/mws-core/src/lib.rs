@@ -7,6 +7,7 @@
 
 mod auth;
 mod error;
+pub mod ids;
 mod service;
 mod validate;
 
