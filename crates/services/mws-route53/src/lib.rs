@@ -151,6 +151,10 @@ fn max_items(requested: Option<i32>, default: usize, ceiling: usize) -> usize {
 
 #[async_trait::async_trait]
 impl Service for Route53 {
+    fn recognizes(&self, request: &HttpRequest) -> bool {
+        request.uri().path().starts_with("/2013-04-01/")
+    }
+
     fn signing_name(&self) -> &'static str {
         "route53"
     }

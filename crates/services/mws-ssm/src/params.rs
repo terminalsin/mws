@@ -95,6 +95,9 @@ impl Ssm {
         if input.starts_with(SECRETS_PREFIX) {
             return self.read_secret_reference(ctx, action, input, decrypt);
         }
+        if let Some(name) = crate::public::public_name(ctx, input) {
+            return crate::public::read(ctx, action, input, &name);
+        }
         let r = ParamRef::parse(ctx, input).ok_or_else(|| not_found(input))?;
         let p = self.snapshot(ctx, &r);
         self.authorize_param(ctx, action, &r, p.as_ref(), ConditionContext::new())?;

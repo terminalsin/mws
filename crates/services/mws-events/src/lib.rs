@@ -165,6 +165,10 @@ impl Events {
 
 #[async_trait::async_trait]
 impl Service for Events {
+    fn recognizes(&self, request: &HttpRequest) -> bool {
+        mws_proto_json::targets(&generated::SERVICE_INFO, request)
+    }
+
     fn signing_name(&self) -> &'static str {
         "events"
     }

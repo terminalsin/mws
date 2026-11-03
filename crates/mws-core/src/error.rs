@@ -110,6 +110,31 @@ impl ServiceError {
     pub fn internal(message: impl Into<String>) -> Self {
         Self::server("InternalFailure", 500, message)
     }
+
+    /// This error as JSON-protocol (awsJson, restJson) services name it,
+    /// for the authentication errors the gateway raises in awsQuery terms:
+    /// `InvalidClientTokenId` is `UnrecognizedClientException`,
+    /// `SignatureDoesNotMatch` is `InvalidSignatureException` and so on.
+    /// `None` for every other error. The status is left for the protocol to
+    /// choose (awsJson answers 400, restJson 403).
+    pub fn json_auth_equivalent(&self) -> Option<ServiceError> {
+        let (code, message) = match self.code.as_ref() {
+            "InvalidClientTokenId" => ("UnrecognizedClientException", None),
+            "SignatureDoesNotMatch" => ("InvalidSignatureException", None),
+            "IncompleteSignature" => ("IncompleteSignatureException", None),
+            "ExpiredToken" => ("ExpiredTokenException", None),
+            "MissingAuthenticationToken" => {
+                ("MissingAuthenticationTokenException", Some("Missing Authentication Token"))
+            }
+            _ => return None,
+        };
+        let mut e = self.clone();
+        e.code = Cow::Borrowed(code);
+        if let Some(m) = message {
+            e.message = m.to_string();
+        }
+        Some(e)
+    }
 }
 
 impl fmt::Display for ServiceError {

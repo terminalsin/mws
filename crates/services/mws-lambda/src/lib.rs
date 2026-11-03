@@ -21,6 +21,7 @@ pub mod generated {
 mod aliases;
 mod code;
 mod config_ops;
+mod esm;
 mod functions;
 mod handler;
 mod invoke;
@@ -36,6 +37,7 @@ use std::sync::{Arc, RwLock, RwLockReadGuard, RwLockWriteGuard};
 
 use mws_core::{HttpRequest, HttpResponse, RequestContext, Service, ServiceError};
 
+pub use esm::{QueueFacts, QueueMessage, QueueMessageAttribute, QueueSource};
 pub use names::FunctionRef;
 pub use service_invoke::{ServiceInvocation, ServiceInvocationResult, ServiceInvokeError};
 use state::State;
@@ -47,6 +49,9 @@ pub(crate) struct Inner {
     s3: Option<mws_s3::S3>,
     /// Where function logs go, when CloudWatch Logs is wired in.
     logs: std::sync::OnceLock<mws_logs::Logs>,
+    /// The queues event source mappings poll, when SQS is wired in.
+    queues: std::sync::OnceLock<Arc<dyn esm::QueueSource>>,
+    pollers: esm::Pollers,
 }
 
 /// The Lambda service. Cheap to clone; clones share state.
@@ -81,6 +86,8 @@ impl Lambda {
                 sts,
                 s3,
                 logs: std::sync::OnceLock::new(),
+                queues: std::sync::OnceLock::new(),
+                pollers: esm::Pollers::default(),
             }),
         }
     }
@@ -103,11 +110,26 @@ impl Lambda {
 
 #[async_trait::async_trait]
 impl Service for Lambda {
+    fn recognizes(&self, request: &HttpRequest) -> bool {
+        // `/2015-03-31/functions/...`, `/2018-10-31/layers/...` and the
+        // other dated Lambda resources.
+        let path = request.uri().path();
+        let mut parts = path.trim_start_matches('/').splitn(3, '/');
+        let (Some(date), Some(resource)) = (parts.next(), parts.next()) else { return false };
+        date.len() == 10
+            && date.bytes().enumerate().all(|(i, b)| if i == 4 || i == 7 { b == b'-' } else { b.is_ascii_digit() })
+            && matches!(
+                resource,
+                "functions" | "layers" | "tags" | "event-source-mappings" | "account-settings" | "code-signing-configs"
+            )
+    }
+
     fn signing_name(&self) -> &'static str {
         "lambda"
     }
 
     async fn handle(&self, ctx: RequestContext, request: HttpRequest) -> HttpResponse {
+        self.observe(&ctx);
         if let Some(response) = self.serve_code_download(&ctx, &request) {
             return response;
         }

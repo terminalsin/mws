@@ -161,3 +161,26 @@ impl Sqs {
 fn service_sender_id(principal: &str) -> String {
     principal.to_string()
 }
+
+impl Sqs {
+    /// The URL of the queue `queue_arn` names, as `ctx` sees it. Services
+    /// that act on a queue as a caller (Lambda's event source pollers, with
+    /// the function's execution role) use it to call SQS's own operations.
+    pub fn queue_url_for(ctx: &mws_core::RequestContext, queue_arn: &str) -> Option<String> {
+        let (_, account, name) = parse_queue_arn(queue_arn)?;
+        Some(crate::names::queue_url(ctx, account, name))
+    }
+
+    /// Whether `ctx`'s caller may perform `action` on the queue: its
+    /// identity policies or the queue policy must allow it.
+    pub fn authorize_caller(
+        &self,
+        ctx: &mws_core::RequestContext,
+        queue_arn: &str,
+        action: &str,
+    ) -> Result<(), mws_core::ServiceError> {
+        let st = self.lock();
+        let q = st.queue(queue_arn)?;
+        crate::names::authorize_queue(ctx, action, q)
+    }
+}

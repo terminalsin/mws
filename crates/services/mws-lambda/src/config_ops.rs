@@ -839,6 +839,12 @@ impl Lambda {
                 }
             }
         }
+        let sqs_source = input.event_source_arn.as_deref().filter(|a| a.split(':').nth(2) == Some("sqs"));
+        let batch_size = input.batch_size.unwrap_or(if sqs_source.is_some() { 10 } else { 100 });
+        if let Some(queue) = sqs_source {
+            let window = input.maximum_batching_window_in_seconds.unwrap_or(0);
+            self.check_queue_source(ctx, queue, &f.qualified_arn(), batch_size, window)?;
+        }
         let uuid = uuid::Uuid::new_v4().to_string();
         let account = names::account_of(ctx);
         let enabled = input.enabled.unwrap_or(true);
@@ -846,9 +852,7 @@ impl Lambda {
             uuid: Some(uuid.clone()),
             starting_position: input.starting_position,
             starting_position_timestamp: input.starting_position_timestamp,
-            batch_size: Some(input.batch_size.unwrap_or(
-                if input.event_source_arn.as_deref().is_some_and(|a| a.contains(":sqs:")) { 10 } else { 100 },
-            )),
+            batch_size: Some(batch_size),
             maximum_batching_window_in_seconds: Some(input.maximum_batching_window_in_seconds.unwrap_or(0)),
             parallelization_factor: input.parallelization_factor,
             event_source_arn: input.event_source_arn,
@@ -934,6 +938,19 @@ impl Lambda {
             }
             None => None,
         };
+        let current = {
+            let st = self.read();
+            st.event_source_mappings.get(&input.uuid).map(|m| m.config.clone())
+        };
+        if let Some(cur) = current {
+            if let Some(queue) = cur.event_source_arn.as_deref().filter(|a| a.split(':').nth(2) == Some("sqs")) {
+                let function = function_arn.clone().or(cur.function_arn.clone()).unwrap_or_default();
+                let batch_size = input.batch_size.or(cur.batch_size).unwrap_or(10);
+                let window =
+                    input.maximum_batching_window_in_seconds.or(cur.maximum_batching_window_in_seconds).unwrap_or(0);
+                self.check_queue_source(ctx, queue, &function, batch_size, window)?;
+            }
+        }
         let mut st = self.write();
         let m = st.event_source_mappings.get_mut(&input.uuid).ok_or_else(|| Self::esm_not_found(&input.uuid))?;
         let c = &mut m.config;
