@@ -15,7 +15,7 @@ whether your code would work against AWS.
 | IAM | All 180 operations are generated from the AWS model and validate input like AWS. About 100 are implemented: users, groups, roles, access keys, login profiles, managed policies and versions, inline policies, attachments, permissions boundaries, tags, instance profiles, OIDC providers, account aliases and summary, authorization details, and the policy simulator. The rest return `NotImplemented`. |
 | STS | `GetCallerIdentity`, `AssumeRole` (trust policies, session policies, tags, transitive tags, external id, source identity, role chaining limits), `GetSessionToken`, `GetFederationToken`, `AssumeRoleWithWebIdentity`, `GetAccessKeyInfo`. |
 | Route 53 | All 71 operations are generated from the AWS model (restXml). Implemented: public and private hosted zones (create, get, list, list by name and by VPC, count, comment, delete, VPC associate/disassociate), atomic `ChangeResourceRecordSets` (CREATE, UPSERT, DELETE with Route 53's `InvalidChangeBatch` messages, CNAME conflicts, apex rules, A/AAAA value checks), `ListResourceRecordSets` in Route 53's order with pagination and `\052` escaping, `GetChange`, health checks, and tags. Changes report `PENDING` and then `INSYNC`. An optional DNS responder serves the zones over UDP. |
-| Private CA | Planned (step 4) |
+| Private CA | All 23 operations are generated from the AWS model (awsJson1.1). Implemented: root and subordinate CAs with real keys (RSA 2048/3072/4096, EC P-256/P-384/P-521), CSRs, self-issued root certificates, import with chain checks, `IssueCertificate` with ACM PCA templates (end-entity, server/client auth, code signing, OCSP, root, subordinate path lengths), validity rules, `GetCertificate` with chains, revocation, disable/delete/restore, tags, permissions, and CA resource policies evaluated by the IAM engine. Certificates verify with standard X.509 tooling. Not yet: CRL/OCSP publishing, audit reports, API passthrough extensions, and hash/curve combinations other than the natural ones for EC keys. |
 
 Authentication is real: requests must carry a valid SigV4 signature (header or
 presigned URL) from a known access key or STS session.
@@ -71,6 +71,7 @@ crates/
   mws-codegen       generates server stubs from Smithy models (build-time)
   mws-proto-query   awsQuery protocol runtime (form decoding, XML, errors)
   mws-proto-restxml restXml protocol runtime (HTTP binding, routing, XML, errors)
+  mws-proto-json    awsJson1.0/1.1 protocol runtime (X-Amz-Target, JSON, errors)
   mws-xml           XML writer and reader shared by the XML protocols
   mws-server        HTTP front door: authenticates, routes by signing name
   mws               the binary; the only crate that knows which services exist
@@ -79,6 +80,7 @@ crates/
     mws-iam-policy  the IAM policy language and evaluation logic
     mws-sts         STS: temporary credentials over IAM identities
     mws-route53     Route 53: hosted zones, record sets, health checks, DNS responder
+    mws-acmpca      AWS Private CA: CAs and real X.509 issuance
 tests/
   e2e-rust          official Rust SDK against an in-process MWS
   e2e-python        boto3 against the mws binary

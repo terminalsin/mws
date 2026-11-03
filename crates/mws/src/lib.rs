@@ -2,6 +2,7 @@
 
 use std::sync::Arc;
 
+use mws_acmpca::PrivateCa;
 use mws_core::Environment;
 use mws_iam::{Iam, IamConfig};
 use mws_route53::Route53;
@@ -56,6 +57,7 @@ pub fn build(config: Config) -> Mws {
         .service(Arc::new(iam))
         .service(Arc::new(sts))
         .service(Arc::new(route53.clone()))
+        .service(Arc::new(PrivateCa::new()))
         .build();
     Mws { gateway, route53 }
 }

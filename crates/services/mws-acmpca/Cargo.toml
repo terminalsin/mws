@@ -1,0 +1,24 @@
+[package]
+name = "mws-acmpca"
+description = "AWS Private CA for MWS: certificate authorities that issue real X.509 certificates, authorized through IAM."
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+async-trait.workspace = true
+base64.workspace = true
+chrono.workspace = true
+mws-core.workspace = true
+mws-proto-json.workspace = true
+rand.workspace = true
+rcgen.workspace = true
+rustls-pki-types.workspace = true
+serde_json.workspace = true
+time.workspace = true
+uuid.workspace = true
+mws-iam-policy.workspace = true
+x509-parser.workspace = true
+
+[build-dependencies]
+mws-codegen.workspace = true
