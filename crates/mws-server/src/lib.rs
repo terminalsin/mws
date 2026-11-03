@@ -27,7 +27,7 @@ use hyper::body::Incoming;
 use hyper_util::rt::{TokioExecutor, TokioIo};
 use mws_core::{
     Authorizer, Caller, CredentialError, CredentialStore, Environment, HttpRequest, HttpResponse, RequestContext,
-    ResolvedCredential, Service, ServiceError,
+    ResolvedCredential, Service, ServiceError, StreamingBody,
 };
 use mws_sigv4::{SigV4Error, VerifyOptions};
 pub use mws_store::Store;
@@ -385,11 +385,52 @@ async fn serve_until(listener: TcpListener, gateway: Arc<Gateway>, shutdown: imp
     }
 }
 
+/// A response body: the bytes in the response, then, for a
+/// [`StreamingBody`] response, whatever its sender produces.
+enum ResponseBody {
+    Full(Full<Bytes>),
+    Streaming { head: Option<Bytes>, rest: tokio::sync::mpsc::Receiver<Bytes> },
+}
+
+impl hyper::body::Body for ResponseBody {
+    type Data = Bytes;
+    type Error = std::convert::Infallible;
+
+    fn poll_frame(
+        self: std::pin::Pin<&mut Self>,
+        cx: &mut std::task::Context<'_>,
+    ) -> std::task::Poll<Option<Result<hyper::body::Frame<Bytes>, Self::Error>>> {
+        match self.get_mut() {
+            ResponseBody::Full(b) => std::pin::Pin::new(b).poll_frame(cx),
+            ResponseBody::Streaming { head, rest } => {
+                if let Some(h) = head.take().filter(|h| !h.is_empty()) {
+                    return std::task::Poll::Ready(Some(Ok(hyper::body::Frame::data(h))));
+                }
+                rest.poll_recv(cx).map(|c| c.map(|c| Ok(hyper::body::Frame::data(c))))
+            }
+        }
+    }
+
+    fn is_end_stream(&self) -> bool {
+        match self {
+            ResponseBody::Full(b) => b.is_end_stream(),
+            ResponseBody::Streaming { .. } => false,
+        }
+    }
+
+    fn size_hint(&self) -> hyper::body::SizeHint {
+        match self {
+            ResponseBody::Full(b) => b.size_hint(),
+            ResponseBody::Streaming { .. } => hyper::body::SizeHint::default(),
+        }
+    }
+}
+
 async fn handle_incoming(
     gateway: &Gateway,
     req: http::Request<Incoming>,
     remote: SocketAddr,
-) -> http::Response<Full<Bytes>> {
+) -> http::Response<ResponseBody> {
     let started = Instant::now();
     let (parts, body) = req.into_parts();
     let body = match Limited::new(body, MAX_BODY_BYTES).collect().await {
@@ -397,7 +438,7 @@ async fn handle_incoming(
         Err(e) => {
             return http::Response::builder()
                 .status(413)
-                .body(Full::new(Bytes::from(format!("request body rejected: {e}"))))
+                .body(ResponseBody::Full(Full::new(Bytes::from(format!("request body rejected: {e}")))))
                 .expect("valid response");
         }
     };
@@ -411,5 +452,9 @@ async fn handle_incoming(
         elapsed_ms = started.elapsed().as_millis() as u64,
         "request"
     );
-    response.map(Full::new)
+    let streaming = response.extensions().get::<StreamingBody>().and_then(StreamingBody::take);
+    match streaming {
+        Some(rest) => response.map(|head| ResponseBody::Streaming { head: Some(head), rest }),
+        None => response.map(|b| ResponseBody::Full(Full::new(b))),
+    }
 }

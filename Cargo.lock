@@ -223,6 +223,32 @@ dependencies = [
 ]
 
 [[package]]
+name = "aws-sdk-cloudwatchlogs"
+version = "1.162.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "25363e1a2f00e2b0f1c4e509566e26569ca1ed258433ff99b7f428ce4f1f0866"
+dependencies = [
+ "arc-swap",
+ "aws-credential-types",
+ "aws-runtime",
+ "aws-smithy-async",
+ "aws-smithy-eventstream",
+ "aws-smithy-http",
+ "aws-smithy-json",
+ "aws-smithy-observability",
+ "aws-smithy-runtime",
+ "aws-smithy-runtime-api",
+ "aws-smithy-schema",
+ "aws-smithy-types",
+ "aws-types",
+ "bytes",
+ "fastrand",
+ "http 1.5.0",
+ "regex-lite",
+ "tracing",
+]
+
+[[package]]
 name = "aws-sdk-iam"
 version = "1.133.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1874,6 +1900,7 @@ dependencies = [
  "mws-iam",
  "mws-kms",
  "mws-lambda",
+ "mws-logs",
  "mws-organizations",
  "mws-route53",
  "mws-s3",
@@ -1933,6 +1960,7 @@ dependencies = [
  "regex",
  "serde",
  "serde_json",
+ "tokio",
 ]
 
 [[package]]
@@ -1943,6 +1971,7 @@ dependencies = [
  "aws-credential-types",
  "aws-lc-rs",
  "aws-sdk-acmpca",
+ "aws-sdk-cloudwatchlogs",
  "aws-sdk-iam",
  "aws-sdk-kms",
  "aws-sdk-lambda",
@@ -2037,6 +2066,7 @@ dependencies = [
  "hyper-util",
  "mws-codegen",
  "mws-core",
+ "mws-logs",
  "mws-proto-json",
  "mws-proto-restjson",
  "mws-s3",
@@ -2049,6 +2079,30 @@ dependencies = [
  "tracing",
  "uuid",
  "zip",
+]
+
+[[package]]
+name = "mws-logs"
+version = "0.1.0"
+dependencies = [
+ "async-trait",
+ "base64 0.22.1",
+ "bytes",
+ "chrono",
+ "flate2",
+ "http 1.5.0",
+ "mws-codegen",
+ "mws-core",
+ "mws-iam-policy",
+ "mws-kms",
+ "mws-proto-json",
+ "mws-s3",
+ "rand",
+ "regex",
+ "serde",
+ "serde_json",
+ "tokio",
+ "uuid",
 ]
 
 [[package]]
@@ -2141,6 +2195,7 @@ dependencies = [
  "mws-codegen",
  "mws-core",
  "mws-kms",
+ "mws-logs",
  "mws-proto-json",
  "mws-proto-restxml",
  "rand",

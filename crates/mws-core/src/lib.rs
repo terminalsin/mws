@@ -7,6 +7,7 @@
 
 mod auth;
 mod error;
+pub mod eventstream;
 pub mod ids;
 mod service;
 mod validate;
@@ -16,7 +17,7 @@ pub use auth::{
     CredentialStore, ResolvedCredential, ResourcePolicyMode, SessionInfo, SessionKind,
 };
 pub use error::{ErrorFault, ErrorField, ErrorValue, ServiceError};
-pub use service::{HttpRequest, HttpResponse, RequestContext, Service};
+pub use service::{HttpRequest, HttpResponse, RequestContext, Service, StreamingBody};
 pub use validate::{render_list, Validator};
 
 /// Settings that describe the simulated AWS partition and account.

@@ -23,6 +23,7 @@ members = [
     "crates/services/mws-s3",
     "crates/services/mws-lambda",
     "crates/services/mws-s3control",
+    "crates/services/mws-logs",
     "tests/e2e-rust",
 ]
 
@@ -56,6 +57,7 @@ mws-organizations = { path = "crates/services/mws-organizations" }
 mws-s3 = { path = "crates/services/mws-s3" }
 mws-lambda = { path = "crates/services/mws-lambda" }
 mws-s3control = { path = "crates/services/mws-s3control" }
+mws-logs = { path = "crates/services/mws-logs" }
 
 # external
 async-trait = "0.1"

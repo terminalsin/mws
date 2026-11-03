@@ -8,6 +8,33 @@ use crate::{Authorizer, AuthzDecision, AuthzRequest, Caller, ConditionContext, R
 pub type HttpRequest = http::Request<Bytes>;
 pub type HttpResponse = http::Response<Bytes>;
 
+/// A response whose body goes on after the bytes in the response itself:
+/// put one in the response's extensions and the server sends the body,
+/// then every chunk received here, until the sender is dropped. Event
+/// stream operations that stay open (CloudWatch Logs live tail) use it.
+/// When the client goes away the receiver is dropped, so sends fail.
+#[derive(Clone)]
+pub struct StreamingBody(Arc<std::sync::Mutex<Option<tokio::sync::mpsc::Receiver<Bytes>>>>);
+
+impl StreamingBody {
+    /// A body fed by the returned sender, buffering up to `capacity` chunks.
+    pub fn channel(capacity: usize) -> (tokio::sync::mpsc::Sender<Bytes>, Self) {
+        let (tx, rx) = tokio::sync::mpsc::channel(capacity);
+        (tx, Self(Arc::new(std::sync::Mutex::new(Some(rx)))))
+    }
+
+    /// The receiver, once.
+    pub fn take(&self) -> Option<tokio::sync::mpsc::Receiver<Bytes>> {
+        self.0.lock().ok()?.take()
+    }
+}
+
+impl std::fmt::Debug for StreamingBody {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("StreamingBody")
+    }
+}
+
 /// Everything a service needs to know about the request beyond its body.
 #[derive(Clone)]
 pub struct RequestContext {

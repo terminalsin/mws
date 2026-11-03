@@ -45,6 +45,14 @@ pub fn event(event_type: &str, content_type: Option<&str>, payload: &[u8]) -> Ve
     event_message(&headers, payload)
 }
 
+/// An `exception` message: a modeled error carried inside the stream.
+pub fn exception(exception_type: &str, content_type: &str, payload: &[u8]) -> Vec<u8> {
+    event_message(
+        &[(":message-type", "exception"), (":exception-type", exception_type), (":content-type", content_type)],
+        payload,
+    )
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

@@ -14,6 +14,7 @@ uuid.workspace = true
 chrono.workspace = true
 mws-core.workspace = true
 mws-kms.workspace = true
+mws-logs.workspace = true
 mws-proto-json.workspace = true
 mws-proto-restxml.workspace = true
 rand.workspace = true

@@ -30,6 +30,10 @@ pub fn generate(model: &Model, options: &JsonOptions) -> String {
     Gen { model, types: TypeGen::new(model), options }.run()
 }
 
+fn encode_event_fn(union: &Shape) -> String {
+    format!("encode_event_{}", snake_case(union.name()))
+}
+
 struct Gen<'m, 'o> {
     model: &'m Model,
     types: TypeGen<'m>,
@@ -95,10 +99,17 @@ impl Gen<'_, '_> {
             "\n/// Decode the request, run the matching handler method, and encode the result.\npub async fn dispatch<H: Handler + ?Sized>(handler: &H, ctx: &RequestContext, req: &HttpRequest) -> HttpResponse {{"
         );
         let _ = writeln!(w, "    match route(handler, ctx, req).await {{");
-        let _ = writeln!(w, "        Ok(v) => {RT}::json_response(&SERVICE_INFO, &ctx.request_id, 200, Some(v)),");
+        let _ = writeln!(
+            w,
+            "        Ok({RT}::Reply::Json(v)) => {RT}::json_response(&SERVICE_INFO, &ctx.request_id, 200, Some(v)),"
+        );
+        let _ = writeln!(
+            w,
+            "        Ok({RT}::Reply::EventStream(b)) => {RT}::event_stream_response(&SERVICE_INFO, &ctx.request_id, b),"
+        );
         let _ = writeln!(w, "        Err(e) => {RT}::error_response(&SERVICE_INFO, &ctx.request_id, &e),");
         let _ = writeln!(w, "    }}\n}}");
-        let _ = writeln!(w, "\n#[allow(unused_mut, clippy::all)]\nasync fn route<H: Handler + ?Sized>(handler: &H, ctx: &RequestContext, req: &HttpRequest) -> Result<Value, ServiceError> {{");
+        let _ = writeln!(w, "\n#[allow(unused_mut, clippy::all)]\nasync fn route<H: Handler + ?Sized>(handler: &H, ctx: &RequestContext, req: &HttpRequest) -> Result<{RT}::Reply, ServiceError> {{");
         let _ = writeln!(w, "    let op = {RT}::operation(&SERVICE_INFO, req)?;");
         let _ = writeln!(w, "    match op {{");
         for op in ops {
@@ -121,20 +132,108 @@ impl Gen<'_, '_> {
                 }
             }
             match &op.output {
-                Some(o) => {
-                    let _ = writeln!(w, "            Ok(ser::{}(&out))", ser_fn_name(self.model.expect(o)));
-                }
+                Some(o) => match self.event_stream_member(o) {
+                    Some((field, union)) => {
+                        let _ = writeln!(
+                            w,
+                            "            let mut stream = Vec::new();\n            for ev in &out.{field} {{ stream.extend({}(ev)); }}\n            Ok({RT}::Reply::EventStream(stream))",
+                            encode_event_fn(union)
+                        );
+                    }
+                    None => {
+                        let _ = writeln!(
+                            w,
+                            "            Ok({RT}::Reply::Json(ser::{}(&out)))",
+                            ser_fn_name(self.model.expect(o))
+                        );
+                    }
+                },
                 None => {
-                    let _ = writeln!(w, "            let () = out;\n            Ok(Value::Object(Map::new()))");
+                    let _ = writeln!(
+                        w,
+                        "            let () = out;\n            Ok({RT}::Reply::Json(Value::Object(Map::new())))"
+                    );
                 }
             }
             let _ = writeln!(w, "        }}");
         }
         let _ = writeln!(w, "        other => Err({RT}::unknown_operation(other)),");
         let _ = writeln!(w, "    }}\n}}");
+        self.emit_event_stream_helpers(ops, w);
         let _ = writeln!(
             w,
             "\n/// The operation a request addresses, if any.\npub fn operation_for(req: &HttpRequest) -> Option<&str> {{ {RT}::operation(&SERVICE_INFO, req).ok() }}"
         );
+    }
+
+    /// The output member holding an event stream, and the stream's union.
+    fn event_stream_member(&self, output: &str) -> Option<(String, &Shape)> {
+        let o = self.model.expect(output);
+        o.members.iter().find_map(|m| {
+            let t = self.model.expect(&m.target);
+            (t.ty == mws_smithy::ShapeType::Union && t.has_trait("streaming"))
+                .then(|| (crate::rust_types::field_name(m), t))
+        })
+    }
+
+    /// For each operation with an event stream output: a public encoder
+    /// for one event (so a service can keep a stream open and send events
+    /// as they happen) and a public decoder for the operation's input.
+    fn emit_event_stream_helpers(&self, ops: &[&Shape], w: &mut String) {
+        let model = self.model;
+        for op in ops {
+            let Some((field, union)) = op.output.as_deref().and_then(|o| self.event_stream_member(o)) else { continue };
+            let output = model.expect(op.output.as_deref().unwrap());
+            assert!(
+                output.members.len() == 1,
+                "{}: event stream outputs with other members (initial-response) are not supported yet",
+                op.id
+            );
+            let _ = field;
+            let ty = crate::naming::type_name(union.name());
+            let mut arms = String::new();
+            for m in &union.members {
+                let event = model.expect(&m.target);
+                for e in &event.members {
+                    assert!(
+                        !e.has_trait("eventPayload") && !e.has_trait("eventHeader"),
+                        "{}${}: bound event members are not supported yet",
+                        event.id,
+                        e.name
+                    );
+                }
+                let deref = if self.types.is_boxed(&union.id, &m.target) { "&**x" } else { "x" };
+                let body = format!("ser::{}({deref}).to_string()", ser_fn_name(event));
+                let encode = if event.has_trait("error") {
+                    format!(
+                        "::mws_core::eventstream::exception({}, \"application/json\", {body}.as_bytes())",
+                        rust_str(&m.name)
+                    )
+                } else {
+                    format!(
+                        "::mws_core::eventstream::event({}, Some(\"application/json\"), {body}.as_bytes())",
+                        rust_str(&m.name)
+                    )
+                };
+                let _ = writeln!(arms, "        types::{ty}::{}(x) => {encode},", crate::naming::type_name(&m.name));
+            }
+            let _ = writeln!(
+                w,
+                "\n/// One `{}` event as an `application/vnd.amazon.eventstream` message.\npub fn {}(ev: &types::{ty}) -> Vec<u8> {{\n    match ev {{\n{arms}    }}\n}}",
+                union.name(),
+                encode_event_fn(union)
+            );
+            if let Some(i) = &op.input {
+                let input = model.expect(i);
+                let _ = writeln!(
+                    w,
+                    "\n/// Decode and validate a `{}` request.\npub fn decode_input_{}(req: &HttpRequest) -> Result<types::{}, ServiceError> {{\n    let body = {RT}::parse_body(req.body())?;\n    let mut d = Decoder::new();\n    let input = de::{}(&mut d, Some(&body), \"\").unwrap_or_default();\n    d.finish(SERVICE_INFO.validation_error)?;\n    Ok(input)\n}}",
+                    op.name(),
+                    snake_case(op.name()),
+                    crate::naming::type_name(input.name()),
+                    de_fn_name(input)
+                );
+            }
+        }
     }
 }

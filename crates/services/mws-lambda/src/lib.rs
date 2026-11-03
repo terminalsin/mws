@@ -43,6 +43,8 @@ pub(crate) struct Inner {
     runtimes: runtime::Runtimes,
     sts: Option<mws_sts::Sts>,
     s3: Option<mws_s3::S3>,
+    /// Where function logs go, when CloudWatch Logs is wired in.
+    logs: std::sync::OnceLock<mws_logs::Logs>,
 }
 
 /// The Lambda service. Cheap to clone; clones share state.
@@ -76,8 +78,16 @@ impl Lambda {
                 runtimes: runtime::Runtimes::default(),
                 sts,
                 s3,
+                logs: std::sync::OnceLock::new(),
             }),
         }
+    }
+
+    /// Send function logs to CloudWatch Logs, written as the function's
+    /// execution role like AWS does (so the role needs
+    /// `logs:CreateLogGroup`, `logs:CreateLogStream` and `logs:PutLogEvents`).
+    pub fn set_logs(&self, logs: mws_logs::Logs) {
+        let _ = self.inner.logs.set(logs);
     }
 
     pub(crate) fn read(&self) -> RwLockReadGuard<'_, State> {
