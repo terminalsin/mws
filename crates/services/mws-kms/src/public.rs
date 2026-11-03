@@ -219,7 +219,8 @@ impl Kms {
             key_id,
             Access::crypto("Encrypt")
                 .context(Some(context))
-                .condition("kms:ViaService", vec![via(service, &ctx.region)]),
+                .condition("kms:ViaService", vec![via(service, &ctx.region)])
+                .condition("aws:ViaAWSService", vec!["true".into()]),
         )?;
         let out = ops::cryptographic::encrypt_with(&key, plaintext, context, None)?;
         self.record_use(ctx, &key.arn, "Encrypt");
@@ -242,7 +243,8 @@ impl Kms {
             &arn,
             Access::crypto("Decrypt")
                 .context(Some(context))
-                .condition("kms:ViaService", vec![via(service, &ctx.region)]),
+                .condition("kms:ViaService", vec![via(service, &ctx.region)])
+                .condition("aws:ViaAWSService", vec!["true".into()]),
         )?;
         let out = ops::cryptographic::decrypt_with(&key, ciphertext, context, None)?;
         self.record_use(ctx, &key.arn, "Decrypt");
@@ -263,7 +265,8 @@ impl Kms {
             key_id,
             Access::crypto("GenerateDataKey")
                 .context(Some(context))
-                .condition("kms:ViaService", vec![via(service, &ctx.region)]),
+                .condition("kms:ViaService", vec![via(service, &ctx.region)])
+                .condition("aws:ViaAWSService", vec!["true".into()]),
         )?;
         let plaintext = crypto::random_bytes(number_of_bytes);
         let out = ops::cryptographic::encrypt_with(&key, &plaintext, context, None)?;

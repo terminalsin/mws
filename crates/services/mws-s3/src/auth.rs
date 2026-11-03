@@ -58,6 +58,13 @@ impl Call {
         if let Some(via) = self.called_via {
             crate::access_points::called_via_context(&mut c, via);
         }
+        // With ABAC enabled, bucket tags take part in authorization of the
+        // bucket and the objects in it.
+        if bucket.abac.as_deref() == Some("Enabled") {
+            for t in bucket.tags.iter().flatten() {
+                c.insert(format!("aws:ResourceTag/{}", t.key), vec![t.value.clone()]);
+            }
+        }
         c
     }
 

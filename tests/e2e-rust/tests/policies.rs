@@ -212,6 +212,45 @@ async fn simulator_uses_the_real_engine() {
 }
 
 #[tokio::test]
+async fn simulator_pages_results_and_reports_boundaries() {
+    let mws = Mws::start().await;
+    let (_, _) = user_with_policy(&mws, "ivy", Some(READ_ONLY)).await;
+    let iam = aws_sdk_iam::Client::new(&mws.root_sdk_config().await);
+    let boundary = r#"{"Version":"2012-10-17","Statement":[{"Effect":"Allow","Action":"iam:List*","Resource":"*"}]}"#;
+    let policy = iam.create_policy().policy_name("boundary").policy_document(boundary).send().await.unwrap();
+    let boundary_arn = policy.policy().unwrap().arn().unwrap().to_string();
+    iam.put_user_permissions_boundary().user_name("ivy").permissions_boundary(&boundary_arn).send().await.unwrap();
+
+    let simulate = |marker: Option<String>| {
+        iam.simulate_principal_policy()
+            .policy_source_arn("arn:aws:iam::123456789012:user/ivy")
+            .action_names("iam:ListUsers")
+            .action_names("iam:GetUser")
+            .action_names("iam:ListRoles")
+            .max_items(2)
+            .set_marker(marker)
+            .send()
+    };
+    let first = simulate(None).await.unwrap();
+    assert!(first.is_truncated());
+    assert_eq!(first.evaluation_results().len(), 2);
+    let get_user = &first.evaluation_results()[1];
+    assert_eq!(get_user.eval_action_name(), "iam:GetUser");
+    assert_eq!(get_user.eval_decision(), &PolicyEvaluationDecisionType::ImplicitDeny);
+    assert_eq!(
+        get_user.permissions_boundary_decision_detail().map(|d| d.allowed_by_permissions_boundary()),
+        Some(false)
+    );
+    let second = simulate(first.marker().map(str::to_string)).await.unwrap();
+    assert!(!second.is_truncated());
+    let names: Vec<&str> = second.evaluation_results().iter().map(|r| r.eval_action_name()).collect();
+    assert_eq!(names, ["iam:ListRoles"]);
+    assert_eq!(second.evaluation_results()[0].eval_decision(), &PolicyEvaluationDecisionType::Allowed);
+    // PolicyExclusionList is covered by the boto3 tests: the Rust SDK
+    // serializes its union members without their variant names.
+}
+
+#[tokio::test]
 async fn roles_and_instance_profiles() {
     let mws = Mws::start().await;
     let iam = aws_sdk_iam::Client::new(&mws.root_sdk_config().await);

@@ -11,6 +11,7 @@ pub mod generated {
     include!(concat!(env!("OUT_DIR"), "/iam_generated.rs"));
 }
 
+mod activity;
 mod api;
 mod authz;
 mod common;
@@ -25,7 +26,7 @@ mod wire;
 
 use std::collections::BTreeMap;
 use std::future::Future;
-use std::sync::{Arc, OnceLock, RwLock};
+use std::sync::{Arc, Mutex, OnceLock, RwLock};
 
 use chrono::{DateTime, Utc};
 use mws_core::{HttpRequest, HttpResponse, RequestContext, Service, ServiceError, SessionKind};
@@ -74,6 +75,8 @@ pub(crate) struct Inner {
     /// is always present; AWS Organizations adds member accounts.
     pub accounts: RwLock<BTreeMap<String, State>>,
     pub organizations: OnceLock<Arc<dyn OrganizationView>>,
+    /// Activity the authorizer noted and IAM has yet to fold into `accounts`.
+    pub activity: Mutex<activity::Pending>,
 }
 
 /// Saved IAM state: the configured account's namespace at the top level (the
@@ -94,6 +97,7 @@ impl Iam {
                 created_at: Utc::now(),
                 accounts: RwLock::new(BTreeMap::new()),
                 organizations: OnceLock::new(),
+                activity: Mutex::new(activity::Pending::default()),
             }),
         };
         iam.reset_state();
@@ -153,6 +157,7 @@ impl Service for Iam {
         if ctx.caller.session.as_ref().is_some_and(|s| s.kind == SessionKind::GetSessionToken && !s.mfa_authenticated) {
             return self.render_error(&ctx.request_id, &ServiceError::invalid_client_token_id());
         }
+        self.inner.flush_activity();
         let params = mws_proto_query::read_params(&request);
         let account = ctx.caller.account_id.clone();
         self.in_account(account, generated::dispatch(self, &ctx, &params)).await
@@ -168,11 +173,13 @@ impl Service for Iam {
         operation: &str,
         input: serde_json::Value,
     ) -> Result<serde_json::Value, ServiceError> {
+        self.inner.flush_activity();
         let account = ctx.caller.account_id.clone();
         self.in_account(account, generated::invoke(self, &ctx, operation, input)).await
     }
 
     fn export_state(&self) -> Option<serde_json::Value> {
+        self.inner.flush_activity();
         let mut accounts = self.inner.accounts.read().expect("IAM state lock poisoned").clone();
         let primary = accounts.remove(&self.inner.config.account_id).unwrap_or_default();
         let saved = SavedState { primary, member_accounts: accounts };
@@ -187,6 +194,7 @@ impl Service for Iam {
             self.seed_aws_managed_policies(state);
         }
         *self.inner.accounts.write().expect("IAM state lock poisoned") = accounts;
+        self.inner.clear_activity();
         Ok(())
     }
 
@@ -196,5 +204,6 @@ impl Service for Iam {
         let mut accounts = BTreeMap::new();
         accounts.insert(self.inner.config.account_id.clone(), state);
         *self.inner.accounts.write().expect("IAM state lock poisoned") = accounts;
+        self.inner.clear_activity();
     }
 }

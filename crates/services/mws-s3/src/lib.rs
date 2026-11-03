@@ -280,16 +280,9 @@ impl Service for S3 {
     }
 
     async fn handle(&self, ctx: RequestContext, request: HttpRequest) -> HttpResponse {
-        // A function fetching its Object Lambda `inputS3Url`.
-        let (ctx, request, called_via) = match self.input_url_context(&ctx, &request) {
-            None => (ctx, request, None),
-            Some(Err(e)) => return self.render_error(&ctx.request_id, &e),
-            Some(Ok((inner, uri))) => {
-                let mut request = request;
-                *request.uri_mut() = uri;
-                (inner, request, Some("s3-object-lambda.amazonaws.com"))
-            }
-        };
+        // A function fetching its Object Lambda `inputS3Url` (signed with
+        // credentials that act as the original caller).
+        let called_via = self.called_via(&ctx);
         match self.resolve_target(request) {
             access_points::Target::Bucket(r) => self.serve(ctx, r, None, called_via).await,
             access_points::Target::AccessPoint(r, ap) => self.serve(ctx, r, Some(ap), called_via).await,

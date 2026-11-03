@@ -2,9 +2,8 @@
 //!
 //! MWS checks what AWS checks in the assertion (issuer registered as the
 //! named SAML provider, audience, validity window, the Role and
-//! RoleSessionName attributes) but does not verify the XML signature, the
-//! same trade-off as for web identity tokens: test IdPs are usually
-//! self-issued.
+//! RoleSessionName attributes); the XML signature is checked in
+//! [`crate::saml_sig`].
 
 use base64::Engine;
 use chrono::{DateTime, Utc};
@@ -51,11 +50,16 @@ fn time(s: Option<&str>) -> Option<DateTime<Utc>> {
     s.and_then(|v| DateTime::parse_from_rfc3339(v).ok()).map(|d| d.with_timezone(&Utc))
 }
 
-/// Parse a base64-encoded SAML `Response` (or bare `Assertion`).
-pub fn parse(encoded: &str) -> Option<Assertion> {
+/// The XML of a base64-encoded SAML response.
+pub fn decode(encoded: &str) -> Option<String> {
     let cleaned: String = encoded.chars().filter(|c| !c.is_whitespace()).collect();
     let bytes = base64::engine::general_purpose::STANDARD.decode(cleaned).ok()?;
-    let xml = String::from_utf8(bytes).ok()?;
+    String::from_utf8(bytes).ok()
+}
+
+/// Parse a base64-encoded SAML `Response` (or bare `Assertion`).
+pub fn parse(encoded: &str) -> Option<Assertion> {
+    let xml = decode(encoded)?;
     let doc = roxmltree::Document::parse(&xml).ok()?;
     let assertion = doc.descendants().find(|n| n.has_tag_name((ASSERTION, "Assertion")))?;
     fn child<'a, 'i>(n: roxmltree::Node<'a, 'i>, name: &str) -> Option<roxmltree::Node<'a, 'i>> {

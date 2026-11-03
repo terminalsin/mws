@@ -280,7 +280,7 @@ impl Call {
         }
         drop(st);
 
-        let access_key_id = format!("ASIA{}", random_id(16).to_ascii_uppercase().replace(['.', '_'], "X"));
+        let access_key_id = mws_core::ids::access_key_id("ASIA", &ctx.caller.account_id);
         let secret = random_id(40);
         let token = format!("mws-s3express-{}", random_id(64));
         // Session lifetimes follow the wall clock, like the SDKs' caches.

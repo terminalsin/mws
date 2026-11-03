@@ -27,7 +27,7 @@ fn resource_account(req: &AuthzRequest<'_>) -> Option<String> {
     (account.len() == 12 && account.bytes().all(|b| b.is_ascii_digit())).then(|| account.to_string())
 }
 
-fn parse_levels(levels: &[crate::org::PolicyLevel], kind: PolicyKind) -> Vec<Vec<SourcedPolicy>> {
+pub(crate) fn parse_levels(levels: &[crate::org::PolicyLevel], kind: PolicyKind) -> Vec<Vec<SourcedPolicy>> {
     levels
         .iter()
         .map(|level| {
@@ -62,7 +62,15 @@ impl Authorizer for IamAuthorizer {
         for (k, v) in &req.context {
             context.insert(k, v.clone());
         }
-        if let Some(arn) = role_arn(&state, req.caller) {
+        let role = role_arn(&state, req.caller);
+        // Access advisor: every authenticated attempt counts, allowed or not.
+        let entity = match &req.caller.kind {
+            CallerKind::User { .. } => Some(req.caller.arn.clone()),
+            CallerKind::AssumedRole { .. } => role.clone(),
+            _ => None,
+        };
+        self.inner.note_activity(req, entity);
+        if let Some(arn) = role {
             context.insert("aws:PrincipalArn", vec![arn]);
         }
         if let Some(o) = &caller_org {

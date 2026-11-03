@@ -35,6 +35,7 @@ import boto3, urllib.request
 
 def handler(event, context):
     ctx = event["getObjectContext"]
+    assert "X-Amz-Signature=" in ctx["inputS3Url"] and "X-Amz-Security-Token=" in ctx["inputS3Url"]
     text = urllib.request.urlopen(ctx["inputS3Url"]).read().decode()
     secret = event["configuration"]["payload"]
     boto3.client("s3").write_get_object_response(

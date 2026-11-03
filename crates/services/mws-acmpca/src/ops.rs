@@ -137,8 +137,15 @@ impl PrivateCa {
         arn: &str,
         extra: ConditionContext,
     ) -> Result<(), ServiceError> {
-        let policy = self.lock().cas.get(arn).and_then(|c| c.policy.clone());
-        ctx.authorize_with_resource_policy(&format!("acm-pca:{action}"), arn, policy.as_deref(), extra)
+        let (policy, tags) = match self.lock().cas.get(arn) {
+            Some(c) => (c.policy.clone(), c.tags.clone()),
+            None => (None, Default::default()),
+        };
+        // The CA's own tags, for ABAC policies (`aws:ResourceTag/<key>`).
+        let mut context: ConditionContext =
+            tags.into_iter().map(|(k, v)| (format!("aws:ResourceTag/{k}"), vec![v])).collect();
+        context.extend(extra);
+        ctx.authorize_with_resource_policy(&format!("acm-pca:{action}"), arn, policy.as_deref(), context)
     }
 
     pub(crate) fn create_certificate_authority(
@@ -461,7 +468,10 @@ impl PrivateCa {
                 ca.status
             )));
         }
-        let id = input.certificate_serial.replace(':', "").to_ascii_lowercase();
+        // A serial number is a number: leading zeros and colons don't matter.
+        let wanted = input.certificate_serial.replace(':', "").to_ascii_lowercase();
+        let wanted = wanted.trim_start_matches('0');
+        let id = ca.certs.keys().find(|k| k.trim_start_matches('0') == wanted).cloned().unwrap_or_default();
         let cert = ca.certs.get_mut(&id).ok_or_else(|| {
             errors::resource_not_found(format!("Could not find certificate with serial {}.", input.certificate_serial))
         })?;

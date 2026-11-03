@@ -712,3 +712,222 @@ async fn kms_state_survives_export_and_import() {
     assert_eq!(dec.plaintext().unwrap().as_ref(), b"durable");
     c.describe_key().key_id("alias/kept").send().await.unwrap();
 }
+
+#[tokio::test]
+async fn ml_kem_keys_encapsulate_shared_secrets() {
+    use aws_sdk_kms::types::EncapsulationAlgorithmSpec;
+    let mws = Mws::start().await;
+    let c = kms(&mws).await;
+    let key = new_key_with(&c, KeySpec::MlKem768, KeyUsageType::EncapsulateDecapsulate).await;
+    let enc =
+        c.encapsulate().key_id(&key).encapsulation_algorithm(EncapsulationAlgorithmSpec::MlKem).send().await.unwrap();
+    let secret = enc.shared_secret().unwrap().as_ref().to_vec();
+    assert_eq!(secret.len(), 32);
+    let ct = enc.shared_secret_ciphertext_blob().unwrap().clone();
+    let dec = c
+        .decapsulate()
+        .key_id(&key)
+        .encapsulation_algorithm(EncapsulationAlgorithmSpec::MlKem)
+        .shared_secret_ciphertext_blob(ct.clone())
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(dec.shared_secret().unwrap().as_ref(), secret.as_slice());
+
+    // Another ML-KEM key derives a different secret from the same ciphertext.
+    let other = new_key_with(&c, KeySpec::MlKem768, KeyUsageType::EncapsulateDecapsulate).await;
+    let wrong = c
+        .decapsulate()
+        .key_id(&other)
+        .encapsulation_algorithm(EncapsulationAlgorithmSpec::MlKem)
+        .shared_secret_ciphertext_blob(ct)
+        .send()
+        .await;
+    if let Ok(w) = wrong {
+        assert_ne!(w.shared_secret().unwrap().as_ref(), secret.as_slice());
+    }
+
+    // Encapsulation needs an ENCAPSULATE_DECAPSULATE key.
+    let symmetric = new_key(&c).await;
+    let err = c
+        .encapsulate()
+        .key_id(&symmetric)
+        .encapsulation_algorithm(EncapsulationAlgorithmSpec::MlKem)
+        .send()
+        .await
+        .unwrap_err();
+    assert_eq!(code(&err), "InvalidKeyUsageException");
+}
+
+#[tokio::test]
+async fn data_key_pairs_without_plaintext_decrypt_later() {
+    let mws = Mws::start().await;
+    let c = kms(&mws).await;
+    let key = new_key(&c).await;
+    let out = c
+        .generate_data_key_pair_without_plaintext()
+        .key_id(&key)
+        .key_pair_spec(DataKeyPairSpec::EccNistP256)
+        .encryption_context("purpose", "signing")
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(out.key_pair_spec(), Some(&DataKeyPairSpec::EccNistP256));
+    let public = out.public_key().unwrap().as_ref().to_vec();
+    let private = c
+        .decrypt()
+        .ciphertext_blob(out.private_key_ciphertext_blob().unwrap().clone())
+        .encryption_context("purpose", "signing")
+        .send()
+        .await
+        .unwrap();
+    // The decrypted private key signs messages the public key verifies.
+    let pair = signature::EcdsaKeyPair::from_pkcs8(
+        &signature::ECDSA_P256_SHA256_ASN1_SIGNING,
+        private.plaintext().unwrap().as_ref(),
+    )
+    .unwrap();
+    let spki = pair.public_key().as_der().unwrap();
+    assert_eq!(spki.as_ref(), public.as_slice());
+    let sig = pair.sign(&aws_lc_rs::rand::SystemRandom::new(), b"hello").unwrap();
+    let raw_point = &public[public.len() - 65..];
+    UnparsedPublicKey::new(&signature::ECDSA_P256_SHA256_ASN1, raw_point).verify(b"hello", sig.as_ref()).unwrap();
+
+    let missing_context =
+        c.decrypt().ciphertext_blob(out.private_key_ciphertext_blob().unwrap().clone()).send().await.unwrap_err();
+    assert_eq!(code(&missing_context), "InvalidCiphertextException");
+}
+
+#[tokio::test]
+async fn key_last_usage_and_policy_names() {
+    use aws_sdk_kms::operation::RequestId;
+    let mws = Mws::start().await;
+    let c = kms(&mws).await;
+    let key = new_key(&c).await;
+    let fresh = c.get_key_last_usage().key_id(&key).send().await.unwrap();
+    assert!(fresh.key_last_usage().is_none());
+    assert!(fresh.key_creation_date().is_some());
+    assert!(fresh.tracking_start_date().is_some());
+
+    let enc = c.encrypt().key_id(&key).plaintext(Blob::new("x")).send().await.unwrap();
+    let used = c.get_key_last_usage().key_id(&key).send().await.unwrap();
+    let last = used.key_last_usage().unwrap();
+    assert_eq!(last.operation().map(|o| o.as_str()), Some("Encrypt"));
+    assert_eq!(last.kms_request_id(), enc.request_id());
+    assert!(used.key_id().unwrap().starts_with("arn:aws:kms:us-east-1:123456789012:key/"));
+
+    // DescribeKey is not a cryptographic operation and does not count.
+    c.describe_key().key_id(&key).send().await.unwrap();
+    let still = c.get_key_last_usage().key_id(&key).send().await.unwrap();
+    assert_eq!(still.key_last_usage().unwrap().operation().map(|o| o.as_str()), Some("Encrypt"));
+
+    let policies = c.list_key_policies().key_id(&key).send().await.unwrap();
+    assert_eq!(policies.policy_names(), ["default"]);
+    assert!(!policies.truncated());
+    let missing = c.list_key_policies().key_id("1234abcd-12ab-34cd-56ef-1234567890ab").send().await.unwrap_err();
+    assert_eq!(code(&missing), "NotFoundException");
+}
+
+#[tokio::test]
+async fn update_primary_region_swaps_primary_and_replica() {
+    let mws = Mws::start().await;
+    let c = kms(&mws).await;
+    let key_id = c.create_key().multi_region(true).send().await.unwrap().key_metadata().unwrap().key_id().to_string();
+    c.replicate_key().key_id(&key_id).replica_region("eu-west-1").send().await.unwrap();
+
+    let missing = c.update_primary_region().key_id(&key_id).primary_region("ap-south-1").send().await.unwrap_err();
+    assert_eq!(code(&missing), "NotFoundException");
+
+    c.update_primary_region().key_id(&key_id).primary_region("eu-west-1").send().await.unwrap();
+    let md = c.describe_key().key_id(&key_id).send().await.unwrap();
+    let mrc = md.key_metadata().unwrap().multi_region_configuration().unwrap();
+    assert_eq!(mrc.multi_region_key_type().map(|t| t.as_str()), Some("REPLICA"));
+    assert_eq!(mrc.primary_key().unwrap().region(), Some("eu-west-1"));
+
+    // The old primary is now a replica and cannot change the primary.
+    let again = c.update_primary_region().key_id(&key_id).primary_region("us-east-1").send().await.unwrap_err();
+    assert_eq!(code(&again), "UnsupportedOperationException");
+
+    let single = new_key(&c).await;
+    let not_mrk = c.update_primary_region().key_id(&single).primary_region("eu-west-1").send().await.unwrap_err();
+    assert_eq!(code(&not_mrk), "UnsupportedOperationException");
+}
+
+#[tokio::test]
+async fn external_key_stores_lifecycle() {
+    use aws_sdk_kms::types::{
+        ConnectionErrorCodeType, ConnectionStateType, CustomKeyStoreType, XksProxyAuthenticationCredentialType,
+        XksProxyConnectivityType,
+    };
+    let mws = Mws::start().await;
+    let c = kms(&mws).await;
+    let cred = XksProxyAuthenticationCredentialType::builder()
+        .access_key_id("ABCDE22345673EXAMPLE")
+        .raw_secret_access_key("DXjSUawnel2fr6SKC7G25CNxTyWKE5PF9XX6H/u9pSo=")
+        .build()
+        .unwrap();
+    let create = |name: &str, path: &str| {
+        c.create_custom_key_store()
+            .custom_key_store_name(name)
+            .custom_key_store_type(CustomKeyStoreType::ExternalKeyStore)
+            .xks_proxy_uri_endpoint("https://xks.example.com")
+            .xks_proxy_uri_path(path)
+            .xks_proxy_connectivity(XksProxyConnectivityType::PublicEndpoint)
+            .xks_proxy_authentication_credential(cred.clone())
+            .send()
+    };
+    let id = create("store-a", "/kms/xks/v1").await.unwrap().custom_key_store_id().unwrap().to_string();
+    assert!(id.starts_with("cks-"));
+    let dup_name = create("store-a", "/other/kms/xks/v1").await.unwrap_err();
+    assert_eq!(code(&dup_name), "CustomKeyStoreNameInUseException");
+    let dup_uri = create("store-b", "/kms/xks/v1").await.unwrap_err();
+    assert_eq!(code(&dup_uri), "XksProxyUriInUseException");
+    let hsm = c
+        .create_custom_key_store()
+        .custom_key_store_name("hsm")
+        .cloud_hsm_cluster_id("cluster-abc234defgh")
+        .key_store_password("password1234")
+        .trust_anchor_certificate("-----BEGIN CERTIFICATE-----\n-----END CERTIFICATE-----")
+        .send()
+        .await
+        .unwrap_err();
+    assert_eq!(code(&hsm), "CloudHsmClusterNotFoundException");
+
+    let described = c.describe_custom_key_stores().custom_key_store_id(&id).send().await.unwrap();
+    let store = &described.custom_key_stores()[0];
+    assert_eq!(store.custom_key_store_name(), Some("store-a"));
+    assert_eq!(store.connection_state(), Some(&ConnectionStateType::Disconnected));
+    assert_eq!(store.custom_key_store_type(), Some(&CustomKeyStoreType::ExternalKeyStore));
+    let xks = store.xks_proxy_configuration().unwrap();
+    assert_eq!(xks.access_key_id(), Some("ABCDE22345673EXAMPLE"));
+    assert_eq!(xks.uri_path(), Some("/kms/xks/v1"));
+
+    // MWS cannot reach the proxy, so connecting fails as an unreachable proxy does.
+    c.connect_custom_key_store().custom_key_store_id(&id).send().await.unwrap();
+    let failed = c.describe_custom_key_stores().custom_key_store_name("store-a").send().await.unwrap();
+    let store = &failed.custom_key_stores()[0];
+    assert_eq!(store.connection_state(), Some(&ConnectionStateType::Failed));
+    assert_eq!(store.connection_error_code(), Some(&ConnectionErrorCodeType::XksProxyNotReachable));
+    let busy = c.update_custom_key_store().custom_key_store_id(&id).new_custom_key_store_name("x").send().await;
+    assert_eq!(code(&busy.unwrap_err()), "CustomKeyStoreInvalidStateException");
+
+    c.disconnect_custom_key_store().custom_key_store_id(&id).send().await.unwrap();
+    c.update_custom_key_store()
+        .custom_key_store_id(&id)
+        .new_custom_key_store_name("store-renamed")
+        .xks_proxy_uri_path("/v2/kms/xks/v1")
+        .send()
+        .await
+        .unwrap();
+    let renamed = c.describe_custom_key_stores().send().await.unwrap();
+    assert_eq!(renamed.custom_key_stores().len(), 1);
+    let store = &renamed.custom_key_stores()[0];
+    assert_eq!(store.custom_key_store_name(), Some("store-renamed"));
+    assert_eq!(store.xks_proxy_configuration().unwrap().uri_path(), Some("/v2/kms/xks/v1"));
+
+    c.delete_custom_key_store().custom_key_store_id(&id).send().await.unwrap();
+    let gone = c.describe_custom_key_stores().custom_key_store_id(&id).send().await.unwrap_err();
+    assert_eq!(code(&gone), "CustomKeyStoreNotFoundException");
+    let gone = c.connect_custom_key_store().custom_key_store_id(&id).send().await.unwrap_err();
+    assert_eq!(code(&gone), "CustomKeyStoreNotFoundException");
+}

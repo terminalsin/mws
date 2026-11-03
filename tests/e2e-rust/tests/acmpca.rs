@@ -700,3 +700,79 @@ async fn crl_ocsp_and_audit_reports() {
         .unwrap_err();
     assert_eq!(err.into_service_error().meta().code(), Some("ResourceNotFoundException"));
 }
+
+#[tokio::test]
+async fn ca_tags_authorize_through_resource_tag() {
+    let mws = Mws::start().await;
+    let pca = Client::new(&mws.root_sdk_config().await);
+    let ca = create_ca(
+        &pca,
+        CertificateAuthorityType::Root,
+        "Tagged",
+        KeyAlgorithm::Rsa2048,
+        SigningAlgorithm::Sha256Withrsa,
+    )
+    .await;
+    let policy = serde_json::json!({
+        "Version": "2012-10-17",
+        "Statement": [{
+            "Effect": "Allow",
+            "Action": "acm-pca:DescribeCertificateAuthority",
+            "Resource": "*",
+            "Condition": {"StringEquals": {"aws:ResourceTag/env": "prod"}}
+        }]
+    });
+    let (_, cfg) = user_with_policy(&mws, "abac", Some(&policy.to_string())).await;
+    let user = Client::new(&cfg);
+    let err = user.describe_certificate_authority().certificate_authority_arn(&ca).send().await.unwrap_err();
+    assert_eq!(err.into_service_error().meta().code(), Some("AccessDeniedException"));
+    pca.tag_certificate_authority()
+        .certificate_authority_arn(&ca)
+        .tags(Tag::builder().key("env").value("prod").build().unwrap())
+        .send()
+        .await
+        .unwrap();
+    user.describe_certificate_authority().certificate_authority_arn(&ca).send().await.unwrap();
+}
+
+#[tokio::test]
+async fn acm_permissions_on_a_ca() {
+    use aws_sdk_acmpca::error::ProvideErrorMetadata;
+    use aws_sdk_acmpca::types::ActionType;
+    let mws = Mws::start().await;
+    let pca = Client::new(&mws.root_sdk_config().await);
+    let (ca, _) = active_root(&pca).await;
+    let empty = pca.list_permissions().certificate_authority_arn(&ca).send().await.unwrap();
+    assert!(empty.permissions().is_empty());
+
+    let grant = || {
+        pca.create_permission()
+            .certificate_authority_arn(&ca)
+            .principal("acm.amazonaws.com")
+            .actions(ActionType::IssueCertificate)
+            .actions(ActionType::GetCertificate)
+            .actions(ActionType::ListPermissions)
+            .send()
+    };
+    grant().await.unwrap();
+    let dup = grant().await.unwrap_err();
+    assert_eq!(dup.code(), Some("PermissionAlreadyExistsException"));
+
+    let listed = pca.list_permissions().certificate_authority_arn(&ca).send().await.unwrap();
+    let p = &listed.permissions()[0];
+    assert_eq!(p.principal(), Some("acm.amazonaws.com"));
+    assert_eq!(p.source_account(), Some("123456789012"));
+    assert_eq!(p.certificate_authority_arn(), Some(ca.as_str()));
+    assert_eq!(p.actions().len(), 3);
+    assert!(p.created_at().is_some());
+
+    pca.delete_permission().certificate_authority_arn(&ca).principal("acm.amazonaws.com").send().await.unwrap();
+    assert!(pca.list_permissions().certificate_authority_arn(&ca).send().await.unwrap().permissions().is_empty());
+    let gone = pca.delete_permission().certificate_authority_arn(&ca).principal("acm.amazonaws.com").send().await;
+    assert_eq!(gone.unwrap_err().code(), Some("ResourceNotFoundException"));
+
+    // Only the CA owner manages its permissions.
+    let (_, cfg) = user_with_policy(&mws, "outsider", None).await;
+    let denied = Client::new(&cfg).list_permissions().certificate_authority_arn(&ca).send().await.unwrap_err();
+    assert_eq!(denied.code(), Some("AccessDeniedException"));
+}

@@ -143,6 +143,7 @@ import boto3, urllib.request
 
 def handler(event, context):
     ctx = event["getObjectContext"]
+    assert "X-Amz-Signature=" in ctx["inputS3Url"] and "X-Amz-Security-Token=" in ctx["inputS3Url"]
     original = urllib.request.urlopen(ctx["inputS3Url"]).read()
     payload = event["configuration"]["payload"]
     if payload == "fail":

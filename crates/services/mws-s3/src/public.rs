@@ -64,6 +64,7 @@ fn service_allowed(b: &Bucket, put: &ServicePutObject<'_>, action: &str, resourc
     context.insert("aws:SourceAccount", vec![put.source_account.to_string()]);
     context.insert("aws:SourceArn", vec![put.source_arn.to_string()]);
     context.insert("aws:PrincipalServiceName", vec![put.service_principal.to_string()]);
+    context.insert("aws:PrincipalIsAWSService", vec!["true".to_string()]);
     if let Some(a) = put.acl {
         context.insert("s3:x-amz-acl", vec![a.to_string()]);
     }

@@ -150,6 +150,9 @@ impl Call {
         if let Some(o) = &input.object_ownership {
             extra.insert("s3:x-amz-object-ownership".into(), vec![o.clone()]);
         }
+        if let Some(tags) = &config.tags {
+            extra.extend(request_tag_context(tags));
+        }
         self.authorize_plain(ctx, "s3:CreateBucket", &bucket_arn(ctx, &name), extra)?;
         if input.object_lock_enabled_for_bucket == Some(true) {
             for action in ["s3:PutBucketObjectLockConfiguration", "s3:PutBucketVersioning"] {
@@ -454,10 +457,13 @@ impl Call {
         input: types::PutBucketTaggingRequest,
     ) -> Result<(), ServiceError> {
         validate_tags(&input.tagging.tag_set, 50, false)?;
-        self.bucket_write(ctx, &input.bucket, input.expected_bucket_owner.as_deref(), "s3:PutBucketTagging", |b| {
-            b.tags = Some(input.tagging.tag_set);
-            Ok(())
-        })
+        let mut st = self.write();
+        let b = st.buckets.get_mut(&input.bucket).ok_or_else(|| errors::no_such_bucket(&input.bucket))?;
+        check_owner(b, input.expected_bucket_owner.as_deref())?;
+        let context = request_tag_context(&input.tagging.tag_set);
+        self.authorize(ctx, "s3:PutBucketTagging", b, Resource::Bucket, context)?;
+        b.tags = Some(input.tagging.tag_set);
+        Ok(())
     }
 
     pub fn delete_bucket_tagging(
@@ -709,6 +715,14 @@ impl State {
     pub fn bucket_mut(&mut self, name: &str) -> Result<&mut Bucket, ServiceError> {
         self.buckets.get_mut(name).ok_or_else(|| errors::no_such_bucket(name))
     }
+}
+
+/// `aws:RequestTag/<key>` and `aws:TagKeys` for tags a request sets.
+fn request_tag_context(tags: &[types::Tag]) -> ConditionContext {
+    let mut c: ConditionContext =
+        tags.iter().map(|t| (format!("aws:RequestTag/{}", t.key), vec![t.value.clone()])).collect();
+    c.insert("aws:TagKeys".into(), tags.iter().map(|t| t.key.clone()).collect());
+    c
 }
 
 #[cfg(test)]

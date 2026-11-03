@@ -2,7 +2,7 @@
 #![allow(deprecated)]
 
 use aws_sdk_sts::error::ProvideErrorMetadata;
-use mws_e2e::{jwt, sts_config, user_with_policy, Mws};
+use mws_e2e::{jwt, sts_config, user_with_policy, Idp, Mws};
 
 const ACCOUNT_TRUST: &str = r#"{"Version":"2012-10-17","Statement":{"Effect":"Allow","Principal":{"AWS":"arn:aws:iam::123456789012:root"},"Action":"sts:AssumeRole"}}"#;
 const IAM_READ: &str =
@@ -221,6 +221,67 @@ async fn federation_tokens_are_scoped_by_their_policy() {
 #[tokio::test]
 async fn web_identity_federation() {
     let mws = Mws::start().await;
+    let idp = Idp::start().await;
+    let host = idp.host().to_string();
+    let root = aws_sdk_iam::Client::new(&mws.root_sdk_config().await);
+    let provider = root
+        .create_open_id_connect_provider()
+        .url(&idp.issuer)
+        .client_id_list("sts.amazonaws.com")
+        .thumbprint_list(&idp.thumbprint)
+        .send()
+        .await
+        .unwrap();
+    let provider_arn = provider.open_id_connect_provider_arn().unwrap().to_string();
+    assert_eq!(provider_arn, format!("arn:aws:iam::123456789012:oidc-provider/{host}"));
+    let trust = format!(
+        r#"{{"Version":"2012-10-17","Statement":{{"Effect":"Allow","Principal":{{"Federated":"{provider_arn}"}},"Action":"sts:AssumeRoleWithWebIdentity",
+        "Condition":{{"StringEquals":{{"{host}:aud":"sts.amazonaws.com"}},"StringLike":{{"{host}:sub":"repo:acme/*"}}}}}}}}"#
+    );
+    make_role(&mws, "ci", &trust, IAM_READ).await;
+    let exp = chrono_now() + 600;
+    let token = |sub: &str, aud: &str| idp.token(serde_json::json!({"sub":sub,"aud":aud,"exp":exp}));
+
+    // The SDK sends this call unsigned; anonymous credentials are fine.
+    let sts = aws_sdk_sts::Client::new(&mws.root_sdk_config().await);
+    let assume = |token: String| {
+        sts.assume_role_with_web_identity()
+            .role_arn("arn:aws:iam::123456789012:role/ci")
+            .role_session_name("gha")
+            .web_identity_token(token)
+            .send()
+    };
+    let out = assume(token("repo:acme/app:ref:refs/heads/main", "sts.amazonaws.com")).await.unwrap();
+    assert_eq!(out.subject_from_web_identity_token(), Some("repo:acme/app:ref:refs/heads/main"));
+    assert_eq!(out.assumed_role_user().unwrap().arn(), "arn:aws:sts::123456789012:assumed-role/ci/gha");
+    let iam = aws_sdk_iam::Client::new(&sts_config(&mws, out.credentials().unwrap()).await);
+    iam.list_roles().send().await.unwrap();
+
+    let err = assume(token("repo:evil/app", "sts.amazonaws.com")).await.unwrap_err();
+    assert_eq!(err.code(), Some("AccessDenied"));
+    let err = assume(token("repo:acme/app", "someone-else")).await.unwrap_err();
+    assert_eq!(err.code(), Some("InvalidIdentityToken"));
+
+    // A token with a forged signature is refused.
+    let forged = jwt(serde_json::json!({"iss":idp.issuer,"sub":"repo:acme/app","aud":"sts.amazonaws.com","exp":exp}));
+    let err = assume(forged).await.unwrap_err();
+    assert_eq!(err.code(), Some("InvalidIdentityToken"));
+
+    // Without a matching thumbprint the self-signed provider is not trusted.
+    root.update_open_id_connect_provider_thumbprint()
+        .open_id_connect_provider_arn(&provider_arn)
+        .thumbprint_list("0000000000000000000000000000000000000000")
+        .send()
+        .await
+        .unwrap();
+    let err = assume(token("repo:acme/app", "sts.amazonaws.com")).await.unwrap_err();
+    assert_eq!(err.code(), Some("IDPCommunicationError"));
+}
+
+#[tokio::test]
+async fn unsigned_web_identity_tokens_need_verification_turned_off() {
+    let config = mws::Config { skip_federation_signature_verification: true, ..Default::default() };
+    let mws = Mws::start_with(config).await;
     let root = aws_sdk_iam::Client::new(&mws.root_sdk_config().await);
     let provider = root
         .create_open_id_connect_provider()
@@ -230,53 +291,85 @@ async fn web_identity_federation() {
         .send()
         .await
         .unwrap();
-    let provider_arn = provider.open_id_connect_provider_arn().unwrap().to_string();
-    assert_eq!(provider_arn, "arn:aws:iam::123456789012:oidc-provider/token.actions.githubusercontent.com");
+    let provider_arn = provider.open_id_connect_provider_arn().unwrap();
     let trust = format!(
-        r#"{{"Version":"2012-10-17","Statement":{{"Effect":"Allow","Principal":{{"Federated":"{provider_arn}"}},"Action":"sts:AssumeRoleWithWebIdentity",
-        "Condition":{{"StringEquals":{{"token.actions.githubusercontent.com:aud":"sts.amazonaws.com"}},"StringLike":{{"token.actions.githubusercontent.com:sub":"repo:acme/*"}}}}}}}}"#
+        r#"{{"Version":"2012-10-17","Statement":{{"Effect":"Allow","Principal":{{"Federated":"{provider_arn}"}},"Action":"sts:AssumeRoleWithWebIdentity"}}}}"#
     );
     make_role(&mws, "ci", &trust, IAM_READ).await;
-    let exp = chrono_now() + 600;
-    let token = |sub: &str, aud: &str| {
-        jwt(serde_json::json!({"iss":"https://token.actions.githubusercontent.com","sub":sub,"aud":aud,"exp":exp}))
-    };
-
-    // The SDK sends this call unsigned; anonymous credentials are fine.
+    let token = jwt(serde_json::json!({
+        "iss":"https://token.actions.githubusercontent.com","sub":"repo:acme/app","aud":"sts.amazonaws.com","exp":chrono_now() + 600
+    }));
     let sts = aws_sdk_sts::Client::new(&mws.root_sdk_config().await);
-    let out = sts
-        .assume_role_with_web_identity()
+    sts.assume_role_with_web_identity()
         .role_arn("arn:aws:iam::123456789012:role/ci")
         .role_session_name("gha")
-        .web_identity_token(token("repo:acme/app:ref:refs/heads/main", "sts.amazonaws.com"))
+        .web_identity_token(token)
         .send()
         .await
         .unwrap();
-    assert_eq!(out.subject_from_web_identity_token(), Some("repo:acme/app:ref:refs/heads/main"));
-    assert_eq!(out.assumed_role_user().unwrap().arn(), "arn:aws:sts::123456789012:assumed-role/ci/gha");
-    let iam = aws_sdk_iam::Client::new(&sts_config(&mws, out.credentials().unwrap()).await);
-    iam.list_roles().send().await.unwrap();
-
-    let err = sts
-        .assume_role_with_web_identity()
-        .role_arn("arn:aws:iam::123456789012:role/ci")
-        .role_session_name("gha")
-        .web_identity_token(token("repo:evil/app", "sts.amazonaws.com"))
-        .send()
-        .await
-        .unwrap_err();
-    assert_eq!(err.code(), Some("AccessDenied"));
-    let err = sts
-        .assume_role_with_web_identity()
-        .role_arn("arn:aws:iam::123456789012:role/ci")
-        .role_session_name("gha")
-        .web_identity_token(token("repo:acme/app", "someone-else"))
-        .send()
-        .await
-        .unwrap_err();
-    assert_eq!(err.code(), Some("InvalidIdentityToken"));
 }
 
 fn chrono_now() -> i64 {
     std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_secs() as i64
+}
+
+#[tokio::test]
+async fn access_key_info_names_the_owning_account() {
+    let mws = Mws::start().await;
+    let root = aws_sdk_iam::Client::new(&mws.root_sdk_config().await);
+    root.create_user().user_name("kim").send().await.unwrap();
+    let key = root.create_access_key().user_name("kim").send().await.unwrap();
+    let akid = key.access_key().unwrap().access_key_id().to_string();
+    assert!(akid.starts_with("AKIA") && akid.len() == 20);
+    let sts = aws_sdk_sts::Client::new(&mws.root_sdk_config().await);
+    let info = sts.get_access_key_info().access_key_id(&akid).send().await.unwrap();
+    assert_eq!(info.account(), Some("123456789012"));
+
+    // Deleted keys and keys from elsewhere still decode: the account is in the id.
+    root.delete_access_key().user_name("kim").access_key_id(&akid).send().await.unwrap();
+    let info = sts.get_access_key_info().access_key_id(&akid).send().await.unwrap();
+    assert_eq!(info.account(), Some("123456789012"));
+    let info = sts.get_access_key_info().access_key_id("ASIAY34FZKBOKMUTVV7A").send().await.unwrap();
+    assert_eq!(info.account(), Some("609629065308"));
+
+    make_role(&mws, "temp", ACCOUNT_TRUST, IAM_READ).await;
+    let (_, cfg) = user_with_policy(&mws, "lee", Some(ASSUME_ANY)).await;
+    let creds = aws_sdk_sts::Client::new(&cfg)
+        .assume_role()
+        .role_arn("arn:aws:iam::123456789012:role/temp")
+        .role_session_name("lee-session")
+        .send()
+        .await
+        .unwrap();
+    let session_key = creds.credentials().unwrap().access_key_id();
+    assert!(session_key.starts_with("ASIA"));
+    let info = sts.get_access_key_info().access_key_id(session_key).send().await.unwrap();
+    assert_eq!(info.account(), Some("123456789012"));
+}
+
+#[tokio::test]
+async fn decode_authorization_message_needs_permission_and_a_valid_message() {
+    use base64::Engine;
+    let mws = Mws::start().await;
+    let message = serde_json::json!({
+        "allowed": false,
+        "explicitDeny": false,
+        "matchedStatements": {"items": []},
+        "context": {"principal": {"arn": "arn:aws:iam::123456789012:user/ops"}, "action": "s3:GetObject"}
+    });
+    let encoded = base64::engine::general_purpose::STANDARD.encode(message.to_string());
+
+    let (_, cfg) = user_with_policy(&mws, "no-decode", None).await;
+    let denied = aws_sdk_sts::Client::new(&cfg).decode_authorization_message().encoded_message(&encoded).send().await;
+    assert_eq!(denied.unwrap_err().code(), Some("AccessDenied"));
+
+    let allow = r#"{"Version":"2012-10-17","Statement":{"Effect":"Allow","Action":"sts:DecodeAuthorizationMessage","Resource":"*"}}"#;
+    let (_, cfg) = user_with_policy(&mws, "decoder", Some(allow)).await;
+    let sts = aws_sdk_sts::Client::new(&cfg);
+    let out = sts.decode_authorization_message().encoded_message(&encoded).send().await.unwrap();
+    let decoded: serde_json::Value = serde_json::from_str(out.decoded_message().unwrap()).unwrap();
+    assert_eq!(decoded, message);
+
+    let invalid = sts.decode_authorization_message().encoded_message("not-a-message").send().await.unwrap_err();
+    assert_eq!(invalid.code(), Some("InvalidAuthorizationMessageException"));
 }

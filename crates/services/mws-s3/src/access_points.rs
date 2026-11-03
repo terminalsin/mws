@@ -109,11 +109,39 @@ struct Pending {
     reply: tokio::sync::oneshot::Sender<HttpResponse>,
 }
 
-/// A presigned `inputS3Url` handed to a function: who it acts for.
+/// Temporary credentials S3 Object Lambda signs an `inputS3Url` with:
+/// they act as the caller of the original request.
 #[derive(Clone)]
-struct InputUrl {
-    ctx: RequestContext,
+struct InputSession {
+    secret: String,
+    token: String,
+    caller: mws_core::Caller,
     expires: chrono::DateTime<chrono::Utc>,
+}
+
+/// Resolves the credentials `inputS3Url`s are signed with.
+struct InputSessionStore(Arc<Mutex<HashMap<String, InputSession>>>);
+
+impl mws_core::CredentialStore for InputSessionStore {
+    fn resolve(
+        &self,
+        access_key_id: &str,
+        session_token: Option<&str>,
+        now: chrono::DateTime<chrono::Utc>,
+    ) -> Result<Option<mws_core::ResolvedCredential>, mws_core::CredentialError> {
+        let Ok(mut sessions) = self.0.lock() else { return Ok(None) };
+        sessions.retain(|_, s| s.expires + chrono::Duration::minutes(1) > now);
+        let Some(s) = sessions.get(access_key_id) else { return Ok(None) };
+        if session_token != Some(s.token.as_str()) {
+            return Err(mws_core::CredentialError::Invalid);
+        }
+        if s.expires <= now {
+            return Err(mws_core::CredentialError::Expired);
+        }
+        let mut caller = s.caller.clone();
+        caller.access_key_id = access_key_id.to_string();
+        Ok(Some(mws_core::ResolvedCredential { secret_access_key: s.secret.clone(), caller }))
+    }
 }
 
 /// How S3 reaches S3 Control and Lambda, and Object Lambda requests in
@@ -123,12 +151,10 @@ pub(crate) struct Links {
     directory: OnceLock<Arc<dyn AccessPointDirectory>>,
     invoker: OnceLock<Arc<dyn ObjectLambdaInvoker>>,
     pending: Mutex<HashMap<String, Pending>>,
-    input_urls: Mutex<HashMap<String, InputUrl>>,
+    input_sessions: Arc<Mutex<HashMap<String, InputSession>>>,
 }
 
-const INPUT_URL_PARAM: &str = "x-mws-object-lambda-token";
-/// Function responses for `GetObject` must arrive within the function's
-/// timeout, at most 60 seconds for Object Lambda.
+/// How long an `inputS3Url` stays valid.
 const INPUT_URL_TTL_SECS: i64 = 3660;
 const CALLED_VIA: &str = "s3-object-lambda.amazonaws.com";
 
@@ -252,33 +278,18 @@ impl S3 {
         Target::Bucket(request)
     }
 
-    /// For a request for an `inputS3Url`: the context of the request it
-    /// was minted for, and the URI without the token. `None` for other
-    /// requests.
-    pub(crate) fn input_url_context(
-        &self,
-        ctx: &RequestContext,
-        request: &HttpRequest,
-    ) -> Option<Result<(RequestContext, http::Uri), ServiceError>> {
-        let query = request.uri().query().unwrap_or("");
-        let token = crate::form_urlencoded_get(query, INPUT_URL_PARAM)?;
-        let found = self.links.input_urls.lock().ok().and_then(|m| m.get(&token).cloned());
-        let Some(found) = found.filter(|f| f.expires >= ctx.received_at) else {
-            return Some(Err(crate::errors::access_denied("Request has expired")));
-        };
-        let rest: Vec<&str> =
-            query.split('&').filter(|p| p.split('=').next() != Some(INPUT_URL_PARAM) && !p.is_empty()).collect();
-        let mut new = request.uri().path().to_string();
-        if !rest.is_empty() {
-            new.push('?');
-            new.push_str(&rest.join("&"));
-        }
-        let uri = new.parse().unwrap_or_else(|_| request.uri().clone());
-        let mut inner = found.ctx;
-        inner.request_id = ctx.request_id.clone();
-        inner.received_at = ctx.received_at;
-        inner.source_ip = ctx.source_ip.clone();
-        Some(Ok((inner, uri)))
+    /// The service a request was made through on the caller's behalf: S3
+    /// Object Lambda, for requests signed with an `inputS3Url`'s
+    /// credentials.
+    pub(crate) fn called_via(&self, ctx: &RequestContext) -> Option<&'static str> {
+        let sessions = self.links.input_sessions.lock().ok()?;
+        sessions.contains_key(&ctx.caller.access_key_id).then_some(CALLED_VIA)
+    }
+
+    /// The credential store for the temporary credentials `inputS3Url`s
+    /// are signed with; register it with the gateway.
+    pub fn object_lambda_credential_store(&self) -> Arc<dyn mws_core::CredentialStore> {
+        Arc::new(InputSessionStore(self.links.input_sessions.clone()))
     }
 }
 
@@ -295,6 +306,7 @@ pub(crate) fn called_via_context(c: &mut ConditionContext, via: &str) {
     c.insert("aws:CalledVia".into(), vec![via.to_string()]);
     c.insert("aws:CalledViaFirst".into(), vec![via.to_string()]);
     c.insert("aws:CalledViaLast".into(), vec![via.to_string()]);
+    c.insert("aws:ViaAWSService".into(), vec!["true".into()]);
 }
 
 // ---- Object Lambda ---------------------------------------------------------
@@ -486,27 +498,69 @@ impl S3 {
 
     /// Mint an `inputS3Url` for the supporting access point, acting as the
     /// caller.
-    fn input_url(&self, ctx: &RequestContext, request: &HttpRequest, supporting: &AccessPoint, key: &str) -> String {
-        let token = uuid::Uuid::new_v4().simple().to_string();
-        if let Ok(mut m) = self.links.input_urls.lock() {
-            m.retain(|_, v| v.expires >= ctx.received_at);
+    /// Presign an `inputS3Url` for the supporting access point with
+    /// temporary credentials that act as the caller, as S3 Object Lambda
+    /// does.
+    fn input_url(
+        &self,
+        ctx: &RequestContext,
+        request: &HttpRequest,
+        supporting: &AccessPoint,
+        key: &str,
+        method: &str,
+    ) -> Result<String, ServiceError> {
+        use rand::Rng;
+        let alnum = |n: usize, upper: bool| -> String {
+            let chars: &[u8] = if upper {
+                b"ABCDEFGHIJKLMNOPQRSTUVWXYZ234567"
+            } else {
+                b"abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789"
+            };
+            let mut rng = rand::thread_rng();
+            (0..n).map(|_| chars[rng.gen_range(0..chars.len())] as char).collect()
+        };
+        let access_key_id = format!("ASIA{}", alnum(16, true));
+        let secret = alnum(40, false);
+        let token = alnum(96, false);
+        let now = chrono::Utc::now();
+        if let Ok(mut m) = self.links.input_sessions.lock() {
+            m.retain(|_, v| v.expires > now);
             m.insert(
-                token.clone(),
-                InputUrl { ctx: ctx.clone(), expires: ctx.received_at + chrono::Duration::seconds(INPUT_URL_TTL_SECS) },
+                access_key_id.clone(),
+                InputSession {
+                    secret: secret.clone(),
+                    token: token.clone(),
+                    caller: ctx.caller.clone(),
+                    expires: now + chrono::Duration::seconds(INPUT_URL_TTL_SECS),
+                },
             );
         }
         let base = ctx.endpoint.clone().unwrap_or_else(|| "http://localhost:4566".into());
-        let mut query: Vec<String> = request
+        let query: Vec<&str> = request
             .uri()
             .query()
             .unwrap_or("")
             .split('&')
             .filter(|p| !p.is_empty() && !p.starts_with("X-Amz-") && !p.starts_with("x-id"))
-            .map(str::to_string)
             .collect();
-        query.push(format!("{INPUT_URL_PARAM}={token}"));
         let path = if key.is_empty() { String::new() } else { format!("/{}", path_encode(key)) };
-        format!("{base}/{}{path}?{}", supporting.alias, query.join("&"))
+        let mut url = format!("{base}/{}{path}", supporting.alias);
+        if !query.is_empty() {
+            url.push('?');
+            url.push_str(&query.join("&"));
+        }
+        mws_sigv4::presign_url(&mws_sigv4::PresignParams {
+            method,
+            url: &url,
+            region: &ctx.region,
+            service: "s3",
+            access_key_id: &access_key_id,
+            secret_access_key: &secret,
+            session_token: Some(&token),
+            now,
+            expires_in: INPUT_URL_TTL_SECS,
+        })
+        .map_err(|e| olap_error("InternalError", 500, format!("Presigning the input URL failed: {e:?}")))
     }
 
     fn user_request(ctx: &RequestContext, request: &HttpRequest) -> Value {
@@ -545,7 +599,8 @@ impl S3 {
         let Some(invoker) = self.links.invoker.get().cloned() else {
             return Err(olap_error("LambdaNotFound", 404, "The AWS Lambda function was not found."));
         };
-        let input_url = self.input_url(ctx, request, supporting, key);
+        let input_url =
+            self.input_url(ctx, request, supporting, key, if op == "HeadObject" { "HEAD" } else { "GET" })?;
         let mut event = json!({
             "xAmzRequestId": ctx.request_id,
             "configuration": {

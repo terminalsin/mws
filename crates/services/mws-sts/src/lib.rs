@@ -12,8 +12,10 @@ pub mod generated {
 
 mod credentials;
 mod extra;
+mod oidc_keys;
 mod ops;
 mod saml;
+mod saml_sig;
 mod service;
 mod web_identity;
 
@@ -37,6 +39,9 @@ pub(crate) struct Session {
 pub(crate) struct Inner {
     pub iam: Iam,
     pub sessions: Mutex<HashMap<String, Session>>,
+    /// Whether AssumeRoleWithWebIdentity and AssumeRoleWithSAML check
+    /// signatures.
+    pub verify_federation_signatures: bool,
 }
 
 /// The STS service. Cheap to clone; clones share state.
@@ -47,7 +52,17 @@ pub struct Sts {
 
 impl Sts {
     pub fn new(iam: Iam) -> Self {
-        Self { inner: Arc::new(Inner { iam, sessions: Mutex::new(HashMap::new()) }) }
+        Self {
+            inner: Arc::new(Inner { iam, sessions: Mutex::new(HashMap::new()), verify_federation_signatures: true }),
+        }
+    }
+
+    /// Accept web identity tokens and SAML responses without checking their
+    /// signatures (for tests that hand-craft them). AWS always checks them.
+    pub fn without_federation_signature_verification(iam: Iam) -> Self {
+        Self {
+            inner: Arc::new(Inner { iam, sessions: Mutex::new(HashMap::new()), verify_federation_signatures: false }),
+        }
     }
 
     /// A credential store for the temporary credentials this service issues.

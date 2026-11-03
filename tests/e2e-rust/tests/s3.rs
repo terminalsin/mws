@@ -1036,3 +1036,85 @@ async fn directory_buckets_use_sessions() {
     s3.delete_object().bucket(bucket).key("a/two").send().await.unwrap();
     s3.delete_bucket().bucket(bucket).send().await.unwrap();
 }
+
+#[tokio::test]
+async fn abac_bucket_tags_authorize_requests() {
+    let mws = Mws::start().await;
+    let s3 = root(&mws).await;
+    s3.create_bucket().bucket("abac-bucket").send().await.unwrap();
+    let tags = |team: &str| {
+        Tagging::builder().tag_set(Tag::builder().key("team").value(team).build().unwrap()).build().unwrap()
+    };
+    s3.put_bucket_tagging().bucket("abac-bucket").tagging(tags("blue")).send().await.unwrap();
+    let policy = serde_json::json!({
+        "Version": "2012-10-17",
+        "Statement": [
+            {"Effect": "Allow", "Action": "s3:ListBucket", "Resource": "*",
+             "Condition": {"StringEquals": {"aws:ResourceTag/team": "blue"}}},
+            {"Effect": "Allow", "Action": "s3:PutBucketTagging", "Resource": "*",
+             "Condition": {"StringEquals": {"aws:RequestTag/team": "blue"}, "ForAllValues:StringEquals": {"aws:TagKeys": ["team"]}}}
+        ]
+    });
+    let (_, cfg) = user_with_policy(&mws, "abac", Some(&policy.to_string())).await;
+    let user = Mws::s3(&cfg);
+
+    // Tags only authorize once ABAC is enabled on the bucket.
+    let err = user.list_objects_v2().bucket("abac-bucket").send().await.unwrap_err().into_service_error();
+    assert_eq!(err.code(), Some("AccessDenied"));
+    s3.put_bucket_abac()
+        .bucket("abac-bucket")
+        .abac_status(
+            aws_sdk_s3::types::AbacStatus::builder().status(aws_sdk_s3::types::BucketAbacStatus::Enabled).build(),
+        )
+        .send()
+        .await
+        .unwrap();
+    user.list_objects_v2().bucket("abac-bucket").send().await.unwrap();
+
+    // aws:RequestTag and aws:TagKeys judge the tags being set.
+    let err = user.put_bucket_tagging().bucket("abac-bucket").tagging(tags("red")).send().await.unwrap_err();
+    assert_eq!(err.into_service_error().code(), Some("AccessDenied"));
+    user.put_bucket_tagging().bucket("abac-bucket").tagging(tags("blue")).send().await.unwrap();
+    s3.put_bucket_tagging().bucket("abac-bucket").tagging(tags("red")).send().await.unwrap();
+    let err = user.list_objects_v2().bucket("abac-bucket").send().await.unwrap_err();
+    assert_eq!(err.into_service_error().code(), Some("AccessDenied"));
+}
+
+#[tokio::test]
+async fn sse_kms_requests_carry_via_aws_service() {
+    let mws = Mws::start().await;
+    let s3 = root(&mws).await;
+    s3.create_bucket().bucket("via-bucket").send().await.unwrap();
+    let kms = aws_sdk_kms::Client::new(&mws.root_sdk_config().await);
+    let key = kms.create_key().send().await.unwrap().key_metadata().unwrap().arn().unwrap().to_string();
+    // KMS use is allowed only through an AWS service, never directly.
+    let policy = serde_json::json!({
+        "Version": "2012-10-17",
+        "Statement": [
+            {"Effect": "Allow", "Action": ["s3:PutObject", "s3:GetObject"], "Resource": "*"},
+            {"Effect": "Allow", "Action": ["kms:GenerateDataKey", "kms:Decrypt", "kms:Encrypt"], "Resource": key,
+             "Condition": {"Bool": {"aws:ViaAWSService": "true"}}}
+        ]
+    });
+    let (_, cfg) = user_with_policy(&mws, "via", Some(&policy.to_string())).await;
+    Mws::s3(&cfg)
+        .put_object()
+        .bucket("via-bucket")
+        .key("k")
+        .server_side_encryption(aws_sdk_s3::types::ServerSideEncryption::AwsKms)
+        .ssekms_key_id(&key)
+        .body(ByteStream::from_static(b"secret"))
+        .send()
+        .await
+        .unwrap();
+    let out = Mws::s3(&cfg).get_object().bucket("via-bucket").key("k").send().await.unwrap();
+    assert_eq!(body(out).await, b"secret");
+    let err = aws_sdk_kms::Client::new(&cfg)
+        .encrypt()
+        .key_id(&key)
+        .plaintext(aws_sdk_kms::primitives::Blob::new("x"))
+        .send()
+        .await
+        .unwrap_err();
+    assert_eq!(err.into_service_error().meta().code(), Some("AccessDeniedException"));
+}

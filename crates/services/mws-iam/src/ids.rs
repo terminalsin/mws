@@ -16,9 +16,10 @@ pub fn unique_id(prefix: &str) -> String {
     format!("{prefix}{}", random_from(ID_ALPHABET, 17))
 }
 
-/// Long-term access key ids are `AKIA` plus 16 characters.
-pub fn access_key_id() -> String {
-    format!("AKIA{}", random_from(ID_ALPHABET, 16))
+/// Long-term access key ids are `AKIA` plus 16 characters that encode the
+/// owning account.
+pub fn access_key_id(account: &str) -> String {
+    mws_core::ids::access_key_id("AKIA", account)
 }
 
 pub fn secret_access_key() -> String {
@@ -30,7 +31,7 @@ mod tests {
     #[test]
     fn formats() {
         assert_eq!(super::unique_id("AIDA").len(), 21);
-        assert_eq!(super::access_key_id().len(), 20);
+        assert_eq!(super::access_key_id("123456789012").len(), 20);
         assert_eq!(super::secret_access_key().len(), 40);
     }
 }
