@@ -30,6 +30,7 @@ mod s3;
 mod signing;
 mod sms;
 mod state;
+mod status_log;
 mod subscriptions;
 mod topics;
 mod webhook;
@@ -45,6 +46,8 @@ pub(crate) struct Inner {
     state: Mutex<State>,
     lambda: OnceLock<mws_lambda::Lambda>,
     queues: OnceLock<Arc<dyn QueueDelivery>>,
+    /// Where delivery status logs go, and how feedback roles are assumed.
+    status_logs: OnceLock<(mws_logs::Logs, mws_sts::Sts)>,
     signer: signing::Signer,
 }
 
@@ -67,6 +70,7 @@ impl Sns {
                 state: Mutex::new(State::default()),
                 lambda: OnceLock::new(),
                 queues: OnceLock::new(),
+                status_logs: OnceLock::new(),
                 signer: signing::Signer::default(),
             }),
         }

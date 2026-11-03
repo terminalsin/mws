@@ -31,6 +31,7 @@ mod annotations;
 mod auth;
 mod buckets;
 
+mod access_log;
 mod config;
 mod cors;
 mod directory;
@@ -348,6 +349,7 @@ impl S3 {
         access_point: Option<AccessPoint>,
         called_via: Option<&'static str>,
     ) -> HttpResponse {
+        let started = std::time::Instant::now();
         let request = directory::control_plane_listing(request);
         let head = request.method() == Method::HEAD;
         if request.method() == Method::OPTIONS {
@@ -375,6 +377,7 @@ impl S3 {
         };
         self.replicate(&ctx, call.take_written());
         self.finish_response(&ctx, &request, &mut response);
+        self.log_request(&ctx, &request, &response, started);
         if head || response.status() == http::StatusCode::NOT_MODIFIED {
             *response.body_mut() = Bytes::new();
         }
@@ -383,6 +386,50 @@ impl S3 {
 
     /// Response details the model does not express: `206` for ranged reads,
     /// `x-amz-id-2`, and CORS headers.
+    /// Server access logging for a path-style request.
+    fn log_request(
+        &self,
+        ctx: &RequestContext,
+        request: &HttpRequest,
+        response: &HttpResponse,
+        started: std::time::Instant,
+    ) {
+        let path = request.uri().path().trim_start_matches('/');
+        let (bucket, key) = match path.split_once('/') {
+            Some((b, k)) if !k.is_empty() => {
+                (b, Some(percent_encoding::percent_decode_str(k).decode_utf8_lossy().into_owned()))
+            }
+            Some((b, _)) => (b, None),
+            None => (path, None),
+        };
+        if bucket.is_empty() {
+            return;
+        }
+        let header = |name: &str| response.headers().get(name).and_then(|v| v.to_str().ok());
+        let error_code = (response.status().as_u16() >= 400)
+            .then(|| {
+                let body = String::from_utf8_lossy(response.body());
+                body.split_once("<Code>").and_then(|(_, r)| r.split_once("</Code>")).map(|(c, _)| c.to_string())
+            })
+            .flatten();
+        let is_object_read = key.is_some() && matches!(request.method(), &Method::GET | &Method::HEAD);
+        self.log_access(
+            ctx,
+            request,
+            access_log::Entry {
+                bucket,
+                key: key.as_deref(),
+                operation: generated::operation_for(request),
+                status: response.status().as_u16(),
+                error_code,
+                bytes_sent: response.body().len(),
+                object_size: if is_object_read { header("content-length").and_then(|v| v.parse().ok()) } else { None },
+                version_id: header("x-amz-version-id").map(str::to_string),
+                started,
+            },
+        );
+    }
+
     fn finish_response(&self, ctx: &RequestContext, request: &HttpRequest, response: &mut HttpResponse) {
         let headers = response.headers_mut();
         if let Ok(v) = http::HeaderValue::from_str(&host_id(&ctx.request_id)) {
@@ -399,7 +446,7 @@ impl S3 {
 }
 
 /// S3's extended request id, derived from the request id.
-fn host_id(request_id: &str) -> String {
+pub(crate) fn host_id(request_id: &str) -> String {
     use base64::Engine;
     use sha2::Digest;
     base64::engine::general_purpose::STANDARD.encode(sha2::Sha256::digest(request_id.as_bytes()))

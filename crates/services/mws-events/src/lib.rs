@@ -39,7 +39,7 @@ mod http_client;
 mod ingest;
 mod names;
 mod partners;
-pub mod pattern;
+pub use mws_event_pattern as pattern;
 mod public;
 mod rules;
 pub mod schedule;

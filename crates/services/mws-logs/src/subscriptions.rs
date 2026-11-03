@@ -211,6 +211,7 @@ impl Logs {
             return Err(errors::invalid_parameter(format!("Invalid destination ARN: {}", input.destination_arn)));
         }
         self.check_destination(ctx, &input.destination_arn)?;
+        self.check_subscription_target(ctx, &g, &input.destination_arn)?;
         let now = now_ms(ctx);
         let mut st = self.lock();
         let group = st.group_mut(&g)?;

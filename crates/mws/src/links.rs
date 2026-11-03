@@ -191,3 +191,60 @@ impl mws_lambda::QueueSource for LambdaFromSqs {
         Ok(())
     }
 }
+
+/// CloudWatch Logs subscription filters invoking Lambda functions, as
+/// `logs.amazonaws.com` (or its Regional form), asynchronously.
+pub(crate) struct LogsToLambda(pub mws_lambda::Lambda);
+
+const LOGS_PERMISSION: &str =
+    "Could not execute the lambda function. Make sure you have given CloudWatch Logs permission to execute your function.";
+
+impl LogsToLambda {
+    fn principals(region: &str) -> [String; 2] {
+        ["logs.amazonaws.com".to_string(), format!("logs.{region}.amazonaws.com")]
+    }
+}
+
+impl mws_logs::SubscriptionTarget for LogsToLambda {
+    fn service(&self) -> &'static str {
+        "lambda"
+    }
+
+    fn check(&self, ctx: &RequestContext, arn: &str, source: &mws_logs::SubscriptionSource<'_>) -> Result<(), String> {
+        let allowed = Self::principals(&ctx.region).iter().any(|p| {
+            let inv = mws_lambda::ServiceInvocation {
+                function: arn,
+                service_principal: p,
+                source_account: Some(source.account),
+                source_arn: Some(source.log_group_arn),
+                payload: Vec::new(),
+            };
+            self.0.check_service_invoke(ctx, &inv).is_ok()
+        });
+        if allowed {
+            Ok(())
+        } else {
+            Err(LOGS_PERMISSION.to_string())
+        }
+    }
+
+    fn deliver(&self, ctx: &RequestContext, arn: &str, source: &mws_logs::SubscriptionSource<'_>, payload: Vec<u8>) {
+        for p in Self::principals(&ctx.region) {
+            let inv = mws_lambda::ServiceInvocation {
+                function: arn,
+                service_principal: &p,
+                source_account: Some(source.account),
+                source_arn: Some(source.log_group_arn),
+                payload: payload.clone(),
+            };
+            match self.0.invoke_event_as_service(ctx, inv) {
+                Ok(()) => return,
+                Err(mws_lambda::ServiceInvokeError::AccessDenied) => continue,
+                Err(e) => {
+                    tracing::debug!(function = arn, "subscription delivery failed: {e:?}");
+                    return;
+                }
+            }
+        }
+    }
+}

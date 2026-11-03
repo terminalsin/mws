@@ -12,6 +12,7 @@ bytes.workspace = true
 chrono.workspace = true
 http.workspace = true
 mws-core.workspace = true
+mws-event-pattern.workspace = true
 mws-iam-policy.workspace = true
 mws-lambda.workspace = true
 mws-logs.workspace = true

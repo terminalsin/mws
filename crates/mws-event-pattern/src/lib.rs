@@ -1,5 +1,6 @@
-//! Event patterns: compiled from their JSON form with EventBridge's
-//! validation, and matched against events the way EventBridge does.
+//! The AWS event pattern language, used by EventBridge rules, Lambda event
+//! source filters and Pipes: patterns compiled from their JSON form with
+//! AWS's validation, and matched against JSON events the way AWS does.
 //!
 //! Supported: exact values (strings, numbers, booleans, `null`), `prefix`
 //! and `suffix` (optionally `equals-ignore-case`), `equals-ignore-case`,

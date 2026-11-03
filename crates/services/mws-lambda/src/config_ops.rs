@@ -839,6 +839,7 @@ impl Lambda {
                 }
             }
         }
+        crate::esm::compile_filters(input.filter_criteria.as_ref())?;
         let sqs_source = input.event_source_arn.as_deref().filter(|a| a.split(':').nth(2) == Some("sqs"));
         let batch_size = input.batch_size.unwrap_or(if sqs_source.is_some() { 10 } else { 100 });
         if let Some(queue) = sqs_source {
@@ -938,6 +939,7 @@ impl Lambda {
             }
             None => None,
         };
+        crate::esm::compile_filters(input.filter_criteria.as_ref())?;
         let current = {
             let st = self.read();
             st.event_source_mappings.get(&input.uuid).map(|m| m.config.clone())

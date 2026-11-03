@@ -156,6 +156,8 @@ fn build_with_store(config: Config, store: Option<Arc<Store>>) -> Mws {
         partition: config.iam.partition.clone(),
     }));
     lambda.set_queue_source(Arc::new(links::LambdaFromSqs(sqs.clone())));
+    logs.add_subscription_target(Arc::new(links::LogsToLambda(lambda.clone())));
+    sns.set_delivery_status_logs(logs.clone(), sts.clone());
     let mut gateway = Gateway::builder();
     if let Some(store) = store {
         gateway = gateway.store(store);

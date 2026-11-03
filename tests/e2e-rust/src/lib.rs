@@ -78,7 +78,10 @@ impl Mws {
         let target = target.strip_prefix(&self.endpoint).unwrap_or(target);
         let addr = self.endpoint.trim_start_matches("http://");
         let mut stream = tokio::net::TcpStream::connect(addr).await.unwrap();
-        let mut request = format!("{method} {target} HTTP/1.1\r\nHost: {addr}\r\nConnection: close\r\n");
+        let mut request = format!("{method} {target} HTTP/1.1\r\nConnection: close\r\n");
+        if !headers.iter().any(|(k, _)| k.eq_ignore_ascii_case("host")) {
+            request.push_str(&format!("Host: {addr}\r\n"));
+        }
         for (k, v) in headers {
             request.push_str(&format!("{k}: {v}\r\n"));
         }

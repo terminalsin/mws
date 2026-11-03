@@ -122,6 +122,7 @@ impl Logs {
         let accepted =
             self.store_events(&g, stream, events, now_ms).map_err(|e| ServiceLogError::Rejected(e.message))?;
         self.tails.publish(&g, stream, &accepted.stored);
+        self.forward(None, &g, stream, &accepted.stored);
         Ok(())
     }
 }

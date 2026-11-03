@@ -25,6 +25,7 @@ pub mod generated {
 mod deliveries;
 mod events;
 pub mod filter;
+mod forward;
 mod groups;
 mod handler;
 pub mod insights;
@@ -45,6 +46,7 @@ use mws_core::{HttpRequest, HttpResponse, RequestContext, Service, ServiceError}
 use mws_kms::Kms;
 use mws_s3::S3;
 
+pub use forward::{SubscriptionSource, SubscriptionTarget};
 pub use public::{ServiceLogError, ServiceLogEvent, ServiceLogWriter};
 use state::State;
 
@@ -55,6 +57,11 @@ pub struct Logs {
     tails: livetail::Sessions,
     s3: Option<S3>,
     kms: Option<Kms>,
+    /// Where subscription filters deliver (Lambda, ...).
+    targets: Arc<std::sync::RwLock<Vec<Arc<dyn SubscriptionTarget>>>>,
+    /// The last request's context and clock offset, for deliveries of
+    /// writes that come without one.
+    template: Arc<Mutex<Option<(RequestContext, chrono::Duration)>>>,
 }
 
 impl Logs {
@@ -90,6 +97,7 @@ impl Service for Logs {
     }
 
     async fn handle(&self, ctx: RequestContext, request: HttpRequest) -> HttpResponse {
+        self.observe(&ctx);
         // Live tail keeps its response open and streams events into it.
         if generated::operation_for(&request) == Some("StartLiveTail") {
             return match generated::decode_input_start_live_tail(&request) {

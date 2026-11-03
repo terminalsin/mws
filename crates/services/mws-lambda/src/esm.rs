@@ -267,6 +267,17 @@ impl Lambda {
             return Ok(());
         }
 
+        // Records no filter matches are dropped: deleted without invoking.
+        let filters = compile_filters(config.filter_criteria.as_ref()).unwrap_or_default();
+        let (batch, dropped): (Vec<QueueMessage>, Vec<QueueMessage>) =
+            batch.into_iter().partition(|m| passes(&filters, &record(m, queue_arn, region)));
+        if !dropped.is_empty() {
+            let handles: Vec<String> = dropped.iter().map(|m| m.receipt_handle.clone()).collect();
+            source.delete(&role_ctx, queue_arn, &handles)?;
+        }
+        if batch.is_empty() {
+            return Ok(());
+        }
         let records: Vec<Value> = batch.iter().map(|m| record(m, queue_arn, region)).collect();
         let payload = serde_json::to_vec(&json!({ "Records": records })).expect("records serialize");
         let f = names::parse_function(&ctx, function_arn, None)?;
@@ -314,6 +325,38 @@ fn failed_items(payload: &[u8], batch: &[QueueMessage]) -> Option<HashSet<String
 fn reported_unusable(payload: &[u8]) -> bool {
     let Ok(v) = serde_json::from_slice::<Value>(payload) else { return false };
     v.get("batchItemFailures").is_some_and(|f| !f.is_array() && !f.is_null())
+}
+
+/// The patterns of a mapping's `FilterCriteria`, checked the way
+/// `CreateEventSourceMapping` checks them.
+pub(crate) fn compile_filters(
+    criteria: Option<&types::FilterCriteria>,
+) -> Result<Vec<mws_event_pattern::Pattern>, ServiceError> {
+    criteria
+        .and_then(|c| c.filters.as_ref())
+        .into_iter()
+        .flatten()
+        .map(|f| {
+            let source = f.pattern.as_deref().unwrap_or_default();
+            mws_event_pattern::Pattern::parse(source)
+                .map_err(|_| errors::invalid_parameter_value("Invalid filter pattern definition."))
+        })
+        .collect()
+}
+
+/// Whether a record passes a mapping's filters: any one must match. A body
+/// that is JSON is filtered as JSON; any other body only as a string.
+fn passes(filters: &[mws_event_pattern::Pattern], record: &Value) -> bool {
+    if filters.is_empty() {
+        return true;
+    }
+    let mut view = record.clone();
+    if let Some(body) = view.get("body").and_then(Value::as_str) {
+        if let Ok(parsed @ Value::Object(_)) = serde_json::from_str::<Value>(body) {
+            view["body"] = parsed;
+        }
+    }
+    filters.iter().any(|f| f.matches(&view))
 }
 
 fn missing_queue() -> ServiceError {
@@ -377,6 +420,29 @@ mod tests {
         let all = failed_items(br#"{"batchItemFailures":[{"itemIdentifier":"zzz"}]}"#, &batch).unwrap();
         assert_eq!(all.len(), 2);
         assert!(reported_unusable(br#"{"batchItemFailures":"x"}"#));
+    }
+
+    #[test]
+    fn filters_match_json_and_plain_bodies() {
+        let criteria = types::FilterCriteria {
+            filters: Some(vec![
+                types::Filter { pattern: Some(r#"{"body":{"kind":["order"]}}"#.into()) },
+                types::Filter { pattern: Some(r#"{"body":[{"prefix":"urgent"}]}"#.into()) },
+            ]),
+        };
+        let filters = compile_filters(Some(&criteria)).unwrap();
+        let with = |body: &str| {
+            let mut m = msg("a");
+            m.body = body.into();
+            record(&m, "arn:aws:sqs:us-east-1:123456789012:q", "us-east-1")
+        };
+        assert!(passes(&filters, &with(r#"{"kind":"order","n":1}"#)));
+        assert!(!passes(&filters, &with(r#"{"kind":"refund"}"#)));
+        assert!(passes(&filters, &with("urgent: call back")));
+        assert!(!passes(&filters, &with("later")));
+        assert!(passes(&[], &with("anything")));
+        let bad = types::FilterCriteria { filters: Some(vec![types::Filter { pattern: Some("{".into()) }]) };
+        assert_eq!(compile_filters(Some(&bad)).unwrap_err().message, "Invalid filter pattern definition.");
     }
 
     #[test]

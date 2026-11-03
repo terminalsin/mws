@@ -2196,6 +2196,13 @@ dependencies = [
 ]
 
 [[package]]
+name = "mws-event-pattern"
+version = "0.1.0"
+dependencies = [
+ "serde_json",
+]
+
+[[package]]
 name = "mws-events"
 version = "0.1.0"
 dependencies = [
@@ -2206,6 +2213,7 @@ dependencies = [
  "http 1.5.0",
  "mws-codegen",
  "mws-core",
+ "mws-event-pattern",
  "mws-iam-policy",
  "mws-lambda",
  "mws-logs",
@@ -2283,6 +2291,7 @@ dependencies = [
  "base64 0.22.1",
  "bytes",
  "chrono",
+ "form_urlencoded",
  "hex",
  "http 1.5.0",
  "http-body-util",
@@ -2290,6 +2299,7 @@ dependencies = [
  "hyper-util",
  "mws-codegen",
  "mws-core",
+ "mws-event-pattern",
  "mws-iam-policy",
  "mws-logs",
  "mws-proto-json",
@@ -2560,13 +2570,16 @@ dependencies = [
  "chrono",
  "form_urlencoded",
  "http 1.5.0",
+ "md-5 0.10.6",
  "mws-codegen",
  "mws-core",
  "mws-iam-policy",
  "mws-lambda",
+ "mws-logs",
  "mws-proto-json",
  "mws-proto-query",
  "mws-s3",
+ "mws-sts",
  "num-bigint",
  "percent-encoding",
  "rand",

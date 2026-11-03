@@ -541,6 +541,14 @@ impl Call {
                     )
                     .with_field("TargetBucket", mws_core::ErrorValue::String(l.target_bucket.clone())))
                 }
+                Some(t) if st.buckets.get(&input.bucket).is_some_and(|b| b.owner != t.owner) => {
+                    return Err(ServiceError::client(
+                        "InvalidTargetBucketForLogging",
+                        400,
+                        "The owner for the bucket to be logged and the target bucket must be the same.",
+                    )
+                    .with_field("TargetBucket", mws_core::ErrorValue::String(l.target_bucket.clone())))
+                }
                 Some(t) if Some(&t.region) != source_region.as_ref() && source_region.is_some() => {
                     return Err(ServiceError::client(
                         "CrossLocationLoggingProhibitted",
