@@ -143,11 +143,116 @@ pub async fn sts_config(mws: &Mws, creds: &aws_sdk_sts::types::Credentials) -> S
     mws.sdk_config(creds.access_key_id(), creds.secret_access_key(), Some(creds.session_token())).await
 }
 
-/// An unsigned-looking OIDC ID token: header.payload.signature.
+/// An OIDC ID token with a fake signature: header.payload.signature. MWS
+/// rejects it unless signature verification is turned off.
 pub fn jwt(claims: serde_json::Value) -> String {
     use base64::Engine;
     let e = base64::engine::general_purpose::URL_SAFE_NO_PAD;
     format!("{}.{}.{}", e.encode(br#"{"alg":"RS256","typ":"JWT"}"#), e.encode(claims.to_string()), e.encode(b"sig"))
+}
+
+/// A local OpenID Connect identity provider: serves discovery and a JWKS
+/// over HTTPS with a self-signed certificate, and signs ID tokens with its
+/// RSA key, so `AssumeRoleWithWebIdentity` can verify them as AWS does.
+pub struct Idp {
+    /// `https://localhost:<port>`.
+    pub issuer: String,
+    /// Hex SHA-1 thumbprint of the server certificate, for the IAM OIDC
+    /// provider.
+    pub thumbprint: String,
+    key: aws_lc_rs::rsa::KeyPair,
+    _server: tokio::task::JoinHandle<()>,
+}
+
+impl Idp {
+    pub async fn start() -> Self {
+        use aws_lc_rs::signature::KeyPair as _;
+        use base64::Engine;
+        let b64 = base64::engine::general_purpose::URL_SAFE_NO_PAD;
+        let key = aws_lc_rs::rsa::KeyPair::generate(aws_lc_rs::rsa::KeySize::Rsa2048).unwrap();
+        let components: aws_lc_rs::signature::RsaPublicKeyComponents<Vec<u8>> = key.public_key().into();
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let issuer = format!("https://localhost:{}", listener.local_addr().unwrap().port());
+        let cert = rcgen::generate_simple_self_signed(vec!["localhost".to_string()]).unwrap();
+        let cert_der = cert.cert.der().to_vec();
+        let thumbprint = aws_lc_rs::digest::digest(&aws_lc_rs::digest::SHA1_FOR_LEGACY_USE_ONLY, &cert_der)
+            .as_ref()
+            .iter()
+            .map(|b| format!("{b:02x}"))
+            .collect();
+        let provider = std::sync::Arc::new(rustls::crypto::aws_lc_rs::default_provider());
+        let tls = rustls::ServerConfig::builder_with_provider(provider)
+            .with_safe_default_protocol_versions()
+            .unwrap()
+            .with_no_client_auth()
+            .with_single_cert(
+                vec![rustls_pki_types::CertificateDer::from(cert_der)],
+                rustls_pki_types::PrivateKeyDer::Pkcs8(cert.key_pair.serialize_der().into()),
+            )
+            .unwrap();
+        let acceptor = tokio_rustls::TlsAcceptor::from(Arc::new(tls));
+        let discovery = serde_json::json!({"issuer": issuer, "jwks_uri": format!("{issuer}/keys")}).to_string();
+        let jwks = serde_json::json!({"keys": [{
+            "kty": "RSA", "kid": "idp-key", "alg": "RS256", "use": "sig",
+            "n": b64.encode(&components.n), "e": b64.encode(&components.e)
+        }]})
+        .to_string();
+        let server = tokio::spawn(async move {
+            use tokio::io::{AsyncReadExt, AsyncWriteExt};
+            loop {
+                let Ok((tcp, _)) = listener.accept().await else { return };
+                let acceptor = acceptor.clone();
+                let (discovery, jwks) = (discovery.clone(), jwks.clone());
+                tokio::spawn(async move {
+                    let Ok(mut tls) = acceptor.accept(tcp).await else { return };
+                    let mut buf = vec![0u8; 4096];
+                    let n = tls.read(&mut buf).await.unwrap_or(0);
+                    let request = String::from_utf8_lossy(&buf[..n]).to_string();
+                    let path = request.split(' ').nth(1).unwrap_or("/");
+                    let (status, body) = match path {
+                        "/.well-known/openid-configuration" => ("200 OK", discovery),
+                        "/keys" => ("200 OK", jwks),
+                        _ => ("404 Not Found", String::new()),
+                    };
+                    let response = format!(
+                        "HTTP/1.1 {status}\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+                        body.len()
+                    );
+                    let _ = tls.write_all(response.as_bytes()).await;
+                    let _ = tls.shutdown().await;
+                });
+            }
+        });
+        Self { issuer, thumbprint, key, _server: server }
+    }
+
+    /// The provider URL as IAM stores it (without the scheme), which is
+    /// also the prefix of its condition keys.
+    pub fn host(&self) -> &str {
+        self.issuer.trim_start_matches("https://")
+    }
+
+    /// An RS256 ID token with these claims (`iss` is filled in).
+    pub fn token(&self, mut claims: serde_json::Value) -> String {
+        use base64::Engine;
+        let b64 = base64::engine::general_purpose::URL_SAFE_NO_PAD;
+        claims["iss"] = serde_json::Value::from(self.issuer.clone());
+        let signing_input = format!(
+            "{}.{}",
+            b64.encode(r#"{"alg":"RS256","typ":"JWT","kid":"idp-key"}"#),
+            b64.encode(claims.to_string())
+        );
+        let mut sig = vec![0; self.key.public_modulus_len()];
+        self.key
+            .sign(
+                &aws_lc_rs::signature::RSA_PKCS1_SHA256,
+                &aws_lc_rs::rand::SystemRandom::new(),
+                signing_input.as_bytes(),
+                &mut sig,
+            )
+            .unwrap();
+        format!("{signing_input}.{}", b64.encode(sig))
+    }
 }
 
 fn dechunk(mut data: &[u8]) -> Vec<u8> {

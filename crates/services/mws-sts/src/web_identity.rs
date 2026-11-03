@@ -1,9 +1,8 @@
-//! Minimal OIDC ID token handling for `AssumeRoleWithWebIdentity`.
+//! Decoding OIDC ID token claims for `AssumeRoleWithWebIdentity`.
 //!
 //! MWS checks the claims AWS checks (issuer registered as an IAM OIDC
-//! provider, audience in its client ids, expiry) but does not verify the
-//! token signature: it has no network access to the provider's keys, and test
-//! tokens are usually self-issued.
+//! provider, audience in its client ids, expiry); the signature is checked
+//! in [`crate::oidc_keys`].
 
 use base64::Engine;
 use serde_json::Value;

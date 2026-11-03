@@ -21,6 +21,10 @@ pub struct Config {
     /// Scenario file applied at startup and used as the reset baseline
     /// (`MWS_SCENARIO`).
     pub scenario: Option<PathBuf>,
+    /// Accept web identity tokens and SAML responses without verifying
+    /// their signatures (`MWS_SKIP_FEDERATION_SIGNATURE_VERIFICATION=1`),
+    /// for test suites that hand-craft them. AWS always verifies them.
+    pub skip_federation_signature_verification: bool,
 }
 
 impl Config {
@@ -38,7 +42,9 @@ impl Config {
             iam.root_secret_access_key = v;
         }
         let path = |var: &str| std::env::var_os(var).filter(|v| !v.is_empty()).map(PathBuf::from);
-        Self { iam, db: path("MWS_DB"), scenario: path("MWS_SCENARIO") }
+        let skip = std::env::var("MWS_SKIP_FEDERATION_SIGNATURE_VERIFICATION")
+            .is_ok_and(|v| matches!(v.as_str(), "1" | "true" | "yes"));
+        Self { iam, db: path("MWS_DB"), scenario: path("MWS_SCENARIO"), skip_federation_signature_verification: skip }
     }
 }
 
@@ -90,7 +96,11 @@ pub async fn start(config: Config) -> Result<Mws, String> {
 
 fn build_with_store(config: Config, store: Option<Arc<Store>>) -> Mws {
     let iam = Iam::new(config.iam.clone());
-    let sts = Sts::new(iam.clone());
+    let sts = if config.skip_federation_signature_verification {
+        Sts::without_federation_signature_verification(iam.clone())
+    } else {
+        Sts::new(iam.clone())
+    };
     let kms = Kms::new();
     let route53 = Route53::new().with_kms(kms.clone());
     let organizations = Organizations::new(iam.clone());
