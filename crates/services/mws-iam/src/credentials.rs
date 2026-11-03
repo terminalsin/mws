@@ -27,6 +27,7 @@ impl CredentialStore for IamCredentials {
                     user_id: cfg.account_id.clone(),
                     access_key_id: access_key_id.to_string(),
                     kind: CallerKind::Root,
+                    session: None,
                 },
             }));
         }
@@ -43,6 +44,7 @@ impl CredentialStore for IamCredentials {
                 user_id: cfg.account_id.clone(),
                 access_key_id: access_key_id.to_string(),
                 kind: CallerKind::Root,
+                session: None,
             },
             Some(name) => {
                 let user = state.user(name).ok_or(CredentialError::Invalid)?;
@@ -52,6 +54,7 @@ impl CredentialStore for IamCredentials {
                     user_id: user.id.clone(),
                     access_key_id: access_key_id.to_string(),
                     kind: CallerKind::User { name: user.name.clone() },
+                    session: None,
                 }
             }
         };

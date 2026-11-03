@@ -10,6 +10,7 @@ async-trait.workspace = true
 chrono.workspace = true
 mws-core.workspace = true
 mws-proto-query.workspace = true
+mws-iam-policy.workspace = true
 rand.workspace = true
 
 [build-dependencies]

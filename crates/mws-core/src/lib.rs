@@ -11,7 +11,7 @@ mod service;
 
 pub use auth::{
     AllowAll, Authorizer, AuthzDecision, AuthzRequest, Caller, CallerKind, ConditionContext, CredentialError,
-    CredentialStore, ResolvedCredential,
+    CredentialStore, ResolvedCredential, SessionInfo, SessionKind,
 };
 pub use error::{ErrorFault, ServiceError};
 pub use service::{HttpRequest, HttpResponse, RequestContext, Service};

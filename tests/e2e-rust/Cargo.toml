@@ -9,6 +9,10 @@ publish = false
 aws-config = { version = "1", features = ["behavior-version-latest"] }
 aws-credential-types = { version = "1", features = ["hardcoded-credentials"] }
 aws-sdk-iam = "1"
+aws-sdk-sts = "1"
+urlencoding = "2"
+base64.workspace = true
+serde_json.workspace = true
 mws.workspace = true
 mws-server.workspace = true
 tokio.workspace = true

@@ -34,6 +34,22 @@ impl RequestContext {
         if let crate::CallerKind::User { name } = &c.kind {
             ctx.insert("aws:username".into(), vec![name.clone()]);
         }
+        let principal_type = match &c.kind {
+            crate::CallerKind::Root => "Account",
+            crate::CallerKind::User { .. } => "User",
+            crate::CallerKind::AssumedRole { .. } => "AssumedRole",
+            crate::CallerKind::FederatedUser { .. } => "FederatedUser",
+            crate::CallerKind::Anonymous => "Anonymous",
+        };
+        ctx.insert("aws:PrincipalType".into(), vec![principal_type.into()]);
+        let mfa = c.session.as_ref().is_some_and(|s| s.mfa_authenticated);
+        ctx.insert("aws:MultiFactorAuthPresent".into(), vec![mfa.to_string()]);
+        if let Some(s) = &c.session {
+            ctx.insert("aws:TokenIssueTime".into(), vec![s.issued_at.format("%Y-%m-%dT%H:%M:%SZ").to_string()]);
+            if let Some(si) = &s.source_identity {
+                ctx.insert("aws:SourceIdentity".into(), vec![si.clone()]);
+            }
+        }
         ctx.insert("aws:CurrentTime".into(), vec![self.received_at.format("%Y-%m-%dT%H:%M:%SZ").to_string()]);
         ctx.insert("aws:EpochTime".into(), vec![self.received_at.timestamp().to_string()]);
         ctx.insert("aws:SecureTransport".into(), vec![self.secure_transport.to_string()]);
@@ -47,19 +63,58 @@ impl RequestContext {
     /// Ask the authorizer whether the caller may perform `action` on
     /// `resource`, and turn a denial into the standard AccessDenied error.
     pub fn authorize(&self, action: &str, resource: &str, extra_context: ConditionContext) -> Result<(), ServiceError> {
+        self.authorize_inner(action, resource, None, false, extra_context)
+    }
+
+    /// Like [`RequestContext::authorize`], also evaluating the resource's
+    /// own policy (a bucket policy, a CA policy, ...).
+    pub fn authorize_with_resource_policy(
+        &self,
+        action: &str,
+        resource: &str,
+        resource_policy: Option<&str>,
+        extra_context: ConditionContext,
+    ) -> Result<(), ServiceError> {
+        self.authorize_inner(action, resource, resource_policy, false, extra_context)
+    }
+
+    /// Authorize against a role trust policy: the trust policy must allow the
+    /// caller, and identity policies must too unless it names them directly.
+    pub fn authorize_against_trust_policy(
+        &self,
+        action: &str,
+        role_arn: &str,
+        trust_policy: &str,
+        extra_context: ConditionContext,
+    ) -> Result<(), ServiceError> {
+        self.authorize_inner(action, role_arn, Some(trust_policy), true, extra_context)
+    }
+
+    fn authorize_inner(
+        &self,
+        action: &str,
+        resource: &str,
+        resource_policy: Option<&str>,
+        resource_policy_required: bool,
+        extra_context: ConditionContext,
+    ) -> Result<(), ServiceError> {
         let mut context = self.global_condition_context();
         context.extend(extra_context);
-        let req = AuthzRequest { caller: &self.caller, action, resource, resource_policy: None, context };
+        let req =
+            AuthzRequest { caller: &self.caller, action, resource, resource_policy, resource_policy_required, context };
         match self.authorizer.authorize(&req) {
             AuthzDecision::Allow => Ok(()),
-            AuthzDecision::Deny { reason } => Err(ServiceError::client(
-                "AccessDenied",
-                403,
-                format!(
-                    "User: {} is not authorized to perform: {} on resource: {} {}",
-                    self.caller.arn, action, resource, reason
-                ),
-            )),
+            AuthzDecision::Deny { reason } => {
+                let reason = if reason.is_empty() { String::new() } else { format!(" {reason}") };
+                Err(ServiceError::client(
+                    "AccessDenied",
+                    403,
+                    format!(
+                        "User: {} is not authorized to perform: {} on resource: {}{reason}",
+                        self.caller.arn, action, resource
+                    ),
+                ))
+            }
         }
     }
 }
