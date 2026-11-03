@@ -87,6 +87,31 @@ impl Route53 {
         let st = self.lock();
         st.zones.values().map(|z| (z.name.clone(), z.records.values().cloned().collect())).collect()
     }
+
+    /// The values of `name`'s simple `ty` records as public DNS would
+    /// answer: from the most specific public hosted zone containing the
+    /// name. Services that validate domain ownership through DNS (ACM) read
+    /// records here.
+    pub fn public_record_values(&self, name: &str, ty: &str) -> Vec<String> {
+        let Some(name) = names::normalize(name) else { return Vec::new() };
+        let st = self.lock();
+        let zone =
+            st.zones.values().filter(|z| !z.private && names::in_zone(&name, &z.name)).max_by_key(|z| z.name.len());
+        let Some(zone) = zone else { return Vec::new() };
+        zone.records
+            .get(&state::record_key(&name, ty, None))
+            .and_then(|r| r.resource_records.clone())
+            .unwrap_or_default()
+            .into_iter()
+            .map(|r| r.value)
+            .collect()
+    }
+
+    /// The name of hosted zone `id` (lowercase, trailing dot) and whether
+    /// it is private.
+    pub fn hosted_zone_name(&self, id: &str) -> Option<(String, bool)> {
+        self.lock().zones.get(strip_id(id)).map(|z| (z.name.clone(), z.private))
+    }
 }
 
 /// `arn:{partition}:route53:::{kind}/{id}`

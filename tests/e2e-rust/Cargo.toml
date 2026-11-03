@@ -22,6 +22,7 @@ aws-sdk-sqs = "1"
 aws-sdk-ssm = "1"
 aws-sdk-secretsmanager = "1"
 aws-sdk-sns = "1"
+aws-sdk-acm = "1"
 aws-smithy-http-client = { version = "1", features = ["rustls-aws-lc"] }
 aws-smithy-runtime-api = { version = "1", features = ["client"] }
 zip.workspace = true
@@ -32,6 +33,7 @@ rustls-pki-types.workspace = true
 tokio-rustls.workspace = true
 x509-parser.workspace = true
 urlencoding = "2"
+time.workspace = true
 aws-lc-rs.workspace = true
 base64.workspace = true
 chrono.workspace = true

@@ -78,6 +78,10 @@ impl Ca {
     }
 
     /// The CA's own certificate plus its chain, for `CertificateChain`.
+    pub(crate) fn full_chain_pem(&self) -> Option<String> {
+        self.full_chain()
+    }
+
     fn full_chain(&self) -> Option<String> {
         let cert = self.cert_pem.clone()?;
         Some(match &self.chain_pem {
@@ -130,7 +134,7 @@ impl PrivateCa {
         self.authorize_with(ctx, action, arn, ConditionContext::new())
     }
 
-    fn authorize_with(
+    pub(crate) fn authorize_with(
         &self,
         ctx: &RequestContext,
         action: &str,
@@ -366,6 +370,16 @@ impl PrivateCa {
         let mut cond = ConditionContext::new();
         cond.insert("acm-pca:TemplateArn".into(), vec![template_arn.clone()]);
         self.authorize_with(ctx, "IssueCertificate", &arn, cond)?;
+        self.issue_authorized(input)
+    }
+
+    /// `IssueCertificate` once the caller has been authorized.
+    pub(crate) fn issue_authorized(
+        &self,
+        input: types::IssueCertificateRequest,
+    ) -> Result<types::IssueCertificateResponse, ServiceError> {
+        let arn = input.certificate_authority_arn.clone();
+        let template_arn = input.template_arn.clone().unwrap_or_else(|| DEFAULT_TEMPLATE.to_string());
 
         if let Some(token) = &input.idempotency_token {
             if let Some(existing) = self.lock().ca(&arn)?.issue_tokens.get(token) {
