@@ -1,5 +1,7 @@
 """AWS Private CA through boto3, with certificates checked by `cryptography`."""
 
+import json
+
 import pytest
 from botocore.exceptions import ClientError
 from cryptography import x509
@@ -93,18 +95,47 @@ def _http(url, data=None, content_type=None):
         return resp.read()
 
 
-def test_crl_ocsp_and_audit_report(pca, endpoint):
+def pca_bucket(s3, name):
+    """A bucket whose policy lets ACM PCA write to it."""
+    s3.create_bucket(Bucket=name)
+    s3.put_bucket_policy(
+        Bucket=name,
+        Policy=json.dumps(
+            {
+                "Version": "2012-10-17",
+                "Statement": [
+                    {
+                        "Effect": "Allow",
+                        "Principal": {"Service": "acm-pca.amazonaws.com"},
+                        "Action": ["s3:PutObject", "s3:GetBucketAcl", "s3:GetBucketLocation"],
+                        "Resource": [f"arn:aws:s3:::{name}", f"arn:aws:s3:::{name}/*"],
+                    }
+                ],
+            }
+        ),
+    )
+
+
+def test_crl_ocsp_and_audit_report(pca, endpoint, session_for):
     from cryptography.x509 import ocsp
 
+    s3 = session_for().client("s3", endpoint_url=endpoint)
     arn, root = make_root(pca)
     ca_id = arn.rsplit("/", 1)[1]
-    pca.update_certificate_authority(
-        CertificateAuthorityArn=arn,
-        RevocationConfiguration={
-            "CrlConfiguration": {"Enabled": True, "S3BucketName": "my-crls", "CustomCname": "crl.example.internal"},
-            "OcspConfiguration": {"Enabled": True, "OcspCustomCname": "ocsp.example.internal"},
+    revocation = {
+        "CrlConfiguration": {
+            "Enabled": True,
+            "S3BucketName": "pca-boto-crls",
+            "S3ObjectAcl": "BUCKET_OWNER_FULL_CONTROL",
+            "CustomCname": "crl.example.internal",
         },
-    )
+        "OcspConfiguration": {"Enabled": True, "OcspCustomCname": "ocsp.example.internal"},
+    }
+    with pytest.raises(ClientError) as err:
+        pca.update_certificate_authority(CertificateAuthorityArn=arn, RevocationConfiguration=revocation)
+    assert err.value.response["Error"]["Code"] == "InvalidArgsException"
+    pca_bucket(s3, "pca-boto-crls")
+    pca.update_certificate_authority(CertificateAuthorityArn=arn, RevocationConfiguration=revocation)
     key = ec.generate_private_key(ec.SECP256R1())
     csr = (
         x509.CertificateSigningRequestBuilder()
@@ -144,17 +175,20 @@ def test_crl_ocsp_and_audit_report(pca, endpoint):
     assert resp.certificate_status == ocsp.OCSPCertStatus.REVOKED
     assert resp.revocation_reason == x509.ReasonFlags.superseded
 
-    crl = x509.load_der_x509_crl(_http(f"{endpoint}/crl/{ca_id}.crl"))
+    crl_object = s3.get_object(Bucket="pca-boto-crls", Key=f"crl/{ca_id}.crl")
+    assert crl_object["ContentType"] == "application/pkix-crl"
+    crl = x509.load_der_x509_crl(crl_object["Body"].read())
     assert crl.is_signature_valid(root.public_key())
     assert crl.get_revoked_certificate_by_serial_number(leaf.serial_number) is not None
 
+    pca_bucket(s3, "pca-boto-audits")
     report = pca.create_certificate_authority_audit_report(
-        CertificateAuthorityArn=arn, S3BucketName="audits", AuditReportResponseFormat="CSV"
+        CertificateAuthorityArn=arn, S3BucketName="pca-boto-audits", AuditReportResponseFormat="CSV"
     )
     pca.get_waiter("audit_report_created").wait(
         CertificateAuthorityArn=arn, AuditReportId=report["AuditReportId"], WaiterConfig={"Delay": 1, "MaxAttempts": 3}
     )
-    csv = _http(f"{endpoint}/audits/{report['S3Key']}").decode()
+    csv = s3.get_object(Bucket="pca-boto-audits", Key=report["S3Key"])["Body"].read().decode()
     header, *rows = csv.strip().splitlines()
     assert header.split(",")[:3] == ["awsAccountId", "certificateArn", "serial"]
     assert any(cert_arn in r and "SUPERSEDED" in r for r in rows)

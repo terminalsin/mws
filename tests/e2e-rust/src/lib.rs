@@ -65,6 +65,49 @@ impl Mws {
         (status, body)
     }
 
+    /// Send a raw HTTP/1.1 request (anonymous or presigned): `(status,
+    /// headers, body)`. `target` is the path and query.
+    pub async fn raw(
+        &self,
+        method: &str,
+        target: &str,
+        headers: &[(&str, &str)],
+        body: &[u8],
+    ) -> (u16, Vec<(String, String)>, Vec<u8>) {
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+        let target = target.strip_prefix(&self.endpoint).unwrap_or(target);
+        let addr = self.endpoint.trim_start_matches("http://");
+        let mut stream = tokio::net::TcpStream::connect(addr).await.unwrap();
+        let mut request = format!("{method} {target} HTTP/1.1\r\nHost: {addr}\r\nConnection: close\r\n");
+        for (k, v) in headers {
+            request.push_str(&format!("{k}: {v}\r\n"));
+        }
+        request.push_str(&format!("Content-Length: {}\r\n\r\n", body.len()));
+        stream.write_all(request.as_bytes()).await.unwrap();
+        stream.write_all(body).await.unwrap();
+        let mut raw = Vec::new();
+        stream.read_to_end(&mut raw).await.unwrap();
+        let split = raw.windows(4).position(|w| w == b"\r\n\r\n").unwrap();
+        let head = String::from_utf8_lossy(&raw[..split]).into_owned();
+        let mut lines = head.split("\r\n");
+        let status = lines.next().unwrap().split(' ').nth(1).unwrap().parse().unwrap();
+        let headers: Vec<(String, String)> = lines
+            .filter_map(|l| l.split_once(':'))
+            .map(|(k, v)| (k.trim().to_ascii_lowercase(), v.trim().to_string()))
+            .collect();
+        let mut body = raw[split + 4..].to_vec();
+        if headers.iter().any(|(k, v)| k == "transfer-encoding" && v.contains("chunked")) {
+            body = dechunk(&body);
+        }
+        (status, headers, body)
+    }
+
+    /// An S3 client (path-style addressing) for `config`.
+    pub fn s3(config: &SdkConfig) -> aws_sdk_s3::Client {
+        let conf = aws_sdk_s3::config::Builder::from(config).force_path_style(true).build();
+        aws_sdk_s3::Client::from_conf(conf)
+    }
+
     /// SDK config signed with the account root keys.
     pub async fn root_sdk_config(&self) -> SdkConfig {
         let iam = &self.config.iam;
@@ -105,4 +148,18 @@ pub fn jwt(claims: serde_json::Value) -> String {
     use base64::Engine;
     let e = base64::engine::general_purpose::URL_SAFE_NO_PAD;
     format!("{}.{}.{}", e.encode(br#"{"alg":"RS256","typ":"JWT"}"#), e.encode(claims.to_string()), e.encode(b"sig"))
+}
+
+fn dechunk(mut data: &[u8]) -> Vec<u8> {
+    let mut out = Vec::new();
+    loop {
+        let Some(end) = data.windows(2).position(|w| w == b"\r\n") else { return out };
+        let size =
+            usize::from_str_radix(std::str::from_utf8(&data[..end]).unwrap().split(';').next().unwrap(), 16).unwrap();
+        if size == 0 {
+            return out;
+        }
+        out.extend_from_slice(&data[end + 2..end + 2 + size]);
+        data = &data[end + 4 + size..];
+    }
 }

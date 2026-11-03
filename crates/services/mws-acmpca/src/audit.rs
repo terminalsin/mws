@@ -1,8 +1,8 @@
 //! Audit reports: every certificate the CA's key issued or revoked.
 //!
 //! ACM PCA writes the report to `audit-report/{ca-id}/{report-id}.{json|csv}`
-//! in the named S3 bucket. MWS keeps it with the CA and serves it, unsigned,
-//! at any URL whose path ends in that key.
+//! in the named S3 bucket, whose policy must let `acm-pca.amazonaws.com`
+//! write there.
 
 use chrono::{DateTime, Utc};
 use mws_core::{RequestContext, ServiceError};
@@ -106,15 +106,10 @@ impl PrivateCa {
         let report_id = uuid::Uuid::new_v4().to_string();
         let key = format!("audit-report/{}/{report_id}.{}", ca_id(arn), format.to_ascii_lowercase());
         let (body, content_type) = render(ca, format);
+        self.publish_audit_report(ca, &input.s3_bucket_name, &key, body, content_type)?;
         ca.audit_reports.insert(
             report_id.clone(),
-            AuditReport {
-                bucket: input.s3_bucket_name,
-                key: key.clone(),
-                created_at: Utc::now(),
-                content_type: content_type.to_string(),
-                body,
-            },
+            AuditReport { bucket: input.s3_bucket_name, key: key.clone(), created_at: Utc::now() },
         );
         Ok(types::CreateCertificateAuthorityAuditReportResponse { audit_report_id: Some(report_id), s3_key: Some(key) })
     }

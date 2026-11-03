@@ -20,6 +20,15 @@ impl XmlWriter {
         let _ = write!(self.buf, "<{name} xmlns=\"{}\">", escape(ns));
     }
 
+    /// `<name a="v" ...>`, with attribute values escaped.
+    pub fn open_attrs(&mut self, name: &str, attrs: &[(&str, String)]) {
+        let _ = write!(self.buf, "<{name}");
+        for (k, v) in attrs {
+            let _ = write!(self.buf, " {k}=\"{}\"", escape(v));
+        }
+        self.buf.push('>');
+    }
+
     pub fn close(&mut self, name: &str) {
         let _ = write!(self.buf, "</{name}>");
     }
@@ -27,6 +36,11 @@ impl XmlWriter {
     /// `<name>text</name>`, with `text` escaped.
     pub fn leaf(&mut self, name: &str, text: &str) {
         let _ = write!(self.buf, "<{name}>{}</{name}>", escape(text));
+    }
+
+    /// Escaped character data inside the current element.
+    pub fn text(&mut self, text: &str) {
+        self.buf.push_str(&escape(text));
     }
 
     pub fn finish(self) -> String {

@@ -504,6 +504,33 @@ fn read_ocsp_response(resp: &[u8], issuer_pem: &str, nonce: &[u8]) -> (u8, bool)
     (status_tag, has_nonce)
 }
 
+/// A bucket ACM PCA may write to; `public` CRLs need ACLs and public
+/// access allowed.
+async fn pca_bucket(s3: &aws_sdk_s3::Client, name: &str, public: bool) {
+    use aws_sdk_s3::types::ObjectOwnership;
+    if s3.head_bucket().bucket(name).send().await.is_err() {
+        let mut create = s3.create_bucket().bucket(name);
+        if public {
+            create = create.object_ownership(ObjectOwnership::BucketOwnerPreferred);
+        }
+        create.send().await.unwrap();
+        if public {
+            s3.delete_public_access_block().bucket(name).send().await.unwrap();
+        }
+    }
+    let policy = serde_json::json!({
+        "Version": "2012-10-17",
+        "Statement": [{
+            "Effect": "Allow",
+            "Principal": {"Service": "acm-pca.amazonaws.com"},
+            "Action": ["s3:PutObject", "s3:PutObjectAcl", "s3:GetBucketAcl", "s3:GetBucketLocation"],
+            "Resource": [format!("arn:aws:s3:::{name}/*"), format!("arn:aws:s3:::{name}")],
+            "Condition": {"StringEquals": {"aws:SourceAccount": "123456789012"}}
+        }]
+    });
+    s3.put_bucket_policy().bucket(name).policy(policy.to_string()).send().await.unwrap();
+}
+
 #[tokio::test]
 async fn crl_ocsp_and_audit_reports() {
     use aws_sdk_acmpca::types::{
@@ -528,24 +555,32 @@ async fn crl_ocsp_and_audit_reports() {
         .unwrap_err();
     assert_eq!(err.into_service_error().meta().code(), Some("InvalidArgsException"));
 
-    pca.update_certificate_authority()
-        .certificate_authority_arn(&ca)
-        .revocation_configuration(
-            RevocationConfiguration::builder()
-                .crl_configuration(
-                    CrlConfiguration::builder()
-                        .enabled(true)
-                        .expiration_in_days(5)
-                        .s3_bucket_name("crl-bucket")
-                        .build()
-                        .unwrap(),
-                )
-                .ocsp_configuration(OcspConfiguration::builder().enabled(true).build().unwrap())
-                .build(),
+    let revocation = RevocationConfiguration::builder()
+        .crl_configuration(
+            CrlConfiguration::builder()
+                .enabled(true)
+                .expiration_in_days(5)
+                .s3_bucket_name("crl-bucket")
+                .build()
+                .unwrap(),
         )
-        .send()
-        .await
-        .unwrap();
+        .ocsp_configuration(OcspConfiguration::builder().enabled(true).build().unwrap())
+        .build();
+    // ACM PCA writes CRLs into S3 as acm-pca.amazonaws.com: the bucket must
+    // exist and its policy must allow that.
+    let s3 = Mws::s3(&mws.root_sdk_config().await);
+    let update = || {
+        pca.update_certificate_authority().certificate_authority_arn(&ca).revocation_configuration(revocation.clone())
+    };
+    let err = update().send().await.unwrap_err();
+    assert_eq!(err.into_service_error().meta().code(), Some("InvalidArgsException"));
+    pca_bucket(&s3, "crl-bucket", true).await;
+    s3.delete_bucket_policy().bucket("crl-bucket").send().await.unwrap();
+    let err = update().send().await.unwrap_err().into_service_error();
+    assert_eq!(err.meta().code(), Some("InvalidArgsException"));
+    assert!(err.meta().message().unwrap().contains("acm-pca.amazonaws.com"), "{:?}", err.meta().message());
+    pca_bucket(&s3, "crl-bucket", true).await;
+    update().send().await.unwrap();
 
     // Issued certificates point at the CRL and the OCSP responder.
     let leaf_arn = issue(&pca, &ca, &leaf_csr("leaf.example.test"), None, SigningAlgorithm::Sha256Withrsa, 30).await;
@@ -616,7 +651,17 @@ async fn crl_ocsp_and_audit_reports() {
             .await;
     assert_eq!(read_ocsp_response(&body, &ca_pem, nonce).0, 0x82, "unknown");
 
-    // Audit report.
+    // Audit report, written to S3 with the same kind of bucket policy.
+    let err = pca
+        .create_certificate_authority_audit_report()
+        .certificate_authority_arn(&ca)
+        .s3_bucket_name("audit-bucket")
+        .audit_report_response_format(AuditReportResponseFormat::Json)
+        .send()
+        .await
+        .unwrap_err();
+    assert_eq!(err.into_service_error().meta().code(), Some("InvalidArgsException"));
+    pca_bucket(&s3, "audit-bucket", false).await;
     let report = pca
         .create_certificate_authority_audit_report()
         .certificate_authority_arn(&ca)
@@ -637,8 +682,9 @@ async fn crl_ocsp_and_audit_reports() {
         .unwrap();
     assert_eq!(described.audit_report_status(), Some(&AuditReportStatus::Success));
     assert_eq!(described.s3_bucket_name(), Some("audit-bucket"));
-    let (status, body) = http(&mws.endpoint, "GET", &format!("/audit-bucket/{key}"), None, b"").await;
-    assert_eq!(status, 200);
+    let object = s3.get_object().bucket("audit-bucket").key(key).send().await.unwrap();
+    assert_eq!(object.content_type(), Some("application/json"));
+    let body = object.body.collect().await.unwrap().into_bytes();
     let rows: Vec<serde_json::Value> = serde_json::from_slice(&body).unwrap();
     let leaf_row = rows.iter().find(|r| r["certificateArn"] == leaf_arn.as_str()).unwrap();
     assert_eq!(leaf_row["revocationReason"], "KEY_COMPROMISE");

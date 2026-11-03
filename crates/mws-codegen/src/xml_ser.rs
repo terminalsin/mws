@@ -45,7 +45,47 @@ impl XmlSer<'_, '_> {
 
     /// Statements writing value expr `v` (a reference) as element `name`.
     pub fn value(&self, target: &str, v: &str, name: &str, flat: bool) -> String {
+        self.value_ns(target, v, name, flat, None)
+    }
+
+    /// [`XmlSer::value`] for a member, honouring its `xmlNamespace`.
+    fn member_value(&self, m: &Member, v: &str, flat: bool) -> String {
+        let ns = m.get_trait("xmlNamespace").map(|ns| {
+            let uri = ns.get("uri").and_then(Value::as_str).unwrap_or_default().to_string();
+            let attr = match ns.get("prefix").and_then(Value::as_str) {
+                Some(p) => format!("xmlns:{p}"),
+                None => "xmlns".into(),
+            };
+            (attr, uri)
+        });
+        self.value_ns(&m.target, v, &rust_str(wire_name(m)), flat, ns)
+    }
+
+    fn value_ns(&self, target: &str, v: &str, name: &str, flat: bool, ns: Option<(String, String)>) -> String {
         let s = self.model.expect(target);
+        let attr_members: Vec<&Member> = s.members.iter().filter(|m| m.has_trait("xmlAttribute")).collect();
+        if matches!(s.ty, ShapeType::Structure) && (ns.is_some() || !attr_members.is_empty()) {
+            let mut stmt = String::from("{ let s = ");
+            stmt.push_str(v);
+            stmt.push_str("; let mut attrs: Vec<(&str, String)> = Vec::new(); ");
+            if let Some((attr, uri)) = &ns {
+                let _ = write!(stmt, "attrs.push(({}, {}.to_string())); ", rust_str(attr), rust_str(uri));
+            }
+            for m in attr_members {
+                let field = field_name(m);
+                let key = rust_str(wire_name(m));
+                match presence(m) {
+                    Presence::Optional => {
+                        let _ = write!(stmt, "if let Some(a) = &s.{field} {{ attrs.push(({key}, a.to_string())); }} ");
+                    }
+                    _ => {
+                        let _ = write!(stmt, "attrs.push(({key}, s.{field}.to_string())); ");
+                    }
+                }
+            }
+            let _ = write!(stmt, "w.open_attrs({name}, &attrs); {}(w, s); w.close({name}); }}", ser_fn_name(s));
+            return stmt;
+        }
         match s.ty {
             ShapeType::String
             | ShapeType::Enum
@@ -73,20 +113,19 @@ impl XmlSer<'_, '_> {
     fn emit_struct(&self, s: &Shape, w: &mut String) {
         let ty = type_name(s.name());
         let _ = writeln!(w, "    pub(super) fn {}(w: &mut XmlWriter, v: &types::{ty}) {{", ser_fn_name(s));
-        for m in s.members.iter().filter(|m| !is_http_bound(m)) {
-            let wire = wire_name(m);
+        for m in s.members.iter().filter(|m| !is_http_bound(m) && !m.has_trait("xmlAttribute")) {
             let flat = m.has_trait("xmlFlattened");
             let field = field_name(m);
             let boxed = self.types.is_boxed(&s.id, &m.target);
             match presence(m) {
                 Presence::Optional => {
                     let deref = if boxed { "&**" } else { "" };
-                    let stmt = self.value(&m.target, &format!("{deref}x"), &rust_str(wire), flat);
+                    let stmt = self.member_value(m, &format!("{deref}x"), flat);
                     let _ = writeln!(w, "        if let Some(x) = &v.{field} {{ {stmt} }}");
                 }
                 _ => {
                     let deref = if boxed { "&*" } else { "" };
-                    let stmt = self.value(&m.target, &format!("{deref}&v.{field}"), &rust_str(wire), flat);
+                    let stmt = self.member_value(m, &format!("{deref}&v.{field}"), flat);
                     let _ = writeln!(w, "        {stmt}");
                 }
             }
@@ -100,8 +139,7 @@ impl XmlSer<'_, '_> {
         let _ = writeln!(w, "        match v {{");
         for m in &s.members {
             let deref = if self.types.is_boxed(&s.id, &m.target) { "&**" } else { "" };
-            let stmt =
-                self.value(&m.target, &format!("{deref}x"), &rust_str(wire_name(m)), m.has_trait("xmlFlattened"));
+            let stmt = self.member_value(m, &format!("{deref}x"), m.has_trait("xmlFlattened"));
             let _ = writeln!(w, "            types::{ty}::{}(x) => {{ {stmt} }}", type_name(&m.name));
         }
         let _ = writeln!(w, "        }}\n    }}");

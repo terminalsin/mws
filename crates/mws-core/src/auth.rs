@@ -160,6 +160,10 @@ pub enum AuthzDecision {
     /// `because no identity-based policy allows the iam:CreateUser action`.
     Deny {
         reason: String,
+        /// Whether a policy statement denied the request explicitly (rather
+        /// than nothing allowing it). Services with their own grants (S3
+        /// ACLs) may still allow implicit denials.
+        explicit: bool,
     },
 }
 

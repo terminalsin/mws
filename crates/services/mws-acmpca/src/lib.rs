@@ -7,8 +7,9 @@
 //! policies (`PutPolicy`) are evaluated as resource-based policies.
 //!
 //! CAs with revocation enabled publish CRLs and answer OCSP, and audit
-//! reports can be generated; see [`revocation`] and [`audit`] for where
-//! MWS serves what ACM PCA would write to S3.
+//! reports can be generated. CRLs and audit reports are written into MWS's
+//! S3 as the service principal `acm-pca.amazonaws.com`, so the bucket policy
+//! must allow it, as in AWS.
 
 #[allow(clippy::all, dead_code, unused_imports, non_snake_case, non_camel_case_types)]
 pub mod generated {
@@ -20,6 +21,7 @@ mod der;
 mod handler;
 mod ops;
 mod public;
+mod publish;
 mod revocation;
 mod state;
 mod x509;
@@ -34,11 +36,18 @@ use state::State;
 #[derive(Clone, Default)]
 pub struct PrivateCa {
     state: Arc<Mutex<State>>,
+    s3: Option<mws_s3::S3>,
 }
 
 impl PrivateCa {
     pub fn new() -> Self {
         Self::default()
+    }
+
+    /// Publish CRLs and audit reports into `s3` buckets.
+    pub fn with_s3(mut self, s3: mws_s3::S3) -> Self {
+        self.s3 = Some(s3);
+        self
     }
 
     fn lock(&self) -> MutexGuard<'_, State> {

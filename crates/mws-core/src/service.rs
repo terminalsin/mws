@@ -129,7 +129,7 @@ impl RequestContext {
     ) -> Result<(), ServiceError> {
         match self.check(action, resource, resource_policy, resource_policy_mode, extra_context) {
             AuthzDecision::Allow => Ok(()),
-            AuthzDecision::Deny { reason } => {
+            AuthzDecision::Deny { reason, .. } => {
                 let reason = if reason.is_empty() { String::new() } else { format!(" {reason}") };
                 Err(ServiceError::client(
                     "AccessDenied",
@@ -168,6 +168,12 @@ pub trait Service: Send + Sync {
     /// Render an error raised before the request reached [`Service::handle`]
     /// (authentication failures) in this service's wire protocol.
     fn render_error(&self, request_id: &str, error: &ServiceError) -> HttpResponse;
+
+    /// Whether SigV4 signs this service's URI path as sent, without
+    /// normalizing or encoding it again (S3).
+    fn signs_raw_path(&self) -> bool {
+        false
+    }
 
     /// Whether this service will accept the given unsigned request. Some STS
     /// operations (e.g. `AssumeRoleWithWebIdentity`) need no signature.

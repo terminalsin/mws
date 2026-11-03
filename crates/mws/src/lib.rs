@@ -9,6 +9,7 @@ use mws_iam::{Iam, IamConfig};
 use mws_kms::Kms;
 use mws_organizations::Organizations;
 use mws_route53::Route53;
+use mws_s3::S3;
 use mws_server::{Gateway, Scenario, Store};
 use mws_sts::Sts;
 
@@ -47,6 +48,7 @@ pub struct Mws {
     pub gateway: Gateway,
     pub route53: Route53,
     pub kms: Kms,
+    pub s3: S3,
 }
 
 /// Build the gateway with every service MWS emulates.
@@ -93,6 +95,7 @@ fn build_with_store(config: Config, store: Option<Arc<Store>>) -> Mws {
     let route53 = Route53::new().with_kms(kms.clone());
     let organizations = Organizations::new(iam.clone());
     iam.set_organizations(organizations.view());
+    let s3 = S3::new().with_kms(kms.clone());
     let mut gateway = Gateway::builder();
     if let Some(store) = store {
         gateway = gateway.store(store);
@@ -106,9 +109,10 @@ fn build_with_store(config: Config, store: Option<Arc<Store>>) -> Mws {
         .service(Arc::new(iam))
         .service(Arc::new(sts))
         .service(Arc::new(route53.clone()))
-        .service(Arc::new(PrivateCa::new()))
+        .service(Arc::new(PrivateCa::new().with_s3(s3.clone())))
         .service(Arc::new(kms.clone()))
         .service(Arc::new(organizations))
+        .service(Arc::new(s3.clone()))
         .build();
-    Mws { gateway, route53, kms }
+    Mws { gateway, route53, kms, s3 }
 }
