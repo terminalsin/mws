@@ -52,6 +52,13 @@ impl Call {
         // Bucket ARNs carry no account: tell IAM whose bucket this is, so
         // cross-account requests need both identity and bucket policies.
         c.insert("aws:ResourceAccount".into(), vec![bucket.owner.clone()]);
+        // With ABAC enabled, bucket tags take part in authorization of the
+        // bucket and the objects in it.
+        if bucket.abac.as_deref() == Some("Enabled") {
+            for t in bucket.tags.iter().flatten() {
+                c.insert(format!("aws:ResourceTag/{}", t.key), vec![t.value.clone()]);
+            }
+        }
         c
     }
 
