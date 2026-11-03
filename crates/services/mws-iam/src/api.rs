@@ -31,6 +31,8 @@ pub struct OidcProviderView {
     pub arn: String,
     pub url: String,
     pub client_ids: Vec<String>,
+    /// Hex SHA-1 thumbprints of the provider's certificates.
+    pub thumbprints: Vec<String>,
 }
 
 /// The account field of an ARN, when it is an account id.
@@ -109,6 +111,7 @@ impl Iam {
             arn: p.arn.clone(),
             url: p.url.clone(),
             client_ids: p.client_ids.clone(),
+            thumbprints: p.thumbprints.clone(),
         })
     }
 
@@ -167,6 +170,28 @@ impl Iam {
             session_duration: d.request.session_duration.unwrap_or(3600),
             policy_template_arn: d.request.permissions.as_ref().and_then(|p| p.policy_template_arn.clone()),
         })
+    }
+
+    /// The signing keys of every account whose outbound web identity
+    /// issuer is `issuer` (normally one), for verifying tokens MWS issued.
+    pub fn outbound_keys_for_issuer(&self, issuer: &str) -> Vec<(String, OutboundKey)> {
+        let wanted = issuer.trim_end_matches('/');
+        let accounts = self.inner.accounts.read().expect("IAM state lock poisoned");
+        let mut out = vec![];
+        for state in accounts.values() {
+            let Some(own) = state.outbound_issuer.as_deref() else { continue };
+            if own.trim_end_matches('/') != wanted {
+                continue;
+            }
+            for (alg, pkcs8) in &state.outbound_keys {
+                let key_id = {
+                    use md5::Digest;
+                    md5::Md5::digest(pkcs8).iter().map(|b| format!("{b:02x}")).collect()
+                };
+                out.push((alg.clone(), OutboundKey { issuer: own.to_string(), pkcs8: pkcs8.clone(), key_id }));
+            }
+        }
+        out
     }
 
     /// The issuer and signing key for outbound web identity tokens, or `None`

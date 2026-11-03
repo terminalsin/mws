@@ -17,6 +17,9 @@ aws-sdk-organizations = "1"
 aws-sdk-s3 = { version = "1", features = ["behavior-version-latest"] }
 mws-s3.workspace = true
 rcgen.workspace = true
+rustls.workspace = true
+rustls-pki-types.workspace = true
+tokio-rustls.workspace = true
 x509-parser.workspace = true
 urlencoding = "2"
 aws-lc-rs.workspace = true

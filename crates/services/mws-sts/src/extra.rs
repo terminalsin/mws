@@ -91,6 +91,12 @@ impl Sts {
         if saml::metadata_entity_id(&metadata).is_some_and(|id| id != assertion.issuer) {
             return Err(invalid("Issuer not present in specified provider"));
         }
+        if self.inner.verify_federation_signatures {
+            let xml = saml::decode(&input.saml_assertion).unwrap_or_default();
+            if !crate::saml_sig::verify(&xml, &crate::saml_sig::signing_certificates(&metadata)) {
+                return Err(invalid("Response signature invalid"));
+            }
+        }
         let now = ctx.received_at;
         if assertion.not_on_or_after.is_some_and(|t| now >= t) {
             return Err(errors::expired_token("Response is expired"));

@@ -39,6 +39,58 @@ pub(crate) struct Issued {
 }
 
 impl Sts {
+    fn inner_verifies_signatures(&self) -> bool {
+        self.inner.verify_federation_signatures
+    }
+
+    /// Check a web identity token's signature: against MWS's own keys when
+    /// MWS issued it, else against the provider's published JWKS.
+    async fn verify_web_identity_signature(
+        &self,
+        token: &str,
+        issuer: &str,
+        thumbprints: &[String],
+    ) -> Result<(), ServiceError> {
+        use crate::oidc_keys::{self, Key, VerifyError};
+        let own = self.iam().outbound_keys_for_issuer(issuer);
+        let keys = if !own.is_empty() {
+            own.into_iter()
+                .filter_map(|(alg, k)| {
+                    use aws_lc_rs::signature::KeyPair;
+                    let public = match alg.as_str() {
+                        "RS256" => aws_lc_rs::rsa::KeyPair::from_pkcs8(&k.pkcs8).ok()?.public_key().as_ref().to_vec(),
+                        "ES384" => aws_lc_rs::signature::EcdsaKeyPair::from_pkcs8(
+                            &aws_lc_rs::signature::ECDSA_P384_SHA384_FIXED_SIGNING,
+                            &k.pkcs8,
+                        )
+                        .ok()?
+                        .public_key()
+                        .as_ref()
+                        .to_vec(),
+                        _ => return None,
+                    };
+                    Some(Key::Raw { kid: k.key_id, alg, public })
+                })
+                .collect()
+        } else {
+            let url = if issuer.starts_with("https://") { issuer.to_string() } else { format!("https://{issuer}") };
+            oidc_keys::fetch_jwks(&url, thumbprints).await.map_err(|e| {
+                tracing::debug!("fetching OIDC keys for {issuer}: {e:?}");
+                errors::idp_communication_error(
+                    "Couldn't retrieve verification key from your identity provider,  please reference AssumeRoleWithWebIdentity documentation for requirements",
+                )
+            })?
+        };
+        oidc_keys::verify(token, &keys).map_err(|e| {
+            tracing::debug!("web identity token for {issuer} rejected: {e:?}");
+            match e {
+                VerifyError::Communication(_) | VerifyError::Invalid(_) => errors::invalid_identity_token(
+                    "The web identity token that was passed could not be validated by AWS. Get a new identity token from the identity provider and then retry the request.",
+                ),
+            }
+        })
+    }
+
     pub(crate) fn issue(&self, mut caller: Caller, duration: i32, session: SessionInfo) -> Issued {
         let akid = format!("ASIA{}", random(b"ABCDEFGHIJKLMNOPQRSTUVWXYZ234567", 16));
         let secret = random(b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/", 40);
@@ -292,6 +344,9 @@ impl Handler for Sts {
                 claims.iss
             ))
         })?;
+        if self.inner_verifies_signatures() {
+            self.verify_web_identity_signature(&input.web_identity_token, &claims.iss, &provider.thumbprints).await?;
+        }
         let audience = claims
             .aud
             .iter()

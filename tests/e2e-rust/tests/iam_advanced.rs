@@ -284,11 +284,73 @@ fn saml_metadata(entity: &str) -> String {
     )
 }
 
-fn saml_response(issuer: &str, role: &str, provider: &str, session: &str) -> String {
-    let xml = format!(
-        r#"<samlp:Response xmlns:samlp="urn:oasis:names:tc:SAML:2.0:protocol" xmlns:saml="urn:oasis:names:tc:SAML:2.0:assertion"><saml:Assertion><saml:Issuer>{issuer}</saml:Issuer><saml:Subject><saml:NameID Format="urn:oasis:names:tc:SAML:2.0:nameid-format:persistent">alice@example.test</saml:NameID><saml:SubjectConfirmation><saml:SubjectConfirmationData Recipient="https://signin.aws.amazon.com/saml" NotOnOrAfter="2099-01-01T00:00:00Z"/></saml:SubjectConfirmation></saml:Subject><saml:Conditions NotBefore="2000-01-01T00:00:00Z" NotOnOrAfter="2099-01-01T00:00:00Z"><saml:AudienceRestriction><saml:Audience>https://signin.aws.amazon.com/saml</saml:Audience></saml:AudienceRestriction></saml:Conditions><saml:AttributeStatement><saml:Attribute Name="https://aws.amazon.com/SAML/Attributes/Role"><saml:AttributeValue>{role},{provider}</saml:AttributeValue></saml:Attribute><saml:Attribute Name="https://aws.amazon.com/SAML/Attributes/RoleSessionName"><saml:AttributeValue>{session}</saml:AttributeValue></saml:Attribute></saml:AttributeStatement></saml:Assertion></samlp:Response>"#
-    );
-    B64.encode(xml)
+/// A SAML identity provider with an RSA signing key and certificate. It
+/// writes the signed assertion directly in exclusive canonical form, so its
+/// digest is the SHA-256 of the text as written.
+struct SamlIdp {
+    entity: String,
+    key: aws_lc_rs::rsa::KeyPair,
+    cert_der: Vec<u8>,
+}
+
+impl SamlIdp {
+    fn new(entity: &str) -> Self {
+        use aws_lc_rs::encoding::AsDer;
+        let key = aws_lc_rs::rsa::KeyPair::generate(aws_lc_rs::rsa::KeySize::Rsa2048).unwrap();
+        let pkcs8: aws_lc_rs::encoding::Pkcs8V1Der = key.as_der().unwrap();
+        let rc_key = rcgen::KeyPair::from_pkcs8_der_and_sign_algo(
+            &rustls_pki_types::PrivatePkcs8KeyDer::from(pkcs8.as_ref().to_vec()),
+            &rcgen::PKCS_RSA_SHA256,
+        )
+        .unwrap();
+        let cert =
+            rcgen::CertificateParams::new(vec!["idp.example.test".into()]).unwrap().self_signed(&rc_key).unwrap();
+        Self { entity: entity.to_string(), key, cert_der: cert.der().to_vec() }
+    }
+
+    fn metadata(&self) -> String {
+        format!(
+            r#"<?xml version="1.0"?><md:EntityDescriptor xmlns:md="urn:oasis:names:tc:SAML:2.0:metadata" xmlns:ds="http://www.w3.org/2000/09/xmldsig#" entityID="{}"><md:IDPSSODescriptor protocolSupportEnumeration="urn:oasis:names:tc:SAML:2.0:protocol"><md:KeyDescriptor use="signing"><ds:KeyInfo><ds:X509Data><ds:X509Certificate>{}</ds:X509Certificate></ds:X509Data></ds:KeyInfo></md:KeyDescriptor><md:SingleSignOnService Binding="urn:oasis:names:tc:SAML:2.0:bindings:HTTP-Redirect" Location="{}/sso"/></md:IDPSSODescriptor><!-- {} --></md:EntityDescriptor>"#,
+            self.entity,
+            B64.encode(&self.cert_der),
+            self.entity,
+            "x".repeat(200)
+        )
+    }
+
+    /// A base64 SAML response whose assertion is signed; `tamper` changes
+    /// the session name after signing.
+    fn response(&self, issuer: &str, role: &str, provider: &str, session: &str, tamper: Option<&str>) -> String {
+        let body = |session: &str| {
+            format!(
+                r#"<saml:Issuer>{issuer}</saml:Issuer><saml:Subject><saml:NameID Format="urn:oasis:names:tc:SAML:2.0:nameid-format:persistent">alice@example.test</saml:NameID><saml:SubjectConfirmation Method="urn:oasis:names:tc:SAML:2.0:cm:bearer"><saml:SubjectConfirmationData NotOnOrAfter="2099-01-01T00:00:00Z" Recipient="https://signin.aws.amazon.com/saml"></saml:SubjectConfirmationData></saml:SubjectConfirmation></saml:Subject><saml:Conditions NotBefore="2000-01-01T00:00:00Z" NotOnOrAfter="2099-01-01T00:00:00Z"><saml:AudienceRestriction><saml:Audience>https://signin.aws.amazon.com/saml</saml:Audience></saml:AudienceRestriction></saml:Conditions><saml:AttributeStatement><saml:Attribute Name="https://aws.amazon.com/SAML/Attributes/Role"><saml:AttributeValue>{role},{provider}</saml:AttributeValue></saml:Attribute><saml:Attribute Name="https://aws.amazon.com/SAML/Attributes/RoleSessionName"><saml:AttributeValue>{session}</saml:AttributeValue></saml:Attribute></saml:AttributeStatement>"#
+            )
+        };
+        let open = r#"<saml:Assertion xmlns:saml="urn:oasis:names:tc:SAML:2.0:assertion" ID="_assertion1" IssueInstant="2026-01-01T00:00:00Z" Version="2.0">"#;
+        let canonical = format!("{open}{}</saml:Assertion>", body(session));
+        let digest = B64.encode(aws_lc_rs::digest::digest(&aws_lc_rs::digest::SHA256, canonical.as_bytes()));
+        let signed_info = format!(
+            r##"<ds:SignedInfo xmlns:ds="http://www.w3.org/2000/09/xmldsig#"><ds:CanonicalizationMethod Algorithm="http://www.w3.org/2001/10/xml-exc-c14n#"></ds:CanonicalizationMethod><ds:SignatureMethod Algorithm="http://www.w3.org/2001/04/xmldsig-more#rsa-sha256"></ds:SignatureMethod><ds:Reference URI="#_assertion1"><ds:Transforms><ds:Transform Algorithm="http://www.w3.org/2000/09/xmldsig#enveloped-signature"></ds:Transform><ds:Transform Algorithm="http://www.w3.org/2001/10/xml-exc-c14n#"></ds:Transform></ds:Transforms><ds:DigestMethod Algorithm="http://www.w3.org/2001/04/xmlenc#sha256"></ds:DigestMethod><ds:DigestValue>{digest}</ds:DigestValue></ds:Reference></ds:SignedInfo>"##
+        );
+        let mut sig = vec![0; self.key.public_modulus_len()];
+        self.key
+            .sign(
+                &aws_lc_rs::signature::RSA_PKCS1_SHA256,
+                &aws_lc_rs::rand::SystemRandom::new(),
+                signed_info.as_bytes(),
+                &mut sig,
+            )
+            .unwrap();
+        let signature = format!(
+            r#"<ds:Signature xmlns:ds="http://www.w3.org/2000/09/xmldsig#">{signed_info}<ds:SignatureValue>{}</ds:SignatureValue></ds:Signature>"#,
+            B64.encode(sig)
+        );
+        let assertion = format!("{open}{signature}{}</saml:Assertion>", body(tamper.unwrap_or(session)));
+        let xml = format!(
+            r#"<samlp:Response xmlns:samlp="urn:oasis:names:tc:SAML:2.0:protocol" xmlns:saml="urn:oasis:names:tc:SAML:2.0:assertion" ID="_response1" Version="2.0">{assertion}</samlp:Response>"#
+        );
+        B64.encode(xml)
+    }
 }
 
 #[tokio::test]
@@ -297,11 +359,11 @@ async fn saml_provider_and_assume_role_with_saml() {
     let cfg = mws.root_sdk_config().await;
     let iam = aws_sdk_iam::Client::new(&cfg);
     let issuer = "https://idp.example.test";
+    let idp = SamlIdp::new(issuer);
 
     let err = iam.create_saml_provider().name("bad").saml_metadata_document("x".repeat(1000)).send().await.unwrap_err();
     assert_eq!(err.code(), Some("InvalidInput"));
-    let created =
-        iam.create_saml_provider().name("corp").saml_metadata_document(saml_metadata(issuer)).send().await.unwrap();
+    let created = iam.create_saml_provider().name("corp").saml_metadata_document(idp.metadata()).send().await.unwrap();
     let provider = created.saml_provider_arn().unwrap().to_string();
     assert_eq!(provider, format!("arn:aws:iam::{ACCOUNT}:saml-provider/corp"));
     let got = iam.get_saml_provider().saml_provider_arn(&provider).send().await.unwrap();
@@ -318,7 +380,7 @@ async fn saml_provider_and_assume_role_with_saml() {
         .assume_role_with_saml()
         .role_arn(&role_arn)
         .principal_arn(&provider)
-        .saml_assertion(saml_response(issuer, &role_arn, &provider, "alice"))
+        .saml_assertion(idp.response(issuer, &role_arn, &provider, "alice", None))
         .send()
         .await
         .unwrap();
@@ -335,11 +397,22 @@ async fn saml_provider_and_assume_role_with_saml() {
         .assume_role_with_saml()
         .role_arn(&role_arn)
         .principal_arn(&provider)
-        .saml_assertion(saml_response("https://evil.example.test", &role_arn, &provider, "alice"))
+        .saml_assertion(idp.response("https://evil.example.test", &role_arn, &provider, "alice", None))
         .send()
         .await
         .unwrap_err();
     assert_eq!(err.code(), Some("InvalidIdentityToken"));
+
+    // A response changed after signing, or signed by another key, is refused.
+    let assume = |assertion: String| {
+        sts.assume_role_with_saml().role_arn(&role_arn).principal_arn(&provider).saml_assertion(assertion).send()
+    };
+    let err = assume(idp.response(issuer, &role_arn, &provider, "alice", Some("mallory"))).await.unwrap_err();
+    assert_eq!(err.code(), Some("InvalidIdentityToken"));
+    assert_eq!(err.message(), Some("Response signature invalid"));
+    let impostor = SamlIdp::new(issuer);
+    let err = assume(impostor.response(issuer, &role_arn, &provider, "alice", None)).await.unwrap_err();
+    assert_eq!(err.message(), Some("Response signature invalid"));
 }
 
 #[tokio::test]
@@ -440,6 +513,46 @@ async fn outbound_federation_issues_signed_tokens() {
         assert_eq!(claims["aud"], "https://api.example.test");
         assert_eq!(claims["sub"], format!("arn:aws:iam::{ACCOUNT}:root"));
         assert_eq!(claims["exp"].as_i64().unwrap() - claims["iat"].as_i64().unwrap(), 120);
+    }
+
+    // MWS verifies its own tokens with its own keys: one can be exchanged
+    // for a role through an OIDC provider for the outbound issuer.
+    let provider = iam
+        .create_open_id_connect_provider()
+        .url(&issuer)
+        .client_id_list("https://api.example.test")
+        .send()
+        .await
+        .unwrap();
+    let provider_arn = provider.open_id_connect_provider_arn().unwrap();
+    let trust = json!({"Version":"2012-10-17","Statement":{"Effect":"Allow","Principal":{"Federated":provider_arn},"Action":"sts:AssumeRoleWithWebIdentity"}});
+    iam.create_role().role_name("outbound-trust").assume_role_policy_document(trust.to_string()).send().await.unwrap();
+    for alg in ["ES384", "RS256"] {
+        let token = sts
+            .get_web_identity_token()
+            .audience("https://api.example.test")
+            .signing_algorithm(alg)
+            .send()
+            .await
+            .unwrap();
+        let token = token.web_identity_token().unwrap();
+        sts.assume_role_with_web_identity()
+            .role_arn(format!("arn:aws:iam::{ACCOUNT}:role/outbound-trust"))
+            .role_session_name("loop")
+            .web_identity_token(token)
+            .send()
+            .await
+            .unwrap();
+        let tampered = format!("{}x", &token[..token.len() - 1]);
+        let err = sts
+            .assume_role_with_web_identity()
+            .role_arn(format!("arn:aws:iam::{ACCOUNT}:role/outbound-trust"))
+            .role_session_name("loop")
+            .web_identity_token(tampered)
+            .send()
+            .await
+            .unwrap_err();
+        assert_eq!(err.code(), Some("InvalidIdentityToken"));
     }
 
     iam.disable_outbound_web_identity_federation().send().await.unwrap();

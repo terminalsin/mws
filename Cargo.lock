@@ -1874,8 +1874,11 @@ dependencies = [
  "mws-s3",
  "mws-server",
  "rcgen",
+ "rustls 0.23.46",
+ "rustls-pki-types",
  "serde_json",
  "tokio",
+ "tokio-rustls 0.26.6",
  "urlencoding",
  "x509-parser",
 ]
@@ -2113,9 +2116,16 @@ dependencies = [
  "mws-proto-query",
  "rand",
  "roxmltree",
+ "rustls 0.23.46",
+ "rustls-native-certs",
+ "rustls-pki-types",
  "serde",
  "serde_json",
+ "tokio",
+ "tokio-rustls 0.26.6",
+ "tracing",
  "uuid",
+ "x509-parser",
 ]
 
 [[package]]
