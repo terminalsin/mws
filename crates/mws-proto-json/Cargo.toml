@@ -1,0 +1,16 @@
+[package]
+name = "mws-proto-json"
+description = "Runtime for the awsJson1.0/1.1 protocols (X-Amz-Target dispatch, JSON bodies) used by ACM PCA and other JSON services."
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+async-trait.workspace = true
+base64.workspace = true
+bytes.workspace = true
+chrono.workspace = true
+http.workspace = true
+mws-core.workspace = true
+regex.workspace = true
+serde_json.workspace = true

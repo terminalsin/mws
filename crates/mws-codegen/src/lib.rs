@@ -13,6 +13,7 @@
 //! Only protocol modules live here; nothing is specific to one service.
 
 mod common;
+mod json;
 mod naming;
 mod query;
 mod regex_compat;
@@ -22,6 +23,7 @@ mod xml_ser;
 
 use std::path::{Path, PathBuf};
 
+pub use json::JsonOptions;
 pub use mws_smithy::Model;
 pub use rest_xml::RestXmlOptions;
 
@@ -54,6 +56,22 @@ pub fn build_rest_xml(model_path: impl AsRef<Path>, out_name: &str, options: Res
     let model =
         Model::load(model_path).unwrap_or_else(|e| panic!("loading Smithy model {}: {e}", model_path.display()));
     let code = generate_rest_xml(&model, &options);
+    let out = PathBuf::from(std::env::var("OUT_DIR").expect("OUT_DIR is set by cargo")).join(out_name);
+    std::fs::write(&out, code).unwrap_or_else(|e| panic!("writing {}: {e}", out.display()));
+}
+
+/// Generate awsJson1.0/1.1 server code for `model`.
+pub fn generate_aws_json(model: &Model, options: &JsonOptions) -> String {
+    json::generate(model, options)
+}
+
+/// Build-script helper for awsJson services; see [`build_aws_query`].
+pub fn build_aws_json(model_path: impl AsRef<Path>, out_name: &str, options: JsonOptions) {
+    let model_path = model_path.as_ref();
+    println!("cargo:rerun-if-changed={}", model_path.display());
+    let model =
+        Model::load(model_path).unwrap_or_else(|e| panic!("loading Smithy model {}: {e}", model_path.display()));
+    let code = generate_aws_json(&model, &options);
     let out = PathBuf::from(std::env::var("OUT_DIR").expect("OUT_DIR is set by cargo")).join(out_name);
     std::fs::write(&out, code).unwrap_or_else(|e| panic!("writing {}: {e}", out.display()));
 }

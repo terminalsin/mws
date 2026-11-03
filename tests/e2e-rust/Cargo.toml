@@ -11,6 +11,9 @@ aws-credential-types = { version = "1", features = ["hardcoded-credentials"] }
 aws-sdk-iam = "1"
 aws-sdk-sts = "1"
 aws-sdk-route53 = "1"
+aws-sdk-acmpca = "1"
+rcgen.workspace = true
+x509-parser.workspace = true
 urlencoding = "2"
 base64.workspace = true
 serde_json.workspace = true

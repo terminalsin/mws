@@ -7,6 +7,7 @@ members = [
     "crates/mws-codegen",
     "crates/mws-proto-query",
     "crates/mws-proto-restxml",
+    "crates/mws-proto-json",
     "crates/mws-xml",
     "crates/mws-server",
     "crates/mws",
@@ -14,6 +15,7 @@ members = [
     "crates/services/mws-iam-policy",
     "crates/services/mws-sts",
     "crates/services/mws-route53",
+    "crates/services/mws-acmpca",
     "tests/e2e-rust",
 ]
 
@@ -31,6 +33,7 @@ mws-smithy = { path = "crates/mws-smithy" }
 mws-codegen = { path = "crates/mws-codegen" }
 mws-proto-query = { path = "crates/mws-proto-query" }
 mws-proto-restxml = { path = "crates/mws-proto-restxml" }
+mws-proto-json = { path = "crates/mws-proto-json" }
 mws-xml = { path = "crates/mws-xml" }
 mws-server = { path = "crates/mws-server" }
 mws = { path = "crates/mws" }
@@ -38,6 +41,7 @@ mws-iam = { path = "crates/services/mws-iam" }
 mws-iam-policy = { path = "crates/services/mws-iam-policy" }
 mws-sts = { path = "crates/services/mws-sts" }
 mws-route53 = { path = "crates/services/mws-route53" }
+mws-acmpca = { path = "crates/services/mws-acmpca" }
 
 # external
 async-trait = "0.1"
@@ -53,14 +57,18 @@ hyper = { version = "1", features = ["server", "http1", "http2"] }
 hyper-util = { version = "0.1", features = ["server", "server-auto", "tokio"] }
 percent-encoding = "2"
 rand = "0.8"
+rcgen = { version = "0.13", default-features = false, features = ["aws_lc_rs", "pem", "x509-parser"] }
 regex = "1"
+rustls-pki-types = "1"
 roxmltree = "0.20"
 serde = { version = "1", features = ["derive"] }
 serde_json = { version = "1", features = ["preserve_order"] }
 sha2 = "0.10"
 subtle = "2"
 thiserror = "2"
+time = "0.3"
 tokio = { version = "1", features = ["rt-multi-thread", "macros", "net", "signal", "sync", "time"] }
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 uuid = { version = "1", features = ["v4"] }
+x509-parser = { version = "0.16", features = ["verify"] }
