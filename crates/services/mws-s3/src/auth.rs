@@ -52,6 +52,12 @@ impl Call {
         // Bucket ARNs carry no account: tell IAM whose bucket this is, so
         // cross-account requests need both identity and bucket policies.
         c.insert("aws:ResourceAccount".into(), vec![bucket.owner.clone()]);
+        if let Some(ap) = &self.access_point {
+            c.extend(crate::access_points::access_point_context(ap));
+        }
+        if let Some(via) = self.called_via {
+            crate::access_points::called_via_context(&mut c, via);
+        }
         // With ABAC enabled, bucket tags take part in authorization of the
         // bucket and the objects in it.
         if bucket.abac.as_deref() == Some("Enabled") {
@@ -60,6 +66,78 @@ impl Call {
             }
         }
         c
+    }
+
+    /// Block Public Access for `bucket`: its own settings combined with its
+    /// owner's account-level settings.
+    pub fn pab(&self, bucket: &Bucket) -> crate::generated::types::PublicAccessBlockConfiguration {
+        let mut p = bucket.pab();
+        let a = self.account_pab(&bucket.owner);
+        let or = |x: Option<bool>, y: bool| Some(x.unwrap_or(false) || y);
+        p.block_public_acls = or(p.block_public_acls, a.block_public_acls);
+        p.ignore_public_acls = or(p.ignore_public_acls, a.ignore_public_acls);
+        p.block_public_policy = or(p.block_public_policy, a.block_public_policy);
+        p.restrict_public_buckets = or(p.restrict_public_buckets, a.restrict_public_buckets);
+        p
+    }
+
+    /// The ARN a denial names: the access point's when the request came
+    /// through one.
+    fn resource_arn(&self, ctx: &RequestContext, bucket: &Bucket, resource: &Resource<'_>) -> String {
+        match (&self.access_point, resource) {
+            (Some(ap), Resource::Bucket) => ap.arn.clone(),
+            (Some(ap), Resource::Object { key, .. }) => format!("{}/object/{key}", ap.arn),
+            (None, Resource::Bucket) => bucket_arn(ctx, &bucket.name),
+            (None, Resource::Object { key, .. }) => object_arn(ctx, &bucket.name, key),
+        }
+    }
+
+    /// A request through an access point needs the access point (identity
+    /// policies and its policy) and the bucket to allow it. The bucket
+    /// owner's own access points need only that the bucket policy does not
+    /// deny; other access points and callers from other accounts need the
+    /// bucket policy to allow (usually by delegating to access points).
+    fn allowed_via_access_point(
+        &self,
+        ctx: &RequestContext,
+        action: &str,
+        bucket: &Bucket,
+        resource: &Resource<'_>,
+        context: ConditionContext,
+        ap: &crate::AccessPoint,
+    ) -> bool {
+        let ap_arn = self.resource_arn(ctx, bucket, resource);
+        let outsider = ctx.caller.kind == CallerKind::Anonymous || ctx.caller.account_id != ap.account_id;
+        let ap_policy = ap.policy.clone().filter(|p| !(ap.restrict_public_buckets && outsider && policy_is_public(p)));
+        let mut ap_context = context.clone();
+        ap_context.insert("aws:ResourceAccount".into(), vec![ap.account_id.clone()]);
+        if ctx.check(action, &ap_arn, ap_policy.as_deref(), mws_core::ResourcePolicyMode::Optional, ap_context)
+            != AuthzDecision::Allow
+        {
+            return false;
+        }
+        let bucket_resource = match resource {
+            Resource::Bucket => bucket_arn(ctx, &bucket.name),
+            Resource::Object { key, .. } => object_arn(ctx, &bucket.name, key),
+        };
+        let policy = self.effective_policy(ctx, bucket);
+        match ctx.check(
+            action,
+            &bucket_resource,
+            policy.as_deref(),
+            mws_core::ResourcePolicyMode::Optional,
+            context.clone(),
+        ) {
+            AuthzDecision::Allow => true,
+            AuthzDecision::Deny { explicit: true, .. } => false,
+            AuthzDecision::Deny { explicit: false, .. } => {
+                let own = ap.account_id == bucket.owner && ctx.caller.account_id == bucket.owner;
+                own || policy.as_deref().is_some_and(|p| {
+                    ctx.check(action, &bucket_resource, Some(p), mws_core::ResourcePolicyMode::Required, context)
+                        == AuthzDecision::Allow
+                })
+            }
+        }
     }
 
     /// Authorize `action` (e.g. `s3:GetObject`) on `bucket` or one of its
@@ -78,10 +156,7 @@ impl Call {
         if self.allowed(ctx, action, bucket, &resource, extra.clone()) {
             return Ok(());
         }
-        let arn = match resource {
-            Resource::Bucket => bucket_arn(ctx, &bucket.name),
-            Resource::Object { key, .. } => object_arn(ctx, &bucket.name, key),
-        };
+        let arn = self.resource_arn(ctx, bucket, &resource);
         Err(self.denied(ctx, action, &arn, bucket, extra))
     }
 
@@ -103,6 +178,9 @@ impl Call {
         };
         let mut context = self.s3_context(bucket);
         context.extend(extra);
+        if let Some(ap) = &self.access_point {
+            return self.allowed_via_access_point(ctx, action, bucket, resource, context, ap);
+        }
         let policy = self.effective_policy(ctx, bucket);
         match ctx.check(action, &arn, policy.as_deref(), mws_core::ResourcePolicyMode::Optional, context.clone()) {
             AuthzDecision::Allow => true,
@@ -147,7 +225,7 @@ impl Call {
         }
         let mut context = self.s3_context(bucket);
         context.extend(extra);
-        let policy = self.effective_policy(ctx, bucket);
+        let policy = if self.access_point.is_some() { None } else { self.effective_policy(ctx, bucket) };
         let reason = match ctx.check(action, arn, policy.as_deref(), mws_core::ResourcePolicyMode::Optional, context) {
             AuthzDecision::Deny { reason, .. } if !reason.is_empty() => format!(" {reason}"),
             _ => String::new(),
@@ -163,7 +241,7 @@ impl Call {
     /// principals of the bucket owner's account.
     fn effective_policy(&self, ctx: &RequestContext, bucket: &Bucket) -> Option<String> {
         let policy = bucket.policy.clone()?;
-        let restrict = bucket.pab().restrict_public_buckets.unwrap_or(false);
+        let restrict = self.pab(bucket).restrict_public_buckets.unwrap_or(false);
         let outsider = ctx.caller.kind == CallerKind::Anonymous || ctx.caller.account_id != bucket.owner;
         if restrict && outsider && policy_is_public(&policy) {
             return None;
@@ -177,7 +255,7 @@ impl Call {
         if !bucket.acls_enabled() {
             return false;
         }
-        let ignore_public = bucket.pab().ignore_public_acls.unwrap_or(false);
+        let ignore_public = self.pab(bucket).ignore_public_acls.unwrap_or(false);
         let (grants, needed) = match resource {
             Resource::Bucket => (bucket.acl.as_slice(), acl::bucket_permission(action)),
             Resource::Object { grants: Some(g), .. } if acl::object_permission(action).is_some() => {

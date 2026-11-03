@@ -1,0 +1,33 @@
+[package]
+name = "mws-lambda"
+description = "AWS Lambda for MWS: functions that really run, on local language runtimes speaking the Lambda Runtime API."
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+async-trait.workspace = true
+base64.workspace = true
+bytes.workspace = true
+chrono.workspace = true
+hex.workspace = true
+http.workspace = true
+http-body-util.workspace = true
+hyper.workspace = true
+hyper-util.workspace = true
+mws-core.workspace = true
+mws-proto-json.workspace = true
+mws-proto-restjson.workspace = true
+mws-s3.workspace = true
+mws-sts.workspace = true
+rand.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+sha2.workspace = true
+tokio = { workspace = true, features = ["process", "io-util"] }
+tracing.workspace = true
+uuid.workspace = true
+zip.workspace = true
+
+[build-dependencies]
+mws-codegen.workspace = true

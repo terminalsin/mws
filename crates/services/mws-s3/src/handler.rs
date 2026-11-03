@@ -780,4 +780,11 @@ impl Handler for Call {
     ) -> Result<types::RenameObjectOutput, ServiceError> {
         Call::rename_object(self, ctx, input)
     }
+    async fn write_get_object_response(
+        &self,
+        ctx: &RequestContext,
+        input: types::WriteGetObjectResponseRequest,
+    ) -> Result<(), ServiceError> {
+        Call::write_get_object_response(self, ctx, input)
+    }
 }

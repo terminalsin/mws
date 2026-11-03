@@ -8,6 +8,7 @@ members = [
     "crates/mws-proto-query",
     "crates/mws-proto-restxml",
     "crates/mws-proto-json",
+    "crates/mws-proto-restjson",
     "crates/mws-xml",
     "crates/mws-server",
     "crates/mws-store",
@@ -20,6 +21,8 @@ members = [
     "crates/services/mws-kms",
     "crates/services/mws-organizations",
     "crates/services/mws-s3",
+    "crates/services/mws-lambda",
+    "crates/services/mws-s3control",
     "tests/e2e-rust",
 ]
 
@@ -38,6 +41,7 @@ mws-codegen = { path = "crates/mws-codegen" }
 mws-proto-query = { path = "crates/mws-proto-query" }
 mws-proto-restxml = { path = "crates/mws-proto-restxml" }
 mws-proto-json = { path = "crates/mws-proto-json" }
+mws-proto-restjson = { path = "crates/mws-proto-restjson" }
 mws-xml = { path = "crates/mws-xml" }
 mws-server = { path = "crates/mws-server" }
 mws-store = { path = "crates/mws-store" }
@@ -50,6 +54,8 @@ mws-acmpca = { path = "crates/services/mws-acmpca" }
 mws-kms = { path = "crates/services/mws-kms" }
 mws-organizations = { path = "crates/services/mws-organizations" }
 mws-s3 = { path = "crates/services/mws-s3" }
+mws-lambda = { path = "crates/services/mws-lambda" }
+mws-s3control = { path = "crates/services/mws-s3control" }
 
 # external
 async-trait = "0.1"
@@ -86,6 +92,7 @@ thiserror = "2"
 time = "0.3"
 tokio = { version = "1", features = ["rt-multi-thread", "macros", "net", "signal", "sync", "time"] }
 tracing = "0.1"
+zip = { version = "2", default-features = false, features = ["deflate"] }
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 uuid = { version = "1", features = ["v4"] }
 x509-parser = { version = "0.16", features = ["verify"] }

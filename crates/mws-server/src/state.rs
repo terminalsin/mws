@@ -90,7 +90,7 @@ impl std::fmt::Display for ScenarioError {
 
 impl Gateway {
     fn stateful(&self) -> impl Iterator<Item = (&'static str, &Arc<dyn Service>)> {
-        self.services.iter().map(|(k, v)| (*k, v))
+        self.named.iter().map(|(k, v)| (*k, v))
     }
 
     /// Every service's state as one document.
@@ -110,7 +110,7 @@ impl Gateway {
     pub fn import_state(&self, doc: &Value) -> Result<(), String> {
         let services = parse_state_doc(doc)?;
         for name in services.keys() {
-            if !self.services.contains_key(name.as_str()) {
+            if !self.named.contains_key(name.as_str()) {
                 return Err(format!("state names unknown service {name:?}"));
             }
         }
@@ -179,12 +179,12 @@ impl Gateway {
         let mut outputs = Outputs::new();
         for (i, step) in scenario.steps.iter().enumerate() {
             let fail = |message: String, code: Option<String>| ScenarioError { step: Some(i), message, code };
-            let svc = self.services.get(step.service.as_str()).cloned().ok_or_else(|| {
+            let svc = self.named.get(step.service.as_str()).cloned().ok_or_else(|| {
                 fail(
                     format!(
                         "unknown service {:?}; MWS emulates {}",
                         step.service,
-                        self.services.keys().copied().collect::<Vec<_>>().join(", ")
+                        self.named.keys().copied().collect::<Vec<_>>().join(", ")
                     ),
                     None,
                 )

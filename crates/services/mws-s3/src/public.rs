@@ -141,3 +141,11 @@ impl S3 {
         (!v.delete_marker).then(|| v.data.to_vec())
     }
 }
+
+impl S3 {
+    /// The account that owns `bucket`, if it exists (S3 Control checks
+    /// this when creating access points).
+    pub fn bucket_owner(&self, bucket: &str) -> Option<String> {
+        self.read().buckets.get(bucket).map(|b| b.owner.clone())
+    }
+}

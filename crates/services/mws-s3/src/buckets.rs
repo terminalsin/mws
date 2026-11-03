@@ -402,7 +402,7 @@ impl Call {
         let partition = ctx.partition.clone();
         self.bucket_write(ctx, &input.bucket, input.expected_bucket_owner.as_deref(), "s3:PutBucketPolicy", |b| {
             auth::validate_policy(&input.policy, &partition, &b.name)?;
-            if b.pab().block_public_policy.unwrap_or(false) && auth::policy_is_public(&input.policy) {
+            if self.pab(b).block_public_policy.unwrap_or(false) && auth::policy_is_public(&input.policy) {
                 return Err(errors::access_denied(format!(
                     "User: {} is not authorized to perform: s3:PutBucketPolicy on resource: \"{}\" because public policies are blocked by the BlockPublicPolicy block public access setting.",
                     ctx.caller.arn,

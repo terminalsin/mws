@@ -21,6 +21,10 @@ pub struct RequestContext {
     /// Whether the request arrived over TLS (`aws:SecureTransport`).
     pub secure_transport: bool,
     pub authorizer: Arc<dyn Authorizer>,
+    /// The URL this emulator is serving on (`http://127.0.0.1:4566`), for
+    /// services that hand out links to themselves or run code that calls
+    /// back (presigned URLs, Lambda functions). `None` when not serving.
+    pub endpoint: Option<String>,
 }
 
 impl RequestContext {
@@ -166,6 +170,13 @@ pub trait Service: Send + Sync {
     /// The SigV4 signing name, e.g. `iam`, `sts`, `route53`, `acm-pca`.
     fn signing_name(&self) -> &'static str;
 
+    /// The name state documents and scenario files know this service by.
+    /// Normally the signing name; services that share one (S3 Control signs
+    /// as `s3`) need their own.
+    fn name(&self) -> &'static str {
+        self.signing_name()
+    }
+
     /// Further signing names this service answers to (S3 directory bucket
     /// requests are signed for `s3express`).
     fn signing_aliases(&self) -> &'static [&'static str] {
@@ -189,6 +200,14 @@ pub trait Service: Send + Sync {
     /// normalizing or encoding it again (S3).
     fn signs_raw_path(&self) -> bool {
         false
+    }
+
+    /// Whether this service handles `request`, signed for its signing
+    /// name. Services that share a signing name (S3 and S3 Control both
+    /// sign as `s3`) claim their own requests; the gateway asks them in
+    /// registration order and falls back to the first registered.
+    fn claims(&self, _request: &HttpRequest) -> bool {
+        true
     }
 
     /// Whether this service will accept the given unsigned request. Some STS

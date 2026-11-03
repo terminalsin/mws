@@ -7,9 +7,11 @@ use mws_acmpca::PrivateCa;
 use mws_core::Environment;
 use mws_iam::{Iam, IamConfig};
 use mws_kms::Kms;
+use mws_lambda::Lambda;
 use mws_organizations::Organizations;
 use mws_route53::Route53;
 use mws_s3::S3;
+use mws_s3control::S3Control;
 use mws_server::{Gateway, Scenario, Store};
 use mws_sts::Sts;
 
@@ -55,6 +57,8 @@ pub struct Mws {
     pub route53: Route53,
     pub kms: Kms,
     pub s3: S3,
+    pub s3control: S3Control,
+    pub lambda: Lambda,
 }
 
 /// Build the gateway with every service MWS emulates.
@@ -106,6 +110,9 @@ fn build_with_store(config: Config, store: Option<Arc<Store>>) -> Mws {
     let organizations = Organizations::new(iam.clone());
     iam.set_organizations(organizations.view());
     let s3 = S3::new().with_kms(kms.clone());
+    let s3control = S3Control::for_s3(s3.clone());
+    let lambda = Lambda::with_services(sts.clone(), s3.clone());
+    s3.set_object_lambda_invoker(Arc::new(lambda.clone()));
     let mut gateway = Gateway::builder();
     if let Some(store) = store {
         gateway = gateway.store(store);
@@ -117,13 +124,17 @@ fn build_with_store(config: Config, store: Option<Arc<Store>>) -> Mws {
         .credentials(iam.credential_store())
         .credentials(sts.credential_store())
         .credentials(s3.credential_store())
+        .credentials(s3.object_lambda_credential_store())
         .service(Arc::new(iam))
         .service(Arc::new(sts))
         .service(Arc::new(route53.clone()))
         .service(Arc::new(PrivateCa::new().with_s3(s3.clone())))
         .service(Arc::new(kms.clone()))
         .service(Arc::new(organizations))
+        // S3 Control signs as `s3` too; it claims its `/v20180820/` paths.
+        .service(Arc::new(s3control.clone()))
         .service(Arc::new(s3.clone()))
+        .service(Arc::new(lambda.clone()))
         .build();
-    Mws { gateway, route53, kms, s3 }
+    Mws { gateway, route53, kms, s3, s3control, lambda }
 }
