@@ -1204,3 +1204,74 @@ async fn ssm_parameter_policies_send_events_on_the_emulated_clock() {
     assert!(ssm.get_parameter().name("/app/token").send().await.is_err());
     mws.stop().await;
 }
+
+#[tokio::test]
+async fn acm_sends_approaching_expiration_events_daily() {
+    let mws = Mws::start().await;
+    let cfg = mws.root_sdk_config().await;
+    let eb = Client::new(&cfg);
+    let sqs = aws_sdk_sqs::Client::new(&cfg);
+    let acm = aws_sdk_acm::Client::new(&cfg);
+    let (url, queue) = open_queue(&sqs, "from-acm").await;
+    eb.put_rule()
+        .name("acm")
+        .event_pattern(r#"{"source":["aws.acm"],"detail-type":["ACM Certificate Approaching Expiration"]}"#)
+        .send()
+        .await
+        .unwrap();
+    eb.put_targets().rule("acm").targets(target("q", &queue)).send().await.unwrap();
+
+    let self_signed = |name: &str, days: i64| {
+        let key = rcgen::KeyPair::generate().unwrap();
+        let mut params = rcgen::CertificateParams::new(vec![name.to_string()]).unwrap();
+        params.distinguished_name.push(rcgen::DnType::CommonName, name);
+        let now = ::time::OffsetDateTime::now_utc();
+        params.not_before = now - ::time::Duration::days(1);
+        params.not_after = now + ::time::Duration::days(days);
+        (params.self_signed(&key).unwrap().pem(), key.serialize_pem())
+    };
+    let import = |name: &'static str, days: i64| {
+        let acm = acm.clone();
+        let (cert, key) = self_signed(name, days);
+        async move {
+            acm.import_certificate()
+                .certificate(aws_sdk_acm::primitives::Blob::new(cert.as_bytes()))
+                .private_key(aws_sdk_acm::primitives::Blob::new(key.as_bytes()))
+                .send()
+                .await
+                .unwrap()
+                .certificate_arn
+                .unwrap()
+        }
+    };
+    let soon = import("soon.example.com", 30).await;
+    import("later.example.com", 200).await;
+
+    let next = || {
+        let (sqs, url) = (sqs.clone(), url.clone());
+        async move {
+            let m = eventually(10, || async {
+                let r = sqs.receive_message().queue_url(&url).send().await.unwrap();
+                r.messages.unwrap_or_default().into_iter().next()
+            })
+            .await;
+            sqs.delete_message().queue_url(&url).receipt_handle(m.receipt_handle().unwrap()).send().await.unwrap();
+            serde_json::from_str::<serde_json::Value>(m.body().unwrap()).unwrap()
+        }
+    };
+    // Within the default 45 days: one event, then one a day.
+    let e = next().await;
+    assert_eq!(e["source"], "aws.acm");
+    assert_eq!(e["resources"][0], soon.as_str());
+    assert_eq!(e["detail"]["CommonName"], "soon.example.com");
+    assert_eq!(e["detail"]["DaysToExpiry"], 29);
+    tokio::time::sleep(Duration::from_millis(1500)).await;
+    let r = sqs.receive_message().queue_url(&url).send().await.unwrap();
+    assert!(r.messages.unwrap_or_default().is_empty(), "one event a day");
+    let (status, _) = mws.control("POST", "/_mws/clock", Some(r#"{"advanceSeconds": 86400}"#)).await;
+    assert_eq!(status, 200);
+    eb.list_rules().send().await.unwrap();
+    let e = next().await;
+    assert_eq!(e["detail"]["DaysToExpiry"], 28);
+    mws.stop().await;
+}

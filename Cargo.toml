@@ -29,6 +29,7 @@ members = [
     "crates/services/mws-events",
     "crates/services/mws-secretsmanager",
     "crates/services/mws-sns",
+    "crates/services/mws-acm",
     "tests/e2e-rust",
 ]
 
@@ -68,6 +69,7 @@ mws-ssm = { path = "crates/services/mws-ssm" }
 mws-events = { path = "crates/services/mws-events" }
 mws-secretsmanager = { path = "crates/services/mws-secretsmanager" }
 mws-sns = { path = "crates/services/mws-sns" }
+mws-acm = { path = "crates/services/mws-acm" }
 
 # external
 async-trait = "0.1"

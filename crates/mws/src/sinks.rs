@@ -192,3 +192,28 @@ impl mws_events::ClockSource for SsmPolicyEvents {
             .collect()
     }
 }
+
+/// ACM's daily "ACM Certificate Approaching Expiration" events.
+pub struct AcmExpiryEvents {
+    pub acm: mws_acm::Acm,
+    pub partition: String,
+}
+
+impl mws_events::ClockSource for AcmExpiryEvents {
+    fn due_events(&self, now: chrono::DateTime<chrono::Utc>) -> Vec<ServiceEvent> {
+        self.acm
+            .take_expiry_events(now)
+            .into_iter()
+            .map(|e| ServiceEvent {
+                partition: self.partition.clone(),
+                account: e.account,
+                region: e.region,
+                source: "aws.acm".into(),
+                detail_type: "ACM Certificate Approaching Expiration".into(),
+                resources: vec![e.certificate_arn],
+                detail: serde_json::json!({ "DaysToExpiry": e.days_to_expiry, "CommonName": e.common_name }),
+                time: e.time,
+            })
+            .collect()
+    }
+}

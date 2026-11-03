@@ -200,6 +200,29 @@ dependencies = [
 ]
 
 [[package]]
+name = "aws-sdk-acm"
+version = "1.126.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "bc6e07aa86098fba8f6a3acaa74d2742685207bf247f35594205f25fda039c7c"
+dependencies = [
+ "arc-swap",
+ "aws-credential-types",
+ "aws-runtime",
+ "aws-smithy-async",
+ "aws-smithy-http",
+ "aws-smithy-json",
+ "aws-smithy-observability",
+ "aws-smithy-runtime",
+ "aws-smithy-runtime-api",
+ "aws-smithy-schema",
+ "aws-smithy-types",
+ "aws-types",
+ "fastrand",
+ "regex-lite",
+ "tracing",
+]
+
+[[package]]
 name = "aws-sdk-acmpca"
 version = "1.126.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2021,6 +2044,7 @@ version = "0.1.0"
 dependencies = [
  "async-trait",
  "chrono",
+ "mws-acm",
  "mws-acmpca",
  "mws-core",
  "mws-events",
@@ -2043,6 +2067,37 @@ dependencies = [
  "tracing",
  "tracing-subscriber",
  "uuid",
+]
+
+[[package]]
+name = "mws-acm"
+version = "0.1.0"
+dependencies = [
+ "async-trait",
+ "aws-lc-rs",
+ "base64 0.22.1",
+ "bytes",
+ "chrono",
+ "hex",
+ "http 1.5.0",
+ "mws-acmpca",
+ "mws-codegen",
+ "mws-core",
+ "mws-iam-policy",
+ "mws-proto-json",
+ "mws-route53",
+ "mws-sts",
+ "percent-encoding",
+ "rand",
+ "rcgen",
+ "rustls-pki-types",
+ "serde",
+ "serde_json",
+ "sha2 0.10.9",
+ "time",
+ "tracing",
+ "uuid",
+ "x509-parser",
 ]
 
 [[package]]
@@ -2103,6 +2158,7 @@ dependencies = [
  "aws-config",
  "aws-credential-types",
  "aws-lc-rs",
+ "aws-sdk-acm",
  "aws-sdk-acmpca",
  "aws-sdk-cloudwatchlogs",
  "aws-sdk-eventbridge",
@@ -2131,6 +2187,7 @@ dependencies = [
  "rustls 0.23.46",
  "rustls-pki-types",
  "serde_json",
+ "time",
  "tokio",
  "tokio-rustls 0.26.6",
  "urlencoding",

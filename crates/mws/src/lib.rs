@@ -1,12 +1,12 @@
 //! Composition root. This is the only crate that knows which services exist.
 
 mod links;
+mod sinks;
 
 use std::path::PathBuf;
 use std::sync::Arc;
 
-mod sinks;
-
+use mws_acm::Acm;
 use mws_acmpca::PrivateCa;
 use mws_core::Environment;
 use mws_events::Events;
@@ -75,6 +75,7 @@ pub struct Mws {
     pub events: Events,
     pub secretsmanager: SecretsManager,
     pub sns: Sns,
+    pub acm: Acm,
 }
 
 /// Build the gateway with every service MWS emulates.
@@ -129,6 +130,8 @@ fn build_with_store(config: Config, store: Option<Arc<Store>>) -> Mws {
     let route53 = Route53::new().with_kms(kms.clone()).with_logs(logs.clone());
     let sqs = Sqs::new().with_kms(kms.clone());
     let s3control = S3Control::for_s3(s3.clone());
+    let pca = PrivateCa::new().with_s3(s3.clone());
+    let acm = Acm::new().with_private_ca(pca.clone()).with_route53(route53.clone()).with_sts(sts.clone());
     let lambda = Lambda::with_services(sts.clone(), s3.clone());
     lambda.set_logs(logs.clone());
     s3.set_object_lambda_invoker(Arc::new(lambda.clone()));
@@ -144,6 +147,10 @@ fn build_with_store(config: Config, store: Option<Arc<Store>>) -> Mws {
     s3.add_notification_destination(Arc::new(links::S3ToSqs(sqs.clone())));
     events.register_target_sink("sns", Arc::new(sinks::SnsTarget(sns.clone())));
     s3.set_eventbridge_sink(Arc::new(sinks::S3ToEvents(events.clone())));
+    events.register_clock_source(Arc::new(sinks::AcmExpiryEvents {
+        acm: acm.clone(),
+        partition: config.iam.partition.clone(),
+    }));
     events.register_clock_source(Arc::new(sinks::SsmPolicyEvents {
         ssm: ssm.clone(),
         partition: config.iam.partition.clone(),
@@ -163,7 +170,8 @@ fn build_with_store(config: Config, store: Option<Arc<Store>>) -> Mws {
         .service(Arc::new(iam))
         .service(Arc::new(sts))
         .service(Arc::new(route53.clone()))
-        .service(Arc::new(PrivateCa::new().with_s3(s3.clone())))
+        .service(Arc::new(pca))
+        .service(Arc::new(acm.clone()))
         .service(Arc::new(kms.clone()))
         .service(Arc::new(organizations))
         // S3 Control signs as `s3` too; it claims its `/v20180820/` paths.
@@ -177,7 +185,7 @@ fn build_with_store(config: Config, store: Option<Arc<Store>>) -> Mws {
         .service(Arc::new(secretsmanager.clone()))
         .service(Arc::new(sns.clone()))
         .build();
-    Mws { gateway, route53, kms, s3, s3control, lambda, logs, sqs, ssm, events, secretsmanager, sns }
+    Mws { gateway, route53, kms, s3, s3control, lambda, logs, sqs, ssm, events, secretsmanager, sns, acm }
 }
 
 /// Parameter Store's `/aws/reference/secretsmanager/` parameters, read
