@@ -161,6 +161,18 @@ impl Ssm {
         let filters = validate_filters(input.parameter_filters.unwrap_or_default(), true)?;
         let label = filters.iter().find(|f| f.key == "Label").map(|f| f.values.clone());
 
+        if format!("{}/", path.trim_end_matches('/')).starts_with(crate::public::PREFIX) {
+            // `/aws/service/...` holds AWS's public parameters, not the
+            // caller's.
+            let public_arn = crate::public::arn(ctx, path.trim_end_matches('/'));
+            let mut cond = ConditionContext::new();
+            cond.insert("ssm:Recursive".into(), vec![recursive.to_string()]);
+            ctx.authorize("ssm:GetParametersByPath", &public_arn, cond)?;
+            let found = crate::public::under(ctx, &path, recursive);
+            let (out, next) =
+                names::page(found, input.next_token.as_deref(), input.max_results.unwrap_or(10) as usize)?;
+            return Ok(types::GetParametersByPathResult { parameters: Some(out), next_token: next });
+        }
         let found: Vec<(ParamRef, Version)> = {
             let mut st = self.lock();
             let region = st.region(&ctx.caller.account_id, &ctx.region);

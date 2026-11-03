@@ -251,3 +251,41 @@ pub fn invalid_bucket_state(message: &str) -> ServiceError {
 pub fn no_such_configuration() -> ServiceError {
     err("NoSuchConfiguration", 404, "The specified configuration does not exist.")
 }
+
+/// The gateway's authentication errors as S3 words them.
+pub(crate) fn s3_auth_error(error: &ServiceError) -> ServiceError {
+    let (code, message) = match error.code.as_ref() {
+        "InvalidClientTokenId" => ("InvalidAccessKeyId", "The AWS Access Key Id you provided does not exist in our records."),
+        "SignatureDoesNotMatch" if error.message.starts_with("The request signature we calculated") => (
+            "SignatureDoesNotMatch",
+            "The request signature we calculated does not match the signature you provided. Check your key and signing method.",
+        ),
+        "ExpiredToken" => ("ExpiredToken", "The provided token has expired."),
+        _ => return error.clone(),
+    };
+    ServiceError { code: code.into(), message: message.into(), ..error.clone() }
+}
+
+/// S3 does not answer constraint violations in Smithy's words (`1
+/// validation error detected: ...`): a bad value in an XML body is
+/// `MalformedXML`, and a few headers and members have errors of their own.
+pub(crate) fn s3_validation_error(error: ServiceError) -> ServiceError {
+    let Some(detail) = error.message.strip_prefix("1 validation error detected: ") else { return error };
+    // `Value 'FOO' at 'storageClass' failed to satisfy constraint: ...`
+    let at = detail.split(" at '").nth(1).and_then(|r| r.split('\'').next()).unwrap_or_default();
+    let (code, message) = match at {
+        "storageClass" | "copySourceStorageClass" => {
+            ("InvalidStorageClass", "The storage class you specified is not valid")
+        }
+        "createBucketConfiguration.locationConstraint" => {
+            ("InvalidLocationConstraint", "The specified location-constraint is not valid")
+        }
+        "serverSideEncryption" => ("InvalidArgument", "The encryption method specified is not supported"),
+        p if p.contains('.') => (
+            "MalformedXML",
+            "The XML you provided was not well-formed or did not validate against our published schema",
+        ),
+        _ => return error,
+    };
+    ServiceError { code: code.into(), message: message.into(), ..error }
+}

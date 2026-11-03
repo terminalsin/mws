@@ -307,7 +307,7 @@ impl Service for S3 {
     }
 
     fn render_error(&self, request_id: &str, error: &ServiceError) -> HttpResponse {
-        mws_proto_restxml::error_response(&generated::SERVICE_INFO, request_id, error)
+        mws_proto_restxml::error_response(&generated::SERVICE_INFO, request_id, &errors::s3_auth_error(error))
     }
 
     async fn invoke(
@@ -369,7 +369,10 @@ impl S3 {
         let mut call = self.call(&ctx, Some(&request));
         call.access_point = access_point;
         call.called_via = called_via;
-        let mut response = generated::dispatch(&call, &ctx, &request).await;
+        let mut response = match generated::route(&call, &ctx, &request).await {
+            Ok(r) => r,
+            Err(e) => self.render_error(&ctx.request_id, &errors::s3_validation_error(e)),
+        };
         self.replicate(&ctx, call.take_written());
         self.finish_response(&ctx, &request, &mut response);
         if head || response.status() == http::StatusCode::NOT_MODIFIED {

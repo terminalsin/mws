@@ -166,17 +166,32 @@ impl Gateway {
         let parsed = match mws_sigv4::parse(&request) {
             Ok(p) => p,
             Err(SigV4Error::Missing) => {
-                let unsigned = self.services.values().flatten().find(|s| s.accepts_unsigned(&request)).cloned();
-                return match unsigned {
-                    Some(service) => {
+                // A request that names its service (an `X-Amz-Target`, a
+                // dated REST path) is that service's to accept or refuse.
+                let recognized = self.services.values().flatten().find(|s| s.recognizes(&request)).cloned();
+                let unsigned = match &recognized {
+                    Some(s) => s.accepts_unsigned(&request).then(|| s.clone()),
+                    None => self.services.values().flatten().find(|s| s.accepts_unsigned(&request)).cloned(),
+                };
+                return match (unsigned, recognized) {
+                    (Some(service), _) => {
                         let ctx =
                             self.context(request_id, self.env.default_region.clone(), Caller::anonymous(), remote, now);
                         service.handle(ctx, request).await
                     }
-                    None => self.fallback_error(&request_id, &ServiceError::missing_authentication_token()),
+                    (None, Some(service)) => {
+                        service.render_error(&request_id, &ServiceError::missing_authentication_token())
+                    }
+                    (None, None) => self.fallback_error(&request_id, &ServiceError::missing_authentication_token()),
                 };
             }
-            Err(e) => return self.fallback_error(&request_id, &sigv4_error(e)),
+            Err(e) => {
+                let err = sigv4_error(e);
+                return match self.services.values().flatten().find(|s| s.recognizes(&request)) {
+                    Some(service) => service.render_error(&request_id, &err),
+                    None => self.fallback_error(&request_id, &err),
+                };
+            }
         };
 
         let name = parsed.scope.service.as_str();

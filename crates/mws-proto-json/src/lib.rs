@@ -255,7 +255,30 @@ pub fn event_stream_response(info: &ServiceInfo, request_id: &str, body: Vec<u8>
         .expect("static response parts are valid")
 }
 
+/// Whether `request` names one of this service's operations in
+/// `X-Amz-Target`.
+pub fn targets(info: &ServiceInfo, request: &HttpRequest) -> bool {
+    request
+        .headers()
+        .get("x-amz-target")
+        .and_then(|v| v.to_str().ok())
+        .and_then(|t| t.split_once('.'))
+        .is_some_and(|(prefix, _)| prefix == info.target_prefix)
+}
+
 pub fn error_response(info: &ServiceInfo, request_id: &str, error: &ServiceError) -> HttpResponse {
+    // The gateway's authentication errors carry awsQuery names. awsJson
+    // services answer them as Coral's `UnrecognizedClientException`,
+    // `InvalidSignatureException`, ... with status 400; awsQueryCompatible
+    // services keep the awsQuery code (and status) in `x-amzn-query-error`.
+    if let Some(mut auth) = error.json_auth_equivalent() {
+        if info.query_compatible.is_none() {
+            auth.status = 400;
+            return render_error(info, request_id, &auth, None, None);
+        }
+        let type_name = format!("com.amazon.coral.service#{}", auth.code);
+        return render_error(info, request_id, &auth, Some(type_name), Some(error.code.as_ref()));
+    }
     // JSON-protocol services name the authorization failure
     // `AccessDeniedException`; the shared authorizer says `AccessDenied`.
     let code = if error.code == "AccessDenied" { "AccessDeniedException" } else { &error.code };
@@ -270,6 +293,18 @@ pub fn error_response(info: &ServiceInfo, request_id: &str, error: &ServiceError
         },
         None => (code.to_string(), None),
     };
+    render_error(info, request_id, error, Some(type_name), query_error)
+}
+
+fn render_error(
+    info: &ServiceInfo,
+    request_id: &str,
+    error: &ServiceError,
+    type_name: Option<String>,
+    query_error: Option<&str>,
+) -> HttpResponse {
+    let code = if error.code == "AccessDenied" { "AccessDeniedException" } else { &error.code };
+    let type_name = type_name.unwrap_or_else(|| code.to_string());
     let mut body = Map::new();
     body.insert("__type".into(), Value::String(type_name));
     body.insert("message".into(), Value::String(error.message.clone()));

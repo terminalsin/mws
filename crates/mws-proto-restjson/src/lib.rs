@@ -232,6 +232,12 @@ pub fn error_body(info: &ServiceInfo, error: &ServiceError) -> Value {
 }
 
 pub fn error_response(info: &ServiceInfo, request_id: &str, error: &ServiceError) -> HttpResponse {
+    // The gateway's authentication errors carry awsQuery names; restJson
+    // services answer `UnrecognizedClientException`,
+    // `InvalidSignatureException`, ... (status 403).
+    if let Some(auth) = error.json_auth_equivalent() {
+        return error_response(info, request_id, &ServiceError { status: 403, ..auth });
+    }
     // The shared authorizer says `AccessDenied`; REST/JSON services call it
     // `AccessDeniedException`.
     let code = if error.code == "AccessDenied" { "AccessDeniedException" } else { &error.code };

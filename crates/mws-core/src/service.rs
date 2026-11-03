@@ -237,6 +237,14 @@ pub trait Service: Send + Sync {
         true
     }
 
+    /// Whether `request` is unmistakably addressed to this service even
+    /// without a signature to name it (an `X-Amz-Target` prefix, a
+    /// versioned REST path). The gateway renders authentication errors for
+    /// such requests in this service's protocol, as AWS would.
+    fn recognizes(&self, _request: &HttpRequest) -> bool {
+        false
+    }
+
     /// Whether this service will accept the given unsigned request. Some STS
     /// operations (e.g. `AssumeRoleWithWebIdentity`) need no signature.
     fn accepts_unsigned(&self, _request: &HttpRequest) -> bool {

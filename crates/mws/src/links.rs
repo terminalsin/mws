@@ -79,3 +79,115 @@ impl NotificationDestination for S3ToSqs {
         }
     }
 }
+
+/// Lambda's event source pollers reading SQS queues as the function's
+/// execution role, through SQS's own operations.
+pub(crate) struct LambdaFromSqs(pub Sqs);
+
+fn queue_url(ctx: &RequestContext, arn: &str) -> Result<String, mws_core::ServiceError> {
+    Sqs::queue_url_for(ctx, arn).ok_or_else(|| {
+        mws_core::ServiceError::client(
+            "AWS.SimpleQueueService.NonExistentQueue",
+            400,
+            "The specified queue does not exist.",
+        )
+    })
+}
+
+#[async_trait::async_trait]
+impl mws_lambda::QueueSource for LambdaFromSqs {
+    fn facts(&self, ctx: &RequestContext, queue_arn: &str) -> Result<mws_lambda::QueueFacts, mws_core::ServiceError> {
+        let out = self.0.get_queue_attributes(
+            ctx,
+            mws_sqs::generated::types::GetQueueAttributesRequest {
+                queue_url: queue_url(ctx, queue_arn)?,
+                attribute_names: Some(vec!["VisibilityTimeout".into(), "FifoQueue".into()]),
+            },
+        )?;
+        let attrs = out.attributes.unwrap_or_default();
+        Ok(mws_lambda::QueueFacts {
+            visibility_timeout: attrs.get("VisibilityTimeout").and_then(|v| v.parse().ok()).unwrap_or(30),
+            fifo: attrs.get("FifoQueue").is_some_and(|v| v == "true"),
+        })
+    }
+
+    fn authorize(&self, ctx: &RequestContext, queue_arn: &str, action: &str) -> Result<(), mws_core::ServiceError> {
+        self.0.authorize_caller(ctx, queue_arn, action)
+    }
+
+    async fn receive(
+        &self,
+        ctx: &RequestContext,
+        queue_arn: &str,
+        max: i32,
+    ) -> Result<Vec<mws_lambda::QueueMessage>, mws_core::ServiceError> {
+        let out = self
+            .0
+            .receive_message(
+                ctx,
+                mws_sqs::generated::types::ReceiveMessageRequest {
+                    queue_url: queue_url(ctx, queue_arn)?,
+                    max_number_of_messages: Some(max.clamp(1, 10)),
+                    wait_time_seconds: Some(0),
+                    message_system_attribute_names: Some(vec!["All".into()]),
+                    message_attribute_names: Some(vec!["All".into()]),
+                    ..Default::default()
+                },
+            )
+            .await?;
+        Ok(out
+            .messages
+            .unwrap_or_default()
+            .into_iter()
+            .map(|m| mws_lambda::QueueMessage {
+                message_id: m.message_id.unwrap_or_default(),
+                receipt_handle: m.receipt_handle.unwrap_or_default(),
+                body: m.body.unwrap_or_default(),
+                md5_of_body: m.md5_of_body.unwrap_or_default(),
+                md5_of_message_attributes: m.md5_of_message_attributes,
+                attributes: m.attributes.unwrap_or_default(),
+                message_attributes: m
+                    .message_attributes
+                    .unwrap_or_default()
+                    .into_iter()
+                    .map(|(k, v)| {
+                        (
+                            k,
+                            mws_lambda::QueueMessageAttribute {
+                                data_type: v.data_type,
+                                string_value: v.string_value,
+                                binary_value: v.binary_value,
+                            },
+                        )
+                    })
+                    .collect(),
+            })
+            .collect())
+    }
+
+    fn delete(
+        &self,
+        ctx: &RequestContext,
+        queue_arn: &str,
+        receipt_handles: &[String],
+    ) -> Result<(), mws_core::ServiceError> {
+        let url = queue_url(ctx, queue_arn)?;
+        for chunk in receipt_handles.chunks(10) {
+            self.0.delete_message_batch(
+                ctx,
+                mws_sqs::generated::types::DeleteMessageBatchRequest {
+                    queue_url: url.clone(),
+                    entries: chunk
+                        .iter()
+                        .enumerate()
+                        .map(|(i, h)| mws_sqs::generated::types::DeleteMessageBatchRequestEntry {
+                            id: i.to_string(),
+                            receipt_handle: h.clone(),
+                        })
+                        .collect(),
+                },
+            )?;
+        }
+        Ok(())
+    }
+}

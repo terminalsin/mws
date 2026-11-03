@@ -128,7 +128,7 @@ pub fn emit_routing(routes: &[Route<'_>], rt: &str, w: &mut String) {
 
     let _ = writeln!(
         w,
-        "\nasync fn route<H: Handler + ?Sized>(handler: &H, ctx: &RequestContext, req: &HttpRequest) -> Result<HttpResponse, ServiceError> {{"
+        "\n/// Route `req` to its operation, returning the error unrendered (see\n/// `dispatch`).\npub async fn route<H: Handler + ?Sized>(handler: &H, ctx: &RequestContext, req: &HttpRequest) -> Result<HttpResponse, ServiceError> {{"
     );
     let _ = writeln!(
         w,

@@ -24,6 +24,7 @@ mod handler;
 mod names;
 mod params;
 pub mod policies;
+mod public;
 mod query;
 mod references;
 pub mod secure;
@@ -158,6 +159,10 @@ impl Ssm {
 
 #[async_trait::async_trait]
 impl Service for Ssm {
+    fn recognizes(&self, request: &HttpRequest) -> bool {
+        mws_proto_json::targets(&generated::SERVICE_INFO, request)
+    }
+
     fn signing_name(&self) -> &'static str {
         "ssm"
     }

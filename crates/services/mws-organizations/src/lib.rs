@@ -60,6 +60,10 @@ impl Organizations {
 
 #[async_trait::async_trait]
 impl Service for Organizations {
+    fn recognizes(&self, request: &HttpRequest) -> bool {
+        mws_proto_json::targets(&generated::SERVICE_INFO, request)
+    }
+
     fn signing_name(&self) -> &'static str {
         "organizations"
     }
