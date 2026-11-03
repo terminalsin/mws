@@ -137,8 +137,15 @@ impl PrivateCa {
         arn: &str,
         extra: ConditionContext,
     ) -> Result<(), ServiceError> {
-        let policy = self.lock().cas.get(arn).and_then(|c| c.policy.clone());
-        ctx.authorize_with_resource_policy(&format!("acm-pca:{action}"), arn, policy.as_deref(), extra)
+        let (policy, tags) = match self.lock().cas.get(arn) {
+            Some(c) => (c.policy.clone(), c.tags.clone()),
+            None => (None, Default::default()),
+        };
+        // The CA's own tags, for ABAC policies (`aws:ResourceTag/<key>`).
+        let mut context: ConditionContext =
+            tags.into_iter().map(|(k, v)| (format!("aws:ResourceTag/{k}"), vec![v])).collect();
+        context.extend(extra);
+        ctx.authorize_with_resource_policy(&format!("acm-pca:{action}"), arn, policy.as_deref(), context)
     }
 
     pub(crate) fn create_certificate_authority(

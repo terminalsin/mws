@@ -54,6 +54,10 @@ impl RequestContext {
         ctx.insert("aws:EpochTime".into(), vec![self.received_at.timestamp().to_string()]);
         ctx.insert("aws:SecureTransport".into(), vec![self.secure_transport.to_string()]);
         ctx.insert("aws:RequestedRegion".into(), vec![self.region.clone()]);
+        // A request made directly by a principal; services forwarding a
+        // request on the caller's behalf override `aws:ViaAWSService`.
+        ctx.insert("aws:ViaAWSService".into(), vec!["false".into()]);
+        ctx.insert("aws:PrincipalIsAWSService".into(), vec!["false".into()]);
         if let Some(ip) = &self.source_ip {
             ctx.insert("aws:SourceIp".into(), vec![ip.clone()]);
         }

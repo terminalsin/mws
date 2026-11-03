@@ -700,3 +700,37 @@ async fn crl_ocsp_and_audit_reports() {
         .unwrap_err();
     assert_eq!(err.into_service_error().meta().code(), Some("ResourceNotFoundException"));
 }
+
+#[tokio::test]
+async fn ca_tags_authorize_through_resource_tag() {
+    let mws = Mws::start().await;
+    let pca = Client::new(&mws.root_sdk_config().await);
+    let ca = create_ca(
+        &pca,
+        CertificateAuthorityType::Root,
+        "Tagged",
+        KeyAlgorithm::Rsa2048,
+        SigningAlgorithm::Sha256Withrsa,
+    )
+    .await;
+    let policy = serde_json::json!({
+        "Version": "2012-10-17",
+        "Statement": [{
+            "Effect": "Allow",
+            "Action": "acm-pca:DescribeCertificateAuthority",
+            "Resource": "*",
+            "Condition": {"StringEquals": {"aws:ResourceTag/env": "prod"}}
+        }]
+    });
+    let (_, cfg) = user_with_policy(&mws, "abac", Some(&policy.to_string())).await;
+    let user = Client::new(&cfg);
+    let err = user.describe_certificate_authority().certificate_authority_arn(&ca).send().await.unwrap_err();
+    assert_eq!(err.into_service_error().meta().code(), Some("AccessDeniedException"));
+    pca.tag_certificate_authority()
+        .certificate_authority_arn(&ca)
+        .tags(Tag::builder().key("env").value("prod").build().unwrap())
+        .send()
+        .await
+        .unwrap();
+    user.describe_certificate_authority().certificate_authority_arn(&ca).send().await.unwrap();
+}
