@@ -34,10 +34,12 @@ mod cors;
 mod errors;
 mod handler;
 mod kms;
+mod lifecycle;
 mod listing;
 mod multipart;
 mod objects;
 mod public;
+mod replication;
 mod state;
 
 use std::sync::{Arc, RwLock, RwLockReadGuard, RwLockWriteGuard};
@@ -85,6 +87,21 @@ pub(crate) struct Call {
     pub s3: S3,
     pub auth: AuthType,
     pub content_sha256: Option<String>,
+    /// Versions this request wrote (bucket, key, version id), for
+    /// replication once the request is done.
+    pub written: std::sync::Mutex<Vec<(String, String, String)>>,
+}
+
+impl Call {
+    pub(crate) fn wrote(&self, bucket: &str, key: &str, version_id: &str) {
+        if let Ok(mut w) = self.written.lock() {
+            w.push((bucket.to_string(), key.to_string(), version_id.to_string()));
+        }
+    }
+
+    fn take_written(&self) -> Vec<(String, String, String)> {
+        self.written.lock().map(|mut w| std::mem::take(&mut *w)).unwrap_or_default()
+    }
 }
 
 impl std::ops::Deref for Call {
@@ -104,6 +121,13 @@ impl S3 {
     pub fn with_kms(mut self, kms: mws_kms::Kms) -> Self {
         self.kms = Some(kms);
         self
+    }
+
+    /// Act on lifecycle rules that have come due by `now`.
+    fn run_lifecycle(&self, now: chrono::DateTime<chrono::Utc>) {
+        if self.read().has_lifecycle() {
+            self.write().run_lifecycle(now);
+        }
     }
 
     pub(crate) fn read(&self) -> RwLockReadGuard<'_, State> {
@@ -132,7 +156,7 @@ impl S3 {
             .and_then(|r| r.headers().get("x-amz-content-sha256"))
             .and_then(|v| v.to_str().ok())
             .map(str::to_string);
-        Call { s3: self.clone(), auth, content_sha256 }
+        Call { s3: self.clone(), auth, content_sha256, written: Default::default() }
     }
 }
 
@@ -227,6 +251,7 @@ impl Service for S3 {
         if request.method() == Method::OPTIONS {
             return self.preflight(&ctx, &request);
         }
+        self.run_lifecycle(ctx.received_at);
         if signature_v2(&request) {
             // S3 turned Signature Version 2 off for buckets created since
             // June 2020; every MWS bucket is that new.
@@ -241,6 +266,7 @@ impl Service for S3 {
         }
         let call = self.call(&ctx, Some(&request));
         let mut response = generated::dispatch(&call, &ctx, &request).await;
+        self.replicate(&ctx, call.take_written());
         self.finish_response(&ctx, &request, &mut response);
         if head || response.status() == http::StatusCode::NOT_MODIFIED {
             *response.body_mut() = Bytes::new();
@@ -262,8 +288,11 @@ impl Service for S3 {
         operation: &str,
         input: serde_json::Value,
     ) -> Result<serde_json::Value, ServiceError> {
+        self.run_lifecycle(ctx.received_at);
         let call = self.call(&ctx, None);
-        generated::invoke(&call, &ctx, operation, input).await
+        let out = generated::invoke(&call, &ctx, operation, input).await;
+        self.replicate(&ctx, call.take_written());
+        out
     }
 
     fn export_state(&self) -> Option<serde_json::Value> {

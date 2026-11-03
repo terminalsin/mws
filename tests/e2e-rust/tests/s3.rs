@@ -554,3 +554,176 @@ async fn cross_account_access_needs_both_bucket_and_identity_policies() {
     let err = bob.get_object().bucket("member-data").key("k").send().await.unwrap_err();
     assert_eq!(err.code(), Some("AccessDenied"));
 }
+
+async fn advance_days(mws: &Mws, days: i64) {
+    let body = format!(r#"{{"advanceSeconds":{}}}"#, days * 86400);
+    let (status, _) = mws.control("POST", "/_mws/clock", Some(&body)).await;
+    assert_eq!(status, 200);
+}
+
+#[tokio::test]
+async fn lifecycle_rules_run_on_the_emulated_clock() {
+    use aws_sdk_s3::types::{
+        AbortIncompleteMultipartUpload, BucketLifecycleConfiguration, ExpirationStatus, LifecycleExpiration,
+        LifecycleRule, LifecycleRuleFilter, NoncurrentVersionExpiration, StorageClass, Transition,
+        TransitionStorageClass,
+    };
+    let mws = Mws::start().await;
+    let s3 = root(&mws).await;
+    s3.create_bucket().bucket("aging").send().await.unwrap();
+    let rule = |id: &str, prefix: &str| {
+        LifecycleRule::builder()
+            .id(id)
+            .status(ExpirationStatus::Enabled)
+            .filter(LifecycleRuleFilter::builder().prefix(prefix).build())
+    };
+    let config = BucketLifecycleConfiguration::builder()
+        .rules(rule("tmp", "tmp/").expiration(LifecycleExpiration::builder().days(1).build()).build().unwrap())
+        .rules(
+            rule("cold", "logs/")
+                .transitions(Transition::builder().days(30).storage_class(TransitionStorageClass::Glacier).build())
+                .build()
+                .unwrap(),
+        )
+        .rules(
+            rule("uploads", "")
+                .abort_incomplete_multipart_upload(
+                    AbortIncompleteMultipartUpload::builder().days_after_initiation(2).build(),
+                )
+                .build()
+                .unwrap(),
+        )
+        .build()
+        .unwrap();
+    s3.put_bucket_lifecycle_configuration().bucket("aging").lifecycle_configuration(config).send().await.unwrap();
+
+    let put = s3.put_object().bucket("aging").key("tmp/a").body(ByteStream::from_static(b"a")).send().await.unwrap();
+    let expiration = put.expiration().unwrap();
+    assert!(expiration.starts_with("expiry-date=\""), "{expiration}");
+    assert!(expiration.ends_with("rule-id=\"tmp\""), "{expiration}");
+    s3.put_object().bucket("aging").key("logs/a").body(ByteStream::from_static(b"l")).send().await.unwrap();
+    s3.put_object().bucket("aging").key("keep").body(ByteStream::from_static(b"k")).send().await.unwrap();
+    let upload = s3.create_multipart_upload().bucket("aging").key("big").send().await.unwrap();
+
+    // Nothing has happened yet.
+    s3.head_object().bucket("aging").key("tmp/a").send().await.unwrap();
+
+    advance_days(&mws, 3).await;
+    let err = s3.get_object().bucket("aging").key("tmp/a").send().await.unwrap_err();
+    assert_eq!(err.code(), Some("NoSuchKey"));
+    s3.get_object().bucket("aging").key("keep").send().await.unwrap();
+    let uploads = s3.list_multipart_uploads().bucket("aging").send().await.unwrap();
+    assert!(uploads.uploads().is_empty());
+    let err =
+        s3.list_parts().bucket("aging").key("big").upload_id(upload.upload_id().unwrap()).send().await.unwrap_err();
+    assert_eq!(err.code(), Some("NoSuchUpload"));
+
+    advance_days(&mws, 30).await;
+    let head = s3.head_object().bucket("aging").key("logs/a").send().await.unwrap();
+    assert_eq!(head.storage_class(), Some(&StorageClass::Glacier));
+    let err = s3.get_object().bucket("aging").key("logs/a").send().await.unwrap_err();
+    assert_eq!(err.code(), Some("InvalidObjectState"));
+
+    // Versioned buckets: current versions get a delete marker, and
+    // noncurrent versions expire after NoncurrentDays.
+    s3.create_bucket().bucket("aging-versions").send().await.unwrap();
+    s3.put_bucket_versioning()
+        .bucket("aging-versions")
+        .versioning_configuration(VersioningConfiguration::builder().status(BucketVersioningStatus::Enabled).build())
+        .send()
+        .await
+        .unwrap();
+    let config = BucketLifecycleConfiguration::builder()
+        .rules(
+            rule("all", "")
+                .expiration(LifecycleExpiration::builder().days(10).build())
+                .noncurrent_version_expiration(NoncurrentVersionExpiration::builder().noncurrent_days(5).build())
+                .build()
+                .unwrap(),
+        )
+        .build()
+        .unwrap();
+    s3.put_bucket_lifecycle_configuration()
+        .bucket("aging-versions")
+        .lifecycle_configuration(config)
+        .send()
+        .await
+        .unwrap();
+    s3.put_object().bucket("aging-versions").key("k").body(ByteStream::from_static(b"1")).send().await.unwrap();
+    advance_days(&mws, 11).await;
+    let versions = s3.list_object_versions().bucket("aging-versions").send().await.unwrap();
+    assert_eq!(versions.versions().len(), 1);
+    assert_eq!(versions.delete_markers().len(), 1);
+    advance_days(&mws, 6).await;
+    // The noncurrent version is gone, and the marker left alone expires too.
+    let versions = s3.list_object_versions().bucket("aging-versions").send().await.unwrap();
+    assert!(versions.versions().is_empty());
+    assert!(versions.delete_markers().is_empty());
+}
+
+#[tokio::test]
+async fn replication_copies_versions_as_the_role() {
+    use aws_sdk_s3::types::{
+        DeleteMarkerReplication, DeleteMarkerReplicationStatus, Destination, ReplicationConfiguration, ReplicationRule,
+        ReplicationRuleFilter, ReplicationRuleStatus, ReplicationStatus,
+    };
+    let mws = Mws::start().await;
+    let s3 = root(&mws).await;
+    let iam = aws_sdk_iam::Client::new(&mws.root_sdk_config().await);
+    let trust = r#"{"Version":"2012-10-17","Statement":[{"Effect":"Allow","Principal":{"Service":"s3.amazonaws.com"},"Action":"sts:AssumeRole"}]}"#;
+    let role = iam.create_role().role_name("replicator").assume_role_policy_document(trust).send().await.unwrap();
+    let role_arn = role.role().unwrap().arn().to_string();
+    let permissions = r#"{"Version":"2012-10-17","Statement":[
+        {"Effect":"Allow","Action":["s3:GetObjectVersionForReplication","s3:GetObjectVersionAcl"],"Resource":"arn:aws:s3:::repl-src/*"},
+        {"Effect":"Allow","Action":["s3:ReplicateObject","s3:ReplicateDelete"],"Resource":"arn:aws:s3:::repl-dst/*"}]}"#;
+    iam.put_role_policy().role_name("replicator").policy_name("p").policy_document(permissions).send().await.unwrap();
+
+    let versioned = || VersioningConfiguration::builder().status(BucketVersioningStatus::Enabled).build();
+    for b in ["repl-src", "repl-dst"] {
+        s3.create_bucket().bucket(b).send().await.unwrap();
+        s3.put_bucket_versioning().bucket(b).versioning_configuration(versioned()).send().await.unwrap();
+    }
+    let config = ReplicationConfiguration::builder()
+        .role(&role_arn)
+        .rules(
+            ReplicationRule::builder()
+                .id("docs")
+                .priority(1)
+                .status(ReplicationRuleStatus::Enabled)
+                .filter(ReplicationRuleFilter::builder().prefix("docs/").build())
+                .delete_marker_replication(
+                    DeleteMarkerReplication::builder().status(DeleteMarkerReplicationStatus::Enabled).build(),
+                )
+                .destination(Destination::builder().bucket("arn:aws:s3:::repl-dst").build().unwrap())
+                .build()
+                .unwrap(),
+        )
+        .build()
+        .unwrap();
+    s3.put_bucket_replication().bucket("repl-src").replication_configuration(config).send().await.unwrap();
+
+    let put =
+        s3.put_object().bucket("repl-src").key("docs/a").body(ByteStream::from_static(b"doc")).send().await.unwrap();
+    s3.put_object().bucket("repl-src").key("other").body(ByteStream::from_static(b"x")).send().await.unwrap();
+    let src = s3.head_object().bucket("repl-src").key("docs/a").send().await.unwrap();
+    assert_eq!(src.replication_status(), Some(&ReplicationStatus::Completed));
+    let dst = s3.get_object().bucket("repl-dst").key("docs/a").send().await.unwrap();
+    assert_eq!(dst.replication_status(), Some(&ReplicationStatus::Replica));
+    assert_eq!(dst.version_id(), put.version_id());
+    assert_eq!(body(dst).await, b"doc");
+    let err = s3.head_object().bucket("repl-dst").key("other").send().await.unwrap_err();
+    assert_eq!(err.raw_response().unwrap().status().as_u16(), 404);
+
+    // Delete markers follow; replicas do not replicate back.
+    s3.delete_object().bucket("repl-src").key("docs/a").send().await.unwrap();
+    let err = s3.get_object().bucket("repl-dst").key("docs/a").send().await.unwrap_err();
+    assert_eq!(err.code(), Some("NoSuchKey"));
+
+    // Without the role's permission the source reports FAILED.
+    iam.delete_role_policy().role_name("replicator").policy_name("p").send().await.unwrap();
+    s3.put_object().bucket("repl-src").key("docs/b").body(ByteStream::from_static(b"b")).send().await.unwrap();
+    let src = s3.head_object().bucket("repl-src").key("docs/b").send().await.unwrap();
+    assert_eq!(src.replication_status(), Some(&ReplicationStatus::Failed));
+    let err = s3.head_object().bucket("repl-dst").key("docs/b").send().await.unwrap_err();
+    assert_eq!(err.raw_response().unwrap().status().as_u16(), 404);
+}

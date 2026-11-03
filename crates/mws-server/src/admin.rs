@@ -14,6 +14,8 @@
 //! | `GET /_mws/snapshots/{name}`           | a snapshot's state document                    |
 //! | `POST /_mws/snapshots/{name}/restore`  | replace the current state with a snapshot      |
 //! | `DELETE /_mws/snapshots/{name}`        | delete a snapshot                              |
+//! | `GET /_mws/clock`                      | the emulated time and its offset               |
+//! | `POST /_mws/clock`                     | `{"advanceSeconds": n}` or `{"offsetSeconds": n}` moves the emulated clock forward |
 
 use bytes::Bytes;
 use http::Method;
@@ -58,12 +60,41 @@ fn body_json(request: &HttpRequest) -> Result<Value, String> {
 }
 
 impl Gateway {
+    fn clock_doc(&self) -> HttpResponse {
+        let now = self.emulated_time(chrono::Utc::now());
+        respond(
+            200,
+            json!({
+                "now": now.to_rfc3339_opts(chrono::SecondsFormat::Millis, true),
+                "offsetSeconds": self.clock_offset().num_seconds(),
+            }),
+        )
+    }
+
     pub(crate) async fn admin(&self, request: HttpRequest) -> HttpResponse {
         let path = request.uri().path().strip_prefix(PREFIX).unwrap_or_default().trim_end_matches('/').to_string();
         let segments: Vec<&str> = path.split('/').collect();
         let method = request.method().clone();
         match (&method, segments.as_slice()) {
             (&Method::GET, ["health"]) => self.health(),
+            (&Method::GET, ["clock"]) => self.clock_doc(),
+            (&Method::POST, ["clock"]) => {
+                let doc = match body_json(&request) {
+                    Ok(d) => d,
+                    Err(e) => return error(400, e),
+                };
+                let seconds = |k: &str| doc.get(k).and_then(Value::as_i64);
+                let offset = match (seconds("advanceSeconds"), seconds("offsetSeconds")) {
+                    (Some(a), None) => self.clock_offset() + chrono::Duration::seconds(a),
+                    (None, Some(o)) => chrono::Duration::seconds(o),
+                    _ => return error(400, "give exactly one of advanceSeconds or offsetSeconds (whole seconds)"),
+                };
+                if offset < chrono::Duration::zero() {
+                    return error(400, "the emulated clock cannot run behind the wall clock");
+                }
+                self.set_clock_offset(offset);
+                self.clock_doc()
+            }
             (&Method::GET, ["state"]) => {
                 let _gate = self.state.gate.read().await;
                 respond(200, self.export_state())

@@ -2,7 +2,6 @@
 //! list.
 
 use bytes::{Bytes, BytesMut};
-use chrono::Utc;
 use mws_core::{CallerKind, ConditionContext, RequestContext, ServiceError};
 
 use crate::acl::{self, GrantHeaders};
@@ -164,7 +163,7 @@ impl Call {
             Upload {
                 upload_id: upload_id.clone(),
                 key: input.key.clone(),
-                initiated: Utc::now(),
+                initiated: ctx.received_at,
                 initiator: id,
                 initiator_arn: arn,
                 template,
@@ -229,7 +228,7 @@ impl Call {
         let up = b.uploads.get_mut(&input.upload_id).expect("upload exists");
         up.parts.insert(
             input.part_number,
-            Part { etag: etag.clone(), last_modified: Utc::now(), data, checksum: part_checksum.clone() },
+            Part { etag: etag.clone(), last_modified: ctx.received_at, data, checksum: part_checksum.clone() },
         );
         let mut out = types::UploadPartOutput {
             e_tag: Some(etag),
@@ -326,7 +325,7 @@ impl Call {
         let algorithm = up.checksum_algorithm.clone();
         let sse = up.template.sse.clone();
         let etag = checksum::etag(&data);
-        let now = Utc::now();
+        let now = ctx.received_at;
         let up = b.uploads.get_mut(&input.upload_id).expect("upload exists");
         up.parts.insert(
             input.part_number,
@@ -447,7 +446,7 @@ impl Call {
             .map(|p| PartInfo { size: p.data.len() as i64, etag: p.etag.clone(), checksum: p.checksum.clone() })
             .collect();
         let mut version = up.template.clone();
-        version.last_modified = Utc::now();
+        version.last_modified = ctx.received_at;
         version.data = data;
         version.etag = etag.clone();
         version.parts = parts;
@@ -464,6 +463,7 @@ impl Call {
         let sse = version.sse.clone();
         b.uploads.remove(&input.upload_id);
         let id = b.insert_version(&input.key, version);
+        self.wrote(&input.bucket, &input.key, &id);
         let mut out = types::CompleteMultipartUploadOutput {
             location: Some(format!("/{}/{}", input.bucket, input.key)),
             bucket: Some(input.bucket.clone()),

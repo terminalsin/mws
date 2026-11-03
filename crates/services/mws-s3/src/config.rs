@@ -2,7 +2,8 @@
 //! encryption, lifecycle, website, logging, notifications, accelerate,
 //! request payment, replication, object lock, ABAC, and the keyed
 //! analytics / metrics / inventory / Intelligent-Tiering configurations.
-//! MWS does not act on lifecycle, replication, logging, inventory or
+//! Lifecycle rules run in [`crate::lifecycle`] and replication rules in
+//! [`crate::replication`]; MWS does not act on logging, inventory or
 //! notifications.
 
 use std::collections::BTreeMap;

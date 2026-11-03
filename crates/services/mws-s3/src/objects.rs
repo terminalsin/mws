@@ -598,6 +598,7 @@ macro_rules! object_headers {
         $out.object_lock_retain_until_date = v.lock_until;
         $out.object_lock_legal_hold_status = v.legal_hold.clone();
         $out.restore = restore_header(v);
+        $out.replication_status = v.replication_status.clone();
         $out.tag_count = (!v.tags.is_empty()).then(|| v.tags.len() as i32);
         if $checksums {
             if let Some(c) = &v.checksum {
@@ -724,7 +725,7 @@ impl Call {
             Some(t) => parse_tagging(t)?,
             None => Vec::new(),
         };
-        let now = Utc::now();
+        let now = ctx.received_at;
         let mut st = self.write();
         let b = st.bucket_mut(&input.bucket)?;
         check_owner(b, input.expected_bucket_owner.as_deref())?;
@@ -821,7 +822,10 @@ impl Call {
         let etag = version.etag.clone();
         let size = version.size();
         let id = b.insert_version(&input.key, version);
+        self.wrote(&input.bucket, &input.key, &id);
+        let expiration = b.latest(&input.key).and_then(|v| crate::lifecycle::expiration_header(b, &input.key, v));
         let mut out = types::PutObjectOutput {
+            expiration,
             e_tag: Some(etag),
             version_id: reports_versions(b).then_some(id),
             server_side_encryption: sse.algorithm.clone(),
@@ -856,7 +860,7 @@ impl Call {
         let extra = existing_object_context(found.as_ref().ok().copied(), input.version_id.as_deref());
         self.authorize(ctx, action, b, Resource::Object { key: &input.key, grants }, extra)?;
         let v = found.map_err(|e| self.missing(ctx, b, e))?;
-        if v.is_archived() && v.restored_until.is_none_or(|t| t < Utc::now()) {
+        if v.is_archived() && v.restored_until.is_none_or(|t| t < ctx.received_at) {
             return Err(errors::invalid_object_state(&v.storage_class));
         }
         check_response_overrides(
@@ -889,6 +893,9 @@ impl Call {
         let checksums = input.checksum_mode.as_deref() == Some("ENABLED")
             && (whole || (input.part_number.is_some() && v.parts.is_empty()));
         object_headers!(out, b, v, checksums);
+        if b.latest(&input.key).is_some_and(|l| l.version_id == v.version_id) {
+            out.expiration = crate::lifecycle::expiration_header(b, &input.key, v);
+        }
         out.content_length = Some(body.len() as i64);
         out.content_range = content_range;
         out.parts_count = (input.part_number.is_some() && !v.parts.is_empty()).then_some(v.parts.len() as i32);
@@ -929,6 +936,9 @@ impl Call {
         let mut out = types::HeadObjectOutput::default();
         let checksums = input.checksum_mode.as_deref() == Some("ENABLED") && content_range.is_none();
         object_headers!(out, b, v, checksums);
+        if b.latest(&input.key).is_some_and(|l| l.version_id == v.version_id) {
+            out.expiration = crate::lifecycle::expiration_header(b, &input.key, v);
+        }
         out.content_length = Some(len as i64);
         out.content_range = content_range;
         out.parts_count = (input.part_number.is_some() && !v.parts.is_empty()).then_some(v.parts.len() as i32);
@@ -985,7 +995,7 @@ impl Call {
             extra.insert("s3:VersionId".into(), vec![id.to_string()]);
         }
         self.authorize(ctx, action, b, Resource::Object { key, grants: None }, extra)?;
-        let now = Utc::now();
+        let now = ctx.received_at;
         if let Some(id) = version_id {
             if id.is_empty() {
                 return Err(errors::invalid_version_id(id));
@@ -1040,6 +1050,7 @@ impl Call {
                     ..ObjectVersion::default()
                 };
                 let id = b.insert_version(key, marker);
+                self.wrote(&b.name, key, &id);
                 Ok((true, Some(id)))
             }
         }
@@ -1129,7 +1140,7 @@ impl Call {
         if let Some(sc) = &input.storage_class {
             validate_storage_class(sc)?;
         }
-        let now = Utc::now();
+        let now = ctx.received_at;
         let mut st = self.write();
         let src = self.read_copy_source(
             ctx,
@@ -1277,6 +1288,7 @@ impl Call {
         };
         let etag = version.etag.clone();
         let id = b.insert_version(&input.key, version);
+        self.wrote(&input.bucket, &input.key, &id);
         let mut result = types::CopyObjectResult {
             e_tag: Some(etag),
             last_modified: Some(now),
@@ -1331,7 +1343,7 @@ impl Call {
                 e
             }
         })?;
-        if v.is_archived() && v.restored_until.is_none_or(|t| t < Utc::now()) {
+        if v.is_archived() && v.restored_until.is_none_or(|t| t < ctx.received_at) {
             return Err(errors::invalid_object_state(&v.storage_class));
         }
         check_customer_key(v, customer_algorithm, customer_key, customer_key_md5)?;
@@ -1624,7 +1636,7 @@ impl Call {
         if retention.mode.is_some() != retention.retain_until_date.is_some() {
             return Err(errors::malformed_xml());
         }
-        let now = Utc::now();
+        let now = ctx.received_at;
         if retention.retain_until_date.is_some_and(|u| u <= now) {
             return Err(errors::invalid_argument(
                 "The retain until date must be in the future!",
@@ -1823,7 +1835,7 @@ impl Call {
                     ));
                 }
                 // Restores complete immediately in MWS.
-                v.restored_until = Some(Utc::now() + Duration::days(i64::from(days)));
+                v.restored_until = Some(ctx.received_at + Duration::days(i64::from(days)));
                 Ok(types::RestoreObjectOutput::default())
             },
         )

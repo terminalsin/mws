@@ -182,6 +182,8 @@ pub struct ObjectVersion {
     pub legal_hold: Option<String>,
     /// When a restored copy of an archived object expires.
     pub restored_until: Option<DateTime<Utc>>,
+    /// `COMPLETED`, `FAILED` or `REPLICA`, once replication has acted.
+    pub replication_status: Option<String>,
 }
 
 impl Default for ObjectVersion {
@@ -211,6 +213,7 @@ impl Default for ObjectVersion {
             lock_until: None,
             legal_hold: None,
             restored_until: None,
+            replication_status: None,
         }
     }
 }
