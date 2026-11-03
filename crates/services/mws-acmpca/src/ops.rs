@@ -468,7 +468,10 @@ impl PrivateCa {
                 ca.status
             )));
         }
-        let id = input.certificate_serial.replace(':', "").to_ascii_lowercase();
+        // A serial number is a number: leading zeros and colons don't matter.
+        let wanted = input.certificate_serial.replace(':', "").to_ascii_lowercase();
+        let wanted = wanted.trim_start_matches('0');
+        let id = ca.certs.keys().find(|k| k.trim_start_matches('0') == wanted).cloned().unwrap_or_default();
         let cert = ca.certs.get_mut(&id).ok_or_else(|| {
             errors::resource_not_found(format!("Could not find certificate with serial {}.", input.certificate_serial))
         })?;
