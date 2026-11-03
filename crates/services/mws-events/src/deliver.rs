@@ -271,7 +271,14 @@ impl Events {
         // `{"timestamp": ..., "message": ...}`.
         let (timestamp, message) = match serde_json::from_str::<Value>(payload) {
             Ok(Value::Object(m)) if m.len() == 2 && m.contains_key("timestamp") && m.contains_key("message") => {
-                let ts = m.get("timestamp").and_then(Value::as_i64).unwrap_or(event_time);
+                let ts = match m.get("timestamp") {
+                    Some(Value::Number(n)) => n.as_i64().unwrap_or(event_time),
+                    Some(Value::String(s)) => chrono::DateTime::parse_from_rfc3339(s)
+                        .map(|t| t.timestamp_millis())
+                        .or_else(|_| s.parse::<i64>())
+                        .unwrap_or(event_time),
+                    _ => event_time,
+                };
                 let msg = match m.get("message") {
                     Some(Value::String(s)) => s.clone(),
                     Some(other) => other.to_string(),
