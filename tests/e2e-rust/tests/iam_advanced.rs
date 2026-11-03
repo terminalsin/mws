@@ -537,3 +537,78 @@ async fn new_iam_state_survives_export_and_import() {
 fn now_secs() -> i64 {
     std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_secs() as i64
 }
+
+#[tokio::test]
+async fn access_keys_and_access_advisor_record_real_activity() {
+    let mws = Mws::start().await;
+    let iam = aws_sdk_iam::Client::new(&mws.root_sdk_config().await);
+    let policy = r#"{"Version":"2012-10-17","Statement":[{"Effect":"Allow","Action":["s3:ListAllMyBuckets","iam:GetUser"],"Resource":"*"},{"Effect":"Allow","Action":"route53:List*","Resource":"*"}]}"#;
+    let (user_iam, cfg) = mws_e2e::user_with_policy(&mws, "worker", Some(policy)).await;
+    iam.create_group().group_name("crew").send().await.unwrap();
+    iam.add_user_to_group().group_name("crew").user_name("worker").send().await.unwrap();
+    iam.put_group_policy().group_name("crew").policy_name("p").policy_document(policy).send().await.unwrap();
+    let keys = iam.list_access_keys().user_name("worker").send().await.unwrap();
+    let key_id = keys.access_key_metadata()[0].access_key_id().unwrap().to_string();
+
+    // Never used yet.
+    let last = iam.get_access_key_last_used().access_key_id(&key_id).send().await.unwrap();
+    let used = last.access_key_last_used().unwrap();
+    assert!(used.last_used_date().is_none());
+    assert_eq!(used.service_name(), "N/A");
+
+    Mws::s3(&cfg).list_buckets().send().await.unwrap();
+    user_iam.get_user().send().await.unwrap();
+
+    let last = iam.get_access_key_last_used().access_key_id(&key_id).send().await.unwrap();
+    let used = last.access_key_last_used().unwrap();
+    assert!(used.last_used_date().is_some());
+    assert_eq!(used.service_name(), "iam");
+    assert_eq!(used.region(), "us-east-1");
+
+    let user_arn = format!("arn:aws:iam::{ACCOUNT}:user/worker");
+    let job = iam
+        .generate_service_last_accessed_details()
+        .arn(&user_arn)
+        .granularity(aws_sdk_iam::types::AccessAdvisorUsageGranularityType::ActionLevel)
+        .send()
+        .await
+        .unwrap();
+    let details = iam.get_service_last_accessed_details().job_id(job.job_id().unwrap()).send().await.unwrap();
+    let by_ns = |ns: &str| details.services_last_accessed().iter().find(|s| s.service_namespace() == ns).unwrap();
+    let s3 = by_ns("s3");
+    assert!(s3.last_authenticated().is_some());
+    assert_eq!(s3.last_authenticated_region(), Some("us-east-1"));
+    assert_eq!(s3.total_authenticated_entities(), Some(1));
+    let actions: Vec<&str> = s3.tracked_actions_last_accessed().iter().filter_map(|a| a.action_name()).collect();
+    assert_eq!(actions, ["ListAllMyBuckets"]);
+    let route53 = by_ns("route53");
+    assert!(route53.last_authenticated().is_none());
+    assert_eq!(route53.total_authenticated_entities(), Some(0));
+
+    // A group report names the member that used the service.
+    let group_arn = format!("arn:aws:iam::{ACCOUNT}:group/crew");
+    let job = iam.generate_service_last_accessed_details().arn(&group_arn).send().await.unwrap();
+    let job_id = job.job_id().unwrap();
+    let details = iam.get_service_last_accessed_details().job_id(job_id).send().await.unwrap();
+    let s3 = details.services_last_accessed().iter().find(|s| s.service_namespace() == "s3").unwrap();
+    assert_eq!(s3.last_authenticated_entity(), Some(user_arn.as_str()));
+    let entities = iam
+        .get_service_last_accessed_details_with_entities()
+        .job_id(job_id)
+        .service_namespace("s3")
+        .send()
+        .await
+        .unwrap();
+    let worker = &entities.entity_details_list()[0];
+    assert_eq!(worker.entity_info().unwrap().name(), "worker");
+    assert!(worker.last_authenticated().is_some());
+
+    // The credential report shows the same last use.
+    iam.generate_credential_report().send().await.unwrap();
+    let report = iam.get_credential_report().send().await.unwrap();
+    let csv = String::from_utf8(report.content().unwrap().as_ref().to_vec()).unwrap();
+    let row = csv.lines().find(|l| l.starts_with("worker,")).unwrap();
+    let cols: Vec<&str> = row.split(',').collect();
+    assert_eq!(cols[11], "us-east-1", "{row}");
+    assert_eq!(cols[12], "iam", "{row}");
+}
