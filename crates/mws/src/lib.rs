@@ -3,6 +3,8 @@
 use std::path::PathBuf;
 use std::sync::Arc;
 
+mod sinks;
+
 use mws_acmpca::PrivateCa;
 use mws_core::Environment;
 use mws_events::Events;
@@ -15,6 +17,7 @@ use mws_route53::Route53;
 use mws_s3::S3;
 use mws_s3control::S3Control;
 use mws_server::{Gateway, Scenario, Store};
+use mws_sqs::Sqs;
 use mws_ssm::Ssm;
 use mws_sts::Sts;
 
@@ -63,6 +66,7 @@ pub struct Mws {
     pub s3control: S3Control,
     pub lambda: Lambda,
     pub logs: Logs,
+    pub sqs: Sqs,
     pub ssm: Ssm,
     pub events: Events,
 }
@@ -117,12 +121,14 @@ fn build_with_store(config: Config, store: Option<Arc<Store>>) -> Mws {
     let s3 = S3::new().with_kms(kms.clone());
     let logs = Logs::new().with_s3(s3.clone()).with_kms(kms.clone());
     let route53 = Route53::new().with_kms(kms.clone()).with_logs(logs.clone());
+    let sqs = Sqs::new().with_kms(kms.clone());
     let s3control = S3Control::for_s3(s3.clone());
     let lambda = Lambda::with_services(sts.clone(), s3.clone());
     lambda.set_logs(logs.clone());
     s3.set_object_lambda_invoker(Arc::new(lambda.clone()));
     let ssm = Ssm::new(kms.clone());
     let events = Events::new().with_lambda(lambda.clone()).with_logs(logs.clone()).with_sts(sts.clone());
+    events.register_target_sink("sqs", Arc::new(sinks::SqsTarget(sqs.clone())));
     let mut gateway = Gateway::builder();
     if let Some(store) = store {
         gateway = gateway.store(store);
@@ -146,8 +152,9 @@ fn build_with_store(config: Config, store: Option<Arc<Store>>) -> Mws {
         .service(Arc::new(s3.clone()))
         .service(Arc::new(lambda.clone()))
         .service(Arc::new(logs.clone()))
+        .service(Arc::new(sqs.clone()))
         .service(Arc::new(ssm.clone()))
         .service(Arc::new(events.clone()))
         .build();
-    Mws { gateway, route53, kms, s3, s3control, lambda, logs, ssm, events }
+    Mws { gateway, route53, kms, s3, s3control, lambda, logs, sqs, ssm, events }
 }

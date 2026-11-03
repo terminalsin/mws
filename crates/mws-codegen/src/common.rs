@@ -20,15 +20,44 @@ pub fn all_errors(service: &Shape, ops: &[&Shape]) -> BTreeSet<String> {
     errors
 }
 
+/// How a protocol names modeled errors on the wire.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ErrorCodes {
+    /// The shape name (awsJson, restJson1).
+    Shape,
+    /// The `awsQueryError` code and status when present (awsQuery, restXml).
+    Query,
+    /// awsJson with `awsQueryCompatible`: the shape name in `__type`, the
+    /// `awsQueryError` status, and the query code in `x-amzn-query-error`
+    /// (see [`query_compatible_codes`]).
+    QueryCompatible,
+}
+
+/// `(shape name, awsQuery code)` for every error, for the
+/// `x-amzn-query-error` header of `awsQueryCompatible` services.
+pub fn query_compatible_codes(model: &Model, errors: &BTreeSet<String>) -> Vec<(String, String)> {
+    errors
+        .iter()
+        .map(|id| {
+            let s = model.expect(id);
+            (s.name().to_string(), error_code_and_status(s, true).0)
+        })
+        .collect()
+}
+
 /// `pub mod errors`: a constant and constructor per modeled error. Error
 /// members that are lists of strings get a `{name}_with_{member}`
 /// constructor that carries them.
-pub fn emit_errors(model: &Model, errors: &BTreeSet<String>, query_codes: bool, w: &mut String) {
+pub fn emit_errors(model: &Model, errors: &BTreeSet<String>, codes: ErrorCodes, w: &mut String) {
     let _ = writeln!(w, "\n/// Constructors for every error the model declares.\npub mod errors {{");
     let _ = writeln!(w, "    #[allow(unused_imports)]\n    use ::mws_core::{{ErrorFault, ErrorValue, ServiceError}};");
     for id in errors {
         let s = model.expect(id);
-        let (code, status) = error_code_and_status(s, query_codes);
+        let (code, status) = match codes {
+            ErrorCodes::Shape => error_code_and_status(s, false),
+            ErrorCodes::Query => error_code_and_status(s, true),
+            ErrorCodes::QueryCompatible => (s.name().to_string(), error_code_and_status(s, true).1),
+        };
         let fault = if s.get_trait("error").and_then(Value::as_str) == Some("server") { "Server" } else { "Client" };
         let fn_name = snake_case(s.name().strip_suffix("Exception").unwrap_or(s.name()));
         let _ = writeln!(w, "    /// `{code}` (HTTP {status}), from `{id}`.");

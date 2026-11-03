@@ -99,7 +99,7 @@ impl Gen<'_, '_, '_> {
         let _ = writeln!(w, "\npub mod types {{\n    use super::chrono;");
         self.types.emit_types(&all, w);
         let _ = writeln!(w, "}}");
-        common::emit_errors(model, &common::all_errors(service, &ops), false, w);
+        common::emit_errors(model, &common::all_errors(service, &ops), common::ErrorCodes::Shape, w);
         common::emit_handler(model, &ops, w);
 
         let routes = crate::http_routes::build(model, &ops, &[]);

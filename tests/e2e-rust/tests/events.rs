@@ -957,3 +957,71 @@ async fn iam_controls_event_bridge() {
     assert_eq!(code(all_denied.into_service_error()), "AccessDeniedException");
     mws.stop().await;
 }
+
+#[tokio::test]
+async fn sqs_targets_and_dead_letter_queues() {
+    let mws = Mws::start().await;
+    let cfg = mws.root_sdk_config().await;
+    let eb = Client::new(&cfg);
+    let sqs = aws_sdk_sqs::Client::new(&cfg);
+    let queue = |name: &'static str, open: bool| {
+        let sqs = sqs.clone();
+        async move {
+            let url = sqs.create_queue().queue_name(name).send().await.unwrap().queue_url.unwrap();
+            let arn = format!("arn:aws:sqs:us-east-1:{ACCOUNT}:{name}");
+            if open {
+                let policy = serde_json::json!({"Version":"2012-10-17","Statement":[{
+                    "Effect":"Allow","Principal":{"Service":"events.amazonaws.com"},
+                    "Action":"sqs:SendMessage","Resource":arn}]});
+                sqs.set_queue_attributes()
+                    .queue_url(&url)
+                    .attributes(aws_sdk_sqs::types::QueueAttributeName::Policy, policy.to_string())
+                    .send()
+                    .await
+                    .unwrap();
+            }
+            (url, arn)
+        }
+    };
+    let (ok_url, ok_arn) = queue("ok", true).await;
+    let (_, locked_arn) = queue("locked", false).await;
+    let (dlq_url, dlq_arn) = queue("dlq", true).await;
+
+    eb.put_rule().name("to-sqs").event_pattern(r#"{"source":["app"]}"#).send().await.unwrap();
+    let locked = Target::builder()
+        .id("locked")
+        .arn(&locked_arn)
+        .dead_letter_config(aws_sdk_eventbridge::types::DeadLetterConfig::builder().arn(&dlq_arn).build())
+        .build()
+        .unwrap();
+    eb.put_targets().rule("to-sqs").targets(target("ok", &ok_arn)).targets(locked).send().await.unwrap();
+    eb.put_events().entries(entry("app", "Thing", serde_json::json!({"n": 1}))).send().await.unwrap();
+
+    let receive = |url: String| {
+        let sqs = sqs.clone();
+        async move {
+            eventually(10, || {
+                let (sqs, url) = (sqs.clone(), url.clone());
+                async move {
+                    let r = sqs.receive_message().queue_url(url).message_attribute_names("All").send().await.unwrap();
+                    r.messages.unwrap_or_default().into_iter().next()
+                }
+            })
+            .await
+        }
+    };
+    let m = receive(ok_url).await;
+    let body: serde_json::Value = serde_json::from_str(m.body().unwrap()).unwrap();
+    assert_eq!(body["source"], "app");
+    assert_eq!(body["detail"]["n"], 1);
+
+    let m = receive(dlq_url).await;
+    let body: serde_json::Value = serde_json::from_str(m.body().unwrap()).unwrap();
+    assert_eq!(body["detail-type"], "Thing");
+    let attrs = m.message_attributes.unwrap();
+    let attr = |k: &str| attrs[k].string_value.clone().unwrap();
+    assert_eq!(attr("RULE_ARN"), format!("arn:aws:events:us-east-1:{ACCOUNT}:rule/to-sqs"));
+    assert_eq!(attr("TARGET_ARN"), locked_arn);
+    assert_eq!(attr("ERROR_CODE"), "AccessDeniedException");
+    mws.stop().await;
+}
