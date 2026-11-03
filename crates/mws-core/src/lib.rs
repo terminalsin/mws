@@ -8,13 +8,15 @@
 mod auth;
 mod error;
 mod service;
+mod validate;
 
 pub use auth::{
     AllowAll, Authorizer, AuthzDecision, AuthzRequest, Caller, CallerKind, ConditionContext, CredentialError,
     CredentialStore, ResolvedCredential, SessionInfo, SessionKind,
 };
-pub use error::{ErrorFault, ServiceError};
+pub use error::{ErrorFault, ErrorField, ErrorValue, ServiceError};
 pub use service::{HttpRequest, HttpResponse, RequestContext, Service};
+pub use validate::{render_list, Validator};
 
 /// Settings that describe the simulated AWS partition and account.
 #[derive(Debug, Clone)]

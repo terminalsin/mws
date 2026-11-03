@@ -8,20 +8,23 @@ use aws_credential_types::Credentials;
 pub struct Mws {
     pub endpoint: String,
     pub config: mws::Config,
+    pub route53: mws_route53::Route53,
     _shutdown: tokio::sync::oneshot::Sender<()>,
 }
 
 impl Mws {
     pub async fn start() -> Self {
         let config = mws::Config::default();
-        let gateway = Arc::new(mws::build_gateway(config.clone()));
+        let built = mws::build(config.clone());
+        let route53 = built.route53;
+        let gateway = Arc::new(built.gateway);
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
         let endpoint = format!("http://{}", listener.local_addr().unwrap());
         let (tx, rx) = tokio::sync::oneshot::channel::<()>();
         tokio::spawn(mws_server::serve(listener, gateway, async {
             let _ = rx.await;
         }));
-        Self { endpoint, config, _shutdown: tx }
+        Self { endpoint, config, route53, _shutdown: tx }
     }
 
     /// SDK config signed with the account root keys.

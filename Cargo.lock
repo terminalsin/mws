@@ -170,6 +170,31 @@ dependencies = [
 ]
 
 [[package]]
+name = "aws-sdk-route53"
+version = "1.132.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "66ce107a88ceb0431c560a3a430b62a43c913cd6dbf6107056e943a4d7f28ded"
+dependencies = [
+ "arc-swap",
+ "aws-credential-types",
+ "aws-runtime",
+ "aws-smithy-async",
+ "aws-smithy-http",
+ "aws-smithy-json",
+ "aws-smithy-observability",
+ "aws-smithy-runtime",
+ "aws-smithy-runtime-api",
+ "aws-smithy-schema",
+ "aws-smithy-types",
+ "aws-smithy-xml",
+ "aws-types",
+ "fastrand",
+ "http 1.5.0",
+ "regex-lite",
+ "tracing",
+]
+
+[[package]]
 name = "aws-sdk-sso"
 version = "1.119.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1418,6 +1443,7 @@ version = "0.1.0"
 dependencies = [
  "mws-core",
  "mws-iam",
+ "mws-route53",
  "mws-server",
  "mws-sts",
  "tokio",
@@ -1442,6 +1468,7 @@ dependencies = [
  "bytes",
  "chrono",
  "http 1.5.0",
+ "regex",
 ]
 
 [[package]]
@@ -1451,9 +1478,11 @@ dependencies = [
  "aws-config",
  "aws-credential-types",
  "aws-sdk-iam",
+ "aws-sdk-route53",
  "aws-sdk-sts",
  "base64 0.22.1",
  "mws",
+ "mws-route53",
  "mws-server",
  "serde_json",
  "tokio",
@@ -1493,7 +1522,37 @@ dependencies = [
  "form_urlencoded",
  "http 1.5.0",
  "mws-core",
+ "mws-xml",
  "regex",
+]
+
+[[package]]
+name = "mws-proto-restxml"
+version = "0.1.0"
+dependencies = [
+ "async-trait",
+ "base64 0.22.1",
+ "bytes",
+ "chrono",
+ "form_urlencoded",
+ "http 1.5.0",
+ "mws-core",
+ "mws-xml",
+ "percent-encoding",
+ "regex",
+]
+
+[[package]]
+name = "mws-route53"
+version = "0.1.0"
+dependencies = [
+ "async-trait",
+ "chrono",
+ "mws-codegen",
+ "mws-core",
+ "mws-proto-restxml",
+ "rand",
+ "tokio",
 ]
 
 [[package]]
@@ -1552,6 +1611,16 @@ dependencies = [
  "mws-proto-query",
  "rand",
  "serde_json",
+]
+
+[[package]]
+name = "mws-xml"
+version = "0.1.0"
+dependencies = [
+ "base64 0.22.1",
+ "chrono",
+ "mws-core",
+ "roxmltree",
 ]
 
 [[package]]
@@ -1824,6 +1893,12 @@ dependencies = [
  "untrusted",
  "windows-sys 0.52.0",
 ]
+
+[[package]]
+name = "roxmltree"
+version = "0.20.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "6c20b6793b5c2fa6553b250154b78d6d0db37e72700ae35fad9387a46f487c97"
 
 [[package]]
 name = "rustc_version"

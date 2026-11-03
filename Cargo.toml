@@ -6,11 +6,14 @@ members = [
     "crates/mws-smithy",
     "crates/mws-codegen",
     "crates/mws-proto-query",
+    "crates/mws-proto-restxml",
+    "crates/mws-xml",
     "crates/mws-server",
     "crates/mws",
     "crates/services/mws-iam",
     "crates/services/mws-iam-policy",
     "crates/services/mws-sts",
+    "crates/services/mws-route53",
     "tests/e2e-rust",
 ]
 
@@ -27,11 +30,14 @@ mws-sigv4 = { path = "crates/mws-sigv4" }
 mws-smithy = { path = "crates/mws-smithy" }
 mws-codegen = { path = "crates/mws-codegen" }
 mws-proto-query = { path = "crates/mws-proto-query" }
+mws-proto-restxml = { path = "crates/mws-proto-restxml" }
+mws-xml = { path = "crates/mws-xml" }
 mws-server = { path = "crates/mws-server" }
 mws = { path = "crates/mws" }
 mws-iam = { path = "crates/services/mws-iam" }
 mws-iam-policy = { path = "crates/services/mws-iam-policy" }
 mws-sts = { path = "crates/services/mws-sts" }
+mws-route53 = { path = "crates/services/mws-route53" }
 
 # external
 async-trait = "0.1"
@@ -48,6 +54,7 @@ hyper-util = { version = "0.1", features = ["server", "server-auto", "tokio"] }
 percent-encoding = "2"
 rand = "0.8"
 regex = "1"
+roxmltree = "0.20"
 serde = { version = "1", features = ["derive"] }
 serde_json = { version = "1", features = ["preserve_order"] }
 sha2 = "0.10"

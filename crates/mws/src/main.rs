@@ -14,7 +14,13 @@ async fn main() {
         .parse()
         .expect("MWS_LISTEN must be host:port");
     let config = mws::Config::from_env();
-    let gateway = Arc::new(mws::build_gateway(config.clone()));
+    let mws::Mws { gateway, route53 } = mws::build(config.clone());
+    let gateway = Arc::new(gateway);
+    if let Ok(dns) = std::env::var("MWS_DNS_LISTEN") {
+        let socket = tokio::net::UdpSocket::bind(&dns).await.expect("bind MWS_DNS_LISTEN");
+        tracing::info!(%dns, "Route 53 DNS responder listening");
+        tokio::spawn(mws_route53::serve_dns(route53, socket));
+    }
     let listener = tokio::net::TcpListener::bind(listen).await.expect("bind MWS_LISTEN");
 
     tracing::info!(

@@ -12,14 +12,18 @@
 //!
 //! Only protocol modules live here; nothing is specific to one service.
 
+mod common;
 mod naming;
 mod query;
 mod regex_compat;
+mod rest_xml;
 mod rust_types;
+mod xml_ser;
 
 use std::path::{Path, PathBuf};
 
 pub use mws_smithy::Model;
+pub use rest_xml::RestXmlOptions;
 
 /// Generate awsQuery server code for the model at `model_path`.
 pub fn generate_aws_query(model: &Model) -> String {
@@ -34,6 +38,22 @@ pub fn build_aws_query(model_path: impl AsRef<Path>, out_name: &str) {
     let model =
         Model::load(model_path).unwrap_or_else(|e| panic!("loading Smithy model {}: {e}", model_path.display()));
     let code = generate_aws_query(&model);
+    let out = PathBuf::from(std::env::var("OUT_DIR").expect("OUT_DIR is set by cargo")).join(out_name);
+    std::fs::write(&out, code).unwrap_or_else(|e| panic!("writing {}: {e}", out.display()));
+}
+
+/// Generate restXml server code for `model`.
+pub fn generate_rest_xml(model: &Model, options: &RestXmlOptions) -> String {
+    rest_xml::generate(model, options)
+}
+
+/// Build-script helper for restXml services; see [`build_aws_query`].
+pub fn build_rest_xml(model_path: impl AsRef<Path>, out_name: &str, options: RestXmlOptions) {
+    let model_path = model_path.as_ref();
+    println!("cargo:rerun-if-changed={}", model_path.display());
+    let model =
+        Model::load(model_path).unwrap_or_else(|e| panic!("loading Smithy model {}: {e}", model_path.display()));
+    let code = generate_rest_xml(&model, &options);
     let out = PathBuf::from(std::env::var("OUT_DIR").expect("OUT_DIR is set by cargo")).join(out_name);
     std::fs::write(&out, code).unwrap_or_else(|e| panic!("writing {}: {e}", out.display()));
 }

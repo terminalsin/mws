@@ -1,0 +1,18 @@
+[package]
+name = "mws-proto-restxml"
+description = "Runtime for the restXml protocol (HTTP-bound requests, XML bodies) used by Route 53 and other REST/XML services."
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+async-trait.workspace = true
+base64.workspace = true
+bytes.workspace = true
+chrono.workspace = true
+form_urlencoded.workspace = true
+http.workspace = true
+mws-core.workspace = true
+mws-xml.workspace = true
+percent-encoding.workspace = true
+regex.workspace = true
