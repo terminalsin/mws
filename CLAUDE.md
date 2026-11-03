@@ -31,7 +31,7 @@ override only) see the same behaviour as real AWS. Fidelity beats breadth.
 2. Generate in `build.rs` with the protocol's codegen entry point (add a new
    `mws-proto-<protocol>` runtime + codegen module if the protocol is new).
    Protocols so far: `build_aws_query` (IAM, STS), `build_rest_xml`
-   (Route 53, S3) and `build_aws_json` (ACM PCA, KMS). Pass the service's validation
+   (Route 53, S3) and `build_aws_json` (ACM PCA, KMS, CloudWatch Logs). Pass the service's validation
    error code in the options (`InvalidInput`, `ValidationException`, ...).
    The restXml generator panics on bindings it does not support yet; extend
    it rather than working around it in the service.

@@ -108,6 +108,12 @@ impl Lambda {
             }
         }
         let env = self.environment(ctx, f, config, &executed_version)?;
+        let log_target = (
+            env.get("AWS_LAMBDA_LOG_GROUP_NAME").cloned(),
+            env.get("AWS_LAMBDA_LOG_STREAM_NAME").cloned(),
+            env.get("AWS_ACCESS_KEY_ID").cloned(),
+            env.get("AWS_SESSION_TOKEN").cloned(),
+        );
         let timeout = config.timeout.unwrap_or(crate::functions::DEFAULT_TIMEOUT).max(1) as u64;
         let spec = LaunchSpec {
             pool_key: format!("{}:{executed_version}:{}", f.arn(), config.revision_id.clone().unwrap_or_default()),
@@ -127,7 +133,12 @@ impl Lambda {
             client_context,
         };
         match self.inner.runtimes.invoke(&spec, job, reserved).await {
-            Ok(outcome) => Ok(Ran { outcome, executed_version }),
+            Ok(outcome) => {
+                if let (Some(group), Some(stream), Some(key), token) = log_target {
+                    self.deliver_logs(ctx, &group, &stream, &key, token.as_deref(), &outcome.logs);
+                }
+                Ok(Ran { outcome, executed_version })
+            }
             Err(LaunchError::Throttled) => Err(throttled()),
             Err(LaunchError::Unsupported(m)) => Err(errors::service(m)),
             Err(LaunchError::Io(m)) => Err(errors::service(format!("Starting the execution environment failed: {m}"))),
@@ -205,6 +216,37 @@ impl Lambda {
             env.insert("AWS_SESSION_TOKEN".into(), creds.session_token);
         }
         Ok(env)
+    }
+
+    /// Write an invocation's log lines to CloudWatch Logs as the execution
+    /// role. Like AWS, a role without logging permissions loses the logs
+    /// without failing the invocation.
+    fn deliver_logs(
+        &self,
+        ctx: &RequestContext,
+        group: &str,
+        stream: &str,
+        access_key_id: &str,
+        session_token: Option<&str>,
+        logs: &str,
+    ) {
+        let (Some(sink), Some(sts)) = (self.inner.logs.get(), &self.inner.sts) else { return };
+        let Ok(Some(resolved)) = sts.credential_store().resolve(access_key_id, session_token, ctx.received_at) else {
+            return;
+        };
+        let role_ctx = RequestContext { caller: resolved.caller, source_ip: None, ..ctx.clone() };
+        let now = chrono::Utc::now().timestamp_millis().max(ctx.received_at.timestamp_millis());
+        let events = logs
+            .lines()
+            .filter(|l| !l.is_empty())
+            .map(|l| mws_logs::ServiceLogEvent { timestamp: now, message: format!("{l}\n") })
+            .collect::<Vec<_>>();
+        if events.is_empty() {
+            return;
+        }
+        if let Err(e) = sink.put_log_events_as_caller(&role_ctx, group, stream, events) {
+            tracing::debug!(%group, %stream, error = %e.message, "function logs not delivered");
+        }
     }
 
     /// Authorize and run a synchronous invocation as `ctx`'s caller,

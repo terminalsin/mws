@@ -220,6 +220,29 @@ pub fn json_response(info: &ServiceInfo, request_id: &str, status: u16, body: Op
         .expect("static response parts are valid")
 }
 
+/// What a generated operation produces: a JSON document, or the bytes of
+/// an `application/vnd.amazon.eventstream` body.
+#[derive(Debug)]
+pub enum Reply {
+    Json(Value),
+    EventStream(Vec<u8>),
+}
+
+/// A streaming output: an `initial-response` event carrying the output's
+/// other (here: no) members, as awsJson services send first, then `body`'s
+/// events.
+pub fn event_stream_response(info: &ServiceInfo, request_id: &str, body: Vec<u8>) -> HttpResponse {
+    let _ = info;
+    let mut stream = mws_core::eventstream::event("initial-response", Some("application/json"), b"{}");
+    stream.extend(body);
+    http::Response::builder()
+        .status(200)
+        .header(http::header::CONTENT_TYPE, "application/vnd.amazon.eventstream")
+        .header("x-amzn-RequestId", request_id)
+        .body(Bytes::from(stream))
+        .expect("static response parts are valid")
+}
+
 pub fn error_response(info: &ServiceInfo, request_id: &str, error: &ServiceError) -> HttpResponse {
     // JSON-protocol services name the authorization failure
     // `AccessDeniedException`; the shared authorizer says `AccessDenied`.

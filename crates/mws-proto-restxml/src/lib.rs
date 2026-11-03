@@ -9,7 +9,7 @@
 //! Spec: <https://smithy.io/2.0/aws/protocols/aws-restxml-protocol.html>
 
 mod decode;
-pub mod eventstream;
+pub use mws_core::eventstream;
 mod route;
 
 pub use decode::{attr, child, children, elements, prefix_headers, Decoder};

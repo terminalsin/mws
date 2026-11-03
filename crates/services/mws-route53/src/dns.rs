@@ -26,7 +26,7 @@ pub async fn serve(route53: Route53, socket: tokio::net::UdpSocket) {
     let mut buf = [0u8; 1500];
     loop {
         let Ok((n, peer)) = socket.recv_from(&mut buf).await else { continue };
-        if let Some(reply) = answer(&route53, &buf[..n]) {
+        if let Some(reply) = answer_from(&route53, &buf[..n], Some(peer.ip())) {
             let _ = socket.send_to(&reply, peer).await;
         }
     }
@@ -34,6 +34,12 @@ pub async fn serve(route53: Route53, socket: tokio::net::UdpSocket) {
 
 /// Build the response to one DNS query message.
 pub fn answer(route53: &Route53, query: &[u8]) -> Option<Vec<u8>> {
+    answer_from(route53, query, None)
+}
+
+/// Like [`answer`], for a query from `resolver`, which goes in the zone's
+/// query log when it has a query logging configuration.
+pub fn answer_from(route53: &Route53, query: &[u8], resolver: Option<std::net::IpAddr>) -> Option<Vec<u8>> {
     if query.len() < 12 {
         return None;
     }
@@ -95,6 +101,24 @@ pub fn answer(route53: &Route53, query: &[u8]) -> Option<Vec<u8>> {
                 }
             }
         }
+    }
+
+    if let Some((zone_name, _)) = zone {
+        let rcode_name = match rcode {
+            0 => "NOERROR",
+            3 => "NXDOMAIN",
+            _ => "REFUSED",
+        };
+        let qtype_name = type_name(qtype).map(str::to_string).unwrap_or_else(|| format!("TYPE{qtype}"));
+        let resolver = resolver.map(|ip| ip.to_string()).unwrap_or_else(|| "-".into());
+        route53.log_query(zone_name, |zone_id| {
+            format!(
+                "1.0 {} {zone_id} {} {qtype_name} {rcode_name} UDP {} {resolver} -",
+                chrono::Utc::now().format("%Y-%m-%dT%H:%M:%S%.3fZ"),
+                names::bare(&qname),
+                crate::query_logging::EDGE_LOCATION,
+            )
+        });
     }
 
     let mut out = Vec::with_capacity(512);

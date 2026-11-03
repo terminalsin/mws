@@ -17,6 +17,7 @@ aws-sdk-organizations = "1"
 aws-sdk-s3 = { version = "1", features = ["behavior-version-latest"] }
 aws-sdk-s3control = "1"
 aws-sdk-lambda = "1"
+aws-sdk-cloudwatchlogs = "1"
 aws-smithy-http-client = { version = "1", features = ["rustls-aws-lc"] }
 aws-smithy-runtime-api = { version = "1", features = ["client"] }
 zip.workspace = true

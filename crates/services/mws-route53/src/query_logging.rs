@@ -1,5 +1,7 @@
-//! DNS query logging configurations. MWS records the configuration; it has
-//! no CloudWatch Logs to write to.
+//! DNS query logging configurations. The log group must exist in
+//! CloudWatch Logs and its resource policy must let `route53.amazonaws.com`
+//! write to it; the DNS responder then logs every query it answers for the
+//! zone, in the Route 53 query log format.
 
 use mws_core::{RequestContext, ServiceError};
 
@@ -32,7 +34,69 @@ fn check_log_group(log_group_arn: &str) -> Result<(), ServiceError> {
     Ok(())
 }
 
+/// Where one zone's query logs go.
+pub(crate) struct LogTarget {
+    partition: String,
+    account: String,
+    region: String,
+    group: String,
+    zone_id: String,
+    source_arn: String,
+}
+
+/// Route 53 names a stream after the zone and the edge location that
+/// answered; MWS answers from one place.
+pub(crate) const EDGE_LOCATION: &str = "MWS1";
+
+impl LogTarget {
+    /// `arn` has passed [`check_log_group`].
+    pub(crate) fn parse(arn: &str, zone_id: &str) -> Self {
+        let parts: Vec<&str> = arn.splitn(7, ':').collect();
+        let group = parts.get(6).copied().unwrap_or_default();
+        LogTarget {
+            partition: parts.get(1).copied().unwrap_or("aws").to_string(),
+            region: parts.get(3).copied().unwrap_or_default().to_string(),
+            account: parts.get(4).copied().unwrap_or_default().to_string(),
+            group: group.strip_suffix(":*").unwrap_or(group).to_string(),
+            zone_id: zone_id.to_string(),
+            source_arn: format!("arn:{}:route53:::hostedzone/{zone_id}", parts.get(1).copied().unwrap_or("aws")),
+        }
+    }
+
+    pub(crate) fn writer(&self) -> mws_logs::ServiceLogWriter<'_> {
+        mws_logs::ServiceLogWriter {
+            partition: &self.partition,
+            account: &self.account,
+            region: &self.region,
+            log_group: &self.group,
+            service_principal: "route53.amazonaws.com",
+            source_account: &self.account,
+            source_arn: &self.source_arn,
+        }
+    }
+
+    pub(crate) fn stream(&self) -> String {
+        format!("{}/{EDGE_LOCATION}", self.zone_id)
+    }
+}
+
 impl Route53 {
+    /// Write one query log line for an answered query, if the zone has a
+    /// query logging configuration. Delivery failures are dropped, as in
+    /// AWS.
+    pub(crate) fn log_query(&self, zone_name: &str, line: impl FnOnce(&str) -> String) {
+        let Some(logs) = &self.logs else { return };
+        let target = {
+            let st = self.lock();
+            let Some(zone) = st.zones.values().find(|z| z.name == zone_name && !z.private) else { return };
+            let Some(cfg) = st.query_logging.values().find(|q| q.hosted_zone_id == zone.id) else { return };
+            LogTarget::parse(&cfg.cloud_watch_logs_log_group_arn, &zone.id)
+        };
+        let now = chrono::Utc::now();
+        let event = mws_logs::ServiceLogEvent { timestamp: now.timestamp_millis(), message: line(&target.zone_id) };
+        let _ = logs.put_log_events_as_service(&target.writer(), &target.stream(), vec![event], now.timestamp_millis());
+    }
+
     pub(crate) fn create_query_logging_config(
         &self,
         ctx: &RequestContext,
@@ -41,6 +105,17 @@ impl Route53 {
         let zone_id = strip_id(&input.hosted_zone_id).to_string();
         self.authorize(ctx, "CreateQueryLoggingConfig", &arn(ctx, "hostedzone", &zone_id))?;
         check_log_group(&input.cloud_watch_logs_log_group_arn)?;
+        if let Some(logs) = &self.logs {
+            let target = LogTarget::parse(&input.cloud_watch_logs_log_group_arn, &zone_id);
+            logs.check_service_access(&target.writer(), &target.stream()).map_err(|e| match e {
+                mws_logs::ServiceLogError::NoSuchLogGroup => errors::no_such_cloud_watch_logs_log_group(
+                    "The specified CloudWatch Logs log group doesn't exist.",
+                ),
+                _ => errors::insufficient_cloud_watch_logs_resource_policy(
+                    "The resource policy that you're using for Route 53 query logging doesn't grant Route 53 sufficient permission to create a log stream in the specified log group.",
+                ),
+            })?;
+        }
         let mut st = self.lock();
         if st.zone(&zone_id)?.private {
             return Err(errors::invalid_input(

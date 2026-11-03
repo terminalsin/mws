@@ -47,6 +47,9 @@ pub struct Route53 {
     /// KMS, for DNSSEC key-signing keys. Without it, KSKs get a key pair of
     /// their own and the KMS key ARN is only checked for shape.
     kms: Option<mws_kms::Kms>,
+    /// CloudWatch Logs, where query logging configurations send the DNS
+    /// queries the responder answers.
+    logs: Option<mws_logs::Logs>,
 }
 
 impl Route53 {
@@ -58,6 +61,13 @@ impl Route53 {
     /// does.
     pub fn with_kms(mut self, kms: mws_kms::Kms) -> Self {
         self.kms = Some(kms);
+        self
+    }
+
+    /// Check query logging log groups in, and write query logs to,
+    /// CloudWatch Logs, as Route 53 does.
+    pub fn with_logs(mut self, logs: mws_logs::Logs) -> Self {
+        self.logs = Some(logs);
         self
     }
 

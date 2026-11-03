@@ -397,6 +397,25 @@ async fn query_logging_vpc_authorizations_and_features() {
     let public = r53.create_hosted_zone().name("logs.example.com").caller_reference("ql").send().await.unwrap();
     let public_id = public.hosted_zone().unwrap().id().trim_start_matches("/hostedzone/").to_string();
     let group = "arn:aws:logs:us-east-1:123456789012:log-group:/aws/route53/logs.example.com";
+    // The log group must exist and let Route 53 write to it.
+    let logs = aws_sdk_cloudwatchlogs::Client::new(&mws.root_sdk_config().await);
+    let attempt =
+        || r53.create_query_logging_config().hosted_zone_id(&public_id).cloud_watch_logs_log_group_arn(group).send();
+    assert_eq!(code(attempt().await.unwrap_err().into_service_error()), "NoSuchCloudWatchLogsLogGroup");
+    logs.create_log_group().log_group_name("/aws/route53/logs.example.com").send().await.unwrap();
+    assert_eq!(code(attempt().await.unwrap_err().into_service_error()), "InsufficientCloudWatchLogsResourcePolicy");
+    let policy = serde_json::json!({
+        "Version": "2012-10-17",
+        "Statement": [{"Effect": "Allow", "Principal": {"Service": "route53.amazonaws.com"},
+                       "Action": ["logs:CreateLogStream", "logs:PutLogEvents"],
+                       "Resource": "arn:aws:logs:us-east-1:123456789012:log-group:/aws/route53/*"}]
+    });
+    logs.put_resource_policy()
+        .policy_name("route53-query-logging")
+        .policy_document(policy.to_string())
+        .send()
+        .await
+        .unwrap();
     let cfg = r53
         .create_query_logging_config()
         .hosted_zone_id(&public_id)

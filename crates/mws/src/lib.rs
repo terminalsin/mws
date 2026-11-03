@@ -8,6 +8,7 @@ use mws_core::Environment;
 use mws_iam::{Iam, IamConfig};
 use mws_kms::Kms;
 use mws_lambda::Lambda;
+use mws_logs::Logs;
 use mws_organizations::Organizations;
 use mws_route53::Route53;
 use mws_s3::S3;
@@ -59,6 +60,7 @@ pub struct Mws {
     pub s3: S3,
     pub s3control: S3Control,
     pub lambda: Lambda,
+    pub logs: Logs,
 }
 
 /// Build the gateway with every service MWS emulates.
@@ -106,12 +108,14 @@ fn build_with_store(config: Config, store: Option<Arc<Store>>) -> Mws {
         Sts::new(iam.clone())
     };
     let kms = Kms::new();
-    let route53 = Route53::new().with_kms(kms.clone());
     let organizations = Organizations::new(iam.clone());
     iam.set_organizations(organizations.view());
     let s3 = S3::new().with_kms(kms.clone());
+    let logs = Logs::new().with_s3(s3.clone()).with_kms(kms.clone());
+    let route53 = Route53::new().with_kms(kms.clone()).with_logs(logs.clone());
     let s3control = S3Control::for_s3(s3.clone());
     let lambda = Lambda::with_services(sts.clone(), s3.clone());
+    lambda.set_logs(logs.clone());
     s3.set_object_lambda_invoker(Arc::new(lambda.clone()));
     let mut gateway = Gateway::builder();
     if let Some(store) = store {
@@ -135,6 +139,7 @@ fn build_with_store(config: Config, store: Option<Arc<Store>>) -> Mws {
         .service(Arc::new(s3control.clone()))
         .service(Arc::new(s3.clone()))
         .service(Arc::new(lambda.clone()))
+        .service(Arc::new(logs.clone()))
         .build();
-    Mws { gateway, route53, kms, s3, s3control, lambda }
+    Mws { gateway, route53, kms, s3, s3control, lambda, logs }
 }
