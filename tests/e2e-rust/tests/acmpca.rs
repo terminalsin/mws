@@ -91,7 +91,7 @@ async fn active_root(pca: &Client) -> (String, String) {
 
 fn leaf_csr(cn: &str) -> String {
     let key = rcgen::KeyPair::generate_for(&rcgen::PKCS_ECDSA_P256_SHA256).unwrap();
-    let mut params = rcgen::CertificateParams::new(vec![format!("{cn}"), "alt.example.test".into()]).unwrap();
+    let mut params = rcgen::CertificateParams::new(vec![cn.to_string(), "alt.example.test".into()]).unwrap();
     params.distinguished_name.push(rcgen::DnType::CommonName, cn);
     params.serialize_request(&key).unwrap().pem().unwrap()
 }
