@@ -107,4 +107,27 @@ impl Service for Route53 {
     fn render_error(&self, request_id: &str, error: &ServiceError) -> HttpResponse {
         mws_proto_restxml::error_response(&generated::SERVICE_INFO, request_id, error)
     }
+    async fn invoke(
+        &self,
+        ctx: RequestContext,
+        operation: &str,
+        input: serde_json::Value,
+    ) -> Result<serde_json::Value, ServiceError> {
+        generated::invoke(self, &ctx, operation, input).await
+    }
+
+    fn export_state(&self) -> Option<serde_json::Value> {
+        let state = self.lock().clone();
+        Some(serde_json::to_value(state).expect("Route 53 state serializes"))
+    }
+
+    fn import_state(&self, state: serde_json::Value) -> Result<(), String> {
+        let state: State = serde_json::from_value(state).map_err(|e| format!("invalid Route 53 state: {e}"))?;
+        *self.lock() = state;
+        Ok(())
+    }
+
+    fn reset_state(&self) {
+        *self.lock() = State::default();
+    }
 }

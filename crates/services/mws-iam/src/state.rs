@@ -6,10 +6,11 @@
 use std::collections::{BTreeMap, BTreeSet};
 
 use chrono::{DateTime, Utc};
+use serde::{Deserialize, Serialize};
 
 pub type Tags = Vec<(String, String)>;
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct User {
     pub name: String,
     pub path: String,
@@ -25,14 +26,14 @@ pub struct User {
     pub password_last_used: Option<DateTime<Utc>>,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct LoginProfile {
     pub created: DateTime<Utc>,
     pub password: String,
     pub reset_required: bool,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Group {
     pub name: String,
     pub path: String,
@@ -45,7 +46,7 @@ pub struct Group {
     pub members: BTreeSet<String>,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Role {
     pub name: String,
     pub path: String,
@@ -62,14 +63,14 @@ pub struct Role {
     pub last_used: Option<(DateTime<Utc>, String)>,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct PolicyVersion {
     pub id: String,
     pub document: String,
     pub created: DateTime<Utc>,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ManagedPolicy {
     pub name: String,
     pub path: String,
@@ -92,7 +93,7 @@ impl ManagedPolicy {
     }
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct InstanceProfile {
     pub name: String,
     pub path: String,
@@ -104,7 +105,7 @@ pub struct InstanceProfile {
     pub tags: Tags,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct OidcProvider {
     pub arn: String,
     /// Without the `https://` scheme, as IAM stores it.
@@ -115,7 +116,7 @@ pub struct OidcProvider {
     pub tags: Tags,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct AccessKey {
     pub id: String,
     pub secret: String,
@@ -126,7 +127,8 @@ pub struct AccessKey {
     pub last_used: Option<(DateTime<Utc>, String, String)>,
 }
 
-#[derive(Debug, Default)]
+#[derive(Debug, Default, Clone, Serialize, Deserialize)]
+#[serde(default)]
 pub struct State {
     pub users: BTreeMap<String, User>,
     pub groups: BTreeMap<String, Group>,

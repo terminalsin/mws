@@ -22,7 +22,7 @@ use mws_core::{Caller, HttpRequest, HttpResponse, RequestContext, Service, Servi
 use mws_iam::Iam;
 
 /// An issued set of temporary credentials.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub(crate) struct Session {
     pub secret_access_key: String,
     pub session_token: String,
@@ -76,5 +76,42 @@ impl Service for Sts {
     fn accepts_unsigned(&self, request: &HttpRequest) -> bool {
         let params = mws_proto_query::read_params(request);
         params.get("Action").is_some_and(|a| UNSIGNED_ACTIONS.contains(&a))
+    }
+
+    async fn invoke(
+        &self,
+        ctx: RequestContext,
+        operation: &str,
+        input: serde_json::Value,
+    ) -> Result<serde_json::Value, ServiceError> {
+        generated::invoke(self, &ctx, operation, input).await
+    }
+
+    /// Issued temporary credentials, so sessions survive a restart.
+    fn export_state(&self) -> Option<serde_json::Value> {
+        let sessions = self.sessions().clone();
+        let sessions: std::collections::BTreeMap<_, _> = sessions.into_iter().collect();
+        Some(serde_json::json!({ "sessions": sessions }))
+    }
+
+    fn import_state(&self, state: serde_json::Value) -> Result<(), String> {
+        #[derive(serde::Deserialize, Default)]
+        #[serde(default)]
+        struct Saved {
+            sessions: HashMap<String, Session>,
+        }
+        let saved: Saved = serde_json::from_value(state).map_err(|e| format!("invalid STS state: {e}"))?;
+        *self.sessions() = saved.sessions;
+        Ok(())
+    }
+
+    fn reset_state(&self) {
+        self.sessions().clear();
+    }
+}
+
+impl Sts {
+    fn sessions(&self) -> std::sync::MutexGuard<'_, HashMap<String, Session>> {
+        self.inner.sessions.lock().expect("STS session lock poisoned")
     }
 }

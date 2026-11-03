@@ -5,7 +5,7 @@ use chrono::{DateTime, Utc};
 use crate::ServiceError;
 
 /// The authenticated identity behind a request.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct Caller {
     pub account_id: String,
     /// The principal ARN as `sts:GetCallerIdentity` would report it.
@@ -19,7 +19,7 @@ pub struct Caller {
 }
 
 /// How temporary credentials were obtained.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub enum SessionKind {
     AssumeRole,
     AssumeRoleWithWebIdentity,
@@ -28,7 +28,7 @@ pub enum SessionKind {
 }
 
 /// Facts about a temporary-credential session that affect authorization.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct SessionInfo {
     pub kind: SessionKind,
     /// Session policy documents (inline and resolved managed ones). Empty
@@ -44,7 +44,7 @@ pub struct SessionInfo {
     pub mfa_authenticated: bool,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub enum CallerKind {
     Root,
     User {

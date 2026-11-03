@@ -1,10 +1,11 @@
 use std::collections::{BTreeMap, HashMap};
 
 use chrono::{DateTime, Utc};
+use serde::{Deserialize, Serialize};
 
 use crate::generated::types;
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct IssuedCert {
     pub pem: String,
     pub revoked: Option<(String, DateTime<Utc>)>,
@@ -33,7 +34,7 @@ pub struct AuditReport {
     pub body: Vec<u8>,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Ca {
     pub arn: String,
     pub owner: String,
@@ -68,7 +69,8 @@ pub struct Ca {
     pub audit_reports: BTreeMap<String, AuditReport>,
 }
 
-#[derive(Debug, Default)]
+#[derive(Debug, Default, Clone, Serialize, Deserialize)]
+#[serde(default)]
 pub struct State {
     pub cas: BTreeMap<String, Ca>,
     pub create_tokens: HashMap<String, String>,

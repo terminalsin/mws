@@ -10,6 +10,7 @@ members = [
     "crates/mws-proto-json",
     "crates/mws-xml",
     "crates/mws-server",
+    "crates/mws-store",
     "crates/mws",
     "crates/services/mws-iam",
     "crates/services/mws-iam-policy",
@@ -36,6 +37,7 @@ mws-proto-restxml = { path = "crates/mws-proto-restxml" }
 mws-proto-json = { path = "crates/mws-proto-json" }
 mws-xml = { path = "crates/mws-xml" }
 mws-server = { path = "crates/mws-server" }
+mws-store = { path = "crates/mws-store" }
 mws = { path = "crates/mws" }
 mws-iam = { path = "crates/services/mws-iam" }
 mws-iam-policy = { path = "crates/services/mws-iam-policy" }
@@ -48,7 +50,7 @@ async-trait = "0.1"
 aws-lc-rs = "1"
 base64 = "0.22"
 bytes = "1"
-chrono = { version = "0.4", default-features = false, features = ["clock", "std"] }
+chrono = { version = "0.4", default-features = false, features = ["clock", "std", "serde"] }
 form_urlencoded = "1"
 hex = "0.4"
 hmac = "0.12"
@@ -62,6 +64,7 @@ rcgen = { version = "0.13", default-features = false, features = ["aws_lc_rs", "
 regex = "1"
 rustls-pki-types = "1"
 roxmltree = "0.20"
+rusqlite = { version = "0.37", features = ["bundled"] }
 serde = { version = "1", features = ["derive"] }
 serde_json = { version = "1", features = ["preserve_order"] }
 sha2 = "0.10"

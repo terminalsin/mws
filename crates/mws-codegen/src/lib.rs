@@ -14,6 +14,7 @@
 
 mod common;
 mod json;
+mod json_codec;
 mod naming;
 mod query;
 mod regex_compat;

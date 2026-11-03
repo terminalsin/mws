@@ -1,0 +1,11 @@
+[package]
+name = "mws-store"
+description = "Optional on-disk persistence for MWS: a SQLite file holding each service's state as an opaque JSON document, plus named snapshots. Knows no service by name."
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+chrono.workspace = true
+rusqlite.workspace = true
+thiserror.workspace = true

@@ -14,14 +14,15 @@ http.workspace = true
 percent-encoding.workspace = true
 chrono.workspace = true
 mws-core.workspace = true
+mws-iam-policy.workspace = true
 mws-proto-json.workspace = true
 rand.workspace = true
 rcgen.workspace = true
 rustls-pki-types.workspace = true
+serde.workspace = true
 serde_json.workspace = true
 time.workspace = true
 uuid.workspace = true
-mws-iam-policy.workspace = true
 x509-parser.workspace = true
 
 [build-dependencies]

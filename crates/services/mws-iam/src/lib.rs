@@ -67,7 +67,7 @@ impl Iam {
     pub fn new(config: IamConfig) -> Self {
         let iam =
             Self { inner: Arc::new(Inner { config, created_at: Utc::now(), state: RwLock::new(State::default()) }) };
-        iam.seed_aws_managed_policies();
+        iam.reset_state();
         iam
     }
 
@@ -107,5 +107,32 @@ impl Service for Iam {
 
     fn render_error(&self, request_id: &str, error: &ServiceError) -> HttpResponse {
         mws_proto_query::error_response(&generated::SERVICE_INFO, request_id, error)
+    }
+
+    async fn invoke(
+        &self,
+        ctx: RequestContext,
+        operation: &str,
+        input: serde_json::Value,
+    ) -> Result<serde_json::Value, ServiceError> {
+        generated::invoke(self, &ctx, operation, input).await
+    }
+
+    fn export_state(&self) -> Option<serde_json::Value> {
+        let state = self.read().clone();
+        Some(serde_json::to_value(state).expect("IAM state serializes"))
+    }
+
+    fn import_state(&self, state: serde_json::Value) -> Result<(), String> {
+        let mut state: State = serde_json::from_value(state).map_err(|e| format!("invalid IAM state: {e}"))?;
+        self.seed_aws_managed_policies(&mut state);
+        *self.write() = state;
+        Ok(())
+    }
+
+    fn reset_state(&self) {
+        let mut state = State::default();
+        self.seed_aws_managed_policies(&mut state);
+        *self.write() = state;
     }
 }

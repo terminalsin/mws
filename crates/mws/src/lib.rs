@@ -1,17 +1,23 @@
 //! Composition root. This is the only crate that knows which services exist.
 
+use std::path::PathBuf;
 use std::sync::Arc;
 
 use mws_acmpca::PrivateCa;
 use mws_core::Environment;
 use mws_iam::{Iam, IamConfig};
 use mws_route53::Route53;
-use mws_server::Gateway;
+use mws_server::{Gateway, Scenario, Store};
 use mws_sts::Sts;
 
 #[derive(Debug, Clone, Default)]
 pub struct Config {
     pub iam: IamConfig,
+    /// SQLite file to persist state in (`MWS_DB`). In-memory when unset.
+    pub db: Option<PathBuf>,
+    /// Scenario file applied at startup and used as the reset baseline
+    /// (`MWS_SCENARIO`).
+    pub scenario: Option<PathBuf>,
 }
 
 impl Config {
@@ -28,7 +34,8 @@ impl Config {
         if let Ok(v) = std::env::var("MWS_ROOT_SECRET_ACCESS_KEY") {
             iam.root_secret_access_key = v;
         }
-        Self { iam }
+        let path = |var: &str| std::env::var_os(var).filter(|v| !v.is_empty()).map(PathBuf::from);
+        Self { iam, db: path("MWS_DB"), scenario: path("MWS_SCENARIO") }
     }
 }
 
@@ -44,12 +51,48 @@ pub fn build_gateway(config: Config) -> Gateway {
     build(config).gateway
 }
 
-/// Build every service and the gateway in front of them.
+/// Build every service and the gateway in front of them, in memory and
+/// without running a scenario. [`start`] honours `db` and `scenario`.
 pub fn build(config: Config) -> Mws {
+    build_with_store(config, None)
+}
+
+/// Build MWS as `config` describes: open the state database if one is
+/// configured, restore saved state or run the scenario, and set the reset
+/// baseline.
+pub async fn start(config: Config) -> Result<Mws, String> {
+    let scenario_source = match &config.scenario {
+        Some(path) => std::fs::read_to_string(path).map_err(|e| format!("reading scenario {}: {e}", path.display()))?,
+        None => String::new(),
+    };
+    let scenario = match &config.scenario {
+        Some(path) => Some(Scenario::parse(&scenario_source).map_err(|e| format!("{}: {e}", path.display()))?),
+        None => None,
+    };
+    let store = match &config.db {
+        Some(path) => {
+            if let Some(dir) = path.parent().filter(|d| !d.as_os_str().is_empty()) {
+                std::fs::create_dir_all(dir).map_err(|e| format!("creating {}: {e}", dir.display()))?;
+            }
+            Some(Arc::new(Store::open(path).map_err(|e| format!("{}: {e}", path.display()))?))
+        }
+        None => None,
+    };
+    let mws = build_with_store(config, store);
+    mws.gateway.initialize_state(scenario.as_ref(), &scenario_source).await?;
+    Ok(mws)
+}
+
+fn build_with_store(config: Config, store: Option<Arc<Store>>) -> Mws {
     let iam = Iam::new(config.iam.clone());
     let sts = Sts::new(iam.clone());
     let route53 = Route53::new();
-    let gateway = Gateway::builder()
+    let mut gateway = Gateway::builder();
+    if let Some(store) = store {
+        gateway = gateway.store(store);
+    }
+    let gateway = gateway
+        .scenario_principal(config.iam.root_access_key_id.clone())
         .environment(Environment { partition: config.iam.partition.clone(), ..Environment::default() })
         .authorizer(iam.authorizer())
         .credentials(iam.credential_store())

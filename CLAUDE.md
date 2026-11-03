@@ -31,7 +31,12 @@ override only) see the same behaviour as real AWS. Fidelity beats breadth.
    error code in the options (`InvalidInput`, `ValidationException`, ...).
    The restXml generator panics on bindings it does not support yet; extend
    it rather than working around it in the service.
-3. Implement the generated `Handler` and `mws_core::Service`.
+3. Implement the generated `Handler` and `mws_core::Service`, including
+   `invoke` (forward to `generated::invoke`, which lets scenario files call
+   the service) and, if the service keeps state, `export_state`,
+   `import_state` and `reset_state`. State types derive serde and use
+   `#[serde(default)]` so older saved state still loads; maps with non-string
+   keys need a custom (de)serializer.
 4. Register it in `crates/mws/src/lib.rs`.
 
 ## Checks

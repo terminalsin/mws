@@ -1,0 +1,17 @@
+{
+  "description": "A small account: a deploy user and role, a hosted zone with records, and a private root CA.",
+  "steps": [
+    {"service": "iam", "action": "CreateUser", "input": {"UserName": "deployer", "Tags": [{"Key": "team", "Value": "platform"}]}},
+    {"service": "iam", "action": "PutUserPolicy", "input": {"UserName": "deployer", "PolicyName": "route53", "PolicyDocument": "{\"Version\":\"2012-10-17\",\"Statement\":[{\"Effect\":\"Allow\",\"Action\":\"route53:*\",\"Resource\":\"*\"}]}"}},
+    {"id": "deployerKey", "service": "iam", "action": "CreateAccessKey", "input": {"UserName": "deployer"}},
+    {"service": "iam", "action": "CreateRole", "input": {"RoleName": "app", "AssumeRolePolicyDocument": "{\"Version\":\"2012-10-17\",\"Statement\":[{\"Effect\":\"Allow\",\"Principal\":{\"AWS\":\"arn:aws:iam::123456789012:root\"},\"Action\":\"sts:AssumeRole\"}]}"}},
+    {"service": "iam", "action": "AttachRolePolicy", "input": {"RoleName": "app", "PolicyArn": "arn:aws:iam::aws:policy/ReadOnlyAccess"}},
+    {"id": "zone", "service": "route53", "action": "CreateHostedZone", "input": {"Name": "example.internal", "CallerReference": "scenario-zone"}},
+    {"service": "route53", "action": "ChangeResourceRecordSets", "input": {"HostedZoneId": "${zone.HostedZone.Id|basename}", "ChangeBatch": {"Changes": [{"Action": "CREATE", "ResourceRecordSet": {"Name": "api.example.internal", "Type": "A", "TTL": 60, "ResourceRecords": [{"Value": "10.0.0.10"}]}}]}}},
+    {"id": "ca", "service": "acm-pca", "action": "CreateCertificateAuthority", "input": {"CertificateAuthorityType": "ROOT", "CertificateAuthorityConfiguration": {"KeyAlgorithm": "EC_prime256v1", "SigningAlgorithm": "SHA256WITHECDSA", "Subject": {"CommonName": "Example Internal Root CA"}}}},
+    {"id": "csr", "service": "acm-pca", "action": "GetCertificateAuthorityCsr", "input": {"CertificateAuthorityArn": "${ca.CertificateAuthorityArn}"}},
+    {"id": "rootCert", "service": "acm-pca", "action": "IssueCertificate", "input": {"CertificateAuthorityArn": "${ca.CertificateAuthorityArn}", "Csr": "${csr.Csr|base64}", "SigningAlgorithm": "SHA256WITHECDSA", "TemplateArn": "arn:aws:acm-pca:::template/RootCACertificate/V1", "Validity": {"Type": "YEARS", "Value": 10}, "IdempotencyToken": "scenario-root"}},
+    {"id": "rootPem", "service": "acm-pca", "action": "GetCertificate", "input": {"CertificateAuthorityArn": "${ca.CertificateAuthorityArn}", "CertificateArn": "${rootCert.CertificateArn}"}},
+    {"service": "acm-pca", "action": "ImportCertificateAuthorityCertificate", "input": {"CertificateAuthorityArn": "${ca.CertificateAuthorityArn}", "Certificate": "${rootPem.Certificate|base64}"}}
+  ]
+}

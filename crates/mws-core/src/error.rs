@@ -102,6 +102,11 @@ impl ServiceError {
         Self::server("NotImplemented", 501, format!("MWS does not implement the {operation} operation yet."))
     }
 
+    /// An operation name the service's model does not define.
+    pub fn unknown_operation(operation: &str) -> Self {
+        Self::client("UnknownOperation", 400, format!("The service has no operation named {operation}."))
+    }
+
     pub fn internal(message: impl Into<String>) -> Self {
         Self::server("InternalFailure", 500, message)
     }
