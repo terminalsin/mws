@@ -58,9 +58,24 @@ pub fn match_uri(pattern: &'static str, path: &str, query: &Query) -> Option<Lab
         }
     }
     let pat_segs: Vec<&'static str> = path_pat.trim_start_matches('/').split('/').collect();
-    // Older SDK models (botocore's Route 53) add a trailing slash; AWS
-    // routes both spellings the same.
-    let path = path.trim_start_matches('/').trim_end_matches('/');
+    let path = path.trim_start_matches('/');
+    // A trailing slash is significant to a greedy label (`dir/` is its own
+    // S3 key). Otherwise older SDK models (botocore's Route 53) add one that
+    // AWS ignores, so retry without it.
+    match_segments(&pat_segs, path).or_else(|| {
+        let trimmed = path.trim_end_matches('/');
+        (trimmed.len() != path.len()).then(|| match_segments(&pat_segs, trimmed)).flatten()
+    })
+}
+
+/// Whether an optional routing hint in the query (a literal such as
+/// `x-id=GetObject` that some SDKs send and others omit) is absent or names
+/// `value`.
+pub fn hint_matches(query: &Query, key: &str, value: &str) -> bool {
+    query.get(key).is_none_or(|v| v == value)
+}
+
+fn match_segments(pat_segs: &[&'static str], path: &str) -> Option<Labels> {
     let path_segs: Vec<&str> = if path.is_empty() { vec![""] } else { path.split('/').collect() };
     let mut labels = Labels::new();
     let mut i = 0;
@@ -116,6 +131,10 @@ mod tests {
         assert_eq!(l["Key"], "a/b c");
         assert!(match_uri("/b/{Id}", "/b/", &q).is_none());
         assert!(match_uri("/a/{Id}/rrset", "/a/Z1/rrset/", &q).is_some());
+        assert_eq!(match_uri("/{Bucket}/{Key+}", "/b/dir/", &q).unwrap()["Key"], "dir/");
+        assert_eq!(match_uri("/{Bucket}/{Key+}", "/b/a//c", &q).unwrap()["Key"], "a//c");
+        assert_eq!(match_uri("/{Bucket}", "/b/", &q).unwrap()["Bucket"], "b");
+        assert!(match_uri("/{Bucket}/{Key+}", "/b/", &q).is_none());
     }
 
     #[test]

@@ -94,10 +94,41 @@ async fn scenario_input_is_validated_like_a_request() {
     assert_eq!(body["code"], "ValidationError");
     assert!(body["error"].as_str().unwrap().contains("failed to satisfy constraint"), "{body}");
 
-    let (status, body) =
-        mws.control("POST", "/_mws/scenario", Some(r#"{"steps":[{"service":"s3","action":"ListBuckets"}]}"#)).await;
+    let (status, body) = mws
+        .control("POST", "/_mws/scenario", Some(r#"{"steps":[{"service":"dynamodb","action":"ListTables"}]}"#))
+        .await;
     assert_eq!(status, 400);
-    assert!(body["error"].as_str().unwrap().contains("unknown service \"s3\""), "{body}");
+    assert!(body["error"].as_str().unwrap().contains("unknown service \"dynamodb\""), "{body}");
+}
+
+#[tokio::test]
+async fn s3_buckets_and_objects_from_scenarios_survive_export_and_import() {
+    let mws = Mws::start().await;
+    let scenario = json!({ "steps": [
+        { "service": "s3", "action": "CreateBucket", "input": { "Bucket": "seeded" } },
+        { "service": "s3", "action": "PutBucketTagging", "input": { "Bucket": "seeded",
+            "Tagging": { "TagSet": [{ "Key": "env", "Value": "test" }] } } }
+    ]});
+    let (status, body) = mws.control("POST", "/_mws/scenario", Some(&scenario.to_string())).await;
+    assert_eq!(status, 200, "{body}");
+    let s3 = Mws::s3(&mws.root_sdk_config().await);
+    s3.put_object()
+        .bucket("seeded")
+        .key("blob")
+        .body(aws_sdk_s3::primitives::ByteStream::from(vec![0u8, 159, 255]))
+        .send()
+        .await
+        .unwrap();
+
+    let (_, state) = mws.control("GET", "/_mws/state", None).await;
+    mws.control("POST", "/_mws/reset?to=empty", None).await;
+    assert!(s3.list_buckets().send().await.unwrap().buckets().is_empty());
+    let (status, _) = mws.control("PUT", "/_mws/state", Some(&state.to_string())).await;
+    assert_eq!(status, 200);
+    let got = s3.get_object().bucket("seeded").key("blob").send().await.unwrap();
+    assert_eq!(got.body.collect().await.unwrap().into_bytes().as_ref(), [0u8, 159, 255]);
+    let tags = s3.get_bucket_tagging().bucket("seeded").send().await.unwrap();
+    assert_eq!(tags.tag_set()[0].value(), "test");
 }
 
 #[tokio::test]

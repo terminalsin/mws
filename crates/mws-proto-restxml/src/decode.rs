@@ -109,3 +109,22 @@ pub fn children<'a, 'i>(node: Node<'a, 'i>, name: &str) -> Vec<Node<'a, 'i>> {
 pub fn elements<'a, 'i>(node: Node<'a, 'i>) -> Vec<Node<'a, 'i>> {
     node.children().filter(Node::is_element).collect()
 }
+
+/// The value of attribute `name` (local name, any namespace) on `node`.
+pub fn attr<'a>(node: Node<'a, '_>, name: &str) -> Option<&'a str> {
+    node.attributes().find(|a| a.name() == name).map(|a| a.value())
+}
+
+/// Headers whose (lowercase) name starts with `prefix`, keyed by the rest of
+/// the name (`httpPrefixHeaders`). `None` when there are none.
+pub fn prefix_headers(headers: &http::HeaderMap, prefix: &str) -> Option<std::collections::BTreeMap<String, String>> {
+    let prefix = prefix.to_ascii_lowercase();
+    let out: std::collections::BTreeMap<String, String> = headers
+        .iter()
+        .filter_map(|(k, v)| {
+            let rest = k.as_str().strip_prefix(prefix.as_str())?;
+            Some((rest.to_string(), String::from_utf8_lossy(v.as_bytes()).into_owned()))
+        })
+        .collect();
+    (!out.is_empty()).then_some(out)
+}

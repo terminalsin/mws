@@ -5,6 +5,12 @@ on:
     branches: [master, main]
   pull_request:
 
+env:
+  # Each end-to-end test binary links several AWS SDKs; full debug info
+  # makes the link step exhaust the runner's disk.
+  CARGO_PROFILE_DEV_DEBUG: line-tables-only
+  CARGO_INCREMENTAL: 0
+
 jobs:
   rust:
     runs-on: ubuntu-latest

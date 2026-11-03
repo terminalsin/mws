@@ -16,6 +16,7 @@ mws-core.workspace = true
 mws-iam.workspace = true
 mws-kms.workspace = true
 mws-route53.workspace = true
+mws-s3.workspace = true
 mws-server.workspace = true
 mws-sts.workspace = true
 tokio.workspace = true

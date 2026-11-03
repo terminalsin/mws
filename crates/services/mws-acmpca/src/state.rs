@@ -30,8 +30,6 @@ pub struct AuditReport {
     pub bucket: String,
     pub key: String,
     pub created_at: DateTime<Utc>,
-    pub content_type: String,
-    pub body: Vec<u8>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

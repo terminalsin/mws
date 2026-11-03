@@ -35,8 +35,8 @@ pub use scenario::Scenario;
 pub use state::{ScenarioError, SnapshotInfo, STATE_FORMAT};
 use tokio::net::TcpListener;
 
-/// Largest request body MWS accepts.
-const MAX_BODY_BYTES: usize = 16 * 1024 * 1024;
+/// Largest request body MWS accepts: S3's 5 GiB single-request limit.
+const MAX_BODY_BYTES: usize = 5 << 30;
 
 /// Routes authenticated requests to services.
 pub struct Gateway {
@@ -173,14 +173,19 @@ impl Gateway {
             Err(e) => return service.render_error(&request_id, &e.into_service_error()),
         };
 
-        if let Err(e) = mws_sigv4::verify(&request, &parsed, &resolved.secret_access_key, now, VerifyOptions::default())
-        {
+        let options = VerifyOptions { double_encode_path: !service.signs_raw_path() };
+        if let Err(e) = mws_sigv4::verify(&request, &parsed, &resolved.secret_access_key, now, options) {
             tracing::debug!(
-                canonical_request = %mws_sigv4::canonical_request(&request, &parsed, VerifyOptions::default()),
+                canonical_request = %mws_sigv4::canonical_request(&request, &parsed, options),
                 "signature verification failed: {e}"
             );
             return service.render_error(&request_id, &sigv4_error(e));
         }
+        let request = match mws_sigv4::check_payload(&request, &parsed, &resolved.secret_access_key) {
+            Ok(None) => request,
+            Ok(Some(decoded)) => replace_chunked_body(request, decoded),
+            Err(e) => return service.render_error(&request_id, &sigv4_error(e)),
+        };
 
         let ctx = self.context(request_id, parsed.scope.region.clone(), resolved.caller, remote, now);
         service.handle(ctx, request).await
@@ -239,6 +244,33 @@ impl Gateway {
     }
 }
 
+/// Swap an `aws-chunked` body for its decoded content, as if the client had
+/// sent it plainly: trailers become headers and `aws-chunked` leaves
+/// `Content-Encoding`.
+fn replace_chunked_body(request: HttpRequest, decoded: mws_sigv4::DecodedChunks) -> HttpRequest {
+    let (mut parts, _) = request.into_parts();
+    for (k, v) in decoded.trailers {
+        if let (Ok(k), Ok(v)) = (http::HeaderName::try_from(k), http::HeaderValue::try_from(v)) {
+            parts.headers.insert(k, v);
+        }
+    }
+    let encoding = parts.headers.get(http::header::CONTENT_ENCODING).and_then(|v| v.to_str().ok()).map(|v| {
+        v.split(',').map(str::trim).filter(|e| !e.eq_ignore_ascii_case("aws-chunked")).collect::<Vec<_>>().join(",")
+    });
+    match encoding {
+        Some(e) if !e.is_empty() => {
+            if let Ok(v) = http::HeaderValue::try_from(e) {
+                parts.headers.insert(http::header::CONTENT_ENCODING, v);
+            }
+        }
+        _ => {
+            parts.headers.remove(http::header::CONTENT_ENCODING);
+        }
+    }
+    parts.headers.insert(http::header::CONTENT_LENGTH, http::HeaderValue::from(decoded.body.len()));
+    http::Request::from_parts(parts, Bytes::from(decoded.body))
+}
+
 fn sigv4_error(e: SigV4Error) -> ServiceError {
     match e {
         SigV4Error::Missing => ServiceError::missing_authentication_token(),
@@ -249,6 +281,8 @@ fn sigv4_error(e: SigV4Error) -> ServiceError {
         e @ SigV4Error::Expired { .. } => ServiceError::client("SignatureDoesNotMatch", 403, e.to_string()),
         SigV4Error::PresignExpired => ServiceError::client("AccessDenied", 403, "Request has expired"),
         SigV4Error::Mismatch => ServiceError::signature_does_not_match(),
+        e @ SigV4Error::ContentSha256Mismatch => ServiceError::client("XAmzContentSHA256Mismatch", 400, e.to_string()),
+        SigV4Error::MalformedChunks(m) => ServiceError::client("IncompleteBody", 400, m),
     }
 }
 

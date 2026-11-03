@@ -42,6 +42,177 @@ pub enum SigV4Error {
     /// The recomputed signature differs.
     #[error("signature does not match")]
     Mismatch,
+    /// The body's SHA-256 is not the one `x-amz-content-sha256` claims.
+    #[error("The provided 'x-amz-content-sha256' header does not match what was computed.")]
+    ContentSha256Mismatch,
+    /// An `aws-chunked` body that cannot be decoded.
+    #[error("{0}")]
+    MalformedChunks(String),
+}
+
+/// The payload claim of a signed request (`x-amz-content-sha256`).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Payload {
+    /// The SHA-256 of the body, hex encoded.
+    Hash(String),
+    /// `UNSIGNED-PAYLOAD`.
+    Unsigned,
+    /// An `aws-chunked` body: `STREAMING-AWS4-HMAC-SHA256-PAYLOAD`
+    /// (`signed`) or `STREAMING-UNSIGNED-PAYLOAD-TRAILER`, optionally with a
+    /// trailer (`-TRAILER`).
+    Streaming { signed: bool, trailer: bool },
+}
+
+impl Payload {
+    /// What `request` claims about its payload. Requests without the header
+    /// sign the SHA-256 of their body.
+    pub fn of<B>(request: &http::Request<B>) -> Result<Option<Self>, SigV4Error> {
+        let Some(v) = request.headers().get("x-amz-content-sha256") else { return Ok(None) };
+        let v = v.to_str().unwrap_or_default();
+        Ok(Some(match v {
+            "UNSIGNED-PAYLOAD" => Payload::Unsigned,
+            "STREAMING-AWS4-HMAC-SHA256-PAYLOAD" => Payload::Streaming { signed: true, trailer: false },
+            "STREAMING-AWS4-HMAC-SHA256-PAYLOAD-TRAILER" => Payload::Streaming { signed: true, trailer: true },
+            "STREAMING-UNSIGNED-PAYLOAD-TRAILER" => Payload::Streaming { signed: false, trailer: true },
+            h if h.len() == 64 && h.bytes().all(|b| b.is_ascii_hexdigit()) => Payload::Hash(h.to_ascii_lowercase()),
+            other => {
+                return Err(SigV4Error::Incomplete(format!(
+                    "x-amz-content-sha256 must be UNSIGNED-PAYLOAD, STREAMING-UNSIGNED-PAYLOAD-TRAILER, STREAMING-AWS4-HMAC-SHA256-PAYLOAD, STREAMING-AWS4-HMAC-SHA256-PAYLOAD-TRAILER, or a valid sha256 value. Got: {other}"
+                )))
+            }
+        }))
+    }
+}
+
+/// A decoded `aws-chunked` body.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DecodedChunks {
+    pub body: Vec<u8>,
+    /// Trailing headers (e.g. `x-amz-checksum-crc32`), lowercase names.
+    pub trailers: Vec<(String, String)>,
+}
+
+/// Check the body against the request's payload claim, decoding an
+/// `aws-chunked` body (and verifying its chunk signatures against
+/// `parsed.signature`, the seed). Returns `None` when the body is used as is.
+pub fn check_payload(
+    request: &http::Request<impl AsRef<[u8]>>,
+    parsed: &ParsedSignature,
+    secret_access_key: &str,
+) -> Result<Option<DecodedChunks>, SigV4Error> {
+    match Payload::of(request)? {
+        None | Some(Payload::Unsigned) => Ok(None),
+        Some(Payload::Hash(h)) => {
+            if hex::encode(Sha256::digest(request.body().as_ref())) == h {
+                Ok(None)
+            } else {
+                Err(SigV4Error::ContentSha256Mismatch)
+            }
+        }
+        Some(Payload::Streaming { signed, trailer }) => {
+            let key = signing_key(secret_access_key, &parsed.scope);
+            let signer = signed.then(|| ChunkSigner {
+                key,
+                prefix: format!("{}\n{}", parsed.amz_date, parsed.scope.scope_string()),
+                previous: parsed.signature.clone(),
+            });
+            decode_chunks(request.body().as_ref(), signer, trailer).map(Some)
+        }
+    }
+}
+
+struct ChunkSigner {
+    key: Vec<u8>,
+    /// `{amz-date}\n{scope}`.
+    prefix: String,
+    previous: String,
+}
+
+impl ChunkSigner {
+    fn check(&mut self, algorithm: &str, hash: &str, claimed: Option<&str>) -> Result<(), SigV4Error> {
+        let empty = hex::encode(Sha256::digest(b""));
+        let to_sign = if algorithm == "AWS4-HMAC-SHA256-PAYLOAD" {
+            format!("{algorithm}\n{}\n{}\n{empty}\n{hash}", self.prefix, self.previous)
+        } else {
+            format!("{algorithm}\n{}\n{}\n{hash}", self.prefix, self.previous)
+        };
+        let expected = hex::encode(hmac(&self.key, to_sign.as_bytes()));
+        match claimed {
+            Some(c) if bool::from(expected.as_bytes().ct_eq(c.as_bytes())) => {
+                self.previous = expected;
+                Ok(())
+            }
+            _ => Err(SigV4Error::Mismatch),
+        }
+    }
+}
+
+fn malformed(msg: &str) -> SigV4Error {
+    SigV4Error::MalformedChunks(msg.to_string())
+}
+
+/// Decode `size[;chunk-signature=sig]\r\ndata\r\n ... 0[;...]\r\n[trailers]\r\n`.
+fn decode_chunks(raw: &[u8], mut signer: Option<ChunkSigner>, trailer: bool) -> Result<DecodedChunks, SigV4Error> {
+    let line = |pos: usize| -> Result<(&[u8], usize), SigV4Error> {
+        let rest = raw.get(pos..).ok_or_else(|| malformed("Incomplete aws-chunked body."))?;
+        let end =
+            rest.windows(2).position(|w| w == b"\r\n").ok_or_else(|| malformed("Incomplete aws-chunked body."))?;
+        Ok((&rest[..end], pos + end + 2))
+    };
+    let mut body = Vec::new();
+    let mut pos = 0;
+    loop {
+        let (header, next) = line(pos)?;
+        let header = std::str::from_utf8(header).map_err(|_| malformed("Invalid chunk header."))?;
+        let (size, ext) = header.split_once(';').unwrap_or((header, ""));
+        let size = usize::from_str_radix(size.trim(), 16).map_err(|_| malformed("Invalid chunk size."))?;
+        let claimed = ext.trim().strip_prefix("chunk-signature=");
+        let data = raw.get(next..next + size).ok_or_else(|| malformed("Incomplete aws-chunked body."))?;
+        if let Some(s) = signer.as_mut() {
+            s.check("AWS4-HMAC-SHA256-PAYLOAD", &hex::encode(Sha256::digest(data)), claimed)?;
+        }
+        body.extend_from_slice(data);
+        pos = next + size;
+        if size == 0 {
+            break;
+        }
+        if raw.get(pos..pos + 2) != Some(b"\r\n") {
+            return Err(malformed("Chunk data is not followed by CRLF."));
+        }
+        pos += 2;
+    }
+    let mut trailers = Vec::new();
+    let mut trailer_text = String::new();
+    let mut trailer_signature = None;
+    // After the final chunk: trailer lines, then an empty line. Tolerate a
+    // missing final CRLF.
+    while pos < raw.len() {
+        let (l, next) = match line(pos) {
+            Ok(x) => x,
+            Err(_) => (&raw[pos..], raw.len()),
+        };
+        pos = next;
+        if l.is_empty() {
+            continue;
+        }
+        let l = std::str::from_utf8(l).map_err(|_| malformed("Invalid trailer."))?;
+        let (k, v) = l.split_once(':').ok_or_else(|| malformed("Invalid trailer."))?;
+        let k = k.trim().to_ascii_lowercase();
+        if k == "x-amz-trailer-signature" {
+            trailer_signature = Some(v.trim().to_string());
+            continue;
+        }
+        trailer_text.push_str(&format!("{k}:{}\n", v.trim()));
+        trailers.push((k, v.trim().to_string()));
+    }
+    if let (Some(s), true) = (signer.as_mut(), trailer) {
+        s.check(
+            "AWS4-HMAC-SHA256-TRAILER",
+            &hex::encode(Sha256::digest(trailer_text.as_bytes())),
+            trailer_signature.as_deref(),
+        )?;
+    }
+    Ok(DecodedChunks { body, trailers })
 }
 
 /// Where the signature came from.

@@ -55,7 +55,7 @@ impl Authorizer for IamAuthorizer {
         };
 
         if caller_org.as_ref().is_some_and(|o| o.suspended) {
-            return AuthzDecision::Deny { reason: String::new() };
+            return AuthzDecision::Deny { reason: String::new(), explicit: true };
         }
         let state = self.inner.read_account(caller_account);
         let (mut set, principal, mut context) = principal_policies(&state, req.caller, caller_account);
@@ -99,7 +99,11 @@ impl Authorizer for IamAuthorizer {
         // who may start root sessions in member accounts.
         let service_decides = req.resource.split(':').nth(2) == Some("organizations")
             || req.action.eq_ignore_ascii_case("sts:AssumeRoot");
-        set.cross_account = !service_decides && resource_account.as_deref().is_some_and(|a| a != caller_account);
+        // Anonymous callers have no identity policies to consult: a resource
+        // policy alone decides, whoever owns the resource.
+        let anonymous = req.caller.kind == CallerKind::Anonymous;
+        set.cross_account =
+            !service_decides && !anonymous && resource_account.as_deref().is_some_and(|a| a != caller_account);
         if let Some(doc) = req.resource_policy {
             let kind = if req.resource_policy_mode == ResourcePolicyMode::Trust {
                 PolicyKind::Trust
@@ -118,6 +122,7 @@ impl Authorizer for IamAuthorizer {
         if decision.allowed {
             AuthzDecision::Allow
         } else {
+            let explicit = decision.deny_reason.as_ref().is_some_and(|r| r.is_explicit());
             let reason = match decision.deny_reason {
                 // AWS gives no reason when a trust policy does not allow.
                 Some(mws_iam_policy::DenyReason::NoResourceAllow)
@@ -128,7 +133,7 @@ impl Authorizer for IamAuthorizer {
                 Some(r) => r.message(req.action),
                 None => String::new(),
             };
-            AuthzDecision::Deny { reason }
+            AuthzDecision::Deny { reason, explicit }
         }
     }
 }

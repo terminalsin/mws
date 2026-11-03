@@ -181,6 +181,7 @@ impl PrivateCa {
             "arn:{}:acm-pca:{}:{}:certificate-authority/{id}",
             ctx.partition, ctx.region, ctx.caller.account_id
         );
+        self.check_crl_bucket(&arn, input.revocation_configuration.as_ref())?;
         let now = Utc::now();
         let ca = Ca {
             arn: arn.clone(),
@@ -343,6 +344,7 @@ impl PrivateCa {
             ca.set_status("ACTIVE");
         }
         revocation::refresh_crl(ca)?;
+        self.publish_crl(ca);
         Ok(())
     }
 
@@ -468,6 +470,7 @@ impl PrivateCa {
         }
         cert.revoked = Some((input.revocation_reason, Utc::now()));
         revocation::refresh_crl(ca)?;
+        self.publish_crl(ca);
         Ok(())
     }
 
@@ -482,6 +485,7 @@ impl PrivateCa {
         if let Some(rc) = &input.revocation_configuration {
             revocation::validate(rc)?;
         }
+        self.check_crl_bucket(arn, input.revocation_configuration.as_ref())?;
         let mut st = self.lock();
         let ca = st.ca_mut(arn)?;
         if let Some(status) = &input.status {
@@ -499,6 +503,7 @@ impl PrivateCa {
         if input.revocation_configuration.is_some() {
             ca.revocation = input.revocation_configuration;
             revocation::refresh_crl(ca)?;
+            self.publish_crl(ca);
         }
         Ok(())
     }

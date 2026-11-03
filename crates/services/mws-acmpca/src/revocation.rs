@@ -3,11 +3,11 @@
 //!
 //! ACM PCA writes CRLs to the S3 bucket named in the CA's CRL
 //! configuration, at `crl/{ca-id}.crl` (or `{CustomPath}/{ca-id}.crl`), and
-//! answers OCSP at `ocsp.acm-pca.{region}.amazonaws.com`. MWS keeps the
-//! latest CRL with the CA and serves it, unsigned, at any URL whose path
-//! ends in `/{ca-id}.crl`, so the distribution point in issued certificates
-//! works once its host resolves to MWS (or with the path on the MWS
-//! endpoint). OCSP requests are answered at any path when POSTed as
+//! answers OCSP at `ocsp.acm-pca.{region}.amazonaws.com`. MWS writes each
+//! new CRL into that bucket in its S3 (see `publish`), so the distribution
+//! point in issued certificates works once the bucket's virtual host
+//! resolves to MWS, or path-style on the MWS endpoint. OCSP requests are
+//! answered at any path when POSTed as
 //! `application/ocsp-request`, or as a GET whose last path segment is the
 //! base64 request.
 

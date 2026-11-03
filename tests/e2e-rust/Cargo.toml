@@ -14,6 +14,8 @@ aws-sdk-route53 = "1"
 aws-sdk-acmpca = "1"
 aws-sdk-kms = "1"
 aws-sdk-organizations = "1"
+aws-sdk-s3 = { version = "1", features = ["behavior-version-latest"] }
+mws-s3.workspace = true
 rcgen.workspace = true
 x509-parser.workspace = true
 urlencoding = "2"
