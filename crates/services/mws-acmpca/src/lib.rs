@@ -16,6 +16,7 @@ pub mod generated {
     include!(concat!(env!("OUT_DIR"), "/acmpca_generated.rs"));
 }
 
+mod acm;
 mod audit;
 mod der;
 mod handler;
@@ -30,6 +31,7 @@ use std::sync::{Arc, Mutex, MutexGuard};
 
 use mws_core::{HttpRequest, HttpResponse, RequestContext, Service, ServiceError};
 
+pub use acm::{AcmCaSummary, AcmIssued, AcmIssuer};
 use state::State;
 
 /// The Private CA service. Cheap to clone; clones share state.
