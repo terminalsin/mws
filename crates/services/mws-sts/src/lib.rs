@@ -1,0 +1,80 @@
+//! AWS Security Token Service for MWS.
+//!
+//! STS issues temporary credentials for identities that live in IAM, so this
+//! crate depends on `mws-iam`'s public API (AWS couples the two the same
+//! way). It is also a [`CredentialStore`](mws_core::CredentialStore) for the
+//! credentials it issues.
+
+#[allow(clippy::all, dead_code, unused_imports, non_snake_case, non_camel_case_types)]
+pub mod generated {
+    include!(concat!(env!("OUT_DIR"), "/sts_generated.rs"));
+}
+
+mod credentials;
+mod ops;
+mod web_identity;
+
+use std::collections::HashMap;
+use std::sync::{Arc, Mutex};
+
+use chrono::{DateTime, Utc};
+use mws_core::{Caller, HttpRequest, HttpResponse, RequestContext, Service, ServiceError};
+use mws_iam::Iam;
+
+/// An issued set of temporary credentials.
+#[derive(Debug, Clone)]
+pub(crate) struct Session {
+    pub secret_access_key: String,
+    pub session_token: String,
+    pub expires_at: DateTime<Utc>,
+    pub caller: Caller,
+}
+
+pub(crate) struct Inner {
+    pub iam: Iam,
+    pub sessions: Mutex<HashMap<String, Session>>,
+}
+
+/// The STS service. Cheap to clone; clones share state.
+#[derive(Clone)]
+pub struct Sts {
+    inner: Arc<Inner>,
+}
+
+impl Sts {
+    pub fn new(iam: Iam) -> Self {
+        Self { inner: Arc::new(Inner { iam, sessions: Mutex::new(HashMap::new()) }) }
+    }
+
+    /// A credential store for the temporary credentials this service issues.
+    pub fn credential_store(&self) -> Arc<dyn mws_core::CredentialStore> {
+        Arc::new(credentials::StsCredentials { inner: self.inner.clone() })
+    }
+
+    pub(crate) fn iam(&self) -> &Iam {
+        &self.inner.iam
+    }
+}
+
+const UNSIGNED_ACTIONS: &[&str] = &["AssumeRoleWithWebIdentity", "AssumeRoleWithSAML"];
+
+#[async_trait::async_trait]
+impl Service for Sts {
+    fn signing_name(&self) -> &'static str {
+        "sts"
+    }
+
+    async fn handle(&self, ctx: RequestContext, request: HttpRequest) -> HttpResponse {
+        let params = mws_proto_query::read_params(&request);
+        generated::dispatch(self, &ctx, &params).await
+    }
+
+    fn render_error(&self, request_id: &str, error: &ServiceError) -> HttpResponse {
+        mws_proto_query::error_response(&generated::SERVICE_INFO, request_id, error)
+    }
+
+    fn accepts_unsigned(&self, request: &HttpRequest) -> bool {
+        let params = mws_proto_query::read_params(request);
+        params.get("Action").is_some_and(|a| UNSIGNED_ACTIONS.contains(&a))
+    }
+}

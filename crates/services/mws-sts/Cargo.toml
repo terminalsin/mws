@@ -1,0 +1,20 @@
+[package]
+name = "mws-sts"
+description = "AWS Security Token Service for MWS: temporary credentials backed by MWS IAM identities."
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+async-trait.workspace = true
+base64.workspace = true
+chrono.workspace = true
+mws-core.workspace = true
+mws-iam.workspace = true
+mws-iam-policy.workspace = true
+mws-proto-query.workspace = true
+rand.workspace = true
+serde_json.workspace = true
+
+[build-dependencies]
+mws-codegen.workspace = true

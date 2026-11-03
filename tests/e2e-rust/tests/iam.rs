@@ -32,6 +32,12 @@ async fn user_lifecycle_and_their_own_credentials() {
     assert!(alice.user_id().starts_with("AIDA"));
     assert_eq!(alice.tags()[0].value(), "platform");
 
+    iam.attach_user_policy()
+        .user_name("alice")
+        .policy_arn("arn:aws:iam::aws:policy/IAMReadOnlyAccess")
+        .send()
+        .await
+        .unwrap();
     let key = iam.create_access_key().user_name("alice").send().await.unwrap();
     let key = key.access_key().unwrap();
     assert_eq!(key.status(), &StatusType::Active);
@@ -57,6 +63,14 @@ async fn user_lifecycle_and_their_own_credentials() {
     assert_eq!(err.code(), Some("DeleteConflict"));
     assert!(err.as_service_error().unwrap().is_delete_conflict_exception());
     iam.delete_access_key().user_name("alice").access_key_id(key.access_key_id()).send().await.unwrap();
+    let err = iam.delete_user().user_name("alice").send().await.unwrap_err();
+    assert_eq!(err.message(), Some("Cannot delete entity, must detach all policies first."));
+    iam.detach_user_policy()
+        .user_name("alice")
+        .policy_arn("arn:aws:iam::aws:policy/IAMReadOnlyAccess")
+        .send()
+        .await
+        .unwrap();
     iam.delete_user().user_name("alice").send().await.unwrap();
 
     let err = iam.get_user().user_name("alice").send().await.unwrap_err();
@@ -122,6 +136,6 @@ async fn bad_credentials_are_rejected_like_aws() {
 async fn unimplemented_operations_say_so() {
     let mws = Mws::start().await;
     let iam = aws_sdk_iam::Client::new(&mws.root_sdk_config().await);
-    let err = iam.list_roles().send().await.unwrap_err();
+    let err = iam.list_server_certificates().send().await.unwrap_err();
     assert_eq!(err.code(), Some("NotImplemented"));
 }

@@ -1,25 +1,33 @@
 //! AWS Identity and Access Management for MWS.
 //!
 //! The wire layer (types, validation, XML) is generated from AWS's Smithy
-//! model at build time. This crate adds the state and behaviour, and owns
-//! the account's identities, so it also acts as the gateway's
-//! [`CredentialStore`](mws_core::CredentialStore).
+//! model at build time. This crate adds the state and behaviour. It owns the
+//! account's identities, so it is also the gateway's
+//! [`CredentialStore`](mws_core::CredentialStore) for long-term keys and its
+//! [`Authorizer`](mws_core::Authorizer) for every service.
 
 #[allow(clippy::all, dead_code, unused_imports, non_snake_case, non_camel_case_types)]
 pub mod generated {
     include!(concat!(env!("OUT_DIR"), "/iam_generated.rs"));
 }
 
+mod api;
+mod authz;
+mod common;
 mod credentials;
 mod handler;
 mod ids;
+mod managed;
+mod ops;
 mod state;
+mod wire;
 
 use std::sync::{Arc, RwLock};
 
 use chrono::{DateTime, Utc};
-use mws_core::{HttpRequest, HttpResponse, RequestContext, Service, ServiceError};
+use mws_core::{HttpRequest, HttpResponse, RequestContext, Service, ServiceError, SessionKind};
 
+pub use api::{OidcProviderView, RoleView, UserView};
 pub use state::State;
 
 /// Settings for the emulated account.
@@ -57,7 +65,10 @@ pub(crate) struct Inner {
 
 impl Iam {
     pub fn new(config: IamConfig) -> Self {
-        Self { inner: Arc::new(Inner { config, created_at: Utc::now(), state: RwLock::new(State::default()) }) }
+        let iam =
+            Self { inner: Arc::new(Inner { config, created_at: Utc::now(), state: RwLock::new(State::default()) }) };
+        iam.seed_aws_managed_policies();
+        iam
     }
 
     pub fn config(&self) -> &IamConfig {
@@ -67,6 +78,11 @@ impl Iam {
     /// A credential store backed by this account's root and user keys.
     pub fn credential_store(&self) -> Arc<dyn mws_core::CredentialStore> {
         Arc::new(credentials::IamCredentials { inner: self.inner.clone() })
+    }
+
+    /// The authorizer that evaluates IAM policies for every service.
+    pub fn authorizer(&self) -> Arc<dyn mws_core::Authorizer> {
+        Arc::new(authz::IamAuthorizer { inner: self.inner.clone() })
     }
 
     pub(crate) fn arn(&self, resource: &str) -> String {
@@ -81,6 +97,10 @@ impl Service for Iam {
     }
 
     async fn handle(&self, ctx: RequestContext, request: HttpRequest) -> HttpResponse {
+        // Credentials from GetSessionToken cannot call IAM without MFA.
+        if ctx.caller.session.as_ref().is_some_and(|s| s.kind == SessionKind::GetSessionToken && !s.mfa_authenticated) {
+            return self.render_error(&ctx.request_id, &ServiceError::invalid_client_token_id());
+        }
         let params = mws_proto_query::read_params(&request);
         generated::dispatch(self, &ctx, &params).await
     }

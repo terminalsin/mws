@@ -21,6 +21,7 @@ def test_user_and_key_lifecycle(iam, endpoint, session_for):
     assert user["Arn"] == f"arn:aws:iam::123456789012:user/qa/{name}"
     assert user["Tags"] == [{"Key": "k", "Value": "v"}]
 
+    iam.attach_user_policy(UserName=name, PolicyArn="arn:aws:iam::aws:policy/IAMReadOnlyAccess")
     key = iam.create_access_key(UserName=name)["AccessKey"]
     carol = session_for(key["AccessKeyId"], key["SecretAccessKey"]).client("iam", endpoint_url=endpoint)
     assert carol.get_user()["User"]["UserName"] == name
@@ -31,6 +32,7 @@ def test_user_and_key_lifecycle(iam, endpoint, session_for):
     with pytest.raises(iam.exceptions.DeleteConflictException):
         iam.delete_user(UserName=name)
     iam.delete_access_key(UserName=name, AccessKeyId=key["AccessKeyId"])
+    iam.detach_user_policy(UserName=name, PolicyArn="arn:aws:iam::aws:policy/IAMReadOnlyAccess")
     iam.delete_user(UserName=name)
 
     with pytest.raises(iam.exceptions.NoSuchEntityException) as e:
@@ -62,3 +64,26 @@ def test_wrong_secret(endpoint, session_for):
     with pytest.raises(ClientError) as e:
         client.get_user()
     assert e.value.response["Error"]["Code"] == "SignatureDoesNotMatch"
+
+
+def test_policy_documents_round_trip(iam):
+    """boto3 URL-decodes and parses IAM policy documents, as with real AWS."""
+    doc = {"Version": "2012-10-17", "Statement": [{"Effect": "Allow", "Action": "iam:List*", "Resource": "*"}]}
+    import json
+
+    name = unique("p")
+    arn = iam.create_policy(PolicyName=name, PolicyDocument=json.dumps(doc))["Policy"]["Arn"]
+    version = iam.get_policy_version(PolicyArn=arn, VersionId="v1")["PolicyVersion"]
+    assert version["Document"] == doc
+    assert version["IsDefaultVersion"] is True
+
+
+def test_access_denied_for_unprivileged_user(iam, endpoint, session_for):
+    name = unique("nobody")
+    iam.create_user(UserName=name)
+    key = iam.create_access_key(UserName=name)["AccessKey"]
+    client = session_for(key["AccessKeyId"], key["SecretAccessKey"]).client("iam", endpoint_url=endpoint)
+    with pytest.raises(ClientError) as e:
+        client.list_users()
+    assert e.value.response["Error"]["Code"] == "AccessDenied"
+    assert e.value.response["ResponseMetadata"]["HTTPStatusCode"] == 403

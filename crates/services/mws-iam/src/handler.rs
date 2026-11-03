@@ -1,343 +1,133 @@
-//! IAM operation behaviour. Validation of shapes, lengths and patterns has
-//! already happened in the generated decoder by the time these run.
+//! Wires the generated `Handler` trait to the operation implementations in
+//! `ops/`. Operations are synchronous; this adapts them to the async trait.
 
-use chrono::Utc;
-use mws_core::{CallerKind, ConditionContext, RequestContext, ServiceError};
+use mws_core::{RequestContext, ServiceError};
 
-use crate::generated::{errors, types, Handler};
-use crate::state::{AccessKey, User};
-use crate::{ids, Iam};
+use crate::generated::{types, Handler};
+use crate::Iam;
 
-const MAX_ACCESS_KEYS_PER_USER: usize = 2;
-const DEFAULT_MAX_ITEMS: usize = 100;
-
-/// Who an operation without an explicit `UserName` acts on.
-enum Subject {
-    Root,
-    User(String),
-}
-
-impl Iam {
-    fn subject(&self, ctx: &RequestContext, user_name: Option<String>) -> Result<Subject, ServiceError> {
-        if let Some(name) = user_name {
-            return Ok(Subject::User(name));
-        }
-        match &ctx.caller.kind {
-            CallerKind::Root => Ok(Subject::Root),
-            CallerKind::User { name } => Ok(Subject::User(name.clone())),
-            _ => Err(ServiceError::client(
-                "ValidationError",
-                400,
-                "Must specify userName when calling with non-User credentials",
-            )),
-        }
-    }
-
-    fn user_arn(&self, path: &str, name: &str) -> String {
-        self.arn(&format!("user{path}{name}"))
-    }
-
-    fn authorize(&self, ctx: &RequestContext, action: &str, resource: &str) -> Result<(), ServiceError> {
-        ctx.authorize(&format!("iam:{action}"), resource, ConditionContext::new())
-    }
-
-    fn no_such_user(name: &str) -> ServiceError {
-        errors::no_such_entity(format!("The user with name {name} cannot be found."))
-    }
-
-    fn read(&self) -> std::sync::RwLockReadGuard<'_, crate::State> {
-        self.inner.state.read().expect("IAM state lock poisoned")
-    }
-
-    fn write(&self) -> std::sync::RwLockWriteGuard<'_, crate::State> {
-        self.inner.state.write().expect("IAM state lock poisoned")
-    }
-}
-
-fn user_to_wire(u: &User) -> types::User {
-    types::User {
-        path: u.path.clone(),
-        user_name: u.name.clone(),
-        user_id: u.id.clone(),
-        arn: u.arn.clone(),
-        create_date: u.created,
-        password_last_used: None,
-        permissions_boundary: u.permissions_boundary.as_ref().map(|arn| types::AttachedPermissionsBoundary {
-            permissions_boundary_type: Some("PermissionsBoundaryPolicy".into()),
-            permissions_boundary_arn: Some(arn.clone()),
-        }),
-        tags: (!u.tags.is_empty())
-            .then(|| u.tags.iter().map(|(k, v)| types::Tag { key: k.clone(), value: v.clone() }).collect()),
-    }
-}
-
-fn key_metadata(k: &AccessKey) -> types::AccessKeyMetadata {
-    types::AccessKeyMetadata {
-        user_name: k.user_name.clone(),
-        access_key_id: Some(k.id.clone()),
-        status: Some(status_str(k.active).into()),
-        create_date: Some(k.created),
-    }
-}
-
-fn status_str(active: bool) -> &'static str {
-    if active {
-        "Active"
-    } else {
-        "Inactive"
-    }
-}
-
-/// IAM-style `Marker`/`MaxItems` pagination over items sorted by `key`.
-/// Returns the page, whether it is truncated, and the next marker.
-pub(crate) fn paginate<T: Clone>(
-    items: &[T],
-    key: impl Fn(&T) -> String,
-    marker: Option<&str>,
-    max_items: Option<i32>,
-) -> Result<(Vec<T>, bool, Option<String>), ServiceError> {
-    let start = match marker {
-        None => 0,
-        Some(m) => {
-            let after =
-                decode_marker(m).ok_or_else(|| ServiceError::client("ValidationError", 400, "Invalid Marker."))?;
-            items.iter().position(|i| key(i) >= after).unwrap_or(items.len())
-        }
+macro_rules! delegate {
+    ($($name:ident($input:ty) -> $output:ty;)*) => {
+        $(
+            fn $name<'life0, 'life1, 'async_trait>(
+                &'life0 self,
+                ctx: &'life1 RequestContext,
+                input: $input,
+            ) -> ::std::pin::Pin<Box<dyn ::std::future::Future<Output = Result<$output, ServiceError>> + Send + 'async_trait>>
+            where
+                'life0: 'async_trait,
+                'life1: 'async_trait,
+                Self: 'async_trait,
+            {
+                let result = Iam::$name(self, ctx, input);
+                Box::pin(async move { result })
+            }
+        )*
     };
-    let max = max_items.map(|m| m as usize).unwrap_or(DEFAULT_MAX_ITEMS);
-    let end = (start + max).min(items.len());
-    let page = items[start..end].to_vec();
-    let truncated = end < items.len();
-    let next = truncated.then(|| encode_marker(&key(&items[end])));
-    Ok((page, truncated, next))
 }
 
-fn encode_marker(key: &str) -> String {
-    key.bytes().map(|b| format!("{b:02X}")).collect()
-}
-
-fn decode_marker(marker: &str) -> Option<String> {
-    if !marker.len().is_multiple_of(2) {
-        return None;
-    }
-    let bytes: Option<Vec<u8>> =
-        (0..marker.len()).step_by(2).map(|i| u8::from_str_radix(marker.get(i..i + 2)?, 16).ok()).collect();
-    String::from_utf8(bytes?).ok()
-}
-
-#[async_trait::async_trait]
 impl Handler for Iam {
-    async fn create_user(
-        &self,
-        ctx: &RequestContext,
-        input: types::CreateUserRequest,
-    ) -> Result<types::CreateUserResponse, ServiceError> {
-        let path = input.path.unwrap_or_else(|| "/".into());
-        let arn = self.user_arn(&path, &input.user_name);
-        self.authorize(ctx, "CreateUser", &arn)?;
-        let mut state = self.write();
-        let key = input.user_name.to_lowercase();
-        if state.users.contains_key(&key) {
-            return Err(errors::entity_already_exists(format!("User with name {} already exists.", input.user_name)));
-        }
-        let user = User {
-            name: input.user_name,
-            path,
-            id: ids::unique_id("AIDA"),
-            arn,
-            created: Utc::now(),
-            permissions_boundary: input.permissions_boundary,
-            tags: input.tags.unwrap_or_default().into_iter().map(|t| (t.key, t.value)).collect(),
-        };
-        let wire = user_to_wire(&user);
-        state.users.insert(key, user);
-        Ok(types::CreateUserResponse { user: Some(wire) })
-    }
-
-    async fn get_user(
-        &self,
-        ctx: &RequestContext,
-        input: types::GetUserRequest,
-    ) -> Result<types::GetUserResponse, ServiceError> {
-        match self.subject(ctx, input.user_name)? {
-            Subject::Root => {
-                let arn = ctx.caller.arn.clone();
-                self.authorize(ctx, "GetUser", &arn)?;
-                Ok(types::GetUserResponse {
-                    user: types::User {
-                        user_id: self.inner.config.account_id.clone(),
-                        arn,
-                        create_date: self.inner.created_at,
-                        ..Default::default()
-                    },
-                })
-            }
-            Subject::User(name) => {
-                let state = self.read();
-                let user = state.user(&name).ok_or_else(|| Self::no_such_user(&name))?;
-                self.authorize(ctx, "GetUser", &user.arn)?;
-                Ok(types::GetUserResponse { user: user_to_wire(user) })
-            }
-        }
-    }
-
-    async fn list_users(
-        &self,
-        ctx: &RequestContext,
-        input: types::ListUsersRequest,
-    ) -> Result<types::ListUsersResponse, ServiceError> {
-        self.authorize(ctx, "ListUsers", &self.arn("user/"))?;
-        let prefix = input.path_prefix.unwrap_or_else(|| "/".into());
-        let users: Vec<User> = self.read().users.values().filter(|u| u.path.starts_with(&prefix)).cloned().collect();
-        let (page, is_truncated, marker) =
-            paginate(&users, |u| u.name.to_lowercase(), input.marker.as_deref(), input.max_items)?;
-        Ok(types::ListUsersResponse { users: page.iter().map(user_to_wire).collect(), is_truncated, marker })
-    }
-
-    async fn delete_user(&self, ctx: &RequestContext, input: types::DeleteUserRequest) -> Result<(), ServiceError> {
-        let mut state = self.write();
-        let user = state.user(&input.user_name).ok_or_else(|| Self::no_such_user(&input.user_name))?;
-        self.authorize(ctx, "DeleteUser", &user.arn)?;
-        if !state.keys_for(Some(&input.user_name)).is_empty() {
-            return Err(errors::delete_conflict("Cannot delete entity, must delete access keys first."));
-        }
-        state.users.remove(&input.user_name.to_lowercase());
-        Ok(())
-    }
-
-    async fn create_access_key(
-        &self,
-        ctx: &RequestContext,
-        input: types::CreateAccessKeyRequest,
-    ) -> Result<types::CreateAccessKeyResponse, ServiceError> {
-        let subject = self.subject(ctx, input.user_name)?;
-        let mut state = self.write();
-        let (user_name, arn) = match &subject {
-            Subject::Root => (None, ctx.caller.arn.clone()),
-            Subject::User(name) => {
-                let user = state.user(name).ok_or_else(|| Self::no_such_user(name))?;
-                (Some(user.name.clone()), user.arn.clone())
-            }
-        };
-        self.authorize(ctx, "CreateAccessKey", &arn)?;
-        if state.keys_for(user_name.as_deref()).len() >= MAX_ACCESS_KEYS_PER_USER {
-            return Err(errors::limit_exceeded(format!(
-                "Cannot exceed quota for AccessKeysPerUser: {MAX_ACCESS_KEYS_PER_USER}"
-            )));
-        }
-        let key = AccessKey {
-            id: ids::access_key_id(),
-            secret: ids::secret_access_key(),
-            user_name: user_name.clone(),
-            active: true,
-            created: Utc::now(),
-        };
-        let wire = types::AccessKey {
-            user_name: user_name.unwrap_or_default(),
-            access_key_id: key.id.clone(),
-            status: "Active".into(),
-            secret_access_key: key.secret.clone(),
-            create_date: Some(key.created),
-        };
-        state.access_keys.insert(key.id.clone(), key);
-        Ok(types::CreateAccessKeyResponse { access_key: wire })
-    }
-
-    async fn list_access_keys(
-        &self,
-        ctx: &RequestContext,
-        input: types::ListAccessKeysRequest,
-    ) -> Result<types::ListAccessKeysResponse, ServiceError> {
-        let subject = self.subject(ctx, input.user_name)?;
-        let state = self.read();
-        let (user_name, arn) = match &subject {
-            Subject::Root => (None, ctx.caller.arn.clone()),
-            Subject::User(name) => {
-                let user = state.user(name).ok_or_else(|| Self::no_such_user(name))?;
-                (Some(user.name.clone()), user.arn.clone())
-            }
-        };
-        self.authorize(ctx, "ListAccessKeys", &arn)?;
-        let keys: Vec<AccessKey> = state.keys_for(user_name.as_deref()).into_iter().cloned().collect();
-        let (page, is_truncated, marker) = paginate(&keys, |k| k.id.clone(), input.marker.as_deref(), input.max_items)?;
-        Ok(types::ListAccessKeysResponse {
-            access_key_metadata: page.iter().map(key_metadata).collect(),
-            is_truncated,
-            marker,
-        })
-    }
-
-    async fn delete_access_key(
-        &self,
-        ctx: &RequestContext,
-        input: types::DeleteAccessKeyRequest,
-    ) -> Result<(), ServiceError> {
-        let subject = self.subject(ctx, input.user_name)?;
-        let mut state = self.write();
-        let arn = self.key_owner_arn(ctx, &state, &subject, &input.access_key_id)?;
-        self.authorize(ctx, "DeleteAccessKey", &arn)?;
-        state.access_keys.remove(&input.access_key_id);
-        Ok(())
-    }
-
-    async fn update_access_key(
-        &self,
-        ctx: &RequestContext,
-        input: types::UpdateAccessKeyRequest,
-    ) -> Result<(), ServiceError> {
-        let subject = self.subject(ctx, input.user_name)?;
-        let mut state = self.write();
-        let arn = self.key_owner_arn(ctx, &state, &subject, &input.access_key_id)?;
-        self.authorize(ctx, "UpdateAccessKey", &arn)?;
-        if let Some(k) = state.access_keys.get_mut(&input.access_key_id) {
-            k.active = input.status == "Active";
-        }
-        Ok(())
-    }
-}
-
-impl Iam {
-    /// Check that `key_id` belongs to `subject` and return the owner's ARN.
-    fn key_owner_arn(
-        &self,
-        ctx: &RequestContext,
-        state: &crate::State,
-        subject: &Subject,
-        key_id: &str,
-    ) -> Result<String, ServiceError> {
-        let not_found = || errors::no_such_entity(format!("The Access Key with id {key_id} cannot be found."));
-        let key = state.access_keys.get(key_id).ok_or_else(not_found)?;
-        match subject {
-            Subject::Root => {
-                if key.user_name.is_some() {
-                    return Err(not_found());
-                }
-                Ok(ctx.caller.arn.clone())
-            }
-            Subject::User(name) => {
-                let user = state.user(name).ok_or_else(|| Self::no_such_user(name))?;
-                if key.user_name.as_deref().map(str::to_lowercase) != Some(name.to_lowercase()) {
-                    return Err(not_found());
-                }
-                Ok(user.arn.clone())
-            }
-        }
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn pagination_round_trips_markers() {
-        let items: Vec<String> = (0..5).map(|i| format!("u{i}")).collect();
-        let (p1, t1, m1) = paginate(&items, |s| s.clone(), None, Some(2)).unwrap();
-        assert_eq!((p1, t1), (vec!["u0".to_string(), "u1".to_string()], true));
-        let (p2, _, m2) = paginate(&items, |s| s.clone(), m1.as_deref(), Some(2)).unwrap();
-        assert_eq!(p2, vec!["u2".to_string(), "u3".to_string()]);
-        let (p3, t3, m3) = paginate(&items, |s| s.clone(), m2.as_deref(), Some(2)).unwrap();
-        assert_eq!((p3, t3, m3), (vec!["u4".to_string()], false, None));
-        assert!(paginate(&items, |s| s.clone(), Some("zz"), None).is_err());
+    delegate! {
+        create_open_id_connect_provider(types::CreateOpenIDConnectProviderRequest) -> types::CreateOpenIDConnectProviderResponse;
+        get_open_id_connect_provider(types::GetOpenIDConnectProviderRequest) -> types::GetOpenIDConnectProviderResponse;
+        list_open_id_connect_providers(types::ListOpenIDConnectProvidersRequest) -> types::ListOpenIDConnectProvidersResponse;
+        delete_open_id_connect_provider(types::DeleteOpenIDConnectProviderRequest) -> ();
+        add_client_id_to_open_id_connect_provider(types::AddClientIDToOpenIDConnectProviderRequest) -> ();
+        remove_client_id_from_open_id_connect_provider(types::RemoveClientIDFromOpenIDConnectProviderRequest) -> ();
+        update_open_id_connect_provider_thumbprint(types::UpdateOpenIDConnectProviderThumbprintRequest) -> ();
+        tag_open_id_connect_provider(types::TagOpenIDConnectProviderRequest) -> ();
+        untag_open_id_connect_provider(types::UntagOpenIDConnectProviderRequest) -> ();
+        list_open_id_connect_provider_tags(types::ListOpenIDConnectProviderTagsRequest) -> types::ListOpenIDConnectProviderTagsResponse;
+        create_account_alias(types::CreateAccountAliasRequest) -> ();
+        delete_account_alias(types::DeleteAccountAliasRequest) -> ();
+        list_account_aliases(types::ListAccountAliasesRequest) -> types::ListAccountAliasesResponse;
+        get_account_authorization_details(types::GetAccountAuthorizationDetailsRequest) -> types::GetAccountAuthorizationDetailsResponse;
+        create_group(types::CreateGroupRequest) -> types::CreateGroupResponse;
+        get_group(types::GetGroupRequest) -> types::GetGroupResponse;
+        list_groups(types::ListGroupsRequest) -> types::ListGroupsResponse;
+        list_groups_for_user(types::ListGroupsForUserRequest) -> types::ListGroupsForUserResponse;
+        update_group(types::UpdateGroupRequest) -> ();
+        delete_group(types::DeleteGroupRequest) -> ();
+        add_user_to_group(types::AddUserToGroupRequest) -> ();
+        remove_user_from_group(types::RemoveUserFromGroupRequest) -> ();
+        create_policy(types::CreatePolicyRequest) -> types::CreatePolicyResponse;
+        get_policy(types::GetPolicyRequest) -> types::GetPolicyResponse;
+        list_policies(types::ListPoliciesRequest) -> types::ListPoliciesResponse;
+        delete_policy(types::DeletePolicyRequest) -> ();
+        create_policy_version(types::CreatePolicyVersionRequest) -> types::CreatePolicyVersionResponse;
+        get_policy_version(types::GetPolicyVersionRequest) -> types::GetPolicyVersionResponse;
+        list_policy_versions(types::ListPolicyVersionsRequest) -> types::ListPolicyVersionsResponse;
+        delete_policy_version(types::DeletePolicyVersionRequest) -> ();
+        set_default_policy_version(types::SetDefaultPolicyVersionRequest) -> ();
+        tag_policy(types::TagPolicyRequest) -> ();
+        untag_policy(types::UntagPolicyRequest) -> ();
+        list_policy_tags(types::ListPolicyTagsRequest) -> types::ListPolicyTagsResponse;
+        list_entities_for_policy(types::ListEntitiesForPolicyRequest) -> types::ListEntitiesForPolicyResponse;
+        attach_user_policy(types::AttachUserPolicyRequest) -> ();
+        attach_group_policy(types::AttachGroupPolicyRequest) -> ();
+        attach_role_policy(types::AttachRolePolicyRequest) -> ();
+        detach_user_policy(types::DetachUserPolicyRequest) -> ();
+        detach_group_policy(types::DetachGroupPolicyRequest) -> ();
+        detach_role_policy(types::DetachRolePolicyRequest) -> ();
+        list_attached_user_policies(types::ListAttachedUserPoliciesRequest) -> types::ListAttachedUserPoliciesResponse;
+        list_attached_group_policies(types::ListAttachedGroupPoliciesRequest) -> types::ListAttachedGroupPoliciesResponse;
+        list_attached_role_policies(types::ListAttachedRolePoliciesRequest) -> types::ListAttachedRolePoliciesResponse;
+        put_user_policy(types::PutUserPolicyRequest) -> ();
+        put_group_policy(types::PutGroupPolicyRequest) -> ();
+        put_role_policy(types::PutRolePolicyRequest) -> ();
+        get_user_policy(types::GetUserPolicyRequest) -> types::GetUserPolicyResponse;
+        get_group_policy(types::GetGroupPolicyRequest) -> types::GetGroupPolicyResponse;
+        get_role_policy(types::GetRolePolicyRequest) -> types::GetRolePolicyResponse;
+        delete_user_policy(types::DeleteUserPolicyRequest) -> ();
+        delete_group_policy(types::DeleteGroupPolicyRequest) -> ();
+        delete_role_policy(types::DeleteRolePolicyRequest) -> ();
+        list_user_policies(types::ListUserPoliciesRequest) -> types::ListUserPoliciesResponse;
+        list_group_policies(types::ListGroupPoliciesRequest) -> types::ListGroupPoliciesResponse;
+        list_role_policies(types::ListRolePoliciesRequest) -> types::ListRolePoliciesResponse;
+        create_role(types::CreateRoleRequest) -> types::CreateRoleResponse;
+        get_role(types::GetRoleRequest) -> types::GetRoleResponse;
+        list_roles(types::ListRolesRequest) -> types::ListRolesResponse;
+        update_role(types::UpdateRoleRequest) -> types::UpdateRoleResponse;
+        update_role_description(types::UpdateRoleDescriptionRequest) -> types::UpdateRoleDescriptionResponse;
+        update_assume_role_policy(types::UpdateAssumeRolePolicyRequest) -> ();
+        delete_role(types::DeleteRoleRequest) -> ();
+        tag_role(types::TagRoleRequest) -> ();
+        untag_role(types::UntagRoleRequest) -> ();
+        list_role_tags(types::ListRoleTagsRequest) -> types::ListRoleTagsResponse;
+        put_role_permissions_boundary(types::PutRolePermissionsBoundaryRequest) -> ();
+        delete_role_permissions_boundary(types::DeleteRolePermissionsBoundaryRequest) -> ();
+        create_instance_profile(types::CreateInstanceProfileRequest) -> types::CreateInstanceProfileResponse;
+        get_instance_profile(types::GetInstanceProfileRequest) -> types::GetInstanceProfileResponse;
+        list_instance_profiles(types::ListInstanceProfilesRequest) -> types::ListInstanceProfilesResponse;
+        list_instance_profiles_for_role(types::ListInstanceProfilesForRoleRequest) -> types::ListInstanceProfilesForRoleResponse;
+        add_role_to_instance_profile(types::AddRoleToInstanceProfileRequest) -> ();
+        remove_role_from_instance_profile(types::RemoveRoleFromInstanceProfileRequest) -> ();
+        delete_instance_profile(types::DeleteInstanceProfileRequest) -> ();
+        tag_instance_profile(types::TagInstanceProfileRequest) -> ();
+        untag_instance_profile(types::UntagInstanceProfileRequest) -> ();
+        list_instance_profile_tags(types::ListInstanceProfileTagsRequest) -> types::ListInstanceProfileTagsResponse;
+        simulate_principal_policy(types::SimulatePrincipalPolicyRequest) -> types::SimulatePolicyResponse;
+        simulate_custom_policy(types::SimulateCustomPolicyRequest) -> types::SimulatePolicyResponse;
+        get_context_keys_for_custom_policy(types::GetContextKeysForCustomPolicyRequest) -> types::GetContextKeysForPolicyResponse;
+        get_context_keys_for_principal_policy(types::GetContextKeysForPrincipalPolicyRequest) -> types::GetContextKeysForPolicyResponse;
+        create_user(types::CreateUserRequest) -> types::CreateUserResponse;
+        get_user(types::GetUserRequest) -> types::GetUserResponse;
+        list_users(types::ListUsersRequest) -> types::ListUsersResponse;
+        update_user(types::UpdateUserRequest) -> ();
+        delete_user(types::DeleteUserRequest) -> ();
+        tag_user(types::TagUserRequest) -> ();
+        untag_user(types::UntagUserRequest) -> ();
+        list_user_tags(types::ListUserTagsRequest) -> types::ListUserTagsResponse;
+        put_user_permissions_boundary(types::PutUserPermissionsBoundaryRequest) -> ();
+        delete_user_permissions_boundary(types::DeleteUserPermissionsBoundaryRequest) -> ();
+        create_login_profile(types::CreateLoginProfileRequest) -> types::CreateLoginProfileResponse;
+        get_login_profile(types::GetLoginProfileRequest) -> types::GetLoginProfileResponse;
+        update_login_profile(types::UpdateLoginProfileRequest) -> ();
+        delete_login_profile(types::DeleteLoginProfileRequest) -> ();
+        create_access_key(types::CreateAccessKeyRequest) -> types::CreateAccessKeyResponse;
+        list_access_keys(types::ListAccessKeysRequest) -> types::ListAccessKeysResponse;
+        delete_access_key(types::DeleteAccessKeyRequest) -> ();
+        update_access_key(types::UpdateAccessKeyRequest) -> ();
+        get_access_key_last_used(types::GetAccessKeyLastUsedRequest) -> types::GetAccessKeyLastUsedResponse;
     }
 }

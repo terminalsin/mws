@@ -15,7 +15,8 @@ override only) see the same behaviour as real AWS. Fidelity beats breadth.
 - **Match AWS wording.** Error codes, HTTP statuses and messages should be what
   AWS returns. Validation messages come from the model's constraints.
 - **Authorize in handlers.** Every handler calls `ctx.authorize("svc:Action",
-  resource_arn, ...)` before acting, even while the authorizer allows all.
+  resource_arn, condition_keys)` before acting. The IAM authorizer reads IAM
+  state, so in `mws-iam` never call it while holding the state lock.
 - **Prove it with real SDKs.** Behaviour changes get an E2E test in
   `tests/e2e-rust` (official Rust SDK) and, where useful, `tests/e2e-python`
   (boto3).

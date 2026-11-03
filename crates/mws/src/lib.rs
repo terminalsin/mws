@@ -5,6 +5,7 @@ use std::sync::Arc;
 use mws_core::Environment;
 use mws_iam::{Iam, IamConfig};
 use mws_server::Gateway;
+use mws_sts::Sts;
 
 #[derive(Debug, Clone, Default)]
 pub struct Config {
@@ -32,9 +33,13 @@ impl Config {
 /// Build the gateway with every service MWS emulates.
 pub fn build_gateway(config: Config) -> Gateway {
     let iam = Iam::new(config.iam.clone());
+    let sts = Sts::new(iam.clone());
     Gateway::builder()
         .environment(Environment { partition: config.iam.partition.clone(), ..Environment::default() })
+        .authorizer(iam.authorizer())
         .credentials(iam.credential_store())
+        .credentials(sts.credential_store())
         .service(Arc::new(iam))
+        .service(Arc::new(sts))
         .build()
 }

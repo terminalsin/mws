@@ -9,6 +9,8 @@ members = [
     "crates/mws-server",
     "crates/mws",
     "crates/services/mws-iam",
+    "crates/services/mws-iam-policy",
+    "crates/services/mws-sts",
     "tests/e2e-rust",
 ]
 
@@ -28,6 +30,8 @@ mws-proto-query = { path = "crates/mws-proto-query" }
 mws-server = { path = "crates/mws-server" }
 mws = { path = "crates/mws" }
 mws-iam = { path = "crates/services/mws-iam" }
+mws-iam-policy = { path = "crates/services/mws-iam-policy" }
+mws-sts = { path = "crates/services/mws-sts" }
 
 # external
 async-trait = "0.1"

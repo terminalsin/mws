@@ -14,6 +14,34 @@ pub struct Caller {
     pub user_id: String,
     pub access_key_id: String,
     pub kind: CallerKind,
+    /// Set when the caller signed with temporary credentials.
+    pub session: Option<SessionInfo>,
+}
+
+/// How temporary credentials were obtained.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SessionKind {
+    AssumeRole,
+    AssumeRoleWithWebIdentity,
+    GetSessionToken,
+    GetFederationToken,
+}
+
+/// Facts about a temporary-credential session that affect authorization.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SessionInfo {
+    pub kind: SessionKind,
+    /// Session policy documents (inline and resolved managed ones). Empty
+    /// means no session policy was passed.
+    pub policies: Vec<String>,
+    /// Session tags (`aws:PrincipalTag/...`).
+    pub tags: BTreeMap<String, String>,
+    /// Tag keys that carry over when this session assumes another role.
+    pub transitive_tag_keys: Vec<String>,
+    pub source_identity: Option<String>,
+    pub issued_at: DateTime<Utc>,
+    pub expires_at: DateTime<Utc>,
+    pub mfa_authenticated: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -26,8 +54,11 @@ pub enum CallerKind {
         role_name: String,
         session_name: String,
     },
+    /// `GetFederationToken`. `parent_user` is the IAM user that called it,
+    /// or `None` for the root user.
     FederatedUser {
         name: String,
+        parent_user: Option<String>,
     },
     /// An unsigned request, for the few operations AWS accepts without a
     /// signature (e.g. `sts:AssumeRoleWithWebIdentity`).
@@ -42,6 +73,7 @@ impl Caller {
             user_id: "anonymous".into(),
             access_key_id: String::new(),
             kind: CallerKind::Anonymous,
+            session: None,
         }
     }
 }
@@ -98,6 +130,9 @@ pub struct AuthzRequest<'a> {
     pub resource: &'a str,
     /// Resource-based policy attached to the resource, if the service has one.
     pub resource_policy: Option<&'a str>,
+    /// The resource policy must itself allow the caller (as role trust
+    /// policies do), rather than merely being able to.
+    pub resource_policy_required: bool,
     pub context: ConditionContext,
 }
 

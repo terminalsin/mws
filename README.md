@@ -12,14 +12,27 @@ whether your code would work against AWS.
 
 | Service | State |
 | --- | --- |
-| IAM | All 180 operations are generated from the AWS model and validate input like AWS. Users and access keys are implemented; the rest return `NotImplemented`. |
-| STS | Planned (step 2) |
+| IAM | All 180 operations are generated from the AWS model and validate input like AWS. About 100 are implemented: users, groups, roles, access keys, login profiles, managed policies and versions, inline policies, attachments, permissions boundaries, tags, instance profiles, OIDC providers, account aliases and summary, authorization details, and the policy simulator. The rest return `NotImplemented`. |
+| STS | `GetCallerIdentity`, `AssumeRole` (trust policies, session policies, tags, transitive tags, external id, source identity, role chaining limits), `GetSessionToken`, `GetFederationToken`, `AssumeRoleWithWebIdentity`, `GetAccessKeyInfo`. |
 | Route 53 | Planned (step 3) |
 | Private CA | Planned (step 4) |
 
 Authentication is real: requests must carry a valid SigV4 signature (header or
-presigned URL) from a known access key. Authorization currently allows every
-authenticated call; real IAM policy evaluation arrives in step 2.
+presigned URL) from a known access key or STS session.
+
+Authorization is real too. Every call to every service is evaluated against
+the caller's IAM policies with AWS's evaluation logic: explicit deny wins;
+identity policies (inline, managed, group) must allow; permissions boundaries
+and session policies cap them; resource policies and role trust policies are
+honoured (including account-level delegation). Conditions support every
+operator (`String*`, `Numeric*`, `Date*`, `Bool`, `IpAddress`, `Arn*`,
+`Binary*`, `Null`, `...IfExists`, `ForAllValues:`/`ForAnyValue:`) and policy
+variables such as `${aws:username}`. Denials use AWS's message wording.
+
+The account root user is allowed everything, as in AWS. Notes:
+`AssumeRoleWithWebIdentity` checks issuer, audience and expiry but does not
+verify token signatures, and AWS managed policies are a trimmed subset
+covering the services MWS emulates.
 
 ## Running
 
