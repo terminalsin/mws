@@ -12,7 +12,7 @@ mod validate;
 
 pub use auth::{
     AllowAll, Authorizer, AuthzDecision, AuthzRequest, Caller, CallerKind, ConditionContext, CredentialError,
-    CredentialStore, ResolvedCredential, SessionInfo, SessionKind,
+    CredentialStore, ResolvedCredential, ResourcePolicyMode, SessionInfo, SessionKind,
 };
 pub use error::{ErrorFault, ErrorField, ErrorValue, ServiceError};
 pub use service::{HttpRequest, HttpResponse, RequestContext, Service};

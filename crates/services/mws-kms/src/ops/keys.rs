@@ -1,0 +1,764 @@
+//! Key lifecycle: creation, metadata, state, deletion, tags, key policies,
+//! rotation and multi-Region replication.
+
+use chrono::{Duration, Utc};
+use mws_core::{AuthzDecision, ConditionContext, RequestContext, ResourcePolicyMode, ServiceError};
+use mws_iam_policy::{Policy, PolicyKind};
+
+use super::{
+    invalid_state, key_arn, metadata, page, request_tag_conditions, require_enabled, require_not_pending_deletion,
+    validate_tags, validation, Access,
+};
+use crate::crypto::{self, Spec};
+use crate::generated::{errors, types};
+use crate::state::{Key, Material, State};
+use crate::Kms;
+
+const MAX_ON_DEMAND_ROTATIONS: usize = 25;
+const DEFAULT_ROTATION_DAYS: i32 = 365;
+
+/// The policy KMS gives a key created without one, formatted as KMS
+/// returns it.
+pub(crate) fn default_policy(partition: &str, account: &str) -> String {
+    format!(
+        "{{\n  \"Version\" : \"2012-10-17\",\n  \"Id\" : \"key-default-1\",\n  \"Statement\" : [ {{\n    \"Sid\" : \"Enable IAM User Permissions\",\n    \"Effect\" : \"Allow\",\n    \"Principal\" : {{\n      \"AWS\" : \"arn:{partition}:iam::{account}:root\"\n    }},\n    \"Action\" : \"kms:*\",\n    \"Resource\" : \"*\"\n  }} ]\n}}"
+    )
+}
+
+fn parse_policy(doc: &str) -> Result<(), ServiceError> {
+    Policy::parse(doc, PolicyKind::Resource).map(|_| ()).map_err(|e| errors::malformed_policy_document(e.0))
+}
+
+/// The policy lockout safety check: the caller must still be able to
+/// change the policy once it is in place.
+fn lockout_check(ctx: &RequestContext, arn: &str, policy: &str) -> Result<(), ServiceError> {
+    let mut cond = ConditionContext::new();
+    cond.insert("kms:CallerAccount".into(), vec![ctx.caller.account_id.clone()]);
+    match ctx.check("kms:PutKeyPolicy", arn, Some(policy), ResourcePolicyMode::Required, cond) {
+        AuthzDecision::Allow => Ok(()),
+        AuthzDecision::Deny { .. } => Err(errors::malformed_policy_document(
+            "The new key policy will not allow you to update the key policy in the future.",
+        )),
+    }
+}
+
+fn new_key_id(multi_region: bool) -> String {
+    if multi_region {
+        format!("mrk-{}", crypto::random_hex(16))
+    } else {
+        uuid::Uuid::new_v4().to_string()
+    }
+}
+
+pub(crate) fn new_material(secret: Vec<u8>, rotation_type: Option<&str>) -> Material {
+    Material {
+        id: crypto::material_id(&secret),
+        secret,
+        created_at: Utc::now(),
+        rotation_type: rotation_type.map(str::to_string),
+        imported: false,
+        description: None,
+        expiration_model: None,
+        valid_to: None,
+        pending: false,
+    }
+}
+
+impl State {
+    /// Copy a primary key's material to its replicas (they share it).
+    pub(crate) fn sync_replicas(&mut self, arn: &str) {
+        let Some(primary) = self.keys.get(arn).cloned() else { return };
+        for r in self.replicas_of(arn) {
+            let k = self.keys.get_mut(&r).expect("listed");
+            k.materials = primary.materials.clone();
+            k.current_material = primary.current_material.clone();
+            if k.state == "PendingImport" && primary.current_material.is_some() {
+                k.state = "Enabled".into();
+            }
+        }
+    }
+}
+
+fn is_primary(key: &Key) -> bool {
+    !key.multi_region || key.primary_region.as_deref() == Some(key.region.as_str())
+}
+
+impl Kms {
+    pub(crate) fn create_key(
+        &self,
+        ctx: &RequestContext,
+        input: types::CreateKeyRequest,
+    ) -> Result<types::CreateKeyResponse, ServiceError> {
+        if input.key_spec.is_some() && input.customer_master_key_spec.is_some() {
+            return Err(validation(
+                "You cannot specify KeySpec and CustomerMasterKeySpec in the same request. CustomerMasterKeySpec parameter is deprecated. Use KeySpec instead.",
+            ));
+        }
+        let key_spec = input.key_spec.or(input.customer_master_key_spec).unwrap_or_else(|| "SYMMETRIC_DEFAULT".into());
+        let s = Spec::parse(&key_spec).ok_or_else(|| validation(format!("Invalid KeySpec {key_spec}")))?;
+        let usage = input.key_usage.unwrap_or_else(|| "ENCRYPT_DECRYPT".into());
+        if !s.usages().contains(&usage.as_str()) {
+            return Err(validation(format!("KeyUsage {usage} is not compatible with KeySpec {key_spec}")));
+        }
+        let origin = input.origin.unwrap_or_else(|| "AWS_KMS".into());
+        let multi_region = input.multi_region.unwrap_or(false);
+        let tags = input.tags.unwrap_or_default();
+
+        let mut cond = request_tag_conditions(&tags);
+        cond.insert("kms:KeySpec".into(), vec![key_spec.clone()]);
+        cond.insert("kms:CustomerMasterKeySpec".into(), vec![key_spec.clone()]);
+        cond.insert("kms:KeyUsage".into(), vec![usage.clone()]);
+        cond.insert("kms:CustomerMasterKeyUsage".into(), vec![usage.clone()]);
+        cond.insert("kms:KeyOrigin".into(), vec![origin.clone()]);
+        cond.insert("kms:MultiRegion".into(), vec![multi_region.to_string()]);
+        cond.insert(
+            "kms:BypassPolicyLockoutSafetyCheck".into(),
+            vec![input.bypass_policy_lockout_safety_check.to_string()],
+        );
+        self.authorize_account(ctx, "CreateKey", cond)?;
+        validate_tags(&tags)?;
+
+        match origin.as_str() {
+            "AWS_KMS" | "EXTERNAL" => {
+                if input.custom_key_store_id.is_some() {
+                    return Err(validation(
+                        "CustomKeyStoreId can be specified only when Origin is AWS_CLOUDHSM or EXTERNAL_KEY_STORE.",
+                    ));
+                }
+            }
+            "AWS_CLOUDHSM" | "EXTERNAL_KEY_STORE" => {
+                if s != Spec::Symmetric {
+                    return Err(errors::unsupported_operation(format!(
+                        "KeySpec {key_spec} is not supported for Origin {origin}"
+                    )));
+                }
+                if multi_region {
+                    return Err(errors::unsupported_operation(
+                        "Multi-Region keys are not supported in custom key stores.",
+                    ));
+                }
+                let id = input
+                    .custom_key_store_id
+                    .as_deref()
+                    .ok_or_else(|| validation(format!("CustomKeyStoreId is required when Origin is {origin}.")))?;
+                let st = self.lock();
+                let store =
+                    st.custom_key_stores.get(id).filter(|s| s.account == ctx.caller.account_id).ok_or_else(|| {
+                        errors::custom_key_store_not_found(format!("Custom key store {id} not found."))
+                    })?;
+                if store.connection_state != "CONNECTED" {
+                    return Err(errors::custom_key_store_invalid_state(format!(
+                        "The custom key store {id} is not connected."
+                    )));
+                }
+            }
+            other => return Err(validation(format!("Invalid Origin {other}"))),
+        }
+        if origin == "EXTERNAL_KEY_STORE" && input.xks_key_id.is_none() {
+            return Err(validation("XksKeyId is required when Origin is EXTERNAL_KEY_STORE."));
+        }
+
+        let key_id = new_key_id(multi_region);
+        let account = ctx.caller.account_id.clone();
+        let arn = key_arn(&ctx.partition, &ctx.region, &account, &key_id);
+        let policy = match input.policy {
+            Some(p) => {
+                parse_policy(&p)?;
+                if !input.bypass_policy_lockout_safety_check {
+                    lockout_check(ctx, &arn, &p)?;
+                }
+                p
+            }
+            None => default_policy(&ctx.partition, &account),
+        };
+        let (materials, state) = if origin == "EXTERNAL" {
+            (vec![], "PendingImport")
+        } else {
+            (vec![new_material(crypto::generate(s)?, None)], "Enabled")
+        };
+        let key = Key {
+            arn: arn.clone(),
+            key_id,
+            account,
+            region: ctx.region.clone(),
+            created_at: Utc::now(),
+            description: input.description.unwrap_or_default(),
+            key_usage: usage,
+            key_spec,
+            origin,
+            key_manager: "CUSTOMER".into(),
+            state: state.into(),
+            enabled_flag: true,
+            deletion_date: None,
+            pending_window_days: None,
+            policy,
+            tags: tags.into_iter().map(|t| (t.tag_key, t.tag_value)).collect(),
+            current_material: materials.last().map(|m| m.id.clone()),
+            materials,
+            rotation_period_days: None,
+            next_rotation: None,
+            multi_region,
+            primary_region: multi_region.then(|| ctx.region.clone()),
+            custom_key_store_id: input.custom_key_store_id,
+            xks_key_id: input.xks_key_id,
+            last_usage: None,
+        };
+        let mut st = self.lock();
+        let md = metadata(&st, &key);
+        st.keys.insert(arn, key);
+        Ok(types::CreateKeyResponse { key_metadata: Some(md) })
+    }
+
+    pub(crate) fn describe_key(
+        &self,
+        ctx: &RequestContext,
+        input: types::DescribeKeyRequest,
+    ) -> Result<types::DescribeKeyResponse, ServiceError> {
+        let t = self.authorize_key(ctx, &input.key_id, Access::new("DescribeKey").grant("DescribeKey").aliases())?;
+        let st = self.lock();
+        Ok(types::DescribeKeyResponse { key_metadata: Some(metadata(&st, st.key(&t.arn)?)) })
+    }
+
+    pub(crate) fn list_keys(
+        &self,
+        ctx: &RequestContext,
+        input: types::ListKeysRequest,
+    ) -> Result<types::ListKeysResponse, ServiceError> {
+        self.authorize_account(ctx, "ListKeys", ConditionContext::new())?;
+        let st = self.lock();
+        let items = st
+            .keys
+            .values()
+            .filter(|k| k.account == ctx.caller.account_id && k.region == ctx.region)
+            .map(|k| {
+                (k.key_id.clone(), types::KeyListEntry { key_id: Some(k.key_id.clone()), key_arn: Some(k.arn.clone()) })
+            })
+            .collect();
+        let (keys, next_marker, truncated) = page(items, input.limit, 100, input.marker.as_deref())?;
+        Ok(types::ListKeysResponse { keys: Some(keys), next_marker, truncated })
+    }
+
+    fn set_enabled(&self, ctx: &RequestContext, key_id: &str, action: &str, enable: bool) -> Result<(), ServiceError> {
+        let t = self.authorize_key(ctx, key_id, Access::new(action))?;
+        let mut st = self.lock();
+        let key = st.key_mut(&t.arn)?;
+        match key.state.as_str() {
+            "Enabled" | "Disabled" => key.state = if enable { "Enabled" } else { "Disabled" }.into(),
+            s => return Err(invalid_state(key, s)),
+        }
+        key.enabled_flag = enable;
+        Ok(())
+    }
+
+    pub(crate) fn enable_key(&self, ctx: &RequestContext, input: types::EnableKeyRequest) -> Result<(), ServiceError> {
+        self.set_enabled(ctx, &input.key_id, "EnableKey", true)
+    }
+
+    pub(crate) fn disable_key(
+        &self,
+        ctx: &RequestContext,
+        input: types::DisableKeyRequest,
+    ) -> Result<(), ServiceError> {
+        self.set_enabled(ctx, &input.key_id, "DisableKey", false)
+    }
+
+    pub(crate) fn schedule_key_deletion(
+        &self,
+        ctx: &RequestContext,
+        input: types::ScheduleKeyDeletionRequest,
+    ) -> Result<types::ScheduleKeyDeletionResponse, ServiceError> {
+        let days = input.pending_window_in_days.unwrap_or(30);
+        let mut cond = ConditionContext::new();
+        cond.insert("kms:ScheduleKeyDeletionPendingWindowInDays".into(), vec![days.to_string()]);
+        let mut access = Access::new("ScheduleKeyDeletion");
+        access.extra = cond;
+        let t = self.authorize_key(ctx, &input.key_id, access)?;
+        if !(7..=30).contains(&days) {
+            return Err(validation("PendingWindowInDays must be between 7 and 30."));
+        }
+        let mut st = self.lock();
+        let has_replicas = !st.replicas_of(&t.arn).is_empty();
+        let key = st.key_mut(&t.arn)?;
+        require_not_pending_deletion(key)?;
+        if key.key_manager == "AWS" {
+            return Err(errors::unsupported_operation(format!("{} is an AWS managed key.", key.arn)));
+        }
+        key.pending_window_days = Some(days);
+        if has_replicas && is_primary(key) {
+            key.state = "PendingReplicaDeletion".into();
+            key.deletion_date = None;
+        } else {
+            key.state = "PendingDeletion".into();
+            key.deletion_date = Some(Utc::now() + Duration::days(days as i64));
+        }
+        Ok(types::ScheduleKeyDeletionResponse {
+            key_id: Some(key.arn.clone()),
+            deletion_date: key.deletion_date,
+            key_state: Some(key.state.clone()),
+            pending_window_in_days: Some(days),
+        })
+    }
+
+    pub(crate) fn cancel_key_deletion(
+        &self,
+        ctx: &RequestContext,
+        input: types::CancelKeyDeletionRequest,
+    ) -> Result<types::CancelKeyDeletionResponse, ServiceError> {
+        let t = self.authorize_key(ctx, &input.key_id, Access::new("CancelKeyDeletion"))?;
+        let mut st = self.lock();
+        let key = st.key_mut(&t.arn)?;
+        if !matches!(key.state.as_str(), "PendingDeletion" | "PendingReplicaDeletion") {
+            return Err(errors::kms_invalid_state(format!("{} is not pending deletion.", key.arn)));
+        }
+        key.state =
+            if key.origin == "EXTERNAL" && key.current().is_none() { "PendingImport" } else { "Disabled" }.into();
+        key.enabled_flag = false;
+        key.deletion_date = None;
+        key.pending_window_days = None;
+        Ok(types::CancelKeyDeletionResponse { key_id: Some(key.arn.clone()) })
+    }
+
+    pub(crate) fn update_key_description(
+        &self,
+        ctx: &RequestContext,
+        input: types::UpdateKeyDescriptionRequest,
+    ) -> Result<(), ServiceError> {
+        let t = self.authorize_key(ctx, &input.key_id, Access::new("UpdateKeyDescription"))?;
+        let mut st = self.lock();
+        let key = st.key_mut(&t.arn)?;
+        require_not_pending_deletion(key)?;
+        key.description = input.description;
+        Ok(())
+    }
+
+    pub(crate) fn tag_resource(
+        &self,
+        ctx: &RequestContext,
+        input: types::TagResourceRequest,
+    ) -> Result<(), ServiceError> {
+        let mut access = Access::new("TagResource");
+        access.extra = request_tag_conditions(&input.tags);
+        let t = self.authorize_key(ctx, &input.key_id, access)?;
+        validate_tags(&input.tags)?;
+        let mut st = self.lock();
+        let key = st.key_mut(&t.arn)?;
+        require_not_pending_deletion(key)?;
+        let mut tags = key.tags.clone();
+        for tag in input.tags {
+            tags.insert(tag.tag_key, tag.tag_value);
+        }
+        if tags.len() > 50 {
+            return Err(errors::tag("Too many tags. A KMS key can have at most 50 tags."));
+        }
+        key.tags = tags;
+        Ok(())
+    }
+
+    pub(crate) fn untag_resource(
+        &self,
+        ctx: &RequestContext,
+        input: types::UntagResourceRequest,
+    ) -> Result<(), ServiceError> {
+        let t = self.authorize_key(
+            ctx,
+            &input.key_id,
+            Access::new("UntagResource").condition("aws:TagKeys", input.tag_keys.clone()),
+        )?;
+        let mut st = self.lock();
+        let key = st.key_mut(&t.arn)?;
+        require_not_pending_deletion(key)?;
+        for k in &input.tag_keys {
+            key.tags.remove(k);
+        }
+        Ok(())
+    }
+
+    pub(crate) fn list_resource_tags(
+        &self,
+        ctx: &RequestContext,
+        input: types::ListResourceTagsRequest,
+    ) -> Result<types::ListResourceTagsResponse, ServiceError> {
+        let t = self.authorize_key(ctx, &input.key_id, Access::new("ListResourceTags"))?;
+        let st = self.lock();
+        let items = st
+            .key(&t.arn)?
+            .tags
+            .iter()
+            .map(|(k, v)| (k.clone(), types::Tag { tag_key: k.clone(), tag_value: v.clone() }))
+            .collect();
+        let (tags, next_marker, truncated) = page(items, input.limit, 50, input.marker.as_deref())?;
+        Ok(types::ListResourceTagsResponse { tags: Some(tags), next_marker, truncated })
+    }
+
+    // ---- key policies -------------------------------------------------------
+
+    pub(crate) fn get_key_policy(
+        &self,
+        ctx: &RequestContext,
+        input: types::GetKeyPolicyRequest,
+    ) -> Result<types::GetKeyPolicyResponse, ServiceError> {
+        let t = self.authorize_key(ctx, &input.key_id, Access::new("GetKeyPolicy"))?;
+        let name = input.policy_name.unwrap_or_else(|| "default".into());
+        if name != "default" {
+            return Err(errors::not_found("No such policy exists"));
+        }
+        let st = self.lock();
+        Ok(types::GetKeyPolicyResponse { policy: Some(st.key(&t.arn)?.policy.clone()), policy_name: Some(name) })
+    }
+
+    pub(crate) fn list_key_policies(
+        &self,
+        ctx: &RequestContext,
+        input: types::ListKeyPoliciesRequest,
+    ) -> Result<types::ListKeyPoliciesResponse, ServiceError> {
+        self.authorize_key(ctx, &input.key_id, Access::new("ListKeyPolicies"))?;
+        let (names, next_marker, truncated) =
+            page(vec![("default".to_string(), "default".to_string())], input.limit, 100, input.marker.as_deref())?;
+        Ok(types::ListKeyPoliciesResponse { policy_names: Some(names), next_marker, truncated })
+    }
+
+    pub(crate) fn put_key_policy(
+        &self,
+        ctx: &RequestContext,
+        input: types::PutKeyPolicyRequest,
+    ) -> Result<(), ServiceError> {
+        let t = self.authorize_key(
+            ctx,
+            &input.key_id,
+            Access::new("PutKeyPolicy").condition(
+                "kms:BypassPolicyLockoutSafetyCheck",
+                vec![input.bypass_policy_lockout_safety_check.to_string()],
+            ),
+        )?;
+        if input.policy_name.as_deref().is_some_and(|n| n != "default") {
+            return Err(errors::not_found("No such policy exists"));
+        }
+        parse_policy(&input.policy)?;
+        if !input.bypass_policy_lockout_safety_check {
+            lockout_check(ctx, &t.arn, &input.policy)?;
+        }
+        let mut st = self.lock();
+        let key = st.key_mut(&t.arn)?;
+        require_not_pending_deletion(key)?;
+        key.policy = input.policy;
+        Ok(())
+    }
+
+    // ---- rotation -----------------------------------------------------------
+
+    fn rotatable<'a>(key: &'a Key, what: &str) -> Result<&'a Key, ServiceError> {
+        if !key.is_symmetric() {
+            return Err(errors::unsupported_operation(format!(
+                "{} key spec {} is not valid for {what}.",
+                key.arn, key.key_spec
+            )));
+        }
+        if key.custom_key_store_id.is_some() {
+            return Err(errors::unsupported_operation(format!(
+                "{} is in a custom key store, which does not support {what}.",
+                key.arn
+            )));
+        }
+        if !is_primary(key) {
+            return Err(errors::unsupported_operation(format!(
+                "{} is a multi-Region replica key. Rotation is managed by its primary key.",
+                key.arn
+            )));
+        }
+        Ok(key)
+    }
+
+    pub(crate) fn enable_key_rotation(
+        &self,
+        ctx: &RequestContext,
+        input: types::EnableKeyRotationRequest,
+    ) -> Result<(), ServiceError> {
+        let period = input.rotation_period_in_days.unwrap_or(DEFAULT_ROTATION_DAYS);
+        let t = self.authorize_key(
+            ctx,
+            &input.key_id,
+            Access::new("EnableKeyRotation").condition("kms:RotationPeriodInDays", vec![period.to_string()]),
+        )?;
+        let mut st = self.lock();
+        let key = st.key_mut(&t.arn)?;
+        Self::rotatable(key, "automatic rotation")?;
+        if key.origin != "AWS_KMS" {
+            return Err(errors::unsupported_operation(format!(
+                "{} origin is {} which is not valid for this operation.",
+                key.arn, key.origin
+            )));
+        }
+        require_enabled(key)?;
+        if key.key_manager == "AWS" {
+            return Err(errors::unsupported_operation(format!("{} is an AWS managed key.", key.arn)));
+        }
+        key.rotation_period_days = Some(period);
+        key.next_rotation = Some(Utc::now() + Duration::days(period as i64));
+        Ok(())
+    }
+
+    pub(crate) fn disable_key_rotation(
+        &self,
+        ctx: &RequestContext,
+        input: types::DisableKeyRotationRequest,
+    ) -> Result<(), ServiceError> {
+        let t = self.authorize_key(ctx, &input.key_id, Access::new("DisableKeyRotation"))?;
+        let mut st = self.lock();
+        let key = st.key_mut(&t.arn)?;
+        Self::rotatable(key, "automatic rotation")?;
+        if key.origin != "AWS_KMS" {
+            return Err(errors::unsupported_operation(format!(
+                "{} origin is {} which is not valid for this operation.",
+                key.arn, key.origin
+            )));
+        }
+        require_enabled(key)?;
+        key.rotation_period_days = None;
+        key.next_rotation = None;
+        Ok(())
+    }
+
+    pub(crate) fn get_key_rotation_status(
+        &self,
+        ctx: &RequestContext,
+        input: types::GetKeyRotationStatusRequest,
+    ) -> Result<types::GetKeyRotationStatusResponse, ServiceError> {
+        let t = self.authorize_key(ctx, &input.key_id, Access::new("GetKeyRotationStatus"))?;
+        let st = self.lock();
+        let key = st.key(&t.arn)?;
+        if !key.is_symmetric() {
+            return Err(errors::unsupported_operation(format!(
+                "{} key spec {} is not valid for this operation.",
+                key.arn, key.key_spec
+            )));
+        }
+        // Replicas report their primary's rotation settings.
+        let source = if is_primary(key) {
+            key
+        } else {
+            let primary_region = key.primary_region.clone().unwrap_or_default();
+            let parn = key_arn(&ctx.partition, &primary_region, &key.account, &key.key_id);
+            st.keys.get(&parn).unwrap_or(key)
+        };
+        Ok(types::GetKeyRotationStatusResponse {
+            key_rotation_enabled: source.rotation_period_days.is_some(),
+            key_id: Some(key.arn.clone()),
+            rotation_period_in_days: source.rotation_period_days,
+            next_rotation_date: source.next_rotation,
+            on_demand_rotation_start_date: None,
+        })
+    }
+
+    pub(crate) fn rotate_key_on_demand(
+        &self,
+        ctx: &RequestContext,
+        input: types::RotateKeyOnDemandRequest,
+    ) -> Result<types::RotateKeyOnDemandResponse, ServiceError> {
+        let t = self.authorize_key(ctx, &input.key_id, Access::new("RotateKeyOnDemand"))?;
+        let mut st = self.lock();
+        let key = st.key_mut(&t.arn)?;
+        Self::rotatable(key, "on-demand rotation")?;
+        require_enabled(key)?;
+        if key.key_manager == "AWS" {
+            return Err(errors::unsupported_operation(format!("{} is an AWS managed key.", key.arn)));
+        }
+        let done = key.materials.iter().filter(|m| m.rotation_type.as_deref() == Some("ON_DEMAND")).count();
+        if done >= MAX_ON_DEMAND_ROTATIONS {
+            return Err(errors::limit_exceeded(format!(
+                "The on-demand rotations limit has been reached for the given key {}.",
+                key.arn
+            )));
+        }
+        if key.origin == "EXTERNAL" {
+            let pending = key.materials.iter_mut().find(|m| m.pending).ok_or_else(|| {
+                errors::kms_invalid_state(format!(
+                    "{} has no key material pending rotation. Import new key material first.",
+                    t.arn
+                ))
+            })?;
+            pending.pending = false;
+            pending.rotation_type = Some("ON_DEMAND".into());
+            pending.created_at = Utc::now();
+            key.current_material = Some(pending.id.clone());
+        } else {
+            let m = new_material(crypto::generate(Spec::Symmetric)?, Some("ON_DEMAND"));
+            key.current_material = Some(m.id.clone());
+            key.materials.push(m);
+        }
+        let key_id = key.key_id.clone();
+        st.sync_replicas(&t.arn);
+        Ok(types::RotateKeyOnDemandResponse { key_id: Some(key_id) })
+    }
+
+    pub(crate) fn list_key_rotations(
+        &self,
+        ctx: &RequestContext,
+        input: types::ListKeyRotationsRequest,
+    ) -> Result<types::ListKeyRotationsResponse, ServiceError> {
+        let t = self.authorize_key(ctx, &input.key_id, Access::new("ListKeyRotations"))?;
+        let st = self.lock();
+        let key = st.key(&t.arn)?;
+        if !key.is_symmetric() {
+            return Err(errors::unsupported_operation(format!(
+                "{} key spec {} is not valid for this operation.",
+                key.arn, key.key_spec
+            )));
+        }
+        let all = input.include_key_material.as_deref() == Some("ALL_KEY_MATERIAL");
+        let items = key
+            .materials
+            .iter()
+            .filter(|m| all || m.rotation_type.is_some() || m.pending)
+            .enumerate()
+            .map(|(i, m)| {
+                let state = if m.pending {
+                    "PENDING_ROTATION"
+                } else if key.current_material.as_deref() == Some(m.id.as_str()) {
+                    "CURRENT"
+                } else {
+                    "NON_CURRENT"
+                };
+                let entry = types::RotationsListEntry {
+                    key_id: Some(key.key_id.clone()),
+                    key_material_id: Some(m.id.clone()),
+                    key_material_description: m.description.clone(),
+                    import_state: (key.origin == "EXTERNAL").then(|| "IMPORTED".into()),
+                    key_material_state: Some(state.into()),
+                    expiration_model: m.expiration_model.clone(),
+                    valid_to: m.valid_to,
+                    rotation_date: m.rotation_type.as_ref().map(|_| m.created_at),
+                    rotation_type: m.rotation_type.clone(),
+                };
+                (format!("{i:08}"), entry)
+            })
+            .collect();
+        let (rotations, next_marker, truncated) = page(items, input.limit, 100, input.marker.as_deref())?;
+        Ok(types::ListKeyRotationsResponse { rotations: Some(rotations), next_marker, truncated })
+    }
+
+    pub(crate) fn get_key_last_usage(
+        &self,
+        ctx: &RequestContext,
+        input: types::GetKeyLastUsageRequest,
+    ) -> Result<types::GetKeyLastUsageResponse, ServiceError> {
+        let t = self.authorize_key(ctx, &input.key_id, Access::new("GetKeyLastUsage"))?;
+        let st = self.lock();
+        let key = st.key(&t.arn)?;
+        Ok(types::GetKeyLastUsageResponse {
+            key_id: Some(key.arn.clone()),
+            key_last_usage: key.last_usage.as_ref().map(|u| types::KeyLastUsageData {
+                operation: Some(u.operation.clone()),
+                timestamp: Some(u.at),
+                cloud_trail_event_id: None,
+                kms_request_id: Some(u.request_id.clone()),
+            }),
+            tracking_start_date: Some(key.created_at),
+            key_creation_date: Some(key.created_at),
+        })
+    }
+
+    // ---- multi-Region keys --------------------------------------------------
+
+    pub(crate) fn replicate_key(
+        &self,
+        ctx: &RequestContext,
+        input: types::ReplicateKeyRequest,
+    ) -> Result<types::ReplicateKeyResponse, ServiceError> {
+        let t = self.authorize_key(
+            ctx,
+            &input.key_id,
+            Access::new("ReplicateKey").condition("kms:ReplicaRegion", vec![input.replica_region.clone()]),
+        )?;
+        let tags = input.tags.unwrap_or_default();
+        validate_tags(&tags)?;
+        let primary = self.lock().key(&t.arn)?.clone();
+        if !primary.multi_region {
+            return Err(errors::unsupported_operation(format!("{} is not a multi-Region key.", primary.arn)));
+        }
+        if !is_primary(&primary) {
+            return Err(errors::unsupported_operation(format!("{} is not a multi-Region primary key.", primary.arn)));
+        }
+        require_not_pending_deletion(&primary)?;
+        if input.replica_region == primary.region {
+            return Err(validation(format!(
+                "The replica region {} must be different from the primary key's region.",
+                input.replica_region
+            )));
+        }
+        let arn = key_arn(&ctx.partition, &input.replica_region, &primary.account, &primary.key_id);
+        let policy = match input.policy {
+            Some(p) => {
+                parse_policy(&p)?;
+                if !input.bypass_policy_lockout_safety_check {
+                    lockout_check(ctx, &arn, &p)?;
+                }
+                p
+            }
+            None => default_policy(&ctx.partition, &primary.account),
+        };
+        let mut st = self.lock();
+        if st.keys.contains_key(&arn) {
+            return Err(errors::already_exists(format!("Replica key {arn} already exists.")));
+        }
+        let replica = Key {
+            arn: arn.clone(),
+            region: input.replica_region,
+            created_at: Utc::now(),
+            description: input.description.unwrap_or_else(|| primary.description.clone()),
+            state: if primary.current_material.is_some() { "Enabled" } else { "PendingImport" }.into(),
+            enabled_flag: true,
+            deletion_date: None,
+            pending_window_days: None,
+            policy: policy.clone(),
+            tags: tags.iter().map(|t| (t.tag_key.clone(), t.tag_value.clone())).collect(),
+            rotation_period_days: None,
+            next_rotation: None,
+            last_usage: None,
+            ..primary
+        };
+        let md = metadata(&st, &replica);
+        st.keys.insert(arn, replica);
+        Ok(types::ReplicateKeyResponse {
+            replica_key_metadata: Some(md),
+            replica_policy: Some(policy),
+            replica_tags: Some(tags),
+        })
+    }
+
+    pub(crate) fn update_primary_region(
+        &self,
+        ctx: &RequestContext,
+        input: types::UpdatePrimaryRegionRequest,
+    ) -> Result<(), ServiceError> {
+        let t = self.authorize_key(
+            ctx,
+            &input.key_id,
+            Access::new("UpdatePrimaryRegion").condition("kms:PrimaryRegion", vec![input.primary_region.clone()]),
+        )?;
+        let mut st = self.lock();
+        let key = st.key(&t.arn)?.clone();
+        if !key.multi_region {
+            return Err(errors::unsupported_operation(format!("{} is not a multi-Region key.", key.arn)));
+        }
+        if !is_primary(&key) {
+            return Err(errors::unsupported_operation(format!("{} is not a multi-Region primary key.", key.arn)));
+        }
+        require_enabled(&key).or_else(|e| if key.state == "Disabled" { Ok(()) } else { Err(e) })?;
+        let new_arn = key_arn(&ctx.partition, &input.primary_region, &key.account, &key.key_id);
+        if !st.keys.contains_key(&new_arn) {
+            return Err(errors::not_found(format!("Key '{new_arn}' does not exist")));
+        }
+        let (rotation, next) = (key.rotation_period_days, key.next_rotation);
+        for k in st.keys.values_mut().filter(|k| k.key_id == key.key_id && k.account == key.account) {
+            k.primary_region = Some(input.primary_region.clone());
+            if k.arn == new_arn {
+                k.rotation_period_days = rotation;
+                k.next_rotation = next;
+            } else {
+                k.rotation_period_days = None;
+                k.next_rotation = None;
+            }
+        }
+        Ok(())
+    }
+}

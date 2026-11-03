@@ -74,7 +74,7 @@ impl<'m> Gen<'m> {
         let _ = writeln!(self.out, "}}");
 
         // ---- errors ----
-        common::emit_errors(model, &errors, &mut self.out);
+        common::emit_errors(model, &errors, true, &mut self.out);
 
         // ---- handler ----
         common::emit_handler(model, &ops, &mut self.out);

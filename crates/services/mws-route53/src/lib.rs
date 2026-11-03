@@ -44,11 +44,21 @@ use state::State;
 #[derive(Clone, Default)]
 pub struct Route53 {
     state: Arc<Mutex<State>>,
+    /// KMS, for DNSSEC key-signing keys. Without it, KSKs get a key pair of
+    /// their own and the KMS key ARN is only checked for shape.
+    kms: Option<mws_kms::Kms>,
 }
 
 impl Route53 {
     pub fn new() -> Self {
         Self::default()
+    }
+
+    /// Use `kms` for the keys behind DNSSEC key-signing keys, as Route 53
+    /// does.
+    pub fn with_kms(mut self, kms: mws_kms::Kms) -> Self {
+        self.kms = Some(kms);
+        self
     }
 
     fn lock(&self) -> MutexGuard<'_, State> {

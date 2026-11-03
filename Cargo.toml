@@ -17,6 +17,7 @@ members = [
     "crates/services/mws-sts",
     "crates/services/mws-route53",
     "crates/services/mws-acmpca",
+    "crates/services/mws-kms",
     "tests/e2e-rust",
 ]
 
@@ -44,6 +45,7 @@ mws-iam-policy = { path = "crates/services/mws-iam-policy" }
 mws-sts = { path = "crates/services/mws-sts" }
 mws-route53 = { path = "crates/services/mws-route53" }
 mws-acmpca = { path = "crates/services/mws-acmpca" }
+mws-kms = { path = "crates/services/mws-kms" }
 
 # external
 async-trait = "0.1"

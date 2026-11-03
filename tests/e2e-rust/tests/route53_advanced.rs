@@ -18,6 +18,38 @@ fn code<E: aws_sdk_route53::error::ProvideErrorMetadata>(e: E) -> String {
     e.code().unwrap_or_default().to_string()
 }
 
+/// A KMS key Route 53 can use for DNSSEC: ECC_NIST_P256 signing, with a key
+/// policy that lets the DNSSEC service principal use it.
+async fn dnssec_kms_key(mws: &Mws, allow_route53: bool) -> String {
+    let kms = aws_sdk_kms::Client::new(&mws.root_sdk_config().await);
+    let mut statements = vec![serde_json::json!({
+        "Effect": "Allow",
+        "Principal": {"AWS": "arn:aws:iam::123456789012:root"},
+        "Action": "kms:*",
+        "Resource": "*"
+    })];
+    if allow_route53 {
+        statements.push(serde_json::json!({
+            "Sid": "Allow Route 53 DNSSEC Service",
+            "Effect": "Allow",
+            "Principal": {"Service": "dnssec-route53.amazonaws.com"},
+            "Action": ["kms:DescribeKey", "kms:GetPublicKey", "kms:Sign"],
+            "Resource": "*",
+            "Condition": {"StringEquals": {"aws:SourceAccount": "123456789012"}}
+        }));
+    }
+    let policy = serde_json::json!({"Version": "2012-10-17", "Statement": statements}).to_string();
+    let key = kms
+        .create_key()
+        .key_spec(aws_sdk_kms::types::KeySpec::EccNistP256)
+        .key_usage(aws_sdk_kms::types::KeyUsageType::SignVerify)
+        .policy(policy)
+        .send()
+        .await
+        .unwrap();
+    key.key_metadata().unwrap().arn().unwrap().to_string()
+}
+
 #[tokio::test]
 async fn reusable_delegation_sets() {
     let mws = Mws::start().await;
@@ -158,7 +190,25 @@ async fn dnssec_key_signing_keys() {
     let r53 = client(&mws).await;
     let zone = r53.create_hosted_zone().name("secure.example.com").caller_reference("sec").send().await.unwrap();
     let zone_id = zone.hosted_zone().unwrap().id().trim_start_matches("/hostedzone/").to_string();
-    let kms = "arn:aws:kms:us-east-1:123456789012:key/11111111-2222-3333-4444-555555555555";
+    let kms_arn = dnssec_kms_key(&mws, true).await;
+    let kms = kms_arn.as_str();
+
+    // A key whose policy does not let Route 53 use it, and one that does
+    // not exist, are both rejected.
+    let unshared = dnssec_kms_key(&mws, false).await;
+    for arn in [unshared.as_str(), "arn:aws:kms:us-east-1:123456789012:key/11111111-2222-3333-4444-555555555555"] {
+        let err = r53
+            .create_key_signing_key()
+            .caller_reference("k-bad")
+            .hosted_zone_id(&zone_id)
+            .key_management_service_arn(arn)
+            .name("ksk_bad")
+            .status("ACTIVE")
+            .send()
+            .await
+            .unwrap_err();
+        assert_eq!(code(err.into_service_error()), "InvalidKMSArn");
+    }
 
     let bad = r53
         .create_key_signing_key()
@@ -188,8 +238,14 @@ async fn dnssec_key_signing_keys() {
     let ksk = ksk.key_signing_key().unwrap();
     assert_eq!((ksk.flag(), ksk.signing_algorithm_type(), ksk.digest_algorithm_type()), (257, 13, 2));
 
-    // Recompute the DS digest from the DNSKEY independently.
+    // The DNSKEY is the KMS key's public key.
     let public = base64::engine::general_purpose::STANDARD.decode(ksk.public_key().unwrap()).unwrap();
+    let kms_client = aws_sdk_kms::Client::new(&mws.root_sdk_config().await);
+    let spki = kms_client.get_public_key().key_id(kms).send().await.unwrap();
+    let spki = spki.public_key().unwrap().as_ref();
+    assert_eq!(&spki[spki.len() - 64..], public.as_slice());
+
+    // Recompute the DS digest from the DNSKEY independently.
     let mut rdata = vec![1, 1, 3, 13];
     rdata.extend(&public);
     let owner = b"\x06secure\x07example\x03com\x00".to_vec();
@@ -445,10 +501,11 @@ async fn new_route53_state_survives_export_and_import() {
     let set_id = set.delegation_set().unwrap().id().unwrap().trim_start_matches("/delegationset/").to_string();
     let zone = r53.create_hosted_zone().name("p.example.com").caller_reference("p").send().await.unwrap();
     let zone_id = zone.hosted_zone().unwrap().id().trim_start_matches("/hostedzone/").to_string();
+    let kms = dnssec_kms_key(&mws, true).await;
     r53.create_key_signing_key()
         .caller_reference("k")
         .hosted_zone_id(&zone_id)
-        .key_management_service_arn("arn:aws:kms:us-east-1:123456789012:key/11111111-2222-3333-4444-555555555555")
+        .key_management_service_arn(&kms)
         .name("ksk")
         .status("ACTIVE")
         .send()

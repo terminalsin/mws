@@ -6,6 +6,7 @@ use std::sync::Arc;
 use mws_acmpca::PrivateCa;
 use mws_core::Environment;
 use mws_iam::{Iam, IamConfig};
+use mws_kms::Kms;
 use mws_route53::Route53;
 use mws_server::{Gateway, Scenario, Store};
 use mws_sts::Sts;
@@ -40,10 +41,11 @@ impl Config {
 }
 
 /// The gateway plus handles to services that have side channels (the
-/// Route 53 DNS responder).
+/// Route 53 DNS responder) or that tests reach into.
 pub struct Mws {
     pub gateway: Gateway,
     pub route53: Route53,
+    pub kms: Kms,
 }
 
 /// Build the gateway with every service MWS emulates.
@@ -86,7 +88,8 @@ pub async fn start(config: Config) -> Result<Mws, String> {
 fn build_with_store(config: Config, store: Option<Arc<Store>>) -> Mws {
     let iam = Iam::new(config.iam.clone());
     let sts = Sts::new(iam.clone());
-    let route53 = Route53::new();
+    let kms = Kms::new();
+    let route53 = Route53::new().with_kms(kms.clone());
     let mut gateway = Gateway::builder();
     if let Some(store) = store {
         gateway = gateway.store(store);
@@ -101,6 +104,7 @@ fn build_with_store(config: Config, store: Option<Arc<Store>>) -> Mws {
         .service(Arc::new(sts))
         .service(Arc::new(route53.clone()))
         .service(Arc::new(PrivateCa::new()))
+        .service(Arc::new(kms.clone()))
         .build();
-    Mws { gateway, route53 }
+    Mws { gateway, route53, kms }
 }

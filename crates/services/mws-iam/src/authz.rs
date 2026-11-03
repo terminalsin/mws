@@ -3,7 +3,7 @@
 
 use std::sync::Arc;
 
-use mws_core::{Authorizer, AuthzDecision, AuthzRequest, Caller, CallerKind};
+use mws_core::{Authorizer, AuthzDecision, AuthzRequest, Caller, CallerKind, ResourcePolicyMode};
 use mws_iam_policy::{decide, ConditionContext, Policy, PolicyKind, PolicySet, PrincipalInfo, Request, SourcedPolicy};
 
 use crate::state::State;
@@ -24,12 +24,16 @@ impl Authorizer for IamAuthorizer {
             context.insert("aws:PrincipalArn", vec![arn]);
         }
         if let Some(doc) = req.resource_policy {
-            let kind = if req.resource_policy_required { PolicyKind::Trust } else { PolicyKind::Resource };
+            let kind = if req.resource_policy_mode == ResourcePolicyMode::Trust {
+                PolicyKind::Trust
+            } else {
+                PolicyKind::Resource
+            };
             if let Ok(policy) = Policy::parse(doc, kind) {
                 set.resource = Some(SourcedPolicy { source_id: "resource".into(), policy });
             }
         }
-        set.resource_required = req.resource_policy_required;
+        set.resource_required = req.resource_policy_mode != ResourcePolicyMode::Optional;
         let decision = decide(
             &set,
             &Request { action: req.action, resource: req.resource, principal: &principal, context: &context },
@@ -39,7 +43,11 @@ impl Authorizer for IamAuthorizer {
         } else {
             let reason = match decision.deny_reason {
                 // AWS gives no reason when a trust policy does not allow.
-                Some(mws_iam_policy::DenyReason::NoResourceAllow) => String::new(),
+                Some(mws_iam_policy::DenyReason::NoResourceAllow)
+                    if req.resource_policy_mode == ResourcePolicyMode::Trust =>
+                {
+                    String::new()
+                }
                 Some(r) => r.message(req.action),
                 None => String::new(),
             };

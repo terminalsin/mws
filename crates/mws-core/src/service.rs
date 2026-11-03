@@ -3,7 +3,7 @@ use std::sync::Arc;
 use bytes::Bytes;
 use chrono::{DateTime, Utc};
 
-use crate::{Authorizer, AuthzDecision, AuthzRequest, Caller, ConditionContext, ServiceError};
+use crate::{Authorizer, AuthzDecision, AuthzRequest, Caller, ConditionContext, ResourcePolicyMode, ServiceError};
 
 pub type HttpRequest = http::Request<Bytes>;
 pub type HttpResponse = http::Response<Bytes>;
@@ -63,7 +63,7 @@ impl RequestContext {
     /// Ask the authorizer whether the caller may perform `action` on
     /// `resource`, and turn a denial into the standard AccessDenied error.
     pub fn authorize(&self, action: &str, resource: &str, extra_context: ConditionContext) -> Result<(), ServiceError> {
-        self.authorize_inner(action, resource, None, false, extra_context)
+        self.authorize_inner(action, resource, None, ResourcePolicyMode::Optional, extra_context)
     }
 
     /// Like [`RequestContext::authorize`], also evaluating the resource's
@@ -75,7 +75,36 @@ impl RequestContext {
         resource_policy: Option<&str>,
         extra_context: ConditionContext,
     ) -> Result<(), ServiceError> {
-        self.authorize_inner(action, resource, resource_policy, false, extra_context)
+        self.authorize_inner(action, resource, resource_policy, ResourcePolicyMode::Optional, extra_context)
+    }
+
+    /// Like [`RequestContext::authorize_with_resource_policy`], but the
+    /// resource policy must allow the caller (directly, or through its
+    /// account together with identity policies), as KMS key policies do.
+    pub fn authorize_with_required_resource_policy(
+        &self,
+        action: &str,
+        resource: &str,
+        resource_policy: &str,
+        extra_context: ConditionContext,
+    ) -> Result<(), ServiceError> {
+        self.authorize_inner(action, resource, Some(resource_policy), ResourcePolicyMode::Required, extra_context)
+    }
+
+    /// Ask the authorizer without turning a denial into an error.
+    pub fn check(
+        &self,
+        action: &str,
+        resource: &str,
+        resource_policy: Option<&str>,
+        resource_policy_mode: ResourcePolicyMode,
+        extra_context: ConditionContext,
+    ) -> AuthzDecision {
+        let mut context = self.global_condition_context();
+        context.extend(extra_context);
+        let req =
+            AuthzRequest { caller: &self.caller, action, resource, resource_policy, resource_policy_mode, context };
+        self.authorizer.authorize(&req)
     }
 
     /// Authorize against a role trust policy: the trust policy must allow the
@@ -87,7 +116,7 @@ impl RequestContext {
         trust_policy: &str,
         extra_context: ConditionContext,
     ) -> Result<(), ServiceError> {
-        self.authorize_inner(action, role_arn, Some(trust_policy), true, extra_context)
+        self.authorize_inner(action, role_arn, Some(trust_policy), ResourcePolicyMode::Trust, extra_context)
     }
 
     fn authorize_inner(
@@ -95,14 +124,10 @@ impl RequestContext {
         action: &str,
         resource: &str,
         resource_policy: Option<&str>,
-        resource_policy_required: bool,
+        resource_policy_mode: ResourcePolicyMode,
         extra_context: ConditionContext,
     ) -> Result<(), ServiceError> {
-        let mut context = self.global_condition_context();
-        context.extend(extra_context);
-        let req =
-            AuthzRequest { caller: &self.caller, action, resource, resource_policy, resource_policy_required, context };
-        match self.authorizer.authorize(&req) {
+        match self.check(action, resource, resource_policy, resource_policy_mode, extra_context) {
             AuthzDecision::Allow => Ok(()),
             AuthzDecision::Deny { reason } => {
                 let reason = if reason.is_empty() { String::new() } else { format!(" {reason}") };
