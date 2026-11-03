@@ -184,6 +184,21 @@ async fn service_control_policies_limit_member_accounts() {
     );
     member_iam.list_users().send().await.unwrap();
 
+    // The simulator applies the account's SCPs too.
+    let sim = member_iam
+        .simulate_principal_policy()
+        .policy_source_arn(format!("arn:aws:iam::{account}:role/OrganizationAccountAccessRole"))
+        .action_names("iam:CreateUser")
+        .action_names("iam:ListUsers")
+        .send()
+        .await
+        .unwrap();
+    let results = sim.evaluation_results();
+    assert_eq!(results[0].eval_decision().as_str(), "explicitDeny");
+    assert_eq!(results[0].organizations_decision_detail().map(|d| d.allowed_by_organizations()), Some(false));
+    assert_eq!(results[1].eval_decision().as_str(), "allowed");
+    assert_eq!(results[1].organizations_decision_detail().map(|d| d.allowed_by_organizations()), Some(true));
+
     // The management account is never limited by SCPs.
     o.orgs.attach_policy().policy_id(&scp_id).target_id(&o.root_id).send().await.unwrap();
     aws_sdk_iam::Client::new(&o.admin).create_user().user_name("mgmt-user").send().await.unwrap();

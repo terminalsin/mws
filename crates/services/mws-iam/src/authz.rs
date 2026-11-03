@@ -27,7 +27,7 @@ fn resource_account(req: &AuthzRequest<'_>) -> Option<String> {
     (account.len() == 12 && account.bytes().all(|b| b.is_ascii_digit())).then(|| account.to_string())
 }
 
-fn parse_levels(levels: &[crate::org::PolicyLevel], kind: PolicyKind) -> Vec<Vec<SourcedPolicy>> {
+pub(crate) fn parse_levels(levels: &[crate::org::PolicyLevel], kind: PolicyKind) -> Vec<Vec<SourcedPolicy>> {
     levels
         .iter()
         .map(|level| {
