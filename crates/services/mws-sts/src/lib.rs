@@ -14,6 +14,7 @@ mod credentials;
 mod extra;
 mod ops;
 mod saml;
+mod service;
 mod web_identity;
 
 use std::collections::HashMap;
@@ -22,6 +23,7 @@ use std::sync::{Arc, Mutex};
 use chrono::{DateTime, Utc};
 use mws_core::{Caller, HttpRequest, HttpResponse, RequestContext, Service, ServiceError};
 use mws_iam::Iam;
+pub use service::{ServiceAssume, ServiceAssumeError, ServiceCredentials};
 
 /// An issued set of temporary credentials.
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]

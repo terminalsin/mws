@@ -25,6 +25,7 @@ pub mod generated {
 
 #[macro_use]
 mod checksum;
+mod access_points;
 mod acl;
 mod annotations;
 mod auth;
@@ -52,6 +53,11 @@ use bytes::Bytes;
 use http::Method;
 use mws_core::{HttpRequest, HttpResponse, RequestContext, Service, ServiceError};
 
+pub use access_points::{
+    AccessPoint, AccessPointDirectory, AccountPublicAccessBlock, LambdaInvocation, ObjectLambdaAccessPoint,
+    ObjectLambdaInvoker, Transformation,
+};
+pub use auth::policy_is_public;
 pub use public::{ServicePutError, ServicePutObject};
 use state::State;
 
@@ -74,6 +80,8 @@ pub struct S3 {
     kms: Option<mws_kms::Kms>,
     /// Directory bucket sessions from `CreateSession`.
     sessions: directory::Sessions,
+    /// S3 Control and Lambda, for access points and Object Lambda.
+    links: Arc<access_points::Links>,
 }
 
 /// How a request proved who sent it, for `s3:authType` and friends.
@@ -96,6 +104,11 @@ pub(crate) struct Call {
     /// Versions this request wrote (bucket, key, version id), for
     /// replication once the request is done.
     pub written: std::sync::Mutex<Vec<(String, String, String)>>,
+    /// The access point the request came through.
+    pub access_point: Option<AccessPoint>,
+    /// The service that made the request for the caller
+    /// (`aws:CalledVia`), e.g. S3 Object Lambda.
+    pub called_via: Option<&'static str>,
 }
 
 impl Call {
@@ -162,7 +175,14 @@ impl S3 {
             .and_then(|r| r.headers().get("x-amz-content-sha256"))
             .and_then(|v| v.to_str().ok())
             .map(str::to_string);
-        Call { s3: self.clone(), auth, content_sha256, written: Default::default() }
+        Call {
+            s3: self.clone(),
+            auth,
+            content_sha256,
+            written: Default::default(),
+            access_point: None,
+            called_via: None,
+        }
     }
 }
 
@@ -195,7 +215,7 @@ fn virtual_host_bucket(host: &str) -> Option<String> {
 }
 
 /// Rewrite a virtual-hosted-style request to path style.
-fn to_path_style(request: HttpRequest) -> HttpRequest {
+pub(crate) fn to_path_style(request: HttpRequest) -> HttpRequest {
     let host = request
         .headers()
         .get(http::header::HOST)
@@ -248,7 +268,7 @@ impl Service for S3 {
     }
 
     fn signing_aliases(&self) -> &'static [&'static str] {
-        &["s3express"]
+        &["s3express", "s3-object-lambda"]
     }
 
     fn session_token(&self, request: &HttpRequest) -> Option<String> {
@@ -260,32 +280,27 @@ impl Service for S3 {
     }
 
     async fn handle(&self, ctx: RequestContext, request: HttpRequest) -> HttpResponse {
-        let request = directory::control_plane_listing(to_path_style(request));
-        let head = request.method() == Method::HEAD;
-        if request.method() == Method::OPTIONS {
-            return self.preflight(&ctx, &request);
+        // A function fetching its Object Lambda `inputS3Url`.
+        let (ctx, request, called_via) = match self.input_url_context(&ctx, &request) {
+            None => (ctx, request, None),
+            Some(Err(e)) => return self.render_error(&ctx.request_id, &e),
+            Some(Ok((inner, uri))) => {
+                let mut request = request;
+                *request.uri_mut() = uri;
+                (inner, request, Some("s3-object-lambda.amazonaws.com"))
+            }
+        };
+        match self.resolve_target(request) {
+            access_points::Target::Bucket(r) => self.serve(ctx, r, None, called_via).await,
+            access_points::Target::AccessPoint(r, ap) => self.serve(ctx, r, Some(ap), called_via).await,
+            access_points::Target::ObjectLambda(r, olap) => {
+                let mut response = self.serve_object_lambda(&ctx, r, olap).await;
+                if let Ok(v) = http::HeaderValue::from_str(&host_id(&ctx.request_id)) {
+                    response.headers_mut().insert("x-amz-id-2", v);
+                }
+                response
+            }
         }
-        self.run_lifecycle(ctx.received_at);
-        if signature_v2(&request) {
-            // S3 turned Signature Version 2 off for buckets created since
-            // June 2020; every MWS bucket is that new.
-            let e = ServiceError::client(
-                "InvalidRequest",
-                400,
-                "The authorization mechanism you have provided is not supported. Please use AWS4-HMAC-SHA256.",
-            );
-            let mut response = self.render_error(&ctx.request_id, &e);
-            self.finish_response(&ctx, &request, &mut response);
-            return response;
-        }
-        let call = self.call(&ctx, Some(&request));
-        let mut response = generated::dispatch(&call, &ctx, &request).await;
-        self.replicate(&ctx, call.take_written());
-        self.finish_response(&ctx, &request, &mut response);
-        if head || response.status() == http::StatusCode::NOT_MODIFIED {
-            *response.body_mut() = Bytes::new();
-        }
-        response
     }
 
     fn accepts_unsigned(&self, request: &HttpRequest) -> bool {
@@ -326,6 +341,44 @@ impl Service for S3 {
 }
 
 impl S3 {
+    /// Serve a path-style request, optionally through an access point.
+    pub(crate) async fn serve(
+        &self,
+        ctx: RequestContext,
+        request: HttpRequest,
+        access_point: Option<AccessPoint>,
+        called_via: Option<&'static str>,
+    ) -> HttpResponse {
+        let request = directory::control_plane_listing(request);
+        let head = request.method() == Method::HEAD;
+        if request.method() == Method::OPTIONS {
+            return self.preflight(&ctx, &request);
+        }
+        self.run_lifecycle(ctx.received_at);
+        if signature_v2(&request) {
+            // S3 turned Signature Version 2 off for buckets created since
+            // June 2020; every MWS bucket is that new.
+            let e = ServiceError::client(
+                "InvalidRequest",
+                400,
+                "The authorization mechanism you have provided is not supported. Please use AWS4-HMAC-SHA256.",
+            );
+            let mut response = self.render_error(&ctx.request_id, &e);
+            self.finish_response(&ctx, &request, &mut response);
+            return response;
+        }
+        let mut call = self.call(&ctx, Some(&request));
+        call.access_point = access_point;
+        call.called_via = called_via;
+        let mut response = generated::dispatch(&call, &ctx, &request).await;
+        self.replicate(&ctx, call.take_written());
+        self.finish_response(&ctx, &request, &mut response);
+        if head || response.status() == http::StatusCode::NOT_MODIFIED {
+            *response.body_mut() = Bytes::new();
+        }
+        response
+    }
+
     /// Response details the model does not express: `206` for ranged reads,
     /// `x-amz-id-2`, and CORS headers.
     fn finish_response(&self, ctx: &RequestContext, request: &HttpRequest, response: &mut HttpResponse) {

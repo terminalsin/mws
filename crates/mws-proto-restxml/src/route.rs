@@ -24,6 +24,11 @@ impl Query {
         self.pairs.iter().filter(|(k, _)| k == name).map(|(_, v)| v.as_str()).collect()
     }
 
+    /// Every `(name, value)` pair, in request order.
+    pub fn pairs(&self) -> impl Iterator<Item = (&str, &str)> {
+        self.pairs.iter().map(|(k, v)| (k.as_str(), v.as_str()))
+    }
+
     pub fn contains(&self, name: &str) -> bool {
         self.pairs.iter().any(|(k, _)| k == name)
     }

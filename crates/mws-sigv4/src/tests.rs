@@ -160,3 +160,30 @@ fn malformed_header_is_incomplete() {
         .unwrap();
     assert!(matches!(parse(&req), Err(SigV4Error::Incomplete(_))));
 }
+
+#[test]
+fn presigned_urls_verify() {
+    let now = chrono::Utc::now();
+    let url = presign_url(&PresignParams {
+        method: "GET",
+        url: "http://127.0.0.1:4566/my-ap-abc-s3alias/a%20b.txt?versionId=1",
+        region: "us-east-1",
+        service: "s3",
+        access_key_id: "AKIDEXAMPLE",
+        secret_access_key: "secret",
+        session_token: Some("tok/en+"),
+        now,
+        expires_in: 60,
+    })
+    .unwrap();
+    let uri: http::Uri = url.parse().unwrap();
+    let request = http::Request::builder()
+        .uri(uri.path_and_query().unwrap().as_str())
+        .header("host", "127.0.0.1:4566")
+        .body(Vec::<u8>::new())
+        .unwrap();
+    let parsed = parse(&request).unwrap();
+    assert_eq!(parsed.session_token.as_deref(), Some("tok/en+"));
+    verify(&request, &parsed, "secret", now, VerifyOptions { double_encode_path: false }).unwrap();
+    assert!(verify(&request, &parsed, "other", now, VerifyOptions { double_encode_path: false }).is_err());
+}

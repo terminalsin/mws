@@ -15,6 +15,11 @@ aws-sdk-acmpca = "1"
 aws-sdk-kms = "1"
 aws-sdk-organizations = "1"
 aws-sdk-s3 = { version = "1", features = ["behavior-version-latest"] }
+aws-sdk-s3control = "1"
+aws-sdk-lambda = "1"
+aws-smithy-http-client = { version = "1", features = ["rustls-aws-lc"] }
+aws-smithy-runtime-api = { version = "1", features = ["client"] }
+zip.workspace = true
 mws-s3.workspace = true
 rcgen.workspace = true
 x509-parser.workspace = true

@@ -316,7 +316,16 @@ fn parse_shape(id: &str, v: &Value) -> Result<Shape, ModelError> {
         input: target("input").filter(|t| t != UNIT),
         output: target("output").filter(|t| t != UNIT),
         errors: targets("errors"),
-        operations: targets("operations"),
+        // Resources also bind operations through lifecycle members and
+        // `collectionOperations`.
+        operations: {
+            let mut ops: Vec<String> = targets("operations");
+            ops.extend(targets("collectionOperations"));
+            for key in ["create", "put", "read", "update", "delete", "list"] {
+                ops.extend(target(key));
+            }
+            ops
+        },
         resources: targets("resources"),
         version: v.get("version").and_then(Value::as_str).map(str::to_string),
     })

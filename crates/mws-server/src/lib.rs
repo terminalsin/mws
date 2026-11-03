@@ -40,7 +40,10 @@ const MAX_BODY_BYTES: usize = 5 << 30;
 
 /// Routes authenticated requests to services.
 pub struct Gateway {
-    services: BTreeMap<&'static str, Arc<dyn Service>>,
+    /// Services by signing name, in registration order.
+    services: BTreeMap<&'static str, Vec<Arc<dyn Service>>>,
+    /// Services by [`Service::name`], for state and scenarios.
+    named: BTreeMap<&'static str, Arc<dyn Service>>,
     /// Further signing names, by the service they belong to.
     aliases: BTreeMap<&'static str, &'static str>,
     /// Renders errors for requests we cannot attribute to a service.
@@ -54,6 +57,8 @@ pub struct Gateway {
     /// `RequestContext::received_at`; signature checks use the wall clock,
     /// since SDKs sign with it.
     clock_offset_ms: std::sync::atomic::AtomicI64,
+    /// Where [`serve`] listens, as a URL.
+    endpoint: std::sync::OnceLock<String>,
 }
 
 pub struct GatewayBuilder {
@@ -70,7 +75,8 @@ impl GatewayBuilder {
         for alias in service.signing_aliases() {
             self.gateway.aliases.insert(alias, service.signing_name());
         }
-        self.gateway.services.insert(service.signing_name(), service);
+        self.gateway.named.insert(service.name(), service.clone());
+        self.gateway.services.entry(service.signing_name()).or_default().push(service);
         self
     }
 
@@ -119,6 +125,7 @@ impl Gateway {
         GatewayBuilder {
             gateway: Gateway {
                 services: BTreeMap::new(),
+                named: BTreeMap::new(),
                 aliases: BTreeMap::new(),
                 fallback: None,
                 credentials: Vec::new(),
@@ -126,12 +133,13 @@ impl Gateway {
                 env: Environment::default(),
                 state: state::StateHub::default(),
                 clock_offset_ms: std::sync::atomic::AtomicI64::new(0),
+                endpoint: std::sync::OnceLock::new(),
             },
         }
     }
 
     pub fn service_names(&self) -> impl Iterator<Item = &'static str> + '_ {
-        self.services.keys().copied()
+        self.named.keys().copied()
     }
 
     /// Handle one request whose body has already been read.
@@ -158,7 +166,7 @@ impl Gateway {
         let parsed = match mws_sigv4::parse(&request) {
             Ok(p) => p,
             Err(SigV4Error::Missing) => {
-                let unsigned = self.services.values().find(|s| s.accepts_unsigned(&request)).cloned();
+                let unsigned = self.services.values().flatten().find(|s| s.accepts_unsigned(&request)).cloned();
                 return match unsigned {
                     Some(service) => {
                         let ctx =
@@ -173,7 +181,9 @@ impl Gateway {
 
         let name = parsed.scope.service.as_str();
         let name = self.aliases.get(name).copied().unwrap_or(name);
-        let Some(service) = self.services.get(name).cloned() else {
+        let candidates = self.services.get(name);
+        let service = candidates.and_then(|c| c.iter().find(|s| s.claims(&request)).or_else(|| c.first())).cloned();
+        let Some(service) = service else {
             let err = ServiceError::client(
                 "UnknownService",
                 400,
@@ -237,6 +247,7 @@ impl Gateway {
             source_ip: remote.map(|a| a.ip().to_string()),
             secure_transport: false,
             authorizer: self.authorizer.clone(),
+            endpoint: self.endpoint.get().cloned(),
         }
     }
 
@@ -250,6 +261,17 @@ impl Gateway {
     pub fn set_clock_offset(&self, offset: chrono::Duration) {
         let ms = offset.num_milliseconds().max(0);
         self.clock_offset_ms.store(ms, std::sync::atomic::Ordering::Relaxed);
+    }
+
+    /// The URL MWS serves on, once [`serve`] has started (or
+    /// [`Gateway::set_endpoint`] was called).
+    pub fn endpoint(&self) -> Option<&str> {
+        self.endpoint.get().map(String::as_str)
+    }
+
+    /// Record the URL MWS is reachable at. The first call wins.
+    pub fn set_endpoint(&self, url: impl Into<String>) {
+        let _ = self.endpoint.set(url.into());
     }
 
     pub fn clock_offset(&self) -> chrono::Duration {
@@ -266,7 +288,7 @@ impl Gateway {
     }
 
     fn health(&self) -> HttpResponse {
-        let services: Vec<String> = self.services.keys().map(|s| format!("\"{s}\"")).collect();
+        let services: Vec<String> = self.named.keys().map(|s| format!("\"{s}\"")).collect();
         http::Response::builder()
             .status(200)
             .header(http::header::CONTENT_TYPE, "application/json")
@@ -321,6 +343,11 @@ fn sigv4_error(e: SigV4Error) -> ServiceError {
 /// attached, state is written in the background while serving and once more
 /// on the way out.
 pub async fn serve(listener: TcpListener, gateway: Arc<Gateway>, shutdown: impl Future<Output = ()>) {
+    if let Ok(addr) = listener.local_addr() {
+        let ip = if addr.ip().is_unspecified() { "127.0.0.1".to_string() } else { addr.ip().to_string() };
+        let host = if ip.contains(':') { format!("[{ip}]") } else { ip };
+        gateway.set_endpoint(format!("http://{host}:{}", addr.port()));
+    }
     let persist = gateway.state.store.is_some().then(|| tokio::spawn(gateway.clone().persist_loop()));
     serve_until(listener, gateway.clone(), shutdown).await;
     if let Some(task) = persist {

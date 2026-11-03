@@ -568,6 +568,74 @@ fn decode_query(query: &str) -> Vec<(String, String)> {
         .collect()
 }
 
+/// What [`presign_url`] signs with.
+#[derive(Debug, Clone)]
+pub struct PresignParams<'a> {
+    pub method: &'a str,
+    /// `http://host:port/path?query`, path already URI-encoded.
+    pub url: &'a str,
+    pub region: &'a str,
+    pub service: &'a str,
+    pub access_key_id: &'a str,
+    pub secret_access_key: &'a str,
+    pub session_token: Option<&'a str>,
+    pub now: DateTime<Utc>,
+    pub expires_in: i64,
+}
+
+/// Presign `url` with query-string SigV4, as SDKs do for S3: only `host` is
+/// signed and the payload is `UNSIGNED-PAYLOAD`.
+pub fn presign_url(p: &PresignParams<'_>) -> Result<String, SigV4Error> {
+    let bad = |m: &str| SigV4Error::Incomplete(m.to_string());
+    let uri: http::Uri = p.url.parse().map_err(|_| bad("invalid URL"))?;
+    let authority = uri.authority().ok_or_else(|| bad("URL has no host"))?.to_string();
+    let amz_date = p.now.format(AMZ_DATE_FORMAT).to_string();
+    let scope = CredentialScope {
+        access_key_id: p.access_key_id.to_string(),
+        date: p.now.format("%Y%m%d").to_string(),
+        region: p.region.to_string(),
+        service: p.service.to_string(),
+    };
+    let mut query = uri.query().map(str::to_string).unwrap_or_default();
+    let mut add = |k: &str, v: &str| {
+        if !query.is_empty() {
+            query.push('&');
+        }
+        query.push_str(k);
+        query.push('=');
+        query.push_str(&sigv4_encode(v));
+    };
+    add("X-Amz-Algorithm", ALGORITHM);
+    add("X-Amz-Credential", &format!("{}/{}", p.access_key_id, scope.scope_string()));
+    add("X-Amz-Date", &amz_date);
+    add("X-Amz-Expires", &p.expires_in.to_string());
+    if let Some(t) = p.session_token {
+        add("X-Amz-Security-Token", t);
+    }
+    add("X-Amz-SignedHeaders", "host");
+    let path_and_query = format!("{}?{query}", uri.path());
+    let request = http::Request::builder()
+        .method(p.method)
+        .uri(&path_and_query)
+        .header(http::header::HOST, &authority)
+        .body(Vec::<u8>::new())
+        .map_err(|_| bad("invalid request"))?;
+    let parsed = ParsedSignature {
+        location: SignatureLocation::Query,
+        scope,
+        signed_headers: vec!["host".into()],
+        signature: String::new(),
+        amz_date,
+        timestamp: p.now,
+        session_token: p.session_token.map(str::to_string),
+        expires_in: Some(p.expires_in),
+    };
+    let options = VerifyOptions { double_encode_path: p.service != "s3" };
+    let signature = compute_signature(&request, &parsed, p.secret_access_key, options);
+    let scheme = uri.scheme_str().unwrap_or("http");
+    Ok(format!("{scheme}://{authority}{path_and_query}&X-Amz-Signature={signature}"))
+}
+
 fn sigv4_encode(s: &str) -> String {
     utf8_percent_encode(s, SIGV4_ENCODE).to_string()
 }

@@ -117,11 +117,33 @@ impl Mws {
     pub async fn sdk_config(&self, akid: &str, secret: &str, token: Option<&str>) -> SdkConfig {
         aws_config::defaults(BehaviorVersion::latest())
             .region(Region::new("us-east-1"))
+            .http_client(loopback_http_client())
             .endpoint_url(&self.endpoint)
             .credentials_provider(Credentials::new(akid, secret, token.map(str::to_string), None, "mws-e2e"))
             .load()
             .await
     }
+}
+
+/// Resolves every name to 127.0.0.1, like wildcard DNS for the endpoint:
+/// SDKs put the account id (S3 Control) or `{access point}-{account}` (S3
+/// access point ARNs) in front of the endpoint's host.
+#[derive(Debug, Clone)]
+struct Loopback;
+
+impl aws_smithy_runtime_api::client::dns::ResolveDns for Loopback {
+    fn resolve_dns<'a>(&'a self, _name: &'a str) -> aws_smithy_runtime_api::client::dns::DnsFuture<'a> {
+        aws_smithy_runtime_api::client::dns::DnsFuture::ready(Ok(vec![std::net::IpAddr::V4(
+            std::net::Ipv4Addr::LOCALHOST,
+        )]))
+    }
+}
+
+fn loopback_http_client() -> aws_smithy_runtime_api::client::http::SharedHttpClient {
+    use aws_smithy_http_client::tls;
+    aws_smithy_http_client::Builder::new()
+        .tls_provider(tls::Provider::Rustls(tls::rustls_provider::CryptoMode::AwsLc))
+        .build_with_resolver(Loopback)
 }
 
 /// Create a user with the given inline policy and return a client signed

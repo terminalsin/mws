@@ -78,6 +78,12 @@ impl<'t, 'm> JsonCodec<'t, 'm> {
 
     /// `Option<T>` decoding `target` from `src` (an `Option<&Value>`).
     fn de_expr(&self, target: &str, src: &str) -> String {
+        self.de_expr_in(target, src, "")
+    }
+
+    /// [`JsonCodec::de_expr`] from outside the decoder module: aggregate
+    /// decoders are named with `module` (e.g. `"json_de::"`).
+    pub(crate) fn de_expr_in(&self, target: &str, src: &str, module: &str) -> String {
         let s = self.model.expect(target);
         match s.ty {
             ShapeType::String | ShapeType::Enum | ShapeType::BigInteger | ShapeType::BigDecimal => {
@@ -93,7 +99,7 @@ impl<'t, 'm> JsonCodec<'t, 'm> {
             ShapeType::Double => format!("d.float({src}, &p)"),
             ShapeType::Timestamp => format!("d.timestamp({src}, &p)"),
             ShapeType::Blob => format!("d.blob({src}, &p)"),
-            _ => format!("{}(d, {src}, &p)", de_fn_name(s)),
+            _ => format!("{module}{}(d, {src}, &p)", de_fn_name(s)),
         }
     }
 
@@ -206,6 +212,11 @@ impl<'t, 'm> JsonCodec<'t, 'm> {
 
     /// `Value` expression for reference expr `x` of `target`.
     fn ser_expr(&self, target: &str, x: &str) -> String {
+        self.ser_expr_in(target, x, "")
+    }
+
+    /// [`JsonCodec::ser_expr`] from outside the encoder module.
+    pub(crate) fn ser_expr_in(&self, target: &str, x: &str, module: &str) -> String {
         let s = self.model.expect(target);
         match s.ty {
             ShapeType::String | ShapeType::Enum | ShapeType::BigInteger | ShapeType::BigDecimal => {
@@ -221,7 +232,7 @@ impl<'t, 'm> JsonCodec<'t, 'm> {
             ShapeType::Float | ShapeType::Double => format!("{RT}::ser_float(*{x} as f64)"),
             ShapeType::Timestamp => format!("{RT}::ser_timestamp({x})"),
             ShapeType::Blob => format!("{RT}::ser_blob({x})"),
-            _ => format!("{}({x})", ser_fn_name(s)),
+            _ => format!("{module}{}({x})", ser_fn_name(s)),
         }
     }
 
