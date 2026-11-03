@@ -223,3 +223,24 @@ def test_select_object_content(s3, bucket):
             OutputSerialization={"CSV": {}},
         )
     assert code(err) == "CastFailed"
+
+
+def test_directory_bucket_sessions(s3):
+    name = f"d{uuid.uuid4().hex[:8]}--use1-az4--x-s3"
+    s3.create_bucket(
+        Bucket=name,
+        CreateBucketConfiguration={
+            "Location": {"Type": "AvailabilityZone", "Name": "use1-az4"},
+            "Bucket": {"Type": "Directory", "DataRedundancy": "SingleAvailabilityZone"},
+        },
+    )
+    assert name in [b["Name"] for b in s3.list_directory_buckets()["Buckets"]]
+    # botocore opens a session with CreateSession and signs with it.
+    s3.put_object(Bucket=name, Key="k", Body=b"fast")
+    got = s3.get_object(Bucket=name, Key="k")
+    assert got["Body"].read() == b"fast"
+    assert got["StorageClass"] == "EXPRESS_ONEZONE"
+    session = s3.create_session(Bucket=name, SessionMode="ReadOnly")
+    assert session["Credentials"]["SessionToken"]
+    s3.delete_object(Bucket=name, Key="k")
+    s3.delete_bucket(Bucket=name)

@@ -65,6 +65,9 @@ impl Call {
         resource: Resource<'_>,
         extra: ConditionContext,
     ) -> Result<(), ServiceError> {
+        if bucket.directory.is_some() {
+            return self.authorize_directory(ctx, action, bucket);
+        }
         if self.allowed(ctx, action, bucket, &resource, extra.clone()) {
             return Ok(());
         }
@@ -84,6 +87,9 @@ impl Call {
         resource: &Resource<'_>,
         extra: ConditionContext,
     ) -> bool {
+        if bucket.directory.is_some() {
+            return self.authorize_directory(ctx, action, bucket).is_ok();
+        }
         let arn = match resource {
             Resource::Bucket => bucket_arn(ctx, &bucket.name),
             Resource::Object { key, .. } => object_arn(ctx, &bucket.name, key),

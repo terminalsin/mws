@@ -162,6 +162,18 @@ pub trait Service: Send + Sync {
     /// The SigV4 signing name, e.g. `iam`, `sts`, `route53`, `acm-pca`.
     fn signing_name(&self) -> &'static str;
 
+    /// Further signing names this service answers to (S3 directory bucket
+    /// requests are signed for `s3express`).
+    fn signing_aliases(&self) -> &'static [&'static str] {
+        &[]
+    }
+
+    /// A session token the request carries outside `X-Amz-Security-Token`,
+    /// in a header or query parameter of this service's own.
+    fn session_token(&self, _request: &HttpRequest) -> Option<String> {
+        None
+    }
+
     /// Handle an authenticated request.
     async fn handle(&self, ctx: RequestContext, request: HttpRequest) -> HttpResponse;
 

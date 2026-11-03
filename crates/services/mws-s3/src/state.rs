@@ -57,6 +57,8 @@ pub struct Bucket {
     /// S3 Metadata: the V2 configuration (journal, inventory, annotation
     /// tables) or the legacy V1 metadata table configuration.
     pub metadata: Option<types::MetadataConfiguration>,
+    /// Set for a directory bucket (S3 Express One Zone).
+    pub directory: Option<DirectoryBucket>,
     pub metadata_v1: Option<types::MetadataTableConfiguration>,
 }
 
@@ -99,6 +101,7 @@ impl Default for Bucket {
             abac: None,
             metadata: None,
             metadata_v1: None,
+            directory: None,
         }
     }
 }
@@ -143,6 +146,9 @@ impl Bucket {
     /// Add a new version of `key` as the versioning state dictates: replace
     /// the `null` version unless versioning is enabled.
     pub fn insert_version(&mut self, key: &str, mut version: ObjectVersion) -> String {
+        if self.directory.is_some() {
+            version.storage_class = "EXPRESS_ONEZONE".into();
+        }
         let versions = self.objects.entry(key.to_string()).or_default();
         if self.versioning.as_deref() == Some("Enabled") {
             version.version_id = new_version_id();
@@ -154,6 +160,17 @@ impl Bucket {
         versions.push(version);
         id
     }
+}
+
+/// Where a directory bucket lives.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct DirectoryBucket {
+    /// `AvailabilityZone` or `LocalZone`.
+    pub location_type: String,
+    /// The zone id, e.g. `usw2-az1`.
+    pub location: String,
+    pub data_redundancy: String,
 }
 
 /// An object version or a delete marker.
@@ -369,7 +386,7 @@ impl Default for Part {
 
 const ID_ALPHABET: &[u8] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789._";
 
-fn random_id(len: usize) -> String {
+pub(crate) fn random_id(len: usize) -> String {
     use rand::Rng;
     let mut rng = rand::thread_rng();
     (0..len).map(|_| ID_ALPHABET[rng.gen_range(0..ID_ALPHABET.len())] as char).collect()

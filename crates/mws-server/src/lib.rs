@@ -41,6 +41,8 @@ const MAX_BODY_BYTES: usize = 5 << 30;
 /// Routes authenticated requests to services.
 pub struct Gateway {
     services: BTreeMap<&'static str, Arc<dyn Service>>,
+    /// Further signing names, by the service they belong to.
+    aliases: BTreeMap<&'static str, &'static str>,
     /// Renders errors for requests we cannot attribute to a service.
     fallback: Option<Arc<dyn Service>>,
     credentials: Vec<Arc<dyn CredentialStore>>,
@@ -64,6 +66,9 @@ impl GatewayBuilder {
     pub fn service(mut self, service: Arc<dyn Service>) -> Self {
         if self.gateway.fallback.is_none() {
             self.gateway.fallback = Some(service.clone());
+        }
+        for alias in service.signing_aliases() {
+            self.gateway.aliases.insert(alias, service.signing_name());
         }
         self.gateway.services.insert(service.signing_name(), service);
         self
@@ -114,6 +119,7 @@ impl Gateway {
         GatewayBuilder {
             gateway: Gateway {
                 services: BTreeMap::new(),
+                aliases: BTreeMap::new(),
                 fallback: None,
                 credentials: Vec::new(),
                 authorizer: Arc::new(mws_core::AllowAll),
@@ -165,7 +171,9 @@ impl Gateway {
             Err(e) => return self.fallback_error(&request_id, &sigv4_error(e)),
         };
 
-        let Some(service) = self.services.get(parsed.scope.service.as_str()).cloned() else {
+        let name = parsed.scope.service.as_str();
+        let name = self.aliases.get(name).copied().unwrap_or(name);
+        let Some(service) = self.services.get(name).cloned() else {
             let err = ServiceError::client(
                 "UnknownService",
                 400,
@@ -174,7 +182,8 @@ impl Gateway {
             return self.fallback_error(&request_id, &err);
         };
 
-        let resolved = match self.resolve(&parsed.scope.access_key_id, parsed.session_token.as_deref(), now) {
+        let session_token = parsed.session_token.clone().or_else(|| service.session_token(&request));
+        let resolved = match self.resolve(&parsed.scope.access_key_id, session_token.as_deref(), now) {
             Ok(r) => r,
             Err(e) => return service.render_error(&request_id, &e.into_service_error()),
         };

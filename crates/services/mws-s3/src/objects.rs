@@ -125,7 +125,7 @@ pub fn parse_range(range: &str, size: i64) -> Result<Option<(i64, i64)>, Service
     Ok(Some(parsed))
 }
 
-fn validate_key(key: &str) -> Result<(), ServiceError> {
+pub(crate) fn validate_key(key: &str) -> Result<(), ServiceError> {
     if key.len() > 1024 {
         return Err(errors::key_too_long(key.len()));
     }
@@ -153,6 +153,7 @@ fn validate_storage_class(class: &str) -> Result<(), ServiceError> {
         "GLACIER",
         "DEEP_ARCHIVE",
         "GLACIER_IR",
+        "EXPRESS_ONEZONE",
     ];
     if ALLOWED.contains(&class) {
         Ok(())

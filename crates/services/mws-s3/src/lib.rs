@@ -32,6 +32,7 @@ mod buckets;
 
 mod config;
 mod cors;
+mod directory;
 mod errors;
 mod handler;
 mod kms;
@@ -71,6 +72,8 @@ fn signature_v2(request: &HttpRequest) -> bool {
 pub struct S3 {
     state: Arc<RwLock<State>>,
     kms: Option<mws_kms::Kms>,
+    /// Directory bucket sessions from `CreateSession`.
+    sessions: directory::Sessions,
 }
 
 /// How a request proved who sent it, for `s3:authType` and friends.
@@ -163,7 +166,7 @@ impl S3 {
     }
 }
 
-fn form_urlencoded_get(query: &str, name: &str) -> Option<String> {
+pub(crate) fn form_urlencoded_get(query: &str, name: &str) -> Option<String> {
     query.split('&').find_map(|p| {
         let (k, v) = p.split_once('=')?;
         (k == name).then(|| percent_encoding::percent_decode_str(v).decode_utf8_lossy().into_owned())
@@ -244,12 +247,20 @@ impl Service for S3 {
         "s3"
     }
 
+    fn signing_aliases(&self) -> &'static [&'static str] {
+        &["s3express"]
+    }
+
+    fn session_token(&self, request: &HttpRequest) -> Option<String> {
+        directory::session_token(request)
+    }
+
     fn signs_raw_path(&self) -> bool {
         true
     }
 
     async fn handle(&self, ctx: RequestContext, request: HttpRequest) -> HttpResponse {
-        let request = to_path_style(request);
+        let request = directory::control_plane_listing(to_path_style(request));
         let head = request.method() == Method::HEAD;
         if request.method() == Method::OPTIONS {
             return self.preflight(&ctx, &request);

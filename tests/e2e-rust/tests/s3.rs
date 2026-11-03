@@ -947,3 +947,92 @@ async fn select_object_content_streams_query_results() {
         .unwrap_err();
     assert_eq!(err.into_service_error().code(), Some("ParseUnexpectedToken"));
 }
+
+#[tokio::test]
+async fn directory_buckets_use_sessions() {
+    use aws_sdk_s3::types::{
+        BucketInfo, BucketType, CreateBucketConfiguration, DataRedundancy, LocationInfo, LocationType, SessionMode,
+        StorageClass,
+    };
+    let mws = Mws::start().await;
+    let s3 = root(&mws).await;
+    let bucket = "fast--use1-az4--x-s3";
+    let config = CreateBucketConfiguration::builder()
+        .location(LocationInfo::builder().r#type(LocationType::AvailabilityZone).name("use1-az4").build())
+        .bucket(
+            BucketInfo::builder()
+                .r#type(BucketType::Directory)
+                .data_redundancy(DataRedundancy::SingleAvailabilityZone)
+                .build(),
+        )
+        .build();
+    s3.create_bucket().bucket(bucket).create_bucket_configuration(config).send().await.unwrap();
+
+    // Against a custom endpoint the Rust SDK only signs ListDirectoryBuckets
+    // (which names no bucket) with S3 Express session auth turned off.
+    let control = aws_sdk_s3::Client::from_conf(
+        aws_sdk_s3::config::Builder::from(&mws.root_sdk_config().await)
+            .force_path_style(true)
+            .disable_s3_express_session_auth(true)
+            .build(),
+    );
+    let listed = control.list_directory_buckets().send().await.unwrap();
+    assert_eq!(listed.buckets()[0].name(), Some(bucket));
+    assert!(s3.list_buckets().send().await.unwrap().buckets().iter().all(|b| b.name() != Some(bucket)));
+
+    // The SDK opens a session with CreateSession and signs with it.
+    s3.put_object().bucket(bucket).key("a/one").body(ByteStream::from_static(b"1")).send().await.unwrap();
+    let got = s3.get_object().bucket(bucket).key("a/one").send().await.unwrap();
+    assert_eq!(got.storage_class(), Some(&StorageClass::ExpressOnezone));
+    assert_eq!(body(got).await, b"1");
+
+    s3.rename_object().bucket(bucket).key("a/two").rename_source(format!("{bucket}/a/one")).send().await.unwrap();
+    let keys: Vec<String> = s3
+        .list_objects_v2()
+        .bucket(bucket)
+        .send()
+        .await
+        .unwrap()
+        .contents()
+        .iter()
+        .filter_map(|o| o.key().map(str::to_string))
+        .collect();
+    assert_eq!(keys, vec!["a/two"]);
+    let err = s3.rename_object().bucket(bucket).key("a/three").rename_source("a/missing").send().await.unwrap_err();
+    assert_eq!(err.into_service_error().code(), Some("NoSuchKey"));
+
+    // Sessions are explicit too, and ReadOnly sessions cannot write.
+    let session = s3.create_session().bucket(bucket).session_mode(SessionMode::ReadOnly).send().await.unwrap();
+    let creds = session.credentials().unwrap();
+    assert!(creds.session_token().len() > 20);
+
+    // Object access needs s3express:CreateSession, and ReadWrite for writes.
+    let readonly = r#"{"Version":"2012-10-17","Statement":[{"Effect":"Allow","Action":"s3express:CreateSession",
+        "Resource":"*","Condition":{"StringEquals":{"s3express:SessionMode":"ReadOnly"}}}]}"#;
+    let (_, reader) = user_with_policy(&mws, "reader", Some(readonly)).await;
+    let reader =
+        aws_sdk_s3::Client::from_conf(aws_sdk_s3::config::Builder::from(&reader).force_path_style(true).build());
+    // The SDK opens ReadWrite sessions, which this user may not.
+    assert!(reader.get_object().bucket(bucket).key("a/two").send().await.is_err());
+    let err = reader.create_session().bucket(bucket).send().await.unwrap_err();
+    assert_eq!(err.into_service_error().meta().code(), Some("AccessDenied"));
+    let ro = reader.create_session().bucket(bucket).session_mode(SessionMode::ReadOnly).send().await.unwrap();
+    assert!(ro.credentials().is_some());
+
+    // Versioning is not supported on directory buckets.
+    let err = s3
+        .put_bucket_versioning()
+        .bucket(bucket)
+        .versioning_configuration(
+            aws_sdk_s3::types::VersioningConfiguration::builder()
+                .status(aws_sdk_s3::types::BucketVersioningStatus::Enabled)
+                .build(),
+        )
+        .send()
+        .await
+        .unwrap_err();
+    assert_eq!(err.into_service_error().code(), Some("NotImplemented"));
+
+    s3.delete_object().bucket(bucket).key("a/two").send().await.unwrap();
+    s3.delete_bucket().bucket(bucket).send().await.unwrap();
+}

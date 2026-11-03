@@ -98,10 +98,13 @@ impl Call {
         input: types::CreateBucketRequest,
     ) -> Result<types::CreateBucketOutput, ServiceError> {
         let name = input.bucket.clone();
+        let config = input.create_bucket_configuration.clone().unwrap_or_default();
+        if let Some(directory) = crate::directory::directory_config(&name, &config)? {
+            return self.create_directory_bucket(ctx, &name, directory);
+        }
         if !valid_bucket_name(&name) {
             return Err(errors::invalid_bucket_name(&name));
         }
-        let config = input.create_bucket_configuration.clone().unwrap_or_default();
         let region = match config.location_constraint.as_deref() {
             None | Some("") => {
                 if ctx.region != "us-east-1" {
@@ -295,7 +298,7 @@ impl Call {
         let mut buckets: Vec<&Bucket> = st
             .buckets
             .values()
-            .filter(|b| b.owner == ctx.caller.account_id)
+            .filter(|b| b.owner == ctx.caller.account_id && b.directory.is_none())
             .filter(|b| input.prefix.as_deref().is_none_or(|p| b.name.starts_with(p)))
             .filter(|b| input.bucket_region.as_deref().is_none_or(|r| b.region == r))
             .filter(|b| after.as_deref().is_none_or(|a| b.name.as_str() > a))
