@@ -48,5 +48,7 @@ impl Handler for PrivateCa {
         put_policy(types::PutPolicyRequest) -> ();
         get_policy(types::GetPolicyRequest) -> types::GetPolicyResponse;
         delete_policy(types::DeletePolicyRequest) -> ();
+        create_certificate_authority_audit_report(types::CreateCertificateAuthorityAuditReportRequest) -> types::CreateCertificateAuthorityAuditReportResponse;
+        describe_certificate_authority_audit_report(types::DescribeCertificateAuthorityAuditReportRequest) -> types::DescribeCertificateAuthorityAuditReportResponse;
     }
 }

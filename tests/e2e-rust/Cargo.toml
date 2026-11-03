@@ -15,6 +15,7 @@ aws-sdk-acmpca = "1"
 rcgen.workspace = true
 x509-parser.workspace = true
 urlencoding = "2"
+aws-lc-rs.workspace = true
 base64.workspace = true
 serde_json.workspace = true
 mws.workspace = true

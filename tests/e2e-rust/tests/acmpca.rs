@@ -405,3 +405,250 @@ async fn iam_and_resource_policies_govern_issuance() {
     let err = pca.put_policy().resource_arn(&ca).policy("{nope").send().await.unwrap_err();
     assert!(err.into_service_error().is_invalid_policy_exception());
 }
+
+/// A plain HTTP/1.1 request to MWS, unsigned, as a CRL or OCSP client sends it.
+async fn http(endpoint: &str, method: &str, path: &str, content_type: Option<&str>, body: &[u8]) -> (u16, Vec<u8>) {
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+    let host = endpoint.trim_start_matches("http://");
+    let mut stream = tokio::net::TcpStream::connect(host).await.unwrap();
+    let mut req =
+        format!("{method} {path} HTTP/1.1\r\nHost: {host}\r\nConnection: close\r\nContent-Length: {}\r\n", body.len());
+    if let Some(ct) = content_type {
+        req.push_str(&format!("Content-Type: {ct}\r\n"));
+    }
+    req.push_str("\r\n");
+    stream.write_all(req.as_bytes()).await.unwrap();
+    stream.write_all(body).await.unwrap();
+    let mut raw = Vec::new();
+    stream.read_to_end(&mut raw).await.unwrap();
+    let split = raw.windows(4).position(|w| w == b"\r\n\r\n").unwrap();
+    let head = String::from_utf8_lossy(&raw[..split]).to_string();
+    let status = head.split(' ').nth(1).unwrap().parse().unwrap();
+    (status, raw[split + 4..].to_vec())
+}
+
+fn tlv(tag: u8, content: &[u8]) -> Vec<u8> {
+    let mut out = vec![tag];
+    if content.len() < 128 {
+        out.push(content.len() as u8);
+    } else {
+        out.extend([0x82, (content.len() >> 8) as u8, content.len() as u8]);
+    }
+    out.extend_from_slice(content);
+    out
+}
+
+/// An OCSP request (RFC 6960) for `serial` issued by `issuer_pem`, SHA-1 CertID, with a nonce.
+fn ocsp_request(issuer_pem: &str, serial: &[u8], nonce: &[u8]) -> Vec<u8> {
+    use aws_lc_rs::digest::{digest, SHA1_FOR_LEGACY_USE_ONLY};
+    let issuer_der = der(issuer_pem);
+    let (_, issuer) = X509Certificate::from_der(&issuer_der).unwrap();
+    let name_hash = digest(&SHA1_FOR_LEGACY_USE_ONLY, issuer.subject().as_raw());
+    let key_hash = digest(&SHA1_FOR_LEGACY_USE_ONLY, &issuer.public_key().subject_public_key.data);
+    let sha1 = tlv(0x30, &[&[0x06, 0x05, 0x2b, 0x0e, 0x03, 0x02, 0x1a][..], &[0x05, 0x00]].concat());
+    let mut serial_content = serial.to_vec();
+    if serial_content[0] & 0x80 != 0 {
+        serial_content.insert(0, 0);
+    }
+    let cert_id = tlv(
+        0x30,
+        &[sha1, tlv(0x04, name_hash.as_ref()), tlv(0x04, key_hash.as_ref()), tlv(0x02, &serial_content)].concat(),
+    );
+    let request = tlv(0x30, &cert_id);
+    let nonce_ext = tlv(
+        0x30,
+        &[&[0x06, 0x09, 0x2b, 0x06, 0x01, 0x05, 0x05, 0x07, 0x30, 0x01, 0x02][..], &tlv(0x04, &tlv(0x04, nonce))]
+            .concat(),
+    );
+    let tbs = tlv(0x30, &[tlv(0x30, &request), tlv(0xa2, &tlv(0x30, &nonce_ext))].concat());
+    tlv(0x30, &tbs)
+}
+
+/// Walk an OCSP response far enough to return (status tag of the first
+/// SingleResponse, whether the nonce is echoed), checking the signature
+/// with the issuer's key.
+fn read_ocsp_response(resp: &[u8], issuer_pem: &str, nonce: &[u8]) -> (u8, bool) {
+    use x509_parser::der_parser::der::parse_der;
+    let (_, top) = parse_der(resp).unwrap();
+    let top = top.as_sequence().unwrap();
+    assert_eq!(top[0].as_u32().unwrap(), 0, "successful");
+    let bytes = top[1].as_slice().unwrap(); // [0] EXPLICIT content
+    let (_, rb) = parse_der(bytes).unwrap();
+    let rb = rb.as_sequence().unwrap();
+    let basic_der = rb[1].as_slice().unwrap();
+    let (_, basic) = parse_der(basic_der).unwrap();
+    let basic = basic.as_sequence().unwrap();
+    let tbs_raw = {
+        // Re-slice the raw tbsResponseData from the BasicOCSPResponse encoding.
+        let (rest, _) = x509_parser::der_parser::der::parse_der(basic_der).unwrap();
+        assert!(rest.is_empty());
+        let inner = &basic_der[if basic_der[1] & 0x80 != 0 { 2 + (basic_der[1] & 0x7f) as usize } else { 2 }..];
+        let (after, _) = parse_der(inner).unwrap();
+        &inner[..inner.len() - after.len()]
+    };
+    let sig = basic[2].as_bitstring().unwrap();
+    let issuer_der = der(issuer_pem);
+    let (_, issuer) = X509Certificate::from_der(&issuer_der).unwrap();
+    let key = aws_lc_rs::signature::UnparsedPublicKey::new(
+        &aws_lc_rs::signature::RSA_PKCS1_2048_8192_SHA256,
+        issuer.public_key().subject_public_key.data.to_vec(),
+    );
+    key.verify(tbs_raw, sig.data).expect("OCSP response signed by the CA");
+    let tbs = basic[0].as_sequence().unwrap();
+    let responses = tbs[2].as_sequence().unwrap();
+    let single = responses[0].as_sequence().unwrap();
+    let status_tag = single[1].header.raw_tag().unwrap()[0];
+    let has_nonce = tbs.len() > 3 && basic_der.windows(nonce.len()).any(|w| w == nonce);
+    (status_tag, has_nonce)
+}
+
+#[tokio::test]
+async fn crl_ocsp_and_audit_reports() {
+    use aws_sdk_acmpca::types::{
+        AuditReportResponseFormat, AuditReportStatus, CrlConfiguration, OcspConfiguration, RevocationConfiguration,
+    };
+    let mws = Mws::start().await;
+    let pca = Client::new(&mws.root_sdk_config().await);
+    let (ca, ca_pem) = active_root(&pca).await;
+    let ca_id = ca.rsplit('/').next().unwrap().to_string();
+
+    // CRLs need a bucket.
+    let err = pca
+        .update_certificate_authority()
+        .certificate_authority_arn(&ca)
+        .revocation_configuration(
+            RevocationConfiguration::builder()
+                .crl_configuration(CrlConfiguration::builder().enabled(true).build().unwrap())
+                .build(),
+        )
+        .send()
+        .await
+        .unwrap_err();
+    assert_eq!(err.into_service_error().meta().code(), Some("InvalidArgsException"));
+
+    pca.update_certificate_authority()
+        .certificate_authority_arn(&ca)
+        .revocation_configuration(
+            RevocationConfiguration::builder()
+                .crl_configuration(
+                    CrlConfiguration::builder()
+                        .enabled(true)
+                        .expiration_in_days(5)
+                        .s3_bucket_name("crl-bucket")
+                        .build()
+                        .unwrap(),
+                )
+                .ocsp_configuration(OcspConfiguration::builder().enabled(true).build().unwrap())
+                .build(),
+        )
+        .send()
+        .await
+        .unwrap();
+
+    // Issued certificates point at the CRL and the OCSP responder.
+    let leaf_arn = issue(&pca, &ca, &leaf_csr("leaf.example.test"), None, SigningAlgorithm::Sha256Withrsa, 30).await;
+    let leaf = pca.get_certificate().certificate_authority_arn(&ca).certificate_arn(&leaf_arn).send().await.unwrap();
+    let leaf_pem = leaf.certificate().unwrap().to_string();
+    let leaf_der = der(&leaf_pem);
+    let (_, leaf_cert) = X509Certificate::from_der(&leaf_der).unwrap();
+    let mut crl_uri = None;
+    let mut ocsp_uri = None;
+    for ext in leaf_cert.extensions() {
+        match ext.parsed_extension() {
+            ParsedExtension::CRLDistributionPoints(points) => {
+                if let Some(DistributionPointName::FullName(names)) = &points.points[0].distribution_point {
+                    if let GeneralName::URI(u) = &names[0] {
+                        crl_uri = Some(u.to_string());
+                    }
+                }
+            }
+            ParsedExtension::AuthorityInfoAccess(aia) => {
+                if let GeneralName::URI(u) = &aia.accessdescs[0].access_location {
+                    ocsp_uri = Some(u.to_string());
+                }
+            }
+            _ => {}
+        }
+    }
+    assert_eq!(crl_uri.unwrap(), format!("http://crl-bucket.s3.us-east-1.amazonaws.com/crl/{ca_id}.crl"));
+    assert_eq!(ocsp_uri.unwrap(), "http://ocsp.acm-pca.us-east-1.amazonaws.com");
+    let leaf_serial = leaf_cert.raw_serial().to_vec();
+
+    // OCSP says good, echoing the nonce.
+    let nonce = b"mws-nonce-0123456789";
+    let (status, body) =
+        http(&mws.endpoint, "POST", "/", Some("application/ocsp-request"), &ocsp_request(&ca_pem, &leaf_serial, nonce))
+            .await;
+    assert_eq!(status, 200);
+    assert_eq!(read_ocsp_response(&body, &ca_pem, nonce), (0x80, true), "good");
+
+    // Revoke: the CRL lists it, signed by the CA, and OCSP says revoked.
+    let serial_hex = leaf_serial.iter().map(|b| format!("{b:02x}")).collect::<Vec<_>>().join(":");
+    pca.revoke_certificate()
+        .certificate_authority_arn(&ca)
+        .certificate_serial(&serial_hex)
+        .revocation_reason(RevocationReason::KeyCompromise)
+        .send()
+        .await
+        .unwrap();
+    let (status, crl_der) = http(&mws.endpoint, "GET", &format!("/crl-bucket/crl/{ca_id}.crl"), None, b"").await;
+    assert_eq!(status, 200);
+    let (_, crl) = parse_x509_crl(&crl_der).unwrap();
+    let ca_der = der(&ca_pem);
+    let (_, ca_cert) = X509Certificate::from_der(&ca_der).unwrap();
+    crl.verify_signature(ca_cert.public_key()).expect("CRL signed by the CA");
+    assert_eq!(crl.issuer().as_raw(), ca_cert.subject().as_raw());
+    let revoked: Vec<_> = crl.iter_revoked_certificates().map(|r| r.raw_serial().to_vec()).collect();
+    assert_eq!(revoked, vec![leaf_serial.clone()]);
+    let next = crl.next_update().unwrap().timestamp() - crl.last_update().timestamp();
+    assert_eq!(next, 5 * 86400);
+
+    let (status, body) =
+        http(&mws.endpoint, "POST", "/", Some("application/ocsp-request"), &ocsp_request(&ca_pem, &leaf_serial, nonce))
+            .await;
+    assert_eq!(status, 200);
+    assert_eq!(read_ocsp_response(&body, &ca_pem, nonce).0, 0xa1, "revoked");
+    // An unknown serial is unknown.
+    let (_, body) =
+        http(&mws.endpoint, "POST", "/", Some("application/ocsp-request"), &ocsp_request(&ca_pem, &[0x42; 16], nonce))
+            .await;
+    assert_eq!(read_ocsp_response(&body, &ca_pem, nonce).0, 0x82, "unknown");
+
+    // Audit report.
+    let report = pca
+        .create_certificate_authority_audit_report()
+        .certificate_authority_arn(&ca)
+        .s3_bucket_name("audit-bucket")
+        .audit_report_response_format(AuditReportResponseFormat::Json)
+        .send()
+        .await
+        .unwrap();
+    let id = report.audit_report_id().unwrap();
+    let key = report.s3_key().unwrap();
+    assert_eq!(key, format!("audit-report/{ca_id}/{id}.json"));
+    let described = pca
+        .describe_certificate_authority_audit_report()
+        .certificate_authority_arn(&ca)
+        .audit_report_id(id)
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(described.audit_report_status(), Some(&AuditReportStatus::Success));
+    assert_eq!(described.s3_bucket_name(), Some("audit-bucket"));
+    let (status, body) = http(&mws.endpoint, "GET", &format!("/audit-bucket/{key}"), None, b"").await;
+    assert_eq!(status, 200);
+    let rows: Vec<serde_json::Value> = serde_json::from_slice(&body).unwrap();
+    let leaf_row = rows.iter().find(|r| r["certificateArn"] == leaf_arn.as_str()).unwrap();
+    assert_eq!(leaf_row["revocationReason"], "KEY_COMPROMISE");
+    assert_eq!(leaf_row["serial"], serial_hex);
+    assert_eq!(leaf_row["subject"], "CN=leaf.example.test");
+
+    let err = pca
+        .describe_certificate_authority_audit_report()
+        .certificate_authority_arn(&ca)
+        .audit_report_id("00000000-0000-0000-0000-000000000000")
+        .send()
+        .await
+        .unwrap_err();
+    assert_eq!(err.into_service_error().meta().code(), Some("ResourceNotFoundException"));
+}

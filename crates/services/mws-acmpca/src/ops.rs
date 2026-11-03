@@ -9,7 +9,7 @@ use rand::Rng;
 
 use crate::generated::{errors, types};
 use crate::state::{Ca, IssuedCert, State};
-use crate::{x509, PrivateCa};
+use crate::{revocation, x509, PrivateCa};
 
 const MAX_TAGS: usize = 50;
 const DEFAULT_TEMPLATE: &str = "arn:aws:acm-pca:::template/EndEntityCertificate/V1";
@@ -18,7 +18,7 @@ fn not_found(arn: &str) -> ServiceError {
     errors::resource_not_found(format!("Could not find certificate authority {arn}."))
 }
 
-fn invalid_state(message: impl Into<String>) -> ServiceError {
+pub(crate) fn invalid_state(message: impl Into<String>) -> ServiceError {
     errors::invalid_state(message)
 }
 
@@ -26,7 +26,7 @@ fn validation(message: impl Into<String>) -> ServiceError {
     ServiceError::client("ValidationException", 400, message)
 }
 
-fn check_arn(ctx: &RequestContext, arn: &str) -> Result<(), ServiceError> {
+pub(crate) fn check_arn(ctx: &RequestContext, arn: &str) -> Result<(), ServiceError> {
     let prefix = format!("arn:{}:acm-pca:", ctx.partition);
     if !arn.starts_with(&prefix) || !arn.contains(":certificate-authority/") {
         return Err(errors::invalid_arn(format!("The ARN {arn} is not valid.")));
@@ -35,11 +35,11 @@ fn check_arn(ctx: &RequestContext, arn: &str) -> Result<(), ServiceError> {
 }
 
 impl State {
-    fn ca(&self, arn: &str) -> Result<&Ca, ServiceError> {
+    pub(crate) fn ca(&self, arn: &str) -> Result<&Ca, ServiceError> {
         self.cas.get(arn).ok_or_else(|| not_found(arn))
     }
 
-    fn ca_mut(&mut self, arn: &str) -> Result<&mut Ca, ServiceError> {
+    pub(crate) fn ca_mut(&mut self, arn: &str) -> Result<&mut Ca, ServiceError> {
         self.cas.get_mut(arn).ok_or_else(|| not_found(arn))
     }
 }
@@ -126,7 +126,7 @@ impl PrivateCa {
     /// Authorize `acm-pca:{action}` on a CA, evaluating its resource policy.
     /// Reads the policy under the lock, then releases it before asking the
     /// authorizer.
-    fn authorize(&self, ctx: &RequestContext, action: &str, arn: &str) -> Result<(), ServiceError> {
+    pub(crate) fn authorize(&self, ctx: &RequestContext, action: &str, arn: &str) -> Result<(), ServiceError> {
         self.authorize_with(ctx, action, arn, ConditionContext::new())
     }
 
@@ -163,6 +163,9 @@ impl PrivateCa {
         validate_tags(&tags)?;
         if tags.len() > MAX_TAGS {
             return Err(errors::too_many_tags(format!("A certificate authority can have at most {MAX_TAGS} tags.")));
+        }
+        if let Some(rc) = &input.revocation_configuration {
+            revocation::validate(rc)?;
         }
         let config = input.certificate_authority_configuration;
         if config.subject == types::ASN1Subject::default() {
@@ -206,6 +209,9 @@ impl PrivateCa {
             permissions: Vec::new(),
             certs: BTreeMap::new(),
             issue_tokens: Default::default(),
+            crl: None,
+            crl_number: 0,
+            audit_reports: BTreeMap::new(),
         };
         let mut st = self.lock();
         if let Some(token) = input.idempotency_token {
@@ -336,6 +342,7 @@ impl PrivateCa {
         if ca.status != "DISABLED" {
             ca.set_status("ACTIVE");
         }
+        revocation::refresh_crl(ca)?;
         Ok(())
     }
 
@@ -373,7 +380,9 @@ impl PrivateCa {
         let alg = x509::signature_algorithm(&ca.config.key_algorithm, &input.signing_algorithm)?;
         let key = x509::key_for(&ca.key_der, alg)?;
         let is_root_cert = template_name == x509::ROOT_TEMPLATE;
-        let issue = x509::Issue { csr: &csr, template, not_before, not_after, serial };
+        let (crl_url, ocsp_url) =
+            if is_root_cert { (None, None) } else { (revocation::crl_url(ca), revocation::ocsp_url(ca)) };
+        let issue = x509::Issue { csr: &csr, template, not_before, not_after, serial, crl_url, ocsp_url };
         let pem = if is_root_cert {
             if ca.ty != "ROOT" {
                 return Err(errors::invalid_args("Only a root certificate authority can issue a root CA certificate."));
@@ -396,7 +405,19 @@ impl PrivateCa {
         };
         let id = serial.iter().map(|b| format!("{b:02x}")).collect::<String>();
         let cert_arn = format!("{arn}/certificate/{id}");
-        ca.certs.insert(id, IssuedCert { pem, revoked: None });
+        let subject = x509::subject_string(&pem);
+        ca.certs.insert(
+            id,
+            IssuedCert {
+                pem,
+                revoked: None,
+                issued_at: now,
+                not_before,
+                not_after,
+                subject,
+                template_arn: template_arn.clone(),
+            },
+        );
         if let Some(token) = input.idempotency_token {
             ca.issue_tokens.insert(token, cert_arn.clone());
         }
@@ -446,6 +467,7 @@ impl PrivateCa {
             return Err(errors::request_already_processed("This certificate is already revoked."));
         }
         cert.revoked = Some((input.revocation_reason, Utc::now()));
+        revocation::refresh_crl(ca)?;
         Ok(())
     }
 
@@ -457,6 +479,9 @@ impl PrivateCa {
         let arn = &input.certificate_authority_arn;
         check_arn(ctx, arn)?;
         self.authorize(ctx, "UpdateCertificateAuthority", arn)?;
+        if let Some(rc) = &input.revocation_configuration {
+            revocation::validate(rc)?;
+        }
         let mut st = self.lock();
         let ca = st.ca_mut(arn)?;
         if let Some(status) = &input.status {
@@ -473,6 +498,7 @@ impl PrivateCa {
         }
         if input.revocation_configuration.is_some() {
             ca.revocation = input.revocation_configuration;
+            revocation::refresh_crl(ca)?;
         }
         Ok(())
     }
@@ -704,7 +730,11 @@ impl PrivateCa {
 }
 
 /// Index-based pagination with an opaque token.
-fn paginate<T>(items: Vec<T>, max: Option<i32>, token: Option<&str>) -> Result<(Vec<T>, Option<String>), ServiceError> {
+pub(crate) fn paginate<T>(
+    items: Vec<T>,
+    max: Option<i32>,
+    token: Option<&str>,
+) -> Result<(Vec<T>, Option<String>), ServiceError> {
     let start = match token {
         Some(t) => t
             .strip_prefix("mws-")

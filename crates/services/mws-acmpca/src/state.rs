@@ -8,6 +8,29 @@ use crate::generated::types;
 pub struct IssuedCert {
     pub pem: String,
     pub revoked: Option<(String, DateTime<Utc>)>,
+    pub issued_at: DateTime<Utc>,
+    pub not_before: DateTime<Utc>,
+    pub not_after: DateTime<Utc>,
+    /// RFC 2253 subject, as audit reports show it.
+    pub subject: String,
+    pub template_arn: String,
+}
+
+/// The CA's current certificate revocation list.
+#[derive(Debug, Clone)]
+pub struct Crl {
+    pub der: Vec<u8>,
+    pub this_update: DateTime<Utc>,
+    pub next_update: DateTime<Utc>,
+}
+
+#[derive(Debug, Clone)]
+pub struct AuditReport {
+    pub bucket: String,
+    pub key: String,
+    pub created_at: DateTime<Utc>,
+    pub content_type: &'static str,
+    pub body: Vec<u8>,
 }
 
 #[derive(Debug, Clone)]
@@ -39,6 +62,10 @@ pub struct Ca {
     /// Issued certificates by serial (hex, no colons).
     pub certs: BTreeMap<String, IssuedCert>,
     pub issue_tokens: HashMap<String, String>,
+    pub crl: Option<Crl>,
+    pub crl_number: u64,
+    /// Audit reports by report id.
+    pub audit_reports: BTreeMap<String, AuditReport>,
 }
 
 #[derive(Debug, Default)]
