@@ -3,7 +3,10 @@
 
 use std::collections::BTreeMap;
 
-use mws_events::{TargetError, TargetInvocation, TargetSink};
+use mws_core::RequestContext;
+use mws_events::{Events, ServiceEvent, TargetError, TargetInvocation, TargetSink};
+use mws_s3::{EventBridgeSink, ObjectEvent};
+use mws_sns::{ServicePublish, ServicePublishError, Sns};
 use mws_sqs::{ServiceMessage, ServiceMessageAttribute, ServiceSendError, Sqs};
 
 /// EventBridge targets and dead-letter queues that are SQS queues.
@@ -47,5 +50,110 @@ impl TargetSink for SqsTarget {
             }
             Err(ServiceSendError::Rejected(m)) => Err(TargetError::permanent("SQSException", m)),
         }
+    }
+}
+
+/// EventBridge targets that are SNS topics.
+pub struct SnsTarget(pub Sns);
+
+#[async_trait::async_trait]
+impl TargetSink for SnsTarget {
+    async fn deliver(&self, inv: TargetInvocation<'_>) -> Result<(), TargetError> {
+        let fifo = inv.target_arn.ends_with(".fifo");
+        let publish = ServicePublish {
+            topic_arn: inv.target_arn,
+            service_principal: inv.service_principal,
+            source_arn: inv.source_arn,
+            source_account: inv.source_account,
+            message: inv.payload.to_string(),
+            subject: None,
+            attributes: inv.message_attributes.iter().map(|(k, v)| (k.clone(), ("String".into(), v.clone()))).collect(),
+            message_group_id: inv.message_group_id.map(str::to_string),
+            message_deduplication_id: fifo.then(|| uuid::Uuid::new_v4().to_string()),
+        };
+        match self.0.publish_as_service(inv.ctx, &publish) {
+            Ok(_) => Ok(()),
+            Err(ServicePublishError::NoSuchTopic) => Err(TargetError::permanent(
+                "ResourceNotFoundException",
+                format!("The topic {} does not exist.", inv.target_arn),
+            )),
+            Err(ServicePublishError::AccessDenied) => Err(TargetError::permanent(
+                "AccessDeniedException",
+                format!(
+                    "events.amazonaws.com is not authorized to perform: SNS:Publish on resource: {}",
+                    inv.target_arn
+                ),
+            )),
+            Err(ServicePublishError::Rejected(m)) => Err(TargetError::permanent("SNSException", m)),
+        }
+    }
+}
+
+/// S3 buses with EventBridge notifications turned on put their object
+/// events on the bucket owner's default bus, in S3's EventBridge format.
+pub struct S3ToEvents(pub Events);
+
+/// The EventBridge `detail-type` for an S3 notification event, if S3
+/// sends that event to EventBridge.
+fn s3_detail_type(event_name: &str) -> Option<&'static str> {
+    let (group, kind) = event_name.split_once(':').unwrap_or((event_name, ""));
+    Some(match (group, kind) {
+        ("ObjectCreated", _) => "Object Created",
+        ("ObjectRemoved", _) | ("LifecycleExpiration", _) => "Object Deleted",
+        ("ObjectRestore", "Post") => "Object Restore Initiated",
+        ("ObjectRestore", "Completed") => "Object Restore Completed",
+        ("ObjectRestore", "Delete") => "Object Restore Expired",
+        ("ObjectTagging", "Put") => "Object Tags Added",
+        ("ObjectTagging", "Delete") => "Object Tags Deleted",
+        ("ObjectAcl", "Put") => "Object ACL Updated",
+        ("LifecycleTransition", _) => "Object Storage Class Changed",
+        ("IntelligentTiering", _) => "Object Access Tier Changed",
+        _ => return None,
+    })
+}
+
+impl EventBridgeSink for S3ToEvents {
+    fn object_event(&self, ctx: &RequestContext, e: &ObjectEvent) {
+        let Some(detail_type) = s3_detail_type(&e.event_name) else { return };
+        let mut object = serde_json::json!({ "key": e.key, "sequencer": e.sequencer });
+        if detail_type == "Object Created" {
+            object["size"] = serde_json::json!(e.size.unwrap_or(0));
+            if let Some(etag) = &e.etag {
+                object["etag"] = serde_json::json!(etag.trim_matches('"'));
+            }
+        }
+        if let Some(v) = &e.version_id {
+            object["version-id"] = serde_json::json!(v);
+        }
+        let reason = if e.event_name.starts_with("LifecycleExpiration") {
+            "Lifecycle Expiration".to_string()
+        } else {
+            e.reason.clone()
+        };
+        let mut detail = serde_json::json!({
+            "version": "0",
+            "bucket": { "name": e.bucket },
+            "object": object,
+            "request-id": e.request_id,
+            "requester": e.requester,
+            "source-ip-address": e.source_ip,
+            "reason": reason,
+        });
+        if let Some(d) = &e.deletion_type {
+            detail["deletion-type"] = serde_json::json!(d);
+        }
+        self.0.put_service_event(
+            ctx,
+            ServiceEvent {
+                partition: e.partition.clone(),
+                account: e.bucket_owner.clone(),
+                region: e.region.clone(),
+                source: "aws.s3".into(),
+                detail_type: detail_type.into(),
+                resources: vec![format!("arn:{}:s3:::{}", e.partition, e.bucket)],
+                detail,
+                time: e.time,
+            },
+        );
     }
 }

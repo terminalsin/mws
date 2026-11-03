@@ -487,6 +487,32 @@ dependencies = [
 ]
 
 [[package]]
+name = "aws-sdk-sns"
+version = "1.121.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "a794cbd36edfbd178189c9197ee79f764b49e2899a92cc0894638c426ae51adc"
+dependencies = [
+ "arc-swap",
+ "aws-credential-types",
+ "aws-runtime",
+ "aws-smithy-async",
+ "aws-smithy-http",
+ "aws-smithy-json",
+ "aws-smithy-observability",
+ "aws-smithy-query",
+ "aws-smithy-runtime",
+ "aws-smithy-runtime-api",
+ "aws-smithy-schema",
+ "aws-smithy-types",
+ "aws-smithy-xml",
+ "aws-types",
+ "fastrand",
+ "http 1.5.0",
+ "regex-lite",
+ "tracing",
+]
+
+[[package]]
 name = "aws-sdk-sqs"
 version = "1.119.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2007,9 +2033,11 @@ dependencies = [
  "mws-s3control",
  "mws-secretsmanager",
  "mws-server",
+ "mws-sns",
  "mws-sqs",
  "mws-ssm",
  "mws-sts",
+ "serde_json",
  "tokio",
  "tracing",
  "tracing-subscriber",
@@ -2085,6 +2113,7 @@ dependencies = [
  "aws-sdk-s3",
  "aws-sdk-s3control",
  "aws-sdk-secretsmanager",
+ "aws-sdk-sns",
  "aws-sdk-sqs",
  "aws-sdk-ssm",
  "aws-sdk-sts",
@@ -2354,6 +2383,7 @@ dependencies = [
  "bzip2",
  "chrono",
  "flate2",
+ "form_urlencoded",
  "hex",
  "http 1.5.0",
  "md-5 0.10.6",
@@ -2459,6 +2489,42 @@ version = "0.1.0"
 dependencies = [
  "serde_json",
  "thiserror 2.0.21",
+]
+
+[[package]]
+name = "mws-sns"
+version = "0.1.0"
+dependencies = [
+ "async-trait",
+ "aws-lc-rs",
+ "base64 0.22.1",
+ "bytes",
+ "chrono",
+ "form_urlencoded",
+ "http 1.5.0",
+ "mws-codegen",
+ "mws-core",
+ "mws-iam-policy",
+ "mws-lambda",
+ "mws-proto-json",
+ "mws-proto-query",
+ "mws-s3",
+ "num-bigint",
+ "percent-encoding",
+ "rand",
+ "rcgen",
+ "rustls 0.23.46",
+ "rustls-native-certs",
+ "rustls-pki-types",
+ "serde",
+ "serde_json",
+ "sha1 0.10.7",
+ "sha2 0.10.9",
+ "tokio",
+ "tokio-rustls 0.26.6",
+ "tracing",
+ "uuid",
+ "x509-parser",
 ]
 
 [[package]]

@@ -226,40 +226,31 @@ impl Events {
         let Some(lambda) = self.inner.lambda.get() else {
             return Err(TargetError::permanent("ResourceNotFoundException", "Lambda is not available."));
         };
-        let invocation = mws_lambda::ServiceInvocation {
-            function: &d.target.arn,
-            service_principal: SERVICE_PRINCIPAL,
-            source_account: Some(&d.bus.account),
-            source_arn: Some(&d.rule_arn),
-            payload: payload.into_bytes(),
-        };
         // EventBridge invokes asynchronously: once Lambda accepts the
         // event, the function's own outcome is not a delivery failure.
-        lambda.check_service_invoke(ctx, &invocation).map_err(|e| match e {
-            mws_lambda::ServiceInvokeError::NotFound => {
-                TargetError::permanent("ResourceNotFoundException", format!("Function not found: {}", d.target.arn))
-            }
-            mws_lambda::ServiceInvokeError::AccessDenied => TargetError::permanent(
-                "AccessDeniedException",
-                format!("EventBridge is not authorized to invoke {}", d.target.arn),
-            ),
-            mws_lambda::ServiceInvokeError::Failed(m) => TargetError::retryable("ServiceException", m),
-        })?;
-        let (lambda, ctx) = (lambda.clone(), ctx.clone());
-        let payload = invocation.payload;
-        let (function, account, rule) = (d.target.arn.clone(), d.bus.account.clone(), d.rule_arn.clone());
-        tokio::spawn(async move {
-            let invocation = mws_lambda::ServiceInvocation {
-                function: &function,
-                service_principal: SERVICE_PRINCIPAL,
-                source_account: Some(&account),
-                source_arn: Some(&rule),
-                payload,
-            };
-            if let Err(e) = lambda.invoke_as_service(&ctx, invocation).await {
-                tracing::info!(function = %function, "EventBridge's asynchronous invocation failed: {e:?}");
-            }
-        });
+        lambda
+            .invoke_event_as_service(
+                ctx,
+                mws_lambda::ServiceInvocation {
+                    function: &d.target.arn,
+                    service_principal: SERVICE_PRINCIPAL,
+                    source_account: Some(&d.bus.account),
+                    source_arn: Some(&d.rule_arn),
+                    payload: payload.into_bytes(),
+                },
+            )
+            .map_err(|e| match e {
+                mws_lambda::ServiceInvokeError::NotFound => {
+                    TargetError::permanent("ResourceNotFoundException", format!("Function not found: {}", d.target.arn))
+                }
+                mws_lambda::ServiceInvokeError::AccessDenied => TargetError::permanent(
+                    "AccessDeniedException",
+                    format!("EventBridge is not authorized to invoke {}", d.target.arn),
+                ),
+                mws_lambda::ServiceInvokeError::Failed(m) => {
+                    TargetError::permanent("InvalidParameterValueException", m)
+                }
+            })?;
         Ok(())
     }
 

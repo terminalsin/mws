@@ -1025,3 +1025,103 @@ async fn sqs_targets_and_dead_letter_queues() {
     assert_eq!(attr("ERROR_CODE"), "AccessDeniedException");
     mws.stop().await;
 }
+
+/// A queue EventBridge and SNS may send to; returns its URL and ARN.
+async fn open_queue(sqs: &aws_sdk_sqs::Client, name: &str) -> (String, String) {
+    let url = sqs.create_queue().queue_name(name).send().await.unwrap().queue_url.unwrap();
+    let arn = format!("arn:aws:sqs:us-east-1:{ACCOUNT}:{name}");
+    let policy = serde_json::json!({"Version":"2012-10-17","Statement":[{
+        "Effect":"Allow","Principal":{"Service":["events.amazonaws.com","sns.amazonaws.com"]},
+        "Action":"sqs:SendMessage","Resource":arn}]});
+    sqs.set_queue_attributes()
+        .queue_url(&url)
+        .attributes(aws_sdk_sqs::types::QueueAttributeName::Policy, policy.to_string())
+        .send()
+        .await
+        .unwrap();
+    (url, arn)
+}
+
+async fn receive_one(sqs: &aws_sdk_sqs::Client, url: &str) -> serde_json::Value {
+    eventually(10, || async {
+        let r = sqs.receive_message().queue_url(url).send().await.unwrap();
+        r.messages.unwrap_or_default().into_iter().next().map(|m| serde_json::from_str(m.body().unwrap()).unwrap())
+    })
+    .await
+}
+
+#[tokio::test]
+async fn sns_targets_and_s3_events() {
+    let mws = Mws::start().await;
+    let cfg = mws.root_sdk_config().await;
+    let eb = Client::new(&cfg);
+    let sqs = aws_sdk_sqs::Client::new(&cfg);
+    let sns = aws_sdk_sns::Client::new(&cfg);
+    let s3 = Mws::s3(&cfg);
+
+    // SNS: the topic policy must let EventBridge publish.
+    let (sns_url, sns_queue) = open_queue(&sqs, "from-sns").await;
+    let topic = sns.create_topic().name("events").send().await.unwrap().topic_arn.unwrap();
+    sns.subscribe().topic_arn(&topic).protocol("sqs").endpoint(&sns_queue).send().await.unwrap();
+    eb.put_rule().name("to-sns").event_pattern(r#"{"source":["app"]}"#).send().await.unwrap();
+    eb.put_targets().rule("to-sns").targets(target("t", &topic)).send().await.unwrap();
+    eb.put_events().entries(entry("app", "Before", serde_json::json!({}))).send().await.unwrap();
+    tokio::time::sleep(Duration::from_millis(500)).await;
+    let r = sqs.receive_message().queue_url(&sns_url).send().await.unwrap();
+    assert!(r.messages.unwrap_or_default().is_empty(), "the default topic policy only allows the owner");
+    let policy = serde_json::json!({"Version":"2012-10-17","Statement":[{
+        "Effect":"Allow","Principal":{"Service":"events.amazonaws.com"},"Action":"sns:Publish","Resource":topic}]});
+    sns.set_topic_attributes()
+        .topic_arn(&topic)
+        .attribute_name("Policy")
+        .attribute_value(policy.to_string())
+        .send()
+        .await
+        .unwrap();
+    eb.put_events().entries(entry("app", "After", serde_json::json!({"k": "v"}))).send().await.unwrap();
+    let note = receive_one(&sqs, &sns_url).await;
+    assert_eq!(note["Type"], "Notification");
+    let event: serde_json::Value = serde_json::from_str(note["Message"].as_str().unwrap()).unwrap();
+    assert_eq!(event["detail-type"], "After");
+    assert_eq!(event["detail"]["k"], "v");
+
+    // S3: buckets with EventBridge turned on put object events on the
+    // default bus.
+    let (s3_url, s3_queue) = open_queue(&sqs, "from-s3").await;
+    eb.put_rule()
+        .name("s3")
+        .event_pattern(r#"{"source":["aws.s3"],"detail":{"bucket":{"name":["watched"]}}}"#)
+        .send()
+        .await
+        .unwrap();
+    eb.put_targets().rule("s3").targets(target("q", &s3_queue)).send().await.unwrap();
+    for b in ["watched", "quiet"] {
+        s3.create_bucket().bucket(b).send().await.unwrap();
+    }
+    s3.put_bucket_notification_configuration()
+        .bucket("watched")
+        .notification_configuration(
+            aws_sdk_s3::types::NotificationConfiguration::builder()
+                .event_bridge_configuration(aws_sdk_s3::types::EventBridgeConfiguration::builder().build())
+                .build(),
+        )
+        .send()
+        .await
+        .unwrap();
+    s3.put_object().bucket("quiet").key("a").body(b"x".to_vec().into()).send().await.unwrap();
+    s3.put_object().bucket("watched").key("docs/a.txt").body(b"hello".to_vec().into()).send().await.unwrap();
+    let event = receive_one(&sqs, &s3_url).await;
+    assert_eq!(event["source"], "aws.s3");
+    assert_eq!(event["detail-type"], "Object Created");
+    assert_eq!(event["account"], ACCOUNT);
+    assert_eq!(event["resources"][0], "arn:aws:s3:::watched");
+    assert_eq!(event["detail"]["bucket"]["name"], "watched");
+    assert_eq!(event["detail"]["object"]["key"], "docs/a.txt");
+    assert_eq!(event["detail"]["object"]["size"], 5);
+    assert_eq!(event["detail"]["reason"], "PutObject");
+    s3.delete_object().bucket("watched").key("docs/a.txt").send().await.unwrap();
+    let event = receive_one(&sqs, &s3_url).await;
+    assert_eq!(event["detail-type"], "Object Deleted");
+    assert_eq!(event["detail"]["deletion-type"], "Permanently Deleted");
+    mws.stop().await;
+}

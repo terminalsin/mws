@@ -105,3 +105,73 @@ impl Lambda {
         })
     }
 }
+
+impl std::fmt::Display for ServiceInvokeError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            ServiceInvokeError::NotFound => write!(f, "Function not found"),
+            ServiceInvokeError::AccessDenied => write!(f, "The function policy does not allow lambda:InvokeFunction"),
+            ServiceInvokeError::Failed(m) => write!(f, "{m}"),
+        }
+    }
+}
+
+impl std::error::Error for ServiceInvokeError {}
+
+impl Lambda {
+    /// Queue an asynchronous (`Event`) invocation as the service principal
+    /// (SNS subscriptions, S3 event notifications), after checking the
+    /// function policy. `ctx` is the request that caused it (for the
+    /// emulator's endpoint and clock); its caller is not consulted.
+    pub fn invoke_event_as_service(
+        &self,
+        ctx: &RequestContext,
+        inv: ServiceInvocation<'_>,
+    ) -> Result<(), ServiceInvokeError> {
+        let f = self.check_service_invoke(ctx, &inv)?;
+        if inv.payload.len() > crate::invoke::MAX_ASYNC_PAYLOAD {
+            return Err(ServiceInvokeError::Failed(
+                "The event is larger than Lambda's asynchronous payload limit".into(),
+            ));
+        }
+        let ctx = RequestContext { region: f.region.clone(), ..ctx.clone() };
+        self.enqueue(&ctx, &f, inv.payload);
+        Ok(())
+    }
+}
+
+const S3_PRINCIPAL: &str = "s3.amazonaws.com";
+
+/// S3 event notifications invoke functions as `s3.amazonaws.com`.
+impl mws_s3::NotificationDestination for Lambda {
+    fn service(&self) -> &'static str {
+        "lambda"
+    }
+
+    fn check(&self, ctx: &RequestContext, arn: &str, source: &mws_s3::NotificationSource<'_>) -> Result<(), String> {
+        let inv = ServiceInvocation {
+            function: arn,
+            service_principal: S3_PRINCIPAL,
+            source_account: Some(source.bucket_owner),
+            source_arn: Some(source.bucket_arn),
+            payload: Vec::new(),
+        };
+        self.check_service_invoke(ctx, &inv).map(|_| ()).map_err(|e| match e {
+            ServiceInvokeError::NotFound => "The destination function does not exist".to_string(),
+            _ => "Permissions on the destination function do not allow S3 to invoke it".to_string(),
+        })
+    }
+
+    fn deliver(&self, ctx: &RequestContext, arn: &str, source: &mws_s3::NotificationSource<'_>, message: String) {
+        let inv = ServiceInvocation {
+            function: arn,
+            service_principal: S3_PRINCIPAL,
+            source_account: Some(source.bucket_owner),
+            source_arn: Some(source.bucket_arn),
+            payload: message.into_bytes(),
+        };
+        if let Err(e) = self.invoke_event_as_service(ctx, inv) {
+            tracing::warn!(function = arn, "S3 could not invoke a notification function: {e}");
+        }
+    }
+}
