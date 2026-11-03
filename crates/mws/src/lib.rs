@@ -14,6 +14,7 @@ use mws_route53::Route53;
 use mws_s3::S3;
 use mws_s3control::S3Control;
 use mws_server::{Gateway, Scenario, Store};
+use mws_ssm::Ssm;
 use mws_sts::Sts;
 
 #[derive(Debug, Clone, Default)]
@@ -61,6 +62,7 @@ pub struct Mws {
     pub s3control: S3Control,
     pub lambda: Lambda,
     pub logs: Logs,
+    pub ssm: Ssm,
 }
 
 /// Build the gateway with every service MWS emulates.
@@ -117,6 +119,7 @@ fn build_with_store(config: Config, store: Option<Arc<Store>>) -> Mws {
     let lambda = Lambda::with_services(sts.clone(), s3.clone());
     lambda.set_logs(logs.clone());
     s3.set_object_lambda_invoker(Arc::new(lambda.clone()));
+    let ssm = Ssm::new(kms.clone());
     let mut gateway = Gateway::builder();
     if let Some(store) = store {
         gateway = gateway.store(store);
@@ -140,6 +143,7 @@ fn build_with_store(config: Config, store: Option<Arc<Store>>) -> Mws {
         .service(Arc::new(s3.clone()))
         .service(Arc::new(lambda.clone()))
         .service(Arc::new(logs.clone()))
+        .service(Arc::new(ssm.clone()))
         .build();
-    Mws { gateway, route53, kms, s3, s3control, lambda, logs }
+    Mws { gateway, route53, kms, s3, s3control, lambda, logs, ssm }
 }
