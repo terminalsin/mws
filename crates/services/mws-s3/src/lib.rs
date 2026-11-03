@@ -41,6 +41,7 @@ mod lifecycle;
 mod listing;
 mod metadata;
 mod multipart;
+mod notifications;
 mod objects;
 mod public;
 mod replication;
@@ -58,6 +59,7 @@ pub use access_points::{
     ObjectLambdaInvoker, Transformation,
 };
 pub use auth::policy_is_public;
+pub use notifications::{event_message, EventBridgeSink, NotificationDestination, NotificationSource, ObjectEvent};
 pub use public::{ServicePutError, ServicePutObject};
 use state::State;
 
@@ -82,6 +84,8 @@ pub struct S3 {
     sessions: directory::Sessions,
     /// S3 Control and Lambda, for access points and Object Lambda.
     links: Arc<access_points::Links>,
+    /// Where event notifications go.
+    notifications: Arc<notifications::Sinks>,
 }
 
 /// How a request proved who sent it, for `s3:authType` and friends.
@@ -252,7 +256,9 @@ fn looks_like_s3(request: &HttpRequest) -> bool {
         // `GET /` is ListBuckets, which needs a signature anyway.
         return false;
     }
-    if path.starts_with("/2013-04-01/") || path.starts_with("/_mws") {
+    // Bucket names never start with `_`, so `/_mws/...` (the control API)
+    // and `/_aws/...` (other services' side channels) are not S3's.
+    if path.starts_with("/2013-04-01/") || path.starts_with("/_") {
         return false;
     }
     let form = request.headers().get(http::header::CONTENT_TYPE).and_then(|v| v.to_str().ok()).is_some_and(|v| {

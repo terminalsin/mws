@@ -19,14 +19,28 @@ impl Handler for Call {
         ctx: &RequestContext,
         input: types::CompleteMultipartUploadRequest,
     ) -> Result<types::CompleteMultipartUploadOutput, ServiceError> {
-        Call::complete_multipart_upload(self, ctx, input)
+        let (bucket, key) = (input.bucket.clone(), input.key.clone());
+        let out = Call::complete_multipart_upload(self, ctx, input)?;
+        let v = out.version_id.clone();
+        self.object_event(
+            ctx,
+            &bucket,
+            &key,
+            v.as_deref(),
+            ("ObjectCreated:CompleteMultipartUpload", "CompleteMultipartUpload", None),
+        );
+        Ok(out)
     }
     async fn copy_object(
         &self,
         ctx: &RequestContext,
         input: types::CopyObjectRequest,
     ) -> Result<types::CopyObjectOutput, ServiceError> {
-        Call::copy_object(self, ctx, input)
+        let (bucket, key) = (input.bucket.clone(), input.key.clone());
+        let out = Call::copy_object(self, ctx, input)?;
+        let v = out.version_id.clone();
+        self.object_event(ctx, &bucket, &key, v.as_deref(), ("ObjectCreated:Copy", "CopyObject", None));
+        Ok(out)
     }
     async fn create_bucket(
         &self,
@@ -134,21 +148,71 @@ impl Handler for Call {
         ctx: &RequestContext,
         input: types::DeleteObjectRequest,
     ) -> Result<types::DeleteObjectOutput, ServiceError> {
-        Call::delete_object(self, ctx, input)
+        let (bucket, key) = (input.bucket.clone(), input.key.clone());
+        let requested = input.version_id.clone();
+        let out = Call::delete_object(self, ctx, input)?;
+        if out.delete_marker == Some(true) && requested.is_none() {
+            let v = out.version_id.clone();
+            self.object_event(
+                ctx,
+                &bucket,
+                &key,
+                v.as_deref(),
+                ("ObjectRemoved:DeleteMarkerCreated", "DeleteObject", Some("Delete Marker Created")),
+            );
+        } else {
+            let v = out.version_id.clone().or(requested);
+            self.object_event(
+                ctx,
+                &bucket,
+                &key,
+                v.as_deref(),
+                ("ObjectRemoved:Delete", "DeleteObject", Some("Permanently Deleted")),
+            );
+        }
+        Ok(out)
     }
     async fn delete_object_tagging(
         &self,
         ctx: &RequestContext,
         input: types::DeleteObjectTaggingRequest,
     ) -> Result<types::DeleteObjectTaggingOutput, ServiceError> {
-        Call::delete_object_tagging(self, ctx, input)
+        let (bucket, key) = (input.bucket.clone(), input.key.clone());
+        let out = Call::delete_object_tagging(self, ctx, input)?;
+        let v = out.version_id.clone();
+        self.object_event(ctx, &bucket, &key, v.as_deref(), ("ObjectTagging:Delete", "DeleteObjectTagging", None));
+        Ok(out)
     }
     async fn delete_objects(
         &self,
         ctx: &RequestContext,
         input: types::DeleteObjectsRequest,
     ) -> Result<types::DeleteObjectsOutput, ServiceError> {
-        Call::delete_objects(self, ctx, input)
+        let bucket = input.bucket.clone();
+        let out = Call::delete_objects(self, ctx, input)?;
+        for d in out.deleted.iter().flatten() {
+            let key = d.key.clone().unwrap_or_default();
+            if d.delete_marker == Some(true) && d.version_id.is_none() {
+                let v = d.delete_marker_version_id.clone();
+                self.object_event(
+                    ctx,
+                    &bucket,
+                    &key,
+                    v.as_deref(),
+                    ("ObjectRemoved:DeleteMarkerCreated", "DeleteObjects", Some("Delete Marker Created")),
+                );
+            } else {
+                let v = d.version_id.clone();
+                self.object_event(
+                    ctx,
+                    &bucket,
+                    &key,
+                    v.as_deref(),
+                    ("ObjectRemoved:Delete", "DeleteObjects", Some("Permanently Deleted")),
+                );
+            }
+        }
+        Ok(out)
     }
     async fn delete_public_access_block(
         &self,
@@ -589,14 +653,21 @@ impl Handler for Call {
         ctx: &RequestContext,
         input: types::PutObjectRequest,
     ) -> Result<types::PutObjectOutput, ServiceError> {
-        Call::put_object(self, ctx, input)
+        let (bucket, key) = (input.bucket.clone(), input.key.clone());
+        let out = Call::put_object(self, ctx, input)?;
+        let v = out.version_id.clone();
+        self.object_event(ctx, &bucket, &key, v.as_deref(), ("ObjectCreated:Put", "PutObject", None));
+        Ok(out)
     }
     async fn put_object_acl(
         &self,
         ctx: &RequestContext,
         input: types::PutObjectAclRequest,
     ) -> Result<types::PutObjectAclOutput, ServiceError> {
-        Call::put_object_acl(self, ctx, input)
+        let (bucket, key, v) = (input.bucket.clone(), input.key.clone(), input.version_id.clone());
+        let out = Call::put_object_acl(self, ctx, input)?;
+        self.object_event(ctx, &bucket, &key, v.as_deref(), ("ObjectAcl:Put", "PutObjectAcl", None));
+        Ok(out)
     }
     async fn put_object_legal_hold(
         &self,
@@ -624,7 +695,11 @@ impl Handler for Call {
         ctx: &RequestContext,
         input: types::PutObjectTaggingRequest,
     ) -> Result<types::PutObjectTaggingOutput, ServiceError> {
-        Call::put_object_tagging(self, ctx, input)
+        let (bucket, key) = (input.bucket.clone(), input.key.clone());
+        let out = Call::put_object_tagging(self, ctx, input)?;
+        let v = out.version_id.clone();
+        self.object_event(ctx, &bucket, &key, v.as_deref(), ("ObjectTagging:Put", "PutObjectTagging", None));
+        Ok(out)
     }
     async fn put_public_access_block(
         &self,
@@ -638,7 +713,10 @@ impl Handler for Call {
         ctx: &RequestContext,
         input: types::RestoreObjectRequest,
     ) -> Result<types::RestoreObjectOutput, ServiceError> {
-        Call::restore_object(self, ctx, input)
+        let (bucket, key, v) = (input.bucket.clone(), input.key.clone(), input.version_id.clone());
+        let out = Call::restore_object(self, ctx, input)?;
+        self.object_event(ctx, &bucket, &key, v.as_deref(), ("ObjectRestore:Post", "RestoreObject", None));
+        Ok(out)
     }
     async fn update_object_encryption(
         &self,

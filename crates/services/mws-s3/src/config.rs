@@ -598,6 +598,15 @@ impl Call {
             }
             l.id.get_or_insert_with(|| uuid::Uuid::new_v4().to_string());
         }
+        let owner = self.bucket_read(
+            ctx,
+            &input.bucket,
+            input.expected_bucket_owner.as_deref(),
+            "s3:PutBucketNotification",
+            |b| Ok(b.owner.clone()),
+        )?;
+        let skip = input.skip_destination_validation.unwrap_or(false);
+        self.validate_notification(ctx, &input.bucket, &owner, &config, skip)?;
         self.bucket_write(ctx, &input.bucket, input.expected_bucket_owner.as_deref(), "s3:PutBucketNotification", |b| {
             b.notification = config;
             Ok(())

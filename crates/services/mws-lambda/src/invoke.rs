@@ -15,7 +15,7 @@ use crate::Lambda;
 /// Largest synchronous request payload (6 MB).
 const MAX_SYNC_PAYLOAD: usize = 6_291_456;
 /// Largest asynchronous request payload (1 MB).
-const MAX_ASYNC_PAYLOAD: usize = 1_048_576;
+pub(crate) const MAX_ASYNC_PAYLOAD: usize = 1_048_576;
 /// `LogResult` carries the last 4 KB of the log.
 const LOG_TAIL: usize = 4096;
 /// Delays before the asynchronous retries, as in Lambda.

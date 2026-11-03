@@ -1,5 +1,7 @@
 //! Composition root. This is the only crate that knows which services exist.
 
+mod links;
+
 use std::path::PathBuf;
 use std::sync::Arc;
 
@@ -15,6 +17,7 @@ use mws_s3::S3;
 use mws_s3control::S3Control;
 use mws_secretsmanager::SecretsManager;
 use mws_server::{Gateway, Scenario, Store};
+use mws_sns::Sns;
 use mws_sqs::Sqs;
 use mws_ssm::Ssm;
 use mws_sts::Sts;
@@ -67,6 +70,7 @@ pub struct Mws {
     pub sqs: Sqs,
     pub ssm: Ssm,
     pub secretsmanager: SecretsManager,
+    pub sns: Sns,
 }
 
 /// Build the gateway with every service MWS emulates.
@@ -127,6 +131,11 @@ fn build_with_store(config: Config, store: Option<Arc<Store>>) -> Mws {
     let ssm = Ssm::new(kms.clone());
     let secretsmanager = SecretsManager::new(kms.clone()).with_lambda(lambda.clone());
     ssm.set_secrets_manager(Arc::new(SsmSecretReferences(secretsmanager.clone())));
+    let sns = Sns::new().with_lambda(lambda.clone());
+    s3.add_notification_destination(Arc::new(sns.clone()));
+    s3.add_notification_destination(Arc::new(lambda.clone()));
+    sns.set_queues(Arc::new(links::SnsToSqs(sqs.clone())));
+    s3.add_notification_destination(Arc::new(links::S3ToSqs(sqs.clone())));
     let mut gateway = Gateway::builder();
     if let Some(store) = store {
         gateway = gateway.store(store);
@@ -153,8 +162,9 @@ fn build_with_store(config: Config, store: Option<Arc<Store>>) -> Mws {
         .service(Arc::new(sqs.clone()))
         .service(Arc::new(ssm.clone()))
         .service(Arc::new(secretsmanager.clone()))
+        .service(Arc::new(sns.clone()))
         .build();
-    Mws { gateway, route53, kms, s3, s3control, lambda, logs, sqs, ssm, secretsmanager }
+    Mws { gateway, route53, kms, s3, s3control, lambda, logs, sqs, ssm, secretsmanager, sns }
 }
 
 /// Parameter Store's `/aws/reference/secretsmanager/` parameters, read
