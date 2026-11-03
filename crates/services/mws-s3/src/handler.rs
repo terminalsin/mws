@@ -766,4 +766,18 @@ impl Handler for Call {
     ) -> Result<types::SelectObjectContentOutput, ServiceError> {
         Call::select_object_content(self, ctx, input)
     }
+    async fn create_session(
+        &self,
+        ctx: &RequestContext,
+        input: types::CreateSessionRequest,
+    ) -> Result<types::CreateSessionOutput, ServiceError> {
+        Call::create_session(self, ctx, input)
+    }
+    async fn rename_object(
+        &self,
+        ctx: &RequestContext,
+        input: types::RenameObjectRequest,
+    ) -> Result<types::RenameObjectOutput, ServiceError> {
+        Call::rename_object(self, ctx, input)
+    }
 }

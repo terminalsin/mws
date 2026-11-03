@@ -391,16 +391,6 @@ impl Call {
             },
         )
     }
-
-    pub fn list_directory_buckets(
-        &self,
-        ctx: &RequestContext,
-        _input: types::ListDirectoryBucketsRequest,
-    ) -> Result<types::ListDirectoryBucketsOutput, ServiceError> {
-        self.authorize_plain(ctx, "s3express:ListAllMyDirectoryBuckets", "*", ConditionContext::new())?;
-        // MWS emulates general purpose buckets only.
-        Ok(types::ListDirectoryBucketsOutput { buckets: Some(Vec::new()), continuation_token: None })
-    }
 }
 
 #[cfg(test)]

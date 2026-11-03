@@ -106,6 +106,7 @@ fn build_with_store(config: Config, store: Option<Arc<Store>>) -> Mws {
         .authorizer(iam.authorizer())
         .credentials(iam.credential_store())
         .credentials(sts.credential_store())
+        .credentials(s3.credential_store())
         .service(Arc::new(iam))
         .service(Arc::new(sts))
         .service(Arc::new(route53.clone()))
