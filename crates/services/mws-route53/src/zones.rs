@@ -33,16 +33,23 @@ impl Zone {
             config: Some(types::HostedZoneConfig { comment: self.comment.clone(), private_zone: self.private }),
             resource_record_set_count: Some(self.records.len() as i64),
             linked_service: None,
-            features: None,
+            features: self.accelerated_recovery.then(|| types::HostedZoneFeatures {
+                accelerated_recovery_status: Some("ENABLED".into()),
+                failure_reasons: None,
+            }),
         }
     }
 
     fn delegation_set(&self) -> types::DelegationSet {
-        types::DelegationSet { id: None, caller_reference: None, name_servers: self.name_servers.clone() }
+        types::DelegationSet {
+            id: self.delegation_set_id.as_ref().map(|d| format!("/delegationset/{d}")),
+            caller_reference: None,
+            name_servers: self.name_servers.clone(),
+        }
     }
 }
 
-fn name_servers() -> Vec<String> {
+pub(crate) fn name_servers() -> Vec<String> {
     let mut rng = rand::thread_rng();
     ["com", "net", "org", "co.uk"]
         .iter()
@@ -50,7 +57,7 @@ fn name_servers() -> Vec<String> {
         .collect()
 }
 
-fn check_vpc(vpc: &types::VPC) -> Result<(), ServiceError> {
+pub(crate) fn check_vpc(vpc: &types::VPC) -> Result<(), ServiceError> {
     let id = vpc.vpc_id.as_deref().unwrap_or_default();
     if !id.starts_with("vpc-") || id.len() < 8 {
         return Err(errors::invalid_vpc_id(format!("The VPC ID '{id}' is invalid.")));
@@ -86,14 +93,37 @@ impl Route53 {
         if let Some(vpc) = &input.vpc {
             check_vpc(vpc)?;
         }
-        if input.delegation_set_id.is_some() {
-            return Err(errors::no_such_delegation_set(format!(
-                "A reusable delegation set with the specified ID does not exist: {}",
-                input.delegation_set_id.as_deref().unwrap_or_default()
-            )));
-        }
-
         let mut st = self.lock();
+        let delegation_set_id = input.delegation_set_id.as_deref().map(|d| strip_id(d).to_string());
+        if let Some(ds) = &delegation_set_id {
+            if private {
+                return Err(errors::invalid_input(
+                    "Invalid request: A reusable delegation set cannot be used with a private hosted zone.",
+                ));
+            }
+            if !st.delegation_sets.contains_key(ds) {
+                return Err(errors::no_such_delegation_set(format!(
+                    "A reusable delegation set with the specified ID does not exist: {ds}"
+                )));
+            }
+            let in_use = st.zones.values().filter(|z| z.delegation_set_id.as_deref() == Some(ds.as_str()));
+            if in_use.clone().any(|z| z.name == name) {
+                return Err(errors::conflicting_domain_exists(format!(
+                    "Cannot create hosted zone with DelegationSetId {ds} as the DNSName {} conflicts with existing ones sharing the delegation set",
+                    input.name
+                )));
+            }
+            if in_use.count() >= crate::limits::MAX_ZONES_BY_REUSABLE_DELEGATION_SET as usize {
+                return Err(errors::delegation_set_not_available(format!(
+                    "The delegation set {ds} has reached the limit of hosted zones."
+                )));
+            }
+        }
+        if st.zones.len() >= crate::limits::MAX_HOSTED_ZONES_BY_OWNER as usize {
+            return Err(errors::too_many_hosted_zones(
+                "This operation can't be completed either because the current account has reached the limit on the number of hosted zones or because you've reached the limit on the number of hosted zones that can be associated with a reusable delegation set.",
+            ));
+        }
         if st.zones.values().any(|z| z.caller_reference == input.caller_reference) {
             return Err(errors::hosted_zone_already_exists(format!(
                 "A hosted zone has already been created with the specified caller reference: {}",
@@ -101,7 +131,10 @@ impl Route53 {
             )));
         }
         let id = new_id('Z');
-        let ns = name_servers();
+        let ns = match &delegation_set_id {
+            Some(ds) => st.delegation_sets[ds].name_servers.clone(),
+            None => name_servers(),
+        };
         let mut zone = Zone {
             id: id.clone(),
             name: name.clone(),
@@ -112,6 +145,11 @@ impl Route53 {
             name_servers: ns.clone(),
             records: BTreeMap::new(),
             tags: BTreeMap::new(),
+            delegation_set_id: delegation_set_id.clone(),
+            ksks: BTreeMap::new(),
+            dnssec_signing: false,
+            vpc_authorizations: Vec::new(),
+            accelerated_recovery: false,
         };
         let soa = types::ResourceRecordSet {
             name: name.clone(),
@@ -175,18 +213,22 @@ impl Route53 {
         input: types::ListHostedZonesRequest,
     ) -> Result<types::ListHostedZonesResponse, ServiceError> {
         self.authorize(ctx, "ListHostedZones", "*")?;
-        if input.delegation_set_id.is_some() {
-            return Err(errors::no_such_delegation_set(
-                "A reusable delegation set with the specified ID does not exist.",
-            ));
-        }
         let limit = max_items(input.max_items, 100, 100);
         let st = self.lock();
+        let delegation_set = input.delegation_set_id.as_deref().map(strip_id);
+        if let Some(ds) = delegation_set {
+            if !st.delegation_sets.contains_key(ds) {
+                return Err(errors::no_such_delegation_set(format!(
+                    "A reusable delegation set with the specified ID does not exist: {ds}"
+                )));
+            }
+        }
         let want_private = input.hosted_zone_type.as_deref().map(|t| t == "PrivateHostedZone");
         let zones: Vec<&Zone> = st
             .zones
             .values()
             .filter(|z| want_private.is_none_or(|p| z.private == p))
+            .filter(|z| delegation_set.is_none_or(|d| z.delegation_set_id.as_deref() == Some(d)))
             .filter(|z| input.marker.as_deref().is_none_or(|m| z.id.as_str() >= strip_id(m)))
             .collect();
         let page: Vec<types::HostedZone> = zones.iter().take(limit).map(|z| z.wire()).collect();
@@ -270,7 +312,13 @@ impl Route53 {
                 "The specified hosted zone contains non-required resource record sets and so cannot be deleted.",
             ));
         }
+        if z.dnssec_signing {
+            return Err(errors::invalid_input(
+                "The hosted zone has DNSSEC signing enabled. Disable DNSSEC signing before deleting the hosted zone.",
+            ));
+        }
         st.zones.remove(id);
+        st.query_logging.retain(|_, q| q.hosted_zone_id != id);
         Ok(types::DeleteHostedZoneResponse { change_info: st.new_change(None) })
     }
 

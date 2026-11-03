@@ -1733,7 +1733,10 @@ name = "mws-route53"
 version = "0.1.0"
 dependencies = [
  "async-trait",
+ "aws-lc-rs",
+ "base64 0.22.1",
  "chrono",
+ "hex",
  "mws-codegen",
  "mws-core",
  "mws-proto-json",
@@ -1742,6 +1745,7 @@ dependencies = [
  "serde",
  "serde_json",
  "tokio",
+ "uuid",
 ]
 
 [[package]]

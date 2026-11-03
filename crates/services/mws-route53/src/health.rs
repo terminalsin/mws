@@ -79,6 +79,11 @@ impl Route53 {
                 input.caller_reference
             )));
         }
+        if st.health_checks.len() as i64 >= crate::limits::MAX_HEALTH_CHECKS_BY_OWNER {
+            return Err(errors::too_many_health_checks(
+                "This health check can't be created because the current account has reached the limit on the number of active health checks.",
+            ));
+        }
         let id = uuid();
         let check = types::HealthCheck {
             id: id.clone(),
@@ -216,4 +221,68 @@ fn uuid() -> String {
     let b: [u8; 16] = rand::thread_rng().gen();
     let h: String = b.iter().map(|x| format!("{x:02x}")).collect();
     format!("{}-{}-4{}-a{}-{}", &h[0..8], &h[8..12], &h[13..16], &h[17..20], &h[20..32])
+}
+
+/// Route 53 health checker regions and one checker address in each.
+const CHECKERS: &[(&str, &str)] = &[
+    ("us-east-1", "107.23.255.10"),
+    ("us-west-1", "54.183.255.140"),
+    ("us-west-2", "54.244.52.200"),
+    ("eu-west-1", "176.34.159.200"),
+    ("ap-southeast-1", "54.251.31.140"),
+    ("ap-southeast-2", "54.252.79.140"),
+    ("ap-northeast-1", "54.248.220.10"),
+    ("sa-east-1", "177.71.207.140"),
+];
+
+impl Route53 {
+    fn endpoint_check(&self, id: &str) -> Result<types::HealthCheckConfig, ServiceError> {
+        let st = self.lock();
+        let check = st.health_checks.get(id).ok_or_else(|| no_such_health_check(id))?;
+        let config = check.check.health_check_config.clone();
+        if matches!(config.r#type.as_str(), "CALCULATED" | "CLOUDWATCH_METRIC" | "RECOVERY_CONTROL") {
+            return Err(errors::invalid_input(format!(
+                "Invalid input: Health check {id} of type {} doesn't have checker observations.",
+                config.r#type
+            )));
+        }
+        Ok(config)
+    }
+
+    /// MWS does not probe endpoints: every checker reports success.
+    pub(crate) fn get_health_check_status(
+        &self,
+        ctx: &RequestContext,
+        input: types::GetHealthCheckStatusRequest,
+    ) -> Result<types::GetHealthCheckStatusResponse, ServiceError> {
+        let id = &input.health_check_id;
+        self.authorize(ctx, "GetHealthCheckStatus", &arn(ctx, "healthcheck", id))?;
+        let config = self.endpoint_check(id)?;
+        let status = match config.r#type.as_str() {
+            "TCP" => "Success: TCP connection established".to_string(),
+            _ => "Success: HTTP Status Code 200, OK".to_string(),
+        };
+        let now = chrono::Utc::now();
+        Ok(types::GetHealthCheckStatusResponse {
+            health_check_observations: CHECKERS
+                .iter()
+                .map(|(region, ip)| types::HealthCheckObservation {
+                    region: Some(region.to_string()),
+                    ip_address: Some(ip.to_string()),
+                    status_report: Some(types::StatusReport { status: Some(status.clone()), checked_time: Some(now) }),
+                })
+                .collect(),
+        })
+    }
+
+    pub(crate) fn get_health_check_last_failure_reason(
+        &self,
+        ctx: &RequestContext,
+        input: types::GetHealthCheckLastFailureReasonRequest,
+    ) -> Result<types::GetHealthCheckLastFailureReasonResponse, ServiceError> {
+        let id = &input.health_check_id;
+        self.authorize(ctx, "GetHealthCheckLastFailureReason", &arn(ctx, "healthcheck", id))?;
+        self.endpoint_check(id)?;
+        Ok(types::GetHealthCheckLastFailureReasonResponse { health_check_observations: Vec::new() })
+    }
 }

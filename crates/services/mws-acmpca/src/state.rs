@@ -18,19 +18,19 @@ pub struct IssuedCert {
 }
 
 /// The CA's current certificate revocation list.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Crl {
     pub der: Vec<u8>,
     pub this_update: DateTime<Utc>,
     pub next_update: DateTime<Utc>,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct AuditReport {
     pub bucket: String,
     pub key: String,
     pub created_at: DateTime<Utc>,
-    pub content_type: &'static str,
+    pub content_type: String,
     pub body: Vec<u8>,
 }
 
@@ -63,8 +63,11 @@ pub struct Ca {
     /// Issued certificates by serial (hex, no colons).
     pub certs: BTreeMap<String, IssuedCert>,
     pub issue_tokens: HashMap<String, String>,
+    #[serde(default)]
     pub crl: Option<Crl>,
+    #[serde(default)]
     pub crl_number: u64,
+    #[serde(default)]
     /// Audit reports by report id.
     pub audit_reports: BTreeMap<String, AuditReport>,
 }

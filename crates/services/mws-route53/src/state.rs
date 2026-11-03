@@ -27,6 +27,53 @@ pub struct Zone {
     #[serde(with = "records_as_list")]
     pub records: BTreeMap<RecordKey, types::ResourceRecordSet>,
     pub tags: BTreeMap<String, String>,
+    #[serde(default)]
+    /// The reusable delegation set whose name servers the zone uses.
+    pub delegation_set_id: Option<String>,
+    #[serde(default)]
+    /// DNSSEC key-signing keys by name.
+    pub ksks: BTreeMap<String, KeySigningKey>,
+    #[serde(default)]
+    /// Whether DNSSEC signing is enabled.
+    pub dnssec_signing: bool,
+    #[serde(default)]
+    /// VPCs other accounts are authorized to associate.
+    pub vpc_authorizations: Vec<types::VPC>,
+    #[serde(default)]
+    pub accelerated_recovery: bool,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct KeySigningKey {
+    pub key: types::KeySigningKey,
+    pub caller_reference: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct DelegationSet {
+    pub id: String,
+    pub caller_reference: String,
+    pub name_servers: Vec<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct CidrCollection {
+    pub id: String,
+    pub name: String,
+    pub caller_reference: String,
+    pub version: i64,
+    /// Location name → CIDR blocks.
+    pub locations: BTreeMap<String, std::collections::BTreeSet<String>>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct TrafficPolicy {
+    pub id: String,
+    pub name: String,
+    pub record_type: String,
+    /// Versions by number; deleted versions are removed.
+    pub versions: BTreeMap<i32, types::TrafficPolicy>,
+    pub latest_version: i32,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -47,6 +94,12 @@ pub struct State {
     pub zones: BTreeMap<String, Zone>,
     pub changes: HashMap<String, Change>,
     pub health_checks: BTreeMap<String, HealthCheck>,
+    pub delegation_sets: BTreeMap<String, DelegationSet>,
+    /// Query logging configurations by id.
+    pub query_logging: BTreeMap<String, types::QueryLoggingConfig>,
+    pub cidr_collections: BTreeMap<String, CidrCollection>,
+    pub traffic_policies: BTreeMap<String, TrafficPolicy>,
+    pub traffic_policy_instances: BTreeMap<String, types::TrafficPolicyInstance>,
 }
 
 impl State {
