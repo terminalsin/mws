@@ -1552,6 +1552,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "md-5"
+version = "0.10.6"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "d89e7ee0cfbedfc4da3340218492196241d89eefb6dab27de5df917a6d2e78cf"
+dependencies = [
+ "cfg-if",
+ "digest 0.10.7",
+]
+
+[[package]]
 name = "memchr"
 version = "2.8.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1663,15 +1673,22 @@ name = "mws-iam"
 version = "0.1.0"
 dependencies = [
  "async-trait",
+ "aws-lc-rs",
+ "base64 0.22.1",
  "chrono",
+ "md-5",
  "mws-codegen",
  "mws-core",
  "mws-iam-policy",
  "mws-proto-json",
  "mws-proto-query",
+ "qrcode",
  "rand",
+ "roxmltree",
  "serde",
  "serde_json",
+ "uuid",
+ "x509-parser",
 ]
 
 [[package]]
@@ -1808,6 +1825,7 @@ name = "mws-sts"
 version = "0.1.0"
 dependencies = [
  "async-trait",
+ "aws-lc-rs",
  "base64 0.22.1",
  "chrono",
  "mws-codegen",
@@ -1817,8 +1835,10 @@ dependencies = [
  "mws-proto-json",
  "mws-proto-query",
  "rand",
+ "roxmltree",
  "serde",
  "serde_json",
+ "uuid",
 ]
 
 [[package]]
@@ -2030,6 +2050,12 @@ checksum = "985e7ec9bb745e6ce6535b544d84d6cd6f7ad8bd711c398938ae983b91a766d9"
 dependencies = [
  "unicode-ident",
 ]
+
+[[package]]
+name = "qrcode"
+version = "0.14.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "d68782463e408eb1e668cf6152704bd856c78c5b6417adaee3203d8f4c1fc9ec"
 
 [[package]]
 name = "quote"

@@ -9,17 +9,17 @@ use rand::Rng;
 use crate::generated::{errors, types, Handler};
 use crate::{web_identity, Session, Sts};
 
-const ROLE_DEFAULT_DURATION: i32 = 3600;
+pub(crate) const ROLE_DEFAULT_DURATION: i32 = 3600;
 const ROLE_CHAINING_MAX: i32 = 3600;
 const SESSION_TOKEN_DEFAULT: i32 = 43_200;
 const ROOT_SESSION_MAX: i32 = 3600;
 const PACKED_POLICY_LIMIT: usize = 2048;
 
-fn access_denied(message: impl Into<String>) -> ServiceError {
+pub(crate) fn access_denied(message: impl Into<String>) -> ServiceError {
     ServiceError::client("AccessDenied", 403, message)
 }
 
-fn validation(message: impl Into<String>) -> ServiceError {
+pub(crate) fn validation(message: impl Into<String>) -> ServiceError {
     ServiceError::client("ValidationError", 400, message)
 }
 
@@ -34,12 +34,12 @@ fn session_token() -> String {
     format!("IQoJb3JpZ2luX2Vj{}", base64::engine::general_purpose::STANDARD.encode(bytes))
 }
 
-struct Issued {
-    credentials: types::Credentials,
+pub(crate) struct Issued {
+    pub(crate) credentials: types::Credentials,
 }
 
 impl Sts {
-    fn issue(&self, mut caller: Caller, duration: i32, session: SessionInfo) -> Issued {
+    pub(crate) fn issue(&self, mut caller: Caller, duration: i32, session: SessionInfo) -> Issued {
         let akid = format!("ASIA{}", random(b"ABCDEFGHIJKLMNOPQRSTUVWXYZ234567", 16));
         let secret = random(b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/", 40);
         let token = session_token();
@@ -63,7 +63,7 @@ impl Sts {
     }
 
     /// Session policies from `Policy` and `PolicyArns`, validated.
-    fn session_policies(
+    pub(crate) fn session_policies(
         &self,
         policy: Option<String>,
         arns: Option<Vec<types::PolicyDescriptorType>>,
@@ -87,17 +87,17 @@ impl Sts {
         Ok((docs, packed))
     }
 
-    fn tags(tags: Option<Vec<types::Tag>>) -> BTreeMap<String, String> {
+    pub(crate) fn tags(tags: Option<Vec<types::Tag>>) -> BTreeMap<String, String> {
         tags.unwrap_or_default().into_iter().map(|t| (t.key, t.value)).collect()
     }
 
-    fn packed_size(packed: usize, tags: &BTreeMap<String, String>) -> Option<i32> {
+    pub(crate) fn packed_size(packed: usize, tags: &BTreeMap<String, String>) -> Option<i32> {
         let tag_size: usize = tags.iter().map(|(k, v)| k.len() + v.len()).sum();
         let total = packed + tag_size;
         (total > 0).then(|| ((total * 100).div_ceil(PACKED_POLICY_LIMIT)) as i32)
     }
 
-    fn check_packed(packed: usize, tags: &BTreeMap<String, String>) -> Result<Option<i32>, ServiceError> {
+    pub(crate) fn check_packed(packed: usize, tags: &BTreeMap<String, String>) -> Result<Option<i32>, ServiceError> {
         let size = Self::packed_size(packed, tags);
         if size.is_some_and(|s| s > 100) {
             return Err(errors::packed_policy_too_large(format!(
@@ -108,7 +108,7 @@ impl Sts {
         Ok(size)
     }
 
-    fn request_tag_context(tags: &BTreeMap<String, String>) -> ConditionContext {
+    pub(crate) fn request_tag_context(tags: &BTreeMap<String, String>) -> ConditionContext {
         let mut ctx = ConditionContext::new();
         if tags.is_empty() {
             return ctx;
@@ -120,7 +120,7 @@ impl Sts {
         ctx
     }
 
-    fn assumed_role_caller(&self, role: &mws_iam::RoleView, session_name: &str) -> Caller {
+    pub(crate) fn assumed_role_caller(&self, role: &mws_iam::RoleView, session_name: &str) -> Caller {
         let account = self.iam().account_id_str().to_string();
         Caller {
             arn: format!("arn:{}:sts::{account}:assumed-role/{}/{session_name}", self.iam().partition(), role.name),
@@ -243,6 +243,7 @@ impl Handler for Sts {
             ctx.authorize_against_trust_policy("sts:SetSourceIdentity", &role.arn, &role.trust_policy, cond)?;
         }
 
+        let mfa = self.check_mfa(caller, input.serial_number.as_deref(), input.token_code.as_deref())?;
         let new_caller = self.assumed_role_caller(&role, &input.role_session_name);
         let assumed_role_user =
             types::AssumedRoleUser { assumed_role_id: new_caller.user_id.clone(), arn: new_caller.arn.clone() };
@@ -257,7 +258,7 @@ impl Handler for Sts {
                 source_identity: source_identity.clone(),
                 issued_at: ctx.received_at,
                 expires_at: ctx.received_at,
-                mfa_authenticated: input.serial_number.is_some() && input.token_code.is_some(),
+                mfa_authenticated: mfa,
             },
         );
         self.iam().note_role_used(&role.name, &ctx.region);
@@ -386,7 +387,9 @@ impl Handler for Sts {
         if !root && !matches!(caller.kind, CallerKind::User { .. }) {
             return Err(access_denied("Cannot call GetSessionToken with session credentials"));
         }
-        ctx.authorize("sts:GetSessionToken", "*", ConditionContext::new())?;
+        // AWS requires no permission for GetSessionToken: it authenticates
+        // the caller (optionally with MFA) and cannot be controlled by policy.
+        let mfa = self.check_mfa(caller, input.serial_number.as_deref(), input.token_code.as_deref())?;
         let mut duration = input.duration_seconds.unwrap_or(SESSION_TOKEN_DEFAULT);
         if root {
             duration = duration.min(ROOT_SESSION_MAX);
@@ -402,7 +405,7 @@ impl Handler for Sts {
                 source_identity: None,
                 issued_at: ctx.received_at,
                 expires_at: ctx.received_at,
-                mfa_authenticated: input.serial_number.is_some() && input.token_code.is_some(),
+                mfa_authenticated: mfa,
             },
         );
         Ok(types::GetSessionTokenResponse { credentials: Some(issued.credentials), ..Default::default() })
@@ -458,5 +461,45 @@ impl Handler for Sts {
             packed_policy_size,
             ..Default::default()
         })
+    }
+
+    async fn assume_role_with_saml(
+        &self,
+        ctx: &RequestContext,
+        input: types::AssumeRoleWithSAMLRequest,
+    ) -> Result<types::AssumeRoleWithSAMLResponse, ServiceError> {
+        self.assume_role_with_saml_impl(ctx, input).await
+    }
+
+    async fn assume_root(
+        &self,
+        ctx: &RequestContext,
+        input: types::AssumeRootRequest,
+    ) -> Result<types::AssumeRootResponse, ServiceError> {
+        self.assume_root_impl(ctx, input).await
+    }
+
+    async fn decode_authorization_message(
+        &self,
+        ctx: &RequestContext,
+        input: types::DecodeAuthorizationMessageRequest,
+    ) -> Result<types::DecodeAuthorizationMessageResponse, ServiceError> {
+        self.decode_authorization_message_impl(ctx, input).await
+    }
+
+    async fn get_delegated_access_token(
+        &self,
+        ctx: &RequestContext,
+        input: types::GetDelegatedAccessTokenRequest,
+    ) -> Result<types::GetDelegatedAccessTokenResponse, ServiceError> {
+        self.get_delegated_access_token_impl(ctx, input).await
+    }
+
+    async fn get_web_identity_token(
+        &self,
+        ctx: &RequestContext,
+        input: types::GetWebIdentityTokenRequest,
+    ) -> Result<types::GetWebIdentityTokenResponse, ServiceError> {
+        self.get_web_identity_token_impl(ctx, input).await
     }
 }

@@ -1,6 +1,13 @@
 mod account;
+mod credentials;
+mod delegation;
 mod groups;
+mod mfa;
 pub(crate) mod policies;
+mod reports;
 mod roles;
+mod saml;
+pub(crate) mod service_roles;
+pub(crate) mod settings;
 mod simulate;
 pub(crate) mod users;

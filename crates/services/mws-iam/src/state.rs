@@ -31,6 +31,12 @@ pub struct LoginProfile {
     pub created: DateTime<Utc>,
     pub password: String,
     pub reset_required: bool,
+    /// When the password was last set, for expiry.
+    #[serde(default)]
+    pub changed: Option<DateTime<Utc>>,
+    /// Earlier passwords, newest last, for `PasswordReusePrevention`.
+    #[serde(default)]
+    pub history: Vec<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -127,6 +133,122 @@ pub struct AccessKey {
     pub last_used: Option<(DateTime<Utc>, String, String)>,
 }
 
+/// A virtual MFA device: a TOTP seed (RFC 6238, SHA-1, 6 digits, 30 s).
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct MfaDevice {
+    pub serial: String,
+    pub path: String,
+    pub name: String,
+    pub seed: Vec<u8>,
+    /// Lower-cased user name it is enabled for.
+    pub user: Option<String>,
+    pub enabled: Option<DateTime<Utc>>,
+    pub tags: Tags,
+    /// The last time step a code was accepted for, to refuse replays.
+    pub last_step: Option<i64>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SshPublicKey {
+    pub id: String,
+    pub user: String,
+    pub body: String,
+    pub fingerprint: String,
+    pub active: bool,
+    pub uploaded: DateTime<Utc>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SigningCertificate {
+    pub id: String,
+    /// Lower-cased user name, or `None` for the root user.
+    pub user: Option<String>,
+    pub body: String,
+    pub active: bool,
+    pub uploaded: DateTime<Utc>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ServiceCredential {
+    pub id: String,
+    pub user: String,
+    pub service: String,
+    pub service_user_name: String,
+    pub password: String,
+    pub active: bool,
+    pub created: DateTime<Utc>,
+    pub expires: Option<DateTime<Utc>>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ServerCertificate {
+    pub name: String,
+    pub path: String,
+    pub id: String,
+    pub arn: String,
+    pub body: String,
+    pub chain: Option<String>,
+    pub uploaded: DateTime<Utc>,
+    pub expiration: Option<DateTime<Utc>>,
+    pub tags: Tags,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SamlProvider {
+    pub arn: String,
+    pub uuid: String,
+    pub metadata: String,
+    pub created: DateTime<Utc>,
+    pub valid_until: DateTime<Utc>,
+    pub tags: Tags,
+    pub assertion_encryption_mode: Option<String>,
+    /// Private keys for encrypted assertions: (key id, PEM, added).
+    pub private_keys: Vec<(String, String, DateTime<Utc>)>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct PasswordPolicy {
+    pub minimum_length: i32,
+    pub require_symbols: bool,
+    pub require_numbers: bool,
+    pub require_uppercase: bool,
+    pub require_lowercase: bool,
+    pub allow_users_to_change: bool,
+    pub max_age: Option<i32>,
+    pub reuse_prevention: Option<i32>,
+    pub hard_expiry: Option<bool>,
+}
+
+/// An asynchronous IAM report job (service last accessed, Organizations
+/// access).
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ReportJob {
+    pub id: String,
+    pub kind: String,
+    pub arn: String,
+    pub granularity: String,
+    pub created: DateTime<Utc>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct DeletionTask {
+    pub id: String,
+    pub role: String,
+    pub status: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct DelegationRequest {
+    pub request: crate::generated::types::DelegationRequest,
+    pub notes: Option<String>,
+    /// The exchange token SendDelegationToken issued (AWS posts it to the
+    /// partner's notification channel; MWS keeps it in state).
+    #[serde(default)]
+    pub token: Option<String>,
+    #[serde(default)]
+    pub redeemed: bool,
+}
+
 #[derive(Debug, Default, Clone, Serialize, Deserialize)]
 #[serde(default)]
 pub struct State {
@@ -140,6 +262,28 @@ pub struct State {
     pub oidc_providers: BTreeMap<String, OidcProvider>,
     pub access_keys: BTreeMap<String, AccessKey>,
     pub account_aliases: Vec<String>,
+    /// Virtual MFA devices by serial number (ARN).
+    pub mfa_devices: BTreeMap<String, MfaDevice>,
+    pub ssh_keys: BTreeMap<String, SshPublicKey>,
+    pub signing_certificates: BTreeMap<String, SigningCertificate>,
+    pub service_credentials: BTreeMap<String, ServiceCredential>,
+    /// Keyed by lower-cased name.
+    pub server_certificates: BTreeMap<String, ServerCertificate>,
+    /// Keyed by ARN.
+    pub saml_providers: BTreeMap<String, SamlProvider>,
+    pub password_policy: Option<PasswordPolicy>,
+    /// When the credential report was last generated.
+    pub credential_report: Option<DateTime<Utc>>,
+    pub report_jobs: BTreeMap<String, ReportJob>,
+    pub deletion_tasks: BTreeMap<String, DeletionTask>,
+    pub delegation_requests: BTreeMap<String, DelegationRequest>,
+    pub account_properties: BTreeMap<String, String>,
+    pub global_endpoint_token_version: Option<String>,
+    /// Outbound web identity federation issuer, when enabled.
+    pub outbound_issuer: Option<String>,
+    pub outbound_enabled: bool,
+    /// Outbound federation signing keys (PKCS#8 DER) by JWS algorithm.
+    pub outbound_keys: BTreeMap<String, Vec<u8>>,
 }
 
 impl State {

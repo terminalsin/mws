@@ -27,7 +27,7 @@ use std::sync::{Arc, RwLock};
 use chrono::{DateTime, Utc};
 use mws_core::{HttpRequest, HttpResponse, RequestContext, Service, ServiceError, SessionKind};
 
-pub use api::{OidcProviderView, RoleView, UserView};
+pub use api::{DelegationGrant, OidcProviderView, OutboundKey, RoleView, UserView};
 pub use state::State;
 
 /// Settings for the emulated account.
