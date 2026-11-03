@@ -1,0 +1,26 @@
+[package]
+name = "mws-secretsmanager"
+description = "AWS Secrets Manager for MWS: secrets encrypted with KMS, resource policies through IAM, and rotation that runs the rotation Lambda function."
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+async-trait.workspace = true
+aws-lc-rs.workspace = true
+base64.workspace = true
+chrono.workspace = true
+mws-core.workspace = true
+mws-iam-policy.workspace = true
+mws-kms.workspace = true
+mws-lambda.workspace = true
+mws-proto-json.workspace = true
+rand.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+tokio.workspace = true
+tracing.workspace = true
+uuid.workspace = true
+
+[build-dependencies]
+mws-codegen.workspace = true

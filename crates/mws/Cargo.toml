@@ -22,6 +22,7 @@ mws-lambda.workspace = true
 mws-route53.workspace = true
 mws-s3.workspace = true
 mws-s3control.workspace = true
+mws-secretsmanager.workspace = true
 mws-server.workspace = true
 mws-sts.workspace = true
 tokio.workspace = true

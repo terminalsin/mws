@@ -13,6 +13,7 @@ use mws_organizations::Organizations;
 use mws_route53::Route53;
 use mws_s3::S3;
 use mws_s3control::S3Control;
+use mws_secretsmanager::SecretsManager;
 use mws_server::{Gateway, Scenario, Store};
 use mws_sqs::Sqs;
 use mws_ssm::Ssm;
@@ -65,6 +66,7 @@ pub struct Mws {
     pub logs: Logs,
     pub sqs: Sqs,
     pub ssm: Ssm,
+    pub secretsmanager: SecretsManager,
 }
 
 /// Build the gateway with every service MWS emulates.
@@ -123,6 +125,8 @@ fn build_with_store(config: Config, store: Option<Arc<Store>>) -> Mws {
     lambda.set_logs(logs.clone());
     s3.set_object_lambda_invoker(Arc::new(lambda.clone()));
     let ssm = Ssm::new(kms.clone());
+    let secretsmanager = SecretsManager::new(kms.clone()).with_lambda(lambda.clone());
+    ssm.set_secrets_manager(Arc::new(SsmSecretReferences(secretsmanager.clone())));
     let mut gateway = Gateway::builder();
     if let Some(store) = store {
         gateway = gateway.store(store);
@@ -148,6 +152,28 @@ fn build_with_store(config: Config, store: Option<Arc<Store>>) -> Mws {
         .service(Arc::new(logs.clone()))
         .service(Arc::new(sqs.clone()))
         .service(Arc::new(ssm.clone()))
+        .service(Arc::new(secretsmanager.clone()))
         .build();
-    Mws { gateway, route53, kms, s3, s3control, lambda, logs, sqs, ssm }
+    Mws { gateway, route53, kms, s3, s3control, lambda, logs, sqs, ssm, secretsmanager }
+}
+
+/// Parameter Store's `/aws/reference/secretsmanager/` parameters, read
+/// from Secrets Manager as the caller.
+struct SsmSecretReferences(SecretsManager);
+
+impl mws_ssm::SecretsManagerReferences for SsmSecretReferences {
+    fn get_secret(
+        &self,
+        ctx: &mws_core::RequestContext,
+        secret_id: &str,
+        selector: Option<&str>,
+    ) -> Result<mws_ssm::ReferencedSecret, mws_core::ServiceError> {
+        let s = self.0.read_for_reference(ctx, secret_id, selector)?;
+        Ok(mws_ssm::ReferencedSecret {
+            arn: s.arn,
+            secret_string: s.secret_string,
+            last_changed_date: s.last_changed_date,
+            describe_secret: s.describe_secret,
+        })
+    }
 }
