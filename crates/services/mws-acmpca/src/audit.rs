@@ -108,7 +108,13 @@ impl PrivateCa {
         let (body, content_type) = render(ca, format);
         ca.audit_reports.insert(
             report_id.clone(),
-            AuditReport { bucket: input.s3_bucket_name, key: key.clone(), created_at: Utc::now(), content_type, body },
+            AuditReport {
+                bucket: input.s3_bucket_name,
+                key: key.clone(),
+                created_at: Utc::now(),
+                content_type: content_type.to_string(),
+                body,
+            },
         );
         Ok(types::CreateCertificateAuthorityAuditReportResponse { audit_report_id: Some(report_id), s3_key: Some(key) })
     }

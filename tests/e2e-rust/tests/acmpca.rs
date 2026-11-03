@@ -311,7 +311,9 @@ async fn validation_tags_and_errors() {
         .unwrap();
     assert_eq!(pca.list_tags().certificate_authority_arn(&ca).send().await.unwrap().tags().len(), 1);
 
-    let missing = format!("{}0", &ca[..ca.len() - 1]);
+    // Change the last hex digit so the ARN never matches the real CA.
+    let last = if ca.ends_with('0') { '1' } else { '0' };
+    let missing = format!("{}{last}", &ca[..ca.len() - 1]);
     let err = pca.describe_certificate_authority().certificate_authority_arn(&missing).send().await.unwrap_err();
     assert!(err.into_service_error().is_resource_not_found_exception());
     let err = pca

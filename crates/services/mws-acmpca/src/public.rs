@@ -91,11 +91,11 @@ impl PrivateCa {
                         }
                         ca.crl.as_ref().map(|c| (c.der.clone(), "application/pkix-crl"))
                     }),
-                    Download::AuditReport { ca_id: id, report_id } => st
-                        .cas
-                        .iter()
-                        .find(|(arn, _)| ca_id(arn) == id)
-                        .map(|(_, ca)| ca.audit_reports.get(report_id).map(|r| (r.body.clone(), r.content_type))),
+                    Download::AuditReport { ca_id: id, report_id } => {
+                        st.cas.iter().find(|(arn, _)| ca_id(arn) == id).map(|(_, ca)| {
+                            ca.audit_reports.get(report_id).map(|r| (r.body.clone(), r.content_type.as_str()))
+                        })
+                    }
                 };
                 match found {
                     Some(Some((body, ct))) => return Some(response(StatusCode::OK, ct, body, head)),

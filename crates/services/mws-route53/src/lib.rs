@@ -2,7 +2,10 @@
 //!
 //! Public and private hosted zones, atomic `ChangeResourceRecordSets` with
 //! Route 53's validation messages, record listing in Route 53's order,
-//! change tracking, health checks and tags. Every operation is authorized
+//! change tracking, health checks and tags, reusable delegation sets,
+//! traffic policies and instances, DNSSEC key-signing keys, CIDR
+//! collections, query logging configurations, VPC association
+//! authorizations, limits and the geolocation catalogue. Every operation is authorized
 //! through the configured [`Authorizer`](mws_core::Authorizer) with
 //! Route 53's actions, resource ARNs and condition keys.
 
@@ -11,13 +14,20 @@ pub mod generated {
     include!(concat!(env!("OUT_DIR"), "/route53_generated.rs"));
 }
 
+mod cidr;
+mod delegation;
 mod dns;
+mod dnssec;
 mod handler;
 mod health;
+mod limits;
 mod names;
+mod query_logging;
 mod records;
 mod state;
 mod tags;
+mod traffic;
+mod vpc_authorizations;
 mod zones;
 
 use std::sync::{Arc, Mutex, MutexGuard};
