@@ -1,0 +1,11 @@
+[package]
+name = "mws-codegen"
+description = "Generates Rust server stubs (types, validation, wire encoding, handler traits) from AWS Smithy models. Used from service crates' build scripts."
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+mws-smithy.workspace = true
+regex.workspace = true
+serde_json.workspace = true

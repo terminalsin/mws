@@ -1,0 +1,18 @@
+[package]
+name = "mws"
+description = "The MWS binary: wires the generic gateway to the service crates."
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[[bin]]
+name = "mws"
+path = "src/main.rs"
+
+[dependencies]
+mws-core.workspace = true
+mws-iam.workspace = true
+mws-server.workspace = true
+tokio.workspace = true
+tracing.workspace = true
+tracing-subscriber.workspace = true

@@ -1,0 +1,16 @@
+[package]
+name = "mws-iam"
+description = "AWS Identity and Access Management for MWS."
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+async-trait.workspace = true
+chrono.workspace = true
+mws-core.workspace = true
+mws-proto-query.workspace = true
+rand.workspace = true
+
+[build-dependencies]
+mws-codegen.workspace = true

@@ -1,0 +1,16 @@
+[package]
+name = "mws-proto-query"
+description = "Runtime for the awsQuery protocol (form-encoded requests, XML responses) used by IAM, STS and other query services."
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+async-trait.workspace = true
+base64.workspace = true
+bytes.workspace = true
+chrono.workspace = true
+form_urlencoded.workspace = true
+http.workspace = true
+mws-core.workspace = true
+regex.workspace = true

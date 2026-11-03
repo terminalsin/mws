@@ -1,0 +1,12 @@
+[package]
+name = "mws-core"
+description = "Service-agnostic contracts shared by every MWS crate: errors, request context, principals, and the authorization and credential traits."
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+async-trait.workspace = true
+bytes.workspace = true
+chrono.workspace = true
+http.workspace = true

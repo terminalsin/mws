@@ -1,0 +1,21 @@
+[package]
+name = "mws-sigv4"
+description = "Server-side AWS Signature Version 4 verification (header and presigned query forms)."
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+chrono.workspace = true
+hex.workspace = true
+hmac.workspace = true
+http.workspace = true
+percent-encoding.workspace = true
+sha2.workspace = true
+subtle.workspace = true
+thiserror.workspace = true
+
+[dev-dependencies]
+aws-sigv4 = { version = "1", features = ["sign-http"] }
+aws-credential-types = { version = "1", features = ["hardcoded-credentials"] }
+aws-smithy-runtime-api = { version = "1", features = ["client"] }
