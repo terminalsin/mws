@@ -47,6 +47,11 @@ pub struct Gateway {
     authorizer: Arc<dyn Authorizer>,
     env: Environment,
     state: state::StateHub,
+    /// How far the emulated clock runs ahead of the wall clock, in
+    /// milliseconds (`/_mws/clock`). Services see it in
+    /// `RequestContext::received_at`; signature checks use the wall clock,
+    /// since SDKs sign with it.
+    clock_offset_ms: std::sync::atomic::AtomicI64,
 }
 
 pub struct GatewayBuilder {
@@ -114,6 +119,7 @@ impl Gateway {
                 authorizer: Arc::new(mws_core::AllowAll),
                 env: Environment::default(),
                 state: state::StateHub::default(),
+                clock_offset_ms: std::sync::atomic::AtomicI64::new(0),
             },
         }
     }
@@ -217,12 +223,28 @@ impl Gateway {
             request_id,
             region,
             partition: self.env.partition.clone(),
-            received_at: now,
+            received_at: self.emulated_time(now),
             caller,
             source_ip: remote.map(|a| a.ip().to_string()),
             secure_transport: false,
             authorizer: self.authorizer.clone(),
         }
+    }
+
+    /// The emulated time for a wall-clock instant.
+    pub fn emulated_time(&self, wall: chrono::DateTime<Utc>) -> chrono::DateTime<Utc> {
+        wall + chrono::Duration::milliseconds(self.clock_offset_ms.load(std::sync::atomic::Ordering::Relaxed))
+    }
+
+    /// Move the emulated clock: it then runs `offset` ahead of the wall
+    /// clock (never behind).
+    pub fn set_clock_offset(&self, offset: chrono::Duration) {
+        let ms = offset.num_milliseconds().max(0);
+        self.clock_offset_ms.store(ms, std::sync::atomic::Ordering::Relaxed);
+    }
+
+    pub fn clock_offset(&self) -> chrono::Duration {
+        chrono::Duration::milliseconds(self.clock_offset_ms.load(std::sync::atomic::Ordering::Relaxed))
     }
 
     fn fallback_error(&self, request_id: &str, err: &ServiceError) -> HttpResponse {

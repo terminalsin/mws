@@ -54,6 +54,10 @@ pub struct Bucket {
     pub inventory: BTreeMap<String, types::InventoryConfiguration>,
     pub intelligent_tiering: BTreeMap<String, types::IntelligentTieringConfiguration>,
     pub abac: Option<String>,
+    /// S3 Metadata: the V2 configuration (journal, inventory, annotation
+    /// tables) or the legacy V1 metadata table configuration.
+    pub metadata: Option<types::MetadataConfiguration>,
+    pub metadata_v1: Option<types::MetadataTableConfiguration>,
 }
 
 impl Default for Bucket {
@@ -93,6 +97,8 @@ impl Default for Bucket {
             inventory: BTreeMap::new(),
             intelligent_tiering: BTreeMap::new(),
             abac: None,
+            metadata: None,
+            metadata_v1: None,
         }
     }
 }
@@ -182,6 +188,27 @@ pub struct ObjectVersion {
     pub legal_hold: Option<String>,
     /// When a restored copy of an archived object expires.
     pub restored_until: Option<DateTime<Utc>>,
+    /// `COMPLETED`, `FAILED` or `REPLICA`, once replication has acted.
+    pub replication_status: Option<String>,
+    /// Named annotations on this version.
+    pub annotations: BTreeMap<String, Annotation>,
+}
+
+/// An object annotation: a named UTF-8 payload attached to a version.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(default)]
+pub struct Annotation {
+    #[serde(with = "b64")]
+    pub data: Bytes,
+    pub etag: String,
+    pub last_modified: DateTime<Utc>,
+    pub checksum: Option<Checksum>,
+}
+
+impl Default for Annotation {
+    fn default() -> Self {
+        Self { data: Bytes::new(), etag: String::new(), last_modified: DateTime::<Utc>::UNIX_EPOCH, checksum: None }
+    }
 }
 
 impl Default for ObjectVersion {
@@ -211,6 +238,8 @@ impl Default for ObjectVersion {
             lock_until: None,
             legal_hold: None,
             restored_until: None,
+            replication_status: None,
+            annotations: BTreeMap::new(),
         }
     }
 }

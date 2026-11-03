@@ -1,7 +1,6 @@
 //! Buckets: create, delete, list, head, location, versioning, policy,
 //! tags, ACLs, ownership controls and Block Public Access.
 
-use chrono::Utc;
 use mws_core::{CallerKind, ConditionContext, RequestContext, ServiceError};
 
 use crate::acl::{self, GrantHeaders};
@@ -202,7 +201,7 @@ impl Call {
             name: name.clone(),
             region: region.clone(),
             owner: account,
-            created: Utc::now(),
+            created: ctx.received_at,
             versioning: lock.then(|| "Enabled".to_string()),
             ownership: Some(ownership),
             acl: grants,
