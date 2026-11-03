@@ -64,9 +64,24 @@ impl Gen<'_, '_> {
         let _ = writeln!(w, "use {RT}::__private::{{async_trait, chrono}};");
         let _ = writeln!(w, "#[allow(unused_imports)]\nuse {RT}::{{Decoder, Map, ServiceInfo, Value}};");
         let _ = writeln!(w, "use ::mws_core::{{HttpRequest, HttpResponse, RequestContext, ServiceError}};");
+        let query_compatible = if service.has_trait("aws.protocols#awsQueryCompatible") {
+            let errors = common::all_errors(service, &model.operations(service));
+            let pairs: Vec<String> = common::query_compatible_codes(model, &errors)
+                .iter()
+                .map(|(shape, code)| format!("({}, {})", rust_str(shape), rust_str(code)))
+                .collect();
+            let namespace = service.id.split('#').next().unwrap_or_default();
+            format!(
+                "Some(::mws_proto_json::QueryCompatible {{ namespace: {}, codes: &[{}] }})",
+                rust_str(namespace),
+                pairs.join(", ")
+            )
+        } else {
+            "None".to_string()
+        };
         let _ = writeln!(
             w,
-            "\npub const SERVICE_INFO: ServiceInfo = ServiceInfo {{ target_prefix: {}, content_type: {}, validation_error: {} }};",
+            "\npub const SERVICE_INFO: ServiceInfo = ServiceInfo {{ target_prefix: {}, content_type: {}, validation_error: {}, query_compatible: {query_compatible} }};",
             rust_str(service.name()),
             rust_str(content_type),
             rust_str(self.options.validation_error)
@@ -79,10 +94,17 @@ impl Gen<'_, '_> {
         let _ = writeln!(w, "\npub mod types {{\n    use super::chrono;");
         self.types.emit_types(&all, w);
         let _ = writeln!(w, "}}");
-        // awsJson ignores `awsQueryError` codes unless the service is
-        // `awsQueryCompatible` (KMS models them but answers with shape names).
-        let query_codes = service.has_trait("aws.protocols#awsQueryCompatible");
-        common::emit_errors(model, &common::all_errors(service, &ops), query_codes, w);
+        // awsJson ignores `awsQueryError` codes (KMS models them but answers
+        // with shape names) unless the service is `awsQueryCompatible`:
+        // then the shape name goes in `__type` and the query code in the
+        // `x-amzn-query-error` header.
+        let errors = common::all_errors(service, &ops);
+        let codes = if service.has_trait("aws.protocols#awsQueryCompatible") {
+            common::ErrorCodes::QueryCompatible
+        } else {
+            common::ErrorCodes::Shape
+        };
+        common::emit_errors(model, &errors, codes, w);
         common::emit_handler(model, &ops, w);
         self.emit_dispatch(&ops, w);
 

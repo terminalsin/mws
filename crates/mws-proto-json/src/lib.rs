@@ -31,6 +31,18 @@ pub struct ServiceInfo {
     /// `application/x-amz-json-1.1` or `-1.0`.
     pub content_type: &'static str,
     pub validation_error: &'static str,
+    /// Set for `awsQueryCompatible` services (SQS), which also report the
+    /// error's awsQuery code in `x-amzn-query-error`.
+    pub query_compatible: Option<QueryCompatible>,
+}
+
+/// awsQuery error codes of an `awsQueryCompatible` service.
+#[derive(Debug, Clone, Copy)]
+pub struct QueryCompatible {
+    /// Smithy namespace `__type` qualifies modeled error names with.
+    pub namespace: &'static str,
+    /// `(shape name, awsQuery code)` per modeled error.
+    pub codes: &'static [(&'static str, &'static str)],
 }
 
 /// The operation named by `X-Amz-Target`, if it belongs to this service.
@@ -247,8 +259,19 @@ pub fn error_response(info: &ServiceInfo, request_id: &str, error: &ServiceError
     // JSON-protocol services name the authorization failure
     // `AccessDeniedException`; the shared authorizer says `AccessDenied`.
     let code = if error.code == "AccessDenied" { "AccessDeniedException" } else { &error.code };
+    // awsQueryCompatible services qualify modeled errors with their
+    // namespace and name the awsQuery code (`AWS.SimpleQueueService.
+    // NonExistentQueue`, `AccessDenied`) in `x-amzn-query-error`, which SDKs
+    // report as the error code.
+    let (type_name, query_error) = match &info.query_compatible {
+        Some(q) => match q.codes.iter().find(|(shape, _)| *shape == code) {
+            Some((shape, query)) => (format!("{}#{shape}", q.namespace), Some(*query)),
+            None => (code.to_string(), Some(error.code.as_ref())),
+        },
+        None => (code.to_string(), None),
+    };
     let mut body = Map::new();
-    body.insert("__type".into(), Value::String(code.to_string()));
+    body.insert("__type".into(), Value::String(type_name));
     body.insert("message".into(), Value::String(error.message.clone()));
     for f in &error.fields {
         let v = match &f.value {
@@ -260,6 +283,15 @@ pub fn error_response(info: &ServiceInfo, request_id: &str, error: &ServiceError
     let mut resp = json_response(info, request_id, error.status, Some(Value::Object(body)));
     if let Ok(v) = http::HeaderValue::from_str(code) {
         resp.headers_mut().insert("x-amzn-ErrorType", v);
+    }
+    if let Some(query) = query_error {
+        let fault = match error.fault {
+            mws_core::ErrorFault::Client => "Sender",
+            mws_core::ErrorFault::Server => "Receiver",
+        };
+        if let Ok(v) = http::HeaderValue::from_str(&format!("{query};{fault}")) {
+            resp.headers_mut().insert("x-amzn-query-error", v);
+        }
     }
     resp
 }
