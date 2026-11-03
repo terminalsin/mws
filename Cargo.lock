@@ -1869,6 +1869,7 @@ dependencies = [
  "aws-sdk-s3",
  "aws-sdk-sts",
  "base64 0.22.1",
+ "chrono",
  "flate2",
  "mws",
  "mws-route53",

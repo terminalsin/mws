@@ -395,6 +395,26 @@ async fn centralized_root_access() {
         .await
         .unwrap_err();
     assert_eq!(err.code(), Some("AccessDenied"));
+
+    // Turning the features off stops root sessions again.
+    let disabled = iam.disable_organizations_root_sessions().send().await.unwrap();
+    assert_eq!(disabled.enabled_features().len(), 1);
+    let err = sts
+        .assume_root()
+        .target_principal(&account)
+        .task_policy_arn(
+            PolicyDescriptorType::builder()
+                .arn("arn:aws:iam::aws:policy/root-task/IAMAuditRootUserCredentials")
+                .build(),
+        )
+        .send()
+        .await
+        .unwrap_err();
+    assert_eq!(err.code(), Some("AccessDenied"));
+    assert!(err.message().unwrap().ends_with("because centralized root access is not enabled for the organization"));
+    let disabled = iam.disable_organizations_root_credentials_management().send().await.unwrap();
+    assert!(disabled.enabled_features().is_empty());
+    assert!(iam.list_organizations_features().send().await.unwrap().enabled_features().is_empty());
 }
 
 #[tokio::test]
@@ -458,6 +478,317 @@ async fn effective_tag_policies_and_delegation() {
     assert_eq!(admins.delegated_administrators()[0].id(), Some(account.as_str()));
     let err = o.orgs.remove_account_from_organization().account_id(&account).send().await.unwrap_err();
     assert_eq!(err.code(), Some("ConstraintViolationException"));
+
+    let services = o.orgs.list_delegated_services_for_account().account_id(&account).send().await.unwrap();
+    let principals: Vec<_> = services.delegated_services().iter().filter_map(|s| s.service_principal()).collect();
+    assert_eq!(principals, ["guardduty.amazonaws.com"]);
+    let access = o.orgs.list_aws_service_access_for_organization().send().await.unwrap();
+    assert!(access
+        .enabled_service_principals()
+        .iter()
+        .any(|p| p.service_principal() == Some("guardduty.amazonaws.com")));
+    o.orgs
+        .deregister_delegated_administrator()
+        .account_id(&account)
+        .service_principal("guardduty.amazonaws.com")
+        .send()
+        .await
+        .unwrap();
+    let err = o.orgs.list_delegated_services_for_account().account_id(&account).send().await.unwrap_err();
+    assert_eq!(err.code(), Some("AccountNotRegisteredException"));
+    let err = Orgs::new(&member).list_roots().send().await.unwrap_err();
+    assert_eq!(err.code(), Some("AccessDeniedException"));
+    o.orgs.disable_aws_service_access().service_principal("guardduty.amazonaws.com").send().await.unwrap();
+    let access = o.orgs.list_aws_service_access_for_organization().send().await.unwrap();
+    assert!(access
+        .enabled_service_principals()
+        .iter()
+        .all(|p| p.service_principal() != Some("guardduty.amazonaws.com")));
+
+    // Merging never fails here, so there are no validation errors to list.
+    use aws_sdk_organizations::types::EffectivePolicyType;
+    let invalid = o
+        .orgs
+        .list_accounts_with_invalid_effective_policy()
+        .policy_type(EffectivePolicyType::TagPolicy)
+        .send()
+        .await
+        .unwrap();
+    assert!(invalid.accounts().is_empty());
+    let errors = o
+        .orgs
+        .list_effective_policy_validation_errors()
+        .account_id(&account)
+        .policy_type(EffectivePolicyType::TagPolicy)
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(errors.account_id(), Some(account.as_str()));
+    assert!(errors.effective_policy_validation_errors().is_empty());
+    let none = o
+        .orgs
+        .list_effective_policy_validation_errors()
+        .account_id(&account)
+        .policy_type(EffectivePolicyType::BackupPolicy)
+        .send()
+        .await
+        .unwrap_err();
+    assert_eq!(none.code(), Some("EffectivePolicyNotFoundException"));
+}
+
+#[tokio::test]
+async fn units_accounts_and_closing() {
+    let o = org().await;
+    let ou = o.orgs.create_organizational_unit().parent_id(&o.root_id).name("Teams").send().await.unwrap();
+    let ou_id = ou.organizational_unit().unwrap().id().unwrap().to_string();
+    let renamed =
+        o.orgs.update_organizational_unit().organizational_unit_id(&ou_id).name("Squads").send().await.unwrap();
+    assert_eq!(renamed.organizational_unit().unwrap().name(), Some("Squads"));
+    let described = o.orgs.describe_organizational_unit().organizational_unit_id(&ou_id).send().await.unwrap();
+    assert_eq!(described.organizational_unit().unwrap().name(), Some("Squads"));
+    let children = o.orgs.list_organizational_units_for_parent().parent_id(&o.root_id).send().await.unwrap();
+    assert_eq!(children.organizational_units().len(), 1);
+    let missing = o.orgs.describe_organizational_unit().organizational_unit_id("ou-abcd-12345678").send().await;
+    assert_eq!(missing.unwrap_err().code(), Some("OrganizationalUnitNotFoundException"));
+
+    let a = o.create_account("alpha").await;
+    let b = o.create_account("beta").await;
+    o.orgs
+        .move_account()
+        .account_id(&b)
+        .source_parent_id(&o.root_id)
+        .destination_parent_id(&ou_id)
+        .send()
+        .await
+        .unwrap();
+    let in_root = o.orgs.list_accounts_for_parent().parent_id(&o.root_id).send().await.unwrap();
+    let ids: Vec<_> = in_root.accounts().iter().filter_map(|x| x.id()).collect();
+    assert!(ids.contains(&a.as_str()) && !ids.contains(&b.as_str()));
+    let in_ou = o.orgs.list_accounts_for_parent().parent_id(&ou_id).send().await.unwrap();
+    assert_eq!(in_ou.accounts()[0].id(), Some(b.as_str()));
+
+    let statuses = o.orgs.list_create_account_status().send().await.unwrap();
+    assert_eq!(statuses.create_account_statuses().len(), 2);
+    let failed = o
+        .orgs
+        .list_create_account_status()
+        .states(aws_sdk_organizations::types::CreateAccountState::Failed)
+        .send()
+        .await
+        .unwrap();
+    assert!(failed.create_account_statuses().is_empty());
+
+    let gov = o.orgs.create_gov_cloud_account().email("gov@example.com").account_name("gov").send().await;
+    assert_eq!(gov.unwrap_err().code(), Some("ConstraintViolationException"));
+
+    o.orgs.close_account().account_id(&a).send().await.unwrap();
+    let closed = o.orgs.describe_account().account_id(&a).send().await.unwrap();
+    let state = closed.account().unwrap().state().map(|s| s.as_str().to_string());
+    assert!(matches!(state.as_deref(), Some("PENDING_CLOSURE") | Some("SUSPENDED")), "{state:?}");
+    let again = o.orgs.close_account().account_id(&a).send().await.unwrap_err();
+    assert_eq!(again.code(), Some("AccountAlreadyClosedException"));
+    let mgmt = o.orgs.close_account().account_id("123456789012").send().await.unwrap_err();
+    assert_eq!(mgmt.code(), Some("ConstraintViolationException"));
+}
+
+#[tokio::test]
+async fn policies_targets_and_resource_policy() {
+    let o = org().await;
+    let account = o.create_account("target").await;
+    o.orgs.enable_policy_type().root_id(&o.root_id).policy_type(PolicyType::ServiceControlPolicy).send().await.unwrap();
+    let created = o
+        .orgs
+        .create_policy()
+        .name("deny-users")
+        .description("first")
+        .r#type(PolicyType::ServiceControlPolicy)
+        .content(DENY_CREATE_USER)
+        .send()
+        .await
+        .unwrap();
+    let id = created.policy().unwrap().policy_summary().unwrap().id().unwrap().to_string();
+    let updated = o.orgs.update_policy().policy_id(&id).name("no-users").description("second").send().await.unwrap();
+    assert_eq!(updated.policy().unwrap().policy_summary().unwrap().name(), Some("no-users"));
+    let described = o.orgs.describe_policy().policy_id(&id).send().await.unwrap();
+    let policy = described.policy().unwrap();
+    assert_eq!(policy.policy_summary().unwrap().description(), Some("second"));
+    assert_eq!(policy.content(), Some(DENY_CREATE_USER));
+
+    let listed = o.orgs.list_policies().filter(PolicyType::ServiceControlPolicy).send().await.unwrap();
+    let names: Vec<_> = listed.policies().iter().filter_map(|p| p.name()).collect();
+    assert!(names.contains(&"FullAWSAccess") && names.contains(&"no-users"), "{names:?}");
+
+    o.orgs.attach_policy().policy_id(&id).target_id(&account).send().await.unwrap();
+    let targets = o.orgs.list_targets_for_policy().policy_id(&id).send().await.unwrap();
+    assert_eq!(targets.targets()[0].target_id(), Some(account.as_str()));
+    assert_eq!(targets.targets()[0].r#type().map(|t| t.as_str()), Some("ACCOUNT"));
+
+    // Disabling the type detaches every policy of that type.
+    o.orgs
+        .disable_policy_type()
+        .root_id(&o.root_id)
+        .policy_type(PolicyType::ServiceControlPolicy)
+        .send()
+        .await
+        .unwrap();
+    let roots = o.orgs.list_roots().send().await.unwrap();
+    assert!(roots.roots()[0].policy_types().iter().all(|t| t.r#type() != Some(&PolicyType::ServiceControlPolicy)));
+    let member_iam = aws_sdk_iam::Client::new(&o.member_config(&account).await);
+    member_iam.create_user().user_name("allowed-now").send().await.unwrap();
+
+    let doc = r#"{"Version":"2012-10-17","Statement":[{"Sid":"ReadOnly","Effect":"Allow","Principal":{"AWS":"arn:aws:iam::123456789012:root"},"Action":"organizations:Describe*","Resource":"*"}]}"#;
+    let put = o.orgs.put_resource_policy().content(doc).send().await.unwrap();
+    assert!(put.resource_policy().unwrap().resource_policy_summary().unwrap().id().is_some());
+    let got = o.orgs.describe_resource_policy().send().await.unwrap();
+    assert_eq!(got.resource_policy().unwrap().content(), Some(doc));
+    o.orgs.delete_resource_policy().send().await.unwrap();
+    let gone = o.orgs.describe_resource_policy().send().await.unwrap_err();
+    assert_eq!(gone.code(), Some("ResourcePolicyNotFoundException"));
+}
+
+#[tokio::test]
+async fn handshakes_cancel_decline_and_all_features() {
+    let mws = Mws::start().await;
+    let orgs = Orgs::new(&mws.root_sdk_config().await);
+    orgs.create_organization()
+        .feature_set(aws_sdk_organizations::types::OrganizationFeatureSet::ConsolidatedBilling)
+        .send()
+        .await
+        .unwrap();
+    let created = orgs.create_account().email("x@example.com").account_name("x").send().await.unwrap();
+    let request = created.create_account_status().unwrap().id().unwrap();
+    let status = orgs.describe_create_account_status().create_account_request_id(request).send().await.unwrap();
+    let account = status.create_account_status().unwrap().account_id().unwrap().to_string();
+    orgs.remove_account_from_organization().account_id(&account).send().await.unwrap();
+
+    let invite = |notes: &'static str| {
+        orgs.invite_account_to_organization()
+            .target(HandshakeParty::builder().r#type(HandshakePartyType::Account).id(&account).build().unwrap())
+            .notes(notes)
+            .send()
+    };
+    let first = invite("one").await.unwrap().handshake().unwrap().id().unwrap().to_string();
+    let described = orgs.describe_handshake().handshake_id(&first).send().await.unwrap();
+    assert_eq!(described.handshake().unwrap().state().unwrap().as_str(), "OPEN");
+    let canceled = orgs.cancel_handshake().handshake_id(&first).send().await.unwrap();
+    assert_eq!(canceled.handshake().unwrap().state().unwrap().as_str(), "CANCELED");
+    let again = orgs.cancel_handshake().handshake_id(&first).send().await.unwrap_err();
+    assert_eq!(again.code(), Some("HandshakeAlreadyInStateException"));
+
+    // The invited account declines the next invitation. It signs in as root
+    // of its standalone account through a user it creates there.
+    let second = invite("two").await.unwrap().handshake().unwrap().id().unwrap().to_string();
+    let listed = orgs.list_handshakes_for_organization().send().await.unwrap();
+    assert_eq!(listed.handshakes().len(), 2);
+    let admin = user_with_policy(&mws, "billing-admin", Some(ADMIN)).await.1;
+    let member = {
+        let sts = aws_sdk_sts::Client::new(&admin);
+        let creds = sts
+            .assume_role()
+            .role_arn(format!("arn:aws:iam::{account}:role/OrganizationAccountAccessRole"))
+            .role_session_name("decline")
+            .send()
+            .await
+            .unwrap();
+        sts_config(&mws, creds.credentials().unwrap()).await
+    };
+    let declined = Orgs::new(&member).decline_handshake().handshake_id(&second).send().await.unwrap();
+    assert_eq!(declined.handshake().unwrap().state().unwrap().as_str(), "DECLINED");
+
+    let enable = orgs.enable_all_features().send().await.unwrap();
+    let handshake = enable.handshake().unwrap();
+    assert_eq!(handshake.action().unwrap().as_str(), "ENABLE_ALL_FEATURES");
+    let open = orgs.list_handshakes_for_organization().send().await.unwrap();
+    assert!(open.handshakes().iter().any(|h| h.id() == handshake.id()));
+}
+
+#[tokio::test]
+async fn responsibility_transfers_between_organizations() {
+    use aws_sdk_organizations::types::{ResponsibilityTransferType, Tag as OrgTag};
+    use chrono::Datelike;
+    let o = org().await;
+    // A second organization, managed by an account that left the first.
+    let other = o.create_account("other-mgmt").await;
+    let other_cfg = o.member_config(&other).await;
+    o.orgs.remove_account_from_organization().account_id(&other).send().await.unwrap();
+    let other_orgs = Orgs::new(&other_cfg);
+    other_orgs.create_organization().send().await.unwrap();
+
+    let now = chrono::Utc::now();
+    let next_month = chrono::NaiveDate::from_ymd_opt(
+        if now.month() == 12 { now.year() + 1 } else { now.year() },
+        if now.month() == 12 { 1 } else { now.month() + 1 },
+        1,
+    )
+    .unwrap()
+    .and_hms_opt(0, 0, 0)
+    .unwrap()
+    .and_utc();
+    let start = aws_sdk_organizations::primitives::DateTime::from_secs(next_month.timestamp());
+    let target = HandshakeParty::builder().r#type(HandshakePartyType::Account).id(&other).build().unwrap();
+    let invite = o
+        .orgs
+        .invite_organization_to_transfer_responsibility()
+        .r#type(ResponsibilityTransferType::Billing)
+        .target(target.clone())
+        .start_timestamp(start)
+        .source_name("billing for other")
+        .notes("we pay")
+        .tags(OrgTag::builder().key("k").value("v").build().unwrap())
+        .send()
+        .await
+        .unwrap();
+    let handshake = invite.handshake().unwrap();
+    let transfer_id = handshake
+        .resources()
+        .iter()
+        .find(|r| r.r#type().map(|t| t.as_str()) == Some("RESPONSIBILITY_TRANSFER"))
+        .and_then(|r| r.value())
+        .unwrap()
+        .to_string();
+    let not_monthly = o
+        .orgs
+        .invite_organization_to_transfer_responsibility()
+        .r#type(ResponsibilityTransferType::Billing)
+        .target(target)
+        .start_timestamp(aws_sdk_organizations::primitives::DateTime::from_secs(next_month.timestamp() + 3600))
+        .source_name("bad")
+        .send()
+        .await
+        .unwrap_err();
+    assert_eq!(not_monthly.code(), Some("InvalidInputException"));
+
+    let described = o.orgs.describe_responsibility_transfer().id(&transfer_id).send().await.unwrap();
+    let t = described.responsibility_transfer().unwrap();
+    assert_eq!(t.status().map(|s| s.as_str()), Some("REQUESTED"));
+    assert_eq!(t.name(), Some("billing for other"));
+    let renamed = o.orgs.update_responsibility_transfer().id(&transfer_id).name("renamed").send().await.unwrap();
+    assert_eq!(renamed.responsibility_transfer().unwrap().name(), Some("renamed"));
+
+    let inbound = o
+        .orgs
+        .list_inbound_responsibility_transfers()
+        .r#type(ResponsibilityTransferType::Billing)
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(inbound.responsibility_transfers()[0].id(), Some(transfer_id.as_str()));
+    let outbound = other_orgs
+        .list_outbound_responsibility_transfers()
+        .r#type(ResponsibilityTransferType::Billing)
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(outbound.responsibility_transfers()[0].id(), Some(transfer_id.as_str()));
+    let seen_by_other = other_orgs.describe_responsibility_transfer().id(&transfer_id).send().await.unwrap();
+    assert_eq!(seen_by_other.responsibility_transfer().unwrap().name(), Some("renamed"));
+
+    let withdrawn = o.orgs.terminate_responsibility_transfer().id(&transfer_id).send().await.unwrap();
+    assert_eq!(withdrawn.responsibility_transfer().unwrap().status().map(|s| s.as_str()), Some("WITHDRAWN"));
+    let twice = o.orgs.terminate_responsibility_transfer().id(&transfer_id).send().await.unwrap_err();
+    assert_eq!(twice.code(), Some("InvalidResponsibilityTransferTransitionException"));
+    let missing = o.orgs.describe_responsibility_transfer().id("rt-0000000000").send().await.unwrap_err();
+    assert_eq!(missing.code(), Some("ResponsibilityTransferNotFoundException"));
 }
 
 #[tokio::test]

@@ -295,10 +295,12 @@ impl Iam {
                     .collect(),
             )
         };
-        let users = want("User").then(|| {
-            s.users
-                .values()
-                .map(|u| types::UserDetail {
+        // One ordered list across all four kinds, so Marker and MaxItems
+        // page through users, then groups, roles and policies, as AWS does.
+        let mut entries: Vec<(String, Detail)> = Vec::new();
+        if want("User") {
+            entries.extend(s.users.iter().map(|(k, u)| {
+                let d = types::UserDetail {
                     path: Some(u.path.clone()),
                     user_name: Some(u.name.clone()),
                     user_id: Some(u.id.clone()),
@@ -309,13 +311,13 @@ impl Iam {
                     attached_managed_policies: Some(wire::attached(&u.attached, &s)),
                     permissions_boundary: wire::boundary(&u.permissions_boundary),
                     tags: tags_to_wire(&u.tags),
-                })
-                .collect()
-        });
-        let groups = want("Group").then(|| {
-            s.groups
-                .values()
-                .map(|g| types::GroupDetail {
+                };
+                (format!("0/{k}"), Detail::User(d))
+            }));
+        }
+        if want("Group") {
+            entries.extend(s.groups.iter().map(|(k, g)| {
+                let d = types::GroupDetail {
                     path: Some(g.path.clone()),
                     group_name: Some(g.name.clone()),
                     group_id: Some(g.id.clone()),
@@ -323,67 +325,92 @@ impl Iam {
                     create_date: Some(g.created),
                     group_policy_list: details(&g.inline),
                     attached_managed_policies: Some(wire::attached(&g.attached, &s)),
-                })
-                .collect()
-        });
-        let roles = want("Role").then(|| {
-            s.roles
-                .values()
-                .map(|r| {
-                    let key = r.name.to_lowercase();
-                    types::RoleDetail {
-                        path: Some(r.path.clone()),
-                        role_name: Some(r.name.clone()),
-                        role_id: Some(r.id.clone()),
-                        arn: Some(r.arn.clone()),
-                        create_date: Some(r.created),
-                        assume_role_policy_document: Some(encode_document(&r.trust_policy)),
-                        instance_profile_list: Some(
-                            s.instance_profiles
-                                .values()
-                                .filter(|ip| ip.roles.contains(&key))
-                                .map(|ip| wire::instance_profile(ip, &s))
-                                .collect(),
-                        ),
-                        role_policy_list: details(&r.inline),
-                        attached_managed_policies: Some(wire::attached(&r.attached, &s)),
-                        permissions_boundary: wire::boundary(&r.permissions_boundary),
-                        tags: tags_to_wire(&r.tags),
-                        role_last_used: wire::role(r).role_last_used,
-                    }
-                })
-                .collect()
-        });
-        let policies = (want("LocalManagedPolicy") || want("AWSManagedPolicy")).then(|| {
-            s.policies
-                .values()
-                .filter(|p| {
-                    (p.aws_managed && want("AWSManagedPolicy") && s.attachment_count(&p.arn) > 0)
-                        || (!p.aws_managed && want("LocalManagedPolicy"))
-                })
-                .map(|p| types::ManagedPolicyDetail {
-                    policy_name: Some(p.name.clone()),
-                    policy_id: Some(p.id.clone()),
-                    arn: Some(p.arn.clone()),
-                    path: Some(p.path.clone()),
-                    default_version_id: Some(p.default_version.clone()),
-                    attachment_count: Some(s.attachment_count(&p.arn) as i32),
-                    permissions_boundary_usage_count: Some(s.boundary_usage_count(&p.arn) as i32),
-                    is_attachable: true,
-                    description: p.description.clone(),
-                    create_date: Some(p.created),
-                    update_date: Some(p.updated),
-                    policy_version_list: Some(p.versions.iter().map(|v| wire::policy_version(p, v, true)).collect()),
-                })
-                .collect()
-        });
+                };
+                (format!("1/{k}"), Detail::Group(d))
+            }));
+        }
+        if want("Role") {
+            entries.extend(s.roles.iter().map(|(k, r)| {
+                let key = r.name.to_lowercase();
+                let d = types::RoleDetail {
+                    path: Some(r.path.clone()),
+                    role_name: Some(r.name.clone()),
+                    role_id: Some(r.id.clone()),
+                    arn: Some(r.arn.clone()),
+                    create_date: Some(r.created),
+                    assume_role_policy_document: Some(encode_document(&r.trust_policy)),
+                    instance_profile_list: Some(
+                        s.instance_profiles
+                            .values()
+                            .filter(|ip| ip.roles.contains(&key))
+                            .map(|ip| wire::instance_profile(ip, &s))
+                            .collect(),
+                    ),
+                    role_policy_list: details(&r.inline),
+                    attached_managed_policies: Some(wire::attached(&r.attached, &s)),
+                    permissions_boundary: wire::boundary(&r.permissions_boundary),
+                    tags: tags_to_wire(&r.tags),
+                    role_last_used: wire::role(r).role_last_used,
+                };
+                (format!("2/{k}"), Detail::Role(Box::new(d)))
+            }));
+        }
+        if want("LocalManagedPolicy") || want("AWSManagedPolicy") {
+            entries.extend(
+                s.policies
+                    .iter()
+                    .filter(|(_, p)| {
+                        (p.aws_managed && want("AWSManagedPolicy") && s.attachment_count(&p.arn) > 0)
+                            || (!p.aws_managed && want("LocalManagedPolicy"))
+                    })
+                    .map(|(k, p)| {
+                        let d = types::ManagedPolicyDetail {
+                            policy_name: Some(p.name.clone()),
+                            policy_id: Some(p.id.clone()),
+                            arn: Some(p.arn.clone()),
+                            path: Some(p.path.clone()),
+                            default_version_id: Some(p.default_version.clone()),
+                            attachment_count: Some(s.attachment_count(&p.arn) as i32),
+                            permissions_boundary_usage_count: Some(s.boundary_usage_count(&p.arn) as i32),
+                            is_attachable: true,
+                            description: p.description.clone(),
+                            create_date: Some(p.created),
+                            update_date: Some(p.updated),
+                            policy_version_list: Some(
+                                p.versions.iter().map(|v| wire::policy_version(p, v, true)).collect(),
+                            ),
+                        };
+                        (format!("3/{k}"), Detail::Policy(d))
+                    }),
+            );
+        }
+        drop(s);
+        let (page, is_truncated, marker) =
+            paginate(&entries, |(k, _)| k.clone(), input.marker.as_deref(), input.max_items)?;
+        let (mut users, mut groups, mut roles, mut policies) = (vec![], vec![], vec![], vec![]);
+        for (_, d) in page {
+            match d {
+                Detail::User(u) => users.push(u),
+                Detail::Group(g) => groups.push(g),
+                Detail::Role(r) => roles.push(*r),
+                Detail::Policy(p) => policies.push(p),
+            }
+        }
         Ok(types::GetAccountAuthorizationDetailsResponse {
-            user_detail_list: users,
-            group_detail_list: groups,
-            role_detail_list: roles,
-            policies,
-            is_truncated: false,
-            marker: None,
+            user_detail_list: Some(users),
+            group_detail_list: Some(groups),
+            role_detail_list: Some(roles),
+            policies: Some(policies),
+            is_truncated,
+            marker,
         })
     }
+}
+
+#[derive(Clone)]
+enum Detail {
+    User(types::UserDetail),
+    Group(types::GroupDetail),
+    Role(Box<types::RoleDetail>),
+    Policy(types::ManagedPolicyDetail),
 }
