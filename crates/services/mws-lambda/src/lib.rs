@@ -29,6 +29,7 @@ mod names;
 mod object_lambda;
 mod permissions;
 mod runtime;
+mod service_invoke;
 mod state;
 
 use std::sync::{Arc, RwLock, RwLockReadGuard, RwLockWriteGuard};
@@ -36,6 +37,7 @@ use std::sync::{Arc, RwLock, RwLockReadGuard, RwLockWriteGuard};
 use mws_core::{HttpRequest, HttpResponse, RequestContext, Service, ServiceError};
 
 pub use names::FunctionRef;
+pub use service_invoke::{ServiceInvocation, ServiceInvocationResult, ServiceInvokeError};
 use state::State;
 
 pub(crate) struct Inner {

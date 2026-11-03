@@ -437,6 +437,31 @@ dependencies = [
 ]
 
 [[package]]
+name = "aws-sdk-secretsmanager"
+version = "1.125.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "ea7f719fbeab11b0215659f9b633649e2ebf94469d218304235368024174f7fc"
+dependencies = [
+ "arc-swap",
+ "aws-credential-types",
+ "aws-runtime",
+ "aws-smithy-async",
+ "aws-smithy-http",
+ "aws-smithy-json",
+ "aws-smithy-observability",
+ "aws-smithy-runtime",
+ "aws-smithy-runtime-api",
+ "aws-smithy-schema",
+ "aws-smithy-types",
+ "aws-types",
+ "bytes",
+ "fastrand",
+ "http 1.5.0",
+ "regex-lite",
+ "tracing",
+]
+
+[[package]]
 name = "aws-sdk-sqs"
 version = "1.119.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1953,6 +1978,7 @@ dependencies = [
  "mws-route53",
  "mws-s3",
  "mws-s3control",
+ "mws-secretsmanager",
  "mws-server",
  "mws-sqs",
  "mws-ssm",
@@ -2029,6 +2055,7 @@ dependencies = [
  "aws-sdk-route53",
  "aws-sdk-s3",
  "aws-sdk-s3control",
+ "aws-sdk-secretsmanager",
  "aws-sdk-sqs",
  "aws-sdk-ssm",
  "aws-sdk-sts",
@@ -2118,6 +2145,7 @@ dependencies = [
  "hyper-util",
  "mws-codegen",
  "mws-core",
+ "mws-iam-policy",
  "mws-logs",
  "mws-proto-json",
  "mws-proto-restjson",
@@ -2304,6 +2332,28 @@ dependencies = [
  "rand",
  "serde",
  "serde_json",
+ "uuid",
+]
+
+[[package]]
+name = "mws-secretsmanager"
+version = "0.1.0"
+dependencies = [
+ "async-trait",
+ "aws-lc-rs",
+ "base64 0.22.1",
+ "chrono",
+ "mws-codegen",
+ "mws-core",
+ "mws-iam-policy",
+ "mws-kms",
+ "mws-lambda",
+ "mws-proto-json",
+ "rand",
+ "serde",
+ "serde_json",
+ "tokio",
+ "tracing",
  "uuid",
 ]
 
