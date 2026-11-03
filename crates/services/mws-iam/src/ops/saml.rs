@@ -272,7 +272,7 @@ impl Iam {
 
     /// Metadata document of a SAML provider, for STS AssumeRoleWithSAML.
     pub fn saml_provider_metadata(&self, arn: &str) -> Option<String> {
-        self.read().saml_providers.get(arn).map(|p| p.metadata.clone())
+        self.read_for_arn(arn).saml_providers.get(arn).map(|p| p.metadata.clone())
     }
 }
 

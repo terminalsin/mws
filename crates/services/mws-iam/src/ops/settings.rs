@@ -183,7 +183,7 @@ impl Iam {
     ) -> Result<types::GetAccountPasswordPolicyResponse, ServiceError> {
         self.authorize(ctx, "GetAccountPasswordPolicy", "*")?;
         let state = self.read();
-        let p = state.password_policy.as_ref().ok_or_else(|| no_policy(self.account_id()))?;
+        let p = state.password_policy.as_ref().ok_or_else(|| no_policy(&self.account_id()))?;
         Ok(types::GetAccountPasswordPolicyResponse {
             password_policy: types::PasswordPolicy {
                 minimum_password_length: Some(p.minimum_length),
@@ -202,7 +202,7 @@ impl Iam {
 
     pub fn delete_account_password_policy(&self, ctx: &RequestContext, _input: ()) -> Result<(), ServiceError> {
         self.authorize(ctx, "DeleteAccountPasswordPolicy", "*")?;
-        self.write().password_policy.take().ok_or_else(|| no_policy(self.account_id()))?;
+        self.write().password_policy.take().ok_or_else(|| no_policy(&self.account_id()))?;
         Ok(())
     }
 
@@ -280,7 +280,7 @@ impl Iam {
         }
         let root = format!("arn:aws:iam::{}:root", self.account_id());
         Ok(types::GetCredentialReportResponse {
-            content: Some(credential_report(&state, self.account_id(), &root).into_bytes()),
+            content: Some(credential_report(&state, &self.account_id(), &root).into_bytes()),
             report_format: Some("text/csv".into()),
             generated_time: Some(generated),
         })
@@ -389,7 +389,69 @@ impl Iam {
     }
 
     // --- Organizations centralized root access ------------------------------
-    // MWS emulates a standalone account, which AWS rejects for these.
+
+    /// The caller's organization, checked as centralized root access
+    /// requires: all features, trusted access for IAM, and a caller that is
+    /// the management account (or, unless `management_only`, IAM's delegated
+    /// administrator). Returns the organization id and management account.
+    fn root_access_org(&self, ctx: &RequestContext, management_only: bool) -> Result<(String, String), ServiceError> {
+        let account = &ctx.caller.account_id;
+        let org = self.organization_of(account).ok_or_else(no_organization)?;
+        if !org.all_features {
+            return Err(errors::organization_not_in_all_features_mode(
+                "The request was rejected because the organization does not have all features enabled.",
+            ));
+        }
+        let delegated = org.delegated_admin_for.iter().any(|s| s == IAM_PRINCIPAL);
+        if !org.is_management(account) {
+            if management_only {
+                return Err(errors::caller_is_not_management_account(
+                    "The request was rejected because the account making the request is not the management account for the organization.",
+                ));
+            }
+            if !delegated {
+                return Err(errors::account_not_management_or_delegated_administrator(
+                    "The request was rejected because the account making the request is not the management account or delegated administrator account for centralized root access.",
+                ));
+            }
+        }
+        if !org.trusted_services.iter().any(|s| s == IAM_PRINCIPAL) {
+            return Err(errors::service_access_not_enabled(
+                "The request was rejected because trusted access is not enabled for IAM in AWS Organizations. For details, see IAM and AWS Organizations in the AWS Organizations User Guide.",
+            ));
+        }
+        Ok((org.organization_id, org.management_account_id))
+    }
+
+    fn root_features(&self, management_account: &str) -> Vec<String> {
+        let state = self.inner.read_account(management_account);
+        let mut out = vec![];
+        if state.org_root_credentials_management {
+            out.push("RootCredentialsManagement".to_string());
+        }
+        if state.org_root_sessions {
+            out.push("RootSessions".to_string());
+        }
+        out
+    }
+
+    fn set_root_feature(
+        &self,
+        ctx: &RequestContext,
+        credentials_management: bool,
+        enabled: bool,
+    ) -> Result<(String, Vec<String>), ServiceError> {
+        let (org_id, mgmt) = self.root_access_org(ctx, true)?;
+        {
+            let mut state = self.inner.write_account(&mgmt);
+            if credentials_management {
+                state.org_root_credentials_management = enabled;
+            } else {
+                state.org_root_sessions = enabled;
+            }
+        }
+        Ok((org_id, self.root_features(&mgmt)))
+    }
 
     pub fn list_organizations_features(
         &self,
@@ -397,7 +459,11 @@ impl Iam {
         _input: types::ListOrganizationsFeaturesRequest,
     ) -> Result<types::ListOrganizationsFeaturesResponse, ServiceError> {
         self.authorize(ctx, "ListOrganizationsFeatures", "*")?;
-        Err(no_organization())
+        let (org_id, mgmt) = self.root_access_org(ctx, false)?;
+        Ok(types::ListOrganizationsFeaturesResponse {
+            organization_id: Some(org_id),
+            enabled_features: Some(self.root_features(&mgmt)),
+        })
     }
 
     pub fn enable_organizations_root_credentials_management(
@@ -406,7 +472,11 @@ impl Iam {
         _input: types::EnableOrganizationsRootCredentialsManagementRequest,
     ) -> Result<types::EnableOrganizationsRootCredentialsManagementResponse, ServiceError> {
         self.authorize(ctx, "EnableOrganizationsRootCredentialsManagement", "*")?;
-        Err(no_organization())
+        let (org_id, features) = self.set_root_feature(ctx, true, true)?;
+        Ok(types::EnableOrganizationsRootCredentialsManagementResponse {
+            organization_id: Some(org_id),
+            enabled_features: Some(features),
+        })
     }
 
     pub fn disable_organizations_root_credentials_management(
@@ -415,7 +485,11 @@ impl Iam {
         _input: types::DisableOrganizationsRootCredentialsManagementRequest,
     ) -> Result<types::DisableOrganizationsRootCredentialsManagementResponse, ServiceError> {
         self.authorize(ctx, "DisableOrganizationsRootCredentialsManagement", "*")?;
-        Err(no_organization())
+        let (org_id, features) = self.set_root_feature(ctx, true, false)?;
+        Ok(types::DisableOrganizationsRootCredentialsManagementResponse {
+            organization_id: Some(org_id),
+            enabled_features: Some(features),
+        })
     }
 
     pub fn enable_organizations_root_sessions(
@@ -424,7 +498,11 @@ impl Iam {
         _input: types::EnableOrganizationsRootSessionsRequest,
     ) -> Result<types::EnableOrganizationsRootSessionsResponse, ServiceError> {
         self.authorize(ctx, "EnableOrganizationsRootSessions", "*")?;
-        Err(no_organization())
+        let (org_id, features) = self.set_root_feature(ctx, false, true)?;
+        Ok(types::EnableOrganizationsRootSessionsResponse {
+            organization_id: Some(org_id),
+            enabled_features: Some(features),
+        })
     }
 
     pub fn disable_organizations_root_sessions(
@@ -433,9 +511,15 @@ impl Iam {
         _input: types::DisableOrganizationsRootSessionsRequest,
     ) -> Result<types::DisableOrganizationsRootSessionsResponse, ServiceError> {
         self.authorize(ctx, "DisableOrganizationsRootSessions", "*")?;
-        Err(no_organization())
+        let (org_id, features) = self.set_root_feature(ctx, false, false)?;
+        Ok(types::DisableOrganizationsRootSessionsResponse {
+            organization_id: Some(org_id),
+            enabled_features: Some(features),
+        })
     }
 }
+
+const IAM_PRINCIPAL: &str = "iam.amazonaws.com";
 
 #[cfg(test)]
 mod tests {

@@ -391,26 +391,47 @@ impl Iam {
         input: types::GetOrganizationsAccessReportRequest,
     ) -> Result<types::GetOrganizationsAccessReportResponse, ServiceError> {
         self.authorize(ctx, "GetOrganizationsAccessReport", "*")?;
+        let org = self.organization_of(&ctx.caller.account_id);
         let state = self.read();
         let job = state
             .report_jobs
             .get(&input.job_id)
             .filter(|j| j.kind == "organizations")
             .ok_or_else(|| no_such_job(&input.job_id))?;
-        // A standalone account has no organization to report on.
-        Ok(types::GetOrganizationsAccessReportResponse {
+        let error = |code: &str, message: &str| types::GetOrganizationsAccessReportResponse {
             job_status: "FAILED".into(),
             job_creation_date: job.created,
             job_completion_date: Some(job.created),
-            number_of_services_accessible: None,
-            number_of_services_not_accessed: None,
-            access_details: None,
+            error_details: Some(types::ErrorDetails { message: message.into(), code: code.into() }),
+            ..Default::default()
+        };
+        let Some(org) = org else {
+            return Ok(error(
+                "OrganizationNotFoundException",
+                "The request was rejected because no organization is associated with your account.",
+            ));
+        };
+        if !org.is_management(&ctx.caller.account_id) {
+            return Ok(error(
+                "AccessDeniedException",
+                "Organizations access reports can only be generated from the management account.",
+            ));
+        }
+        if !job.arn.starts_with(&format!("{}/", org.organization_id)) {
+            return Ok(error("InvalidEntityPath", "The entity path is not part of your organization."));
+        }
+        // MWS does not record which services each account used, so the
+        // report finds no access.
+        Ok(types::GetOrganizationsAccessReportResponse {
+            job_status: "COMPLETED".into(),
+            job_creation_date: job.created,
+            job_completion_date: Some(job.created),
+            number_of_services_accessible: Some(0),
+            number_of_services_not_accessed: Some(0),
+            access_details: Some(vec![]),
             is_truncated: false,
             marker: None,
-            error_details: Some(types::ErrorDetails {
-                message: "The request was rejected because no organization is associated with your account.".into(),
-                code: "OrganizationNotFoundException".into(),
-            }),
+            error_details: None,
         })
     }
 }

@@ -7,6 +7,7 @@ use mws_acmpca::PrivateCa;
 use mws_core::Environment;
 use mws_iam::{Iam, IamConfig};
 use mws_kms::Kms;
+use mws_organizations::Organizations;
 use mws_route53::Route53;
 use mws_server::{Gateway, Scenario, Store};
 use mws_sts::Sts;
@@ -90,6 +91,8 @@ fn build_with_store(config: Config, store: Option<Arc<Store>>) -> Mws {
     let sts = Sts::new(iam.clone());
     let kms = Kms::new();
     let route53 = Route53::new().with_kms(kms.clone());
+    let organizations = Organizations::new(iam.clone());
+    iam.set_organizations(organizations.view());
     let mut gateway = Gateway::builder();
     if let Some(store) = store {
         gateway = gateway.store(store);
@@ -105,6 +108,7 @@ fn build_with_store(config: Config, store: Option<Arc<Store>>) -> Mws {
         .service(Arc::new(route53.clone()))
         .service(Arc::new(PrivateCa::new()))
         .service(Arc::new(kms.clone()))
+        .service(Arc::new(organizations))
         .build();
     Mws { gateway, route53, kms }
 }

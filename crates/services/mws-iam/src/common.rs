@@ -1,11 +1,15 @@
 //! Helpers shared by the IAM operation modules.
 
+use std::collections::BTreeMap;
+use std::ops::{Deref, DerefMut};
+use std::sync::{LazyLock, RwLockReadGuard, RwLockWriteGuard};
+
 use mws_core::{ConditionContext, RequestContext, ServiceError};
 use mws_iam_policy::{Policy, PolicyKind};
 
 use crate::generated::{errors, types};
 use crate::state::Tags;
-use crate::Iam;
+use crate::{Iam, Inner, State};
 
 pub const DEFAULT_MAX_ITEMS: usize = 100;
 pub const MAX_TAGS: usize = 50;
@@ -13,17 +17,67 @@ pub const MAX_MANAGED_POLICIES_PER_ENTITY: usize = 10;
 pub const MAX_POLICY_VERSIONS: usize = 5;
 pub const MANAGED_POLICY_MAX_SIZE: usize = 6144;
 
+/// Read access to one account's IAM namespace.
+pub(crate) struct StateRead<'a> {
+    guard: RwLockReadGuard<'a, BTreeMap<String, State>>,
+    account: String,
+}
+
+impl Deref for StateRead<'_> {
+    type Target = State;
+    fn deref(&self) -> &State {
+        static EMPTY: LazyLock<State> = LazyLock::new(State::default);
+        self.guard.get(&self.account).unwrap_or(&EMPTY)
+    }
+}
+
+/// Write access to one account's IAM namespace.
+pub(crate) struct StateWrite<'a> {
+    guard: RwLockWriteGuard<'a, BTreeMap<String, State>>,
+    account: String,
+}
+
+impl Deref for StateWrite<'_> {
+    type Target = State;
+    fn deref(&self) -> &State {
+        &self.guard[&self.account]
+    }
+}
+
+impl DerefMut for StateWrite<'_> {
+    fn deref_mut(&mut self) -> &mut State {
+        self.guard.get_mut(&self.account).expect("account namespace exists")
+    }
+}
+
+impl Inner {
+    pub(crate) fn read_account(&self, account: &str) -> StateRead<'_> {
+        StateRead { guard: self.accounts.read().expect("IAM state lock poisoned"), account: account.to_string() }
+    }
+
+    pub(crate) fn write_account(&self, account: &str) -> StateWrite<'_> {
+        let mut guard = self.accounts.write().expect("IAM state lock poisoned");
+        if !guard.contains_key(account) {
+            let mut state = State::default();
+            crate::ops::seed_aws_managed_policies(&self.config.partition, &mut state);
+            guard.insert(account.to_string(), state);
+        }
+        StateWrite { guard, account: account.to_string() }
+    }
+}
+
 impl Iam {
-    pub(crate) fn read(&self) -> std::sync::RwLockReadGuard<'_, crate::State> {
-        self.inner.state.read().expect("IAM state lock poisoned")
+    /// The current account's namespace (see [`Iam::in_account`]).
+    pub(crate) fn read(&self) -> StateRead<'_> {
+        self.inner.read_account(&self.current_account())
     }
 
-    pub(crate) fn write(&self) -> std::sync::RwLockWriteGuard<'_, crate::State> {
-        self.inner.state.write().expect("IAM state lock poisoned")
+    pub(crate) fn write(&self) -> StateWrite<'_> {
+        self.inner.write_account(&self.current_account())
     }
 
-    pub(crate) fn account_id(&self) -> &str {
-        &self.inner.config.account_id
+    pub(crate) fn account_id(&self) -> String {
+        self.current_account()
     }
 
     /// Ask the authorizer. Never call this while holding the state lock: the

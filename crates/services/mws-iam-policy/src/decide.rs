@@ -1,5 +1,6 @@
 //! Combining policies into one decision, following IAM's policy evaluation
-//! logic for requests within a single account:
+//! logic, including AWS Organizations guardrails (SCPs and RCPs) and
+//! cross-account requests:
 //! <https://docs.aws.amazon.com/IAM/latest/UserGuide/reference_policies_evaluation-logic.html>
 
 use crate::{Evaluation, Policy, Request};
@@ -30,10 +31,23 @@ pub struct PolicySet {
     /// The resource policy must allow the principal (directly or through its
     /// account), as role trust policies require.
     pub resource_required: bool,
+    /// Service control policies that apply to the principal, one entry per
+    /// level of the organization tree (root first, account last). Every
+    /// level must allow the action. `None` when no SCPs apply.
+    pub service_control: Option<Vec<Vec<SourcedPolicy>>>,
+    /// Resource control policies that apply to the resource, likewise.
+    pub resource_control: Option<Vec<Vec<SourcedPolicy>>>,
+    /// The resource belongs to another account: both the resource policy and
+    /// the principal's identity policies must allow.
+    pub cross_account: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum DenyReason {
+    ExplicitServiceControl,
+    ExplicitResourceControl,
+    NoServiceControlAllow,
+    NoResourceControlAllow,
     ExplicitIdentity,
     ExplicitResource,
     ExplicitBoundary,
@@ -48,6 +62,14 @@ impl DenyReason {
     /// Wording AWS appends to `AccessDenied` messages.
     pub fn message(&self, action: &str) -> String {
         match self {
+            DenyReason::ExplicitServiceControl => "with an explicit deny in a service control policy".into(),
+            DenyReason::ExplicitResourceControl => "with an explicit deny in a resource control policy".into(),
+            DenyReason::NoServiceControlAllow => {
+                format!("because no service control policy allows the {action} action")
+            }
+            DenyReason::NoResourceControlAllow => {
+                format!("because no resource control policy allows the {action} action")
+            }
             DenyReason::ExplicitIdentity => "with an explicit deny in an identity-based policy".into(),
             DenyReason::ExplicitResource => "with an explicit deny in a resource-based policy".into(),
             DenyReason::ExplicitBoundary => "with an explicit deny in a permissions boundary".into(),
@@ -62,7 +84,9 @@ impl DenyReason {
     pub fn is_explicit(&self) -> bool {
         matches!(
             self,
-            DenyReason::ExplicitIdentity
+            DenyReason::ExplicitServiceControl
+                | DenyReason::ExplicitResourceControl
+                | DenyReason::ExplicitIdentity
                 | DenyReason::ExplicitResource
                 | DenyReason::ExplicitBoundary
                 | DenyReason::ExplicitSession
@@ -88,6 +112,11 @@ pub fn decide(set: &PolicySet, req: &Request<'_>) -> Decision {
     let boundary = set.boundary.as_ref().map(|b| (b.source_id.clone(), b.policy.evaluate(req)));
     let session = eval_all(&set.session, req);
     let resource = set.resource.as_ref().map(|r| (r.source_id.clone(), r.policy.evaluate(req)));
+    let levels = |l: &Option<Vec<Vec<SourcedPolicy>>>| -> Option<Vec<Vec<(String, Evaluation)>>> {
+        l.as_ref().map(|levels| levels.iter().map(|level| eval_all(level, req)).collect())
+    };
+    let scp = levels(&set.service_control);
+    let rcp = levels(&set.resource_control);
 
     // 1. Any explicit deny wins.
     let mut denies = Vec::new();
@@ -100,6 +129,12 @@ pub fn decide(set: &PolicySet, req: &Request<'_>) -> Decision {
             }
         }
     };
+    for level in rcp.iter().flatten() {
+        collect(level, DenyReason::ExplicitResourceControl);
+    }
+    for level in scp.iter().flatten() {
+        collect(level, DenyReason::ExplicitServiceControl);
+    }
     collect(&identity, DenyReason::ExplicitIdentity);
     collect(resource.as_slice(), DenyReason::ExplicitResource);
     collect(boundary.as_slice(), DenyReason::ExplicitBoundary);
@@ -111,11 +146,26 @@ pub fn decide(set: &PolicySet, req: &Request<'_>) -> Decision {
     let allows_of = |evals: &[(String, Evaluation)]| -> Vec<(String, usize)> {
         evals.iter().flat_map(|(s, e)| e.allows.iter().map(move |(i, _)| (s.clone(), *i))).collect()
     };
+    // 2. Organizations guardrails: every level of the tree must allow.
+    let every_level_allows = |levels: &Option<Vec<Vec<(String, Evaluation)>>>| {
+        levels.as_ref().is_none_or(|levels| levels.iter().all(|level| level.iter().any(|(_, e)| e.allowed())))
+    };
+    if !every_level_allows(&rcp) {
+        return Decision { allowed: false, deny_reason: Some(DenyReason::NoResourceControlAllow), matched: vec![] };
+    }
+    if !every_level_allows(&scp) {
+        return Decision { allowed: false, deny_reason: Some(DenyReason::NoServiceControlAllow), matched: vec![] };
+    }
+
     let session_ok = (set.session.is_empty() && !set.session_required) || session.iter().any(|(_, e)| e.allowed());
 
-    // 2. A resource-based policy that names the principal directly grants
-    //    access on its own (subject only to session policies).
-    if let Some((src, e)) = &resource {
+    // 3. Within one account, a resource-based policy that names the
+    //    principal directly grants access on its own (subject only to session
+    //    policies). Across accounts, both sides must allow.
+    if set.cross_account && !resource.as_ref().is_some_and(|(_, e)| e.allowed()) {
+        return Decision { allowed: false, deny_reason: Some(DenyReason::NoResourceAllow), matched: vec![] };
+    }
+    if let Some((src, e)) = resource.as_ref().filter(|_| !set.cross_account) {
         if e.allowed_directly() && session_ok {
             let matched = e.allows.iter().map(|(i, _)| (src.clone(), *i)).collect();
             return Decision { allowed: true, deny_reason: None, matched };
@@ -126,7 +176,7 @@ pub fn decide(set: &PolicySet, req: &Request<'_>) -> Decision {
         return Decision { allowed: false, deny_reason: Some(DenyReason::NoResourceAllow), matched: vec![] };
     }
 
-    // 3. Otherwise identity policies must allow, within the boundary and the
+    // 4. Otherwise identity policies must allow, within the boundary and the
     //    session policies. The root user has implicit full identity access.
     let identity_allows = set.is_root || identity.iter().any(|(_, e)| e.allowed());
     if !identity_allows {

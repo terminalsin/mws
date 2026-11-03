@@ -284,6 +284,10 @@ pub struct State {
     pub outbound_enabled: bool,
     /// Outbound federation signing keys (PKCS#8 DER) by JWS algorithm.
     pub outbound_keys: BTreeMap<String, Vec<u8>>,
+    /// Centralized root access (management account only): root credentials
+    /// management and privileged root sessions for member accounts.
+    pub org_root_credentials_management: bool,
+    pub org_root_sessions: bool,
 }
 
 impl State {

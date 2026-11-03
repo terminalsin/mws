@@ -258,6 +258,29 @@ dependencies = [
 ]
 
 [[package]]
+name = "aws-sdk-organizations"
+version = "1.137.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "ae43971a088045a096513cbfba3d3f2ea490a42d40e535a4c4d62d95a2dea434"
+dependencies = [
+ "arc-swap",
+ "aws-credential-types",
+ "aws-runtime",
+ "aws-smithy-async",
+ "aws-smithy-http",
+ "aws-smithy-json",
+ "aws-smithy-observability",
+ "aws-smithy-runtime",
+ "aws-smithy-runtime-api",
+ "aws-smithy-schema",
+ "aws-smithy-types",
+ "aws-types",
+ "fastrand",
+ "regex-lite",
+ "tracing",
+]
+
+[[package]]
 name = "aws-sdk-route53"
 version = "1.132.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1617,6 +1640,7 @@ dependencies = [
  "mws-core",
  "mws-iam",
  "mws-kms",
+ "mws-organizations",
  "mws-route53",
  "mws-server",
  "mws-sts",
@@ -1682,6 +1706,7 @@ dependencies = [
  "aws-sdk-acmpca",
  "aws-sdk-iam",
  "aws-sdk-kms",
+ "aws-sdk-organizations",
  "aws-sdk-route53",
  "aws-sdk-sts",
  "base64 0.22.1",
@@ -1714,6 +1739,7 @@ dependencies = [
  "roxmltree",
  "serde",
  "serde_json",
+ "tokio",
  "uuid",
  "x509-parser",
 ]
@@ -1737,6 +1763,23 @@ dependencies = [
  "chrono",
  "mws-codegen",
  "mws-core",
+ "mws-iam-policy",
+ "mws-proto-json",
+ "rand",
+ "serde",
+ "serde_json",
+ "uuid",
+]
+
+[[package]]
+name = "mws-organizations"
+version = "0.1.0"
+dependencies = [
+ "async-trait",
+ "chrono",
+ "mws-codegen",
+ "mws-core",
+ "mws-iam",
  "mws-iam-policy",
  "mws-proto-json",
  "rand",

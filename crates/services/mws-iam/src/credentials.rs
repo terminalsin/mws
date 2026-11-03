@@ -17,39 +17,36 @@ impl CredentialStore for IamCredentials {
         _now: DateTime<Utc>,
     ) -> Result<Option<ResolvedCredential>, CredentialError> {
         let cfg = &self.inner.config;
-        let root_arn = format!("arn:{}:iam::{}:root", cfg.partition, cfg.account_id);
+        let root = |account: &str| Caller {
+            account_id: account.to_string(),
+            arn: format!("arn:{}:iam::{account}:root", cfg.partition),
+            user_id: account.to_string(),
+            access_key_id: access_key_id.to_string(),
+            kind: CallerKind::Root,
+            session: None,
+        };
         if access_key_id == cfg.root_access_key_id {
             return Ok(Some(ResolvedCredential {
                 secret_access_key: cfg.root_secret_access_key.clone(),
-                caller: Caller {
-                    account_id: cfg.account_id.clone(),
-                    arn: root_arn,
-                    user_id: cfg.account_id.clone(),
-                    access_key_id: access_key_id.to_string(),
-                    kind: CallerKind::Root,
-                    session: None,
-                },
+                caller: root(&cfg.account_id),
             }));
         }
-        let state = self.inner.state.read().expect("IAM state lock poisoned");
-        let Some(key) = state.access_keys.get(access_key_id) else { return Ok(None) };
+        let accounts = self.inner.accounts.read().expect("IAM state lock poisoned");
+        let Some((account, state, key)) =
+            accounts.iter().find_map(|(id, s)| s.access_keys.get(access_key_id).map(|k| (id, s, k)))
+        else {
+            return Ok(None);
+        };
         // Long-term keys never carry a session token.
         if !key.active || session_token.is_some() {
             return Err(CredentialError::Invalid);
         }
         let caller = match &key.user_name {
-            None => Caller {
-                account_id: cfg.account_id.clone(),
-                arn: root_arn,
-                user_id: cfg.account_id.clone(),
-                access_key_id: access_key_id.to_string(),
-                kind: CallerKind::Root,
-                session: None,
-            },
+            None => root(account),
             Some(name) => {
                 let user = state.user(name).ok_or(CredentialError::Invalid)?;
                 Caller {
-                    account_id: cfg.account_id.clone(),
+                    account_id: account.clone(),
                     arn: user.arn.clone(),
                     user_id: user.id.clone(),
                     access_key_id: access_key_id.to_string(),
