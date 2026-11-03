@@ -9,22 +9,60 @@ pub struct Mws {
     pub endpoint: String,
     pub config: mws::Config,
     pub route53: mws_route53::Route53,
-    _shutdown: tokio::sync::oneshot::Sender<()>,
+    shutdown: tokio::sync::oneshot::Sender<()>,
+    server: tokio::task::JoinHandle<()>,
 }
 
 impl Mws {
     pub async fn start() -> Self {
         let config = mws::Config::default();
         let built = mws::build(config.clone());
+        Self::serve(config, built).await
+    }
+
+    /// Start the way the binary does: open `config.db`, restore saved state
+    /// or run `config.scenario`.
+    pub async fn start_with(config: mws::Config) -> Self {
+        let built = mws::start(config.clone()).await.expect("MWS starts");
+        Self::serve(config, built).await
+    }
+
+    async fn serve(config: mws::Config, built: mws::Mws) -> Self {
         let route53 = built.route53;
         let gateway = Arc::new(built.gateway);
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
         let endpoint = format!("http://{}", listener.local_addr().unwrap());
         let (tx, rx) = tokio::sync::oneshot::channel::<()>();
-        tokio::spawn(mws_server::serve(listener, gateway, async {
+        let server = tokio::spawn(mws_server::serve(listener, gateway, async {
             let _ = rx.await;
         }));
-        Self { endpoint, config, route53, _shutdown: tx }
+        Self { endpoint, config, route53, shutdown: tx, server }
+    }
+
+    /// Shut down gracefully (state is flushed to the database, if any).
+    pub async fn stop(self) {
+        let _ = self.shutdown.send(());
+        self.server.await.unwrap();
+    }
+
+    /// Call the MWS control API: `(status, JSON body)`.
+    pub async fn control(&self, method: &str, path: &str, body: Option<&str>) -> (u16, serde_json::Value) {
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+        let addr = self.endpoint.trim_start_matches("http://");
+        let mut stream = tokio::net::TcpStream::connect(addr).await.unwrap();
+        let body = body.unwrap_or("");
+        let request = format!(
+            "{method} {path} HTTP/1.1\r\nHost: {addr}\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+            body.len()
+        );
+        stream.write_all(request.as_bytes()).await.unwrap();
+        let mut raw = Vec::new();
+        stream.read_to_end(&mut raw).await.unwrap();
+        let text = String::from_utf8(raw).unwrap();
+        let (head, body) = text.split_once("\r\n\r\n").unwrap();
+        let status = head.split(' ').nth(1).unwrap().parse().unwrap();
+        let body = if body.is_empty() { serde_json::Value::Null } else { serde_json::from_str(body).unwrap() };
+        (status, body)
     }
 
     /// SDK config signed with the account root keys.

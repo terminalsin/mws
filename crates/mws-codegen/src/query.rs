@@ -105,6 +105,14 @@ impl<'m> Gen<'m> {
         let _ = writeln!(self.out, "\n#[allow(unused_variables, clippy::all)]\nmod ser {{\n    use super::*;");
         self.out.push_str(&ser);
         let _ = writeln!(self.out, "}}");
+
+        // ---- JSON entry point (scenarios) ----
+        crate::json_codec::emit_invoke(model, &ops, "json_de", "json_ser", "ValidationError", &mut self.out);
+        let mut codec = crate::json_codec::JsonCodec::new(model, &self.types);
+        let de = codec.de_module(&input_closure, "json_de");
+        let ser = codec.ser_module(&output_closure, "json_ser");
+        self.out.push_str(&de);
+        self.out.push_str(&ser);
         self.out
     }
 

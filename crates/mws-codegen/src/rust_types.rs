@@ -140,7 +140,8 @@ impl<'m> TypeGen<'m> {
     fn emit_struct(&self, s: &Shape, out: &mut String) {
         let name = type_name(s.name());
         let _ = writeln!(out, "/// Smithy shape `{}`.", s.id);
-        let _ = writeln!(out, "#[derive(Debug, Clone, PartialEq)]");
+        let _ = writeln!(out, "#[derive(Debug, Clone, PartialEq, ::serde::Serialize, ::serde::Deserialize)]");
+        let _ = writeln!(out, "#[serde(default)]");
         let _ = writeln!(out, "pub struct {name} {{");
         for m in &s.members {
             let _ = writeln!(out, "    pub {}: {},", field_name(m), self.field_type(s, m));
@@ -180,7 +181,7 @@ impl<'m> TypeGen<'m> {
     fn emit_union(&self, s: &Shape, out: &mut String) {
         let name = type_name(s.name());
         let _ = writeln!(out, "/// Smithy union `{}`.", s.id);
-        let _ = writeln!(out, "#[derive(Debug, Clone, PartialEq)]");
+        let _ = writeln!(out, "#[derive(Debug, Clone, PartialEq, ::serde::Serialize, ::serde::Deserialize)]");
         let _ = writeln!(out, "pub enum {name} {{");
         for m in &s.members {
             let _ = writeln!(out, "    {}({}),", type_name(&m.name), self.field_type(s, m));

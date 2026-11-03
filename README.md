@@ -5,8 +5,10 @@ talks to AWS. Point an unmodified AWS SDK at it and it should behave like the
 real service: same wire protocol, same validation messages, same error codes,
 real SigV4 authentication.
 
-It is not meant to carry load or store data durably. It is meant to tell you
-whether your code would work against AWS.
+It is not meant to carry load. It is meant to tell you whether your code
+would work against AWS. State lives in memory by default; it can optionally
+be saved to a local SQLite file, seeded from a scenario file, reset between
+tests and snapshotted (see [State, scenarios and snapshots](#state-scenarios-and-snapshots)).
 
 ## Status
 
@@ -47,6 +49,8 @@ cargo run -p mws            # listens on 0.0.0.0:4566
 | `MWS_ROOT_ACCESS_KEY_ID` | `AKIAMWSROOTEXAMPLE00` |
 | `MWS_ROOT_SECRET_ACCESS_KEY` | `mwsRootSecretAccessKeyEXAMPLEKEY00000000` |
 | `MWS_DNS_LISTEN` | unset; e.g. `127.0.0.1:5353` starts the Route 53 DNS responder |
+| `MWS_DB` | unset (in memory); a path such as `.mws/state.db` keeps state in SQLite across restarts |
+| `MWS_SCENARIO` | unset; a scenario file run at startup and used as the reset baseline |
 | `RUST_LOG` | `info` |
 
 Then use any SDK or the CLI with the endpoint overridden:
@@ -59,6 +63,68 @@ export AWS_REGION=us-east-1
 aws iam create-user --user-name alice
 aws iam create-access-key --user-name alice   # these keys now authenticate as alice
 ```
+
+## State, scenarios and snapshots
+
+**Persistence.** With `MWS_DB` set, every service's state is written to that
+SQLite file shortly after each change (within about 250 ms) and again on
+shutdown (Ctrl-C or SIGTERM), and comes back on the next start. Temporary
+STS credentials survive too, until they expire.
+
+**Scenarios.** A scenario is a JSON list of API calls that sets up state.
+Each step names the service (its signing name), the operation, and the input
+in the same shape as `aws ... --cli-input-json`. Steps go through the real
+handlers, so they are validated and authorized like SDK calls (as the root
+user unless a step sets `accessKeyId`). A step with an `id` exposes its output
+to later steps as `${id.Path.To.Field}`, with optional `|basename` (strip
+`/hostedzone/`) and `|base64` (for blob inputs such as a CSR) filters.
+If any step fails, the whole scenario is rolled back and the error names the
+step.
+
+```json
+{
+  "steps": [
+    { "service": "iam", "action": "CreateUser", "input": { "UserName": "deployer" } },
+    { "id": "key", "service": "iam", "action": "CreateAccessKey", "input": { "UserName": "deployer" } },
+    { "id": "zone", "service": "route53", "action": "CreateHostedZone",
+      "input": { "Name": "example.internal", "CallerReference": "seed" } },
+    { "service": "route53", "action": "ChangeResourceRecordSets",
+      "input": { "HostedZoneId": "${zone.HostedZone.Id|basename}", "ChangeBatch": { "Changes": [
+        { "Action": "CREATE", "ResourceRecordSet": { "Name": "api.example.internal", "Type": "A",
+          "TTL": 60, "ResourceRecords": [{ "Value": "10.0.0.10" }] } } ] } } }
+  ]
+}
+```
+
+[`examples/scenario.json`](examples/scenario.json) also creates a role and
+a Private CA and activates it with a self-signed root certificate.
+
+`MWS_SCENARIO` runs a scenario at startup on an empty emulator, and the
+result becomes the **baseline** that `POST /_mws/reset` returns to. With
+`MWS_DB` as well, the scenario runs only once: later starts restore the saved
+state. If the scenario file changes, the saved state is replaced by a fresh
+run of the new scenario (the old state is kept as a snapshot named
+`before-scenario-change-...`).
+
+**Control API.** Plain unsigned JSON over HTTP on the same port:
+
+| Request | Effect |
+| --- | --- |
+| `GET /_mws/health` | liveness and the emulated services |
+| `GET /_mws/state` | export the whole emulator's state |
+| `PUT /_mws/state` | replace it with an exported document |
+| `POST /_mws/reset` | back to the baseline (`?to=empty` for a fresh emulator) |
+| `POST /_mws/scenario` | run a scenario now; returns the outputs of steps with an `id`. `?baseline=true` makes the result the new baseline |
+| `GET /_mws/snapshots` | list named snapshots |
+| `PUT /_mws/snapshots/{name}` | save the current state |
+| `GET /_mws/snapshots/{name}` | export a snapshot |
+| `POST /_mws/snapshots/{name}/restore` | replace the current state with a snapshot |
+| `DELETE /_mws/snapshots/{name}` | delete a snapshot |
+
+A typical test suite starts MWS with a scenario and calls `POST /_mws/reset`
+before each test. Snapshots live in the database when `MWS_DB` is set, and in
+memory otherwise. The control API is unauthenticated, like the rest of a
+local emulator: don't expose the port beyond your machine.
 
 ## Layout
 
@@ -73,7 +139,9 @@ crates/
   mws-proto-restxml restXml protocol runtime (HTTP binding, routing, XML, errors)
   mws-proto-json    awsJson1.0/1.1 protocol runtime (X-Amz-Target, JSON, errors)
   mws-xml           XML writer and reader shared by the XML protocols
-  mws-server        HTTP front door: authenticates, routes by signing name
+  mws-server        HTTP front door: authenticates, routes by signing name; the
+                    /_mws control API, scenarios, snapshots and persistence
+  mws-store         SQLite persistence of opaque per-service state documents
   mws               the binary; the only crate that knows which services exist
   services/
     mws-iam         IAM: model/iam.json + behaviour
@@ -81,6 +149,8 @@ crates/
     mws-sts         STS: temporary credentials over IAM identities
     mws-route53     Route 53: hosted zones, record sets, health checks, DNS responder
     mws-acmpca      AWS Private CA: CAs and real X.509 issuance
+examples/
+  scenario.json     a sample scenario: IAM user and role, a hosted zone, an active CA
 tests/
   e2e-rust          official Rust SDK against an in-process MWS
   e2e-python        boto3 against the mws binary

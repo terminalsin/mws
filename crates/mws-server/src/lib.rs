@@ -4,12 +4,21 @@
 //! against the registered [`CredentialStore`]s, builds a
 //! [`RequestContext`], and hands the request to the [`Service`] whose signing
 //! name matches the credential scope. It does not know any service by name.
+//!
+//! It also serves the MWS control API under `/_mws/` (see [`admin`]):
+//! export, import, reset and snapshot the whole emulator's state, and run
+//! [`scenario`] files. With a [`Store`] attached, state is saved to disk
+//! shortly after every change and restored at startup.
+
+mod admin;
+pub mod scenario;
+mod state;
 
 use std::collections::BTreeMap;
 use std::future::Future;
 use std::net::SocketAddr;
 use std::sync::Arc;
-use std::time::Instant;
+use std::time::{Duration, Instant};
 
 use bytes::Bytes;
 use chrono::Utc;
@@ -21,6 +30,9 @@ use mws_core::{
     ResolvedCredential, Service, ServiceError,
 };
 use mws_sigv4::{SigV4Error, VerifyOptions};
+pub use mws_store::Store;
+pub use scenario::Scenario;
+pub use state::{ScenarioError, SnapshotInfo, STATE_FORMAT};
 use tokio::net::TcpListener;
 
 /// Largest request body MWS accepts.
@@ -34,6 +46,7 @@ pub struct Gateway {
     credentials: Vec<Arc<dyn CredentialStore>>,
     authorizer: Arc<dyn Authorizer>,
     env: Environment,
+    state: state::StateHub,
 }
 
 pub struct GatewayBuilder {
@@ -67,6 +80,25 @@ impl GatewayBuilder {
         self
     }
 
+    /// Persist state in `store` and restore it at startup.
+    pub fn store(mut self, store: Arc<Store>) -> Self {
+        self.gateway.state.store = Some(store);
+        self
+    }
+
+    /// How long to wait after a change before writing state to the store.
+    pub fn flush_interval(mut self, interval: Duration) -> Self {
+        self.gateway.state.flush_interval = interval;
+        self
+    }
+
+    /// The access key whose identity runs scenario steps that do not name
+    /// one (normally the account root's).
+    pub fn scenario_principal(mut self, access_key_id: impl Into<String>) -> Self {
+        self.gateway.state.scenario_access_key = Some(access_key_id.into());
+        self
+    }
+
     pub fn build(self) -> Gateway {
         self.gateway
     }
@@ -81,6 +113,7 @@ impl Gateway {
                 credentials: Vec::new(),
                 authorizer: Arc::new(mws_core::AllowAll),
                 env: Environment::default(),
+                state: state::StateHub::default(),
             },
         }
     }
@@ -94,10 +127,22 @@ impl Gateway {
         let request_id = uuid::Uuid::new_v4().to_string();
         let now = Utc::now();
 
-        if request.uri().path() == "/_mws/health" {
-            return self.health();
+        if request.uri().path().starts_with(admin::PREFIX) {
+            return self.admin(request).await;
         }
+        let _gate = self.state.gate.read().await;
+        let response = self.handle_service_request(request_id, request, remote, now).await;
+        self.mark_dirty();
+        response
+    }
 
+    async fn handle_service_request(
+        &self,
+        request_id: String,
+        request: HttpRequest,
+        remote: Option<SocketAddr>,
+        now: chrono::DateTime<Utc>,
+    ) -> HttpResponse {
         let parsed = match mws_sigv4::parse(&request) {
             Ok(p) => p,
             Err(SigV4Error::Missing) => {
@@ -207,8 +252,19 @@ fn sigv4_error(e: SigV4Error) -> ServiceError {
     }
 }
 
-/// Serve `gateway` on `listener` until `shutdown` resolves.
+/// Serve `gateway` on `listener` until `shutdown` resolves. With a store
+/// attached, state is written in the background while serving and once more
+/// on the way out.
 pub async fn serve(listener: TcpListener, gateway: Arc<Gateway>, shutdown: impl Future<Output = ()>) {
+    let persist = gateway.state.store.is_some().then(|| tokio::spawn(gateway.clone().persist_loop()));
+    serve_until(listener, gateway.clone(), shutdown).await;
+    if let Some(task) = persist {
+        task.abort();
+        gateway.flush().await;
+    }
+}
+
+async fn serve_until(listener: TcpListener, gateway: Arc<Gateway>, shutdown: impl Future<Output = ()>) {
     tokio::pin!(shutdown);
     loop {
         let (stream, remote) = tokio::select! {

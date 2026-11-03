@@ -14,7 +14,13 @@ async fn main() {
         .parse()
         .expect("MWS_LISTEN must be host:port");
     let config = mws::Config::from_env();
-    let mws::Mws { gateway, route53 } = mws::build(config.clone());
+    let mws::Mws { gateway, route53 } = match mws::start(config.clone()).await {
+        Ok(m) => m,
+        Err(e) => {
+            eprintln!("mws: {e}");
+            std::process::exit(1);
+        }
+    };
     let gateway = Arc::new(gateway);
     if let Ok(dns) = std::env::var("MWS_DNS_LISTEN") {
         let socket = tokio::net::UdpSocket::bind(&dns).await.expect("bind MWS_DNS_LISTEN");
@@ -28,10 +34,26 @@ async fn main() {
         services = ?gateway.service_names().collect::<Vec<_>>(),
         account_id = %config.iam.account_id,
         root_access_key_id = %config.iam.root_access_key_id,
+        db = ?config.db,
+        scenario = ?config.scenario,
         "MWS listening; root secret access key is set by MWS_ROOT_SECRET_ACCESS_KEY"
     );
-    mws_server::serve(listener, gateway, async {
+    mws_server::serve(listener, gateway, shutdown_signal()).await;
+}
+
+/// Ctrl-C, or SIGTERM (what `docker stop` sends) on Unix.
+async fn shutdown_signal() {
+    #[cfg(unix)]
+    {
+        let mut term =
+            tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate()).expect("SIGTERM handler");
+        tokio::select! {
+            _ = tokio::signal::ctrl_c() => {}
+            _ = term.recv() => {}
+        }
+    }
+    #[cfg(not(unix))]
+    {
         let _ = tokio::signal::ctrl_c().await;
-    })
-    .await;
+    }
 }

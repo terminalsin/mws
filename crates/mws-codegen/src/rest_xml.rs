@@ -118,6 +118,11 @@ impl Gen<'_, '_> {
         let _ = writeln!(out, "\n#[allow(unused_variables, clippy::all)]\nmod ser {{\n    use super::*;");
         out.push_str(&ser);
         let _ = writeln!(out, "}}");
+
+        crate::json_codec::emit_invoke(model, &ops, "json_de", "json_ser", self.options.validation_error, &mut out);
+        let mut codec = crate::json_codec::JsonCodec::new(model, &self.types);
+        out.push_str(&codec.de_module(&input_closure, "json_de"));
+        out.push_str(&codec.ser_module(&output_closure, "json_ser"));
         out
     }
 

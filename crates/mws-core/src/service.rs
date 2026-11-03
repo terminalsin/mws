@@ -149,4 +149,32 @@ pub trait Service: Send + Sync {
     fn accepts_unsigned(&self, _request: &HttpRequest) -> bool {
         false
     }
+
+    /// Run `operation` with its input as JSON keyed by Smithy member names
+    /// (the shape `aws ... --cli-input-json` takes) and return its output
+    /// the same way. MWS uses this to apply scenario files; the input is
+    /// validated and authorized exactly like a wire request.
+    async fn invoke(
+        &self,
+        _ctx: RequestContext,
+        operation: &str,
+        _input: serde_json::Value,
+    ) -> Result<serde_json::Value, ServiceError> {
+        Err(ServiceError::unknown_operation(operation))
+    }
+
+    /// This service's whole state as JSON, for persistence and snapshots.
+    /// `None` for services that keep no state.
+    fn export_state(&self) -> Option<serde_json::Value> {
+        None
+    }
+
+    /// Replace this service's whole state with one [`Service::export_state`]
+    /// produced. On error the state is left unchanged.
+    fn import_state(&self, _state: serde_json::Value) -> Result<(), String> {
+        Ok(())
+    }
+
+    /// Return to the state of a freshly started service.
+    fn reset_state(&self) {}
 }
