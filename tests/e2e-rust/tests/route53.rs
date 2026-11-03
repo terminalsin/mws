@@ -226,8 +226,35 @@ async fn private_zones_health_checks_and_tags() {
     let by_vpc =
         r53.list_hosted_zones_by_vpc().vpc_id("vpc-0abc1234").vpc_region(VpcRegion::UsEast1).send().await.unwrap();
     assert_eq!(by_vpc.hosted_zone_summaries()[0].hosted_zone_id(), zone_id);
-    let err = r53.disassociate_vpc_from_hosted_zone().hosted_zone_id(&zone_id).vpc(vpc).send().await.unwrap_err();
+    let err =
+        r53.disassociate_vpc_from_hosted_zone().hosted_zone_id(&zone_id).vpc(vpc.clone()).send().await.unwrap_err();
     assert!(err.into_service_error().is_last_vpc_association());
+
+    // A second VPC can be associated and disassociated again.
+    let second = Vpc::builder().vpc_id("vpc-0def5678").vpc_region(VpcRegion::UsWest2).build();
+    let change = r53
+        .associate_vpc_with_hosted_zone()
+        .hosted_zone_id(&zone_id)
+        .vpc(second.clone())
+        .comment("west")
+        .send()
+        .await
+        .unwrap();
+    assert!(change.change_info().unwrap().id().starts_with("/change/"));
+    let dup = r53.associate_vpc_with_hosted_zone().hosted_zone_id(&zone_id).vpc(second.clone()).send().await;
+    assert!(dup.unwrap_err().into_service_error().is_conflicting_domain_exists());
+    let zone = r53.get_hosted_zone().id(&zone_id).send().await.unwrap();
+    assert_eq!(zone.vpcs().len(), 2);
+    let by_vpc =
+        r53.list_hosted_zones_by_vpc().vpc_id("vpc-0def5678").vpc_region(VpcRegion::UsWest2).send().await.unwrap();
+    assert_eq!(by_vpc.hosted_zone_summaries().len(), 1);
+    r53.disassociate_vpc_from_hosted_zone().hosted_zone_id(&zone_id).vpc(second.clone()).send().await.unwrap();
+    let not_associated = r53.disassociate_vpc_from_hosted_zone().hosted_zone_id(&zone_id).vpc(second).send().await;
+    assert!(not_associated.unwrap_err().into_service_error().is_vpc_association_not_found());
+    let public = create_zone(&r53, "public.corp").await;
+    let public_id = public.trim_start_matches("/hostedzone/");
+    let not_private = r53.associate_vpc_with_hosted_zone().hosted_zone_id(public_id).vpc(vpc).send().await;
+    assert!(not_private.unwrap_err().into_service_error().is_public_zone_vpc_association());
 
     let hc = r53
         .create_health_check()
@@ -248,6 +275,7 @@ async fn private_zones_health_checks_and_tags() {
     let updated = r53.update_health_check().health_check_id(hc.id()).failure_threshold(5).send().await.unwrap();
     assert_eq!(updated.health_check().unwrap().health_check_version(), 2);
     assert_eq!(r53.list_health_checks().send().await.unwrap().health_checks().len(), 1);
+    assert_eq!(r53.get_health_check_count().send().await.unwrap().health_check_count(), 1);
 
     r53.change_tags_for_resource()
         .resource_type(TagResourceType::Hostedzone)
@@ -274,8 +302,34 @@ async fn private_zones_health_checks_and_tags() {
     let tags = tags.resource_tag_set().unwrap().tags();
     assert_eq!(tags.len(), 1);
     assert_eq!(tags[0].key(), Some("env"));
+    r53.change_tags_for_resource()
+        .resource_type(TagResourceType::Healthcheck)
+        .resource_id(hc.id())
+        .add_tags(Tag::builder().key("probe").value("https").build())
+        .send()
+        .await
+        .unwrap();
+    let many = r53
+        .list_tags_for_resources()
+        .resource_type(TagResourceType::Healthcheck)
+        .resource_ids(hc.id())
+        .resource_ids("00000000-0000-0000-0000-000000000000")
+        .send()
+        .await;
+    assert!(many.unwrap_err().into_service_error().is_no_such_health_check());
+    let many = r53
+        .list_tags_for_resources()
+        .resource_type(TagResourceType::Healthcheck)
+        .resource_ids(hc.id())
+        .send()
+        .await
+        .unwrap();
+    let set = &many.resource_tag_sets()[0];
+    assert_eq!(set.resource_id(), Some(hc.id()));
+    assert_eq!(set.tags()[0].key(), Some("probe"));
 
     r53.delete_health_check().health_check_id(hc.id()).send().await.unwrap();
+    assert_eq!(r53.get_health_check_count().send().await.unwrap().health_check_count(), 0);
     let err = r53.get_health_check().health_check_id(hc.id()).send().await.unwrap_err();
     assert!(err.into_service_error().is_no_such_health_check());
 }

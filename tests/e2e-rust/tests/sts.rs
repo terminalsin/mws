@@ -312,3 +312,64 @@ async fn unsigned_web_identity_tokens_need_verification_turned_off() {
 fn chrono_now() -> i64 {
     std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_secs() as i64
 }
+
+#[tokio::test]
+async fn access_key_info_names_the_owning_account() {
+    let mws = Mws::start().await;
+    let root = aws_sdk_iam::Client::new(&mws.root_sdk_config().await);
+    root.create_user().user_name("kim").send().await.unwrap();
+    let key = root.create_access_key().user_name("kim").send().await.unwrap();
+    let akid = key.access_key().unwrap().access_key_id().to_string();
+    assert!(akid.starts_with("AKIA") && akid.len() == 20);
+    let sts = aws_sdk_sts::Client::new(&mws.root_sdk_config().await);
+    let info = sts.get_access_key_info().access_key_id(&akid).send().await.unwrap();
+    assert_eq!(info.account(), Some("123456789012"));
+
+    // Deleted keys and keys from elsewhere still decode: the account is in the id.
+    root.delete_access_key().user_name("kim").access_key_id(&akid).send().await.unwrap();
+    let info = sts.get_access_key_info().access_key_id(&akid).send().await.unwrap();
+    assert_eq!(info.account(), Some("123456789012"));
+    let info = sts.get_access_key_info().access_key_id("ASIAY34FZKBOKMUTVV7A").send().await.unwrap();
+    assert_eq!(info.account(), Some("609629065308"));
+
+    make_role(&mws, "temp", ACCOUNT_TRUST, IAM_READ).await;
+    let (_, cfg) = user_with_policy(&mws, "lee", Some(ASSUME_ANY)).await;
+    let creds = aws_sdk_sts::Client::new(&cfg)
+        .assume_role()
+        .role_arn("arn:aws:iam::123456789012:role/temp")
+        .role_session_name("lee-session")
+        .send()
+        .await
+        .unwrap();
+    let session_key = creds.credentials().unwrap().access_key_id();
+    assert!(session_key.starts_with("ASIA"));
+    let info = sts.get_access_key_info().access_key_id(session_key).send().await.unwrap();
+    assert_eq!(info.account(), Some("123456789012"));
+}
+
+#[tokio::test]
+async fn decode_authorization_message_needs_permission_and_a_valid_message() {
+    use base64::Engine;
+    let mws = Mws::start().await;
+    let message = serde_json::json!({
+        "allowed": false,
+        "explicitDeny": false,
+        "matchedStatements": {"items": []},
+        "context": {"principal": {"arn": "arn:aws:iam::123456789012:user/ops"}, "action": "s3:GetObject"}
+    });
+    let encoded = base64::engine::general_purpose::STANDARD.encode(message.to_string());
+
+    let (_, cfg) = user_with_policy(&mws, "no-decode", None).await;
+    let denied = aws_sdk_sts::Client::new(&cfg).decode_authorization_message().encoded_message(&encoded).send().await;
+    assert_eq!(denied.unwrap_err().code(), Some("AccessDenied"));
+
+    let allow = r#"{"Version":"2012-10-17","Statement":{"Effect":"Allow","Action":"sts:DecodeAuthorizationMessage","Resource":"*"}}"#;
+    let (_, cfg) = user_with_policy(&mws, "decoder", Some(allow)).await;
+    let sts = aws_sdk_sts::Client::new(&cfg);
+    let out = sts.decode_authorization_message().encoded_message(&encoded).send().await.unwrap();
+    let decoded: serde_json::Value = serde_json::from_str(out.decoded_message().unwrap()).unwrap();
+    assert_eq!(decoded, message);
+
+    let invalid = sts.decode_authorization_message().encoded_message("not-a-message").send().await.unwrap_err();
+    assert_eq!(invalid.code(), Some("InvalidAuthorizationMessageException"));
+}

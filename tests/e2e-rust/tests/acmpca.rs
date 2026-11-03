@@ -734,3 +734,45 @@ async fn ca_tags_authorize_through_resource_tag() {
         .unwrap();
     user.describe_certificate_authority().certificate_authority_arn(&ca).send().await.unwrap();
 }
+
+#[tokio::test]
+async fn acm_permissions_on_a_ca() {
+    use aws_sdk_acmpca::error::ProvideErrorMetadata;
+    use aws_sdk_acmpca::types::ActionType;
+    let mws = Mws::start().await;
+    let pca = Client::new(&mws.root_sdk_config().await);
+    let (ca, _) = active_root(&pca).await;
+    let empty = pca.list_permissions().certificate_authority_arn(&ca).send().await.unwrap();
+    assert!(empty.permissions().is_empty());
+
+    let grant = || {
+        pca.create_permission()
+            .certificate_authority_arn(&ca)
+            .principal("acm.amazonaws.com")
+            .actions(ActionType::IssueCertificate)
+            .actions(ActionType::GetCertificate)
+            .actions(ActionType::ListPermissions)
+            .send()
+    };
+    grant().await.unwrap();
+    let dup = grant().await.unwrap_err();
+    assert_eq!(dup.code(), Some("PermissionAlreadyExistsException"));
+
+    let listed = pca.list_permissions().certificate_authority_arn(&ca).send().await.unwrap();
+    let p = &listed.permissions()[0];
+    assert_eq!(p.principal(), Some("acm.amazonaws.com"));
+    assert_eq!(p.source_account(), Some("123456789012"));
+    assert_eq!(p.certificate_authority_arn(), Some(ca.as_str()));
+    assert_eq!(p.actions().len(), 3);
+    assert!(p.created_at().is_some());
+
+    pca.delete_permission().certificate_authority_arn(&ca).principal("acm.amazonaws.com").send().await.unwrap();
+    assert!(pca.list_permissions().certificate_authority_arn(&ca).send().await.unwrap().permissions().is_empty());
+    let gone = pca.delete_permission().certificate_authority_arn(&ca).principal("acm.amazonaws.com").send().await;
+    assert_eq!(gone.unwrap_err().code(), Some("ResourceNotFoundException"));
+
+    // Only the CA owner manages its permissions.
+    let (_, cfg) = user_with_policy(&mws, "outsider", None).await;
+    let denied = Client::new(&cfg).list_permissions().certificate_authority_arn(&ca).send().await.unwrap_err();
+    assert_eq!(denied.code(), Some("AccessDeniedException"));
+}

@@ -92,7 +92,7 @@ impl Sts {
     }
 
     pub(crate) fn issue(&self, mut caller: Caller, duration: i32, session: SessionInfo) -> Issued {
-        let akid = format!("ASIA{}", random(b"ABCDEFGHIJKLMNOPQRSTUVWXYZ234567", 16));
+        let akid = mws_core::ids::access_key_id("ASIA", &caller.account_id);
         let secret = random(b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/", 40);
         let token = session_token();
         let expires_at = session.issued_at + TimeDelta::seconds(duration as i64);
@@ -209,6 +209,7 @@ impl Handler for Sts {
         let session_account = self.sessions().get(&input.access_key_id).map(|s| s.caller.account_id.clone());
         let account = session_account
             .or_else(|| self.iam().account_of_access_key(&input.access_key_id))
+            .or_else(|| mws_core::ids::account_of_access_key_id(&input.access_key_id))
             .unwrap_or_else(|| ctx.caller.account_id.clone());
         Ok(types::GetAccessKeyInfoResponse { account: Some(account) })
     }

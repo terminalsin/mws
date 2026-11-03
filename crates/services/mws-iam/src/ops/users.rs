@@ -406,7 +406,7 @@ impl Iam {
             )));
         }
         let key = AccessKey {
-            id: ids::access_key_id(),
+            id: ids::access_key_id(&ctx.caller.account_id),
             secret: ids::secret_access_key(),
             user_name: user_name.clone(),
             active: true,

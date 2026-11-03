@@ -71,6 +71,18 @@ async fn reusable_delegation_sets() {
     }
     let listed = r53.list_hosted_zones().delegation_set_id(&set_id).send().await.unwrap();
     assert_eq!(listed.hosted_zones().len(), 2);
+    let other = r53.create_reusable_delegation_set().caller_reference("ds-2").send().await.unwrap();
+    let sets = r53.list_reusable_delegation_sets().send().await.unwrap();
+    let ids: Vec<_> = sets.delegation_sets().iter().filter_map(|d| d.id()).collect();
+    assert_eq!(ids.len(), 2);
+    assert!(ids.iter().any(|i| i.ends_with(&set_id)));
+    let page = r53.list_reusable_delegation_sets().max_items(1).send().await.unwrap();
+    assert!(page.is_truncated());
+    assert_eq!(page.delegation_sets().len(), 1);
+    let rest = r53.list_reusable_delegation_sets().marker(page.next_marker().unwrap()).send().await.unwrap();
+    assert_eq!(rest.delegation_sets().len(), 1);
+    assert!(!rest.is_truncated());
+    r53.delete_reusable_delegation_set().id(other.delegation_set().unwrap().id().unwrap()).send().await.unwrap();
     let limit = r53
         .get_reusable_delegation_set_limit()
         .delegation_set_id(&set_id)
@@ -167,6 +179,35 @@ async fn traffic_policies_and_instances() {
         .resource_record_sets()
         .iter()
         .any(|r| r.resource_records().first().map(|v| v.value()) == Some("192.0.2.30")));
+
+    let got = r53.get_traffic_policy_instance().id(&iid).send().await.unwrap();
+    let got = got.traffic_policy_instance().unwrap();
+    assert_eq!((got.ttl(), got.traffic_policy_version()), (30, 2));
+    assert_eq!(got.name(), "www.tp.example.com.");
+    let all = r53.list_traffic_policy_instances().send().await.unwrap();
+    assert_eq!(all.traffic_policy_instances().len(), 1);
+    assert!(!all.is_truncated());
+    let by_policy = r53
+        .list_traffic_policy_instances_by_policy()
+        .traffic_policy_id(&pid)
+        .traffic_policy_version(2)
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(by_policy.traffic_policy_instances().len(), 1);
+    let none = r53
+        .list_traffic_policy_instances_by_policy()
+        .traffic_policy_id(&pid)
+        .traffic_policy_version(1)
+        .send()
+        .await
+        .unwrap();
+    assert!(none.traffic_policy_instances().is_empty());
+    let versions = r53.list_traffic_policy_versions().id(&pid).send().await.unwrap();
+    let numbers: Vec<_> = versions.traffic_policies().iter().map(|p| p.version()).collect();
+    assert_eq!(numbers, [1, 2]);
+    let missing = r53.get_traffic_policy_instance().id("00000000-0000-0000-0000-000000000000").send().await;
+    assert_eq!(code(missing.unwrap_err().into_service_error()), "NoSuchTrafficPolicyInstance");
 
     let in_use = r53.delete_traffic_policy().id(&pid).version(2).send().await.unwrap_err();
     assert_eq!(code(in_use.into_service_error()), "TrafficPolicyInUse");
@@ -269,6 +310,13 @@ async fn dnssec_key_signing_keys() {
     r53.disable_hosted_zone_dnssec().hosted_zone_id(&zone_id).send().await.unwrap();
     let active = r53.delete_key_signing_key().hosted_zone_id(&zone_id).name("ksk_one").send().await.unwrap_err();
     assert_eq!(code(active.into_service_error()), "InvalidKeySigningKeyStatus");
+    r53.deactivate_key_signing_key().hosted_zone_id(&zone_id).name("ksk_one").send().await.unwrap();
+    let reactivated = r53.activate_key_signing_key().hosted_zone_id(&zone_id).name("ksk_one").send().await.unwrap();
+    assert!(reactivated.change_info().unwrap().id().starts_with("/change/"));
+    let status = r53.get_dnssec().hosted_zone_id(&zone_id).send().await.unwrap();
+    assert_eq!(status.key_signing_keys()[0].status(), Some("ACTIVE"));
+    let missing = r53.activate_key_signing_key().hosted_zone_id(&zone_id).name("ksk_nope").send().await;
+    assert_eq!(code(missing.unwrap_err().into_service_error()), "NoSuchKeySigningKey");
     r53.deactivate_key_signing_key().hosted_zone_id(&zone_id).name("ksk_one").send().await.unwrap();
     r53.delete_key_signing_key().hosted_zone_id(&zone_id).name("ksk_one").send().await.unwrap();
     let status = r53.get_dnssec().hosted_zone_id(&zone_id).send().await.unwrap();
