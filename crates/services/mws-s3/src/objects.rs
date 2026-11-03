@@ -1123,6 +1123,14 @@ impl Call {
         let source = CopySource::parse(&input.copy_source)?;
         let metadata_directive = input.metadata_directive.clone().unwrap_or_else(|| "COPY".into());
         let tagging_directive = input.tagging_directive.clone().unwrap_or_else(|| "COPY".into());
+        let annotation_directive = input.annotation_directive.clone().unwrap_or_else(|| "COPY".into());
+        if !matches!(annotation_directive.as_str(), "COPY" | "EXCLUDE") {
+            return Err(errors::invalid_argument(
+                "Unknown annotation directive.",
+                "x-amz-annotation-directive",
+                &annotation_directive,
+            ));
+        }
         if !matches!(metadata_directive.as_str(), "COPY" | "REPLACE") {
             return Err(errors::invalid_argument(
                 "Unknown metadata directive.",
@@ -1284,6 +1292,7 @@ impl Call {
             lock_until,
             legal_hold,
             data: src.data.clone(),
+            annotations: if annotation_directive == "EXCLUDE" { Default::default() } else { src.annotations.clone() },
             ..ObjectVersion::default()
         };
         let etag = version.etag.clone();
@@ -1424,7 +1433,7 @@ impl Call {
 
     /// Find a version, authorize `action` on it, then run `f`.
     #[allow(clippy::too_many_arguments)]
-    fn object_read<R>(
+    pub(crate) fn object_read<R>(
         &self,
         ctx: &RequestContext,
         bucket: &str,
@@ -1448,7 +1457,7 @@ impl Call {
     /// Like [`Call::object_read`], with the version mutable. `f` gets
     /// whether the bucket reports version ids.
     #[allow(clippy::too_many_arguments)]
-    fn object_write<R>(
+    pub(crate) fn object_write<R>(
         &self,
         ctx: &RequestContext,
         bucket: &str,

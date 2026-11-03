@@ -26,6 +26,7 @@ pub mod generated {
 #[macro_use]
 mod checksum;
 mod acl;
+mod annotations;
 mod auth;
 mod buckets;
 
@@ -36,6 +37,7 @@ mod handler;
 mod kms;
 mod lifecycle;
 mod listing;
+mod metadata;
 mod multipart;
 mod objects;
 mod public;

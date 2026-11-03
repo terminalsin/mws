@@ -727,3 +727,115 @@ async fn replication_copies_versions_as_the_role() {
     let err = s3.head_object().bucket("repl-dst").key("docs/b").send().await.unwrap_err();
     assert_eq!(err.raw_response().unwrap().status().as_u16(), 404);
 }
+
+#[tokio::test]
+async fn annotations_torrents_and_metadata_configurations() {
+    use aws_sdk_s3::types::{
+        InventoryConfigurationState, InventoryTableConfiguration, JournalTableConfiguration, MetadataConfiguration,
+        RecordExpiration,
+    };
+    let mws = Mws::start().await;
+    let s3 = root(&mws).await;
+    s3.create_bucket().bucket("notes").send().await.unwrap();
+    let put = s3.put_object().bucket("notes").key("doc").body(ByteStream::from_static(b"body")).send().await.unwrap();
+    let etag = put.e_tag().unwrap().to_string();
+
+    let out = s3
+        .put_object_annotation()
+        .bucket("notes")
+        .key("doc")
+        .annotation_name("review.status")
+        .annotation_payload(ByteStream::from_static(b"approved"))
+        .object_if_match(&etag)
+        .send()
+        .await
+        .unwrap();
+    assert!(out.e_tag().is_some());
+    s3.put_object_annotation()
+        .bucket("notes")
+        .key("doc")
+        .annotation_name("owner")
+        .annotation_payload(ByteStream::from_static(b"team-a"))
+        .send()
+        .await
+        .unwrap();
+    let got =
+        s3.get_object_annotation().bucket("notes").key("doc").annotation_name("review.status").send().await.unwrap();
+    assert_eq!(got.annotation_payload.collect().await.unwrap().into_bytes().as_ref(), b"approved");
+    let listed = s3.list_object_annotations().bucket("notes").key("doc").send().await.unwrap();
+    let names: Vec<_> = listed.annotations().iter().map(|a| a.annotation_name()).collect();
+    assert_eq!(names, ["owner", "review.status"]);
+    // The object's ETag does not change.
+    let head = s3.head_object().bucket("notes").key("doc").send().await.unwrap();
+    assert_eq!(head.e_tag(), Some(etag.as_str()));
+
+    let err = s3
+        .put_object_annotation()
+        .bucket("notes")
+        .key("doc")
+        .annotation_name("aws-reserved")
+        .annotation_payload(ByteStream::from_static(b"x"))
+        .send()
+        .await
+        .unwrap_err();
+    assert_eq!(err.code(), Some("InvalidAnnotationName"));
+    let err = s3
+        .put_object_annotation()
+        .bucket("notes")
+        .key("doc")
+        .annotation_name("late")
+        .object_if_match("\"0000\"")
+        .annotation_payload(ByteStream::from_static(b"x"))
+        .send()
+        .await
+        .unwrap_err();
+    assert_eq!(err.code(), Some("PreconditionFailed"));
+
+    // CopyObject carries annotations unless told to exclude them.
+    s3.copy_object().bucket("notes").key("copy").copy_source("notes/doc").send().await.unwrap();
+    let listed = s3.list_object_annotations().bucket("notes").key("copy").send().await.unwrap();
+    assert_eq!(listed.annotations().len(), 2);
+    // Overwriting the object drops them.
+    s3.put_object().bucket("notes").key("doc").body(ByteStream::from_static(b"v2")).send().await.unwrap();
+    let err = s3.get_object_annotation().bucket("notes").key("doc").annotation_name("owner").send().await.unwrap_err();
+    assert_eq!(err.code(), Some("NoSuchAnnotation"));
+    s3.delete_object_annotation().bucket("notes").key("copy").annotation_name("owner").send().await.unwrap();
+    let listed = s3.list_object_annotations().bucket("notes").key("copy").send().await.unwrap();
+    assert_eq!(listed.annotations().len(), 1);
+
+    let torrent = s3.get_object_torrent().bucket("notes").key("copy").send().await.unwrap();
+    let bytes = torrent.body.collect().await.unwrap().into_bytes();
+    assert!(bytes.starts_with(b"d8:announce"));
+
+    // S3 Metadata (V2): journal and inventory tables in the managed table bucket.
+    let config = MetadataConfiguration::builder()
+        .journal_table_configuration(
+            JournalTableConfiguration::builder()
+                .record_expiration(
+                    RecordExpiration::builder()
+                        .expiration(aws_sdk_s3::types::ExpirationState::Enabled)
+                        .days(30)
+                        .build()
+                        .unwrap(),
+                )
+                .build(),
+        )
+        .inventory_table_configuration(
+            InventoryTableConfiguration::builder()
+                .configuration_state(InventoryConfigurationState::Enabled)
+                .build()
+                .unwrap(),
+        )
+        .build();
+    s3.create_bucket_metadata_configuration().bucket("notes").metadata_configuration(config).send().await.unwrap();
+    let got = s3.get_bucket_metadata_configuration().bucket("notes").send().await.unwrap();
+    let result = got.get_bucket_metadata_configuration_result().unwrap().metadata_configuration_result().unwrap();
+    let dest = result.destination_result().unwrap();
+    assert_eq!(dest.table_bucket_arn(), Some("arn:aws:s3tables:us-east-1:123456789012:bucket/aws-s3"));
+    assert_eq!(dest.table_namespace(), Some("b_notes"));
+    assert_eq!(result.journal_table_configuration_result().unwrap().table_status(), "ACTIVE");
+    assert_eq!(result.inventory_table_configuration_result().unwrap().table_name(), Some("inventory"));
+    s3.delete_bucket_metadata_configuration().bucket("notes").send().await.unwrap();
+    let err = s3.get_bucket_metadata_configuration().bucket("notes").send().await.unwrap_err();
+    assert_eq!(err.raw_response().unwrap().status().as_u16(), 404);
+}

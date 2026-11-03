@@ -661,4 +661,102 @@ impl Handler for Call {
     ) -> Result<types::UploadPartCopyOutput, ServiceError> {
         Call::upload_part_copy(self, ctx, input)
     }
+    async fn put_object_annotation(
+        &self,
+        ctx: &RequestContext,
+        input: types::PutObjectAnnotationRequest,
+    ) -> Result<types::PutObjectAnnotationOutput, ServiceError> {
+        Call::put_object_annotation(self, ctx, input)
+    }
+    async fn get_object_annotation(
+        &self,
+        ctx: &RequestContext,
+        input: types::GetObjectAnnotationRequest,
+    ) -> Result<types::GetObjectAnnotationOutput, ServiceError> {
+        Call::get_object_annotation(self, ctx, input)
+    }
+    async fn list_object_annotations(
+        &self,
+        ctx: &RequestContext,
+        input: types::ListObjectAnnotationsRequest,
+    ) -> Result<types::ListObjectAnnotationsOutput, ServiceError> {
+        Call::list_object_annotations(self, ctx, input)
+    }
+    async fn delete_object_annotation(
+        &self,
+        ctx: &RequestContext,
+        input: types::DeleteObjectAnnotationRequest,
+    ) -> Result<types::DeleteObjectAnnotationOutput, ServiceError> {
+        Call::delete_object_annotation(self, ctx, input)
+    }
+    async fn get_object_torrent(
+        &self,
+        ctx: &RequestContext,
+        input: types::GetObjectTorrentRequest,
+    ) -> Result<types::GetObjectTorrentOutput, ServiceError> {
+        Call::get_object_torrent(self, ctx, input)
+    }
+    async fn create_bucket_metadata_configuration(
+        &self,
+        ctx: &RequestContext,
+        input: types::CreateBucketMetadataConfigurationRequest,
+    ) -> Result<(), ServiceError> {
+        Call::create_bucket_metadata_configuration(self, ctx, input)
+    }
+    async fn get_bucket_metadata_configuration(
+        &self,
+        ctx: &RequestContext,
+        input: types::GetBucketMetadataConfigurationRequest,
+    ) -> Result<types::GetBucketMetadataConfigurationOutput, ServiceError> {
+        Call::get_bucket_metadata_configuration(self, ctx, input)
+    }
+    async fn delete_bucket_metadata_configuration(
+        &self,
+        ctx: &RequestContext,
+        input: types::DeleteBucketMetadataConfigurationRequest,
+    ) -> Result<(), ServiceError> {
+        Call::delete_bucket_metadata_configuration(self, ctx, input)
+    }
+    async fn update_bucket_metadata_journal_table_configuration(
+        &self,
+        ctx: &RequestContext,
+        input: types::UpdateBucketMetadataJournalTableConfigurationRequest,
+    ) -> Result<(), ServiceError> {
+        Call::update_bucket_metadata_journal_table_configuration(self, ctx, input)
+    }
+    async fn update_bucket_metadata_inventory_table_configuration(
+        &self,
+        ctx: &RequestContext,
+        input: types::UpdateBucketMetadataInventoryTableConfigurationRequest,
+    ) -> Result<(), ServiceError> {
+        Call::update_bucket_metadata_inventory_table_configuration(self, ctx, input)
+    }
+    async fn update_bucket_metadata_annotation_table_configuration(
+        &self,
+        ctx: &RequestContext,
+        input: types::UpdateBucketMetadataAnnotationTableConfigurationRequest,
+    ) -> Result<(), ServiceError> {
+        Call::update_bucket_metadata_annotation_table_configuration(self, ctx, input)
+    }
+    async fn create_bucket_metadata_table_configuration(
+        &self,
+        ctx: &RequestContext,
+        input: types::CreateBucketMetadataTableConfigurationRequest,
+    ) -> Result<(), ServiceError> {
+        Call::create_bucket_metadata_table_configuration(self, ctx, input)
+    }
+    async fn get_bucket_metadata_table_configuration(
+        &self,
+        ctx: &RequestContext,
+        input: types::GetBucketMetadataTableConfigurationRequest,
+    ) -> Result<types::GetBucketMetadataTableConfigurationOutput, ServiceError> {
+        Call::get_bucket_metadata_table_configuration(self, ctx, input)
+    }
+    async fn delete_bucket_metadata_table_configuration(
+        &self,
+        ctx: &RequestContext,
+        input: types::DeleteBucketMetadataTableConfigurationRequest,
+    ) -> Result<(), ServiceError> {
+        Call::delete_bucket_metadata_table_configuration(self, ctx, input)
+    }
 }
