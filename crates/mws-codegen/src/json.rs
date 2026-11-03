@@ -75,7 +75,10 @@ impl Gen<'_, '_> {
         let _ = writeln!(w, "\npub mod types {{\n    use super::chrono;");
         self.types.emit_types(&all, w);
         let _ = writeln!(w, "}}");
-        common::emit_errors(model, &common::all_errors(service, &ops), w);
+        // awsJson ignores `awsQueryError` codes unless the service is
+        // `awsQueryCompatible` (KMS models them but answers with shape names).
+        let query_codes = service.has_trait("aws.protocols#awsQueryCompatible");
+        common::emit_errors(model, &common::all_errors(service, &ops), query_codes, w);
         common::emit_handler(model, &ops, w);
         self.emit_dispatch(&ops, w);
 

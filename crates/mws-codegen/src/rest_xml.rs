@@ -91,7 +91,7 @@ impl Gen<'_, '_> {
         self.types.emit_types(&all, w);
         let _ = writeln!(w, "}}");
 
-        common::emit_errors(model, &common::all_errors(service, &ops), w);
+        common::emit_errors(model, &common::all_errors(service, &ops), true, w);
         common::emit_handler(model, &ops, w);
 
         self.emit_dispatch(&ops, &namespace, &mut out);

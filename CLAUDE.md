@@ -17,6 +17,10 @@ override only) see the same behaviour as real AWS. Fidelity beats breadth.
 - **Authorize in handlers.** Every handler calls `ctx.authorize("svc:Action",
   resource_arn, condition_keys)` before acting. The IAM authorizer reads IAM
   state, so in `mws-iam` never call it while holding the state lock.
+  Resource policies: `authorize_with_resource_policy` when either the
+  resource or identity policy may grant (bucket/CA policies),
+  `authorize_with_required_resource_policy` when the resource policy must
+  allow (KMS key policies).
 - **Prove it with real SDKs.** Behaviour changes get an E2E test in
   `tests/e2e-rust` (official Rust SDK) and, where useful, `tests/e2e-python`
   (boto3).
@@ -27,7 +31,7 @@ override only) see the same behaviour as real AWS. Fidelity beats breadth.
 2. Generate in `build.rs` with the protocol's codegen entry point (add a new
    `mws-proto-<protocol>` runtime + codegen module if the protocol is new).
    Protocols so far: `build_aws_query` (IAM, STS), `build_rest_xml`
-   (Route 53) and `build_aws_json` (ACM PCA). Pass the service's validation
+   (Route 53) and `build_aws_json` (ACM PCA, KMS). Pass the service's validation
    error code in the options (`InvalidInput`, `ValidationException`, ...).
    The restXml generator panics on bindings it does not support yet; extend
    it rather than working around it in the service.

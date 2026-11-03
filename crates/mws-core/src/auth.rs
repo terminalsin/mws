@@ -133,10 +133,24 @@ pub struct AuthzRequest<'a> {
     pub resource: &'a str,
     /// Resource-based policy attached to the resource, if the service has one.
     pub resource_policy: Option<&'a str>,
-    /// The resource policy must itself allow the caller (as role trust
-    /// policies do), rather than merely being able to.
-    pub resource_policy_required: bool,
+    /// How the resource policy takes part in the decision.
+    pub resource_policy_mode: ResourcePolicyMode,
     pub context: ConditionContext,
+}
+
+/// How a resource policy combines with identity policies.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub enum ResourcePolicyMode {
+    /// Either the resource policy or identity policies may grant access
+    /// (bucket policies, CA policies, ...).
+    #[default]
+    Optional,
+    /// The resource policy must allow the caller, directly or through its
+    /// account; in the latter case identity policies must allow too. KMS key
+    /// policies work this way.
+    Required,
+    /// A role trust policy: required, and parsed with trust-policy rules.
+    Trust,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]

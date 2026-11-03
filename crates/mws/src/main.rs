@@ -14,7 +14,7 @@ async fn main() {
         .parse()
         .expect("MWS_LISTEN must be host:port");
     let config = mws::Config::from_env();
-    let mws::Mws { gateway, route53 } = match mws::start(config.clone()).await {
+    let mws::Mws { gateway, route53, .. } = match mws::start(config.clone()).await {
         Ok(m) => m,
         Err(e) => {
             eprintln!("mws: {e}");

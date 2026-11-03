@@ -23,12 +23,12 @@ pub fn all_errors(service: &Shape, ops: &[&Shape]) -> BTreeSet<String> {
 /// `pub mod errors`: a constant and constructor per modeled error. Error
 /// members that are lists of strings get a `{name}_with_{member}`
 /// constructor that carries them.
-pub fn emit_errors(model: &Model, errors: &BTreeSet<String>, w: &mut String) {
+pub fn emit_errors(model: &Model, errors: &BTreeSet<String>, query_codes: bool, w: &mut String) {
     let _ = writeln!(w, "\n/// Constructors for every error the model declares.\npub mod errors {{");
     let _ = writeln!(w, "    #[allow(unused_imports)]\n    use ::mws_core::{{ErrorFault, ErrorValue, ServiceError}};");
     for id in errors {
         let s = model.expect(id);
-        let (code, status) = error_code_and_status(s);
+        let (code, status) = error_code_and_status(s, query_codes);
         let fault = if s.get_trait("error").and_then(Value::as_str) == Some("server") { "Server" } else { "Client" };
         let fn_name = snake_case(s.name().strip_suffix("Exception").unwrap_or(s.name()));
         let _ = writeln!(w, "    /// `{code}` (HTTP {status}), from `{id}`.");
@@ -172,8 +172,10 @@ pub fn qualified_type(model: &Model, target: &str) -> String {
 
 /// Wire code and HTTP status of an error shape. awsQuery services may
 /// override both with `awsQueryError`; otherwise the code is the shape name.
-pub fn error_code_and_status(s: &Shape) -> (String, u16) {
-    if let Some(q) = s.get_trait("aws.protocols#awsQueryError") {
+/// `query_codes` says whether the protocol honours `awsQueryError`: awsQuery
+/// does, awsJson only for services marked `awsQueryCompatible`.
+pub fn error_code_and_status(s: &Shape, query_codes: bool) -> (String, u16) {
+    if let Some(q) = s.get_trait("aws.protocols#awsQueryError").filter(|_| query_codes) {
         let code = q.get("code").and_then(Value::as_str).unwrap_or(s.name()).to_string();
         let status = q.get("httpResponseCode").and_then(Value::as_u64).unwrap_or(400) as u16;
         return (code, status);

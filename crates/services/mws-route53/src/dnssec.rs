@@ -1,8 +1,10 @@
 //! DNSSEC: key-signing keys and zone signing status.
 //!
-//! Route 53 keeps KSKs in KMS. MWS has no KMS, so it accepts the KMS key
-//! ARN as given and generates the ECDSA P-256 key itself, which gives real
-//! DNSKEY and DS records (key tag, digest) for the zone's apex.
+//! Route 53 keeps KSKs in KMS: the KMS key must be a customer managed,
+//! enabled `ECC_NIST_P256` signing key in us-east-1 whose key policy lets
+//! `dnssec-route53.amazonaws.com` describe it, read its public key and
+//! sign. The DNSKEY and DS records (key tag, digest) come from that key's
+//! public key. A `Route53` built without KMS generates the key pair itself.
 
 use aws_lc_rs::digest;
 use aws_lc_rs::rand::SystemRandom;
@@ -42,9 +44,7 @@ fn check_kms_arn(kms: &str) -> Result<(), ServiceError> {
         && parts[4].len() == 12
         && (parts[5].starts_with("key/") || parts[5].starts_with("alias/"));
     if !ok {
-        return Err(errors::invalid_kms_arn(
-            "The KeyManagementServiceArn that you specified isn't valid to use with DNSSEC signing.",
-        ));
+        return Err(invalid_kms_arn());
     }
     Ok(())
 }
@@ -70,13 +70,28 @@ fn key_tag(rdata: &[u8]) -> u16 {
     (ac & 0xffff) as u16
 }
 
-fn new_ksk(zone: &Zone, name: &str, kms: &str, status: &str) -> Result<types::KeySigningKey, ServiceError> {
+fn invalid_kms_arn() -> ServiceError {
+    errors::invalid_kms_arn("The KeyManagementServiceArn that you specified isn't valid to use with DNSSEC signing.")
+}
+
+/// A standalone P-256 public point, when no KMS is attached.
+fn generated_point() -> Result<Vec<u8>, ServiceError> {
     let pkcs8 = EcdsaKeyPair::generate_pkcs8(&ECDSA_P256_SHA256_FIXED_SIGNING, &SystemRandom::new())
         .map_err(|_| ServiceError::internal("key generation failed"))?;
     let pair = EcdsaKeyPair::from_pkcs8(&ECDSA_P256_SHA256_FIXED_SIGNING, pkcs8.as_ref())
         .map_err(|_| ServiceError::internal("key generation failed"))?;
+    Ok(pair.public_key().as_ref().to_vec())
+}
+
+fn new_ksk(
+    zone: &Zone,
+    name: &str,
+    kms: &str,
+    status: &str,
+    point: &[u8],
+) -> Result<types::KeySigningKey, ServiceError> {
     // Uncompressed point without its 0x04 prefix: RFC 6605.
-    let public = pair.public_key().as_ref()[1..].to_vec();
+    let public = point[1..].to_vec();
     let mut rdata = KSK_FLAGS.to_be_bytes().to_vec();
     rdata.extend([3, ALGORITHM]);
     rdata.extend(&public);
@@ -114,6 +129,28 @@ fn is_active(k: &KeySigningKey) -> bool {
 }
 
 impl Route53 {
+    /// The public point of the KMS key behind a new KSK, after checking the
+    /// key is one Route 53 can use.
+    fn ksk_public_point(&self, ctx: &RequestContext, zone_arn: &str, kms_arn: &str) -> Result<Vec<u8>, ServiceError> {
+        let Some(kms) = &self.kms else { return generated_point() };
+        let mut cond = mws_core::ConditionContext::new();
+        cond.insert("aws:SourceAccount".into(), vec![ctx.caller.account_id.clone()]);
+        cond.insert("aws:SourceArn".into(), vec![zone_arn.to_string()]);
+        let key = kms
+            .key_for_service(
+                kms_arn,
+                "dnssec-route53.amazonaws.com",
+                &["kms:DescribeKey", "kms:GetPublicKey", "kms:Sign"],
+                &cond,
+            )
+            .map_err(|_| invalid_kms_arn())?;
+        let usable = key.key_spec == "ECC_NIST_P256"
+            && key.key_usage == "SIGN_VERIFY"
+            && key.key_state == "Enabled"
+            && key.key_manager == "CUSTOMER";
+        key.ec_point.filter(|_| usable).ok_or_else(invalid_kms_arn)
+    }
+
     pub(crate) fn create_key_signing_key(
         &self,
         ctx: &RequestContext,
@@ -128,6 +165,7 @@ impl Route53 {
                 "The key-signing key (KSK) status isn't valid or another KSK has the status INTERNAL_FAILURE.",
             ));
         }
+        let point = self.ksk_public_point(ctx, &arn(ctx, "hostedzone", &zone_id), &input.key_management_service_arn)?;
         let mut st = self.lock();
         let zone = st.zone(&zone_id)?;
         if zone.private {
@@ -147,7 +185,7 @@ impl Route53 {
                 "You've reached the limit for the number of key-signing keys (KSKs). Remove at least one KSK, and then try again.",
             ));
         }
-        let key = new_ksk(zone, &input.name, &input.key_management_service_arn, &input.status)?;
+        let key = new_ksk(zone, &input.name, &input.key_management_service_arn, &input.status, &point)?;
         st.zone_mut(&zone_id)?
             .ksks
             .insert(input.name.clone(), KeySigningKey { key: key.clone(), caller_reference: input.caller_reference });
