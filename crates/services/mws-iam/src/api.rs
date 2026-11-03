@@ -85,3 +85,73 @@ impl Iam {
         }
     }
 }
+
+/// What a redeemed delegation exchange token grants.
+#[derive(Debug, Clone)]
+pub struct DelegationGrant {
+    /// The identity that accepted the request.
+    pub approver_arn: String,
+    pub session_duration: i32,
+    pub policy_template_arn: Option<String>,
+}
+
+/// A signing key for outbound web identity tokens.
+pub struct OutboundKey {
+    pub issuer: String,
+    /// PKCS#8 DER.
+    pub pkcs8: Vec<u8>,
+    pub key_id: String,
+}
+
+impl Iam {
+    /// The lower-cased user name an enabled MFA device belongs to.
+    pub fn mfa_device_owner(&self, serial: &str) -> Option<String> {
+        self.read().mfa_devices.get(serial).filter(|d| d.enabled.is_some()).and_then(|d| d.user.clone())
+    }
+
+    /// Redeem a delegation exchange token once, for STS
+    /// GetDelegatedAccessToken.
+    pub fn redeem_delegation_token(&self, token: &str) -> Option<DelegationGrant> {
+        let mut state = self.write();
+        let d = state.delegation_requests.values_mut().find(|d| d.token.as_deref() == Some(token) && !d.redeemed)?;
+        d.redeemed = true;
+        Some(DelegationGrant {
+            approver_arn: d.request.approver_id.clone()?,
+            session_duration: d.request.session_duration.unwrap_or(3600),
+            policy_template_arn: d.request.permissions.as_ref().and_then(|p| p.policy_template_arn.clone()),
+        })
+    }
+
+    /// The issuer and signing key for outbound web identity tokens, or `None`
+    /// while outbound federation is disabled. Keys are created on first use
+    /// and kept in IAM state.
+    pub fn outbound_signing_key(&self, algorithm: &str) -> Option<OutboundKey> {
+        use aws_lc_rs::encoding::AsDer;
+        let mut state = self.write();
+        let issuer = state.outbound_enabled.then(|| state.outbound_issuer.clone()).flatten()?;
+        if !state.outbound_keys.contains_key(algorithm) {
+            let der = match algorithm {
+                "RS256" => {
+                    let k = aws_lc_rs::rsa::KeyPair::generate(aws_lc_rs::rsa::KeySize::Rsa2048).ok()?;
+                    let der: aws_lc_rs::encoding::Pkcs8V1Der = k.as_der().ok()?;
+                    der.as_ref().to_vec()
+                }
+                "ES384" => {
+                    let k = aws_lc_rs::signature::EcdsaKeyPair::generate(
+                        &aws_lc_rs::signature::ECDSA_P384_SHA384_FIXED_SIGNING,
+                    )
+                    .ok()?;
+                    k.to_pkcs8v1().ok()?.as_ref().to_vec()
+                }
+                _ => return None,
+            };
+            state.outbound_keys.insert(algorithm.to_string(), der);
+        }
+        let pkcs8 = state.outbound_keys[algorithm].clone();
+        let key_id = {
+            use md5::Digest;
+            md5::Md5::digest(&pkcs8).iter().map(|b| format!("{b:02x}")).collect()
+        };
+        Some(OutboundKey { issuer, pkcs8, key_id })
+    }
+}

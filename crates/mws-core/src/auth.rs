@@ -25,6 +25,9 @@ pub enum SessionKind {
     AssumeRoleWithWebIdentity,
     GetSessionToken,
     GetFederationToken,
+    AssumeRoleWithSAML,
+    AssumeRoot,
+    GetDelegatedAccessToken,
 }
 
 /// Facts about a temporary-credential session that affect authorization.

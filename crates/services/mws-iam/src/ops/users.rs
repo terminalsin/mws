@@ -162,6 +162,18 @@ impl Iam {
                     k.user_name = Some(user.name.clone());
                 }
             }
+            for d in state.mfa_devices.values_mut().filter(|d| d.user.as_deref() == Some(old_key.as_str())) {
+                d.user = Some(new_key.clone());
+            }
+            for k in state.ssh_keys.values_mut().filter(|k| k.user == old_key) {
+                k.user = new_key.clone();
+            }
+            for c in state.signing_certificates.values_mut().filter(|c| c.user.as_deref() == Some(old_key.as_str())) {
+                c.user = Some(new_key.clone());
+            }
+            for c in state.service_credentials.values_mut().filter(|c| c.user == old_key) {
+                c.user = new_key.clone();
+            }
         }
         state.users.insert(new_key, user);
         Ok(())
@@ -187,6 +199,19 @@ impl Iam {
         }
         if !state.groups_for_user(&input.user_name).is_empty() {
             return Err(conflict("remove user from all groups"));
+        }
+        let key = input.user_name.to_lowercase();
+        if state.signing_certificates.values().any(|c| c.user.as_deref() == Some(key.as_str())) {
+            return Err(conflict("delete signing certificates"));
+        }
+        if state.ssh_keys.values().any(|k| k.user == key) {
+            return Err(conflict("delete SSH public keys"));
+        }
+        if state.service_credentials.values().any(|c| c.user == key) {
+            return Err(conflict("delete service specific credentials"));
+        }
+        if state.mfa_devices.values().any(|d| d.user.as_deref() == Some(key.as_str())) {
+            return Err(conflict("delete MFA device"));
         }
         state.users.remove(&input.user_name.to_lowercase());
         Ok(())
@@ -269,14 +294,21 @@ impl Iam {
         };
         self.authorize(ctx, "CreateLoginProfile", &self.user_arn_or_default(&name))?;
         let mut state = self.write();
+        let policy = state.password_policy.clone();
         let user = state.user_mut(&name).ok_or_else(|| no_such_user(&name))?;
         if user.login_profile.is_some() {
             return Err(errors::entity_already_exists(format!("Login Profile for user {name} already exists.")));
         }
+        if let Some(pw) = &input.password {
+            crate::ops::settings::check_password(policy.as_ref(), pw, &[])?;
+        }
+        let now = Utc::now();
         let profile = LoginProfile {
-            created: Utc::now(),
+            created: now,
             password: input.password.unwrap_or_default(),
             reset_required: input.password_reset_required,
+            changed: Some(now),
+            history: vec![],
         };
         let out = types::LoginProfile {
             user_name: user.name.clone(),
@@ -318,6 +350,7 @@ impl Iam {
     ) -> Result<(), ServiceError> {
         self.authorize(ctx, "UpdateLoginProfile", &self.user_arn_or_default(&input.user_name))?;
         let mut state = self.write();
+        let policy = state.password_policy.clone();
         let user = state.user_mut(&input.user_name).ok_or_else(|| no_such_user(&input.user_name))?;
         let name = user.name.clone();
         let p = user
@@ -325,7 +358,10 @@ impl Iam {
             .as_mut()
             .ok_or_else(|| errors::no_such_entity(format!("Login Profile for User {name} cannot be found.")))?;
         if let Some(pw) = input.password {
-            p.password = pw;
+            let mut history = p.history.clone();
+            history.push(p.password.clone());
+            crate::ops::settings::check_password(policy.as_ref(), &pw, &history)?;
+            p.set_password(pw);
         }
         if let Some(r) = input.password_reset_required {
             p.reset_required = r;

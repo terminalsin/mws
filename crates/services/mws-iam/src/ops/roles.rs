@@ -142,6 +142,9 @@ impl Iam {
         let mut state = self.write();
         let key = input.role_name.to_lowercase();
         let role = state.role(&input.role_name).ok_or_else(|| no_such_role(&input.role_name))?;
+        if role.path.starts_with("/aws-service-role/") {
+            return Err(crate::ops::service_roles::protected(&role.name));
+        }
         if state.instance_profiles.values().any(|ip| ip.roles.contains(&key)) {
             return Err(errors::delete_conflict(
                 "Cannot delete entity, must remove roles from instance profile first.",

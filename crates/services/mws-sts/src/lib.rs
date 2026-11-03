@@ -11,7 +11,9 @@ pub mod generated {
 }
 
 mod credentials;
+mod extra;
 mod ops;
+mod saml;
 mod web_identity;
 
 use std::collections::HashMap;

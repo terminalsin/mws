@@ -246,13 +246,18 @@ impl Iam {
         put("PolicyVersionsInUseQuota", 10000);
         put("InstanceProfiles", s.instance_profiles.len());
         put("InstanceProfilesQuota", 1000);
-        put("Providers", s.oidc_providers.len());
+        put("Providers", s.oidc_providers.len() + s.saml_providers.len());
         put("AccountAccessKeysPresent", usize::from(!s.keys_for(None).is_empty()));
         put("AccountMFAEnabled", 0);
-        put("AccountSigningCertificatesPresent", 0);
-        put("MFADevices", 0);
-        put("MFADevicesInUse", 0);
-        put("ServerCertificates", 0);
+        put("AccountPasswordPresent", 0);
+        put(
+            "AccountSigningCertificatesPresent",
+            usize::from(s.signing_certificates.values().any(|c| c.user.is_none())),
+        );
+        put("SigningCertificatesPerUserQuota", 2);
+        put("MFADevices", s.mfa_devices.len());
+        put("MFADevicesInUse", s.mfa_devices.values().filter(|d| d.enabled.is_some()).count());
+        put("ServerCertificates", s.server_certificates.len());
         put("ServerCertificatesQuota", 20);
         put("AccessKeysPerUserQuota", 2);
         put("AttachedPoliciesPerUserQuota", MAX_MANAGED_POLICIES_PER_ENTITY);
@@ -263,7 +268,10 @@ impl Iam {
         put("UserPolicySizeQuota", 2048);
         put("GroupPolicySizeQuota", 5120);
         put("VersionsPerPolicyQuota", MAX_POLICY_VERSIONS);
-        put("GlobalEndpointTokenVersion", 1);
+        put(
+            "GlobalEndpointTokenVersion",
+            if s.global_endpoint_token_version.as_deref() == Some("v2Token") { 2 } else { 1 },
+        );
         Ok(types::GetAccountSummaryResponse { summary_map: Some(m) })
     }
 

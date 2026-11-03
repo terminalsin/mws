@@ -131,11 +131,3 @@ async fn bad_credentials_are_rejected_like_aws() {
     let err = unknown.get_user().send().await.unwrap_err();
     assert_eq!(err.code(), Some("InvalidClientTokenId"));
 }
-
-#[tokio::test]
-async fn unimplemented_operations_say_so() {
-    let mws = Mws::start().await;
-    let iam = aws_sdk_iam::Client::new(&mws.root_sdk_config().await);
-    let err = iam.list_server_certificates().send().await.unwrap_err();
-    assert_eq!(err.code(), Some("NotImplemented"));
-}
