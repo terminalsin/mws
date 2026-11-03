@@ -85,6 +85,87 @@ def test_errors(pca):
     assert "Member must satisfy enum value set" in err["Message"]
 
 
+def _http(url, data=None, content_type=None):
+    import urllib.request
+
+    req = urllib.request.Request(url, data=data, headers={"Content-Type": content_type} if content_type else {})
+    with urllib.request.urlopen(req) as resp:
+        return resp.read()
+
+
+def test_crl_ocsp_and_audit_report(pca, endpoint):
+    from cryptography.x509 import ocsp
+
+    arn, root = make_root(pca)
+    ca_id = arn.rsplit("/", 1)[1]
+    pca.update_certificate_authority(
+        CertificateAuthorityArn=arn,
+        RevocationConfiguration={
+            "CrlConfiguration": {"Enabled": True, "S3BucketName": "my-crls", "CustomCname": "crl.example.internal"},
+            "OcspConfiguration": {"Enabled": True, "OcspCustomCname": "ocsp.example.internal"},
+        },
+    )
+    key = ec.generate_private_key(ec.SECP256R1())
+    csr = (
+        x509.CertificateSigningRequestBuilder()
+        .subject_name(x509.Name([x509.NameAttribute(NameOID.COMMON_NAME, "svc.internal")]))
+        .sign(key, hashes.SHA256())
+    )
+    cert_arn = pca.issue_certificate(
+        CertificateAuthorityArn=arn,
+        Csr=csr.public_bytes(serialization_pem()),
+        SigningAlgorithm="SHA256WITHECDSA",
+        Validity={"Value": 30, "Type": "DAYS"},
+    )["CertificateArn"]
+    leaf = x509.load_pem_x509_certificate(
+        pca.get_certificate(CertificateAuthorityArn=arn, CertificateArn=cert_arn)["Certificate"].encode()
+    )
+    cdp = leaf.extensions.get_extension_for_class(x509.CRLDistributionPoints).value
+    assert cdp[0].full_name[0].value == f"http://crl.example.internal/crl/{ca_id}.crl"
+    aia = leaf.extensions.get_extension_for_class(x509.AuthorityInformationAccess).value
+    assert aia[0].access_location.value == "http://ocsp.example.internal"
+
+    def ask_ocsp():
+        req = ocsp.OCSPRequestBuilder().add_certificate(leaf, root, hashes.SHA1()).add_extension(
+            x509.OCSPNonce(b"boto-nonce"), critical=False
+        ).build()
+        der = _http(endpoint + "/", req.public_bytes(serialization_der()), "application/ocsp-request")
+        resp = ocsp.load_der_ocsp_response(der)
+        assert resp.response_status == ocsp.OCSPResponseStatus.SUCCESSFUL
+        root.public_key().verify(resp.signature, resp.tbs_response_bytes, ec.ECDSA(hashes.SHA256()))
+        assert resp.extensions.get_extension_for_class(x509.OCSPNonce).value.nonce == b"boto-nonce"
+        return resp
+
+    assert ask_ocsp().certificate_status == ocsp.OCSPCertStatus.GOOD
+    pca.revoke_certificate(
+        CertificateAuthorityArn=arn, CertificateSerial=f"{leaf.serial_number:x}", RevocationReason="SUPERSEDED"
+    )
+    resp = ask_ocsp()
+    assert resp.certificate_status == ocsp.OCSPCertStatus.REVOKED
+    assert resp.revocation_reason == x509.ReasonFlags.superseded
+
+    crl = x509.load_der_x509_crl(_http(f"{endpoint}/crl/{ca_id}.crl"))
+    assert crl.is_signature_valid(root.public_key())
+    assert crl.get_revoked_certificate_by_serial_number(leaf.serial_number) is not None
+
+    report = pca.create_certificate_authority_audit_report(
+        CertificateAuthorityArn=arn, S3BucketName="audits", AuditReportResponseFormat="CSV"
+    )
+    pca.get_waiter("audit_report_created").wait(
+        CertificateAuthorityArn=arn, AuditReportId=report["AuditReportId"], WaiterConfig={"Delay": 1, "MaxAttempts": 3}
+    )
+    csv = _http(f"{endpoint}/audits/{report['S3Key']}").decode()
+    header, *rows = csv.strip().splitlines()
+    assert header.split(",")[:3] == ["awsAccountId", "certificateArn", "serial"]
+    assert any(cert_arn in r and "SUPERSEDED" in r for r in rows)
+
+
+def serialization_der():
+    from cryptography.hazmat.primitives.serialization import Encoding
+
+    return Encoding.DER
+
+
 def serialization_pem():
     from cryptography.hazmat.primitives.serialization import Encoding
 

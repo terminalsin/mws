@@ -228,6 +228,10 @@ pub struct Issue<'a> {
     pub not_after: DateTime<Utc>,
     /// 16 random bytes, high bit cleared.
     pub serial: [u8; 16],
+    /// CRL Distribution Points URL, when the CA publishes CRLs.
+    pub crl_url: Option<String>,
+    /// Authority Information Access OCSP URL, when the CA answers OCSP.
+    pub ocsp_url: Option<String>,
 }
 
 impl Issue<'_> {
@@ -252,6 +256,18 @@ impl Issue<'_> {
         p.extended_key_usages = self.template.extended_key_usages.clone();
         p.use_authority_key_identifier_extension = true;
         p.key_identifier_method = KeyIdMethod::Sha256;
+        if let Some(url) = &self.crl_url {
+            p.crl_distribution_points = vec![rcgen::CrlDistributionPoint { uris: vec![url.clone()] }];
+        }
+        if let Some(url) = &self.ocsp_url {
+            // AuthorityInfoAccess ::= SEQUENCE OF AccessDescription { id-ad-ocsp, [6] uri }
+            let desc = crate::der::seq(&[
+                &crate::der::oid(&[1, 3, 6, 1, 5, 5, 7, 48, 1]),
+                &crate::der::tlv(crate::der::ctx_prim(6), url.as_bytes()),
+            ]);
+            let aia = crate::der::seq(&[&desc]);
+            p.custom_extensions.push(rcgen::CustomExtension::from_oid_content(&[1, 3, 6, 1, 5, 5, 7, 1, 1], aia));
+        }
         p
     }
 
@@ -264,6 +280,7 @@ impl Issue<'_> {
         }
         let mut params = self.params();
         params.use_authority_key_identifier_extension = false;
+        params.crl_distribution_points.clear();
         params.self_signed(key).map(|c| c.pem()).map_err(|e| ServiceError::internal(format!("signing: {e}")))
     }
 
@@ -278,6 +295,28 @@ impl Issue<'_> {
             .map(|c| c.pem())
             .map_err(|e| ServiceError::internal(format!("signing: {e}")))
     }
+}
+
+/// The certificate's subject in RFC 2253 form (`CN=...,O=...`).
+pub fn subject_string(pem_str: &str) -> String {
+    parse_x509_pem(pem_str.as_bytes())
+        .ok()
+        .and_then(|(_, pem)| {
+            let (_, cert) = X509Certificate::from_der(&pem.contents).ok()?;
+            let mut parts = Vec::new();
+            for rdn in cert.subject().iter() {
+                for attr in rdn.iter() {
+                    let name = x509_parser::objects::oid2abbrev(attr.attr_type(), x509_parser::objects::oid_registry())
+                        .map(str::to_string)
+                        .unwrap_or_else(|_| attr.attr_type().to_id_string());
+                    let value = attr.as_str().map(str::to_string).unwrap_or_default();
+                    parts.push(format!("{name}={value}"));
+                }
+            }
+            parts.reverse();
+            Some(parts.join(","))
+        })
+        .unwrap_or_default()
 }
 
 /// Facts about a certificate MWS needs to track.
