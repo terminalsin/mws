@@ -10,6 +10,10 @@ name = "mws"
 path = "src/main.rs"
 
 [dependencies]
+async-trait.workspace = true
+uuid.workspace = true
+chrono.workspace = true
+serde_json.workspace = true
 mws-acmpca.workspace = true
 mws-organizations.workspace = true
 mws-core.workspace = true
@@ -18,6 +22,7 @@ mws-kms.workspace = true
 mws-logs.workspace = true
 mws-sqs.workspace = true
 mws-ssm.workspace = true
+mws-events.workspace = true
 mws-acm.workspace = true
 mws-lambda.workspace = true
 mws-route53.workspace = true

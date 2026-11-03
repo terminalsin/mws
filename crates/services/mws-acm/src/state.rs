@@ -81,6 +81,10 @@ pub struct Certificate {
     /// Times `ResendValidationEmail` was called, for nothing but realism.
     #[serde(default)]
     pub emails_sent: u32,
+    /// When the last "ACM Certificate Approaching Expiration" event was
+    /// sent (they are daily).
+    #[serde(default)]
+    pub expiry_event_at: Option<DateTime<Utc>>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

@@ -91,9 +91,69 @@ impl Ssm {
     }
 }
 
-/// Drop expired parameters.
+/// Drop expired parameters, keeping their `Expiration` events.
 fn sweep(region: &mut state::Region, now: chrono::DateTime<chrono::Utc>) {
-    region.parameters.retain(|_, p| !p.latest().policies.iter().filter_map(policies::expiration).any(|t| t <= now));
+    let mut expired = Vec::new();
+    region.parameters.retain(|_, p| {
+        let latest = p.latest();
+        let Some(at) = latest.policies.iter().filter_map(policies::expiration).find(|t| *t <= now) else {
+            return true;
+        };
+        expired.push((latest.name.clone(), latest.param_type.clone(), at));
+        false
+    });
+    region.expired.extend(expired.into_iter().map(|(name, parameter_type, time)| policies::PolicyEvent {
+        account: String::new(),
+        region: String::new(),
+        name,
+        parameter_type,
+        policy_type: "Expiration".into(),
+        action_status: "Finished".into(),
+        action_reason: "The parameter has expired and was deleted.".into(),
+        time,
+    }));
+}
+
+impl Ssm {
+    /// The parameter policy events due by `now` (the emulated clock), each
+    /// handed out once: expirations (deleting the parameters), and
+    /// `ExpirationNotification`/`NoChangeNotification` notices, whose
+    /// policies are then `Finished`.
+    pub fn take_policy_events(&self, now: chrono::DateTime<chrono::Utc>) -> Vec<policies::PolicyEvent> {
+        let mut out = Vec::new();
+        let mut st = self.lock();
+        for (key, region) in st.regions.iter_mut() {
+            let Some((account, region_name)) = key.split_once('/') else { continue };
+            sweep(region, now);
+            for mut e in region.expired.drain(..) {
+                e.account = account.to_string();
+                e.region = region_name.to_string();
+                out.push(e);
+            }
+            for p in region.parameters.values_mut() {
+                let Some(latest) = p.versions.last_mut() else { continue };
+                let snapshot = latest.clone();
+                for policy in latest.policies.iter_mut().filter(|p| p.status == "Pending") {
+                    let Some((due, reason)) = policies::notification_due(policy, &snapshot) else { continue };
+                    if due > now {
+                        continue;
+                    }
+                    policy.status = "Finished".into();
+                    out.push(policies::PolicyEvent {
+                        account: account.to_string(),
+                        region: region_name.to_string(),
+                        name: snapshot.name.clone(),
+                        parameter_type: snapshot.param_type.clone(),
+                        policy_type: policy.policy_type.clone(),
+                        action_status: "Pending".into(),
+                        action_reason: reason,
+                        time: due,
+                    });
+                }
+            }
+        }
+        out
+    }
 }
 
 #[async_trait::async_trait]

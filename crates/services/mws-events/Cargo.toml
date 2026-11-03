@@ -1,0 +1,33 @@
+[package]
+name = "mws-events"
+description = "Amazon EventBridge for MWS: event buses, rules with real event pattern matching, targets that deliver to Lambda, CloudWatch Logs, other buses and API destinations, archives and replays, schedules, with IAM enforced."
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+async-trait.workspace = true
+base64.workspace = true
+bytes.workspace = true
+chrono.workspace = true
+http.workspace = true
+mws-core.workspace = true
+mws-iam-policy.workspace = true
+mws-lambda.workspace = true
+mws-logs.workspace = true
+mws-proto-json.workspace = true
+mws-sts.workspace = true
+percent-encoding.workspace = true
+rand.workspace = true
+rustls.workspace = true
+rustls-native-certs.workspace = true
+rustls-pki-types.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+tokio = { workspace = true, features = ["io-util"] }
+tokio-rustls.workspace = true
+tracing.workspace = true
+uuid.workspace = true
+
+[build-dependencies]
+mws-codegen.workspace = true

@@ -15,6 +15,9 @@ jobs:
   rust:
     runs-on: ubuntu-latest
     steps:
+      # The workspace's test binaries outgrow the runner's free disk; drop
+      # preinstalled toolchains this job never uses.
+      - run: sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc /opt/hostedtoolcache/CodeQL && df -h /
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
         with:
@@ -32,6 +35,8 @@ jobs:
       - run: cargo test --workspace
         env:
           MWS_LAMBDA_PYTHON: ${{ steps.python.outputs.python-path }}
+      # The test binaries are no longer needed; make room for the binary.
+      - run: find target/debug/deps -maxdepth 1 -type f -executable ! -name '*.so' -delete && df -h /
       - run: cargo build -p mws
       - run: pytest -q tests/e2e-python
         env:

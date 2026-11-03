@@ -32,12 +32,15 @@ pub mod acme_server;
 pub mod approval;
 mod certs;
 mod common;
+mod expiry;
 mod handler;
 mod jws;
 mod pki;
 mod search;
 mod state;
 mod validation;
+
+pub use expiry::ExpiryEvent;
 
 use std::sync::{Arc, Mutex, MutexGuard};
 

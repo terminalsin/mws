@@ -26,6 +26,7 @@ members = [
     "crates/services/mws-logs",
     "crates/services/mws-sqs",
     "crates/services/mws-ssm",
+    "crates/services/mws-events",
     "crates/services/mws-secretsmanager",
     "crates/services/mws-sns",
     "crates/services/mws-acm",
@@ -65,6 +66,7 @@ mws-s3control = { path = "crates/services/mws-s3control" }
 mws-logs = { path = "crates/services/mws-logs" }
 mws-sqs = { path = "crates/services/mws-sqs" }
 mws-ssm = { path = "crates/services/mws-ssm" }
+mws-events = { path = "crates/services/mws-events" }
 mws-secretsmanager = { path = "crates/services/mws-secretsmanager" }
 mws-sns = { path = "crates/services/mws-sns" }
 mws-acm = { path = "crates/services/mws-acm" }

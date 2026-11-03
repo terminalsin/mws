@@ -351,6 +351,7 @@ impl Acm {
             acme_account_id: None,
             pca_certificate_arn: None,
             emails_sent: 0,
+            expiry_event_at: None,
         };
         if !private {
             if let Some(reason) = names.iter().find_map(|n| validation::public_domain_problem(n)) {
@@ -630,6 +631,7 @@ impl Acm {
             acme_account_id: None,
             pca_certificate_arn: None,
             emails_sent: 0,
+            expiry_event_at: None,
         };
         self.lock().certificates.insert(arn.clone(), cert);
         Ok(types::ImportCertificateResponse { certificate_arn: Some(arn) })

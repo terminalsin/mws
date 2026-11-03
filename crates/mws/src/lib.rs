@@ -1,6 +1,7 @@
 //! Composition root. This is the only crate that knows which services exist.
 
 mod links;
+mod sinks;
 
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -8,6 +9,7 @@ use std::sync::Arc;
 use mws_acm::Acm;
 use mws_acmpca::PrivateCa;
 use mws_core::Environment;
+use mws_events::Events;
 use mws_iam::{Iam, IamConfig};
 use mws_kms::Kms;
 use mws_lambda::Lambda;
@@ -70,6 +72,7 @@ pub struct Mws {
     pub logs: Logs,
     pub sqs: Sqs,
     pub ssm: Ssm,
+    pub events: Events,
     pub secretsmanager: SecretsManager,
     pub sns: Sns,
     pub acm: Acm,
@@ -133,6 +136,8 @@ fn build_with_store(config: Config, store: Option<Arc<Store>>) -> Mws {
     lambda.set_logs(logs.clone());
     s3.set_object_lambda_invoker(Arc::new(lambda.clone()));
     let ssm = Ssm::new(kms.clone());
+    let events = Events::new().with_lambda(lambda.clone()).with_logs(logs.clone()).with_sts(sts.clone());
+    events.register_target_sink("sqs", Arc::new(sinks::SqsTarget(sqs.clone())));
     let secretsmanager = SecretsManager::new(kms.clone()).with_lambda(lambda.clone());
     ssm.set_secrets_manager(Arc::new(SsmSecretReferences(secretsmanager.clone())));
     let sns = Sns::new().with_lambda(lambda.clone());
@@ -140,6 +145,16 @@ fn build_with_store(config: Config, store: Option<Arc<Store>>) -> Mws {
     s3.add_notification_destination(Arc::new(lambda.clone()));
     sns.set_queues(Arc::new(links::SnsToSqs(sqs.clone())));
     s3.add_notification_destination(Arc::new(links::S3ToSqs(sqs.clone())));
+    events.register_target_sink("sns", Arc::new(sinks::SnsTarget(sns.clone())));
+    s3.set_eventbridge_sink(Arc::new(sinks::S3ToEvents(events.clone())));
+    events.register_clock_source(Arc::new(sinks::AcmExpiryEvents {
+        acm: acm.clone(),
+        partition: config.iam.partition.clone(),
+    }));
+    events.register_clock_source(Arc::new(sinks::SsmPolicyEvents {
+        ssm: ssm.clone(),
+        partition: config.iam.partition.clone(),
+    }));
     let mut gateway = Gateway::builder();
     if let Some(store) = store {
         gateway = gateway.store(store);
@@ -166,10 +181,11 @@ fn build_with_store(config: Config, store: Option<Arc<Store>>) -> Mws {
         .service(Arc::new(logs.clone()))
         .service(Arc::new(sqs.clone()))
         .service(Arc::new(ssm.clone()))
+        .service(Arc::new(events.clone()))
         .service(Arc::new(secretsmanager.clone()))
         .service(Arc::new(sns.clone()))
         .build();
-    Mws { gateway, route53, kms, s3, s3control, lambda, logs, sqs, ssm, secretsmanager, sns, acm }
+    Mws { gateway, route53, kms, s3, s3control, lambda, logs, sqs, ssm, events, secretsmanager, sns, acm }
 }
 
 /// Parameter Store's `/aws/reference/secretsmanager/` parameters, read

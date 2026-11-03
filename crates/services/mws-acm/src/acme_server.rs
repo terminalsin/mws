@@ -698,6 +698,7 @@ impl Acm {
             acme_account_id: Some(account.id.clone()),
             pca_certificate_arn: None,
             emails_sent: 0,
+            expiry_event_at: None,
         };
         st.certificates.insert(arn.clone(), cert);
         let o = st.acme_orders.get_mut(&order.id).expect("order exists");

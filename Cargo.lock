@@ -272,6 +272,31 @@ dependencies = [
 ]
 
 [[package]]
+name = "aws-sdk-eventbridge"
+version = "1.127.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "a1dcce5ec62891b9c15b7d435de63240ee557aa557345b95a99448ea07e150f0"
+dependencies = [
+ "arc-swap",
+ "aws-credential-types",
+ "aws-runtime",
+ "aws-smithy-async",
+ "aws-smithy-http",
+ "aws-smithy-json",
+ "aws-smithy-observability",
+ "aws-smithy-runtime",
+ "aws-smithy-runtime-api",
+ "aws-smithy-schema",
+ "aws-smithy-types",
+ "aws-types",
+ "bytes",
+ "fastrand",
+ "http 1.5.0",
+ "regex-lite",
+ "tracing",
+]
+
+[[package]]
 name = "aws-sdk-iam"
 version = "1.133.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2017,9 +2042,12 @@ dependencies = [
 name = "mws"
 version = "0.1.0"
 dependencies = [
+ "async-trait",
+ "chrono",
  "mws-acm",
  "mws-acmpca",
  "mws-core",
+ "mws-events",
  "mws-iam",
  "mws-kms",
  "mws-lambda",
@@ -2034,9 +2062,11 @@ dependencies = [
  "mws-sqs",
  "mws-ssm",
  "mws-sts",
+ "serde_json",
  "tokio",
  "tracing",
  "tracing-subscriber",
+ "uuid",
 ]
 
 [[package]]
@@ -2131,6 +2161,7 @@ dependencies = [
  "aws-sdk-acm",
  "aws-sdk-acmpca",
  "aws-sdk-cloudwatchlogs",
+ "aws-sdk-eventbridge",
  "aws-sdk-iam",
  "aws-sdk-kms",
  "aws-sdk-lambda",
@@ -2162,6 +2193,35 @@ dependencies = [
  "urlencoding",
  "x509-parser",
  "zip",
+]
+
+[[package]]
+name = "mws-events"
+version = "0.1.0"
+dependencies = [
+ "async-trait",
+ "base64 0.22.1",
+ "bytes",
+ "chrono",
+ "http 1.5.0",
+ "mws-codegen",
+ "mws-core",
+ "mws-iam-policy",
+ "mws-lambda",
+ "mws-logs",
+ "mws-proto-json",
+ "mws-sts",
+ "percent-encoding",
+ "rand",
+ "rustls 0.23.46",
+ "rustls-native-certs",
+ "rustls-pki-types",
+ "serde",
+ "serde_json",
+ "tokio",
+ "tokio-rustls 0.26.6",
+ "tracing",
+ "uuid",
 ]
 
 [[package]]
