@@ -142,7 +142,7 @@ impl Iam {
     /// Check a one-time code from an enabled MFA device (STS calls this for
     /// `SerialNumber`/`TokenCode`). A code is accepted once.
     pub fn verify_mfa_code(&self, serial: &str, code: &str) -> bool {
-        let mut state = self.write();
+        let mut state = self.write_for_arn(serial);
         let Some(device) = state.mfa_devices.get_mut(serial).filter(|d| d.enabled.is_some()) else { return false };
         let now = now_step();
         let hit = (now - 1..=now + 1).find(|t| totp(&device.seed, *t) == code && device.last_step < Some(*t));

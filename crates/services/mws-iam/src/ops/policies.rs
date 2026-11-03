@@ -84,9 +84,16 @@ impl Iam {
     /// Add the AWS managed policies MWS knows to `state`, keeping any that
     /// are already there (restored state keeps their ids).
     pub(crate) fn seed_aws_managed_policies(&self, state: &mut crate::State) {
+        seed_aws_managed_policies(&self.inner.config.partition, state)
+    }
+}
+
+/// Add every AWS managed policy MWS knows to an account's namespace.
+pub(crate) fn seed_aws_managed_policies(partition: &str, state: &mut crate::State) {
+    {
         let created = chrono::DateTime::parse_from_rfc3339("2015-02-06T18:39:46Z").unwrap().with_timezone(&Utc);
         for p in crate::managed::POLICIES {
-            let arn = format!("arn:{}:iam::aws:policy{}{}", self.inner.config.partition, p.path, p.name);
+            let arn = format!("arn:{partition}:iam::aws:policy{}{}", p.path, p.name);
             if state.policies.contains_key(&arn) {
                 continue;
             }
@@ -109,7 +116,9 @@ impl Iam {
             );
         }
     }
+}
 
+impl Iam {
     // ---- managed policies ---------------------------------------------------
 
     pub fn create_policy(

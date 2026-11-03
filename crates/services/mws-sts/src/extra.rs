@@ -14,6 +14,8 @@ use crate::{saml, Sts};
 
 const SAML_AUDIENCES: &[&str] = &["https://signin.aws.amazon.com/saml", "urn:amazon:webservices"];
 const WEB_TOKEN_DEFAULT: i32 = 300;
+/// Root task sessions last at most 15 minutes.
+const ROOT_TASK_DURATION: i32 = 900;
 const B64URL: base64::engine::GeneralPurpose = base64::engine::general_purpose::URL_SAFE_NO_PAD;
 
 fn is_aws_saml_audience(a: &str) -> bool {
@@ -120,7 +122,7 @@ impl Sts {
             .ok_or_else(|| invalid("RoleSessionName is required in AuthnResponse"))?;
         let role = self.iam().role_by_arn(&input.role_arn).ok_or_else(denied)?;
 
-        let account = self.iam().account_id_str().to_string();
+        let account = role.account_id.clone();
         let provider_name = input.principal_arn.rsplit('/').next().unwrap_or_default().to_string();
         let qualifier = saml::name_qualifier(&assertion.issuer, &account, &provider_name);
         let mut cond = ConditionContext::new();
@@ -188,7 +190,7 @@ impl Sts {
                 mfa_authenticated: false,
             },
         );
-        self.iam().note_role_used(&role.name, &ctx.region);
+        self.iam().note_role_used(&role, &ctx.region);
         Ok(types::AssumeRoleWithSAMLResponse {
             credentials: Some(issued.credentials),
             assumed_role_user: Some(assumed_role_user),
@@ -214,12 +216,67 @@ impl Sts {
             cond.insert("sts:TaskPolicyArn".into(), vec![arn.clone()]);
         }
         ctx.authorize("sts:AssumeRoot", &target, cond)?;
-        // Centralized root access needs an AWS Organization; an MWS account
-        // is standalone.
-        Err(access_denied(format!(
-            "User: {} is not authorized to perform: sts:AssumeRoot on resource: {target} because centralized root access is not enabled for the organization",
-            ctx.caller.arn
-        )))
+        let not_enabled = || {
+            access_denied(format!(
+                "User: {} is not authorized to perform: sts:AssumeRoot on resource: {target} because centralized root access is not enabled for the organization",
+                ctx.caller.arn
+            ))
+        };
+        let caller_account = ctx.caller.account_id.clone();
+        let org = self.iam().organization_of(&caller_account).ok_or_else(not_enabled)?;
+        let iam_admin =
+            org.is_management(&caller_account) || org.delegated_admin_for.iter().any(|s| s == "iam.amazonaws.com");
+        if !iam_admin
+            || !org.trusted_services.iter().any(|s| s == "iam.amazonaws.com")
+            || !self.iam().org_root_sessions_enabled(&org.management_account_id)
+        {
+            return Err(not_enabled());
+        }
+        let member = self.iam().organization_of(&input.target_principal);
+        if member.as_ref().is_none_or(|m| m.organization_id != org.organization_id)
+            || org.is_management(&input.target_principal)
+        {
+            return Err(access_denied(format!(
+                "User: {} is not authorized to perform: sts:AssumeRoot on resource: {target} because the target is not a member account of the organization",
+                ctx.caller.arn
+            )));
+        }
+        let task_arn = input.task_policy_arn.arn.clone().unwrap_or_default();
+        let task_policy = task_arn
+            .contains(":policy/root-task/")
+            .then(|| self.iam().managed_policy_document(&task_arn))
+            .flatten()
+            .ok_or_else(|| validation(format!("The task policy {task_arn} is not a valid root task policy.")))?;
+        let duration = input.duration_seconds.unwrap_or(ROOT_TASK_DURATION);
+        if !(1..=ROOT_TASK_DURATION).contains(&duration) {
+            return Err(validation(format!(
+                "1 validation error detected: Value '{duration}' at 'durationSeconds' failed to satisfy constraint: Member must have value less than or equal to {ROOT_TASK_DURATION}"
+            )));
+        }
+        let account = input.target_principal.clone();
+        let caller = Caller {
+            arn: target.clone(),
+            user_id: account.clone(),
+            account_id: account,
+            access_key_id: String::new(),
+            kind: CallerKind::Root,
+            session: None,
+        };
+        let issued = self.issue(
+            caller,
+            duration,
+            SessionInfo {
+                kind: SessionKind::AssumeRoot,
+                policies: vec![task_policy],
+                tags: BTreeMap::new(),
+                transitive_tag_keys: vec![],
+                source_identity: None,
+                issued_at: ctx.received_at,
+                expires_at: ctx.received_at,
+                mfa_authenticated: false,
+            },
+        );
+        Ok(types::AssumeRootResponse { credentials: Some(issued.credentials), ..Default::default() })
     }
 
     pub(crate) async fn decode_authorization_message_impl(
@@ -247,7 +304,7 @@ impl Sts {
     ) -> Result<types::GetDelegatedAccessTokenResponse, ServiceError> {
         let expired = || errors::expired_trade_in_token("The trade-in token is invalid or has expired.");
         let grant = self.iam().redeem_delegation_token(&input.trade_in_token).ok_or_else(expired)?;
-        let account = self.iam().account_id_str().to_string();
+        let account = mws_iam::arn_account(&grant.approver_arn).ok_or_else(expired)?.to_string();
         let caller = if grant.approver_arn.ends_with(":root") {
             Caller {
                 arn: grant.approver_arn.clone(),
@@ -258,7 +315,7 @@ impl Sts {
                 session: None,
             }
         } else if let Some(name) = grant.approver_arn.split(":user/").nth(1).and_then(|p| p.rsplit('/').next()) {
-            let user = self.iam().user_by_name(name).ok_or_else(expired)?;
+            let user = self.iam().user_by_name(&account, name).ok_or_else(expired)?;
             Caller {
                 arn: user.arn,
                 user_id: user.id,

@@ -1,0 +1,21 @@
+[package]
+name = "mws-organizations"
+description = "AWS Organizations for MWS: organizations, OUs, member accounts and SCPs/RCPs enforced by the IAM authorizer."
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+async-trait.workspace = true
+chrono.workspace = true
+mws-core.workspace = true
+mws-iam.workspace = true
+mws-iam-policy.workspace = true
+mws-proto-json.workspace = true
+rand.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+uuid.workspace = true
+
+[build-dependencies]
+mws-codegen.workspace = true

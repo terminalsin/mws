@@ -22,6 +22,7 @@ mws-proto-query.workspace = true
 rand.workspace = true
 serde.workspace = true
 serde_json.workspace = true
+tokio.workspace = true
 
 [build-dependencies]
 mws-codegen.workspace = true

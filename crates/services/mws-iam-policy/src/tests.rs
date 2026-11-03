@@ -181,3 +181,54 @@ fn decision_combines_boundary_session_and_resource() {
     );
     assert_eq!(d.deny_reason, Some(DenyReason::NoResourceAllow), "identity alone cannot satisfy a trust policy");
 }
+
+fn sourced(id: &str, doc: &str, kind: PolicyKind) -> SourcedPolicy {
+    SourcedPolicy { source_id: id.into(), policy: Policy::parse(doc, kind).unwrap() }
+}
+
+#[test]
+fn every_scp_level_must_allow_and_any_deny_wins() {
+    let full = r#"{"Version":"2012-10-17","Statement":{"Effect":"Allow","Action":"*","Resource":"*"}}"#;
+    let iam_only = r#"{"Version":"2012-10-17","Statement":{"Effect":"Allow","Action":"iam:*"}}"#;
+    let deny_s3 = r#"{"Version":"2012-10-17","Statement":{"Effect":"Deny","Action":"s3:*","Resource":"*"}}"#;
+    let who = principal("arn:aws:iam::123456789012:user/bob");
+    let c = ConditionContext::new();
+    let req = |action| Request { action, resource: "*", principal: &who, context: &c };
+    let scp = |levels: Vec<Vec<&str>>| {
+        Some(
+            levels
+                .into_iter()
+                .map(|l| l.into_iter().map(|d| sourced("p", d, PolicyKind::ServiceControl)).collect())
+                .collect(),
+        )
+    };
+    let mut set = PolicySet { identity: vec![sourced("id", full, PolicyKind::Identity)], ..Default::default() };
+    set.service_control = scp(vec![vec![full], vec![iam_only]]);
+    assert!(decide(&set, &req("iam:GetUser")).allowed);
+    assert_eq!(decide(&set, &req("ec2:RunInstances")).deny_reason, Some(DenyReason::NoServiceControlAllow));
+    set.service_control = scp(vec![vec![full, deny_s3], vec![full]]);
+    assert_eq!(decide(&set, &req("s3:GetObject")).deny_reason, Some(DenyReason::ExplicitServiceControl));
+    assert_eq!(
+        DenyReason::NoServiceControlAllow.message("iam:CreateRole"),
+        "because no service control policy allows the iam:CreateRole action"
+    );
+}
+
+#[test]
+fn cross_account_needs_both_sides() {
+    let full = r#"{"Version":"2012-10-17","Statement":{"Effect":"Allow","Action":"*","Resource":"*"}}"#;
+    let bucket = r#"{"Version":"2012-10-17","Statement":{"Effect":"Allow","Principal":{"AWS":"arn:aws:iam::123456789012:user/bob"},"Action":"s3:GetObject","Resource":"*"}}"#;
+    let who = principal("arn:aws:iam::123456789012:user/bob");
+    let c = ConditionContext::new();
+    let r = Request { action: "s3:GetObject", resource: "arn:aws:s3:::b/k", principal: &who, context: &c };
+    let mut set = PolicySet {
+        resource: Some(sourced("bucket", bucket, PolicyKind::Resource)),
+        cross_account: true,
+        ..Default::default()
+    };
+    assert_eq!(decide(&set, &r).deny_reason, Some(DenyReason::NoIdentityAllow));
+    set.identity = vec![sourced("id", full, PolicyKind::Identity)];
+    assert!(decide(&set, &r).allowed);
+    set.resource = None;
+    assert_eq!(decide(&set, &r).deny_reason, Some(DenyReason::NoResourceAllow));
+}

@@ -29,7 +29,7 @@ const KNOWN: &[(&str, &str)] = &[
     ("acm.amazonaws.com", "CertificateManager"),
 ];
 
-fn stem(service: &str) -> String {
+pub(crate) fn stem(service: &str) -> String {
     if let Some((_, s)) = KNOWN.iter().find(|(svc, _)| *svc == service) {
         return s.to_string();
     }

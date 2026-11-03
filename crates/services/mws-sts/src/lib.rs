@@ -56,6 +56,15 @@ impl Sts {
     pub(crate) fn iam(&self) -> &Iam {
         &self.inner.iam
     }
+
+    /// The IAM namespace a request works in: the caller's account, or the
+    /// configured one for unsigned requests.
+    fn scope_account(&self, ctx: &RequestContext) -> String {
+        match ctx.caller.account_id.as_str() {
+            "" => self.iam().account_id_str().to_string(),
+            a => a.to_string(),
+        }
+    }
 }
 
 const UNSIGNED_ACTIONS: &[&str] = &["AssumeRoleWithWebIdentity", "AssumeRoleWithSAML"];
@@ -68,7 +77,8 @@ impl Service for Sts {
 
     async fn handle(&self, ctx: RequestContext, request: HttpRequest) -> HttpResponse {
         let params = mws_proto_query::read_params(&request);
-        generated::dispatch(self, &ctx, &params).await
+        let account = self.scope_account(&ctx);
+        self.iam().in_account(account, generated::dispatch(self, &ctx, &params)).await
     }
 
     fn render_error(&self, request_id: &str, error: &ServiceError) -> HttpResponse {
@@ -86,7 +96,8 @@ impl Service for Sts {
         operation: &str,
         input: serde_json::Value,
     ) -> Result<serde_json::Value, ServiceError> {
-        generated::invoke(self, &ctx, operation, input).await
+        let account = self.scope_account(&ctx);
+        self.iam().in_account(account, generated::invoke(self, &ctx, operation, input)).await
     }
 
     /// Issued temporary credentials, so sessions survive a restart.

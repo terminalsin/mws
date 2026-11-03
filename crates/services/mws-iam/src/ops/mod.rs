@@ -11,3 +11,4 @@ pub(crate) mod service_roles;
 pub(crate) mod settings;
 mod simulate;
 pub(crate) mod users;
+pub(crate) use policies::seed_aws_managed_policies;

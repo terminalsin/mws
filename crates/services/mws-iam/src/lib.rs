@@ -19,16 +19,26 @@ mod handler;
 mod ids;
 mod managed;
 mod ops;
+pub mod org;
 mod state;
 mod wire;
 
-use std::sync::{Arc, RwLock};
+use std::collections::BTreeMap;
+use std::future::Future;
+use std::sync::{Arc, OnceLock, RwLock};
 
 use chrono::{DateTime, Utc};
 use mws_core::{HttpRequest, HttpResponse, RequestContext, Service, ServiceError, SessionKind};
 
-pub use api::{DelegationGrant, OidcProviderView, OutboundKey, RoleView, UserView};
+pub use api::{arn_account, DelegationGrant, OidcProviderView, OutboundKey, RoleView, UserView};
+pub use org::{AccountOrganization, OrganizationView};
 pub use state::State;
+
+tokio::task_local! {
+    /// The account whose IAM namespace the running request works in: the
+    /// caller's account.
+    static CURRENT_ACCOUNT: String;
+}
 
 /// Settings for the emulated account.
 #[derive(Debug, Clone)]
@@ -60,15 +70,57 @@ pub struct Iam {
 pub(crate) struct Inner {
     pub config: IamConfig,
     pub created_at: DateTime<Utc>,
-    pub state: RwLock<State>,
+    /// Every account's IAM namespace, by account id. The configured account
+    /// is always present; AWS Organizations adds member accounts.
+    pub accounts: RwLock<BTreeMap<String, State>>,
+    pub organizations: OnceLock<Arc<dyn OrganizationView>>,
+}
+
+/// Saved IAM state: the configured account's namespace at the top level (the
+/// format before member accounts existed) plus every other account.
+#[derive(serde::Serialize, serde::Deserialize)]
+struct SavedState {
+    #[serde(flatten)]
+    primary: State,
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    member_accounts: BTreeMap<String, State>,
 }
 
 impl Iam {
     pub fn new(config: IamConfig) -> Self {
-        let iam =
-            Self { inner: Arc::new(Inner { config, created_at: Utc::now(), state: RwLock::new(State::default()) }) };
+        let iam = Self {
+            inner: Arc::new(Inner {
+                config,
+                created_at: Utc::now(),
+                accounts: RwLock::new(BTreeMap::new()),
+                organizations: OnceLock::new(),
+            }),
+        };
         iam.reset_state();
         iam
+    }
+
+    /// Run `f` with `account` as the IAM namespace that unqualified lookups
+    /// (and ARNs of new entities) use. IAM scopes each request to the
+    /// caller's account; STS uses this for its own lookups.
+    pub async fn in_account<F: Future>(&self, account: String, f: F) -> F::Output {
+        CURRENT_ACCOUNT.scope(account, f).await
+    }
+
+    /// The account the running request works in.
+    pub(crate) fn current_account(&self) -> String {
+        CURRENT_ACCOUNT.try_with(String::clone).unwrap_or_else(|_| self.inner.config.account_id.clone())
+    }
+
+    /// Let AWS Organizations tell IAM which organization each account
+    /// belongs to and which SCPs and RCPs apply.
+    pub fn set_organizations(&self, view: Arc<dyn OrganizationView>) {
+        let _ = self.inner.organizations.set(view);
+    }
+
+    /// The organization `account_id` belongs to, if any.
+    pub fn organization_of(&self, account_id: &str) -> Option<AccountOrganization> {
+        self.inner.organizations.get().and_then(|o| o.account(account_id))
     }
 
     pub fn config(&self) -> &IamConfig {
@@ -86,7 +138,7 @@ impl Iam {
     }
 
     pub(crate) fn arn(&self, resource: &str) -> String {
-        format!("arn:{}:iam::{}:{resource}", self.inner.config.partition, self.inner.config.account_id)
+        format!("arn:{}:iam::{}:{resource}", self.inner.config.partition, self.current_account())
     }
 }
 
@@ -102,7 +154,8 @@ impl Service for Iam {
             return self.render_error(&ctx.request_id, &ServiceError::invalid_client_token_id());
         }
         let params = mws_proto_query::read_params(&request);
-        generated::dispatch(self, &ctx, &params).await
+        let account = ctx.caller.account_id.clone();
+        self.in_account(account, generated::dispatch(self, &ctx, &params)).await
     }
 
     fn render_error(&self, request_id: &str, error: &ServiceError) -> HttpResponse {
@@ -115,24 +168,33 @@ impl Service for Iam {
         operation: &str,
         input: serde_json::Value,
     ) -> Result<serde_json::Value, ServiceError> {
-        generated::invoke(self, &ctx, operation, input).await
+        let account = ctx.caller.account_id.clone();
+        self.in_account(account, generated::invoke(self, &ctx, operation, input)).await
     }
 
     fn export_state(&self) -> Option<serde_json::Value> {
-        let state = self.read().clone();
-        Some(serde_json::to_value(state).expect("IAM state serializes"))
+        let mut accounts = self.inner.accounts.read().expect("IAM state lock poisoned").clone();
+        let primary = accounts.remove(&self.inner.config.account_id).unwrap_or_default();
+        let saved = SavedState { primary, member_accounts: accounts };
+        Some(serde_json::to_value(saved).expect("IAM state serializes"))
     }
 
     fn import_state(&self, state: serde_json::Value) -> Result<(), String> {
-        let mut state: State = serde_json::from_value(state).map_err(|e| format!("invalid IAM state: {e}"))?;
-        self.seed_aws_managed_policies(&mut state);
-        *self.write() = state;
+        let saved: SavedState = serde_json::from_value(state).map_err(|e| format!("invalid IAM state: {e}"))?;
+        let mut accounts = saved.member_accounts;
+        accounts.insert(self.inner.config.account_id.clone(), saved.primary);
+        for state in accounts.values_mut() {
+            self.seed_aws_managed_policies(state);
+        }
+        *self.inner.accounts.write().expect("IAM state lock poisoned") = accounts;
         Ok(())
     }
 
     fn reset_state(&self) {
         let mut state = State::default();
         self.seed_aws_managed_policies(&mut state);
-        *self.write() = state;
+        let mut accounts = BTreeMap::new();
+        accounts.insert(self.inner.config.account_id.clone(), state);
+        *self.inner.accounts.write().expect("IAM state lock poisoned") = accounts;
     }
 }

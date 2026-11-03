@@ -121,7 +121,7 @@ impl Sts {
     }
 
     pub(crate) fn assumed_role_caller(&self, role: &mws_iam::RoleView, session_name: &str) -> Caller {
-        let account = self.iam().account_id_str().to_string();
+        let account = role.account_id.clone();
         Caller {
             arn: format!("arn:{}:sts::{account}:assumed-role/{}/{session_name}", self.iam().partition(), role.name),
             user_id: format!("{}:{session_name}", role.id),
@@ -151,10 +151,14 @@ impl Handler for Sts {
     async fn get_access_key_info(
         &self,
         ctx: &RequestContext,
-        _input: types::GetAccessKeyInfoRequest,
+        input: types::GetAccessKeyInfoRequest,
     ) -> Result<types::GetAccessKeyInfoResponse, ServiceError> {
         ctx.authorize("sts:GetAccessKeyInfo", "*", ConditionContext::new())?;
-        Ok(types::GetAccessKeyInfoResponse { account: Some(self.iam().account_id_str().to_string()) })
+        let session_account = self.sessions().get(&input.access_key_id).map(|s| s.caller.account_id.clone());
+        let account = session_account
+            .or_else(|| self.iam().account_of_access_key(&input.access_key_id))
+            .unwrap_or_else(|| ctx.caller.account_id.clone());
+        Ok(types::GetAccessKeyInfoResponse { account: Some(account) })
     }
 
     async fn assume_role(
@@ -261,7 +265,7 @@ impl Handler for Sts {
                 mfa_authenticated: mfa,
             },
         );
-        self.iam().note_role_used(&role.name, &ctx.region);
+        self.iam().note_role_used(&role, &ctx.region);
         Ok(types::AssumeRoleResponse {
             credentials: Some(issued.credentials),
             assumed_role_user: Some(assumed_role_user),
@@ -281,7 +285,8 @@ impl Handler for Sts {
                 "The ID Token provided is not a valid JWT. (You may see this error if you sent an Access Token)",
             )
         })?;
-        let provider = self.iam().oidc_provider_for_issuer(&claims.iss).ok_or_else(|| {
+        let role_account = mws_iam::arn_account(&input.role_arn).unwrap_or(self.iam().account_id_str()).to_string();
+        let provider = self.iam().oidc_provider_for_issuer(&role_account, &claims.iss).ok_or_else(|| {
             errors::invalid_identity_token(format!(
                 "No OpenIDConnect provider found in your account for {}",
                 claims.iss
@@ -362,7 +367,7 @@ impl Handler for Sts {
                 mfa_authenticated: false,
             },
         );
-        self.iam().note_role_used(&role.name, &ctx.region);
+        self.iam().note_role_used(&role, &ctx.region);
         Ok(types::AssumeRoleWithWebIdentityResponse {
             credentials: Some(issued.credentials),
             subject_from_web_identity_token: Some(claims.sub),
@@ -422,7 +427,7 @@ impl Handler for Sts {
             (CallerKind::Root, None) => None,
             _ => return Err(access_denied("Cannot call GetFederationToken with session credentials")),
         };
-        let account = self.iam().account_id_str().to_string();
+        let account = caller.account_id.clone();
         let arn = format!("arn:{}:sts::{account}:federated-user/{}", self.iam().partition(), input.name);
         let tags = Self::tags(input.tags);
         ctx.authorize("sts:GetFederationToken", &arn, Self::request_tag_context(&tags))?;

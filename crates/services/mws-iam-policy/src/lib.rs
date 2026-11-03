@@ -29,6 +29,11 @@ pub enum PolicyKind {
     Trust,
     /// Attached to a resource. Must have `Principal`.
     Resource,
+    /// An AWS Organizations service control policy. Must not have
+    /// `Principal`; `Resource` defaults to every resource.
+    ServiceControl,
+    /// An AWS Organizations resource control policy. Must have `Principal`.
+    ResourceControl,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -273,8 +278,10 @@ fn parse_statement(v: &Value, kind: PolicyKind) -> Result<Statement, PolicyError
         (None, None) => None,
     };
     match kind {
-        PolicyKind::Identity if principal.is_some() => return err("Policy document should not specify a principal."),
-        PolicyKind::Trust | PolicyKind::Resource if principal.is_none() => {
+        PolicyKind::Identity | PolicyKind::ServiceControl if principal.is_some() => {
+            return err("Policy document should not specify a principal.")
+        }
+        PolicyKind::Trust | PolicyKind::Resource | PolicyKind::ResourceControl if principal.is_none() => {
             return err("Missing required field Principal")
         }
         _ => {}

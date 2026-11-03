@@ -13,16 +13,93 @@ pub(crate) struct IamAuthorizer {
     pub inner: Arc<Inner>,
 }
 
+/// Services whose resources resource control policies protect.
+const RCP_SERVICES: &[&str] =
+    &["s3", "sts", "kms", "sqs", "secretsmanager", "cognito-identity", "ecr", "aoss", "logs", "dynamodb"];
+
+/// The account a resource belongs to: `aws:ResourceAccount` when the service
+/// supplies it, else the ARN's account field.
+fn resource_account(req: &AuthzRequest<'_>) -> Option<String> {
+    if let Some(a) = req.context.get("aws:ResourceAccount").and_then(|v| v.first()) {
+        return Some(a.clone());
+    }
+    let account = req.resource.split(':').nth(4)?;
+    (account.len() == 12 && account.bytes().all(|b| b.is_ascii_digit())).then(|| account.to_string())
+}
+
+fn parse_levels(levels: &[crate::org::PolicyLevel], kind: PolicyKind) -> Vec<Vec<SourcedPolicy>> {
+    levels
+        .iter()
+        .map(|level| {
+            level
+                .iter()
+                .filter_map(|(id, doc)| {
+                    Policy::parse(doc, kind).ok().map(|policy| SourcedPolicy { source_id: id.clone(), policy })
+                })
+                .collect()
+        })
+        .collect()
+}
+
 impl Authorizer for IamAuthorizer {
     fn authorize(&self, req: &AuthzRequest<'_>) -> AuthzDecision {
-        let state = self.inner.state.read().expect("IAM state lock poisoned");
-        let (mut set, principal, mut context) = principal_policies(&state, req.caller, &self.inner.config.account_id);
+        // Ask Organizations first: it must not be asked under the IAM lock.
+        let orgs = self.inner.organizations.get();
+        let caller_account = req.caller.account_id.as_str();
+        let caller_org = orgs.and_then(|o| o.account(caller_account));
+        let resource_account = resource_account(req);
+        let resource_org = match resource_account.as_deref() {
+            Some(a) if a == caller_account => caller_org.clone(),
+            Some(a) => orgs.and_then(|o| o.account(a)),
+            None => None,
+        };
+
+        if caller_org.as_ref().is_some_and(|o| o.suspended) {
+            return AuthzDecision::Deny { reason: String::new() };
+        }
+        let state = self.inner.read_account(caller_account);
+        let (mut set, principal, mut context) = principal_policies(&state, req.caller, caller_account);
         for (k, v) in &req.context {
             context.insert(k, v.clone());
         }
         if let Some(arn) = role_arn(&state, req.caller) {
             context.insert("aws:PrincipalArn", vec![arn]);
         }
+        if let Some(o) = &caller_org {
+            context.insert("aws:PrincipalOrgID", vec![o.organization_id.clone()]);
+            context.insert("aws:PrincipalOrgPaths", vec![o.org_path.clone()]);
+        }
+        if let Some(a) = &resource_account {
+            context.insert("aws:ResourceAccount", vec![a.clone()]);
+        }
+        if let Some(o) = &resource_org {
+            context.insert("aws:ResourceOrgID", vec![o.organization_id.clone()]);
+            context.insert("aws:ResourceOrgPaths", vec![o.org_path.clone()]);
+        }
+        // SCPs never restrict service-linked roles.
+        let service_linked = match &req.caller.kind {
+            CallerKind::AssumedRole { role_name, .. } => {
+                state.role(role_name).is_some_and(|r| r.path.starts_with("/aws-service-role/"))
+            }
+            _ => false,
+        };
+        if !service_linked {
+            if let Some(levels) = caller_org.as_ref().and_then(|o| o.service_control_policies.as_ref()) {
+                set.service_control = Some(parse_levels(levels, PolicyKind::ServiceControl));
+            }
+            let service = req.action.split(':').next().unwrap_or_default().to_ascii_lowercase();
+            if RCP_SERVICES.contains(&service.as_str()) {
+                if let Some(levels) = resource_org.as_ref().and_then(|o| o.resource_control_policies.as_ref()) {
+                    set.resource_control = Some(parse_levels(levels, PolicyKind::ResourceControl));
+                }
+            }
+        }
+        // Organizations decides who may read an organization itself (its
+        // resources all carry the management account's id), and STS decides
+        // who may start root sessions in member accounts.
+        let service_decides = req.resource.split(':').nth(2) == Some("organizations")
+            || req.action.eq_ignore_ascii_case("sts:AssumeRoot");
+        set.cross_account = !service_decides && resource_account.as_deref().is_some_and(|a| a != caller_account);
         if let Some(doc) = req.resource_policy {
             let kind = if req.resource_policy_mode == ResourcePolicyMode::Trust {
                 PolicyKind::Trust
