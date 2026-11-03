@@ -144,6 +144,10 @@ fn build_with_store(config: Config, store: Option<Arc<Store>>) -> Mws {
     s3.add_notification_destination(Arc::new(links::S3ToSqs(sqs.clone())));
     events.register_target_sink("sns", Arc::new(sinks::SnsTarget(sns.clone())));
     s3.set_eventbridge_sink(Arc::new(sinks::S3ToEvents(events.clone())));
+    events.register_clock_source(Arc::new(sinks::SsmPolicyEvents {
+        ssm: ssm.clone(),
+        partition: config.iam.partition.clone(),
+    }));
     let mut gateway = Gateway::builder();
     if let Some(store) = store {
         gateway = gateway.store(store);

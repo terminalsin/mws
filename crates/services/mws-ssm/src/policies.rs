@@ -1,14 +1,66 @@
 //! Parameter policies: `Expiration`, `ExpirationNotification` and
 //! `NoChangeNotification`. Expiration really deletes the parameter once the
-//! emulated clock passes its timestamp. The notification policies are
-//! validated and stored; their EventBridge events are not delivered.
+//! emulated clock passes its timestamp. Each policy's EventBridge event
+//! ("Parameter Store Policy Action") comes due with the emulated clock and
+//! is handed out by [`crate::Ssm::take_policy_events`].
 
 use chrono::{DateTime, Utc};
 use mws_core::ServiceError;
 use serde_json::Value;
 
 use crate::generated::errors;
-use crate::state::StoredPolicy;
+use crate::state::{StoredPolicy, Version};
+
+/// A parameter policy's EventBridge event, due at `time`.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PolicyEvent {
+    pub account: String,
+    pub region: String,
+    /// The parameter's name as written.
+    pub name: String,
+    pub parameter_type: String,
+    pub policy_type: String,
+    /// `Finished` once the parameter is deleted, `Pending` for notices.
+    pub action_status: String,
+    pub action_reason: String,
+    pub time: DateTime<Utc>,
+}
+
+/// A notification policy's `Before`/`After` and `Unit` as a duration.
+fn offset(p: &StoredPolicy, key: &str) -> Option<chrono::Duration> {
+    let v: Value = serde_json::from_str(&p.text).ok()?;
+    let attrs = v.get("Attributes")?;
+    let n: i64 = attrs.get(key)?.as_str()?.parse().ok()?;
+    match attrs.get("Unit")?.as_str()? {
+        "Days" => Some(chrono::Duration::days(n)),
+        "Hours" => Some(chrono::Duration::hours(n)),
+        _ => None,
+    }
+}
+
+/// When a notification policy of `version` comes due, with its reason.
+pub fn notification_due(p: &StoredPolicy, version: &Version) -> Option<(DateTime<Utc>, String)> {
+    match p.policy_type.as_str() {
+        "ExpirationNotification" => {
+            let expires = version.policies.iter().find_map(expiration)?;
+            Some((
+                expires - offset(p, "Before")?,
+                format!("The parameter will expire at {}.", expires.to_rfc3339_opts(chrono::SecondsFormat::Secs, true)),
+            ))
+        }
+        "NoChangeNotification" => {
+            let after = offset(p, "After")?;
+            Some((
+                version.last_modified_date + after,
+                format!(
+                    "The parameter has not been changed since {}.",
+                    version.last_modified_date.to_rfc3339_opts(chrono::SecondsFormat::Secs, true)
+                ),
+            ))
+        }
+        _ => None,
+    }
+}
 
 const TYPES: &[&str] = &["Expiration", "ExpirationNotification", "NoChangeNotification"];
 

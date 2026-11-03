@@ -1125,3 +1125,82 @@ async fn sns_targets_and_s3_events() {
     assert_eq!(event["detail"]["deletion-type"], "Permanently Deleted");
     mws.stop().await;
 }
+
+#[tokio::test]
+async fn ssm_parameter_policies_send_events_on_the_emulated_clock() {
+    let mws = Mws::start().await;
+    let cfg = mws.root_sdk_config().await;
+    let eb = Client::new(&cfg);
+    let sqs = aws_sdk_sqs::Client::new(&cfg);
+    let ssm = aws_sdk_ssm::Client::new(&cfg);
+    let (url, queue) = open_queue(&sqs, "from-ssm").await;
+    eb.put_rule()
+        .name("ssm")
+        .event_pattern(r#"{"source":["aws.ssm"],"detail-type":["Parameter Store Policy Action"]}"#)
+        .send()
+        .await
+        .unwrap();
+    eb.put_targets().rule("ssm").targets(target("q", &queue)).send().await.unwrap();
+    let expires = (chrono::Utc::now() + chrono::Duration::days(3)).to_rfc3339_opts(chrono::SecondsFormat::Secs, true);
+    let policies = serde_json::json!([
+        {"Type":"Expiration","Version":"1.0","Attributes":{"Timestamp": expires}},
+        {"Type":"ExpirationNotification","Version":"1.0","Attributes":{"Before":"2","Unit":"Days"}},
+        {"Type":"NoChangeNotification","Version":"1.0","Attributes":{"After":"1","Unit":"Hours"}},
+    ]);
+    ssm.put_parameter()
+        .name("/app/token")
+        .value("v")
+        .r#type(aws_sdk_ssm::types::ParameterType::String)
+        .tier(aws_sdk_ssm::types::ParameterTier::Advanced)
+        .policies(policies.to_string())
+        .send()
+        .await
+        .unwrap();
+
+    let advance = |secs: i64| {
+        let mws = &mws;
+        let eb = eb.clone();
+        async move {
+            let (status, _) =
+                mws.control("POST", "/_mws/clock", Some(&format!(r#"{{"advanceSeconds": {secs}}}"#))).await;
+            assert_eq!(status, 200);
+            eb.list_rules().send().await.unwrap();
+        }
+    };
+    let next = || {
+        let (sqs, url) = (sqs.clone(), url.clone());
+        async move {
+            let m = eventually(10, || async {
+                let r = sqs.receive_message().queue_url(&url).send().await.unwrap();
+                r.messages.unwrap_or_default().into_iter().next()
+            })
+            .await;
+            sqs.delete_message().queue_url(&url).receipt_handle(m.receipt_handle().unwrap()).send().await.unwrap();
+            serde_json::from_str::<serde_json::Value>(m.body().unwrap()).unwrap()
+        }
+    };
+
+    advance(2 * 3600).await;
+    let e = next().await;
+    assert_eq!(e["source"], "aws.ssm");
+    assert_eq!(e["resources"][0], format!("arn:aws:ssm:us-east-1:{ACCOUNT}:parameter/app/token"));
+    assert_eq!(e["detail"]["parameter-name"], "/app/token");
+    assert_eq!(e["detail"]["policy-type"], "NoChangeNotification");
+    assert_eq!(e["detail"]["action-status"], "Pending");
+
+    advance(86400).await;
+    let e = next().await;
+    assert_eq!(e["detail"]["policy-type"], "ExpirationNotification");
+    let d = ssm.describe_parameters().send().await.unwrap();
+    let statuses: Vec<_> =
+        d.parameters()[0].policies().iter().map(|p| (p.policy_type().unwrap(), p.policy_status().unwrap())).collect();
+    assert!(statuses.contains(&("ExpirationNotification", "Finished")), "{statuses:?}");
+
+    advance(2 * 86400).await;
+    let e = next().await;
+    assert_eq!(e["detail"]["policy-type"], "Expiration");
+    assert_eq!(e["detail"]["action-status"], "Finished");
+    assert_eq!(e["detail"]["parameter-type"], "String");
+    assert!(ssm.get_parameter().name("/app/token").send().await.is_err());
+    mws.stop().await;
+}

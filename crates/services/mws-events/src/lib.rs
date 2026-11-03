@@ -54,7 +54,7 @@ use std::sync::{Arc, Mutex, MutexGuard, OnceLock, RwLock};
 use mws_core::{HttpRequest, HttpResponse, RequestContext, Service, ServiceError};
 
 pub use deliver::{TargetError, TargetInvocation, TargetSink};
-pub use public::ServiceEvent;
+pub use public::{ClockSource, ServiceEvent};
 use state::State;
 
 pub(crate) struct Inner {
@@ -63,6 +63,7 @@ pub(crate) struct Inner {
     logs: OnceLock<mws_logs::Logs>,
     sts: OnceLock<mws_sts::Sts>,
     sinks: RwLock<BTreeMap<String, Arc<dyn TargetSink>>>,
+    clock_sources: RwLock<Vec<Arc<dyn ClockSource>>>,
     /// The most recent request's context, for work that happens later
     /// (deliveries, schedules, replays): its authorizer and endpoint.
     template: Mutex<Option<RequestContext>>,
@@ -92,6 +93,7 @@ impl Events {
                 logs: OnceLock::new(),
                 sts: OnceLock::new(),
                 sinks: RwLock::new(BTreeMap::new()),
+                clock_sources: RwLock::new(Vec::new()),
                 template: Mutex::new(None),
                 clock_offset_ms: AtomicI64::new(0),
                 scheduler: AtomicBool::new(false),
@@ -121,6 +123,12 @@ impl Events {
     /// through `sink`. Dead-letter queues go through the `sqs` sink.
     pub fn register_target_sink(&self, service: &str, sink: Arc<dyn TargetSink>) {
         self.inner.sinks.write().expect("sink lock poisoned").insert(service.to_string(), sink);
+    }
+
+    /// Let `source` put events on default buses as the emulated clock
+    /// reaches them.
+    pub fn register_clock_source(&self, source: Arc<dyn ClockSource>) {
+        self.inner.clock_sources.write().expect("clock source lock poisoned").push(source);
     }
 
     pub(crate) fn sink(&self, service: &str) -> Option<Arc<dyn TargetSink>> {

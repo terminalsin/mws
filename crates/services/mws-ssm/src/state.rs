@@ -107,6 +107,10 @@ pub struct Region {
     pub parameters: BTreeMap<String, Parameter>,
     /// Customized service settings, by setting id.
     pub settings: BTreeMap<String, Setting>,
+    /// `Expiration` events of parameters deleted since they were last
+    /// handed out.
+    #[serde(skip)]
+    pub expired: Vec<crate::policies::PolicyEvent>,
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]

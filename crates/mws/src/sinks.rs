@@ -157,3 +157,38 @@ impl EventBridgeSink for S3ToEvents {
         );
     }
 }
+
+/// SSM parameter policies' "Parameter Store Policy Action" events, put on
+/// the parameter's account's default bus as the emulated clock reaches them.
+pub struct SsmPolicyEvents {
+    pub ssm: mws_ssm::Ssm,
+    pub partition: String,
+}
+
+impl mws_events::ClockSource for SsmPolicyEvents {
+    fn due_events(&self, now: chrono::DateTime<chrono::Utc>) -> Vec<ServiceEvent> {
+        self.ssm
+            .take_policy_events(now)
+            .into_iter()
+            .map(|e| {
+                let name = e.name.strip_prefix('/').unwrap_or(&e.name).to_string();
+                ServiceEvent {
+                    resources: vec![format!("arn:{}:ssm:{}:{}:parameter/{name}", self.partition, e.region, e.account)],
+                    partition: self.partition.clone(),
+                    account: e.account,
+                    region: e.region,
+                    source: "aws.ssm".into(),
+                    detail_type: "Parameter Store Policy Action".into(),
+                    detail: serde_json::json!({
+                        "parameter-name": e.name,
+                        "parameter-type": e.parameter_type,
+                        "policy-type": e.policy_type,
+                        "action-status": e.action_status,
+                        "action-reason": e.action_reason,
+                    }),
+                    time: e.time,
+                }
+            })
+            .collect()
+    }
+}

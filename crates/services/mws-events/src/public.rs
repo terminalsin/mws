@@ -27,6 +27,14 @@ pub struct ServiceEvent {
     pub time: chrono::DateTime<chrono::Utc>,
 }
 
+/// Another service whose events come due with the emulated clock rather
+/// than a request (SSM parameter policies, ...). The scheduler asks it every
+/// second.
+pub trait ClockSource: Send + Sync {
+    /// The events due by `now`, each returned once.
+    fn due_events(&self, now: chrono::DateTime<chrono::Utc>) -> Vec<ServiceEvent>;
+}
+
 impl Events {
     /// Put an AWS service's event on the account's default bus, where it
     /// matches rules and reaches their targets like any other. Returns the
@@ -45,6 +53,19 @@ impl Events {
         loop {
             tokio::time::sleep(Duration::from_secs(1)).await;
             self.fire_schedules();
+            self.poll_clock_sources();
+        }
+    }
+
+    fn poll_clock_sources(&self) {
+        let Some(template) = self.template() else { return };
+        let now = self.now();
+        let sources = self.inner.clock_sources.read().expect("clock source lock poisoned").clone();
+        for source in sources {
+            for e in source.due_events(now) {
+                let ctx = RequestContext { region: e.region.clone(), ..self.delivery_ctx(&template) };
+                self.put_service_event(&ctx, e);
+            }
         }
     }
 
