@@ -460,3 +460,31 @@ async fn member_accounts_survive_export_and_import() {
     // The admin user's keys and the member's role came back too.
     o.member_config(&account).await;
 }
+
+#[tokio::test]
+async fn organizations_access_report_shows_member_activity() {
+    let o = org().await;
+    let member = o.create_account("reports").await;
+    let member_cfg = o.member_config(&member).await;
+    aws_sdk_iam::Client::new(&member_cfg).list_users().send().await.unwrap();
+
+    let iam = aws_sdk_iam::Client::new(&o.mws.root_sdk_config().await);
+    let path = format!("{}/{}", o.org_id, o.root_id);
+    let job = iam.generate_organizations_access_report().entity_path(&path).send().await.unwrap();
+    let report = iam.get_organizations_access_report().job_id(job.job_id().unwrap()).send().await.unwrap();
+    assert_eq!(report.job_status().as_str(), "COMPLETED");
+    let details = report.access_details();
+    let iam_detail = details.iter().find(|d| d.service_namespace() == "iam").unwrap();
+    assert!(iam_detail.last_authenticated_time().is_some());
+    assert!(iam_detail.entity_path().unwrap().starts_with(&path), "{:?}", iam_detail.entity_path());
+    let lambda = details.iter().find(|d| d.service_namespace() == "lambda").unwrap();
+    assert!(lambda.last_authenticated_time().is_none());
+    assert!(report.number_of_services_not_accessed().unwrap() < report.number_of_services_accessible().unwrap());
+
+    // A report on just the member account sees only its own activity.
+    let member_path = format!("{path}/{member}");
+    let job = iam.generate_organizations_access_report().entity_path(&member_path).send().await.unwrap();
+    let report = iam.get_organizations_access_report().job_id(job.job_id().unwrap()).send().await.unwrap();
+    let iam_detail = report.access_details().iter().find(|d| d.service_namespace() == "iam").unwrap();
+    assert_eq!(iam_detail.entity_path(), Some(member_path.as_str()));
+}

@@ -288,6 +288,35 @@ pub struct State {
     /// management and privileged root sessions for member accounts.
     pub org_root_credentials_management: bool,
     pub org_root_sessions: bool,
+    /// Access advisor data: for each user or role ARN, when it last
+    /// authenticated to each service namespace.
+    pub service_access: BTreeMap<String, BTreeMap<String, ServiceAccess>>,
+    /// The latest access to each service namespace by anyone in the account
+    /// (for Organizations access reports).
+    pub account_service_access: BTreeMap<String, AccountServiceAccess>,
+}
+
+/// When an entity last authenticated to one service.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ServiceAccess {
+    pub at: DateTime<Utc>,
+    pub region: String,
+    /// Tracked actions (access advisor tracks actions for a few services),
+    /// by action name: when and in which region each was last used.
+    #[serde(default)]
+    pub actions: BTreeMap<String, (DateTime<Utc>, String)>,
+}
+
+/// When anyone in an account last authenticated to one service.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct AccountServiceAccess {
+    pub at: DateTime<Utc>,
+    pub region: String,
+    /// The user or role ARN that made that access.
+    pub entity: String,
+    /// User and role ARNs that have used the service.
+    #[serde(default)]
+    pub entities: BTreeSet<String>,
 }
 
 impl State {

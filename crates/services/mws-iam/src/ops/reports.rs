@@ -1,9 +1,9 @@
 //! Access advisor reports: service last accessed details, the Organizations
 //! access report, and ListPoliciesGrantingServiceAccess.
 //!
-//! MWS does not record per-service authentication history, so services an
-//! entity's policies allow are reported as never accessed, which is what AWS
-//! shows for activity outside its tracking period.
+//! The authorizer records when each user and role authenticates to each
+//! service (see [`crate::activity`]); reports list the services an entity's
+//! policies allow, with that history.
 
 use chrono::Utc;
 use mws_core::{RequestContext, ServiceError};
@@ -177,6 +177,76 @@ fn applied(state: &State, entity: &Entity) -> Vec<Applied> {
     }
 }
 
+/// The user and role ARNs whose activity a report on `entity` covers.
+fn covered_arns(state: &State, entity: &Entity) -> Vec<String> {
+    match entity {
+        Entity::User(n) => state.user(n).map(|u| vec![u.arn.clone()]).unwrap_or_default(),
+        Entity::Role(n) => state.role(n).map(|r| vec![r.arn.clone()]).unwrap_or_default(),
+        Entity::Group(n) => {
+            let key = n.to_lowercase();
+            let Some(g) = state.groups.get(&key) else { return vec![] };
+            state.users.values().filter(|u| g.members.contains(&u.name.to_lowercase())).map(|u| u.arn.clone()).collect()
+        }
+        Entity::Policy(arn) => {
+            let mut out: Vec<String> =
+                state.users.values().filter(|u| u.attached.contains(arn)).map(|u| u.arn.clone()).collect();
+            out.extend(state.roles.values().filter(|r| r.attached.contains(arn)).map(|r| r.arn.clone()));
+            for g in state.groups.values().filter(|g| g.attached.contains(arn)) {
+                out.extend(
+                    state.users.values().filter(|u| g.members.contains(&u.name.to_lowercase())).map(|u| u.arn.clone()),
+                );
+            }
+            out.sort();
+            out.dedup();
+            out
+        }
+    }
+}
+
+/// The latest access to `namespace` among `arns`: (when, region, who), and
+/// how many of them used it.
+fn latest_access(
+    state: &State,
+    arns: &[String],
+    namespace: &str,
+) -> (Option<(chrono::DateTime<Utc>, String, String)>, i32) {
+    let mut latest: Option<(chrono::DateTime<Utc>, String, String)> = None;
+    let mut count = 0;
+    for arn in arns {
+        if let Some(a) = state.service_access.get(arn).and_then(|m| m.get(namespace)) {
+            count += 1;
+            if latest.as_ref().is_none_or(|l| a.at > l.0) {
+                latest = Some((a.at, a.region.clone(), arn.clone()));
+            }
+        }
+    }
+    (latest, count)
+}
+
+/// Tracked actions of `namespace` that `arns` used, latest use of each.
+fn tracked_actions(state: &State, arns: &[String], namespace: &str) -> Vec<types::TrackedActionLastAccessed> {
+    let mut by_action: std::collections::BTreeMap<String, (chrono::DateTime<Utc>, String, String)> =
+        std::collections::BTreeMap::new();
+    for arn in arns {
+        let Some(a) = state.service_access.get(arn).and_then(|m| m.get(namespace)) else { continue };
+        for (action, (at, region)) in &a.actions {
+            let entry = by_action.entry(action.clone()).or_insert_with(|| (*at, region.clone(), arn.clone()));
+            if *at > entry.0 {
+                *entry = (*at, region.clone(), arn.clone());
+            }
+        }
+    }
+    by_action
+        .into_iter()
+        .map(|(action, (at, region, arn))| types::TrackedActionLastAccessed {
+            action_name: Some(action),
+            last_accessed_entity: Some(arn),
+            last_accessed_time: Some(at),
+            last_accessed_region: Some(region),
+        })
+        .collect()
+}
+
 fn no_such_job(id: &str) -> ServiceError {
     errors::no_such_entity(format!("No report job found with id {id}"))
 }
@@ -218,23 +288,32 @@ impl Iam {
             .get(&input.job_id)
             .filter(|j| j.kind == "service")
             .ok_or_else(|| no_such_job(&input.job_id))?;
-        let mut namespaces: Vec<String> = match resolve(&state, &job.arn) {
-            Some(e) => applied(&state, &e).iter().flat_map(|a| allowed_namespaces(&a.document)).collect(),
+        let entity = resolve(&state, &job.arn);
+        let mut namespaces: Vec<String> = match &entity {
+            Some(e) => applied(&state, e).iter().flat_map(|a| allowed_namespaces(&a.document)).collect(),
             None => vec![],
         };
         namespaces.sort();
         namespaces.dedup();
+        let arns = entity.as_ref().map(|e| covered_arns(&state, e)).unwrap_or_default();
         let action_level = job.granularity == "ACTION_LEVEL";
         let all: Vec<types::ServiceLastAccessed> = namespaces
             .into_iter()
-            .map(|ns| types::ServiceLastAccessed {
-                service_name: service_name(&ns),
-                last_authenticated: None,
-                service_namespace: ns,
-                last_authenticated_entity: None,
-                last_authenticated_region: None,
-                total_authenticated_entities: Some(0),
-                tracked_actions_last_accessed: action_level.then(Vec::new),
+            .map(|ns| {
+                let (latest, count) = latest_access(&state, &arns, &ns);
+                let tracked = (action_level && crate::activity::ACTION_TRACKED.contains(&ns.as_str()))
+                    .then(|| tracked_actions(&state, &arns, &ns));
+                // Only reports on groups and policies name the entity.
+                let many = matches!(entity, Some(Entity::Group(_)) | Some(Entity::Policy(_)));
+                types::ServiceLastAccessed {
+                    service_name: service_name(&ns),
+                    last_authenticated: latest.as_ref().map(|l| l.0),
+                    last_authenticated_entity: latest.as_ref().filter(|_| many).map(|l| l.2.clone()),
+                    last_authenticated_region: latest.as_ref().map(|l| l.1.clone()),
+                    total_authenticated_entities: Some(count),
+                    tracked_actions_last_accessed: tracked,
+                    service_namespace: ns,
+                }
             })
             .collect();
         let (page, truncated, marker) =
@@ -273,7 +352,14 @@ impl Iam {
                 id: id.into(),
                 path: Some(path.into()),
             },
-            last_authenticated: None,
+            last_authenticated: match kind {
+                // A group's last access is its most recent member's.
+                "GROUP" => {
+                    let members = covered_arns(&state, &Entity::Group(name.to_string()));
+                    latest_access(&state, &members, &ns).0.map(|l| l.0)
+                }
+                _ => state.service_access.get(arn).and_then(|m| m.get(&ns)).map(|a| a.at),
+            },
         };
         let mut entities = vec![];
         match resolve(&state, &job.arn) {
@@ -420,19 +506,81 @@ impl Iam {
         if !job.arn.starts_with(&format!("{}/", org.organization_id)) {
             return Ok(error("InvalidEntityPath", "The entity path is not part of your organization."));
         }
-        // MWS does not record which services each account used, so the
-        // report finds no access.
+        let created = job.created;
+        let path = job.arn.clone();
+        drop(state);
+        let details = self.organizations_access_details(&path);
+        let accessible = details.len() as i32;
+        let not_accessed = details.iter().filter(|d| d.last_authenticated_time.is_none()).count() as i32;
+        let (page, truncated, marker) = paginate(
+            &details,
+            |d| format!("{}|{}", d.service_namespace, d.entity_path.clone().unwrap_or_default()),
+            input.marker.as_deref(),
+            input.max_items,
+        )?;
         Ok(types::GetOrganizationsAccessReportResponse {
             job_status: "COMPLETED".into(),
-            job_creation_date: job.created,
-            job_completion_date: Some(job.created),
-            number_of_services_accessible: Some(0),
-            number_of_services_not_accessed: Some(0),
-            access_details: Some(vec![]),
-            is_truncated: false,
-            marker: None,
+            job_creation_date: created,
+            job_completion_date: Some(created),
+            number_of_services_accessible: Some(accessible),
+            number_of_services_not_accessed: Some(not_accessed),
+            access_details: Some(page),
+            is_truncated: truncated,
+            marker,
             error_details: None,
         })
+    }
+}
+
+impl Iam {
+    /// For each service the SCPs on `path` allow, the latest access by any
+    /// account under `path` (an organization entity path such as
+    /// `o-a1b2c3d4e5/r-ab12/ou-ab12-11111111` or one ending in an account id).
+    fn organizations_access_details(&self, path: &str) -> Vec<types::AccessDetail> {
+        // Ask Organizations before taking the IAM lock.
+        let account_ids: Vec<String> =
+            self.inner.accounts.read().expect("IAM state lock poisoned").keys().cloned().collect();
+        let mut under: Vec<(String, String, Option<Vec<crate::org::PolicyLevel>>)> = vec![];
+        for id in account_ids {
+            let Some(org) = self.organization_of(&id) else { continue };
+            let full = format!("{}{id}", org.org_path);
+            let full = full.trim_end_matches('/');
+            if full == path || full.starts_with(&format!("{path}/")) {
+                under.push((id, full.to_string(), org.service_control_policies.clone()));
+            }
+        }
+        let accounts = self.inner.accounts.read().expect("IAM state lock poisoned");
+        let mut out = vec![];
+        for (ns, display) in SERVICES {
+            // SCPs must allow the service at every level for some account.
+            let allowed = |levels: &Option<Vec<crate::org::PolicyLevel>>| match levels {
+                None => true,
+                Some(levels) => levels
+                    .iter()
+                    .all(|level| level.iter().any(|(_, doc)| allowed_namespaces(doc).iter().any(|n| n == ns))),
+            };
+            if !under.iter().any(|(_, _, scps)| allowed(scps)) {
+                continue;
+            }
+            let mut latest: Option<(chrono::DateTime<Utc>, String, String)> = None;
+            let mut entities = 0;
+            for (id, full, _) in &under {
+                let Some(a) = accounts.get(id).and_then(|s| s.account_service_access.get(*ns)) else { continue };
+                entities += a.entities.len().max(1) as i32;
+                if latest.as_ref().is_none_or(|l| a.at > l.0) {
+                    latest = Some((a.at, a.region.clone(), full.clone()));
+                }
+            }
+            out.push(types::AccessDetail {
+                service_name: display.to_string(),
+                service_namespace: ns.to_string(),
+                region: latest.as_ref().map(|l| l.1.clone()),
+                entity_path: latest.as_ref().map(|l| l.2.clone()),
+                last_authenticated_time: latest.as_ref().map(|l| l.0),
+                total_authenticated_entities: latest.as_ref().map(|_| entities),
+            });
+        }
+        out
     }
 }
 

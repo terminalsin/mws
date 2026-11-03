@@ -96,8 +96,10 @@ cert_1_active,cert_1_last_rotated,cert_2_active,cert_2_last_rotated\n",
                     k.active.to_string(),
                     iso(k.created),
                     k.last_used.as_ref().map(|l| iso(l.0)).unwrap_or_else(|| "N/A".into()),
-                    k.last_used.as_ref().map(|l| l.1.clone()).unwrap_or_else(|| "N/A".into()),
+                    // `last_used` is (when, service, region); the report
+                    // lists the region first.
                     k.last_used.as_ref().map(|l| l.2.clone()).unwrap_or_else(|| "N/A".into()),
+                    k.last_used.as_ref().map(|l| l.1.clone()).unwrap_or_else(|| "N/A".into()),
                 ],
                 None => vec!["false".into(), "N/A".into(), "N/A".into(), "N/A".into(), "N/A".into()],
             })
