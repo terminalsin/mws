@@ -27,6 +27,7 @@ members = [
     "crates/services/mws-sqs",
     "crates/services/mws-ssm",
     "crates/services/mws-secretsmanager",
+    "crates/services/mws-sns",
     "tests/e2e-rust",
 ]
 
@@ -64,6 +65,7 @@ mws-logs = { path = "crates/services/mws-logs" }
 mws-sqs = { path = "crates/services/mws-sqs" }
 mws-ssm = { path = "crates/services/mws-ssm" }
 mws-secretsmanager = { path = "crates/services/mws-secretsmanager" }
+mws-sns = { path = "crates/services/mws-sns" }
 
 # external
 async-trait = "0.1"
@@ -77,6 +79,7 @@ hmac = "0.12"
 http = "1"
 http-body-util = "0.1"
 md-5 = "0.10"
+num-bigint = "0.4"
 qrcode = { version = "0.14", default-features = false }
 hyper = { version = "1", features = ["server", "http1", "http2"] }
 hyper-util = { version = "0.1", features = ["server", "server-auto", "tokio"] }
@@ -92,6 +95,7 @@ roxmltree = "0.20"
 rusqlite = { version = "0.37", features = ["bundled"] }
 serde = { version = "1", features = ["derive"] }
 serde_json = { version = "1", features = ["preserve_order"] }
+sha1 = "0.10"
 sha2 = "0.10"
 flate2 = "1"
 bzip2 = "0.6"

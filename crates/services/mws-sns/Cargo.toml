@@ -1,0 +1,42 @@
+[package]
+name = "mws-sns"
+description = "Amazon Simple Notification Service for MWS: topics, subscriptions and real message delivery."
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+async-trait.workspace = true
+base64.workspace = true
+bytes.workspace = true
+chrono.workspace = true
+form_urlencoded.workspace = true
+http.workspace = true
+mws-core.workspace = true
+mws-iam-policy.workspace = true
+mws-lambda.workspace = true
+mws-proto-json.workspace = true
+mws-proto-query.workspace = true
+mws-s3.workspace = true
+num-bigint.workspace = true
+percent-encoding.workspace = true
+rand.workspace = true
+rcgen.workspace = true
+rustls.workspace = true
+rustls-native-certs.workspace = true
+rustls-pki-types.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+sha1.workspace = true
+sha2.workspace = true
+tokio = { workspace = true, features = ["io-util"] }
+tokio-rustls.workspace = true
+tracing.workspace = true
+uuid.workspace = true
+
+[dev-dependencies]
+aws-lc-rs.workspace = true
+x509-parser.workspace = true
+
+[build-dependencies]
+mws-codegen.workspace = true
