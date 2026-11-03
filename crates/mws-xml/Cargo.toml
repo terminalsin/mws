@@ -1,0 +1,12 @@
+[package]
+name = "mws-xml"
+description = "Minimal XML writing and reading shared by the XML-based protocol runtimes."
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+base64.workspace = true
+chrono.workspace = true
+mws-core.workspace = true
+roxmltree.workspace = true

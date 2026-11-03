@@ -8,10 +8,10 @@
 //! Spec: <https://smithy.io/2.0/aws/protocols/aws-query-protocol.html>
 
 mod decode;
-mod xml;
 
-pub use decode::{render_list, Decoder, Params};
-pub use xml::XmlWriter;
+pub use decode::{Decoder, Params};
+pub use mws_core::render_list;
+pub use mws_xml::{format_timestamp, XmlWriter};
 
 use bytes::Bytes;
 use mws_core::{ErrorFault, HttpRequest, HttpResponse, ServiceError};
@@ -88,6 +88,7 @@ pub fn error_body(info: &ServiceInfo, request_id: &str, error: &ServiceError) ->
     );
     w.leaf("Code", &error.code);
     w.leaf("Message", &error.message);
+    mws_xml::write_error_fields(&mut w, error);
     w.close("Error");
     w.leaf("RequestId", request_id);
     w.close("ErrorResponse");

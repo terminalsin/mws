@@ -26,6 +26,10 @@ override only) see the same behaviour as real AWS. Fidelity beats breadth.
 1. Put the Smithy model in `crates/services/mws-<svc>/model/`.
 2. Generate in `build.rs` with the protocol's codegen entry point (add a new
    `mws-proto-<protocol>` runtime + codegen module if the protocol is new).
+   Protocols so far: `build_aws_query` (IAM, STS) and `build_rest_xml`
+   (Route 53; pass the service's validation error code in `RestXmlOptions`).
+   The restXml generator panics on bindings it does not support yet; extend
+   it rather than working around it in the service.
 3. Implement the generated `Handler` and `mws_core::Service`.
 4. Register it in `crates/mws/src/lib.rs`.
 

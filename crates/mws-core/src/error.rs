@@ -17,11 +17,39 @@ pub struct ServiceError {
     pub message: String,
     pub status: u16,
     pub fault: ErrorFault,
+    /// Extra modeled members of the error shape (beyond the message), in
+    /// wire order.
+    pub fields: Vec<ErrorField>,
+}
+
+/// An extra member of a modeled error, e.g. Route 53's
+/// `InvalidChangeBatch.messages`.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ErrorField {
+    /// Wire name of the member.
+    pub name: String,
+    pub value: ErrorValue,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ErrorValue {
+    String(String),
+    /// A list of strings; `item` is the XML element name of each entry.
+    List {
+        item: String,
+        values: Vec<String>,
+    },
 }
 
 impl ServiceError {
     pub fn new(code: impl Into<Cow<'static, str>>, status: u16, fault: ErrorFault, message: impl Into<String>) -> Self {
-        Self { code: code.into(), message: message.into(), status, fault }
+        Self { code: code.into(), message: message.into(), status, fault, fields: Vec::new() }
+    }
+
+    /// Attach an extra modeled member.
+    pub fn with_field(mut self, name: impl Into<String>, value: ErrorValue) -> Self {
+        self.fields.push(ErrorField { name: name.into(), value });
+        self
     }
 
     pub fn client(code: impl Into<Cow<'static, str>>, status: u16, message: impl Into<String>) -> Self {

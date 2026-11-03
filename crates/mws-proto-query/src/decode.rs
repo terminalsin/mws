@@ -1,8 +1,7 @@
 use std::collections::{BTreeMap, BTreeSet};
 
 use chrono::{DateTime, NaiveDateTime, Utc};
-use mws_core::ServiceError;
-use regex::Regex;
+use mws_core::{ServiceError, Validator};
 
 /// Flat awsQuery request parameters, e.g. `Tags.member.1.Key -> "env"`.
 #[derive(Debug, Clone, Default)]
@@ -55,38 +54,35 @@ impl Params {
 }
 
 /// Decodes typed values out of [`Params`] while collecting validation errors
-/// in the same wording AWS uses.
+/// in the same wording AWS uses. Constraint checks come from the shared
+/// [`Validator`] it derefs to.
 #[derive(Debug)]
 pub struct Decoder<'a> {
     pub params: &'a Params,
-    errors: Vec<String>,
+    validator: Validator,
+}
+
+impl std::ops::Deref for Decoder<'_> {
+    type Target = Validator;
+    fn deref(&self) -> &Validator {
+        &self.validator
+    }
+}
+
+impl std::ops::DerefMut for Decoder<'_> {
+    fn deref_mut(&mut self) -> &mut Validator {
+        &mut self.validator
+    }
 }
 
 impl<'a> Decoder<'a> {
     pub fn new(params: &'a Params) -> Self {
-        Self { params, errors: Vec::new() }
+        Self { params, validator: Validator::new() }
     }
 
     /// Turn collected errors into AWS's `ValidationError`, if any.
     pub fn finish(self) -> Result<(), ServiceError> {
-        if self.errors.is_empty() {
-            return Ok(());
-        }
-        let n = self.errors.len();
-        let noun = if n == 1 { "error" } else { "errors" };
-        Err(ServiceError::client(
-            "ValidationError",
-            400,
-            format!("{n} validation {noun} detected: {}", self.errors.join("; ")),
-        ))
-    }
-
-    pub fn has_errors(&self) -> bool {
-        !self.errors.is_empty()
-    }
-
-    pub fn push_error(&mut self, message: String) {
-        self.errors.push(message);
+        self.validator.finish("ValidationError")
     }
 
     pub fn has_prefix(&self, key: &str) -> bool {
@@ -114,7 +110,7 @@ impl<'a> Decoder<'a> {
             "true" => Some(true),
             "false" => Some(false),
             _ => {
-                self.invalid(path, raw, "boolean");
+                self.validator.invalid(path, raw, "boolean");
                 None
             }
         }
@@ -125,7 +121,7 @@ impl<'a> Decoder<'a> {
         match raw.parse::<T>() {
             Ok(v) => Some(v),
             Err(_) => {
-                self.invalid(path, raw, "number");
+                self.validator.invalid(path, raw, "number");
                 None
             }
         }
@@ -144,7 +140,7 @@ impl<'a> Decoder<'a> {
                 return Some(t);
             }
         }
-        self.invalid(path, raw, "timestamp");
+        self.validator.invalid(path, raw, "timestamp");
         None
     }
 
@@ -154,98 +150,10 @@ impl<'a> Decoder<'a> {
         match base64::engine::general_purpose::STANDARD.decode(raw) {
             Ok(v) => Some(v),
             Err(_) => {
-                self.invalid(path, raw, "base64 blob");
+                self.validator.invalid(path, raw, "base64 blob");
                 None
             }
         }
-    }
-
-    fn invalid(&mut self, path: &str, raw: &str, kind: &str) {
-        self.errors
-            .push(format!("Value '{raw}' at '{path}' failed to satisfy constraint: Member must be a valid {kind}"));
-    }
-
-    // ---- constraints --------------------------------------------------------
-
-    pub fn required<T>(&mut self, value: &Option<T>, path: &str) {
-        if value.is_none() {
-            self.errors.push(format!("Value null at '{path}' failed to satisfy constraint: Member must not be null"));
-        }
-    }
-
-    pub fn check_length(&mut self, path: &str, shown: &str, len: usize, min: Option<u64>, max: Option<u64>) {
-        let len = len as u64;
-        if let Some(min) = min {
-            if len < min {
-                self.errors.push(format!(
-                    "Value '{shown}' at '{path}' failed to satisfy constraint: Member must have length greater than or equal to {min}"
-                ));
-            }
-        }
-        if let Some(max) = max {
-            if len > max {
-                self.errors.push(format!(
-                    "Value '{shown}' at '{path}' failed to satisfy constraint: Member must have length less than or equal to {max}"
-                ));
-            }
-        }
-    }
-
-    pub fn check_range(&mut self, path: &str, value: f64, min: Option<f64>, max: Option<f64>) {
-        let shown = trim_float(value);
-        if let Some(min) = min {
-            if value < min {
-                self.errors.push(format!(
-                    "Value '{shown}' at '{path}' failed to satisfy constraint: Member must have value greater than or equal to {}",
-                    trim_float(min)
-                ));
-            }
-        }
-        if let Some(max) = max {
-            if value > max {
-                self.errors.push(format!(
-                    "Value '{shown}' at '{path}' failed to satisfy constraint: Member must have value less than or equal to {}",
-                    trim_float(max)
-                ));
-            }
-        }
-    }
-
-    pub fn check_pattern(&mut self, path: &str, value: &str, re: &Regex, pattern: &str) {
-        if !re.is_match(value) {
-            self.errors.push(format!(
-                "Value '{value}' at '{path}' failed to satisfy constraint: Member must satisfy regular expression pattern: {pattern}"
-            ));
-        }
-    }
-
-    pub fn check_enum(&mut self, path: &str, value: &str, allowed: &[&str]) {
-        if !allowed.contains(&value) {
-            self.errors.push(format!(
-                "Value '{value}' at '{path}' failed to satisfy constraint: Member must satisfy enum value set: [{}]",
-                allowed.join(", ")
-            ));
-        }
-    }
-}
-
-/// How AWS renders a list value inside a validation message.
-pub fn render_list<T: std::fmt::Debug>(items: &[T]) -> String {
-    let parts: Vec<String> = items
-        .iter()
-        .map(|i| {
-            let s = format!("{i:?}");
-            s.strip_prefix('"').and_then(|s| s.strip_suffix('"')).map(str::to_string).unwrap_or(s)
-        })
-        .collect();
-    format!("[{}]", parts.join(", "))
-}
-
-fn trim_float(v: f64) -> String {
-    if v.fract() == 0.0 && v.abs() < 1e15 {
-        format!("{}", v as i64)
-    } else {
-        v.to_string()
     }
 }
 
@@ -261,20 +169,6 @@ mod tests {
         assert!(p.has_prefix("Tags"));
         assert!(!p.has_prefix("Tag"));
         assert!(p.has_prefix("TagsOther"));
-    }
-
-    #[test]
-    fn validation_message_matches_aws() {
-        let p = Params::new();
-        let mut d = Decoder::new(&p);
-        d.required::<String>(&None, "userName");
-        d.check_length("path", "x", 1, Some(2), None);
-        let err = d.finish().unwrap_err();
-        assert_eq!(err.code, "ValidationError");
-        assert_eq!(
-            err.message,
-            "2 validation errors detected: Value null at 'userName' failed to satisfy constraint: Member must not be null; Value 'x' at 'path' failed to satisfy constraint: Member must have length greater than or equal to 2"
-        );
     }
 
     #[test]

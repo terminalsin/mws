@@ -4,6 +4,7 @@ use std::sync::Arc;
 
 use mws_core::Environment;
 use mws_iam::{Iam, IamConfig};
+use mws_route53::Route53;
 use mws_server::Gateway;
 use mws_sts::Sts;
 
@@ -30,16 +31,31 @@ impl Config {
     }
 }
 
+/// The gateway plus handles to services that have side channels (the
+/// Route 53 DNS responder).
+pub struct Mws {
+    pub gateway: Gateway,
+    pub route53: Route53,
+}
+
 /// Build the gateway with every service MWS emulates.
 pub fn build_gateway(config: Config) -> Gateway {
+    build(config).gateway
+}
+
+/// Build every service and the gateway in front of them.
+pub fn build(config: Config) -> Mws {
     let iam = Iam::new(config.iam.clone());
     let sts = Sts::new(iam.clone());
-    Gateway::builder()
+    let route53 = Route53::new();
+    let gateway = Gateway::builder()
         .environment(Environment { partition: config.iam.partition.clone(), ..Environment::default() })
         .authorizer(iam.authorizer())
         .credentials(iam.credential_store())
         .credentials(sts.credential_store())
         .service(Arc::new(iam))
         .service(Arc::new(sts))
-        .build()
+        .service(Arc::new(route53.clone()))
+        .build();
+    Mws { gateway, route53 }
 }
