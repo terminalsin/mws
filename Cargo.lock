@@ -437,6 +437,31 @@ dependencies = [
 ]
 
 [[package]]
+name = "aws-sdk-sqs"
+version = "1.119.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "86e08dcb1abb0a0d3771fa7eac3af7550fd1708628e79f89db9bf41da8d2c030"
+dependencies = [
+ "arc-swap",
+ "aws-credential-types",
+ "aws-runtime",
+ "aws-smithy-async",
+ "aws-smithy-http",
+ "aws-smithy-json",
+ "aws-smithy-observability",
+ "aws-smithy-runtime",
+ "aws-smithy-runtime-api",
+ "aws-smithy-schema",
+ "aws-smithy-types",
+ "aws-types",
+ "bytes",
+ "fastrand",
+ "http 1.5.0",
+ "regex-lite",
+ "tracing",
+]
+
+[[package]]
 name = "aws-sdk-sso"
 version = "1.119.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1906,6 +1931,7 @@ dependencies = [
  "mws-s3",
  "mws-s3control",
  "mws-server",
+ "mws-sqs",
  "mws-sts",
  "tokio",
  "tracing",
@@ -1979,6 +2005,7 @@ dependencies = [
  "aws-sdk-route53",
  "aws-sdk-s3",
  "aws-sdk-s3control",
+ "aws-sdk-sqs",
  "aws-sdk-sts",
  "aws-smithy-http-client",
  "aws-smithy-runtime-api",
@@ -2299,6 +2326,30 @@ version = "0.1.0"
 dependencies = [
  "serde_json",
  "thiserror 2.0.21",
+]
+
+[[package]]
+name = "mws-sqs"
+version = "0.1.0"
+dependencies = [
+ "async-trait",
+ "base64 0.22.1",
+ "chrono",
+ "hex",
+ "http 1.5.0",
+ "md-5 0.10.6",
+ "mws-codegen",
+ "mws-core",
+ "mws-iam-policy",
+ "mws-kms",
+ "mws-proto-json",
+ "mws-proto-query",
+ "rand",
+ "serde",
+ "serde_json",
+ "sha2 0.10.9",
+ "tokio",
+ "uuid",
 ]
 
 [[package]]

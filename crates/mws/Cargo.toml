@@ -16,6 +16,7 @@ mws-core.workspace = true
 mws-iam.workspace = true
 mws-kms.workspace = true
 mws-logs.workspace = true
+mws-sqs.workspace = true
 mws-lambda.workspace = true
 mws-route53.workspace = true
 mws-s3.workspace = true

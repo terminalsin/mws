@@ -12,31 +12,45 @@ use crate::naming::{lower_camel, rust_str, snake_case, type_name};
 use crate::rust_types::{field_name, presence, Presence, TypeGen};
 use crate::xml_ser::XmlSer;
 
-pub fn generate(model: &Model) -> String {
-    Gen::new(model).run()
+/// `xml_namespace` overrides the model's `xmlNamespace`; it lets a former
+/// awsQuery service whose model moved to awsJson (`awsQueryCompatible`, as
+/// SQS) keep answering awsQuery requests from older SDKs.
+pub fn generate(model: &Model, xml_namespace: Option<&str>) -> String {
+    Gen::new(model, xml_namespace).run()
 }
 
 struct Gen<'m> {
     model: &'m Model,
+    xml_namespace: Option<&'m str>,
     types: TypeGen<'m>,
     out: String,
     constraints: Constraints,
 }
 
 impl<'m> Gen<'m> {
-    fn new(model: &'m Model) -> Self {
-        Self { model, types: TypeGen::new(model), out: String::new(), constraints: Constraints::default() }
+    fn new(model: &'m Model, xml_namespace: Option<&'m str>) -> Self {
+        Self {
+            model,
+            xml_namespace,
+            types: TypeGen::new(model),
+            out: String::new(),
+            constraints: Constraints::default(),
+        }
     }
 
     fn run(mut self) -> String {
         let model = self.model;
         let service = model.service().expect("model has a service");
-        assert!(service.has_trait("aws.protocols#awsQuery"), "{} does not use the awsQuery protocol", service.id);
+        assert!(
+            service.has_trait("aws.protocols#awsQuery")
+                || (service.has_trait("aws.protocols#awsQueryCompatible") && self.xml_namespace.is_some()),
+            "{} does not use the awsQuery protocol",
+            service.id
+        );
         let ops = model.operations(service);
-        let namespace = service
-            .get_trait("xmlNamespace")
-            .and_then(|v| v.get("uri"))
-            .and_then(Value::as_str)
+        let namespace = self
+            .xml_namespace
+            .or_else(|| service.get_trait("xmlNamespace").and_then(|v| v.get("uri")).and_then(Value::as_str))
             .expect("awsQuery services declare an xmlNamespace");
         let version = service.version.clone().unwrap_or_default();
 
@@ -74,7 +88,7 @@ impl<'m> Gen<'m> {
         let _ = writeln!(self.out, "}}");
 
         // ---- errors ----
-        common::emit_errors(model, &errors, true, &mut self.out);
+        common::emit_errors(model, &errors, common::ErrorCodes::Query, &mut self.out);
 
         // ---- handler ----
         common::emit_handler(model, &ops, &mut self.out);
