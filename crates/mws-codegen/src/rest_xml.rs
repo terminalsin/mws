@@ -373,15 +373,13 @@ impl Gen<'_, '_> {
                         let opt = presence(m) == Presence::Optional;
                         match target.ty {
                             ShapeType::Union if target.has_trait("streaming") => {
-                                // Event streams need the binary
-                                // vnd.amazon.eventstream framing, which MWS
-                                // does not speak yet.
-                                let _ = writeln!(
-                                    w,
-                                    "    let _ = (out, headers);\n    Err(ServiceError::not_implemented({}))\n}}",
-                                    rust_str(&format!("{} (event stream responses)", op.name()))
-                                );
-                                return;
+                                let arms = self.event_stream_arms(target, namespace);
+                                format!(
+                                    "{{ headers.push((\"content-type\".into(), \"application/vnd.amazon.eventstream\".into())); \
+                                     let mut stream = Vec::new(); \
+                                     for ev in &out.{field} {{ stream.extend(match ev {{ {arms} }}); }} \
+                                     Body::Raw(stream.into()) }}"
+                                )
                             }
                             ShapeType::Structure | ShapeType::Union => {
                                 let root = m
@@ -456,6 +454,77 @@ impl Gen<'_, '_> {
             }
         }
         let _ = writeln!(w, "}}");
+    }
+
+    /// Match arms that encode each event of an event stream union as an
+    /// `application/vnd.amazon.eventstream` message.
+    fn event_stream_arms(&self, union: &Shape, namespace: &str) -> String {
+        let model = self.model;
+        let ty = type_name(union.name());
+        let mut arms = String::new();
+        for m in &union.members {
+            let event = model.expect(&m.target);
+            let event_type = rust_str(&m.name);
+            let payload = event.members.iter().find(|e| e.has_trait("eventPayload"));
+            for e in &event.members {
+                assert!(
+                    e.has_trait("eventPayload"),
+                    "{}${}: event headers and unbound event members are not supported yet",
+                    event.id,
+                    e.name
+                );
+            }
+            let encode = match payload {
+                None => format!("{RT}::eventstream::event({event_type}, None, &[])"),
+                Some(p) => {
+                    let target = model.expect(&p.target);
+                    let field = field_name(p);
+                    let opt = presence(p) == Presence::Optional;
+                    match target.ty {
+                        ShapeType::Blob => {
+                            let bytes = if opt {
+                                format!("x.{field}.as_deref().unwrap_or(&[])")
+                            } else {
+                                format!("&x.{field}")
+                            };
+                            format!(
+                                "{RT}::eventstream::event({event_type}, Some(\"application/octet-stream\"), {bytes})"
+                            )
+                        }
+                        ShapeType::String => {
+                            let text = if opt {
+                                format!("x.{field}.as_deref().unwrap_or(\"\")")
+                            } else {
+                                format!("x.{field}.as_str()")
+                            };
+                            format!("{RT}::eventstream::event({event_type}, Some(\"text/plain\"), {text}.as_bytes())")
+                        }
+                        ShapeType::Structure => {
+                            let root = p
+                                .get_trait("xmlName")
+                                .or_else(|| target.get_trait("xmlName"))
+                                .and_then(Value::as_str)
+                                .unwrap_or(target.name());
+                            let write = format!(
+                                "let mut w = XmlWriter::new(); {} ser::{}(&mut w, v); w.close({}); w.finish()",
+                                open_root(root, namespace, target),
+                                ser_fn_name(target),
+                                rust_str(root)
+                            );
+                            let xml = if opt {
+                                format!("x.{field}.as_ref().map(|v| {{ {write} }}).unwrap_or_default()")
+                            } else {
+                                format!("{{ let v = &x.{field}; {write} }}")
+                            };
+                            format!("{RT}::eventstream::event({event_type}, Some(\"text/xml\"), {xml}.as_bytes())")
+                        }
+                        other => panic!("{}: event payload of type {other:?} is not supported yet", event.id),
+                    }
+                }
+            };
+            let _ = write!(arms, "types::{ty}::{}(x) => {{ let _ = x; {encode} }}, ", type_name(&m.name));
+        }
+        arms
     }
 
     /// `Option<T>` expression for a top-level input member, honouring its

@@ -189,3 +189,37 @@ def test_resource_api(endpoint, session_for, bucket):
     b.delete()
     assert bucket not in [x.name for x in s3.buckets.all()]
 
+
+
+def test_select_object_content(s3, bucket):
+    s3.put_object(Bucket=bucket, Key="people.csv", Body=b"name,age\nalice,34\nbob,27\ncarol,41\n")
+    resp = s3.select_object_content(
+        Bucket=bucket,
+        Key="people.csv",
+        Expression="SELECT name FROM S3Object WHERE CAST(age AS INT) >= 34",
+        ExpressionType="SQL",
+        InputSerialization={"CSV": {"FileHeaderInfo": "USE"}},
+        OutputSerialization={"JSON": {}},
+    )
+    records, stats, ended = b"", None, False
+    for event in resp["Payload"]:
+        if "Records" in event:
+            records += event["Records"]["Payload"]
+        elif "Stats" in event:
+            stats = event["Stats"]["Details"]
+        elif "End" in event:
+            ended = True
+    assert records == b'{"name":"alice"}\n{"name":"carol"}\n'
+    assert stats["BytesReturned"] == len(records)
+    assert ended
+
+    with pytest.raises(ClientError) as err:
+        s3.select_object_content(
+            Bucket=bucket,
+            Key="people.csv",
+            Expression="SELECT CAST(name AS INT) FROM S3Object",
+            ExpressionType="SQL",
+            InputSerialization={"CSV": {"FileHeaderInfo": "USE"}},
+            OutputSerialization={"CSV": {}},
+        )
+    assert code(err) == "CastFailed"

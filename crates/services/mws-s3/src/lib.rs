@@ -42,6 +42,7 @@ mod multipart;
 mod objects;
 mod public;
 mod replication;
+mod select;
 mod state;
 
 use std::sync::{Arc, RwLock, RwLockReadGuard, RwLockWriteGuard};
