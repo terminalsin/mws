@@ -70,6 +70,11 @@ impl<'m> TypeGen<'m> {
 
     /// The field type including `Box` and `Option` wrappers.
     pub fn field_type(&self, owner: &Shape, member: &Member) -> String {
+        let target = self.model.expect(&member.target);
+        if owner.ty == ShapeType::Structure && target.ty == ShapeType::Union && target.has_trait("streaming") {
+            // An event stream: the events, in order.
+            return format!("::std::vec::Vec<{}>", type_name(target.name()));
+        }
         let mut t = self.rust_type(&member.target);
         if self.is_boxed(&owner.id, &member.target) {
             t = format!("::std::boxed::Box<{t}>");

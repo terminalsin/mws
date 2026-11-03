@@ -6,7 +6,7 @@
 use std::collections::BTreeSet;
 use std::fmt::Write;
 
-use mws_smithy::{Model, Shape, ShapeType};
+use mws_smithy::{Member, Model, Shape, ShapeType};
 
 use crate::common::{de_fn_name, qualified_type, ser_fn_name, Constraints};
 use crate::naming::{ident, lower_camel, rust_str, snake_case, type_name};
@@ -138,6 +138,8 @@ impl<'t, 'm> JsonCodec<'t, 'm> {
                     "            if out.is_none() {{ if let Some(v) = val {{ out = Some(types::{ty}::{}({wrap})); }} }}",
                     type_name(&m.name)
                 );
+            } else if self.is_event_stream(m) {
+                let _ = writeln!(w, "            out.{field} = val.into_iter().collect();");
             } else {
                 let stmt = match presence(m) {
                     Presence::Required => {
@@ -245,6 +247,14 @@ impl<'t, 'm> JsonCodec<'t, 'm> {
                 let field = field_name(mem);
                 let boxed = self.types.is_boxed(&s.id, &mem.target);
                 let name = rust_str(&mem.name);
+                if self.is_event_stream(mem) {
+                    let _ = writeln!(
+                        w,
+                        "        m.insert({name}.into(), Value::Array(v.{field}.iter().map(|x| {}).collect()));",
+                        self.ser_expr(&mem.target, "x")
+                    );
+                    continue;
+                }
                 match presence(mem) {
                     Presence::Optional => {
                         let x = if boxed { "&**x" } else { "x" };
@@ -262,6 +272,12 @@ impl<'t, 'm> JsonCodec<'t, 'm> {
             }
         }
         let _ = writeln!(w, "        Value::Object(m)\n    }}");
+    }
+
+    /// A structure member holding an event stream (a `Vec` of events).
+    fn is_event_stream(&self, m: &Member) -> bool {
+        let t = self.model.expect(&m.target);
+        t.ty == ShapeType::Union && t.has_trait("streaming")
     }
 
     fn emit_ser_list(&self, s: &Shape, w: &mut String) {

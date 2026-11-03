@@ -839,3 +839,111 @@ async fn annotations_torrents_and_metadata_configurations() {
     let err = s3.get_bucket_metadata_configuration().bucket("notes").send().await.unwrap_err();
     assert_eq!(err.raw_response().unwrap().status().as_u16(), 404);
 }
+
+#[tokio::test]
+async fn select_object_content_streams_query_results() {
+    use aws_sdk_s3::types::{
+        CompressionType, CsvInput, CsvOutput, ExpressionType, FileHeaderInfo, InputSerialization, JsonInput,
+        JsonOutput, JsonType, OutputSerialization, RequestProgress, SelectObjectContentEventStream,
+    };
+    let mws = Mws::start().await;
+    let s3 = root(&mws).await;
+    s3.create_bucket().bucket("data").send().await.unwrap();
+    let csv = "name,age,city\nalice,34,\"Paris, FR\"\nbob,27,Berlin\ncarol,41,Oslo\n";
+    s3.put_object()
+        .bucket("data")
+        .key("people.csv")
+        .body(ByteStream::from_static(csv.as_bytes()))
+        .send()
+        .await
+        .unwrap();
+
+    async fn collect(
+        mut out: aws_sdk_s3::operation::select_object_content::SelectObjectContentOutput,
+    ) -> (String, Option<i64>, bool, bool) {
+        let (mut records, mut returned, mut progress, mut end) = (Vec::new(), None, false, false);
+        while let Some(event) = out.payload.recv().await.unwrap() {
+            match event {
+                SelectObjectContentEventStream::Records(r) => records.extend_from_slice(r.payload().unwrap().as_ref()),
+                SelectObjectContentEventStream::Stats(s) => returned = s.details().unwrap().bytes_returned(),
+                SelectObjectContentEventStream::Progress(_) => progress = true,
+                SelectObjectContentEventStream::End(_) => end = true,
+                _ => {}
+            }
+        }
+        (String::from_utf8(records).unwrap(), returned, progress, end)
+    }
+
+    let csv_in =
+        InputSerialization::builder().csv(CsvInput::builder().file_header_info(FileHeaderInfo::Use).build()).build();
+    let out = s3
+        .select_object_content()
+        .bucket("data")
+        .key("people.csv")
+        .expression("SELECT s.name, s.city FROM S3Object s WHERE CAST(s.age AS INT) > 30")
+        .expression_type(ExpressionType::Sql)
+        .input_serialization(csv_in.clone())
+        .output_serialization(OutputSerialization::builder().csv(CsvOutput::builder().build()).build())
+        .request_progress(RequestProgress::builder().enabled(true).build())
+        .send()
+        .await
+        .unwrap();
+    let (records, returned, progress, end) = collect(out).await;
+    assert_eq!(records, "alice,\"Paris, FR\"\ncarol,Oslo\n");
+    assert_eq!(returned, Some(records.len() as i64));
+    assert!(progress && end);
+
+    let out = s3
+        .select_object_content()
+        .bucket("data")
+        .key("people.csv")
+        .expression("SELECT COUNT(*) AS n, AVG(CAST(age AS INT)) AS mean FROM S3Object")
+        .expression_type(ExpressionType::Sql)
+        .input_serialization(csv_in.clone())
+        .output_serialization(OutputSerialization::builder().json(JsonOutput::builder().build()).build())
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(collect(out).await.0, "{\"n\":3,\"mean\":34.0}\n");
+
+    // Compressed JSON lines.
+    let mut gz = flate2::write::GzEncoder::new(Vec::new(), flate2::Compression::default());
+    std::io::Write::write_all(&mut gz, b"{\"id\":1,\"tags\":[\"a\"]}\n{\"id\":2,\"tags\":[\"b\"]}\n").unwrap();
+    s3.put_object()
+        .bucket("data")
+        .key("rows.json.gz")
+        .body(ByteStream::from(gz.finish().unwrap()))
+        .send()
+        .await
+        .unwrap();
+    let out = s3
+        .select_object_content()
+        .bucket("data")
+        .key("rows.json.gz")
+        .expression("SELECT s.id FROM S3Object s WHERE s.tags[0] = 'b'")
+        .expression_type(ExpressionType::Sql)
+        .input_serialization(
+            InputSerialization::builder()
+                .json(JsonInput::builder().r#type(JsonType::Lines).build())
+                .compression_type(CompressionType::Gzip)
+                .build(),
+        )
+        .output_serialization(OutputSerialization::builder().json(JsonOutput::builder().build()).build())
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(collect(out).await.0, "{\"id\":2}\n");
+
+    let err = s3
+        .select_object_content()
+        .bucket("data")
+        .key("people.csv")
+        .expression("SELECT FROM S3Object")
+        .expression_type(ExpressionType::Sql)
+        .input_serialization(csv_in)
+        .output_serialization(OutputSerialization::builder().csv(CsvOutput::builder().build()).build())
+        .send()
+        .await
+        .unwrap_err();
+    assert_eq!(err.into_service_error().code(), Some("ParseUnexpectedToken"));
+}

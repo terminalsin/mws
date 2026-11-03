@@ -759,4 +759,11 @@ impl Handler for Call {
     ) -> Result<(), ServiceError> {
         Call::delete_bucket_metadata_table_configuration(self, ctx, input)
     }
+    async fn select_object_content(
+        &self,
+        ctx: &RequestContext,
+        input: types::SelectObjectContentRequest,
+    ) -> Result<types::SelectObjectContentOutput, ServiceError> {
+        Call::select_object_content(self, ctx, input)
+    }
 }
