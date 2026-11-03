@@ -1,0 +1,14 @@
+[package]
+name = "mws-e2e"
+description = "End-to-end tests: real AWS SDK clients against a running MWS."
+version.workspace = true
+edition.workspace = true
+publish = false
+
+[dependencies]
+aws-config = { version = "1", features = ["behavior-version-latest"] }
+aws-credential-types = { version = "1", features = ["hardcoded-credentials"] }
+aws-sdk-iam = "1"
+mws.workspace = true
+mws-server.workspace = true
+tokio.workspace = true

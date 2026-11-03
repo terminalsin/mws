@@ -1,0 +1,39 @@
+//! Server code generation from Smithy models.
+//!
+//! A service crate calls [`build_aws_query`] from its `build.rs`; the result
+//! is `include!`d into the crate. Generated code contains:
+//!
+//! * `types`: one Rust type per structure and union in the service's closure,
+//! * `errors`: a constructor per modeled error, with its wire code and status,
+//! * `Handler`: an async trait with one method per operation, each defaulting
+//!   to a `NotImplemented` error,
+//! * `dispatch`: decodes and validates a request, calls the handler and
+//!   encodes the response or error.
+//!
+//! Only protocol modules live here; nothing is specific to one service.
+
+mod naming;
+mod query;
+mod regex_compat;
+mod rust_types;
+
+use std::path::{Path, PathBuf};
+
+pub use mws_smithy::Model;
+
+/// Generate awsQuery server code for the model at `model_path`.
+pub fn generate_aws_query(model: &Model) -> String {
+    query::generate(model)
+}
+
+/// Build-script helper: read `model_path` (relative to the crate), write the
+/// generated code to `$OUT_DIR/{out_name}`, and register rebuild triggers.
+pub fn build_aws_query(model_path: impl AsRef<Path>, out_name: &str) {
+    let model_path = model_path.as_ref();
+    println!("cargo:rerun-if-changed={}", model_path.display());
+    let model =
+        Model::load(model_path).unwrap_or_else(|e| panic!("loading Smithy model {}: {e}", model_path.display()));
+    let code = generate_aws_query(&model);
+    let out = PathBuf::from(std::env::var("OUT_DIR").expect("OUT_DIR is set by cargo")).join(out_name);
+    std::fs::write(&out, code).unwrap_or_else(|e| panic!("writing {}: {e}", out.display()));
+}

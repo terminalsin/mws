@@ -1,0 +1,10 @@
+[package]
+name = "mws-smithy"
+description = "Loads Smithy JSON AST models (the format AWS publishes its service models in)."
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+serde_json.workspace = true
+thiserror.workspace = true
