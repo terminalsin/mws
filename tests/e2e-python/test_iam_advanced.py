@@ -103,3 +103,24 @@ def test_server_certificate_errors(iam):
     with pytest.raises(ClientError) as e:
         iam.get_server_certificate(ServerCertificateName=unique("missing"))
     assert e.value.response["Error"]["Code"] == "NoSuchEntity"
+
+
+def test_simulator_policy_exclusions(iam):
+    user = unique("sim")
+    iam.create_user(UserName=user)
+    allow = json.dumps({"Version": "2012-10-17", "Statement": [{"Effect": "Allow", "Action": "iam:List*", "Resource": "*"}]})
+    iam.put_user_policy(UserName=user, PolicyName="lists", PolicyDocument=allow)
+    arn = f"arn:aws:iam::{ACCOUNT}:user/{user}"
+
+    def decide(**kwargs):
+        out = iam.simulate_principal_policy(PolicySourceArn=arn, ActionNames=["iam:ListRoles"], **kwargs)
+        return out["EvaluationResults"][0]["EvalDecision"]
+
+    assert decide() == "allowed"
+    inline = {"InlinePolicyIdentifier": {"PolicyName": "lists", "AttachmentType": "user", "AttachmentName": user}}
+    assert decide(PolicyExclusionList=[inline]) == "implicitDeny"
+    assert decide(PolicyExclusionList=[{"PolicyType": "inline"}]) == "implicitDeny"
+    assert decide(PolicyExclusionList=[{"PolicyType": "aws-managed"}]) == "allowed"
+    with pytest.raises(ClientError) as e:
+        decide(PolicyExclusionList=[{"PolicyArn": "arn:aws:s3:::not-a-policy"}])
+    assert e.value.response["Error"]["Code"] == "InvalidInput"
