@@ -1920,6 +1920,7 @@ version = "0.1.0"
 dependencies = [
  "mws-acmpca",
  "mws-core",
+ "mws-events",
  "mws-iam",
  "mws-kms",
  "mws-lambda",
@@ -2026,6 +2027,35 @@ dependencies = [
 ]
 
 [[package]]
+name = "mws-events"
+version = "0.1.0"
+dependencies = [
+ "async-trait",
+ "base64 0.22.1",
+ "bytes",
+ "chrono",
+ "http 1.5.0",
+ "mws-codegen",
+ "mws-core",
+ "mws-iam-policy",
+ "mws-lambda",
+ "mws-logs",
+ "mws-proto-json",
+ "mws-sts",
+ "percent-encoding",
+ "rand",
+ "rustls 0.23.46",
+ "rustls-native-certs",
+ "rustls-pki-types",
+ "serde",
+ "serde_json",
+ "tokio",
+ "tokio-rustls 0.26.6",
+ "tracing",
+ "uuid",
+]
+
+[[package]]
 name = "mws-iam"
 version = "0.1.0"
 dependencies = [
@@ -2091,6 +2121,7 @@ dependencies = [
  "hyper-util",
  "mws-codegen",
  "mws-core",
+ "mws-iam-policy",
  "mws-logs",
  "mws-proto-json",
  "mws-proto-restjson",
