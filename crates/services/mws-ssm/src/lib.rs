@@ -10,7 +10,9 @@
 //! other accounts through resource policies. `/aws/reference/secretsmanager/`
 //! names resolve Secrets Manager secrets through a
 //! [`SecretsManagerReferences`] the composition root provides. Every call is
-//! authorized through IAM, with `aws:ResourceTag` conditions.
+//! authorized through IAM, with `aws:ResourceTag` conditions. Creating,
+//! updating, deleting and labelling parameters reports "Parameter Store
+//! Change" events through a [`ParameterChangeSink`].
 //!
 //! Only the Parameter Store part of the SSM API is implemented; the other
 //! operations of the model answer `NotImplemented`.
@@ -20,6 +22,7 @@ pub mod generated {
     include!(concat!(env!("OUT_DIR"), "/ssm_generated.rs"));
 }
 
+mod changes;
 mod handler;
 mod names;
 mod params;
@@ -38,6 +41,7 @@ use std::sync::{Arc, Mutex, MutexGuard, RwLock};
 use mws_core::{ConditionContext, HttpRequest, HttpResponse, RequestContext, Service, ServiceError};
 use mws_kms::Kms;
 
+pub use changes::{ParameterChange, ParameterChangeSink};
 pub use references::{ReferencedSecret, SecretsManagerReferences};
 
 use names::{now, resource_tag_conditions, ParamRef};
@@ -49,12 +53,13 @@ pub struct Ssm {
     state: Arc<Mutex<State>>,
     kms: Kms,
     secrets: Arc<RwLock<Option<Arc<dyn SecretsManagerReferences>>>>,
+    changes: Arc<RwLock<Option<Arc<dyn ParameterChangeSink>>>>,
 }
 
 impl Ssm {
     /// SecureString parameters are encrypted with keys from `kms`.
     pub fn new(kms: Kms) -> Self {
-        Self { state: Arc::default(), kms, secrets: Arc::default() }
+        Self { state: Arc::default(), kms, secrets: Arc::default(), changes: Arc::default() }
     }
 
     /// Resolve `/aws/reference/secretsmanager/...` names through `secrets`.

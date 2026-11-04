@@ -193,6 +193,36 @@ impl mws_events::ClockSource for SsmPolicyEvents {
     }
 }
 
+/// Parameter Store's "Parameter Store Change" events (create, update,
+/// delete, label), put on the parameter's account's default bus.
+pub struct SsmChangeEvents(pub Events);
+
+impl mws_ssm::ParameterChangeSink for SsmChangeEvents {
+    fn parameter_changed(&self, ctx: &RequestContext, c: mws_ssm::ParameterChange) {
+        let mut detail = serde_json::json!({
+            "operation": c.operation,
+            "name": c.name,
+            "type": c.parameter_type,
+        });
+        if let Some(d) = c.description {
+            detail["description"] = serde_json::json!(d);
+        }
+        self.0.put_service_event(
+            ctx,
+            ServiceEvent {
+                partition: c.partition,
+                account: c.account,
+                region: c.region,
+                source: "aws.ssm".into(),
+                detail_type: "Parameter Store Change".into(),
+                resources: vec![c.arn],
+                detail,
+                time: c.time,
+            },
+        );
+    }
+}
+
 /// ACM's EventBridge events (certificate available, expired, renewal
 /// action required, approaching expiration) and its daily `DaysToExpiry`
 /// metric, both on the emulated clock.
