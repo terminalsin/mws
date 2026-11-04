@@ -18,6 +18,7 @@ mws-acmpca.workspace = true
 mws-organizations.workspace = true
 mws-cloudwatch.workspace = true
 mws-core.workspace = true
+mws-ec2.workspace = true
 mws-iam.workspace = true
 mws-kms.workspace = true
 mws-kinesis.workspace = true

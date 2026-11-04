@@ -8,6 +8,8 @@ mod acmpca;
 mod acmpca_parity;
 mod cloudwatch;
 mod cloudwatch_parity;
+mod ec2;
+mod ec2_docker;
 mod events;
 mod firehose;
 mod firehose_monitoring;

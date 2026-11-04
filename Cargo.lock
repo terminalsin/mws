@@ -301,6 +301,32 @@ dependencies = [
 ]
 
 [[package]]
+name = "aws-sdk-ec2"
+version = "1.275.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "88b82eb8632f1e69cc6a085164252fcf1aa48340d8992d03d91dd8e57e0d2a36"
+dependencies = [
+ "arc-swap",
+ "aws-credential-types",
+ "aws-runtime",
+ "aws-smithy-async",
+ "aws-smithy-http",
+ "aws-smithy-json",
+ "aws-smithy-observability",
+ "aws-smithy-query",
+ "aws-smithy-runtime",
+ "aws-smithy-runtime-api",
+ "aws-smithy-schema",
+ "aws-smithy-types",
+ "aws-smithy-xml",
+ "aws-types",
+ "fastrand",
+ "http 1.5.0",
+ "regex-lite",
+ "tracing",
+]
+
+[[package]]
 name = "aws-sdk-eventbridge"
 version = "1.127.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2239,6 +2265,7 @@ dependencies = [
  "mws-acmpca",
  "mws-cloudwatch",
  "mws-core",
+ "mws-ec2",
  "mws-events",
  "mws-firehose",
  "mws-iam",
@@ -2387,6 +2414,7 @@ dependencies = [
  "aws-sdk-acmpca",
  "aws-sdk-cloudwatch",
  "aws-sdk-cloudwatchlogs",
+ "aws-sdk-ec2",
  "aws-sdk-eventbridge",
  "aws-sdk-firehose",
  "aws-sdk-iam",
@@ -2409,6 +2437,7 @@ dependencies = [
  "flate2",
  "md-5 0.10.6",
  "mws",
+ "mws-ec2",
  "mws-route53",
  "mws-s3",
  "mws-server",
@@ -2423,6 +2452,29 @@ dependencies = [
  "urlencoding",
  "x509-parser",
  "zip",
+]
+
+[[package]]
+name = "mws-ec2"
+version = "0.1.0"
+dependencies = [
+ "async-trait",
+ "aws-lc-rs",
+ "base64 0.22.1",
+ "bytes",
+ "chrono",
+ "hex",
+ "http 1.5.0",
+ "md-5 0.10.6",
+ "mws-codegen",
+ "mws-core",
+ "mws-proto-ec2",
+ "mws-proto-json",
+ "rand",
+ "serde",
+ "serde_json",
+ "tokio",
+ "tracing",
 ]
 
 [[package]]
@@ -2657,6 +2709,20 @@ dependencies = [
  "mws-core",
  "mws-proto-json",
  "serde_json",
+]
+
+[[package]]
+name = "mws-proto-ec2"
+version = "0.1.0"
+dependencies = [
+ "async-trait",
+ "base64 0.22.1",
+ "bytes",
+ "chrono",
+ "http 1.5.0",
+ "mws-core",
+ "mws-proto-query",
+ "mws-xml",
 ]
 
 [[package]]

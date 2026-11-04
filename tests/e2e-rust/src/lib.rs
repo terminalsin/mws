@@ -27,11 +27,23 @@ impl Mws {
         Self::serve(config, built).await
     }
 
+    /// Start listening on every interface (for clients outside this host's
+    /// loopback, such as EC2 instances in containers); clients here still
+    /// use 127.0.0.1.
+    pub async fn start_on_all_interfaces(config: mws::Config) -> Self {
+        let built = mws::build(config.clone());
+        Self::serve_on(config, built, "0.0.0.0:0").await
+    }
+
     async fn serve(config: mws::Config, built: mws::Mws) -> Self {
+        Self::serve_on(config, built, "127.0.0.1:0").await
+    }
+
+    async fn serve_on(config: mws::Config, built: mws::Mws, addr: &str) -> Self {
         let route53 = built.route53;
         let gateway = Arc::new(built.gateway);
-        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
-        let endpoint = format!("http://{}", listener.local_addr().unwrap());
+        let listener = tokio::net::TcpListener::bind(addr).await.unwrap();
+        let endpoint = format!("http://127.0.0.1:{}", listener.local_addr().unwrap().port());
         let (tx, rx) = tokio::sync::oneshot::channel::<()>();
         let server = tokio::spawn(mws_server::serve(listener, gateway, async {
             let _ = rx.await;

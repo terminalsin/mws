@@ -31,7 +31,13 @@ def endpoint():
     port = _free_port()
     proc = subprocess.Popen(
         [binary],
-        env={**os.environ, "MWS_LISTEN": f"127.0.0.1:{port}", "RUST_LOG": "warn"},
+        env={
+            # EC2 instances are metadata only unless a test run asks for Docker.
+            "MWS_EC2_BACKEND": "metadata",
+            **os.environ,
+            "MWS_LISTEN": f"127.0.0.1:{port}",
+            "RUST_LOG": "warn",
+        },
     )
     url = f"http://127.0.0.1:{port}"
     for _ in range(100):

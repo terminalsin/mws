@@ -19,6 +19,17 @@ pub struct RoleView {
     pub tags: BTreeMap<String, String>,
 }
 
+/// An instance profile and the role it carries, for EC2 (which hands
+/// the role's credentials to instances through instance metadata).
+#[derive(Debug, Clone)]
+pub struct InstanceProfileView {
+    pub name: String,
+    pub arn: String,
+    pub id: String,
+    /// The ARN of its role, if it has one.
+    pub role_arn: Option<String>,
+}
+
 #[derive(Debug, Clone)]
 pub struct UserView {
     pub name: String,
@@ -92,6 +103,29 @@ impl Iam {
             max_session_duration: r.max_session_duration,
             tags: r.tags.iter().cloned().collect(),
         })
+    }
+
+    /// Look up an instance profile in `account` by name, or by ARN (whose
+    /// account then wins).
+    pub fn instance_profile(&self, account: &str, name_or_arn: &str) -> Option<InstanceProfileView> {
+        let (account, name) = match name_or_arn.strip_prefix("arn:") {
+            Some(_) => {
+                let account = arn_account(name_or_arn)?;
+                let name = name_or_arn.rsplit('/').next()?;
+                (account.to_string(), name.to_string())
+            }
+            None => (account.to_string(), name_or_arn.to_string()),
+        };
+        if !self.account_exists(&account) {
+            return None;
+        }
+        let state = self.inner.read_account(&account);
+        let p = state.instance_profile(&name)?;
+        if name_or_arn.starts_with("arn:") && p.arn != name_or_arn {
+            return None;
+        }
+        let role_arn = p.roles.first().and_then(|r| state.role(r)).map(|r| r.arn.clone());
+        Some(InstanceProfileView { name: p.name.clone(), arn: p.arn.clone(), id: p.id.clone(), role_arn })
     }
 
     /// Look up a user in `account`.
