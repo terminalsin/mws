@@ -37,12 +37,9 @@ jobs:
       - run: cargo test --workspace --all-targets
         env:
           MWS_LAMBDA_PYTHON: ${{ steps.python.outputs.python-path }}
-          CARGO_LOG: cargo::core::compiler::fingerprint=info
       # Same feature set as the test build, so only the mws binary links
       # (`-p mws` alone resolves features differently and rebuilds ~30 crates).
-      - run: cargo build --workspace --bins && df -h /
-        env:
-          CARGO_LOG: cargo::core::compiler::fingerprint=info
+      - run: cargo build --workspace --bins -v 2>&1 | grep -v '^ *Running' && df -h /
       - run: pytest -q tests/e2e-python
         env:
           MWS_LAMBDA_PYTHON: ${{ steps.python.outputs.python-path }}
