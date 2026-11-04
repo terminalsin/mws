@@ -35,7 +35,13 @@ impl Agg {
                     a.sum += st.sum;
                     a.min = a.min.min(st.min);
                     a.max = a.max.max(st.max);
-                    a.has_values = false;
+                    // A set of one value, or of equal values, still gives
+                    // exact percentiles.
+                    if st.count == 1.0 || st.min == st.max {
+                        a.values.push((st.min, st.count));
+                    } else {
+                        a.has_values = false;
+                    }
                 }
                 None => {
                     for &(v, c) in &s.values {
@@ -124,6 +130,8 @@ impl Agg {
 
     fn extended(&self, s: &Stat) -> Option<f64> {
         match s {
+            // Not available when any value is negative.
+            Stat::Percentile(_) if self.min < 0.0 => None,
             Stat::Percentile(p) => Some(self.percentile(*p)),
             Stat::TrimmedMean(b) => {
                 let w = self.within(b);
