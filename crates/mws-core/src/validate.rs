@@ -116,6 +116,25 @@ impl Validator {
         }
     }
 
+    /// Like [`Validator::check_pattern`], for a match computed by the
+    /// caller (patterns the `regex` crate cannot express).
+    pub fn check_pattern_result(&mut self, path: &str, value: &str, matched: bool, pattern: &str) {
+        if !matched {
+            self.errors.push(format!(
+                "Value '{value}' at '{path}' failed to satisfy constraint: Member must satisfy regular expression pattern: {pattern}"
+            ));
+        }
+    }
+
+    /// `check_pattern_result` for a `@sensitive` member.
+    pub fn check_pattern_result_redacted(&mut self, path: &str, matched: bool, pattern: &str) {
+        if !matched {
+            self.errors.push(format!(
+                "Value at '{path}' failed to satisfy constraint: Member must satisfy regular expression pattern: {pattern}"
+            ));
+        }
+    }
+
     pub fn check_enum(&mut self, path: &str, value: &str, allowed: &[&str]) {
         if !allowed.contains(&value) {
             self.errors.push(format!(

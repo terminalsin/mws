@@ -3,7 +3,7 @@ use std::collections::BTreeMap;
 use base64::Engine;
 use chrono::{DateTime, TimeDelta, Utc};
 use mws_core::{Caller, CallerKind, ConditionContext, RequestContext, ServiceError, SessionInfo, SessionKind};
-use mws_iam_policy::{decide, Policy, PolicyKind, PolicySet, PrincipalInfo, Request, SourcedPolicy};
+use mws_iam_policy::{Policy, PolicyKind};
 use rand::Rng;
 
 use crate::generated::{errors, types, Handler};
@@ -28,15 +28,24 @@ fn random(alphabet: &[u8], len: usize) -> String {
     (0..len).map(|_| alphabet[rng.gen_range(0..alphabet.len())] as char).collect()
 }
 
-fn session_token() -> String {
-    let mut bytes = vec![0u8; 256];
+/// A session token. Session policies and tags are packed into the token, so
+/// it grows with them, as AWS's does.
+fn session_token(packed: usize) -> String {
+    let mut bytes = vec![0u8; 256 + packed.min(PACKED_POLICY_LIMIT)];
     rand::thread_rng().fill(&mut bytes[..]);
     format!("IQoJb3JpZ2luX2Vj{}", base64::engine::general_purpose::STANDARD.encode(bytes))
 }
 
 pub(crate) struct Issued {
     pub(crate) credentials: types::Credentials,
+    /// `SessionTokenSize`: the token's length in bytes.
+    pub(crate) token_size: i32,
+    /// `SessionTokenUtilization`: the percentage of the largest allowed token.
+    pub(crate) token_utilization: i32,
 }
+
+/// The longest session token: one carrying the most packed policy and tags.
+const MAX_SESSION_TOKEN: usize = 16 + (256 + PACKED_POLICY_LIMIT).div_ceil(3) * 4;
 
 impl Sts {
     fn inner_verifies_signatures(&self) -> bool {
@@ -94,7 +103,10 @@ impl Sts {
     pub(crate) fn issue(&self, mut caller: Caller, duration: i32, session: SessionInfo) -> Issued {
         let akid = mws_core::ids::access_key_id("ASIA", &caller.account_id);
         let secret = random(b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/", 40);
-        let token = session_token();
+        let packed: usize = session.policies.iter().map(|p| mws_iam_policy::policy_size(p)).sum::<usize>()
+            + session.tags.iter().map(|(k, v)| k.len() + v.len()).sum::<usize>();
+        let token = session_token(packed);
+        let token_size = token.len();
         let expires_at = session.issued_at + TimeDelta::seconds(duration as i64);
         caller.access_key_id = akid.clone();
         caller.session = Some(SessionInfo { expires_at, ..session });
@@ -111,6 +123,8 @@ impl Sts {
                 session_token: token,
                 expiration,
             },
+            token_size: token_size as i32,
+            token_utilization: (token_size * 100).div_ceil(MAX_SESSION_TOKEN).min(100) as i32,
         }
     }
 
@@ -321,10 +335,11 @@ impl Handler for Sts {
         self.iam().note_role_used(&role, &ctx.region);
         Ok(types::AssumeRoleResponse {
             credentials: Some(issued.credentials),
+            session_token_utilization: Some(issued.token_utilization),
+            session_token_size: Some(issued.token_size),
             assumed_role_user: Some(assumed_role_user),
             packed_policy_size,
             source_identity,
-            ..Default::default()
         })
     }
 
@@ -369,8 +384,7 @@ impl Handler for Sts {
         let role = self.iam().role_by_arn(&input.role_arn).ok_or_else(denied)?;
 
         // Only the trust policy decides: there is no calling IAM identity.
-        let trust = Policy::parse(&role.trust_policy, PolicyKind::Trust).map_err(|_| denied())?;
-        let mut cond = mws_iam_policy::ConditionContext::new();
+        let mut cond = ConditionContext::new();
         cond.insert(format!("{}:aud", provider.url), vec![audience.clone()]);
         cond.insert(format!("{}:sub", provider.url), vec![claims.sub.clone()]);
         if let Some(amr) = claims.raw.get("amr").and_then(|v| v.as_array()) {
@@ -379,24 +393,26 @@ impl Handler for Sts {
                 amr.iter().filter_map(|v| v.as_str().map(str::to_string)).collect(),
             );
         }
-        cond.insert("sts:RoleSessionName", vec![input.role_session_name.clone()]);
-        cond.insert("aws:FederatedProvider", vec![provider.arn.clone()]);
-        let principal = PrincipalInfo { federated: Some(provider.arn.clone()), ..Default::default() };
-        let set = PolicySet {
-            resource: Some(SourcedPolicy { source_id: "trust".into(), policy: trust }),
-            resource_required: true,
-            ..Default::default()
-        };
-        let decision = decide(
-            &set,
-            &Request {
-                action: "sts:AssumeRoleWithWebIdentity",
-                resource: &role.arn,
-                principal: &principal,
-                context: &cond,
-            },
-        );
-        if !decision.allowed {
+        cond.insert("sts:RoleSessionName".into(), vec![input.role_session_name.clone()]);
+        cond.insert("aws:FederatedProvider".into(), vec![provider.arn.clone()]);
+        let session_tags = web_identity::session_tags(&claims.raw);
+        cond.extend(Self::request_tag_context(&session_tags.tags));
+        if !session_tags.transitive.is_empty() {
+            cond.insert("sts:TransitiveTagKeys".into(), session_tags.transitive.clone());
+        }
+        if let Some(si) = &session_tags.source_identity {
+            cond.insert("sts:SourceIdentity".into(), vec![si.clone()]);
+        }
+        let allows =
+            |action: &str| crate::extra::trust_allows(&role.trust_policy, action, &role.arn, &provider.arn, &cond);
+        if !allows("sts:AssumeRoleWithWebIdentity") {
+            return Err(denied());
+        }
+        // Tags and a source identity in the token need their own permissions.
+        if !session_tags.tags.is_empty() && !allows("sts:TagSession") {
+            return Err(denied());
+        }
+        if session_tags.source_identity.is_some() && !allows("sts:SetSourceIdentity") {
             return Err(denied());
         }
 
@@ -405,7 +421,7 @@ impl Handler for Sts {
             return Err(validation("The requested DurationSeconds exceeds the MaxSessionDuration set for this role."));
         }
         let (policies, packed) = self.session_policies(input.policy, input.policy_arns)?;
-        let packed_policy_size = Self::check_packed(packed, &BTreeMap::new())?;
+        let packed_policy_size = Self::check_packed(packed, &session_tags.tags)?;
         let new_caller = self.assumed_role_caller(&role, &input.role_session_name);
         let assumed_role_user =
             types::AssumedRoleUser { assumed_role_id: new_caller.user_id.clone(), arn: new_caller.arn.clone() };
@@ -415,9 +431,9 @@ impl Handler for Sts {
             SessionInfo {
                 kind: SessionKind::AssumeRoleWithWebIdentity,
                 policies,
-                tags: BTreeMap::new(),
-                transitive_tag_keys: vec![],
-                source_identity: None,
+                tags: session_tags.tags,
+                transitive_tag_keys: session_tags.transitive,
+                source_identity: session_tags.source_identity.clone(),
                 issued_at: ctx.received_at,
                 expires_at: ctx.received_at,
                 mfa_authenticated: false,
@@ -426,12 +442,14 @@ impl Handler for Sts {
         self.iam().note_role_used(&role, &ctx.region);
         Ok(types::AssumeRoleWithWebIdentityResponse {
             credentials: Some(issued.credentials),
+            session_token_utilization: Some(issued.token_utilization),
+            session_token_size: Some(issued.token_size),
             subject_from_web_identity_token: Some(claims.sub),
             assumed_role_user: Some(assumed_role_user),
             packed_policy_size,
             provider: Some(claims.iss),
             audience: Some(audience),
-            ..Default::default()
+            source_identity: session_tags.source_identity,
         })
     }
 
@@ -469,7 +487,11 @@ impl Handler for Sts {
                 mfa_authenticated: mfa,
             },
         );
-        Ok(types::GetSessionTokenResponse { credentials: Some(issued.credentials), ..Default::default() })
+        Ok(types::GetSessionTokenResponse {
+            credentials: Some(issued.credentials),
+            session_token_utilization: Some(issued.token_utilization),
+            session_token_size: Some(issued.token_size),
+        })
     }
 
     async fn get_federation_token(
@@ -518,9 +540,10 @@ impl Handler for Sts {
         );
         Ok(types::GetFederationTokenResponse {
             credentials: Some(issued.credentials),
+            session_token_utilization: Some(issued.token_utilization),
+            session_token_size: Some(issued.token_size),
             federated_user: Some(federated_user),
             packed_policy_size,
-            ..Default::default()
         })
     }
 

@@ -25,7 +25,7 @@ impl Iam {
             return Err(validation("Invalid Openid Connect Provider URL. The URL must begin with https://"));
         }
         let arn = self.arn(&format!("oidc-provider/{url}"));
-        let tags = tags_from_wire(input.tags);
+        let tags = tags_from_wire(input.tags)?;
         self.authorize_with(ctx, "CreateOpenIDConnectProvider", &arn, request_tag_context(&tags))?;
         let mut state = self.write();
         if state.oidc_providers.contains_key(&arn) {
@@ -146,7 +146,7 @@ impl Iam {
         ctx: &RequestContext,
         i: types::TagOpenIDConnectProviderRequest,
     ) -> Result<(), ServiceError> {
-        let tags = tags_from_wire(Some(i.tags));
+        let tags = tags_from_wire(Some(i.tags))?;
         self.with_provider(ctx, "TagOpenIDConnectProvider", &i.open_id_connect_provider_arn, |p| {
             merge_tags(&mut p.tags, tags, "TagsPerOpenIDConnectProvider")
         })
