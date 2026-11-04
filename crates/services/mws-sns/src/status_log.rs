@@ -37,7 +37,41 @@ fn attribute_prefix(protocol: &str) -> Option<&'static str> {
     })
 }
 
+/// A request context acting as `role`, assumed by `sns.amazonaws.com` for
+/// the topic `topic_arn` (in the topic's region).
+pub(crate) fn role_context(
+    sts: &mws_sts::Sts,
+    ctx: &RequestContext,
+    role: &str,
+    topic_arn: &str,
+    session_name: &str,
+) -> Result<RequestContext, String> {
+    let parsed = crate::names::parse_sns_arn(topic_arn).ok_or_else(|| format!("{topic_arn} is not a topic ARN"))?;
+    let creds = sts
+        .assume_role_as_service(&mws_sts::ServiceAssume {
+            role_arn: role,
+            service_principal: "sns.amazonaws.com",
+            session_name,
+            duration_seconds: 900,
+            source_account: Some(&parsed.account),
+            source_arn: Some(topic_arn),
+            now: ctx.received_at,
+        })
+        .map_err(|e| format!("SNS could not assume {role}: {e:?}"))?;
+    let resolved = sts
+        .credential_store()
+        .resolve(&creds.access_key_id, Some(&creds.session_token), ctx.received_at)
+        .map_err(|e| format!("{e:?}"))?
+        .ok_or_else(|| "the role session could not be resolved".to_string())?;
+    Ok(RequestContext { caller: resolved.caller, region: parsed.region, source_ip: None, ..ctx.clone() })
+}
+
 impl Sns {
+    /// The STS service, for acting as roles.
+    pub(crate) fn sts(&self) -> Option<&mws_sts::Sts> {
+        self.inner.status_logs.get().map(|(_, sts)| sts)
+    }
+
     /// Write delivery status logs to `logs`, assuming feedback roles
     /// through `sts`.
     pub fn set_delivery_status_logs(&self, logs: mws_logs::Logs, sts: mws_sts::Sts) {
@@ -69,24 +103,7 @@ impl Sns {
         else {
             return;
         };
-        let Ok(creds) = sts.assume_role_as_service(&mws_sts::ServiceAssume {
-            role_arn: role,
-            service_principal: "sns.amazonaws.com",
-            session_name: "SNSDeliveryStatusLogging",
-            duration_seconds: 900,
-            source_account: Some(account),
-            source_arn: Some(a.topic_arn),
-            now: ctx.received_at,
-        }) else {
-            return;
-        };
-        let Ok(Some(resolved)) =
-            sts.credential_store().resolve(&creds.access_key_id, Some(&creds.session_token), ctx.received_at)
-        else {
-            return;
-        };
-        let role_ctx =
-            RequestContext { caller: resolved.caller, region: region.to_string(), source_ip: None, ..ctx.clone() };
+        let Ok(role_ctx) = role_context(sts, ctx, role, a.topic_arn, "SNSDeliveryStatusLogging") else { return };
         let body = msg.message_for(a.protocol);
         let md5: String = Md5::digest(body.as_bytes()).iter().map(|b| format!("{b:02x}")).collect();
         let now = ctx.received_at;
