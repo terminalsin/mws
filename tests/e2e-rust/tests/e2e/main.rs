@@ -1,0 +1,38 @@
+//! End-to-end tests: real AWS SDK clients against a running MWS.
+//!
+//! One test binary for every service: each extra binary would link all the
+//! AWS SDKs again, which costs minutes of build time and gigabytes of disk.
+
+mod acm;
+mod acmpca;
+mod cloudwatch;
+mod events;
+mod firehose;
+mod iam;
+mod iam_advanced;
+mod kinesis;
+mod kinesis_targets;
+mod kms;
+mod lambda;
+mod lambda_sqs;
+mod lambda_urls;
+mod logs;
+mod logs_subscriptions;
+mod object_lambda;
+mod organizations;
+mod parity;
+mod policies;
+mod route53;
+mod route53_advanced;
+mod s3;
+mod s3_access_logs;
+mod s3_inventory;
+mod secretsmanager;
+mod sns;
+mod sns_archive;
+mod sns_encryption;
+mod sns_status_logs;
+mod sqs;
+mod ssm;
+mod state;
+mod sts;

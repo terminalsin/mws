@@ -22,8 +22,10 @@ override only) see the same behaviour as real AWS. Fidelity beats breadth.
   `authorize_with_required_resource_policy` when the resource policy must
   allow (KMS key policies).
 - **Prove it with real SDKs.** Behaviour changes get an E2E test in
-  `tests/e2e-rust` (official Rust SDK) and, where useful, `tests/e2e-python`
-  (boto3).
+  `tests/e2e-rust/tests/e2e/` (official Rust SDK) and, where useful,
+  `tests/e2e-python` (boto3). Add Rust tests as modules of `e2e/main.rs`,
+  never as new files directly under `tests/`: every test binary links all
+  the SDKs, which costs minutes of build and gigabytes of disk.
 
 ## Adding a service
 
@@ -50,4 +52,4 @@ override only) see the same behaviour as real AWS. Fidelity beats breadth.
 
 ## Checks
 
-`cargo fmt --all --check && cargo clippy --workspace --all-targets -- -D warnings && cargo test --workspace`
+`cargo fmt --all --check && cargo clippy --workspace --all-targets -- -D warnings && cargo test --workspace --all-targets`

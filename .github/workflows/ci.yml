@@ -15,9 +15,9 @@ jobs:
   rust:
     runs-on: ubuntu-latest
     steps:
-      # The workspace's test binaries outgrow the runner's free disk; drop
-      # preinstalled toolchains this job never uses.
-      - run: sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc /opt/hostedtoolcache/CodeQL && df -h /
+      # Free disk for target/ (the runner starts with ~20 GB). Deleting takes
+      # ~50s, so run it in the background while the job carries on.
+      - run: nohup sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc /opt/hostedtoolcache/CodeQL > /dev/null 2>&1 &
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
         with:
@@ -32,12 +32,13 @@ jobs:
         with:
           python-version: "3.12"
       - run: pip install -r tests/e2e-python/requirements.txt
-      - run: cargo test --workspace
+      # --all-targets skips doctests: the workspace has none, and rustdoc
+      # still spends ~20s per run compiling an empty harness for every crate.
+      - run: cargo test --workspace --all-targets
         env:
           MWS_LAMBDA_PYTHON: ${{ steps.python.outputs.python-path }}
-      # The test binaries are no longer needed; make room for the binary.
-      - run: find target/debug/deps -maxdepth 1 -type f -executable ! -name '*.so' -delete && df -h /
-      - run: cargo build -p mws
+      # `cargo test` built target/debug/mws for crates/mws/tests/binary.rs;
+      # a separate `cargo build` would recompile the service crates.
       - run: pytest -q tests/e2e-python
         env:
           MWS_LAMBDA_PYTHON: ${{ steps.python.outputs.python-path }}
