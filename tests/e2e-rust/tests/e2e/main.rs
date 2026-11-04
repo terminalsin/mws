@@ -5,6 +5,7 @@
 
 mod acm;
 mod acmpca;
+mod acmpca_parity;
 mod cloudwatch;
 mod events;
 mod firehose;

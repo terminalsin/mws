@@ -109,7 +109,7 @@ impl PrivateCa {
         self.publish_audit_report(ca, &input.s3_bucket_name, &key, body, content_type)?;
         ca.audit_reports.insert(
             report_id.clone(),
-            AuditReport { bucket: input.s3_bucket_name, key: key.clone(), created_at: Utc::now() },
+            AuditReport { bucket: input.s3_bucket_name, key: key.clone(), created_at: ctx.received_at },
         );
         Ok(types::CreateCertificateAuthorityAuditReportResponse { audit_report_id: Some(report_id), s3_key: Some(key) })
     }

@@ -10,6 +10,13 @@
 //! reports can be generated. CRLs and audit reports are written into MWS's
 //! S3 as the service principal `acm-pca.amazonaws.com`, so the bucket policy
 //! must allow it, as in AWS.
+//!
+//! Certificate templates, including the API/CSR passthrough and blank
+//! variants, decide which extensions come from the template, the request's
+//! `ApiPassthrough` and the CSR. Time runs on MWS's emulated clock: CAs
+//! expire, deleted CAs disappear after their restoration period, and CRLs
+//! are regenerated before they lapse (see `lifecycle`). CAs belong to their
+//! account and region.
 
 #[allow(clippy::all, dead_code, unused_imports, non_snake_case, non_camel_case_types)]
 pub mod generated {
@@ -19,7 +26,9 @@ pub mod generated {
 mod acm;
 mod audit;
 mod der;
+mod extensions;
 mod handler;
+mod lifecycle;
 mod ops;
 mod public;
 mod publish;
@@ -68,8 +77,9 @@ impl Service for PrivateCa {
     }
 
     async fn handle(&self, ctx: RequestContext, request: HttpRequest) -> HttpResponse {
+        self.advance(ctx.received_at);
         if ctx.caller.kind == mws_core::CallerKind::Anonymous {
-            if let Some(response) = self.public_response(&request) {
+            if let Some(response) = self.public_response(&request, ctx.received_at) {
                 return response;
             }
         }
@@ -89,6 +99,7 @@ impl Service for PrivateCa {
         operation: &str,
         input: serde_json::Value,
     ) -> Result<serde_json::Value, ServiceError> {
+        self.advance(ctx.received_at);
         generated::invoke(self, &ctx, operation, input).await
     }
 
