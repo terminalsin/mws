@@ -27,7 +27,7 @@ pub fn valid_bucket_name(name: &str) -> bool {
 pub fn validate_tags(tags: &[types::Tag], max: usize, object: bool) -> Result<(), ServiceError> {
     if tags.len() > max {
         return Err(if object {
-            errors::invalid_tag("Object tags cannot be greater than 10", None)
+            ServiceError::client("BadRequest", 400, "Object tags cannot be greater than 10")
         } else {
             errors::invalid_tag("Bucket tag count cannot be greater than 50", None)
         });

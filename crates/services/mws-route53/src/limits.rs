@@ -99,7 +99,7 @@ impl Route53 {
         input: types::GetAccountLimitRequest,
     ) -> Result<types::GetAccountLimitResponse, ServiceError> {
         self.authorize(ctx, "GetAccountLimit", "*")?;
-        let st = self.lock();
+        let st = self.lock(ctx);
         let (value, count) = match input.r#type.as_str() {
             "MAX_HEALTH_CHECKS_BY_OWNER" => (MAX_HEALTH_CHECKS_BY_OWNER, st.health_checks.len()),
             "MAX_HOSTED_ZONES_BY_OWNER" => (MAX_HOSTED_ZONES_BY_OWNER, st.zones.len()),
@@ -125,7 +125,7 @@ impl Route53 {
     ) -> Result<types::GetHostedZoneLimitResponse, ServiceError> {
         let id = strip_id(&input.hosted_zone_id);
         self.authorize(ctx, "GetHostedZoneLimit", &arn(ctx, "hostedzone", id))?;
-        let st = self.lock();
+        let st = self.lock(ctx);
         let zone = st.zone(id)?;
         let (value, count) = match input.r#type.as_str() {
             "MAX_RRSETS_BY_ZONE" => (MAX_RRSETS_BY_ZONE, zone.records.len()),
@@ -223,7 +223,7 @@ impl Route53 {
     ) -> Result<types::TestDNSAnswerResponse, ServiceError> {
         let id = strip_id(&input.hosted_zone_id);
         self.authorize(ctx, "TestDNSAnswer", "*")?;
-        let st = self.lock();
+        let st = self.lock(ctx);
         let zone = st.zone(id)?;
         if zone.private {
             return Err(errors::invalid_input("Invalid input: TestDNSAnswer only supports public hosted zones."));
@@ -237,24 +237,29 @@ impl Route53 {
                 names::display(&zone.name)
             )));
         }
-        let at_name: Vec<&types::ResourceRecordSet> = zone.records.values().filter(|r| r.name == name).collect();
-        let mut data = Vec::new();
-        for r in at_name.iter().filter(|r| r.r#type == input.record_type) {
-            match &r.alias_target {
-                Some(alias) => {
-                    let target = names::normalize(&alias.dns_name).unwrap_or_default();
-                    for (_, records) in st.zones.iter().map(|(k, z)| (k, &z.records)) {
-                        for t in records.values().filter(|t| t.name == target && t.r#type == r.r#type) {
-                            data.extend(t.resource_records.iter().flatten().map(|v| v.value.clone()));
-                        }
-                    }
-                }
-                None => data.extend(r.resource_records.iter().flatten().map(|v| v.value.clone())),
-            }
-        }
-        let response_code = if at_name.is_empty() { "NXDOMAIN" } else { "NOERROR" };
+        let nameserver = zone.name_servers.first().cloned().unwrap_or_default();
+        let zone_id = zone.id.clone();
+        drop(st);
+        // The EDNS client subnet, else the resolver, decides IP-based routing.
+        let parse_ip = |raw: &Option<String>, what: &str| -> Result<Option<std::net::IpAddr>, ServiceError> {
+            raw.as_deref()
+                .map(|ip| {
+                    ip.parse().map_err(|_| errors::invalid_input(format!("Invalid input: {what} {ip} is not valid.")))
+                })
+                .transpose()
+        };
+        let subnet = parse_ip(&input.edns0_client_subnet_ip, "EDNS0ClientSubnetIP")?;
+        let resolver = parse_ip(&input.resolver_ip, "ResolverIP")?;
+        let (_, answer) =
+            self.lookup(Some(&zone_id), &name, &input.record_type, subnet.or(resolver)).expect("zone exists");
+        let records = if answer.authoritative { &answer.answers } else { &answer.authority };
+        let data: Vec<String> = records.iter().map(|r| r.value.clone()).collect();
+        let response_code = match answer.rcode {
+            crate::resolve::Rcode::NoError => "NOERROR",
+            crate::resolve::Rcode::NxDomain => "NXDOMAIN",
+        };
         Ok(types::TestDNSAnswerResponse {
-            nameserver: zone.name_servers.first().cloned().unwrap_or_default(),
+            nameserver,
             record_name: input.record_name,
             record_type: input.record_type,
             record_data: data,
@@ -270,7 +275,7 @@ impl Route53 {
     ) -> Result<types::UpdateHostedZoneFeaturesResponse, ServiceError> {
         let id = strip_id(&input.hosted_zone_id);
         self.authorize(ctx, "UpdateHostedZoneFeatures", &arn(ctx, "hostedzone", id))?;
-        let mut st = self.lock();
+        let mut st = self.lock(ctx);
         let zone = st.zone_mut(id)?;
         if let Some(enable) = input.enable_accelerated_recovery {
             if zone.private {

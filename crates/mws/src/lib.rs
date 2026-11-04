@@ -147,6 +147,8 @@ fn build_with_store(config: Config, store: Option<Arc<Store>>) -> Mws {
         .with_lambda(lambda.clone())
         .with_kinesis(kinesis.clone());
     lambda.set_logs(logs.clone());
+    s3control.set_sts(sts.clone());
+    s3control.set_lambda(lambda.clone());
     s3.set_object_lambda_invoker(Arc::new(lambda.clone()));
     let ssm = Ssm::new(kms.clone());
     let events = Events::new().with_lambda(lambda.clone()).with_logs(logs.clone()).with_sts(sts.clone());
@@ -191,6 +193,7 @@ fn build_with_store(config: Config, store: Option<Arc<Store>>) -> Mws {
     }));
     logs.set_metric_publisher(Arc::new(links::LogsToCloudWatch(cloudwatch.clone())));
     kinesis.set_metric_publisher(Arc::new(links::KinesisToCloudWatch(cloudwatch.clone())));
+    sqs.set_metric_publisher(Arc::new(links::SqsToCloudWatch(cloudwatch.clone())));
     cloudwatch.set_metric_stream_delivery(Arc::new(links::MetricStreamsToFirehose {
         firehose: firehose.clone(),
         sts: sts.clone(),

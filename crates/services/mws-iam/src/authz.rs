@@ -239,7 +239,7 @@ pub(crate) fn principal_policies(
         CallerKind::AssumedRole { role_name, .. } => {
             set.identity = parse_all(role_policy_docs(state, role_name));
             if let Some(r) = state.role(role_name) {
-                principal.arns.push(r.arn.clone());
+                principal.role_arn = Some(r.arn.clone());
                 set.boundary = boundary_doc(state, &r.permissions_boundary);
                 for (k, v) in &r.tags {
                     ctx.insert(format!("aws:PrincipalTag/{k}"), vec![v.clone()]);
@@ -252,6 +252,11 @@ pub(crate) fn principal_policies(
                     set.identity = parse_all(user_policy_docs(state, u));
                     if let Some(user) = state.user(u) {
                         set.boundary = boundary_doc(state, &user.permissions_boundary);
+                        // A federated user's principal tags are its IAM
+                        // user's tags plus the session tags.
+                        for (k, v) in &user.tags {
+                            ctx.insert(format!("aws:PrincipalTag/{k}"), vec![v.clone()]);
+                        }
                     }
                 }
                 None => set.is_root = true,

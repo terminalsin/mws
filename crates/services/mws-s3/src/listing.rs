@@ -74,6 +74,10 @@ pub fn walk<'a>(
     after: Option<&str>,
     max: usize,
 ) -> (Vec<Entry<'a>>, bool) {
+    // S3 answers `max-keys=0` with an empty, untruncated page.
+    if max == 0 {
+        return (Vec::new(), false);
+    }
     let delimiter = delimiter.filter(|d| !d.is_empty());
     let mut out: Vec<Entry<'a>> = Vec::new();
     let mut last_prefix: Option<String> = None;

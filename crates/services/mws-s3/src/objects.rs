@@ -1844,7 +1844,14 @@ impl Call {
                         "Restore is not allowed for the object's current storage class",
                     ));
                 }
-                // Restores complete immediately in MWS.
+                // Restores complete immediately in MWS. S3 answers `202
+                // Accepted` when it starts a restore and `200 OK` when the
+                // object is already restored (which extends the copy).
+                if !v.restored_until.is_some_and(|u| u > ctx.received_at) {
+                    if let Ok(mut s) = self.status.lock() {
+                        *s = Some(http::StatusCode::ACCEPTED);
+                    }
+                }
                 v.restored_until = Some(ctx.received_at + Duration::days(i64::from(days)));
                 Ok(types::RestoreObjectOutput::default())
             },

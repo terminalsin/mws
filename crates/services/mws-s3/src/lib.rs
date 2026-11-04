@@ -46,10 +46,13 @@ mod multipart;
 mod notifications;
 mod objects;
 mod parquet;
+mod post;
 mod public;
 mod replication;
 mod select;
+mod sigv2;
 mod state;
+mod website;
 
 use std::sync::{Arc, RwLock, RwLockReadGuard, RwLockWriteGuard};
 
@@ -62,6 +65,7 @@ pub use access_points::{
     ObjectLambdaInvoker, Transformation,
 };
 pub use auth::policy_is_public;
+pub use checksum::compute as compute_checksum;
 pub use notifications::{event_message, EventBridgeSink, NotificationDestination, NotificationSource, ObjectEvent};
 pub use public::{ServicePutError, ServicePutObject};
 use state::State;
@@ -76,6 +80,12 @@ fn signature_v2(request: &HttpRequest) -> bool {
             .get(http::header::AUTHORIZATION)
             .and_then(|v| v.to_str().ok())
             .is_some_and(|v| v.starts_with("AWS "))
+}
+
+/// A form upload signed with Signature Version 2 (an `AWSAccessKeyId`
+/// field rather than `x-amz-credential`).
+fn form_signed_v2(request: &HttpRequest) -> bool {
+    post::is_form_upload(request) && post::Form::parse(request).is_ok_and(|f| f.field("awsaccesskeyid").is_some())
 }
 
 /// The S3 service. Cheap to clone; clones share state.
@@ -116,6 +126,18 @@ pub(crate) struct Call {
     /// The service that made the request for the caller
     /// (`aws:CalledVia`), e.g. S3 Object Lambda.
     pub called_via: Option<&'static str>,
+    /// A success status other than the model's (`202 Accepted` for a
+    /// restore that has started).
+    pub status: std::sync::Mutex<Option<http::StatusCode>>,
+    /// The request accepted Requester Pays charges
+    /// (`x-amz-request-payer: requester`).
+    pub request_payer: bool,
+    /// The requester was charged, so the response says so.
+    pub request_charged: std::sync::atomic::AtomicBool,
+    /// Signed with Signature Version 2.
+    pub sigv2: bool,
+    /// A browser form upload (`POST` with a policy).
+    pub form_post: bool,
 }
 
 impl Call {
@@ -189,8 +211,49 @@ impl S3 {
             written: Default::default(),
             access_point: None,
             called_via: None,
+            status: Default::default(),
+            request_payer: request
+                .and_then(|r| r.headers().get("x-amz-request-payer"))
+                .is_some_and(|v| v.as_bytes().eq_ignore_ascii_case(b"requester")),
+            request_charged: Default::default(),
+            sigv2: request.is_some_and(|r| signature_v2(r) || form_signed_v2(r)),
+            form_post: false,
         }
     }
+}
+
+/// In a presigned URL, S3 reads `x-amz-*` query parameters (other than the
+/// signature's own) as the request headers they stand for: SDKs move
+/// headers such as `x-amz-checksum-crc32`, `x-amz-acl` or
+/// `x-amz-server-side-encryption` into the query when presigning.
+fn hoist_presigned_headers(mut request: HttpRequest) -> HttpRequest {
+    const SIGNATURE_PARAMS: [&str; 8] = [
+        "x-amz-algorithm",
+        "x-amz-credential",
+        "x-amz-date",
+        "x-amz-expires",
+        "x-amz-signedheaders",
+        "x-amz-signature",
+        "x-amz-security-token",
+        "x-amz-content-sha256",
+    ];
+    let Some(query) = request.uri().query().map(str::to_string) else {
+        return request;
+    };
+    if form_urlencoded_get(&query, "X-Amz-Signature").is_none() {
+        return request;
+    }
+    for (k, v) in form_urlencoded::parse(query.as_bytes()) {
+        let name = k.to_ascii_lowercase();
+        if !name.starts_with("x-amz-") || SIGNATURE_PARAMS.contains(&name.as_str()) {
+            continue;
+        }
+        if let (Ok(name), Ok(value)) = (http::HeaderName::from_bytes(name.as_bytes()), http::HeaderValue::from_str(&v))
+        {
+            request.headers_mut().entry(name).or_insert(value);
+        }
+    }
+    request
 }
 
 pub(crate) fn form_urlencoded_get(query: &str, name: &str) -> Option<String> {
@@ -243,6 +306,17 @@ pub(crate) fn to_path_style(request: HttpRequest) -> HttpRequest {
     http::Request::from_parts(parts, body)
 }
 
+/// Whether the path could be S3's: not another service's versioned or
+/// side-channel path, and not a query API's SigV2 (`SignatureVersion=2`).
+fn s3_path(request: &HttpRequest) -> bool {
+    let path = request.uri().path();
+    let query = request.uri().query().unwrap_or_default();
+    !(path.starts_with("/_")
+        || path.starts_with("/2013-04-01/")
+        || path.starts_with("/v20180820/")
+        || query.split('&').any(|p| p.starts_with("SignatureVersion=")))
+}
+
 /// Whether an unsigned request looks like S3 rather than one of the other
 /// services' unsigned operations (STS's form-encoded `POST /`, JSON
 /// protocols' `X-Amz-Target`, Route 53's versioned paths).
@@ -250,14 +324,22 @@ fn looks_like_s3(request: &HttpRequest) -> bool {
     if request.headers().contains_key("x-amz-target") {
         return false;
     }
+    if website::target(request).is_some() {
+        return true;
+    }
     let host = request.headers().get(http::header::HOST).and_then(|v| v.to_str().ok()).unwrap_or("");
     if virtual_host_bucket(host).is_some() {
         return true;
     }
     let path = request.uri().path();
     if path == "/" || path.is_empty() {
-        // `GET /` is ListBuckets, which needs a signature anyway.
-        return false;
+        // `GET /` is ListBuckets, which S3 refuses anonymously with
+        // `AccessDenied`. Other methods on `/`, and query-protocol `GET`s
+        // (`/?Action=...`, such as SNS's SubscribeURL), belong to other
+        // services.
+        let query_api =
+            request.uri().query().unwrap_or("").split('&').any(|p| p.starts_with("Action=") || p == "Action");
+        return request.method() == Method::GET && !query_api;
     }
     // Bucket names never start with `_`, so `/_mws/...` (the control API)
     // and `/_aws/...` (other services' side channels) are not S3's.
@@ -291,6 +373,9 @@ impl Service for S3 {
     async fn handle(&self, ctx: RequestContext, request: HttpRequest) -> HttpResponse {
         // A function fetching its Object Lambda `inputS3Url` (signed with
         // credentials that act as the original caller).
+        if let Some((bucket, path)) = website::target(&request) {
+            return self.serve_website(&ctx, &request, &bucket, &path).await;
+        }
         let called_via = self.called_via(&ctx);
         match self.resolve_target(request) {
             access_points::Target::Bucket(r) => self.serve(ctx, r, None, called_via).await,
@@ -303,6 +388,13 @@ impl Service for S3 {
                 response
             }
         }
+    }
+
+    fn alternate_signature(&self, request: &HttpRequest) -> Option<Result<mws_core::AlternateSignature, ServiceError>> {
+        if request.headers().contains_key("x-amz-target") || !s3_path(request) {
+            return None;
+        }
+        sigv2::alternate(request)
     }
 
     fn accepts_unsigned(&self, request: &HttpRequest) -> bool {
@@ -354,15 +446,14 @@ impl S3 {
     ) -> HttpResponse {
         let started = std::time::Instant::now();
         let request = directory::control_plane_listing(request);
+        let request = hoist_presigned_headers(request);
         let head = request.method() == Method::HEAD;
         if request.method() == Method::OPTIONS {
             return self.preflight(&ctx, &request);
         }
         self.run_lifecycle(ctx.received_at);
         self.run_inventory(&ctx);
-        if signature_v2(&request) {
-            // S3 turned Signature Version 2 off for buckets created since
-            // June 2020; every MWS bucket is that new.
+        if (signature_v2(&request) || form_signed_v2(&request)) && !self.takes_sigv2(&request) {
             let e = ServiceError::client(
                 "InvalidRequest",
                 400,
@@ -375,10 +466,23 @@ impl S3 {
         let mut call = self.call(&ctx, Some(&request));
         call.access_point = access_point;
         call.called_via = called_via;
-        let mut response = match generated::route(&call, &ctx, &request).await {
+        let routed = if post::is_form_upload(&request) {
+            call.post_object(&ctx, &request).await
+        } else {
+            generated::route(&call, &ctx, &request).await
+        };
+        let mut response = match routed {
             Ok(r) => r,
             Err(e) => self.render_error(&ctx.request_id, &errors::s3_validation_error(e)),
         };
+        if call.request_charged.load(std::sync::atomic::Ordering::Relaxed) && response.status().as_u16() < 300 {
+            response.headers_mut().insert("x-amz-request-charged", http::HeaderValue::from_static("requester"));
+        }
+        if let Some(status) = call.status.lock().ok().and_then(|s| *s) {
+            if response.status() == http::StatusCode::OK {
+                *response.status_mut() = status;
+            }
+        }
         self.replicate(&ctx, call.take_written());
         self.finish_response(&ctx, &request, &mut response);
         self.log_request(&ctx, &request, &response, started);
@@ -386,6 +490,13 @@ impl S3 {
             *response.body_mut() = Bytes::new();
         }
         response
+    }
+
+    /// Whether Signature Version 2 is accepted: S3 refuses it for buckets
+    /// created after 24 June 2020 (every MWS bucket), so only bucket-less
+    /// requests (`ListBuckets`) take it.
+    fn takes_sigv2(&self, request: &HttpRequest) -> bool {
+        request.uri().path().trim_start_matches('/').is_empty()
     }
 
     /// Response details the model does not express: `206` for ranged reads,

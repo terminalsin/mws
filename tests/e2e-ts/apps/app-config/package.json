@@ -1,0 +1,22 @@
+{
+  "name": "app-config",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Application configuration from SSM Parameter Store, Secrets Manager and KMS envelope encryption",
+  "type": "module",
+  "scripts": {
+    "test": "vitest run",
+    "typecheck": "tsc --noEmit"
+  },
+  "dependencies": {
+    "@aws-sdk/client-ssm": "^3.1161.0",
+    "@aws-sdk/client-secrets-manager": "^3.1161.0",
+    "@aws-sdk/client-kms": "^3.1161.0",
+    "@aws-sdk/client-iam": "^3.1161.0"
+  },
+  "devDependencies": {
+    "@types/node": "^24.0.0",
+    "typescript": "^7.0.2",
+    "vitest": "^5.1.0"
+  }
+}

@@ -15,23 +15,26 @@ use crate::xml_ser::XmlSer;
 /// `xml_namespace` overrides the model's `xmlNamespace`; it lets a former
 /// awsQuery service whose model moved to awsJson (`awsQueryCompatible`, as
 /// SQS) keep answering awsQuery requests from older SDKs.
-pub fn generate(model: &Model, xml_namespace: Option<&str>) -> String {
-    Gen::new(model, xml_namespace).run()
+/// `validation_error` is the code request validation errors carry.
+pub fn generate(model: &Model, xml_namespace: Option<&str>, validation_error: &str) -> String {
+    Gen::new(model, xml_namespace, validation_error).run()
 }
 
 struct Gen<'m> {
     model: &'m Model,
     xml_namespace: Option<&'m str>,
+    validation_error: &'m str,
     types: TypeGen<'m>,
     out: String,
     constraints: Constraints,
 }
 
 impl<'m> Gen<'m> {
-    fn new(model: &'m Model, xml_namespace: Option<&'m str>) -> Self {
+    fn new(model: &'m Model, xml_namespace: Option<&'m str>, validation_error: &'m str) -> Self {
         Self {
             model,
             xml_namespace,
+            validation_error,
             types: TypeGen::new(model),
             out: String::new(),
             constraints: Constraints::default(),
@@ -153,7 +156,7 @@ impl<'m> Gen<'m> {
                         w,
                         "            let input = de::{de_fn}(&mut d, \"\", \"\", false).unwrap_or_default();"
                     );
-                    let _ = writeln!(w, "            match d.finish() {{");
+                    let _ = writeln!(w, "            match d.finish_as({}) {{", rust_str(self.validation_error));
                     let _ = writeln!(w, "                Err(e) => Err(e),");
                     let _ = writeln!(w, "                Ok(()) => handler.{method}(ctx, input).await,");
                     let _ = writeln!(w, "            }}");

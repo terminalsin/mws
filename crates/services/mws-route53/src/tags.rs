@@ -4,18 +4,20 @@ use std::collections::BTreeMap;
 
 use mws_core::{RequestContext, ServiceError};
 
+use crate::account::AccountGuard;
 use crate::generated::{errors, types};
-use crate::health::no_such_health_check;
-use crate::state::State;
-use crate::zones::no_such_zone;
 use crate::{arn, strip_id, Route53};
 
 const MAX_TAGS: usize = 50;
 
-fn tag_map<'a>(st: &'a mut State, kind: &str, id: &str) -> Result<&'a mut BTreeMap<String, String>, ServiceError> {
+fn tag_map<'a>(
+    st: &'a mut AccountGuard<'_>,
+    kind: &str,
+    id: &str,
+) -> Result<&'a mut BTreeMap<String, String>, ServiceError> {
     match kind {
-        "hostedzone" => st.zones.get_mut(id).map(|z| &mut z.tags).ok_or_else(|| no_such_zone(id)),
-        "healthcheck" => st.health_checks.get_mut(id).map(|h| &mut h.tags).ok_or_else(|| no_such_health_check(id)),
+        "hostedzone" => st.zone_mut(id).map(|z| &mut z.tags),
+        "healthcheck" => st.health_check_mut(id).map(|h| &mut h.tags),
         other => Err(errors::invalid_input(format!("Invalid resource type: {other}"))),
     }
 }
@@ -36,7 +38,7 @@ impl Route53 {
     ) -> Result<types::ChangeTagsForResourceResponse, ServiceError> {
         let id = strip_id(&input.resource_id);
         self.authorize(ctx, "ChangeTagsForResource", &arn(ctx, &input.resource_type, id))?;
-        let mut st = self.lock();
+        let mut st = self.lock(ctx);
         let tags = tag_map(&mut st, &input.resource_type, id)?;
         let mut next = tags.clone();
         for k in input.remove_tag_keys.iter().flatten() {
@@ -64,7 +66,7 @@ impl Route53 {
     ) -> Result<types::ListTagsForResourceResponse, ServiceError> {
         let id = strip_id(&input.resource_id);
         self.authorize(ctx, "ListTagsForResource", &arn(ctx, &input.resource_type, id))?;
-        let mut st = self.lock();
+        let mut st = self.lock(ctx);
         let tags = tag_map(&mut st, &input.resource_type, id)?;
         Ok(types::ListTagsForResourceResponse { resource_tag_set: tag_set(&input.resource_type, id, tags) })
     }
@@ -78,7 +80,7 @@ impl Route53 {
         for id in &ids {
             self.authorize(ctx, "ListTagsForResources", &arn(ctx, &input.resource_type, id))?;
         }
-        let mut st = self.lock();
+        let mut st = self.lock(ctx);
         let mut sets = Vec::new();
         for id in &ids {
             let tags = tag_map(&mut st, &input.resource_type, id)?;

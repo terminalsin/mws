@@ -77,6 +77,10 @@ impl RequestContext {
         ctx.insert("aws:MultiFactorAuthPresent".into(), vec![mfa.to_string()]);
         if let Some(s) = &c.session {
             ctx.insert("aws:TokenIssueTime".into(), vec![s.issued_at.format("%Y-%m-%dT%H:%M:%SZ").to_string()]);
+            if s.mfa_authenticated {
+                let age = (self.received_at - s.issued_at).num_seconds().max(0);
+                ctx.insert("aws:MultiFactorAuthAge".into(), vec![age.to_string()]);
+            }
             if let Some(si) = &s.source_identity {
                 ctx.insert("aws:SourceIdentity".into(), vec![si.clone()]);
             }
@@ -191,6 +195,30 @@ fn principal_arn_for_conditions(c: &Caller) -> String {
     }
 }
 
+/// A request signed some other way than Signature Version 4 (S3's
+/// Signature Version 2, browser form uploads signed with a POST policy).
+/// The gateway resolves the access key as usual and hands its secret to
+/// `verify`.
+pub struct AlternateSignature {
+    pub access_key_id: String,
+    pub session_token: Option<String>,
+    /// The region the signature names, if it names one.
+    pub region: Option<String>,
+    /// Check the signature against the access key's secret, at `now` (wall
+    /// clock).
+    #[allow(clippy::type_complexity)]
+    pub verify: Box<dyn FnOnce(&str, DateTime<Utc>) -> Result<(), ServiceError> + Send>,
+}
+
+impl std::fmt::Debug for AlternateSignature {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("AlternateSignature")
+            .field("access_key_id", &self.access_key_id)
+            .field("region", &self.region)
+            .finish_non_exhaustive()
+    }
+}
+
 /// One AWS service, reachable through the shared HTTP front door.
 #[async_trait::async_trait]
 pub trait Service: Send + Sync {
@@ -213,6 +241,13 @@ pub trait Service: Send + Sync {
     /// A session token the request carries outside `X-Amz-Security-Token`,
     /// in a header or query parameter of this service's own.
     fn session_token(&self, _request: &HttpRequest) -> Option<String> {
+        None
+    }
+
+    /// A signature of this service's own on `request`, checked before
+    /// looking for SigV4. `Some(Err(..))` refuses the request with that
+    /// error.
+    fn alternate_signature(&self, _request: &HttpRequest) -> Option<Result<AlternateSignature, ServiceError>> {
         None
     }
 

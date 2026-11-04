@@ -521,6 +521,27 @@ impl mws_kinesis::MetricPublisher for KinesisToCloudWatch {
     }
 }
 
+/// SQS publishing its `AWS/SQS` queue metrics into CloudWatch.
+pub struct SqsToCloudWatch(pub mws_cloudwatch::CloudWatch);
+
+impl mws_sqs::MetricPublisher for SqsToCloudWatch {
+    fn publish(&self, metrics: Vec<mws_sqs::QueueMetric>) {
+        for m in metrics {
+            let Some(timestamp) = chrono::DateTime::from_timestamp_millis(m.timestamp) else { continue };
+            self.0.put_metric_as_service(mws_cloudwatch::ServiceMetric {
+                account: m.account,
+                region: m.region,
+                namespace: "AWS/SQS".into(),
+                metric_name: m.metric_name.into(),
+                dimensions: vec![("QueueName".into(), m.queue_name)],
+                unit: Some(m.unit.into()),
+                timestamp,
+                values: m.values,
+            });
+        }
+    }
+}
+
 /// CloudWatch metric streams putting their records into Firehose, as the
 /// stream's role assumed by `streams.metrics.cloudwatch.amazonaws.com`.
 pub(crate) struct MetricStreamsToFirehose {

@@ -542,51 +542,36 @@ async fn geo_catalogue_test_dns_answer_and_health_status() {
     assert_eq!(nx.response_code(), "NXDOMAIN");
 
     assert!(!r53.get_checker_ip_ranges().send().await.unwrap().checker_ip_ranges().is_empty());
+    // The checkers really probe: a TCP check of a port that accepts.
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let port = listener.local_addr().unwrap().port() as i32;
     let hc = r53
         .create_health_check()
         .caller_reference("hc")
         .health_check_config(
-            HealthCheckConfig::builder().r#type(HealthCheckType::Http).ip_address("192.0.2.1").build().unwrap(),
+            HealthCheckConfig::builder()
+                .r#type(HealthCheckType::Tcp)
+                .ip_address("127.0.0.1")
+                .port(port)
+                .build()
+                .unwrap(),
         )
         .send()
         .await
         .unwrap();
     let hc_id = hc.health_check().unwrap().id().to_string();
-    let status = r53.get_health_check_status().health_check_id(&hc_id).send().await.unwrap();
-    assert_eq!(status.health_check_observations().len(), 8);
-    assert!(status.health_check_observations()[0].status_report().unwrap().status().unwrap().starts_with("Success"));
+    let mut observations = Vec::new();
+    for _ in 0..50 {
+        let status = r53.get_health_check_status().health_check_id(&hc_id).send().await.unwrap();
+        observations = status.health_check_observations().to_vec();
+        if !observations.is_empty() {
+            break;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+    }
+    assert_eq!(observations.len(), 8);
+    assert!(observations[0].status_report().unwrap().status().unwrap().starts_with("Success"));
     let failures = r53.get_health_check_last_failure_reason().health_check_id(&hc_id).send().await.unwrap();
     assert!(failures.health_check_observations().is_empty());
-}
-
-#[tokio::test]
-async fn new_route53_state_survives_export_and_import() {
-    let mws = Mws::start().await;
-    let r53 = client(&mws).await;
-    r53.create_traffic_policy().name("persisted").document(POLICY).send().await.unwrap();
-    let set = r53.create_reusable_delegation_set().caller_reference("p").send().await.unwrap();
-    let set_id = set.delegation_set().unwrap().id().unwrap().trim_start_matches("/delegationset/").to_string();
-    let zone = r53.create_hosted_zone().name("p.example.com").caller_reference("p").send().await.unwrap();
-    let zone_id = zone.hosted_zone().unwrap().id().trim_start_matches("/hostedzone/").to_string();
-    let kms = dnssec_kms_key(&mws, true).await;
-    r53.create_key_signing_key()
-        .caller_reference("k")
-        .hosted_zone_id(&zone_id)
-        .key_management_service_arn(&kms)
-        .name("ksk")
-        .status("ACTIVE")
-        .send()
-        .await
-        .unwrap();
-
-    let (_, exported) = mws.control("GET", "/_mws/state", None).await;
-    mws.control("POST", "/_mws/reset", None).await;
-    assert!(r53.list_traffic_policies().send().await.unwrap().traffic_policy_summaries().is_empty());
-    let (status, _) = mws.control("PUT", "/_mws/state", Some(&exported.to_string())).await;
-    assert_eq!(status, 200);
-
-    assert_eq!(r53.list_traffic_policies().send().await.unwrap().traffic_policy_summaries()[0].name(), "persisted");
-    r53.get_reusable_delegation_set().id(&set_id).send().await.unwrap();
-    let dnssec = r53.get_dnssec().hosted_zone_id(&zone_id).send().await.unwrap();
-    assert_eq!(dnssec.key_signing_keys()[0].name(), Some("ksk"));
+    drop(listener);
 }

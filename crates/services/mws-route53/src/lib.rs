@@ -14,6 +14,7 @@ pub mod generated {
     include!(concat!(env!("OUT_DIR"), "/route53_generated.rs"));
 }
 
+mod account;
 mod cidr;
 mod delegation;
 mod dns;
@@ -22,8 +23,10 @@ mod handler;
 mod health;
 mod limits;
 mod names;
+mod probe;
 mod query_logging;
 mod records;
+mod resolve;
 mod state;
 mod tags;
 mod traffic;
@@ -35,21 +38,25 @@ use std::sync::{Arc, Mutex, MutexGuard};
 use mws_core::{ConditionContext, HttpRequest, HttpResponse, RequestContext, Service, ServiceError};
 use rand::Rng;
 
-pub use dns::{answer as dns_answer, serve as serve_dns};
+use account::{AccountGuard, Accounts};
+pub use dns::{answer as dns_answer, answer_from as dns_answer_from, serve as serve_dns, serve_tcp as serve_dns_tcp};
 use generated::types;
 pub use names::{display as display_name, normalize as normalize_name};
-use state::State;
 
 /// The Route 53 service. Cheap to clone; clones share state.
 #[derive(Clone, Default)]
 pub struct Route53 {
-    state: Arc<Mutex<State>>,
+    state: Arc<Mutex<Accounts>>,
     /// KMS, for DNSSEC key-signing keys. Without it, KSKs get a key pair of
     /// their own and the KMS key ARN is only checked for shape.
     kms: Option<mws_kms::Kms>,
     /// CloudWatch Logs, where query logging configurations send the DNS
     /// queries the responder answers.
     logs: Option<mws_logs::Logs>,
+    /// What the health checkers last saw, by health check id. Not saved:
+    /// checkers start over when state is loaded.
+    health: Arc<Mutex<probe::Runs>>,
+    prober_started: Arc<std::sync::atomic::AtomicBool>,
 }
 
 impl Route53 {
@@ -71,7 +78,14 @@ impl Route53 {
         self
     }
 
-    fn lock(&self) -> MutexGuard<'_, State> {
+    /// The state of the caller's account.
+    fn lock(&self, ctx: &RequestContext) -> AccountGuard<'_> {
+        AccountGuard::new(self.lock_all(), ctx)
+    }
+
+    /// Every account's state, for views that span accounts (DNS answers,
+    /// cross-account VPC associations).
+    fn lock_all(&self) -> MutexGuard<'_, Accounts> {
         self.state.lock().expect("Route 53 state lock poisoned")
     }
 
@@ -84,8 +98,8 @@ impl Route53 {
     /// A read-only view of the record sets of every zone, for an optional
     /// DNS front end or tests: `(zone name, record sets)`.
     pub fn snapshot(&self) -> Vec<(String, Vec<types::ResourceRecordSet>)> {
-        let st = self.lock();
-        st.zones.values().map(|z| (z.name.clone(), z.records.values().cloned().collect())).collect()
+        let st = self.lock_all();
+        st.all_zones().map(|(_, z)| (z.name.clone(), z.records.values().cloned().collect())).collect()
     }
 
     /// The values of `name`'s simple `ty` records as public DNS would
@@ -94,9 +108,12 @@ impl Route53 {
     /// records here.
     pub fn public_record_values(&self, name: &str, ty: &str) -> Vec<String> {
         let Some(name) = names::normalize(name) else { return Vec::new() };
-        let st = self.lock();
-        let zone =
-            st.zones.values().filter(|z| !z.private && names::in_zone(&name, &z.name)).max_by_key(|z| z.name.len());
+        let st = self.lock_all();
+        let zone = st
+            .all_zones()
+            .map(|(_, z)| z)
+            .filter(|z| !z.private && names::in_zone(&name, &z.name))
+            .max_by_key(|z| z.name.len());
         let Some(zone) = zone else { return Vec::new() };
         zone.records
             .get(&state::record_key(&name, ty, None))
@@ -107,25 +124,50 @@ impl Route53 {
             .collect()
     }
 
+    /// Resolve `qname`/`qtype` as Route 53's name servers would. With
+    /// `zone_id`, from that zone; otherwise from the most specific zone
+    /// containing the name (public zones first, then private ones, since a
+    /// local resolver is in no VPC). `None` when no zone contains the name.
+    pub(crate) fn lookup(
+        &self,
+        zone_id: Option<&str>,
+        qname: &str,
+        qtype: &str,
+        client: Option<std::net::IpAddr>,
+    ) -> Option<(String, resolve::Answer)> {
+        let all = self.lock_all();
+        let (owner, zone) = match zone_id {
+            Some(id) => all.all_zones().find(|(_, z)| z.id == id)?,
+            None => all
+                .all_zones()
+                .filter(|(_, z)| names::in_zone(qname, &z.name))
+                .max_by_key(|(_, z)| (z.name.len(), !z.private))?,
+        };
+        let state = &all.accounts[owner];
+        let checks = resolve::health_configs(state.health_checks.iter());
+        let healthy = |id: &str| self.is_healthy(&checks, id);
+        let cx = resolve::Context { cidr_collections: &state.cidr_collections, healthy: &healthy, client };
+        Some((zone.id.clone(), resolve::resolve(zone, qname, qtype, &cx)))
+    }
+
     /// Whether health check `id` (an id or a `healthcheck/` ARN) is
     /// healthy, as services that route on Route 53 health checks
-    /// (EventBridge global endpoints) see it; `None` if there is no such
-    /// health check. MWS's checkers always succeed, so a check is healthy
-    /// unless it is inverted; a disabled check is always healthy.
+    /// (EventBridge global endpoints) see it: what the checkers saw, after
+    /// `Inverted` and `Disabled`, and for calculated checks from their
+    /// children. `None` if there is no such health check.
     pub fn health_check_healthy(&self, id: &str) -> Option<bool> {
         let id = id.rsplit_once("healthcheck/").map_or(id, |(_, id)| id);
-        let st = self.lock();
-        let config = &st.health_checks.get(id)?.check.health_check_config;
-        if config.disabled.unwrap_or(false) {
-            return Some(true);
-        }
-        Some(!config.inverted.unwrap_or(false))
+        let all = self.lock_all();
+        let state = all.accounts.values().find(|s| s.health_checks.contains_key(id))?;
+        let checks = resolve::health_configs(state.health_checks.iter());
+        Some(self.is_healthy(&checks, id))
     }
 
     /// The name of hosted zone `id` (lowercase, trailing dot) and whether
     /// it is private.
     pub fn hosted_zone_name(&self, id: &str) -> Option<(String, bool)> {
-        self.lock().zones.get(strip_id(id)).map(|z| (z.name.clone(), z.private))
+        let id = strip_id(id);
+        self.lock_all().all_zones().find(|(_, z)| z.id == id).map(|(_, z)| (z.name.clone(), z.private))
     }
 }
 
@@ -191,17 +233,20 @@ impl Service for Route53 {
     }
 
     fn export_state(&self) -> Option<serde_json::Value> {
-        let state = self.lock().clone();
+        let state = self.lock_all().clone();
         Some(serde_json::to_value(state).expect("Route 53 state serializes"))
     }
 
     fn import_state(&self, state: serde_json::Value) -> Result<(), String> {
-        let state: State = serde_json::from_value(state).map_err(|e| format!("invalid Route 53 state: {e}"))?;
-        *self.lock() = state;
+        let state = Accounts::from_saved(state).map_err(|e| format!("invalid Route 53 state: {e}"))?;
+        *self.lock_all() = state;
+        self.health.lock().expect("health runs lock").clear();
+        self.ensure_prober();
         Ok(())
     }
 
     fn reset_state(&self) {
-        *self.lock() = State::default();
+        *self.lock_all() = Accounts::default();
+        self.health.lock().expect("health runs lock").clear();
     }
 }

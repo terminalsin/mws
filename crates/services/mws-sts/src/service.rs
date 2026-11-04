@@ -73,6 +73,17 @@ impl Sts {
     /// Issue role credentials to a service principal, as `AssumeRole`
     /// called by that service would.
     pub fn assume_role_as_service(&self, a: &ServiceAssume<'_>) -> Result<ServiceCredentials, ServiceAssumeError> {
+        self.assume_role_as_service_with_policy(a, None)
+    }
+
+    /// Like [`Sts::assume_role_as_service`], with a session policy that
+    /// narrows what the credentials may do (S3 Access Grants scope the
+    /// credentials they vend this way).
+    pub fn assume_role_as_service_with_policy(
+        &self,
+        a: &ServiceAssume<'_>,
+        session_policy: Option<String>,
+    ) -> Result<ServiceCredentials, ServiceAssumeError> {
         self.service_can_assume(a)?;
         let role = self.iam().role_by_arn(a.role_arn).ok_or(ServiceAssumeError::NoSuchRole)?;
         let caller = self.assumed_role_caller(&role, a.session_name);
@@ -82,7 +93,7 @@ impl Sts {
             a.duration_seconds,
             SessionInfo {
                 kind: SessionKind::AssumeRole,
-                policies: Vec::new(),
+                policies: session_policy.into_iter().collect(),
                 tags: Default::default(),
                 transitive_tag_keys: Vec::new(),
                 source_identity: None,

@@ -60,3 +60,26 @@ def test_missing_zone(r53):
         r53.get_hosted_zone(Id="Z0000000000000000000")
     assert e.value.response["Error"]["Code"] == "NoSuchHostedZone"
     assert e.value.response["ResponseMetadata"]["HTTPStatusCode"] == 404
+
+
+def test_routing_policies_are_validated_and_answered(r53):
+    zone = new_zone(r53, f"{uuid.uuid4().hex[:8]}.example")
+    name = r53.get_hosted_zone(Id=zone)["HostedZone"]["Name"]
+    weighted = a_record("CREATE", f"w.{name}", "192.0.2.1")
+    weighted["ResourceRecordSet"]["Weight"] = 10
+    with pytest.raises(ClientError) as e:
+        r53.change_resource_record_sets(HostedZoneId=zone, ChangeBatch={"Changes": [weighted]})
+    assert e.value.response["Error"]["Code"] == "InvalidChangeBatch"
+    assert "Missing field 'SetIdentifier'" in e.value.response["Error"]["Message"]
+
+    def failover(role, ip):
+        change = a_record("CREATE", f"app.{name}", ip)
+        change["ResourceRecordSet"].update({"SetIdentifier": role.lower(), "Failover": role})
+        return change
+
+    r53.change_resource_record_sets(
+        HostedZoneId=zone,
+        ChangeBatch={"Changes": [failover("PRIMARY", "192.0.2.10"), failover("SECONDARY", "192.0.2.20")]},
+    )
+    answer = r53.test_dns_answer(HostedZoneId=zone, RecordName=f"app.{name}", RecordType="A")
+    assert (answer["ResponseCode"], answer["RecordData"]) == ("NOERROR", ["192.0.2.10"])

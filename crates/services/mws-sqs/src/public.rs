@@ -151,6 +151,7 @@ impl Sqs {
         check_outgoing(q, &out).map_err(|e| ServiceSendError::Rejected(e.message))?;
         // AWS reports the service principal as the sender.
         let sent = enqueue(q, out, &service_sender_id(m.service_principal), now, None);
+        self.meter.count(m.queue_arn, now, |c| crate::metrics::count_send(c, sent.size, sent.duplicate));
         drop(st);
         self.arrivals.notify_waiters();
         Ok(sent.message_id)

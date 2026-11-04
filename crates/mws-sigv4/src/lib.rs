@@ -563,6 +563,13 @@ pub fn canonical_request(
     for name in &parsed.signed_headers {
         let values: Vec<String> = if name == "host" && headers.get("host").is_none() {
             request.uri().authority().map(|a| vec![a.to_string()]).unwrap_or_default()
+        } else if name == ":authority" {
+            // HTTP/2 clients (the JavaScript SDK's Kinesis client, for one)
+            // sign the `:authority` pseudo-header, which arrives as the URI
+            // authority, or as `Host` once translated to HTTP/1.
+            let authority = request.uri().authority().map(|a| a.to_string());
+            let host = headers.get("host").map(|v| String::from_utf8_lossy(v.as_bytes()).into_owned());
+            authority.or(host).into_iter().collect()
         } else {
             headers
                 .get_all(name.as_str())
@@ -718,6 +725,12 @@ pub fn presign_url(p: &PresignParams<'_>) -> Result<String, SigV4Error> {
 
 fn sigv4_encode(s: &str) -> String {
     utf8_percent_encode(s, SIGV4_ENCODE).to_string()
+}
+
+/// Sign an arbitrary string with the SigV4 key for `scope` and return the
+/// hex signature (S3 browser POST policies are signed this way).
+pub fn sign_string(secret_access_key: &str, scope: &CredentialScope, string_to_sign: &str) -> String {
+    hex::encode(hmac(&signing_key(secret_access_key, scope), string_to_sign.as_bytes()))
 }
 
 fn signing_key(secret: &str, scope: &CredentialScope) -> Vec<u8> {

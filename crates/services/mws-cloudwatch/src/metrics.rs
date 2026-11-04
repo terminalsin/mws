@@ -160,6 +160,7 @@ fn sample(d: &types::MetricDatum, at: &str, now: DateTime<Utc>) -> Result<Sample
 
 /// Store samples for `key`.
 pub(crate) fn record(region: &mut Region, key: MetricKey, samples: Vec<Sample>, now: DateTime<Utc>) {
+    region.puts += 1;
     let series = region.metrics.entry(key.key()).or_insert_with(|| Series { key, ..Series::default() });
     for s in samples {
         let at = series.samples.partition_point(|x| x.t <= s.t);
@@ -187,6 +188,39 @@ pub fn align(t: DateTime<Utc>, period: i64) -> DateTime<Utc> {
     let g = if period >= 60 { 60 } else { period.max(1) };
     let s = t.timestamp().div_euclid(g) * g;
     DateTime::from_timestamp(s, 0).unwrap_or(t)
+}
+
+/// `StartTime` as CloudWatch rounds it, by its age at `now`: down to the
+/// minute under 15 days, to 5 minutes up to 63 days, to the hour beyond,
+/// and to whole periods for periods under a minute.
+pub fn round_start(start: DateTime<Utc>, now: DateTime<Utc>, period: i64) -> DateTime<Utc> {
+    let age = now - start;
+    let g = if (1..60).contains(&period) {
+        period
+    } else if age <= Duration::days(15) {
+        60
+    } else if age <= Duration::days(63) {
+        300
+    } else {
+        3600
+    };
+    DateTime::from_timestamp(start.timestamp().div_euclid(g) * g, 0).unwrap_or(start)
+}
+
+/// The resolution data from `start` on is still kept at: under a minute
+/// for 3 hours, a minute for 15 days, 5 minutes for 63 days, then an hour.
+/// A period that is not a multiple of it gets no data points.
+pub fn retained_resolution(start: DateTime<Utc>, now: DateTime<Utc>) -> i64 {
+    let age = now - start;
+    if age <= Duration::hours(3) {
+        1
+    } else if age <= Duration::days(15) {
+        60
+    } else if age <= Duration::days(63) {
+        300
+    } else {
+        3600
+    }
 }
 
 /// Period starts from `start` (aligned) up to `end`.
@@ -294,10 +328,14 @@ impl CloudWatch {
             Some("PT3H") => Some(now - Duration::hours(3)),
             _ => None,
         };
-        let account = input.owning_account.clone().unwrap_or_else(|| ctx.caller.account_id.clone());
+        // Without cross-account observability links the caller is not a
+        // monitoring account: only its own metrics are visible, so another
+        // OwningAccount lists nothing.
+        let account = ctx.caller.account_id.clone();
+        let foreign = input.owning_account.as_ref().is_some_and(|a| a != &account);
         let st = self.lock();
         let mut out: Vec<types::Metric> = Vec::new();
-        if let Some(r) = st.region_ref(&account, &ctx.region) {
+        if let Some(r) = st.region_ref(&account, &ctx.region).filter(|_| !foreign) {
             for s in r.metrics.values() {
                 let k = &s.key;
                 if input.namespace.as_ref().is_some_and(|n| n != &k.namespace)
@@ -372,7 +410,10 @@ impl CloudWatch {
                 "The parameter StartTime must be less than the parameter EndTime.",
             ));
         }
-        let starts = buckets(input.start_time, input.end_time, period);
+        let now = now(ctx);
+        let start = round_start(input.start_time, now, period);
+        let starts = buckets(start, input.end_time, period);
+        let retained = period % retained_resolution(start, now) == 0;
         let requested = starts.len() as i64 * (statistics.len() + extended.len()) as i64;
         if requested > MAX_DATAPOINTS {
             return Err(errors::invalid_parameter_combination(format!(
@@ -382,7 +423,10 @@ impl CloudWatch {
         }
         let key = MetricKey::new(&input.namespace, &input.metric_name, input.dimensions.as_deref());
         let st = self.lock();
-        let series = st.region_ref(&ctx.caller.account_id, &ctx.region).and_then(|r| r.metrics.get(&key.key()));
+        let series = st
+            .region_ref(&ctx.caller.account_id, &ctx.region)
+            .and_then(|r| r.metrics.get(&key.key()))
+            .filter(|_| retained);
         let mut datapoints = Vec::new();
         if let Some(series) = series {
             for (t, agg) in aggregates(series, &starts, period, input.unit.as_deref()) {

@@ -33,7 +33,7 @@ pub use rest_xml::RestXmlOptions;
 
 /// Generate awsQuery server code for the model at `model_path`.
 pub fn generate_aws_query(model: &Model) -> String {
-    query::generate(model, None)
+    query::generate(model, None, "ValidationError")
 }
 
 /// Build-script helper: read `model_path` (relative to the crate), write the
@@ -52,12 +52,19 @@ pub fn build_aws_query(model_path: impl AsRef<Path>, out_name: &str) {
 /// `awsQueryCompatible` awsJson model (SQS), whose real service still
 /// answers awsQuery requests from older SDKs. The model no longer names its
 /// XML namespace, so the caller does.
-pub fn build_aws_query_compatible(model_path: impl AsRef<Path>, out_name: &str, xml_namespace: &str) {
+/// Request validation errors carry `validation_error`, as in the service's
+/// awsJson answers.
+pub fn build_aws_query_compatible(
+    model_path: impl AsRef<Path>,
+    out_name: &str,
+    xml_namespace: &str,
+    validation_error: &str,
+) {
     let model_path = model_path.as_ref();
     println!("cargo:rerun-if-changed={}", model_path.display());
     let model =
         Model::load(model_path).unwrap_or_else(|e| panic!("loading Smithy model {}: {e}", model_path.display()));
-    let code = query::generate(&model, Some(xml_namespace));
+    let code = query::generate(&model, Some(xml_namespace), validation_error);
     let out = PathBuf::from(std::env::var("OUT_DIR").expect("OUT_DIR is set by cargo")).join(out_name);
     std::fs::write(&out, code).unwrap_or_else(|e| panic!("writing {}: {e}", out.display()));
 }

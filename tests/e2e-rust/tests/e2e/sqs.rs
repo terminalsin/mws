@@ -244,10 +244,15 @@ async fn send_receive_change_visibility_and_delete() {
         .visibility_timeout(10)
         .send()
         .await
-        .unwrap_err()
-        .into_service_error();
-    assert!(stale.is_message_not_inflight());
-    assert_eq!(code(&stale), "AWS.SimpleQueueService.MessageNotInflight");
+        .unwrap_err();
+    assert_eq!(code(&stale), "InvalidParameterValue");
+    assert_eq!(
+        stale.message(),
+        Some(
+            format!("Value {handle} for parameter ReceiptHandle is invalid. Reason: The receipt handle has expired.")
+                .as_str()
+        )
+    );
     let too_long = sqs
         .change_message_visibility()
         .queue_url(&url)
@@ -786,4 +791,180 @@ async fn state_survives_export_and_import() {
     assert_eq!(status, 200);
     let got = sqs.receive_message().queue_url(&url).send().await.unwrap();
     assert_eq!(got.messages()[0].body(), Some("kept"));
+}
+
+#[tokio::test]
+async fn receipt_handle_errors() {
+    let mws = Mws::start().await;
+    let sqs = client(&mws).await;
+    let fifo = create(
+        &sqs,
+        "handles.fifo",
+        &[(QueueAttributeName::FifoQueue, "true"), (QueueAttributeName::ContentBasedDeduplication, "true")],
+    )
+    .await;
+    let other = create(&sqs, "handles-other", &[]).await;
+    sqs.send_message().queue_url(&fifo).message_body("a").message_group_id("g").send().await.unwrap();
+    let got = sqs.receive_message().queue_url(&fifo).visibility_timeout(0).send().await.unwrap();
+    let handle = got.messages()[0].receipt_handle().unwrap().to_string();
+    let expired =
+        format!("Value {handle} for parameter ReceiptHandle is invalid. Reason: The receipt handle has expired.");
+
+    // A FIFO handle stops working when the visibility timeout ends.
+    let e = sqs.delete_message().queue_url(&fifo).receipt_handle(&handle).send().await.unwrap_err();
+    assert_eq!(code(&e), "InvalidParameterValue");
+    assert_eq!(e.message(), Some(expired.as_str()));
+    let e = sqs
+        .change_message_visibility()
+        .queue_url(&fifo)
+        .receipt_handle(&handle)
+        .visibility_timeout(5)
+        .send()
+        .await
+        .unwrap_err();
+    assert_eq!(code(&e), "InvalidParameterValue");
+    assert_eq!(e.message(), Some(expired.as_str()));
+    // Batch entries carry ReceiptHandleIsInvalid with the bare reason.
+    let batch = sqs
+        .delete_message_batch()
+        .queue_url(&fifo)
+        .entries(DeleteMessageBatchRequestEntry::builder().id("a").receipt_handle(&handle).build().unwrap())
+        .send()
+        .await
+        .unwrap();
+    let failed = &batch.failed()[0];
+    assert_eq!(failed.code(), "ReceiptHandleIsInvalid");
+    assert_eq!(failed.message(), Some("The receipt handle has expired."));
+    assert!(failed.sender_fault());
+
+    // A handle of another queue.
+    let e = sqs.delete_message().queue_url(&other).receipt_handle(&handle).send().await.unwrap_err();
+    assert!(e.as_service_error().is_some_and(|e| e.is_receipt_handle_is_invalid()));
+    assert_eq!(e.message(), Some(format!("The receipt handle \"{handle}\" is not valid for this queue.").as_str()));
+
+    // A deleted message.
+    let again = sqs.receive_message().queue_url(&fifo).send().await.unwrap();
+    let current = again.messages()[0].receipt_handle().unwrap().to_string();
+    sqs.delete_message().queue_url(&fifo).receipt_handle(&current).send().await.unwrap();
+    let e = sqs
+        .change_message_visibility()
+        .queue_url(&fifo)
+        .receipt_handle(&current)
+        .visibility_timeout(5)
+        .send()
+        .await
+        .unwrap_err();
+    assert_eq!(code(&e), "InvalidParameterValue");
+    assert!(e
+        .message()
+        .unwrap()
+        .ends_with("Reason: Message does not exist or is not available for visibility timeout change."));
+}
+
+#[tokio::test]
+async fn fifo_dead_letter_queues_restart_retention() {
+    let mws = Mws::start().await;
+    let sqs = client(&mws).await;
+    let fifo = [(QueueAttributeName::FifoQueue, "true"), (QueueAttributeName::ContentBasedDeduplication, "true")];
+    let retention = (QueueAttributeName::MessageRetentionPeriod, "600");
+    let dlq = create(&sqs, "ret-dlq.fifo", &[fifo[0].clone(), fifo[1].clone(), retention.clone()]).await;
+    let sdlq = create(&sqs, "ret-dlq", std::slice::from_ref(&retention)).await;
+    let redrive = |target: &str| {
+        format!(r#"{{"deadLetterTargetArn":"arn:aws:sqs:us-east-1:{ACCOUNT}:{target}","maxReceiveCount":1}}"#)
+    };
+    let src = create(
+        &sqs,
+        "ret-src.fifo",
+        &[fifo[0].clone(), fifo[1].clone(), (QueueAttributeName::RedrivePolicy, &redrive("ret-dlq.fifo"))],
+    )
+    .await;
+    let ssrc = create(&sqs, "ret-src", &[(QueueAttributeName::RedrivePolicy, &redrive("ret-dlq"))]).await;
+    sqs.send_message().queue_url(&src).message_body("poison").message_group_id("g").send().await.unwrap();
+    sqs.send_message().queue_url(&ssrc).message_body("poison").send().await.unwrap();
+    // Eight minutes later, both are received once and then moved.
+    advance_seconds(&mws, 480).await;
+    for url in [&src, &ssrc] {
+        assert_eq!(
+            sqs.receive_message().queue_url(url).visibility_timeout(0).send().await.unwrap().messages().len(),
+            1
+        );
+        assert!(sqs.receive_message().queue_url(url).send().await.unwrap().messages().is_empty());
+    }
+    assert_eq!(attr(&sqs, &dlq, QueueAttributeName::ApproximateNumberOfMessages).await.as_deref(), Some("1"));
+    assert_eq!(attr(&sqs, &sdlq, QueueAttributeName::ApproximateNumberOfMessages).await.as_deref(), Some("1"));
+    // Past 600 s from the send: the standard DLQ counts from the original
+    // send and drops it; the FIFO one restarted the clock at the move.
+    advance_seconds(&mws, 180).await;
+    assert_eq!(attr(&sqs, &sdlq, QueueAttributeName::ApproximateNumberOfMessages).await.as_deref(), Some("0"));
+    assert_eq!(attr(&sqs, &dlq, QueueAttributeName::ApproximateNumberOfMessages).await.as_deref(), Some("1"));
+    advance_seconds(&mws, 480).await;
+    assert_eq!(attr(&sqs, &dlq, QueueAttributeName::ApproximateNumberOfMessages).await.as_deref(), Some("0"));
+}
+
+#[tokio::test]
+async fn queue_metrics_reach_cloudwatch() {
+    use aws_sdk_cloudwatch::types::{Dimension, Statistic};
+    let mws = Mws::start().await;
+    let sqs = client(&mws).await;
+    let cw = aws_sdk_cloudwatch::Client::new(&mws.root_sdk_config().await);
+    let url = create(&sqs, "metered", &[]).await;
+    for _ in 0..3 {
+        sqs.send_message().queue_url(&url).message_body("0123456789").send().await.unwrap();
+    }
+    let got = sqs.receive_message().queue_url(&url).send().await.unwrap();
+    sqs.delete_message()
+        .queue_url(&url)
+        .receipt_handle(got.messages()[0].receipt_handle().unwrap())
+        .send()
+        .await
+        .unwrap();
+    let rest = sqs.receive_message().queue_url(&url).max_number_of_messages(10).visibility_timeout(90).send().await;
+    assert_eq!(rest.unwrap().messages().len(), 2);
+    sqs.receive_message().queue_url(&url).send().await.unwrap();
+    // Close the minute on the emulated clock; SQS learns it from a request.
+    advance_seconds(&mws, 180).await;
+    sqs.list_queues().send().await.unwrap();
+
+    let now = aws_sdk_cloudwatch::primitives::DateTime::from_secs(emulated_now(&mws).await);
+    let start = aws_sdk_cloudwatch::primitives::DateTime::from_secs(now.secs() - 600);
+    let stat = |name: &'static str, s: Statistic| {
+        let cw = cw.clone();
+        async move {
+            let out = cw
+                .get_metric_statistics()
+                .namespace("AWS/SQS")
+                .metric_name(name)
+                .dimensions(Dimension::builder().name("QueueName").value("metered").build())
+                .start_time(start)
+                .end_time(now)
+                .period(600)
+                .statistics(s.clone())
+                .send()
+                .await
+                .unwrap();
+            let d = &out.datapoints()[0];
+            match s {
+                Statistic::Sum => d.sum().unwrap(),
+                Statistic::Maximum => d.maximum().unwrap(),
+                _ => d.average().unwrap(),
+            }
+        }
+    };
+    assert_eq!(stat("NumberOfMessagesSent", Statistic::Sum).await, 3.0);
+    assert_eq!(stat("NumberOfMessagesReceived", Statistic::Sum).await, 3.0);
+    assert_eq!(stat("NumberOfMessagesDeleted", Statistic::Sum).await, 1.0);
+    assert_eq!(stat("NumberOfEmptyReceives", Statistic::Sum).await, 1.0);
+    assert_eq!(stat("SentMessageSize", Statistic::Average).await, 10.0);
+    // Two messages left: in flight in the first minute, visible again later.
+    assert_eq!(stat("ApproximateNumberOfMessagesVisible", Statistic::Maximum).await, 2.0);
+    assert_eq!(stat("ApproximateNumberOfMessagesNotVisible", Statistic::Maximum).await, 2.0);
+    assert!(stat("ApproximateAgeOfOldestMessage", Statistic::Maximum).await >= 60.0);
+}
+
+/// The emulated clock, in epoch seconds.
+async fn emulated_now(mws: &Mws) -> i64 {
+    let (status, doc) = mws.control("GET", "/_mws/clock", None).await;
+    assert_eq!(status, 200);
+    let wall = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_secs() as i64;
+    wall + doc["offsetSeconds"].as_i64().unwrap() + 5
 }

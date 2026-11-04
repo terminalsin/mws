@@ -103,8 +103,10 @@ def test_send_receive_digests_and_visibility(sqs, queue):
     sqs.change_message_visibility(QueueUrl=queue, ReceiptHandle=got["ReceiptHandle"], VisibilityTimeout=0)
     again = sqs.receive_message(QueueUrl=queue, MessageSystemAttributeNames=["ApproximateReceiveCount"])["Messages"][0]
     assert again["Attributes"] == {"ApproximateReceiveCount": "2"}
-    with pytest.raises(sqs.exceptions.MessageNotInflight):
+    with pytest.raises(ClientError) as stale:
         sqs.change_message_visibility(QueueUrl=queue, ReceiptHandle=got["ReceiptHandle"], VisibilityTimeout=5)
+    assert stale.value.response["Error"]["Code"] == "InvalidParameterValue"
+    assert stale.value.response["Error"]["Message"].endswith("Reason: The receipt handle has expired.")
     with pytest.raises(sqs.exceptions.ReceiptHandleIsInvalid):
         sqs.delete_message(QueueUrl=queue, ReceiptHandle="junk")
     sqs.delete_message(QueueUrl=queue, ReceiptHandle=again["ReceiptHandle"])
@@ -296,3 +298,14 @@ def test_legacy_query_protocol(sqs, endpoint, session_for):
     assert status == 400
     assert "<Code>AWS.SimpleQueueService.NonExistentQueue</Code>" in body
     assert "<Type>Sender</Type>" in body
+
+    # Validation and unknown attribute names answer as over awsJson.
+    status, body = query_call(
+        session, endpoint, Action="GetQueueAttributes", QueueUrl=url, **{"AttributeName.1": "Bogus"}
+    )
+    assert status == 400 and "<Code>InvalidAttributeName</Code>" in body, body
+    assert "<Message>Unknown Attribute Bogus.</Message>" in body
+    status, body = query_call(
+        session, endpoint, Action="ReceiveMessage", QueueUrl=url, **{"AttributeName.1": "Bogus"}
+    )
+    assert status == 400 and "<Code>InvalidParameterValue</Code>" in body, body

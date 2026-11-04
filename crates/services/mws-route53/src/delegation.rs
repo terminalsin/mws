@@ -34,7 +34,7 @@ impl Route53 {
         input: types::CreateReusableDelegationSetRequest,
     ) -> Result<types::CreateReusableDelegationSetResponse, ServiceError> {
         self.authorize(ctx, "CreateReusableDelegationSet", "*")?;
-        let mut st = self.lock();
+        let mut st = self.lock(ctx);
         if st.delegation_sets.values().any(|d| d.caller_reference == input.caller_reference) {
             return Err(errors::delegation_set_already_created(
                 "A delegation set with the same owner and caller reference combination has already been created.",
@@ -82,7 +82,7 @@ impl Route53 {
     ) -> Result<types::GetReusableDelegationSetResponse, ServiceError> {
         let id = strip_id(&input.id);
         self.authorize(ctx, "GetReusableDelegationSet", &arn(ctx, "delegationset", id))?;
-        let st = self.lock();
+        let st = self.lock(ctx);
         Ok(types::GetReusableDelegationSetResponse { delegation_set: st.delegation_set(id)?.wire() })
     }
 
@@ -93,7 +93,7 @@ impl Route53 {
     ) -> Result<types::ListReusableDelegationSetsResponse, ServiceError> {
         self.authorize(ctx, "ListReusableDelegationSets", "*")?;
         let limit = max_items(input.max_items, 100, 100);
-        let st = self.lock();
+        let st = self.lock(ctx);
         let sets: Vec<&DelegationSet> = st
             .delegation_sets
             .values()
@@ -116,7 +116,7 @@ impl Route53 {
     ) -> Result<types::DeleteReusableDelegationSetResponse, ServiceError> {
         let id = strip_id(&input.id);
         self.authorize(ctx, "DeleteReusableDelegationSet", &arn(ctx, "delegationset", id))?;
-        let mut st = self.lock();
+        let mut st = self.lock(ctx);
         st.delegation_set(id)?;
         if st.zones.values().any(|z| z.delegation_set_id.as_deref() == Some(id)) {
             return Err(errors::delegation_set_in_use(
@@ -137,7 +137,7 @@ impl Route53 {
         if input.r#type != "MAX_ZONES_BY_REUSABLE_DELEGATION_SET" {
             return Err(errors::invalid_input(format!("Invalid limit type: {}", input.r#type)));
         }
-        let st = self.lock();
+        let st = self.lock(ctx);
         st.delegation_set(id)?;
         let count = st.zones.values().filter(|z| z.delegation_set_id.as_deref() == Some(id)).count();
         Ok(types::GetReusableDelegationSetLimitResponse {

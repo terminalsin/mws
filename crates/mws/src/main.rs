@@ -24,7 +24,9 @@ async fn main() {
     let gateway = Arc::new(gateway);
     if let Ok(dns) = std::env::var("MWS_DNS_LISTEN") {
         let socket = tokio::net::UdpSocket::bind(&dns).await.expect("bind MWS_DNS_LISTEN");
-        tracing::info!(%dns, "Route 53 DNS responder listening");
+        let tcp = tokio::net::TcpListener::bind(&dns).await.expect("bind MWS_DNS_LISTEN (TCP)");
+        tracing::info!(%dns, "Route 53 DNS responder listening (UDP and TCP)");
+        tokio::spawn(mws_route53::serve_dns_tcp(route53.clone(), tcp));
         tokio::spawn(mws_route53::serve_dns(route53, socket));
     }
     let listener = tokio::net::TcpListener::bind(listen).await.expect("bind MWS_LISTEN");

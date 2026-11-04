@@ -158,4 +158,9 @@ impl S3 {
     pub fn bucket_owner(&self, bucket: &str) -> Option<String> {
         self.read().buckets.get(bucket).map(|b| b.owner.clone())
     }
+
+    /// The Region `bucket` lives in, if it exists.
+    pub fn bucket_region(&self, bucket: &str) -> Option<String> {
+        self.read().buckets.get(bucket).map(|b| b.region.clone())
+    }
 }

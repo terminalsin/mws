@@ -12,6 +12,55 @@ use crate::{ids, wire, Iam};
 const DEFAULT_MAX_SESSION: i32 = 3600;
 
 impl Iam {
+    /// Validate a role trust policy as IAM does when storing one: the
+    /// policy grammar, its size quota, STS-only actions, and that every IAM
+    /// user or role it names as a principal exists. Don't call this while
+    /// holding the state lock.
+    pub(crate) fn validate_trust_policy(&self, document: &str) -> Result<(), ServiceError> {
+        let policy = validate_policy(document, PolicyKind::Trust)?;
+        if mws_iam_policy::policy_size(document) > TRUST_POLICY_MAX_SIZE {
+            return Err(errors::limit_exceeded(format!(
+                "Cannot exceed quota for ACLSizePerRole: {TRUST_POLICY_MAX_SIZE}"
+            )));
+        }
+        for s in &policy.statements {
+            let sts_only = s.action.negated
+                || s.action
+                    .patterns
+                    .iter()
+                    .all(|a| a == "*" || a.get(..4).is_some_and(|p| p.eq_ignore_ascii_case("sts:")));
+            if !sts_only {
+                return Err(errors::malformed_policy_document(
+                    "AssumeRole policy may only specify STS AssumeRole actions.",
+                ));
+            }
+            for a in s.principal.iter().flat_map(|p| &p.aws) {
+                if !self.principal_exists(a) {
+                    return Err(errors::malformed_policy_document(format!(
+                        "Invalid principal in policy: \"AWS\":\"{a}\""
+                    )));
+                }
+            }
+        }
+        Ok(())
+    }
+
+    /// Whether an IAM user or role ARN names an entity that exists. Other
+    /// principals (accounts, sessions, ids) and accounts MWS knows nothing
+    /// about are taken as given.
+    fn principal_exists(&self, principal: &str) -> bool {
+        let parts: Vec<&str> = principal.splitn(6, ':').collect();
+        let [_, _, "iam", _, account, resource] = parts[..] else { return true };
+        let Some(kind) = ["user/", "role/"].into_iter().find(|k| resource.starts_with(k)) else { return true };
+        let accounts = self.inner.accounts.read().expect("IAM state lock poisoned");
+        let Some(state) = accounts.get(account) else { return true };
+        let name = resource.rsplit('/').next().unwrap_or_default();
+        match kind {
+            "user/" => state.user(name).is_some_and(|u| u.arn == principal),
+            _ => state.role(name).is_some_and(|r| r.arn == principal),
+        }
+    }
+
     fn role_resource_ctx(&self, name: &str) -> (String, ConditionContext) {
         let s = self.read();
         match s.role(name) {
@@ -27,13 +76,13 @@ impl Iam {
     ) -> Result<types::CreateRoleResponse, ServiceError> {
         let path = input.path.unwrap_or_else(|| "/".into());
         let arn = self.entity_arn("role", &path, &input.role_name);
-        let tags = tags_from_wire(input.tags);
+        let tags = tags_from_wire(input.tags)?;
         let mut cond = request_tag_context(&tags);
         if let Some(b) = &input.permissions_boundary {
             cond.insert("iam:PermissionsBoundary".into(), vec![b.clone()]);
         }
         self.authorize_with(ctx, "CreateRole", &arn, cond)?;
-        validate_policy(&input.assume_role_policy_document, PolicyKind::Trust)?;
+        self.validate_trust_policy(&input.assume_role_policy_document)?;
         if tags.len() > MAX_TAGS {
             return Err(errors::limit_exceeded(format!("Cannot exceed quota for TagsPerRole: {MAX_TAGS}")));
         }
@@ -129,7 +178,7 @@ impl Iam {
     ) -> Result<(), ServiceError> {
         let (arn, cond) = self.role_resource_ctx(&input.role_name);
         self.authorize_with(ctx, "UpdateAssumeRolePolicy", &arn, cond)?;
-        validate_policy(&input.policy_document, PolicyKind::Trust)?;
+        self.validate_trust_policy(&input.policy_document)?;
         let mut state = self.write();
         let role = state.role_mut(&input.role_name).ok_or_else(|| no_such_role(&input.role_name))?;
         role.trust_policy = input.policy_document;
@@ -156,13 +205,15 @@ impl Iam {
         if !role.attached.is_empty() {
             return Err(errors::delete_conflict("Cannot delete entity, must detach all policies first."));
         }
+        let (arn, id) = (role.arn.clone(), role.id.clone());
         state.roles.remove(&key);
+        retire_principal(state.every_account(), &arn, &id);
         Ok(())
     }
 
     pub fn tag_role(&self, ctx: &RequestContext, input: types::TagRoleRequest) -> Result<(), ServiceError> {
         let (arn, mut cond) = self.role_resource_ctx(&input.role_name);
-        let tags = tags_from_wire(Some(input.tags));
+        let tags = tags_from_wire(Some(input.tags))?;
         cond.extend(request_tag_context(&tags));
         self.authorize_with(ctx, "TagRole", &arn, cond)?;
         let mut state = self.write();
@@ -230,7 +281,7 @@ impl Iam {
     ) -> Result<types::CreateInstanceProfileResponse, ServiceError> {
         let path = input.path.unwrap_or_else(|| "/".into());
         let arn = self.entity_arn("instance-profile", &path, &input.instance_profile_name);
-        let tags = tags_from_wire(input.tags);
+        let tags = tags_from_wire(input.tags)?;
         self.authorize_with(ctx, "CreateInstanceProfile", &arn, request_tag_context(&tags))?;
         let mut state = self.write();
         let key = input.instance_profile_name.to_lowercase();
@@ -388,7 +439,7 @@ impl Iam {
         ctx: &RequestContext,
         input: types::TagInstanceProfileRequest,
     ) -> Result<(), ServiceError> {
-        let tags = tags_from_wire(Some(input.tags));
+        let tags = tags_from_wire(Some(input.tags))?;
         self.authorize_with(
             ctx,
             "TagInstanceProfile",
