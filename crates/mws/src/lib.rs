@@ -10,7 +10,9 @@ use mws_acm::Acm;
 use mws_acmpca::PrivateCa;
 use mws_core::Environment;
 use mws_events::Events;
+use mws_firehose::Firehose;
 use mws_iam::{Iam, IamConfig};
+use mws_kinesis::Kinesis;
 use mws_kms::Kms;
 use mws_lambda::Lambda;
 use mws_logs::Logs;
@@ -76,6 +78,8 @@ pub struct Mws {
     pub secretsmanager: SecretsManager,
     pub sns: Sns,
     pub acm: Acm,
+    pub kinesis: Kinesis,
+    pub firehose: Firehose,
 }
 
 /// Build the gateway with every service MWS emulates.
@@ -129,10 +133,17 @@ fn build_with_store(config: Config, store: Option<Arc<Store>>) -> Mws {
     let logs = Logs::new().with_s3(s3.clone()).with_kms(kms.clone());
     let route53 = Route53::new().with_kms(kms.clone()).with_logs(logs.clone());
     let sqs = Sqs::new().with_kms(kms.clone());
+    let kinesis = Kinesis::new().with_kms(kms.clone());
     let s3control = S3Control::for_s3(s3.clone());
     let pca = PrivateCa::new().with_s3(s3.clone());
     let acm = Acm::new().with_private_ca(pca.clone()).with_route53(route53.clone()).with_sts(sts.clone());
     let lambda = Lambda::with_services(sts.clone(), s3.clone());
+    let firehose = Firehose::new()
+        .with_s3(s3.clone())
+        .with_sts(sts.clone())
+        .with_kms(kms.clone())
+        .with_lambda(lambda.clone())
+        .with_kinesis(kinesis.clone());
     lambda.set_logs(logs.clone());
     s3.set_object_lambda_invoker(Arc::new(lambda.clone()));
     let ssm = Ssm::new(kms.clone());
@@ -157,6 +168,11 @@ fn build_with_store(config: Config, store: Option<Arc<Store>>) -> Mws {
     }));
     lambda.set_queue_source(Arc::new(links::LambdaFromSqs(sqs.clone())));
     logs.add_subscription_target(Arc::new(links::LogsToLambda(lambda.clone())));
+    logs.add_subscription_target(Arc::new(links::LogsToKinesis { kinesis: kinesis.clone(), sts: sts.clone() }));
+    logs.add_subscription_target(Arc::new(links::LogsToFirehose { firehose: firehose.clone(), sts: sts.clone() }));
+    lambda.set_stream_source(Arc::new(links::LambdaFromKinesis(kinesis.clone())));
+    events.register_target_sink("kinesis", Arc::new(sinks::KinesisTarget(kinesis.clone())));
+    events.register_target_sink("firehose", Arc::new(sinks::FirehoseTarget(firehose.clone())));
     sns.set_delivery_status_logs(logs.clone(), sts.clone());
     let mut gateway = Gateway::builder();
     if let Some(store) = store {
@@ -187,8 +203,26 @@ fn build_with_store(config: Config, store: Option<Arc<Store>>) -> Mws {
         .service(Arc::new(events.clone()))
         .service(Arc::new(secretsmanager.clone()))
         .service(Arc::new(sns.clone()))
+        .service(Arc::new(kinesis.clone()))
+        .service(Arc::new(firehose.clone()))
         .build();
-    Mws { gateway, route53, kms, s3, s3control, lambda, logs, sqs, ssm, events, secretsmanager, sns, acm }
+    Mws {
+        gateway,
+        route53,
+        kms,
+        s3,
+        s3control,
+        lambda,
+        logs,
+        sqs,
+        ssm,
+        events,
+        secretsmanager,
+        sns,
+        acm,
+        kinesis,
+        firehose,
+    }
 }
 
 /// Parameter Store's `/aws/reference/secretsmanager/` parameters, read

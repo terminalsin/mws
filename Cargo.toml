@@ -31,6 +31,8 @@ members = [
     "crates/services/mws-secretsmanager",
     "crates/services/mws-sns",
     "crates/services/mws-acm",
+    "crates/services/mws-kinesis",
+    "crates/services/mws-firehose",
     "tests/e2e-rust",
 ]
 
@@ -72,6 +74,8 @@ mws-events = { path = "crates/services/mws-events" }
 mws-secretsmanager = { path = "crates/services/mws-secretsmanager" }
 mws-sns = { path = "crates/services/mws-sns" }
 mws-acm = { path = "crates/services/mws-acm" }
+mws-kinesis = { path = "crates/services/mws-kinesis" }
+mws-firehose = { path = "crates/services/mws-firehose" }
 
 # external
 async-trait = "0.1"
@@ -104,6 +108,7 @@ serde_json = { version = "1", features = ["preserve_order"] }
 sha1 = "0.10"
 sha2 = "0.10"
 flate2 = "1"
+snap = "1"
 bzip2 = "0.6"
 subtle = "2"
 thiserror = "2"
