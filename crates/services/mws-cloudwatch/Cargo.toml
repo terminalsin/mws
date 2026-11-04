@@ -1,0 +1,33 @@
+[package]
+name = "mws-cloudwatch"
+description = "Amazon CloudWatch for MWS: metrics with statistics and percentiles, GetMetricData with metric math, alarms that evaluate and act (SNS, Lambda, EventBridge), dashboards, Contributor Insights, anomaly detectors and metric streams, with IAM enforced."
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+async-trait.workspace = true
+base64.workspace = true
+bytes.workspace = true
+chrono.workspace = true
+flate2.workspace = true
+http.workspace = true
+mws-core.workspace = true
+mws-kms.workspace = true
+mws-events.workspace = true
+mws-lambda.workspace = true
+mws-logs.workspace = true
+mws-proto-cbor.workspace = true
+mws-proto-json.workspace = true
+mws-proto-query.workspace = true
+mws-sns.workspace = true
+rand.workspace = true
+regex.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+tokio.workspace = true
+tracing.workspace = true
+uuid.workspace = true
+
+[build-dependencies]
+mws-codegen.workspace = true

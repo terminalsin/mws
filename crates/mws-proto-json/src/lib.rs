@@ -267,6 +267,41 @@ pub fn targets(info: &ServiceInfo, request: &HttpRequest) -> bool {
 }
 
 pub fn error_response(info: &ServiceInfo, request_id: &str, error: &ServiceError) -> HttpResponse {
+    let mut parts = error_parts(info, error);
+    let body = std::mem::take(&mut parts.body);
+    let mut resp = json_response(info, request_id, parts.status, Some(Value::Object(body)));
+    parts.apply_headers(&mut resp);
+    resp
+}
+
+/// An error as an awsJson-family protocol carries it: the status, the
+/// body document (`__type`, `message`, modeled fields) and the
+/// `x-amzn-ErrorType` / `x-amzn-query-error` headers. Shared with
+/// protocols that encode the same document differently (rpcv2Cbor).
+#[derive(Debug, Clone)]
+pub struct ErrorParts {
+    pub status: u16,
+    pub body: Map<String, Value>,
+    pub error_type: String,
+    pub query_error: Option<String>,
+}
+
+impl ErrorParts {
+    /// Add `x-amzn-ErrorType` and `x-amzn-query-error` to `resp`.
+    pub fn apply_headers(&self, resp: &mut HttpResponse) {
+        if let Ok(v) = http::HeaderValue::from_str(&self.error_type) {
+            resp.headers_mut().insert("x-amzn-ErrorType", v);
+        }
+        if let Some(query) = &self.query_error {
+            if let Ok(v) = http::HeaderValue::from_str(query) {
+                resp.headers_mut().insert("x-amzn-query-error", v);
+            }
+        }
+    }
+}
+
+/// The parts of `error`'s awsJson response; see [`ErrorParts`].
+pub fn error_parts(info: &ServiceInfo, error: &ServiceError) -> ErrorParts {
     // The gateway's authentication errors carry awsQuery names. awsJson
     // services answer them as Coral's `UnrecognizedClientException`,
     // `InvalidSignatureException`, ... with status 400; awsQueryCompatible
@@ -274,10 +309,10 @@ pub fn error_response(info: &ServiceInfo, request_id: &str, error: &ServiceError
     if let Some(mut auth) = error.json_auth_equivalent() {
         if info.query_compatible.is_none() {
             auth.status = 400;
-            return render_error(info, request_id, &auth, None, None);
+            return build_parts(&auth, None, None);
         }
         let type_name = format!("com.amazon.coral.service#{}", auth.code);
-        return render_error(info, request_id, &auth, Some(type_name), Some(error.code.as_ref()));
+        return build_parts(&auth, Some(type_name), Some(error.code.as_ref()));
     }
     // JSON-protocol services name the authorization failure
     // `AccessDeniedException`; the shared authorizer says `AccessDenied`.
@@ -293,16 +328,10 @@ pub fn error_response(info: &ServiceInfo, request_id: &str, error: &ServiceError
         },
         None => (code.to_string(), None),
     };
-    render_error(info, request_id, error, Some(type_name), query_error)
+    build_parts(error, Some(type_name), query_error)
 }
 
-fn render_error(
-    info: &ServiceInfo,
-    request_id: &str,
-    error: &ServiceError,
-    type_name: Option<String>,
-    query_error: Option<&str>,
-) -> HttpResponse {
+fn build_parts(error: &ServiceError, type_name: Option<String>, query_error: Option<&str>) -> ErrorParts {
     let code = if error.code == "AccessDenied" { "AccessDeniedException" } else { &error.code };
     let type_name = type_name.unwrap_or_else(|| code.to_string());
     let mut body = Map::new();
@@ -315,18 +344,12 @@ fn render_error(
         };
         body.insert(f.name.clone(), v);
     }
-    let mut resp = json_response(info, request_id, error.status, Some(Value::Object(body)));
-    if let Ok(v) = http::HeaderValue::from_str(code) {
-        resp.headers_mut().insert("x-amzn-ErrorType", v);
-    }
-    if let Some(query) = query_error {
+    let query_error = query_error.map(|query| {
         let fault = match error.fault {
             mws_core::ErrorFault::Client => "Sender",
             mws_core::ErrorFault::Server => "Receiver",
         };
-        if let Ok(v) = http::HeaderValue::from_str(&format!("{query};{fault}")) {
-            resp.headers_mut().insert("x-amzn-query-error", v);
-        }
-    }
-    resp
+        format!("{query};{fault}")
+    });
+    ErrorParts { status: error.status, body, error_type: code.to_string(), query_error }
 }
