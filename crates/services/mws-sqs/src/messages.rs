@@ -34,6 +34,10 @@ pub struct Sent {
     pub md5_of_attributes: Option<String>,
     pub md5_of_system_attributes: Option<String>,
     pub sequence_number: Option<String>,
+    /// A FIFO duplicate: accepted, not enqueued again.
+    pub duplicate: bool,
+    /// Body and attribute bytes, for `SentMessageSize`.
+    pub size: usize,
 }
 
 const ALLOWED_CHARS: &str = "#x9 | #xA | #xD | #x20 to #xD7FF | #xE000 to #xFFFD | #x10000 to #x10FFFF";
@@ -227,6 +231,7 @@ pub fn enqueue(q: &mut Queue, o: Outgoing, sender_id: &str, now: i64, data_key: 
     let md5_of_body = md5_of_body(&o.body);
     let md5_of_system_attributes = md5_of_attributes(&trace_map(&o.trace_header));
     let md5_of_attributes = md5_of_attributes(&o.attributes);
+    let size = o.body.len() + attributes_size(&o.attributes);
     q.expire(now);
     let mut dedup_key = None;
     if q.fifo {
@@ -243,6 +248,8 @@ pub fn enqueue(q: &mut Queue, o: Outgoing, sender_id: &str, now: i64, data_key: 
                 md5_of_attributes,
                 md5_of_system_attributes,
                 sequence_number: Some(d.sequence_number.clone()),
+                duplicate: true,
+                size,
             };
         }
         dedup_key = Some((key, dedup));
@@ -273,7 +280,15 @@ pub fn enqueue(q: &mut Queue, o: Outgoing, sender_id: &str, now: i64, data_key: 
         kms_data_key: data_key,
         ..Message::default()
     });
-    Sent { message_id: id, md5_of_body, md5_of_attributes, md5_of_system_attributes, sequence_number }
+    Sent {
+        message_id: id,
+        md5_of_body,
+        md5_of_attributes,
+        md5_of_system_attributes,
+        sequence_number,
+        duplicate: false,
+        size,
+    }
 }
 
 /// A KMS error as SQS reports it.
@@ -358,6 +373,7 @@ impl Sqs {
         check_outgoing(q, &out)?;
         let data_key = self.data_key_for_send(ctx, q, now)?;
         let sent = enqueue(q, out, &ctx.caller.user_id, now, data_key);
+        self.meter.count(&arn, now, |c| crate::metrics::count_send(c, sent.size, sent.duplicate));
         drop(st);
         self.arrivals.notify_waiters();
         Ok(types::SendMessageResult {
@@ -415,6 +431,7 @@ impl Sqs {
             match out {
                 Ok(out) => {
                     let sent = enqueue(q, out, &ctx.caller.user_id, now, data_key.clone());
+                    self.meter.count(&arn, now, |c| crate::metrics::count_send(c, sent.size, sent.duplicate));
                     result.successful.push(types::SendMessageBatchResultEntry {
                         id,
                         message_id: sent.message_id,
@@ -469,6 +486,10 @@ impl Sqs {
             let messages = self.try_receive(ctx, &arn, &input, now)?;
             let left = deadline.saturating_duration_since(Instant::now());
             if !messages.is_empty() || left.is_zero() {
+                self.meter.count(&arn, now, |c| match messages.len() {
+                    0 => c.empty_receives += 1,
+                    n => c.received += n as u64,
+                });
                 return Ok(types::ReceiveMessageResult { messages: (!messages.is_empty()).then_some(messages) });
             }
             // Delays and visibility timeouts end without a wake-up.
@@ -545,7 +566,10 @@ impl Sqs {
         let mut st = self.lock();
         let q = st.queue_mut(&arn)?;
         authorize_queue(ctx, "sqs:DeleteMessage", q)?;
-        delete_one(q, &arn, &input.receipt_handle, now_ms(ctx))
+        let now = now_ms(ctx);
+        delete_one(q, &arn, &input.receipt_handle, now, false)?;
+        self.meter.count(&arn, now, |c| c.deleted += 1);
+        Ok(())
     }
 
     pub fn delete_message_batch(
@@ -561,8 +585,11 @@ impl Sqs {
         authorize_queue(ctx, "sqs:DeleteMessage", q)?;
         let mut result = types::DeleteMessageBatchResult::default();
         for e in input.entries {
-            match delete_one(q, &arn, &e.receipt_handle, now) {
-                Ok(()) => result.successful.push(types::DeleteMessageBatchResultEntry { id: e.id }),
+            match delete_one(q, &arn, &e.receipt_handle, now, true) {
+                Ok(()) => {
+                    self.meter.count(&arn, now, |c| c.deleted += 1);
+                    result.successful.push(types::DeleteMessageBatchResultEntry { id: e.id })
+                }
                 Err(err) => result.failed.push(failure(e.id, &err)),
             }
         }
@@ -578,7 +605,7 @@ impl Sqs {
         let mut st = self.lock();
         let q = st.queue_mut(&arn)?;
         authorize_queue(ctx, "sqs:ChangeMessageVisibility", q)?;
-        change_one(q, &arn, &input.receipt_handle, input.visibility_timeout, now_ms(ctx))?;
+        change_one(q, &arn, &input.receipt_handle, input.visibility_timeout, now_ms(ctx), false)?;
         drop(st);
         self.arrivals.notify_waiters();
         Ok(())
@@ -598,7 +625,7 @@ impl Sqs {
         let mut result = types::ChangeMessageVisibilityBatchResult::default();
         for e in input.entries {
             let timeout = e.visibility_timeout.unwrap_or(0);
-            match change_one(q, &arn, &e.receipt_handle, timeout, now) {
+            match change_one(q, &arn, &e.receipt_handle, timeout, now, true) {
                 Ok(()) => result.successful.push(types::ChangeMessageVisibilityBatchResultEntry { id: e.id }),
                 Err(err) => result.failed.push(failure(e.id, &err)),
             }
@@ -618,18 +645,39 @@ fn failure(id: String, e: &ServiceError) -> types::BatchResultErrorEntry {
     }
 }
 
-fn delete_one(q: &mut Queue, arn: &str, handle: &str, now: i64) -> Result<(), ServiceError> {
+/// A receipt handle SQS no longer accepts. Single calls answer
+/// `InvalidParameterValue`; batch entries carry `ReceiptHandleIsInvalid`
+/// with the bare reason.
+fn handle_rejected(handle: &str, reason: &str, batch: bool) -> ServiceError {
+    if batch {
+        errors::receipt_handle_is_invalid(reason.to_string())
+    } else {
+        invalid_parameter("ReceiptHandle", handle, reason)
+    }
+}
+
+/// The handle must name a message of this queue.
+fn handle_message_id(arn: &str, handle: &str) -> Result<String, ServiceError> {
     let (handle_arn, id) = parse_receipt_handle(handle)?;
     if handle_arn != arn {
         return Err(errors::receipt_handle_is_invalid(format!(
-            "The input receipt handle \"{handle}\" is not a valid receipt handle."
+            "The receipt handle \"{handle}\" is not valid for this queue."
         )));
     }
+    Ok(id)
+}
+
+const EXPIRED: &str = "The receipt handle has expired.";
+
+fn delete_one(q: &mut Queue, arn: &str, handle: &str, now: i64, batch: bool) -> Result<(), ServiceError> {
+    let id = handle_message_id(arn, handle)?;
     let Some(pos) = q.messages.iter().position(|m| m.id == id) else { return Ok(()) };
     let m = &q.messages[pos];
     let current = m.receipt_handle.as_deref() == Some(handle);
+    // FIFO handles stop working when the visibility timeout ends; standard
+    // queues accept an old handle but only the latest one deletes.
     if q.fifo && (!current || !m.in_flight(now)) {
-        return Err(errors::receipt_handle_is_invalid("The receipt handle has expired."));
+        return Err(handle_rejected(handle, EXPIRED, batch));
     }
     if current {
         q.messages.remove(pos);
@@ -637,23 +685,17 @@ fn delete_one(q: &mut Queue, arn: &str, handle: &str, now: i64) -> Result<(), Se
     Ok(())
 }
 
-fn change_one(q: &mut Queue, arn: &str, handle: &str, timeout: i32, now: i64) -> Result<(), ServiceError> {
-    let (handle_arn, id) = parse_receipt_handle(handle)?;
-    if handle_arn != arn {
-        return Err(errors::receipt_handle_is_invalid(format!(
-            "The input receipt handle \"{handle}\" is not a valid receipt handle."
-        )));
-    }
+fn change_one(q: &mut Queue, arn: &str, handle: &str, timeout: i32, now: i64, batch: bool) -> Result<(), ServiceError> {
+    let id = handle_message_id(arn, handle)?;
     if !(0..=43_200).contains(&timeout) {
         return Err(invalid_parameter("VisibilityTimeout", timeout, "Must be between 0 and 43200, if provided."));
     }
-    let m = q
-        .messages
-        .iter_mut()
-        .find(|m| m.id == id && m.receipt_handle.as_deref() == Some(handle) && m.in_flight(now))
-        .ok_or_else(|| {
-            errors::message_not_inflight("Message does not exist or is not available for visibility timeout change.")
-        })?;
+    let m = q.messages.iter_mut().find(|m| m.id == id).ok_or_else(|| {
+        handle_rejected(handle, "Message does not exist or is not available for visibility timeout change.", batch)
+    })?;
+    if m.receipt_handle.as_deref() != Some(handle) || !m.in_flight(now) {
+        return Err(handle_rejected(handle, EXPIRED, batch));
+    }
     let first = m.first_receive_at.unwrap_or(now);
     if now + i64::from(timeout) * 1000 > first + 43_200_000 {
         return Err(invalid_parameter(
@@ -694,6 +736,9 @@ fn redrive_exhausted(st: &mut State, arn: &str, now: i64) -> Result<(), ServiceE
         m.visible_at = now;
         m.dead_letter_source_arn = Some(arn.to_string());
         if target.fifo {
+            // Standard queues keep the original enqueue time for retention;
+            // FIFO queues restart it in the dead-letter queue.
+            m.enqueued_at = Some(now);
             target.next_sequence += 1;
             m.sequence_number = Some((18_000_000_000_000_000_000u128 + target.next_sequence as u128).to_string());
         }

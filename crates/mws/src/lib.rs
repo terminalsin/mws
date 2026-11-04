@@ -191,6 +191,7 @@ fn build_with_store(config: Config, store: Option<Arc<Store>>) -> Mws {
     }));
     logs.set_metric_publisher(Arc::new(links::LogsToCloudWatch(cloudwatch.clone())));
     kinesis.set_metric_publisher(Arc::new(links::KinesisToCloudWatch(cloudwatch.clone())));
+    sqs.set_metric_publisher(Arc::new(links::SqsToCloudWatch(cloudwatch.clone())));
     cloudwatch.set_metric_stream_delivery(Arc::new(links::MetricStreamsToFirehose {
         firehose: firehose.clone(),
         sts: sts.clone(),
