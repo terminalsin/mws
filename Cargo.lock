@@ -2384,6 +2384,7 @@ dependencies = [
  "mws-route53",
  "mws-s3",
  "mws-server",
+ "mws-sigv4",
  "rcgen",
  "rustls 0.23.46",
  "rustls-pki-types",

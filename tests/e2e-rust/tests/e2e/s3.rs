@@ -434,6 +434,43 @@ async fn presigned_urls() {
 }
 
 #[tokio::test]
+async fn presigned_urls_honour_hoisted_checksums() {
+    // The JavaScript SDK moves `x-amz-*` headers such as the checksum into
+    // the query string when presigning; S3 reads them as headers.
+    let mws = Mws::start().await;
+    let s3 = root(&mws).await;
+    s3.create_bucket().bucket("pre-ck").send().await.unwrap();
+    let url = format!("{}/pre-ck/k?x-amz-checksum-crc32=NhCmhg%3D%3D", mws.endpoint);
+    let put = mws_sigv4::presign_url(&mws_sigv4::PresignParams {
+        method: "PUT",
+        url: &url,
+        region: "us-east-1",
+        service: "s3",
+        access_key_id: "AKIAMWSROOTEXAMPLE00",
+        secret_access_key: "mwsRootSecretAccessKeyEXAMPLEKEY00000000",
+        session_token: None,
+        now: chrono::Utc::now(),
+        expires_in: 300,
+    })
+    .unwrap();
+    // CRC32 of "hello", not of this body.
+    let (status, _, body) = mws.raw("PUT", &put, &[], b"goodbye").await;
+    assert_eq!(status, 400);
+    assert!(String::from_utf8_lossy(&body).contains("<Code>BadDigest</Code>"));
+    let (status, _, _) = mws.raw("PUT", &put, &[], b"hello").await;
+    assert_eq!(status, 200);
+    let head = s3
+        .head_object()
+        .bucket("pre-ck")
+        .key("k")
+        .checksum_mode(aws_sdk_s3::types::ChecksumMode::Enabled)
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(head.checksum_crc32(), Some("NhCmhg=="));
+}
+
+#[tokio::test]
 async fn sse_kms_uses_kms_with_the_callers_permissions() {
     let mws = Mws::start().await;
     let s3 = root(&mws).await;

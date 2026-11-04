@@ -193,6 +193,40 @@ impl S3 {
     }
 }
 
+/// In a presigned URL, S3 reads `x-amz-*` query parameters (other than the
+/// signature's own) as the request headers they stand for: SDKs move
+/// headers such as `x-amz-checksum-crc32`, `x-amz-acl` or
+/// `x-amz-server-side-encryption` into the query when presigning.
+fn hoist_presigned_headers(mut request: HttpRequest) -> HttpRequest {
+    const SIGNATURE_PARAMS: [&str; 8] = [
+        "x-amz-algorithm",
+        "x-amz-credential",
+        "x-amz-date",
+        "x-amz-expires",
+        "x-amz-signedheaders",
+        "x-amz-signature",
+        "x-amz-security-token",
+        "x-amz-content-sha256",
+    ];
+    let Some(query) = request.uri().query().map(str::to_string) else {
+        return request;
+    };
+    if form_urlencoded_get(&query, "X-Amz-Signature").is_none() {
+        return request;
+    }
+    for (k, v) in form_urlencoded::parse(query.as_bytes()) {
+        let name = k.to_ascii_lowercase();
+        if !name.starts_with("x-amz-") || SIGNATURE_PARAMS.contains(&name.as_str()) {
+            continue;
+        }
+        if let (Ok(name), Ok(value)) = (http::HeaderName::from_bytes(name.as_bytes()), http::HeaderValue::from_str(&v))
+        {
+            request.headers_mut().entry(name).or_insert(value);
+        }
+    }
+    request
+}
+
 pub(crate) fn form_urlencoded_get(query: &str, name: &str) -> Option<String> {
     query.split('&').find_map(|p| {
         let (k, v) = p.split_once('=')?;
@@ -354,6 +388,7 @@ impl S3 {
     ) -> HttpResponse {
         let started = std::time::Instant::now();
         let request = directory::control_plane_listing(request);
+        let request = hoist_presigned_headers(request);
         let head = request.method() == Method::HEAD;
         if request.method() == Method::OPTIONS {
             return self.preflight(&ctx, &request);

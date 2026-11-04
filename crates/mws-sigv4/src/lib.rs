@@ -484,6 +484,13 @@ pub fn canonical_request(
     for name in &parsed.signed_headers {
         let values: Vec<String> = if name == "host" && headers.get("host").is_none() {
             request.uri().authority().map(|a| vec![a.to_string()]).unwrap_or_default()
+        } else if name == ":authority" {
+            // HTTP/2 clients (the JavaScript SDK's Kinesis client, for one)
+            // sign the `:authority` pseudo-header, which arrives as the URI
+            // authority, or as `Host` once translated to HTTP/1.
+            let authority = request.uri().authority().map(|a| a.to_string());
+            let host = headers.get("host").map(|v| String::from_utf8_lossy(v.as_bytes()).into_owned());
+            authority.or(host).into_iter().collect()
         } else {
             headers
                 .get_all(name.as_str())

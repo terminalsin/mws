@@ -227,5 +227,16 @@ cargo test --workspace --all-targets   # also builds target/debug/mws
 pip install -r tests/e2e-python/requirements.txt && pytest tests/e2e-python
 ```
 
+[`tests/e2e-ts`](tests/e2e-ts) holds example applications written with the
+AWS SDK for JavaScript v3, each with a Vitest suite that runs it against a
+running MWS (S3/SNS/SQS uploads, EventBridge and Lambda, SSM/Secrets
+Manager/KMS config, IAM/STS tenant isolation, CloudWatch, Kinesis and
+Firehose). They double as examples of testing your own code with MWS:
+
+```sh
+cargo run -p mws &
+cd tests/e2e-ts && npm ci && npm test
+```
+
 The Rust SDK tests are one binary (`tests/e2e-rust/tests/e2e/`, a module per
 service); run one service's with `cargo test -p mws-e2e --test e2e sqs::`.
