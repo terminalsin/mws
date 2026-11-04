@@ -348,10 +348,12 @@ impl Ssm {
             if p.versions.is_empty() {
                 p.tags = tags;
             }
-            p.versions.push(version);
+            p.versions.push(version.clone());
             if p.versions.len() > MAX_VERSIONS {
                 p.versions.remove(0);
             }
+            drop(st);
+            self.changed(ctx, &r, if current.is_none() { "Create" } else { "Update" }, &version);
         }
         Ok(types::PutParameterResult { version: version_number, tier: Some(tier.to_string()) })
     }
@@ -369,8 +371,10 @@ impl Ssm {
         let r = ParamRef::parse(ctx, name).filter(|r| r.selector.is_none()).ok_or_else(|| not_found(name))?;
         let p = self.snapshot(ctx, &r);
         self.authorize_param(ctx, action, &r, p.as_ref(), ConditionContext::new())?;
-        let mut st = self.lock();
-        st.region(&r.account, &r.region).parameters.remove(&r.key()).map(|_| ()).ok_or_else(|| not_found(name))
+        let removed = self.lock().region(&r.account, &r.region).parameters.remove(&r.key());
+        let removed = removed.ok_or_else(|| not_found(name))?;
+        self.changed(ctx, &r, "Delete", removed.latest());
+        Ok(())
     }
 
     pub(crate) fn delete_parameters(
@@ -460,6 +464,11 @@ impl Ssm {
             } else {
                 v.labels.retain(|l| !valid.contains(l));
             }
+        }
+        let labelled = p.versions[idx].clone();
+        drop(st);
+        if !valid.is_empty() {
+            self.changed(ctx, &r, "LabelParameterVersion", &labelled);
         }
         Ok(types::LabelParameterVersionResult { invalid_labels: Some(invalid), parameter_version: version })
     }
