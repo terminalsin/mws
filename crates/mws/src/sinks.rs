@@ -301,3 +301,12 @@ impl TargetSink for FirehoseTarget {
             .map_err(target_error)
     }
 }
+
+/// Route 53 health checks for EventBridge global endpoint failover.
+pub struct Route53HealthChecks(pub mws_route53::Route53);
+
+impl mws_events::HealthChecks for Route53HealthChecks {
+    fn healthy(&self, health_check_arn: &str) -> Option<bool> {
+        self.0.health_check_healthy(health_check_arn)
+    }
+}
