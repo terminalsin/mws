@@ -2750,18 +2750,27 @@ name = "mws-s3control"
 version = "0.1.0"
 dependencies = [
  "async-trait",
+ "base64 0.22.1",
  "bytes",
  "chrono",
+ "flate2",
+ "form_urlencoded",
+ "hex",
  "http 1.5.0",
+ "md-5 0.10.6",
  "mws-codegen",
  "mws-core",
  "mws-iam-policy",
+ "mws-lambda",
  "mws-proto-json",
  "mws-proto-restxml",
  "mws-s3",
+ "mws-sts",
+ "percent-encoding",
  "rand",
  "serde",
  "serde_json",
+ "tokio",
  "uuid",
 ]
 

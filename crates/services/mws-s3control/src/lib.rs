@@ -1,6 +1,9 @@
 //! Amazon S3 Control for MWS.
 //!
 //! Access points (with their policies and Block Public Access settings),
+//! S3 Batch Operations jobs (run for real as the job's role, see `jobs`),
+//! Access Grants (which vend credentials scoped to a grant), Multi-Region
+//! Access Points, Storage Lens dashboards and groups,
 //! S3 Object Lambda access points (with their transformation
 //! configurations and policies), account-level Block Public Access, and
 //! tags on those resources. S3 serves data through access points by asking
@@ -15,9 +18,13 @@ pub mod generated {
     include!(concat!(env!("OUT_DIR"), "/s3control_generated.rs"));
 }
 
+mod access_grants;
 mod access_points;
 mod handler;
+mod jobs;
+mod mrap;
 mod state;
+mod storage_lens;
 
 use std::sync::{Arc, RwLock, RwLockReadGuard, RwLockWriteGuard};
 
@@ -29,6 +36,10 @@ use state::State;
 pub struct S3Control {
     state: Arc<RwLock<State>>,
     s3: Option<mws_s3::S3>,
+    /// For Batch Operations jobs, which run as their role.
+    sts: Arc<std::sync::OnceLock<mws_sts::Sts>>,
+    /// For Batch Operations `LambdaInvoke` jobs.
+    lambda: Arc<std::sync::OnceLock<mws_lambda::Lambda>>,
 }
 
 impl S3Control {
@@ -39,9 +50,19 @@ impl S3Control {
     /// S3 Control for `s3`'s buckets: access points are checked against
     /// them, and `s3` is told about access points.
     pub fn for_s3(s3: mws_s3::S3) -> Self {
-        let control = Self { state: Default::default(), s3: Some(s3.clone()) };
+        let control = Self { s3: Some(s3.clone()), ..Default::default() };
         s3.set_access_points(Arc::new(control.clone()));
         control
+    }
+
+    /// Let Batch Operations assume job roles through `sts`.
+    pub fn set_sts(&self, sts: mws_sts::Sts) {
+        let _ = self.sts.set(sts);
+    }
+
+    /// Let Batch Operations invoke functions in `lambda`.
+    pub fn set_lambda(&self, lambda: mws_lambda::Lambda) {
+        let _ = self.lambda.set(lambda);
     }
 
     pub(crate) fn read(&self) -> RwLockReadGuard<'_, State> {
