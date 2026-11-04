@@ -155,7 +155,7 @@ impl Sns {
         };
         let rejected = |e: ServiceError| ServicePublishError::Rejected(e.message);
         let structure = publish::check_message(&r).map_err(rejected)?;
-        let out = self.publish_to_topic(&ctx, p.topic_arn, &r, structure).map_err(|e| {
+        let out = self.publish_to_topic(&ctx, p.topic_arn, p.service_principal, &r, structure).map_err(|e| {
             if e.code == "NotFound" {
                 ServicePublishError::NoSuchTopic
             } else {

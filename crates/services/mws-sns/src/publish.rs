@@ -210,15 +210,18 @@ impl Sns {
             }
         };
         topic.dedup.retain(|_, d| now_ms - d.at_ms < DEDUP_WINDOW_MS);
-        if let Some(prev) = topic.dedup.get(&dedup) {
+        // With `FifoThroughputScope` = `MessageGroup`, deduplication is
+        // scoped to each message group; otherwise to the whole topic.
+        let per_group = topic.attributes.get("FifoThroughputScope").is_some_and(|s| s == "MessageGroup");
+        let key = if per_group { format!("{}\n{dedup}", r.group_id.unwrap_or_default()) } else { dedup.clone() };
+        if let Some(prev) = topic.dedup.get(&key) {
             return Ok(Err(prev.clone()));
         }
         topic.sequence += 1;
         let seq = format!("{}", 10_000_000_000_000_000_000u128 + u128::from(topic.sequence));
-        topic.dedup.insert(
-            dedup.clone(),
-            Dedup { at_ms: now_ms, message_id: message_id.to_string(), sequence_number: seq.clone() },
-        );
+        topic
+            .dedup
+            .insert(key, Dedup { at_ms: now_ms, message_id: message_id.to_string(), sequence_number: seq.clone() });
         Ok(Ok((Some(seq), Some(dedup))))
     }
 
@@ -227,11 +230,22 @@ impl Sns {
         &self,
         ctx: &RequestContext,
         topic_arn: &str,
+        principal: &str,
         r: &Request<'_>,
         structure: Option<BTreeMap<String, String>>,
     ) -> Result<types::PublishResponse, ServiceError> {
         let message_id = uuid::Uuid::new_v4().to_string();
         let now_ms = ctx.received_at.timestamp_millis();
+        // The data protection policy judges the message before it is
+        // sequenced, so a denied message takes no deduplication id.
+        let inbound = {
+            let current = {
+                let st = self.lock();
+                Self::topic(&st, topic_arn)?.clone()
+            };
+            self.protect_inbound(ctx, &current, principal, r.message, structure)?
+        };
+        let structure = inbound.structure.clone();
         let (topic, sequence, dedup) = {
             let mut st = self.lock();
             let topic = Self::topic_mut(&mut st, topic_arn)?;
@@ -251,7 +265,7 @@ impl Sns {
             message: structure
                 .as_ref()
                 .and_then(|s| s.get("default").cloned())
-                .unwrap_or_else(|| r.message.to_string()),
+                .unwrap_or_else(|| inbound.message.clone()),
             structure,
             attributes: r.attributes.cloned().unwrap_or_default(),
             group_id: r.group_id.map(str::to_string),
@@ -265,6 +279,7 @@ impl Sns {
                 t.archive_message(&out, ctx.received_at);
             }
         }
+        self.write_audit(ctx, &topic, &inbound, &message_id);
         self.fan_out(ctx, &topic, out);
         Ok(types::PublishResponse { message_id: Some(message_id), sequence_number: sequence })
     }
@@ -313,7 +328,7 @@ impl Sns {
             Self::topic(&st, &arn)?.clone()
         };
         self.seal_for_caller(ctx, &topic)?;
-        self.publish_to_topic(ctx, &arn, &r, structure)
+        self.publish_to_topic(ctx, &arn, &ctx.caller.arn, &r, structure)
     }
 
     fn publish_sms(
@@ -450,7 +465,8 @@ impl Sns {
                 group_id: e.message_group_id.as_deref(),
                 dedup_id: e.message_deduplication_id.as_deref(),
             };
-            let result = check_message(&r).and_then(|s| self.publish_to_topic(ctx, &input.topic_arn, &r, s));
+            let result =
+                check_message(&r).and_then(|s| self.publish_to_topic(ctx, &input.topic_arn, &ctx.caller.arn, &r, s));
             match result {
                 Ok(out) => successful.push(types::PublishBatchResultEntry {
                     id: Some(e.id.clone()),

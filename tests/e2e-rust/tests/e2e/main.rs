@@ -32,6 +32,7 @@ mod secretsmanager;
 mod sns;
 mod sns_archive;
 mod sns_encryption;
+mod sns_parity;
 mod sns_status_logs;
 mod sqs;
 mod ssm;
