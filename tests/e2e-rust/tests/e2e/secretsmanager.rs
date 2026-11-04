@@ -745,3 +745,100 @@ async fn parameter_store_references_read_secrets_as_the_caller() {
     assert_eq!(e.into_service_error().meta().code(), Some("AccessDeniedException"));
     mws.stop().await;
 }
+
+#[tokio::test]
+async fn errors_idempotency_and_quotas_match_aws() {
+    let mws = Mws::start().await;
+    let sm = client(&mws).await;
+
+    // Model constraints answer ValidationException, as Secrets Manager does.
+    let e = sm.create_secret().name("short").client_request_token("too-short").secret_string("x").send().await;
+    assert_eq!(code(&e.unwrap_err()), "ValidationException");
+    let e = sm.list_secrets().max_results(101).send().await.unwrap_err();
+    assert_eq!(code(&e), "ValidationException");
+
+    // IAM is asked before the lookup: an unauthorized caller is denied
+    // rather than told the secret doesn't exist.
+    let (_, nobody_cfg) = user_with_policy(&mws, "nobody", None).await;
+    let nobody = Client::new(&nobody_cfg);
+    let e = nobody.get_secret_value().secret_id("missing").send().await.unwrap_err();
+    assert_eq!(code(&e), "AccessDeniedException");
+    let e = sm.get_secret_value().secret_id("missing").send().await.unwrap_err();
+    assert_eq!(code(&e), "ResourceNotFoundException");
+
+    // A retried CreateSecret (same token, same value) is ignored.
+    let token = "11111111-2222-3333-4444-555555555555";
+    let first = sm.create_secret().name("retried").client_request_token(token).secret_string("v").send().await.unwrap();
+    let again = sm.create_secret().name("retried").client_request_token(token).secret_string("v").send().await.unwrap();
+    assert_eq!(first.arn(), again.arn());
+    assert_eq!(again.version_id(), Some(token));
+    let e = sm.create_secret().name("retried").client_request_token(token).secret_string("w").send().await;
+    assert_eq!(code(&e.unwrap_err()), "ResourceExistsException");
+    let e = sm.create_secret().name("retried").secret_string("v").send().await.unwrap_err();
+    assert_eq!(code(&e), "ResourceExistsException");
+
+    // Secrets are Regional: another Region's ARN finds nothing.
+    let west = client_in(&mws, "us-west-2").await;
+    let e = west.get_secret_value().secret_id(first.arn().unwrap()).send().await.unwrap_err();
+    assert_eq!(code(&e), "ResourceNotFoundException");
+
+    // Forcibly deleting a secret that doesn't exist succeeds.
+    let gone = sm.delete_secret().secret_id("never-was").force_delete_without_recovery(true).send().await.unwrap();
+    assert_eq!(gone.name(), Some("never-was"));
+    assert!(gone.deletion_date().is_some());
+    let e = sm.delete_secret().secret_id("never-was").send().await.unwrap_err();
+    assert_eq!(code(&e), "ResourceNotFoundException");
+
+    // The first value of an empty secret becomes AWSCURRENT.
+    sm.create_secret().name("empty").send().await.unwrap();
+    let put = sm.put_secret_value().secret_id("empty").secret_string("first").version_stages("mine").send().await;
+    let mut labels = put.unwrap().version_stages().to_vec();
+    labels.sort();
+    assert_eq!(labels, ["AWSCURRENT", "mine"]);
+    assert_eq!(sm.get_secret_value().secret_id("empty").send().await.unwrap().secret_string(), Some("first"));
+
+    // At most 20 staging labels across a secret's versions.
+    let many: Vec<String> = (0..19).map(|i| format!("label-{i}")).collect();
+    sm.put_secret_value().secret_id("retried").secret_string("l").set_version_stages(Some(many)).send().await.unwrap();
+    let e = sm.put_secret_value().secret_id("retried").secret_string("m").version_stages("one-more").send().await;
+    assert_eq!(code(&e.unwrap_err()), "LimitExceededException");
+
+    // At most 100 versions; unlabelled ones older than a day make room.
+    sm.create_secret().name("busy").secret_string("0").send().await.unwrap();
+    for i in 1..100 {
+        sm.put_secret_value().secret_id("busy").secret_string(i.to_string()).send().await.unwrap();
+    }
+    let e = sm.put_secret_value().secret_id("busy").secret_string("100").send().await.unwrap_err();
+    assert_eq!(code(&e), "LimitExceededException");
+    let (status, _) = mws.control("POST", "/_mws/clock", Some(r#"{"advanceSeconds":90000}"#)).await;
+    assert_eq!(status, 200);
+    sm.put_secret_value().secret_id("busy").secret_string("100").send().await.unwrap();
+    let all = sm.list_secret_version_ids().secret_id("busy").include_deprecated(true).send().await.unwrap();
+    assert_eq!(all.versions().len(), 100);
+
+    // Name and tag filters are case-sensitive prefixes; descriptions match
+    // word by word; the free-text search splits words like the console.
+    sm.create_secret()
+        .name("DatabaseSecret")
+        .description("Primary database credentials")
+        .tags(Tag::builder().key("Env").value("Prod892").build())
+        .send()
+        .await
+        .unwrap();
+    sm.create_secret().name("databaseSecret").send().await.unwrap();
+    let names = |out: aws_sdk_secretsmanager::operation::list_secrets::ListSecretsOutput| {
+        let mut n: Vec<String> = out.secret_list().iter().filter_map(|s| s.name().map(str::to_string)).collect();
+        n.sort();
+        n
+    };
+    let by = |key: FilterNameStringType, value: &str| Filter::builder().key(key).values(value).build();
+    let out = sm.list_secrets().filters(by(FilterNameStringType::Name, "Data")).send().await.unwrap();
+    assert_eq!(names(out), ["DatabaseSecret"]);
+    let out = sm.list_secrets().filters(by(FilterNameStringType::Description, "CRED")).send().await.unwrap();
+    assert_eq!(names(out), ["DatabaseSecret"]);
+    let out = sm.list_secrets().filters(by(FilterNameStringType::All, "secretProd892")).send().await.unwrap();
+    assert_eq!(names(out), ["DatabaseSecret"]);
+    let out = sm.list_secrets().filters(by(FilterNameStringType::TagValue, "prod")).send().await.unwrap();
+    assert!(names(out).is_empty());
+    mws.stop().await;
+}

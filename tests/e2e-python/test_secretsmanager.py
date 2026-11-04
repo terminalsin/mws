@@ -231,3 +231,33 @@ def test_replication(endpoint, session_for, sm):
     sm.replicate_secret_to_regions(SecretId=name, AddReplicaRegions=[{"Region": "eu-central-1"}])
     removed = sm.remove_regions_from_replication(SecretId=name, RemoveReplicaRegions=["eu-central-1"])
     assert removed["ReplicationStatus"] == []
+
+
+def test_errors_and_idempotency_match_aws(endpoint, session_for, sm, iam):
+    # Model constraints are ValidationException.
+    with pytest.raises(ClientError) as e:
+        sm.list_secrets(MaxResults=101)
+    assert code(e) == "ValidationException"
+
+    # Unauthorized callers are denied before the lookup.
+    user = unique("nobody")
+    iam.create_user(UserName=user)
+    k = iam.create_access_key(UserName=user)["AccessKey"]
+    nobody = session_for(k["AccessKeyId"], k["SecretAccessKey"]).client("secretsmanager", endpoint_url=endpoint)
+    with pytest.raises(ClientError) as e:
+        nobody.describe_secret(SecretId=unique("missing"))
+    assert code(e) == "AccessDeniedException"
+
+    # A retried CreateSecret is ignored; a forced delete of nothing succeeds.
+    name, token = unique("retried"), str(uuid.uuid4())
+    first = sm.create_secret(Name=name, ClientRequestToken=token, SecretString="v")
+    again = sm.create_secret(Name=name, ClientRequestToken=token, SecretString="v")
+    assert again["ARN"] == first["ARN"] and again["VersionId"] == token
+    gone = sm.delete_secret(SecretId=unique("never"), ForceDeleteWithoutRecovery=True)
+    assert "DeletionDate" in gone
+
+    # Another Region's ARN finds nothing.
+    west = session_for().client("secretsmanager", endpoint_url=endpoint, region_name="us-west-2")
+    with pytest.raises(ClientError) as e:
+        west.get_secret_value(SecretId=first["ARN"])
+    assert code(e) == "ResourceNotFoundException"
