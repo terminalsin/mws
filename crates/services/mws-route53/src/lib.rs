@@ -107,6 +107,21 @@ impl Route53 {
             .collect()
     }
 
+    /// Whether health check `id` (an id or a `healthcheck/` ARN) is
+    /// healthy, as services that route on Route 53 health checks
+    /// (EventBridge global endpoints) see it; `None` if there is no such
+    /// health check. MWS's checkers always succeed, so a check is healthy
+    /// unless it is inverted; a disabled check is always healthy.
+    pub fn health_check_healthy(&self, id: &str) -> Option<bool> {
+        let id = id.rsplit_once("healthcheck/").map_or(id, |(_, id)| id);
+        let st = self.lock();
+        let config = &st.health_checks.get(id)?.check.health_check_config;
+        if config.disabled.unwrap_or(false) {
+            return Some(true);
+        }
+        Some(!config.inverted.unwrap_or(false))
+    }
+
     /// The name of hosted zone `id` (lowercase, trailing dot) and whether
     /// it is private.
     pub fn hosted_zone_name(&self, id: &str) -> Option<(String, bool)> {

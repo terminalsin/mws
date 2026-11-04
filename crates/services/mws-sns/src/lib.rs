@@ -18,6 +18,7 @@ pub mod generated {
 }
 
 mod archive;
+mod data_protection;
 mod delivery;
 mod errors;
 mod filter;
@@ -48,6 +49,10 @@ pub(crate) struct Inner {
     state: Mutex<State>,
     lambda: OnceLock<mws_lambda::Lambda>,
     queues: OnceLock<Arc<dyn QueueDelivery>>,
+    /// Where `firehose` subscriptions (and audit findings) go.
+    firehose: OnceLock<mws_firehose::Firehose>,
+    /// Where audit findings for S3 destinations go.
+    s3: OnceLock<mws_s3::S3>,
     /// Server-side encryption of topics.
     kms: OnceLock<mws_kms::Kms>,
     /// Where delivery status logs go, and how feedback roles are assumed.
@@ -74,6 +79,8 @@ impl Sns {
                 state: Mutex::new(State::default()),
                 lambda: OnceLock::new(),
                 queues: OnceLock::new(),
+                firehose: OnceLock::new(),
+                s3: OnceLock::new(),
                 kms: OnceLock::new(),
                 status_logs: OnceLock::new(),
                 signer: signing::Signer::default(),
@@ -84,6 +91,19 @@ impl Sns {
     /// Deliver to `lambda` subscriptions through Lambda.
     pub fn with_lambda(self, lambda: mws_lambda::Lambda) -> Self {
         let _ = self.inner.lambda.set(lambda);
+        self
+    }
+
+    /// Deliver to `firehose` subscriptions through Firehose, as each
+    /// subscription's `SubscriptionRoleArn`.
+    pub fn with_firehose(self, firehose: mws_firehose::Firehose) -> Self {
+        let _ = self.inner.firehose.set(firehose);
+        self
+    }
+
+    /// Write data protection audit findings to S3 buckets.
+    pub fn with_s3(self, s3: mws_s3::S3) -> Self {
+        let _ = self.inner.s3.set(s3);
         self
     }
 

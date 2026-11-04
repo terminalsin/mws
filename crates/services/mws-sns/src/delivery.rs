@@ -170,13 +170,34 @@ impl Sns {
                     continue;
                 }
             }
-            self.deliver(ctx, &origin, &sub, &msg);
+            self.deliver_protected(ctx, topic, &origin, &sub, &msg);
         }
     }
 
     /// Deliver one message to one subscription (archive replays).
     pub(crate) fn deliver_one(&self, ctx: &RequestContext, topic: &Topic, sub: &Subscription, msg: &Outgoing) {
-        self.deliver(ctx, &Origin::of(topic), sub, msg);
+        self.deliver_protected(ctx, topic, &Origin::of(topic), sub, msg);
+    }
+
+    /// Deliver through the topic's outbound data protection statements.
+    fn deliver_protected(
+        &self,
+        ctx: &RequestContext,
+        topic: &Topic,
+        origin: &Origin,
+        sub: &Subscription,
+        msg: &Outgoing,
+    ) {
+        match Self::protect_outbound(topic, sub, msg) {
+            Some(out) => self.deliver(ctx, origin, sub, &out),
+            None => {
+                let response = format!(
+                    "The topic's data protection policy prohibits this message from being delivered to {}",
+                    sub.arn
+                );
+                self.log_delivery(ctx, msg, self.attempt(origin, sub, false, 403, response, 1));
+            }
+        }
     }
 
     fn attempt<'a>(
@@ -341,6 +362,34 @@ impl Sns {
                 let response = json!({"messageId": uuid::Uuid::new_v4().to_string()}).to_string();
                 self.log_delivery(ctx, msg, self.attempt(origin, sub, true, 200, response, 1));
             }
+            "firehose" => {
+                // Firehose records carry the envelope without a signature
+                // (or the raw message), each ending in a newline.
+                let mut record = if Self::raw(sub) {
+                    body
+                } else {
+                    let mut env = self.envelope(ctx, origin, sub, msg, &body);
+                    if let Some(o) = env.as_object_mut() {
+                        for k in ["SignatureVersion", "Signature", "SigningCertURL"] {
+                            o.remove(k);
+                        }
+                    }
+                    env.to_string()
+                };
+                record.push('\n');
+                match self.put_to_firehose(ctx, origin, sub, record.into_bytes()) {
+                    Ok(id) => {
+                        let response = json!({"firehoseRecordId": id}).to_string();
+                        self.log_delivery(ctx, msg, self.attempt(origin, sub, true, 200, response, 1));
+                    }
+                    Err((status, e)) => {
+                        let response = json!({"ErrorCode": "DeliveryFailed", "ErrorMessage": e}).to_string();
+                        self.log_delivery(ctx, msg, self.attempt(origin, sub, false, status, response, 1));
+                        tracing::warn!(subscription = %sub.arn, "SNS could not deliver to {}: {e}", sub.endpoint);
+                        self.redrive(ctx, origin, sub, msg);
+                    }
+                }
+            }
             _ => {
                 tracing::warn!(subscription = %sub.arn, "MWS does not deliver to {} subscriptions", sub.protocol);
             }
@@ -372,10 +421,41 @@ impl Sns {
             source_account: origin.account.clone(),
             body,
             message_attributes: attributes,
-            message_group_id: if origin.fifo { msg.group_id.clone() } else { None },
+            // Standard topics forward a MessageGroupId to standard queues
+            // (SQS fair queues); FIFO topics need it for FIFO queues.
+            message_group_id: msg.group_id.clone(),
             message_deduplication_id: if origin.fifo { msg.dedup_id.clone() } else { None },
             now: msg.timestamp,
         }
+    }
+
+    /// Put one record into a subscription's delivery stream as its
+    /// `SubscriptionRoleArn`. Returns the record id, or the status code
+    /// and reason of the failure.
+    fn put_to_firehose(
+        &self,
+        ctx: &RequestContext,
+        origin: &Origin,
+        sub: &Subscription,
+        data: Vec<u8>,
+    ) -> Result<String, (u16, String)> {
+        let (Some(firehose), Some(sts)) = (self.inner.firehose.get(), self.sts()) else {
+            return Err((500, "Firehose is not wired in".to_string()));
+        };
+        let role = sub.attributes.get("SubscriptionRoleArn").cloned().unwrap_or_default();
+        let rctx = crate::status_log::role_context(sts, ctx, &role, &origin.topic_arn, "SNSFirehoseDelivery")
+            .map_err(|e| (403, e))?;
+        let name = sub.endpoint.rsplit_once("deliverystream/").map(|(_, n)| n).unwrap_or(&sub.endpoint);
+        firehose
+            .put_record(
+                &rctx,
+                mws_firehose::generated::types::PutRecordInput {
+                    delivery_stream_name: name.to_string(),
+                    record: mws_firehose::generated::types::Record { data },
+                },
+            )
+            .map(|out| out.record_id)
+            .map_err(|e| (e.status, format!("{}: {}", e.code, e.message)))
     }
 
     fn send_to_queue(&self, m: QueueMessage) -> Result<String, String> {

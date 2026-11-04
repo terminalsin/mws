@@ -1,6 +1,6 @@
 //! Importing key material into keys with origin `EXTERNAL`.
 
-use chrono::{Duration, Utc};
+use chrono::Duration;
 use mws_core::{RequestContext, ServiceError};
 
 use super::{require_not_pending_deletion, spec, validation, Access};
@@ -56,7 +56,7 @@ impl Kms {
         let wrapping_key = crypto::generate(Spec::Rsa(bits))?;
         let public_key = crypto::public_key_der(Spec::Rsa(bits), &wrapping_key)?;
         let token = crypto::random_bytes(64);
-        let valid_to = Utc::now() + Duration::hours(24);
+        let valid_to = ctx.received_at + Duration::hours(24);
         self.lock().imports.insert(
             crypto::hex(&token),
             ImportParams {
@@ -95,7 +95,7 @@ impl Kms {
             ("KEY_MATERIAL_DOES_NOT_EXPIRE", Some(_)) => {
                 return Err(validation("ValidTo cannot be set when ExpirationModel is KEY_MATERIAL_DOES_NOT_EXPIRE."))
             }
-            (_, Some(v)) if v <= Utc::now() || v > Utc::now() + Duration::days(365) => {
+            (_, Some(v)) if v <= ctx.received_at || v > ctx.received_at + Duration::days(365) => {
                 return Err(validation("ValidTo must be in the future and no more than 365 days from now."));
             }
             _ => {}
@@ -155,7 +155,7 @@ impl Kms {
             key.materials.push(Material {
                 id: id.clone(),
                 secret: material,
-                created_at: Utc::now(),
+                created_at: ctx.received_at,
                 rotation_type: None,
                 imported: true,
                 description: input.key_material_description,
