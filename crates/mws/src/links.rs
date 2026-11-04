@@ -562,3 +562,80 @@ impl mws_cloudwatch::MetricStreamDelivery for MetricStreamsToFirehose {
         Ok(())
     }
 }
+
+/// Lambda destination records (asynchronous invocation destinations,
+/// dead-letter queues, stream mapping failures) for SQS, SNS and
+/// EventBridge, sent through each service's own operation as the
+/// function's execution role.
+pub(crate) enum LambdaDestination {
+    Sqs(Sqs),
+    Sns(mws_sns::Sns),
+    Events(mws_events::Events),
+}
+
+fn message_attributes(m: &mws_lambda::DestinationMessage) -> serde_json::Map<String, serde_json::Value> {
+    let strings = m.string_attributes.iter().map(|(k, v)| (k, "String", v));
+    let numbers = m.number_attributes.iter().map(|(k, v)| (k, "Number", v));
+    strings
+        .chain(numbers)
+        .map(|(k, t, v)| (k.clone(), serde_json::json!({ "DataType": t, "StringValue": v })))
+        .collect()
+}
+
+#[async_trait::async_trait]
+impl mws_lambda::DestinationSink for LambdaDestination {
+    fn service(&self) -> &'static str {
+        match self {
+            LambdaDestination::Sqs(_) => "sqs",
+            LambdaDestination::Sns(_) => "sns",
+            LambdaDestination::Events(_) => "events",
+        }
+    }
+
+    async fn send(
+        &self,
+        ctx: &RequestContext,
+        arn: &str,
+        m: &mws_lambda::DestinationMessage,
+    ) -> Result<(), mws_core::ServiceError> {
+        use mws_core::Service;
+        let attributes = message_attributes(m);
+        match self {
+            LambdaDestination::Sqs(sqs) => {
+                let mut request = serde_json::json!({ "QueueUrl": queue_url(ctx, arn)?, "MessageBody": m.body });
+                if !attributes.is_empty() {
+                    request["MessageAttributes"] = serde_json::Value::Object(attributes);
+                }
+                sqs.invoke(ctx.clone(), "SendMessage", request).await.map(|_| ())
+            }
+            LambdaDestination::Sns(sns) => {
+                let mut request = serde_json::json!({ "TopicArn": arn, "Message": m.body });
+                if !attributes.is_empty() {
+                    request["MessageAttributes"] = serde_json::Value::Object(attributes);
+                }
+                sns.invoke(ctx.clone(), "Publish", request).await.map(|_| ())
+            }
+            LambdaDestination::Events(events) => {
+                let request = serde_json::json!({ "Entries": [{
+                    "Source": "lambda",
+                    "DetailType": m.detail_type,
+                    "Detail": m.body,
+                    "EventBusName": arn,
+                    "Resources": [arn, m.function_arn],
+                }]});
+                let out = events.invoke(ctx.clone(), "PutEvents", request).await?;
+                match out.get("FailedEntryCount").and_then(serde_json::Value::as_i64) {
+                    Some(n) if n > 0 => {
+                        let entry = &out["Entries"][0];
+                        Err(mws_core::ServiceError::client(
+                            entry["ErrorCode"].as_str().unwrap_or("InternalFailure").to_string(),
+                            400,
+                            entry["ErrorMessage"].as_str().unwrap_or("PutEvents failed").to_string(),
+                        ))
+                    }
+                    _ => Ok(()),
+                }
+            }
+        }
+    }
+}

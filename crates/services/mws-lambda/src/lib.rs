@@ -21,6 +21,7 @@ pub mod generated {
 mod aliases;
 mod code;
 mod config_ops;
+mod destinations;
 mod esm;
 mod esm_stream;
 mod function_url;
@@ -39,6 +40,7 @@ use std::sync::{Arc, RwLock, RwLockReadGuard, RwLockWriteGuard};
 
 use mws_core::{HttpRequest, HttpResponse, RequestContext, Service, ServiceError};
 
+pub use destinations::{DestinationMessage, DestinationSink};
 pub use esm::{QueueFacts, QueueMessage, QueueMessageAttribute, QueueSource};
 pub use esm_stream::{StreamPosition, StreamRead, StreamRecord, StreamShard, StreamSource};
 pub use names::FunctionRef;
@@ -57,6 +59,8 @@ pub(crate) struct Inner {
     /// The streams event source mappings poll, when Kinesis is wired in.
     streams: std::sync::OnceLock<Arc<dyn esm_stream::StreamSource>>,
     pollers: esm::Pollers,
+    /// Where destination records for other services go.
+    destinations: destinations::Sinks,
 }
 
 /// The Lambda service. Cheap to clone; clones share state.
@@ -94,6 +98,7 @@ impl Lambda {
                 queues: std::sync::OnceLock::new(),
                 streams: std::sync::OnceLock::new(),
                 pollers: esm::Pollers::default(),
+                destinations: destinations::Sinks::default(),
             }),
         }
     }

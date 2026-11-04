@@ -860,6 +860,19 @@ impl Lambda {
                 input.starting_position_timestamp,
             )?;
         }
+        if let Some(source) = input.event_source_arn.as_deref() {
+            let st = self.read();
+            let existing = st.event_source_mappings.iter().find(|(_, m)| {
+                m.config.event_source_arn.as_deref() == Some(source)
+                    && m.config.function_arn.as_deref() == Some(f.qualified_arn().as_str())
+            });
+            if let Some((uuid, _)) = existing {
+                return Err(errors::resource_conflict(format!(
+                    "The event source arn (\" {source} \") and function (\" {} \") provided mapping already exists. Please update or delete the existing mapping with UUID {uuid}",
+                    input.function_name
+                )));
+            }
+        }
         let uuid = uuid::Uuid::new_v4().to_string();
         let account = names::account_of(ctx);
         let enabled = input.enabled.unwrap_or(true);
