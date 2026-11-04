@@ -1023,6 +1023,10 @@ async fn managed_acme_endpoint_issues_to_a_real_acme_client() {
     let d = acm.describe_certificate().certificate_arn(&cert_arn).send().await.unwrap();
     assert_eq!(d.certificate().unwrap().status(), Some(&CertificateStatus::Revoked));
 
+    // ACME certificates are not the account's to delete.
+    let err = acm.delete_certificate().certificate_arn(&cert_arn).send().await.unwrap_err();
+    assert_eq!(code(&err.into_service_error()), "ValidationException");
+
     // Accounts.
     let accounts = acm.list_acme_accounts().acme_endpoint_arn(&endpoint_arn).send().await.unwrap();
     assert_eq!(accounts.acme_accounts()[0].account_url(), Some(account_url.as_str()));
@@ -1052,4 +1056,285 @@ async fn managed_acme_endpoint_issues_to_a_real_acme_client() {
     acm.delete_acme_endpoint().acme_endpoint_arn(&endpoint_arn).send().await.unwrap();
     let (status, _, _) = mws.raw("GET", &directory_url, &[], b"").await;
     assert_eq!(status, 404);
+}
+
+#[tokio::test]
+async fn listing_defaults_to_rsa_certificates_with_a_domain() {
+    let mws = Mws::start().await;
+    let (acm, _) = clients(&mws).await;
+    let (cert, key) = self_signed(&["ec.example.com"], 90);
+    acm.import_certificate()
+        .certificate(Blob::new(cert.as_bytes()))
+        .private_key(Blob::new(key.serialize_pem().as_bytes()))
+        .send()
+        .await
+        .unwrap();
+    // No subject and no SANs: no domain name at all.
+    let nameless_key = rcgen::KeyPair::generate().unwrap();
+    let nameless = rcgen::CertificateParams::new(Vec::<String>::new()).unwrap().self_signed(&nameless_key).unwrap();
+    acm.import_certificate()
+        .certificate(Blob::new(nameless.pem().as_bytes()))
+        .private_key(Blob::new(nameless_key.serialize_pem().as_bytes()))
+        .send()
+        .await
+        .unwrap();
+
+    let list = acm.list_certificates().send().await.unwrap();
+    assert!(list.certificate_summary_list().is_empty(), "only RSA_1024 and RSA_2048 by default");
+    let ec = acm
+        .list_certificates()
+        .includes(Filters::builder().key_types(KeyAlgorithm::EcPrime256v1).build())
+        .send()
+        .await
+        .unwrap();
+    let names: Vec<_> = ec.certificate_summary_list().iter().map(|s| s.domain_name().unwrap_or_default()).collect();
+    assert_eq!(names.len(), 2, "{names:?}");
+    assert!(names.contains(&"ec.example.com"));
+}
+
+#[tokio::test]
+async fn email_validated_renewal_waits_for_approval() {
+    let mws = Mws::start().await;
+    let (acm, _) = clients(&mws).await;
+    let arn = acm
+        .request_certificate()
+        .domain_name("mail.example.net")
+        .validation_method(ValidationMethod::Email)
+        .send()
+        .await
+        .unwrap()
+        .certificate_arn()
+        .unwrap()
+        .to_string();
+    let link = format!("/_acm/approvals?certificate={}&domain=mail.example.net", urlencoding::encode(&arn));
+    let (status, _, _) = mws.raw("GET", &link, &[], b"").await;
+    assert_eq!(status, 200);
+    let d = acm.describe_certificate().certificate_arn(&arn).send().await.unwrap();
+    let first = d.certificate().unwrap().clone();
+    assert_eq!(first.status(), Some(&CertificateStatus::Issued));
+
+    // Inside the renewal window ACM asks the owner again.
+    clock(&mws, 140).await;
+    let d = acm.describe_certificate().certificate_arn(&arn).send().await.unwrap();
+    let c = d.certificate().unwrap();
+    assert_eq!(c.status(), Some(&CertificateStatus::Issued));
+    let renewal = c.renewal_summary().unwrap();
+    assert_eq!(renewal.renewal_status(), &RenewalStatus::PendingValidation);
+    assert_eq!(renewal.domain_validation_options()[0].validation_status().unwrap().as_str(), "PENDING_VALIDATION");
+    assert_eq!(c.serial(), first.serial());
+    acm.resend_validation_email()
+        .certificate_arn(&arn)
+        .domain("mail.example.net")
+        .validation_domain("example.net")
+        .send()
+        .await
+        .unwrap();
+
+    // Approving the renewal email renews the certificate.
+    let (status, _, body) = mws.raw("GET", &link, &[], b"").await;
+    assert_eq!(status, 200, "{}", String::from_utf8_lossy(&body));
+    let d = acm.describe_certificate().certificate_arn(&arn).send().await.unwrap();
+    let c = d.certificate().unwrap();
+    assert_eq!(c.renewal_summary().unwrap().renewal_status(), &RenewalStatus::Success);
+    assert_ne!(c.serial(), first.serial());
+    assert!(c.not_after().unwrap().secs() > first.not_after().unwrap().secs());
+}
+
+/// Every `aws.acm` event on the default bus, delivered to an SQS queue.
+async fn acm_event_queue(mws: &Mws) -> (aws_sdk_eventbridge::Client, EventInbox) {
+    let cfg = mws.root_sdk_config().await;
+    let eb = aws_sdk_eventbridge::Client::new(&cfg);
+    let sqs = aws_sdk_sqs::Client::new(&cfg);
+    let url = sqs.create_queue().queue_name("acm-events").send().await.unwrap().queue_url.unwrap();
+    let attrs = sqs
+        .get_queue_attributes()
+        .queue_url(&url)
+        .attribute_names(aws_sdk_sqs::types::QueueAttributeName::QueueArn)
+        .send()
+        .await
+        .unwrap();
+    let queue_arn = attrs.attributes().unwrap()[&aws_sdk_sqs::types::QueueAttributeName::QueueArn].clone();
+    let policy = json!({"Version":"2012-10-17","Statement":[{"Effect":"Allow",
+        "Principal":{"Service":"events.amazonaws.com"},"Action":"sqs:SendMessage","Resource":queue_arn}]});
+    sqs.set_queue_attributes()
+        .queue_url(&url)
+        .attributes(aws_sdk_sqs::types::QueueAttributeName::Policy, policy.to_string())
+        .send()
+        .await
+        .unwrap();
+    eb.put_rule().name("acm").event_pattern(r#"{"source":["aws.acm"]}"#).send().await.unwrap();
+    eb.put_targets()
+        .rule("acm")
+        .targets(aws_sdk_eventbridge::types::Target::builder().id("q").arn(&queue_arn).build().unwrap())
+        .send()
+        .await
+        .unwrap();
+    (eb, EventInbox { sqs, url, seen: Vec::new() })
+}
+
+/// Events received from an ACM event queue, kept until a test asks for
+/// them (they arrive in any order).
+struct EventInbox {
+    sqs: aws_sdk_sqs::Client,
+    url: String,
+    seen: Vec<Value>,
+}
+
+impl EventInbox {
+    /// Wait for an event of `detail_type` about `arn`.
+    async fn expect(&mut self, detail_type: &str, arn: &str) -> Value {
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(15);
+        loop {
+            if let Some(i) = self.seen.iter().position(|e| e["detail-type"] == detail_type && e["resources"][0] == arn)
+            {
+                return self.seen.remove(i);
+            }
+            assert!(std::time::Instant::now() < deadline, "no {detail_type} event for {arn}: {:?}", self.seen);
+            let r = self.sqs.receive_message().queue_url(&self.url).max_number_of_messages(10).send().await.unwrap();
+            if r.messages().is_empty() {
+                tokio::time::sleep(std::time::Duration::from_millis(200)).await;
+            }
+            for m in r.messages() {
+                self.sqs
+                    .delete_message()
+                    .queue_url(&self.url)
+                    .receipt_handle(m.receipt_handle().unwrap())
+                    .send()
+                    .await
+                    .unwrap();
+                self.seen.push(serde_json::from_str(m.body().unwrap()).unwrap());
+            }
+        }
+    }
+}
+
+#[tokio::test]
+async fn certificate_events_and_days_to_expiry_metric() {
+    let mws = Mws::start().await;
+    let (acm, r53) = clients(&mws).await;
+    let (eb, mut inbox) = acm_event_queue(&mws).await;
+    let cw = aws_sdk_cloudwatch::Client::new(&mws.root_sdk_config().await);
+    let zone_id = zone(&r53, "events.example.org").await;
+    let issued = acm
+        .request_certificate()
+        .domain_name("events.example.org")
+        .validation_method(ValidationMethod::Dns)
+        .send()
+        .await
+        .unwrap()
+        .certificate_arn()
+        .unwrap()
+        .to_string();
+    publish_validation_records(&acm, &r53, &zone_id, &issued).await;
+    let (cert, key) = self_signed(&["short.example.org"], 20);
+    let imported = acm
+        .import_certificate()
+        .certificate(Blob::new(cert.as_bytes()))
+        .private_key(Blob::new(key.serialize_pem().as_bytes()))
+        .send()
+        .await
+        .unwrap()
+        .certificate_arn()
+        .unwrap()
+        .to_string();
+
+    // Issuance happens in the background once the record is in Route 53.
+    let e = inbox.expect("ACM Certificate Available", &issued).await;
+    assert_eq!(e["source"], "aws.acm");
+    assert_eq!(e["detail"]["Action"], "ISSUANCE");
+    assert_eq!(e["detail"]["CertificateType"], "AMAZON_ISSUED");
+    assert_eq!(e["detail"]["CommonName"], "events.example.org");
+    assert_eq!(e["detail"]["DomainValidationMethod"], "DNS");
+    assert_eq!(e["detail"]["DaysToExpiry"], 198);
+    assert_eq!(e["detail"]["InUse"], false);
+    let e = inbox.expect("ACM Certificate Available", &imported).await;
+    assert_eq!(e["detail"]["Action"], "IMPORT");
+    assert_eq!(e["detail"]["CertificateType"], "IMPORTED");
+
+    // DaysToExpiry in AWS/CertificateManager, per certificate.
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(15);
+    let stats = loop {
+        let stats = cw
+            .get_metric_statistics()
+            .namespace("AWS/CertificateManager")
+            .metric_name("DaysToExpiry")
+            .dimensions(aws_sdk_cloudwatch::types::Dimension::builder().name("CertificateArn").value(&imported).build())
+            .start_time(aws_sdk_cloudwatch::primitives::DateTime::from_secs(chrono_now() - 3600))
+            .end_time(aws_sdk_cloudwatch::primitives::DateTime::from_secs(chrono_now() + 3600))
+            .period(60)
+            .statistics(aws_sdk_cloudwatch::types::Statistic::Minimum)
+            .send()
+            .await
+            .unwrap();
+        if !stats.datapoints().is_empty() {
+            break stats;
+        }
+        assert!(std::time::Instant::now() < deadline, "no DaysToExpiry metric");
+        tokio::time::sleep(std::time::Duration::from_millis(200)).await;
+    };
+    assert_eq!(stats.datapoints()[0].minimum(), Some(19.0));
+    let metrics = cw.list_metrics().namespace("AWS/CertificateManager").send().await.unwrap();
+    assert_eq!(metrics.metrics().len(), 2);
+
+    // Expiry happens on the clock, with nobody calling ACM.
+    clock(&mws, 25).await;
+    eb.list_rules().send().await.unwrap();
+    let e = inbox.expect("ACM Certificate Expired", &imported).await;
+    assert_eq!(e["detail"]["CommonName"], "short.example.org");
+
+    // So does managed renewal: the validation record is still there.
+    clock(&mws, 120).await;
+    eb.list_rules().send().await.unwrap();
+    let e = inbox.expect("ACM Certificate Available", &issued).await;
+    assert_eq!(e["detail"]["Action"], "RENEWAL");
+    let d = acm.describe_certificate().certificate_arn(&imported).send().await.unwrap();
+    assert_eq!(d.certificate().unwrap().status(), Some(&CertificateStatus::Expired));
+}
+
+#[tokio::test]
+async fn renewal_that_needs_the_owner_sends_an_event() {
+    let mws = Mws::start().await;
+    let (acm, r53) = clients(&mws).await;
+    let (eb, mut inbox) = acm_event_queue(&mws).await;
+    let zone_id = zone(&r53, "stuck.example.org").await;
+    let arn = acm
+        .request_certificate()
+        .domain_name("stuck.example.org")
+        .validation_method(ValidationMethod::Dns)
+        .send()
+        .await
+        .unwrap()
+        .certificate_arn()
+        .unwrap()
+        .to_string();
+    publish_validation_records(&acm, &r53, &zone_id, &arn).await;
+    let d = acm.describe_certificate().certificate_arn(&arn).send().await.unwrap();
+    let rr = d.certificate().unwrap().domain_validation_options()[0].resource_record().unwrap().clone();
+    let set = ResourceRecordSet::builder()
+        .name(rr.name())
+        .r#type(RrType::Cname)
+        .ttl(300)
+        .resource_records(ResourceRecord::builder().value(rr.value()).build().unwrap())
+        .build()
+        .unwrap();
+    r53.change_resource_record_sets()
+        .hosted_zone_id(&zone_id)
+        .change_batch(
+            ChangeBatch::builder()
+                .changes(Change::builder().action(ChangeAction::Delete).resource_record_set(set).build().unwrap())
+                .build()
+                .unwrap(),
+        )
+        .send()
+        .await
+        .unwrap();
+    clock(&mws, 145).await;
+    eb.list_rules().send().await.unwrap();
+    let e = inbox.expect("ACM Certificate Renewal Action Required", &arn).await;
+    assert_eq!(e["detail"]["RenewalStatus"], "PENDING_AUTO_RENEWAL");
+    assert_eq!(e["detail"]["DomainValidationMethod"], "DNS");
+}
+
+fn chrono_now() -> i64 {
+    std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_secs() as i64
 }

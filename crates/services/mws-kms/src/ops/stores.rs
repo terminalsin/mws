@@ -3,7 +3,6 @@
 //! but CloudHSM stores cannot be created (their cluster does not exist) and
 //! connecting an external key store fails the way an unreachable proxy does.
 
-use chrono::Utc;
 use mws_core::{ConditionContext, RequestContext, ServiceError};
 
 use super::{page, validation};
@@ -102,7 +101,7 @@ impl Kms {
                 region: ctx.region.clone(),
                 name: input.custom_key_store_name,
                 store_type,
-                created_at: Utc::now(),
+                created_at: ctx.received_at,
                 connection_state: "DISCONNECTED".into(),
                 connection_error_code: None,
                 cloud_hsm_cluster_id: None,

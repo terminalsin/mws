@@ -35,6 +35,13 @@ pub trait ClockSource: Send + Sync {
     fn due_events(&self, now: chrono::DateTime<chrono::Utc>) -> Vec<ServiceEvent>;
 }
 
+/// Route 53 health checks as EventBridge global endpoints see them.
+pub trait HealthChecks: Send + Sync {
+    /// Whether the health check (an ARN) is healthy; `None` if it does
+    /// not exist, which EventBridge treats as healthy.
+    fn healthy(&self, health_check_arn: &str) -> Option<bool>;
+}
+
 impl Events {
     /// Put an AWS service's event on the account's default bus, where it
     /// matches rules and reaches their targets like any other. Returns the

@@ -14,14 +14,15 @@ def test_scp_limits_a_created_account(endpoint, session_for, iam):
     orgs = session_for().client("organizations", endpoint_url=endpoint, region_name="us-east-1")
     org = orgs.create_organization(FeatureSet="ALL")["Organization"]
     try:
-        root_id = orgs.list_roots()["Roots"][0]["Id"]
+        root = orgs.list_roots()["Roots"][0]
         name = f"acct-{uuid.uuid4().hex[:6]}"
         status = orgs.create_account(Email=f"{name}@example.com", AccountName=name)["CreateAccountStatus"]
         status = orgs.describe_create_account_status(CreateAccountRequestId=status["Id"])["CreateAccountStatus"]
         assert status["State"] == "SUCCEEDED"
         account = status["AccountId"]
 
-        orgs.enable_policy_type(RootId=root_id, PolicyType="SERVICE_CONTROL_POLICY")
+        # SCPs start enabled in an organization with all features.
+        assert root["PolicyTypes"] == [{"Type": "SERVICE_CONTROL_POLICY", "Status": "ENABLED"}]
         policy = orgs.create_policy(
             Name="no-users", Description="deny", Type="SERVICE_CONTROL_POLICY", Content=json.dumps(DENY_CREATE_USER)
         )["Policy"]["PolicySummary"]

@@ -9,6 +9,14 @@ use crate::names::{self, arn, not_found, own_region, validation, BusRef};
 use crate::state::Endpoint;
 use crate::Events;
 
+/// Where an endpoint sends an event; see [`Events::endpoint_route`].
+#[derive(Debug, Clone)]
+pub(crate) struct EndpointRoute {
+    pub bus: BusRef,
+    /// The other Region's bus, when the endpoint replicates events.
+    pub replica: Option<BusRef>,
+}
+
 fn endpoint_missing(name: &str) -> ServiceError {
     not_found(format!("Endpoint {name} does not exist."))
 }
@@ -73,29 +81,47 @@ impl Events {
         own_region(&mut st, ctx).endpoints.get(name).cloned().ok_or_else(|| endpoint_missing(name))
     }
 
-    /// The bus `PutEvents` with this endpoint id puts events on: the bus
-    /// in the endpoint's Region, which is the primary.
-    pub(crate) fn endpoint_primary_bus(&self, ctx: &RequestContext, id: &str) -> Result<BusRef, ServiceError> {
-        let st = self.lock();
-        let prefix = format!("{}/", ctx.caller.account_id);
-        let e = st
-            .regions
-            .iter()
-            .filter(|(k, _)| k.starts_with(&prefix))
-            .flat_map(|(_, r)| r.endpoints.values())
-            .find(|e| e.endpoint_id == id)
-            .cloned()
-            .ok_or_else(|| {
-                validation(format!("Parameter EndpointId is not valid. Reason: Endpoint {id} does not exist."))
-            })?;
-        let home = names::split_arn(&e.arn).map(|p| p.2.to_string()).unwrap_or_default();
+    /// Where `PutEvents` with this endpoint id puts events: the primary
+    /// Region's bus while the primary health check is healthy, the
+    /// secondary Region's bus once it is not; and, with replication
+    /// enabled (the default), a copy on the other bus too.
+    pub(crate) fn endpoint_route(&self, ctx: &RequestContext, id: &str) -> Result<EndpointRoute, ServiceError> {
+        let e = {
+            let st = self.lock();
+            let prefix = format!("{}/", ctx.caller.account_id);
+            st.regions
+                .iter()
+                .filter(|(k, _)| k.starts_with(&prefix))
+                .flat_map(|(_, r)| r.endpoints.values())
+                .find(|e| e.endpoint_id == id)
+                .cloned()
+        }
+        .ok_or_else(|| {
+            validation(format!("Parameter EndpointId is not valid. Reason: Endpoint {id} does not exist."))
+        })?;
         let buses: Vec<BusRef> = e.event_buses.iter().filter_map(|b| BusRef::from_arn(&b.event_bus_arn)).collect();
-        buses
+        let failover = e.routing_config.as_ref().map(|r| &r.failover_config);
+        let secondary_region = failover.map(|f| f.secondary.route.clone());
+        let home = names::split_arn(&e.arn).map(|p| p.2.to_string()).unwrap_or_default();
+        let secondary = buses.iter().find(|b| Some(&b.region) == secondary_region.as_ref());
+        let primary = buses
             .iter()
-            .find(|b| b.region == home)
+            .find(|b| Some(&b.region) != secondary_region.as_ref())
+            .or_else(|| buses.iter().find(|b| b.region == home))
             .or(buses.first())
             .cloned()
-            .ok_or_else(|| validation("The endpoint has no event buses."))
+            .ok_or_else(|| validation("The endpoint has no event buses."))?;
+        let healthy = failover
+            .map(|f| f.primary.health_check.as_str())
+            .and_then(|hc| self.health_checks().and_then(|h| h.healthy(hc)))
+            .unwrap_or(true);
+        let (bus, other) = match secondary {
+            Some(s) if !healthy => (s.clone(), Some(primary)),
+            Some(s) => (primary, Some(s.clone())),
+            None => (primary, None),
+        };
+        let replicate = e.replication_config.as_ref().and_then(|r| r.state.as_deref()) != Some("DISABLED");
+        Ok(EndpointRoute { bus, replica: other.filter(|_| replicate) })
     }
 
     pub fn create_endpoint(

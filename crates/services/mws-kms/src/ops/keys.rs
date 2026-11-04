@@ -50,11 +50,11 @@ fn new_key_id(multi_region: bool) -> String {
     }
 }
 
-pub(crate) fn new_material(secret: Vec<u8>, rotation_type: Option<&str>) -> Material {
+pub(crate) fn new_material(secret: Vec<u8>, rotation_type: Option<&str>, now: chrono::DateTime<Utc>) -> Material {
     Material {
         id: crypto::material_id(&secret),
         secret,
-        created_at: Utc::now(),
+        created_at: now,
         rotation_type: rotation_type.map(str::to_string),
         imported: false,
         description: None,
@@ -77,6 +77,56 @@ impl State {
             }
         }
     }
+}
+
+/// Services with a predefined `alias/aws/<service>` alias, which AWS backs
+/// with an AWS managed key on first use.
+const PREDEFINED_AWS_ALIASES: &[&str] = &[
+    "acm",
+    "backup",
+    "codeartifact",
+    "codecommit",
+    "connect",
+    "dynamodb",
+    "ebs",
+    "ecr",
+    "elasticfilesystem",
+    "es",
+    "firehose",
+    "fsx",
+    "glue",
+    "kafka",
+    "kinesis",
+    "kinesisvideo",
+    "lambda",
+    "lightsail",
+    "rds",
+    "redshift",
+    "route53",
+    "s3",
+    "secretsmanager",
+    "sns",
+    "sqs",
+    "ssm",
+    "timestream",
+    "xray",
+];
+
+/// The service of a predefined AWS alias in the caller's account and
+/// Region (`alias/aws/s3` or its ARN).
+fn predefined_aws_alias<'a>(ctx: &RequestContext, key_id: &'a str) -> Option<&'a str> {
+    let name = match key_id.strip_prefix("arn:") {
+        Some(_) => {
+            let parts: Vec<&str> = key_id.splitn(6, ':').collect();
+            if parts.len() != 6 || parts[3] != ctx.region || parts[4] != ctx.caller.account_id {
+                return None;
+            }
+            parts[5]
+        }
+        None => key_id,
+    };
+    let service = name.strip_prefix("alias/aws/")?;
+    PREDEFINED_AWS_ALIASES.contains(&service).then_some(service)
 }
 
 fn is_primary(key: &Key) -> bool {
@@ -174,14 +224,14 @@ impl Kms {
         let (materials, state) = if origin == "EXTERNAL" {
             (vec![], "PendingImport")
         } else {
-            (vec![new_material(crypto::generate(s)?, None)], "Enabled")
+            (vec![new_material(crypto::generate(s)?, None, ctx.received_at)], "Enabled")
         };
         let key = Key {
             arn: arn.clone(),
             key_id,
             account,
             region: ctx.region.clone(),
-            created_at: Utc::now(),
+            created_at: ctx.received_at,
             description: input.description.unwrap_or_default(),
             key_usage: usage,
             key_spec,
@@ -214,6 +264,11 @@ impl Kms {
         ctx: &RequestContext,
         input: types::DescribeKeyRequest,
     ) -> Result<types::DescribeKeyResponse, ServiceError> {
+        // DescribeKey on a predefined AWS alias that no key backs yet
+        // creates the AWS managed key, as AWS does.
+        if let Some(service) = predefined_aws_alias(ctx, &input.key_id) {
+            self.aws_managed_key(ctx, service);
+        }
         let t = self.authorize_key(ctx, &input.key_id, Access::new("DescribeKey").grant("DescribeKey").aliases())?;
         let st = self.lock();
         Ok(types::DescribeKeyResponse { key_metadata: Some(metadata(&st, st.key(&t.arn)?)) })
@@ -247,6 +302,11 @@ impl Kms {
             s => return Err(invalid_state(key, s)),
         }
         key.enabled_flag = enable;
+        // A key re-enabled after its rotation date rotates at once, then
+        // every period after that (rotation pauses while it is disabled).
+        if enable && key.next_rotation.is_some_and(|n| n < ctx.received_at) {
+            key.next_rotation = Some(ctx.received_at);
+        }
         Ok(())
     }
 
@@ -289,7 +349,7 @@ impl Kms {
             key.deletion_date = None;
         } else {
             key.state = "PendingDeletion".into();
-            key.deletion_date = Some(Utc::now() + Duration::days(days as i64));
+            key.deletion_date = Some(ctx.received_at + Duration::days(days as i64));
         }
         Ok(types::ScheduleKeyDeletionResponse {
             key_id: Some(key.arn.clone()),
@@ -493,7 +553,7 @@ impl Kms {
             return Err(errors::unsupported_operation(format!("{} is an AWS managed key.", key.arn)));
         }
         key.rotation_period_days = Some(period);
-        key.next_rotation = Some(Utc::now() + Duration::days(period as i64));
+        key.next_rotation = Some(ctx.received_at + Duration::days(period as i64));
         Ok(())
     }
 
@@ -540,11 +600,14 @@ impl Kms {
             let parn = key_arn(&ctx.partition, &primary_region, &key.account, &key.key_id);
             st.keys.get(&parn).unwrap_or(key)
         };
+        // A key pending deletion reports rotation as off (and is not
+        // rotated); cancelling the deletion restores the old status.
+        let pending = matches!(key.state.as_str(), "PendingDeletion" | "PendingReplicaDeletion");
         Ok(types::GetKeyRotationStatusResponse {
-            key_rotation_enabled: source.rotation_period_days.is_some(),
+            key_rotation_enabled: source.rotation_period_days.is_some() && !pending,
             key_id: Some(key.arn.clone()),
             rotation_period_in_days: source.rotation_period_days,
-            next_rotation_date: source.next_rotation,
+            next_rotation_date: source.next_rotation.filter(|_| !pending),
             on_demand_rotation_start_date: None,
         })
     }
@@ -578,10 +641,10 @@ impl Kms {
             })?;
             pending.pending = false;
             pending.rotation_type = Some("ON_DEMAND".into());
-            pending.created_at = Utc::now();
+            pending.created_at = ctx.received_at;
             key.current_material = Some(pending.id.clone());
         } else {
-            let m = new_material(crypto::generate(Spec::Symmetric)?, Some("ON_DEMAND"));
+            let m = new_material(crypto::generate(Spec::Symmetric)?, Some("ON_DEMAND"), ctx.received_at);
             key.current_material = Some(m.id.clone());
             key.materials.push(m);
         }
@@ -703,7 +766,7 @@ impl Kms {
         let replica = Key {
             arn: arn.clone(),
             region: input.replica_region,
-            created_at: Utc::now(),
+            created_at: ctx.received_at,
             description: input.description.unwrap_or_else(|| primary.description.clone()),
             state: if primary.current_material.is_some() { "Enabled" } else { "PendingImport" }.into(),
             enabled_flag: true,

@@ -5,6 +5,7 @@
 
 mod acm;
 mod acmpca;
+mod acmpca_parity;
 mod cloudwatch;
 mod cloudwatch_parity;
 mod events;
@@ -12,6 +13,7 @@ mod firehose;
 mod iam;
 mod iam_advanced;
 mod kinesis;
+mod kinesis_parity;
 mod kinesis_targets;
 mod kms;
 mod lambda;
@@ -32,6 +34,7 @@ mod secretsmanager;
 mod sns;
 mod sns_archive;
 mod sns_encryption;
+mod sns_parity;
 mod sns_status_logs;
 mod sqs;
 mod ssm;

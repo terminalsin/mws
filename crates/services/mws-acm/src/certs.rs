@@ -4,6 +4,7 @@ use chrono::{Duration, Utc};
 use mws_core::{ConditionContext, RequestContext, ServiceError};
 
 use crate::common::{self, check_certificate_arn, is_local, Tags};
+use crate::events;
 use crate::generated::{errors, types};
 use crate::pki::{self, CertInfo};
 use crate::state::{Certificate, DomainValidation, MethodUpdate};
@@ -117,7 +118,17 @@ pub(crate) fn detail(c: &Certificate) -> types::CertificateDetail {
     if let Some(r) = &c.renewal {
         d.renewal_summary = Some(types::RenewalSummary {
             renewal_status: r.status.clone(),
-            domain_validation_options: c.validations.iter().map(|v| dv_wire(c, v)).collect(),
+            domain_validation_options: c
+                .validations
+                .iter()
+                .map(|v| {
+                    let mut w = dv_wire(c, v);
+                    if let (Some(s), Some(_)) = (&v.renewal_status, &w.validation_status) {
+                        w.validation_status = Some(s.clone());
+                    }
+                    w
+                })
+                .collect(),
             renewal_status_reason: r.reason.clone(),
             updated_at: r.updated_at,
         });
@@ -315,6 +326,7 @@ impl Acm {
                     status: if private { "SUCCESS".into() } else { "PENDING_VALIDATION".into() },
                     requested_method: None,
                     requested_status: None,
+                    renewal_status: None,
                 }
             })
             .collect();
@@ -352,6 +364,7 @@ impl Acm {
             pca_certificate_arn: None,
             emails_sent: 0,
             expiry_event_at: None,
+            metric_at: None,
         };
         if !private {
             if let Some(reason) = names.iter().find_map(|n| validation::public_domain_problem(n)) {
@@ -367,6 +380,9 @@ impl Acm {
             let mut st = self.lock();
             if let Some(key) = token_key {
                 st.request_tokens.insert(key, (arn.clone(), now));
+            }
+            if cert.status == "ISSUED" {
+                st.pending_events.extend(events::available(&cert, "ISSUANCE", now));
             }
             st.certificates.insert(arn.clone(), cert);
         }
@@ -447,7 +463,13 @@ impl Acm {
         ctx.authorize("acm:ListCertificates", "*", ConditionContext::new())?;
         self.refresh(ctx);
         let includes = input.includes.clone().unwrap_or_default();
-        let key_types = includes.key_types.clone().unwrap_or_else(|| vec!["RSA_2048".into()]);
+        // Without keyTypes ACM lists RSA_1024 and RSA_2048 certificates that
+        // have at least one domain name.
+        let default_filter = includes.key_types.as_ref().is_none_or(|k| k.is_empty());
+        let key_types = match &includes.key_types {
+            Some(k) if !k.is_empty() => k.clone(),
+            _ => vec!["RSA_1024".into(), "RSA_2048".into()],
+        };
         let origins = input.certificate_key_pair_origins.clone();
         let st = self.lock();
         let mut certs: Vec<(&Certificate, Option<CertInfo>)> = st
@@ -461,6 +483,7 @@ impl Acm {
                 _ => c.origin != "ACME",
             })
             .filter(|(c, _)| key_types.contains(&c.key_algorithm))
+            .filter(|(c, _)| !default_filter || !c.domain_name.is_empty())
             .filter(|(c, _)| includes.export_option.as_ref().is_none_or(|e| *e == c.export_option))
             .filter(|(c, _)| includes.managed_by.as_ref().is_none_or(|m| Some(m) == c.managed_by.as_ref()))
             .filter(|(_, info)| {
@@ -493,6 +516,12 @@ impl Acm {
         input: types::DeleteCertificateRequest,
     ) -> Result<(), ServiceError> {
         let c = self.begin(ctx, "DeleteCertificate", &input.certificate_arn)?;
+        if c.origin == "ACME" {
+            return Err(errors::validation(format!(
+                "Certificate {} has a CertificateKeyPairOrigin of ACME and cannot be deleted. ACM deletes ACME certificates 1 year after they expire.",
+                c.arn
+            )));
+        }
         self.lock().certificates.remove(&c.arn);
         Ok(())
     }
@@ -575,7 +604,8 @@ impl Acm {
                     "Certificate {arn} was not imported, so it cannot be reimported."
                 )));
             }
-            self.update_cert(&arn, |c| {
+            let mut st = self.lock();
+            if let Some(c) = st.certificates.get_mut(&arn) {
                 c.domain_name = domain;
                 c.sans = sans;
                 c.key_algorithm = info.key_algorithm.clone();
@@ -584,7 +614,10 @@ impl Acm {
                 c.imported_key = Some(input.private_key.clone());
                 c.imported_at = Some(now);
                 c.status = "ISSUED".into();
-            });
+                c.expiry_event_at = None;
+                let e = events::available(c, "REIMPORT", now);
+                st.pending_events.extend(e);
+            }
             return Ok(types::ImportCertificateResponse { certificate_arn: Some(arn) });
         }
         common::validate_tags(&tags)?;
@@ -632,8 +665,11 @@ impl Acm {
             pca_certificate_arn: None,
             emails_sent: 0,
             expiry_event_at: None,
+            metric_at: None,
         };
-        self.lock().certificates.insert(arn.clone(), cert);
+        let mut st = self.lock();
+        st.pending_events.extend(events::available(&cert, "IMPORT", now));
+        st.certificates.insert(arn.clone(), cert);
         Ok(types::ImportCertificateResponse { certificate_arn: Some(arn) })
     }
 
@@ -728,7 +764,8 @@ impl Acm {
         input: types::ResendValidationEmailRequest,
     ) -> Result<(), ServiceError> {
         let c = self.begin(ctx, "ResendValidationEmail", &input.certificate_arn)?;
-        if c.status != "PENDING_VALIDATION" {
+        let renewing = c.status == "ISSUED" && c.renewal.as_ref().is_some_and(|r| r.status == "PENDING_VALIDATION");
+        if c.status != "PENDING_VALIDATION" && !renewing {
             return Err(errors::invalid_state(format!(
                 "Certificate {} is not in the PENDING_VALIDATION state (it is {}).",
                 c.arn, c.status
@@ -954,7 +991,7 @@ impl Acm {
     }
 
     /// "Send" the validation emails: log the message and the approval link.
-    fn send_validation_emails(&self, ctx: &RequestContext, arn: &str, only: Option<&str>) {
+    pub(crate) fn send_validation_emails(&self, ctx: &RequestContext, arn: &str, only: Option<&str>) {
         let Ok(c) = self.certificate(ctx, arn) else { return };
         let base = ctx.endpoint.clone().unwrap_or_default();
         for v in c.validations.iter().filter(|v| v.method.as_deref() == Some("EMAIL")) {
@@ -975,16 +1012,27 @@ impl Acm {
     pub(crate) fn approve_email(&self, arn: &str, domain: &str, now: chrono::DateTime<Utc>) -> Result<(), String> {
         let mut st = self.lock();
         let Some(mut c) = st.certificates.get(arn).cloned() else { return Err("certificate not found".into()) };
+        let renewing = c.status == "ISSUED" && c.renewal.as_ref().is_some_and(|r| r.status == "PENDING_VALIDATION");
         let Some(v) = c.validations.iter_mut().find(|v| v.domain == domain && v.method.as_deref() == Some("EMAIL"))
         else {
             return Err("domain not validated by email".into());
         };
+        if renewing {
+            // Approving the renewal email.
+            v.renewal_status = Some("SUCCESS".into());
+            if c.validations.iter().all(|v| v.renewal_status.as_deref() == Some("SUCCESS")) {
+                validation::complete_public_renewal(&mut st, &mut c, now);
+            }
+            st.certificates.insert(arn.to_string(), c);
+            return Ok(());
+        }
         if c.status != "PENDING_VALIDATION" {
             return Err(format!("certificate is {}", c.status));
         }
         v.status = "SUCCESS".into();
         if c.validations.iter().all(|v| v.status == "SUCCESS") {
             validation::issue_public(&mut st, &mut c, now).map_err(|e| e.message.clone())?;
+            st.pending_events.extend(events::available(&c, "ISSUANCE", now));
         }
         st.certificates.insert(arn.to_string(), c);
         Ok(())

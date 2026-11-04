@@ -9,9 +9,11 @@ use rand::Rng;
 
 use crate::generated::{errors, types};
 use crate::state::{Ca, IssuedCert, State};
-use crate::{revocation, x509, PrivateCa};
+use crate::{extensions, revocation, x509, PrivateCa};
 
 const MAX_TAGS: usize = 50;
+/// The longest validity a short-lived-certificate CA issues.
+const SHORT_LIVED_MAX_DAYS: i64 = 7;
 const DEFAULT_TEMPLATE: &str = "arn:aws:acm-pca:::template/EndEntityCertificate/V1";
 
 fn not_found(arn: &str) -> ServiceError {
@@ -31,6 +33,10 @@ pub(crate) fn check_arn(ctx: &RequestContext, arn: &str) -> Result<(), ServiceEr
     if !arn.starts_with(&prefix) || !arn.contains(":certificate-authority/") {
         return Err(errors::invalid_arn(format!("The ARN {arn} is not valid.")));
     }
+    // Each region's endpoint only knows its own CAs.
+    if revocation::region(arn) != ctx.region {
+        return Err(not_found(arn));
+    }
     Ok(())
 }
 
@@ -45,9 +51,9 @@ impl State {
 }
 
 impl Ca {
-    fn set_status(&mut self, status: &str) {
+    fn set_status(&mut self, status: &str, now: DateTime<Utc>) {
         self.status = status.to_string();
-        self.last_state_change_at = Utc::now();
+        self.last_state_change_at = now;
     }
 
     fn wire(&self) -> types::CertificateAuthority {
@@ -165,7 +171,8 @@ impl PrivateCa {
             cond.insert("aws:TagKeys".into(), tags.iter().map(|t| t.key.clone()).collect());
         }
         ctx.authorize("acm-pca:CreateCertificateAuthority", "*", cond)?;
-        if let Some(token) = &input.idempotency_token {
+        let token_key = input.idempotency_token.as_ref().map(|t| format!("{}/{t}", ctx.caller.account_id));
+        if let Some(token) = &token_key {
             if let Some(arn) = self.lock().create_tokens.get(token) {
                 return Ok(types::CreateCertificateAuthorityResponse { certificate_authority_arn: Some(arn.clone()) });
             }
@@ -185,7 +192,11 @@ impl PrivateCa {
         let key_der = x509::generate_key(&config.key_algorithm, &config.signing_algorithm)?;
         let alg = x509::signature_algorithm(&config.key_algorithm, &config.signing_algorithm)?;
         let key = x509::key_for(&key_der, alg)?;
-        let csr_pem = x509::csr_pem(&key, &x509::subject_dn(&config.subject))?;
+        let csr_extensions = match &config.csr_extensions {
+            Some(c) => extensions::csr_extensions(c)?,
+            None => Vec::new(),
+        };
+        let csr_pem = x509::csr_pem(&key, &x509::subject_dn(&config.subject)?, &csr_extensions)?;
 
         let id = uuid::Uuid::new_v4().to_string();
         let arn = format!(
@@ -193,7 +204,7 @@ impl PrivateCa {
             ctx.partition, ctx.region, ctx.caller.account_id
         );
         self.check_crl_bucket(&arn, input.revocation_configuration.as_ref())?;
-        let now = Utc::now();
+        let now = ctx.received_at;
         let ca = Ca {
             arn: arn.clone(),
             owner: ctx.caller.account_id.clone(),
@@ -226,7 +237,7 @@ impl PrivateCa {
             audit_reports: BTreeMap::new(),
         };
         let mut st = self.lock();
-        if let Some(token) = input.idempotency_token {
+        if let Some(token) = token_key {
             st.create_tokens.insert(token, arn.clone());
         }
         st.cas.insert(arn.clone(), ca);
@@ -251,14 +262,25 @@ impl PrivateCa {
         input: types::ListCertificateAuthoritiesRequest,
     ) -> Result<types::ListCertificateAuthoritiesResponse, ServiceError> {
         ctx.authorize("acm-pca:ListCertificateAuthorities", "*", ConditionContext::new())?;
-        let st = self.lock();
-        if input.resource_owner.as_deref() == Some("OTHER_ACCOUNTS") {
-            return Ok(types::ListCertificateAuthoritiesResponse {
-                next_token: None,
-                certificate_authorities: Some(vec![]),
-            });
-        }
-        let all: Vec<types::CertificateAuthority> = st.cas.values().map(Ca::wire).collect();
+        let account = ctx.caller.account_id.as_str();
+        let in_region: Vec<types::CertificateAuthority> =
+            self.lock().cas.values().filter(|ca| revocation::region(&ca.arn) == ctx.region).map(Ca::wire).collect();
+        let all: Vec<types::CertificateAuthority> = if input.resource_owner.as_deref() == Some("OTHER_ACCOUNTS") {
+            // CAs other accounts share with this one. MWS has no AWS RAM, so
+            // a CA counts as shared when its resource policy (PutPolicy, which
+            // is what a RAM share writes) lets the caller describe it.
+            in_region
+                .into_iter()
+                .filter(|ca| ca.owner_account.as_deref() != Some(account))
+                .filter(|ca| {
+                    let arn = ca.arn.as_deref().unwrap_or_default();
+                    let has_policy = self.lock().cas.get(arn).is_some_and(|c| c.policy.is_some());
+                    has_policy && self.authorize(ctx, "DescribeCertificateAuthority", arn).is_ok()
+                })
+                .collect()
+        } else {
+            in_region.into_iter().filter(|ca| ca.owner_account.as_deref() == Some(account)).collect()
+        };
         let (page, next) = paginate(all, input.max_results, input.next_token.as_deref())?;
         Ok(types::ListCertificateAuthoritiesResponse { next_token: next, certificate_authorities: Some(page) })
     }
@@ -352,9 +374,9 @@ impl PrivateCa {
         ca.not_before = Some(info.not_before);
         ca.not_after = Some(info.not_after);
         if ca.status != "DISABLED" {
-            ca.set_status("ACTIVE");
+            ca.set_status("ACTIVE", ctx.received_at);
         }
-        revocation::refresh_crl(ca)?;
+        revocation::refresh_crl(ca, ctx.received_at)?;
         self.publish_crl(ca);
         Ok(())
     }
@@ -370,13 +392,14 @@ impl PrivateCa {
         let mut cond = ConditionContext::new();
         cond.insert("acm-pca:TemplateArn".into(), vec![template_arn.clone()]);
         self.authorize_with(ctx, "IssueCertificate", &arn, cond)?;
-        self.issue_authorized(input)
+        self.issue_authorized(input, ctx.received_at)
     }
 
     /// `IssueCertificate` once the caller has been authorized.
     pub(crate) fn issue_authorized(
         &self,
         input: types::IssueCertificateRequest,
+        now: DateTime<Utc>,
     ) -> Result<types::IssueCertificateResponse, ServiceError> {
         let arn = input.certificate_authority_arn.clone();
         let template_arn = input.template_arn.clone().unwrap_or_else(|| DEFAULT_TEMPLATE.to_string());
@@ -386,9 +409,11 @@ impl PrivateCa {
                 return Ok(types::IssueCertificateResponse { certificate_arn: Some(existing.clone()) });
             }
         }
-        let (template_name, template) = x509::template(&template_arn)?;
+        let template = x509::template(&template_arn)?;
         let csr = x509::parse_csr(&input.csr)?;
-        let now = Utc::now();
+        if let Some(subject) = input.api_passthrough.as_ref().and_then(|a| a.subject.as_ref()) {
+            extensions::subject_attributes(subject)?;
+        }
         let not_after = validity_time(&input.validity, now)?;
         let not_before = match &input.validity_not_before {
             Some(v) => validity_time(v, now)?,
@@ -402,10 +427,11 @@ impl PrivateCa {
         let ca = st.ca_mut(&arn)?;
         let alg = x509::signature_algorithm(&ca.config.key_algorithm, &input.signing_algorithm)?;
         let key = x509::key_for(&ca.key_der, alg)?;
-        let is_root_cert = template_name == x509::ROOT_TEMPLATE;
+        let is_root_cert = template.root;
         let (crl_url, ocsp_url) =
             if is_root_cert { (None, None) } else { (revocation::crl_url(ca), revocation::ocsp_url(ca)) };
-        let issue = x509::Issue { csr: &csr, template, not_before, not_after, serial, crl_url, ocsp_url };
+        let api = input.api_passthrough.as_ref();
+        let issue = x509::Issue { csr: &csr, template, api, not_before, not_after, serial, crl_url, ocsp_url };
         let pem = if is_root_cert {
             if ca.ty != "ROOT" {
                 return Err(errors::invalid_args("Only a root certificate authority can issue a root CA certificate."));
@@ -419,6 +445,13 @@ impl PrivateCa {
             issue.self_signed(&key)?
         } else {
             ca.require_usable()?;
+            if ca.usage_mode.as_deref() == Some("SHORT_LIVED_CERTIFICATE")
+                && not_after - not_before.max(now) > Duration::days(SHORT_LIVED_MAX_DAYS)
+            {
+                return Err(validation(format!(
+                    "A certificate authority in SHORT_LIVED_CERTIFICATE mode issues certificates valid for at most {SHORT_LIVED_MAX_DAYS} days."
+                )));
+            }
             if ca.not_after.is_some_and(|ca_end| not_after > ca_end) {
                 return Err(validation(
                     "The certificate validity specified exceeds the certificate authority validity.",
@@ -492,8 +525,8 @@ impl PrivateCa {
         if cert.revoked.is_some() {
             return Err(errors::request_already_processed("This certificate is already revoked."));
         }
-        cert.revoked = Some((input.revocation_reason, Utc::now()));
-        revocation::refresh_crl(ca)?;
+        cert.revoked = Some((input.revocation_reason, ctx.received_at));
+        revocation::refresh_crl(ca, ctx.received_at)?;
         self.publish_crl(ca);
         Ok(())
     }
@@ -522,11 +555,11 @@ impl PrivateCa {
                     ca.status
                 )));
             }
-            ca.set_status(status);
+            ca.set_status(status, ctx.received_at);
         }
         if input.revocation_configuration.is_some() {
             ca.revocation = input.revocation_configuration;
-            revocation::refresh_crl(ca)?;
+            revocation::refresh_crl(ca, ctx.received_at)?;
             self.publish_crl(ca);
         }
         Ok(())
@@ -548,15 +581,13 @@ impl PrivateCa {
                 "The certificate authority {arn} is in the ACTIVE state. Disable it before deleting it."
             ))),
             "DELETED" => Err(invalid_state(format!("The certificate authority {arn} is already deleted."))),
-            "CREATING" | "PENDING_CERTIFICATE" | "FAILED" => {
-                // Never activated: deleted with no restoration period.
-                st.cas.remove(arn);
-                Ok(())
-            }
             _ => {
+                // Every other state, PENDING_CERTIFICATE included, keeps a
+                // restoration period; RestoreCertificateAuthority puts the CA
+                // back in the state it was deleted from.
                 ca.status_before_delete = Some(ca.status.clone());
-                ca.restorable_until = Some(Utc::now() + Duration::days(days as i64));
-                ca.set_status("DELETED");
+                ca.restorable_until = Some(ctx.received_at + Duration::days(days as i64));
+                ca.set_status("DELETED", ctx.received_at);
                 Ok(())
             }
         }
@@ -572,16 +603,16 @@ impl PrivateCa {
         self.authorize(ctx, "RestoreCertificateAuthority", arn)?;
         let mut st = self.lock();
         let ca = st.ca_mut(arn)?;
-        if ca.status != "DELETED" || ca.restorable_until.is_some_and(|t| t < Utc::now()) {
+        if ca.status != "DELETED" || ca.restorable_until.is_some_and(|t| t < ctx.received_at) {
             return Err(invalid_state(format!(
                 "The certificate authority {arn} is not in a valid state ({}).",
                 ca.status
             )));
         }
         ca.restorable_until = None;
-        let back = if ca.cert_pem.is_some() { "DISABLED" } else { "PENDING_CERTIFICATE" };
-        ca.status_before_delete = None;
-        ca.set_status(back);
+        let fallback = if ca.cert_pem.is_some() { "DISABLED" } else { "PENDING_CERTIFICATE" };
+        let back = ca.status_before_delete.take().unwrap_or_else(|| fallback.to_string());
+        ca.set_status(&back, ctx.received_at);
         Ok(())
     }
 
@@ -672,7 +703,7 @@ impl PrivateCa {
         }
         ca.permissions.push(types::Permission {
             certificate_authority_arn: Some(arn.clone()),
-            created_at: Some(Utc::now()),
+            created_at: Some(ctx.received_at),
             principal: Some(input.principal),
             source_account: Some(input.source_account.unwrap_or_else(|| ctx.caller.account_id.clone())),
             actions: Some(input.actions),
