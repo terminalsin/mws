@@ -69,7 +69,10 @@ impl Logs {
             (Some(n), None, None) => vec![n.clone()],
             (None, Some(ns), None) => ns.clone(),
             (None, None, Some(ids)) => ids.clone(),
-            (None, None, None) if language != "CWLI" => Vec::new(),
+            (None, None, None) if language == "SQL" => Vec::new(),
+            (None, None, None) if language == "PPL" && input.query_string.trim_start().starts_with("source") => {
+                Vec::new()
+            }
             (None, None, None) => {
                 return Err(errors::invalid_parameter(
                     "Either logGroupName, logGroupNames or logGroupIdentifiers must be specified",
@@ -84,19 +87,52 @@ impl Logs {
         if input.end_time < input.start_time {
             return Err(errors::invalid_parameter("End time should not be before the start time"));
         }
-        if language != "CWLI" {
-            return Err(errors::malformed_query(format!(
-                "Query language {language} is not supported; MWS runs CloudWatch Logs Insights (CWLI) queries."
-            )));
-        }
-        let query = insights::parse(&input.query_string).map_err(errors::malformed_query)?;
+        let id = self.run_query(
+            ctx,
+            &language,
+            &input.query_string,
+            ids,
+            (input.start_time.saturating_mul(1000), input.end_time.saturating_mul(1000) + 999),
+            input.limit,
+        )?;
+        Ok(types::StartQueryResponse { query_id: Some(id) })
+    }
+
+    /// Compile and run a query in any of the three languages over the
+    /// events in `[from, to]` (epoch ms), keeping the results for
+    /// `GetQueryResults`. Returns the query id.
+    pub(crate) fn run_query(
+        &self,
+        ctx: &RequestContext,
+        language: &str,
+        query_string: &str,
+        ids: Vec<String>,
+        (from, to): (i64, i64),
+        limit: Option<i32>,
+    ) -> Result<String, ServiceError> {
+        let compiled = crate::sqlppl::compile(language, query_string).map_err(errors::malformed_query)?;
+        // SQL names its log groups in FROM; the request may not add more.
+        let ids = match (language, compiled.log_groups.is_empty()) {
+            ("SQL", true) => {
+                return Err(errors::malformed_query(
+                    "Syntax error: missing FROM clause; name the log group to query in FROM",
+                ))
+            }
+            ("SQL", false) if !ids.is_empty() => {
+                return Err(errors::invalid_parameter(
+                    "For SQL queries, specify log groups in the FROM clause of the query, not in the request.",
+                ))
+            }
+            (_, false) => compiled.log_groups.clone(),
+            _ => ids,
+        };
+        let query = compiled.query;
         let groups: Vec<GroupRef> = ids.iter().map(|i| GroupRef::parse(ctx, i)).collect::<Result<_, _>>()?;
         for g in &groups {
             self.authorize_group(ctx, "StartQuery", g, None, ConditionContext::new())?;
         }
         let started = std::time::Instant::now();
         let now = now_ms(ctx);
-        let (from, to) = (input.start_time.saturating_mul(1000), input.end_time.saturating_mul(1000) + 999);
         let mut records = Vec::new();
         let mut scanned_bytes = 0i64;
         {
@@ -118,12 +154,19 @@ impl Logs {
             }
         }
         let scanned = records.len();
-        let limit = input.limit.map_or(10_000, |l| l.clamp(1, 10_000) as usize);
+        let limit = limit.map_or(10_000, |l| l.clamp(1, 10_000) as usize);
         let out = insights::execute(&query, records, limit);
+        // `@ptr` is a Logs Insights language field.
+        let ptr = language == "CWLI";
         let results: Vec<Vec<types::ResultField>> = out
             .rows
             .into_iter()
-            .map(|row| row.into_iter().map(|(f, v)| types::ResultField { field: Some(f), value: Some(v) }).collect())
+            .map(|row| {
+                row.into_iter()
+                    .filter(|(f, _)| ptr || f != "@ptr")
+                    .map(|(f, v)| types::ResultField { field: Some(f), value: Some(v) })
+                    .collect()
+            })
             .collect();
         let id = uuid();
         let stats = types::QueryStatistics {
@@ -136,8 +179,8 @@ impl Logs {
         };
         let q = Query {
             id: id.clone(),
-            language,
-            query_string: input.query_string,
+            language: language.to_string(),
+            query_string: query_string.to_string(),
             status: "Complete".into(),
             create_time: now,
             log_groups: groups.iter().map(GroupRef::arn).collect(),
@@ -146,7 +189,7 @@ impl Logs {
             duration_ms: started.elapsed().as_millis() as i64,
         };
         self.lock().region(&ctx.caller.account_id, &ctx.region).queries.insert(id.clone(), q);
-        Ok(types::StartQueryResponse { query_id: Some(id) })
+        Ok(id)
     }
 
     fn query(&self, ctx: &RequestContext, id: &str) -> Result<Query, ServiceError> {

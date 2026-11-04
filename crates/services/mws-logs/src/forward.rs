@@ -74,6 +74,7 @@ impl Logs {
     pub(crate) fn observe(&self, ctx: &RequestContext) {
         let offset = ctx.received_at - chrono::Utc::now();
         *self.template.lock().expect("Logs template lock poisoned") = Some((ctx.clone(), offset));
+        self.start_scheduler();
     }
 
     /// The target and role a destination ARN delivers to: a CloudWatch
