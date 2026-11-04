@@ -931,3 +931,140 @@ async fn external_key_stores_lifecycle() {
     let gone = c.connect_custom_key_store().custom_key_store_id(&id).send().await.unwrap_err();
     assert_eq!(code(&gone), "CustomKeyStoreNotFoundException");
 }
+
+async fn advance_days(mws: &Mws, days: i64) {
+    let body = format!(r#"{{"advanceSeconds": {}}}"#, days * 86400);
+    let (status, _) = mws.control("POST", "/_mws/clock", Some(&body)).await;
+    assert_eq!(status, 200);
+}
+
+#[tokio::test]
+async fn deletion_and_rotation_follow_the_emulated_clock() {
+    let mws = Mws::start().await;
+    let c = kms(&mws).await;
+    let doomed = new_key(&c).await;
+    let rotating = new_key(&c).await;
+    c.enable_key_rotation().key_id(&rotating).rotation_period_in_days(90).send().await.unwrap();
+    let blob = c.encrypt().key_id(&rotating).plaintext(Blob::new("old")).send().await.unwrap();
+
+    // Rotation reads as off while a key is pending deletion.
+    c.enable_key_rotation().key_id(&doomed).send().await.unwrap();
+    c.schedule_key_deletion().key_id(&doomed).pending_window_in_days(7).send().await.unwrap();
+    let status = c.get_key_rotation_status().key_id(&doomed).send().await.unwrap();
+    assert!(!status.key_rotation_enabled());
+
+    advance_days(&mws, 6).await;
+    let md = c.describe_key().key_id(&doomed).send().await.unwrap();
+    assert_eq!(md.key_metadata().unwrap().key_state(), Some(&KeyState::PendingDeletion));
+    advance_days(&mws, 2).await;
+    let gone = c.describe_key().key_id(&doomed).send().await.unwrap_err();
+    assert_eq!(code(&gone), "NotFoundException");
+
+    // 8 days in: not yet rotated. 200 days in: two rotations, each dated
+    // when it was due.
+    assert!(c.list_key_rotations().key_id(&rotating).send().await.unwrap().rotations().is_empty());
+    advance_days(&mws, 192).await;
+    let rotations = c.list_key_rotations().key_id(&rotating).send().await.unwrap();
+    assert_eq!(rotations.rotations().len(), 2);
+    let dates: Vec<_> = rotations.rotations().iter().map(|r| r.rotation_date().unwrap().secs()).collect();
+    assert_eq!(dates[1] - dates[0], 90 * 86400);
+    let decrypted = c.decrypt().ciphertext_blob(blob.ciphertext_blob().unwrap().clone()).send().await.unwrap();
+    assert_eq!(decrypted.plaintext().unwrap().as_ref(), b"old");
+}
+
+#[tokio::test]
+async fn describe_key_creates_predefined_aws_managed_keys() {
+    let mws = Mws::start().await;
+    let c = kms(&mws).await;
+    let md = c.describe_key().key_id("alias/aws/ebs").send().await.unwrap();
+    let md = md.key_metadata().unwrap();
+    assert_eq!(md.key_manager(), Some(&aws_sdk_kms::types::KeyManagerType::Aws));
+    let again = c.describe_key().key_id("arn:aws:kms:us-east-1:123456789012:alias/aws/ebs").send().await.unwrap();
+    assert_eq!(again.key_metadata().unwrap().key_id(), md.key_id());
+    let aliases = c.list_aliases().key_id(md.key_id()).send().await.unwrap();
+    assert_eq!(aliases.aliases()[0].alias_name(), Some("alias/aws/ebs"));
+
+    let unknown = c.describe_key().key_id("alias/aws/not-a-service").send().await.unwrap_err();
+    assert_eq!(code(&unknown), "NotFoundException");
+}
+
+#[tokio::test]
+async fn malformed_key_ids_and_sensitive_values() {
+    let mws = Mws::start().await;
+    let c = kms(&mws).await;
+    let bad = c.describe_key().key_id("garbage").send().await.unwrap_err();
+    assert_eq!(code(&bad), "NotFoundException");
+    assert_eq!(bad.message(), Some("Invalid keyId 'garbage'"));
+    let missing = c.describe_key().key_id("1234abcd-12ab-34cd-56ef-1234567890ab").send().await.unwrap_err();
+    assert_eq!(
+        missing.message(),
+        Some("Key 'arn:aws:kms:us-east-1:123456789012:key/1234abcd-12ab-34cd-56ef-1234567890ab' does not exist")
+    );
+
+    // Plaintext is @sensitive, so AWS leaves it out of the message.
+    let key = new_key(&c).await;
+    let long = c.encrypt().key_id(&key).plaintext(Blob::new(vec![b'a'; 4097])).send().await.unwrap_err();
+    assert_eq!(
+        long.message(),
+        Some("1 validation error detected: Value at 'plaintext' failed to satisfy constraint: Member must have length less than or equal to 4096")
+    );
+}
+
+#[tokio::test]
+async fn grants_hand_on_only_what_they_hold() {
+    let mws = Mws::start().await;
+    let c = kms(&mws).await;
+    let key = new_key(&c).await;
+    let (_, cfg) = user_with_policy(&mws, "lead", None).await;
+    let lead = Client::new(&cfg);
+    user_with_policy(&mws, "worker", None).await;
+    let worker = "arn:aws:iam::123456789012:user/worker";
+    c.create_grant()
+        .key_id(&key)
+        .grantee_principal("arn:aws:iam::123456789012:user/lead")
+        .operations(GrantOperation::Encrypt)
+        .operations(GrantOperation::CreateGrant)
+        .operations(GrantOperation::DescribeKey)
+        .constraints(GrantConstraints::builder().encryption_context_subset("team", "a").build())
+        .send()
+        .await
+        .unwrap();
+
+    // Constraints don't apply to DescribeKey.
+    lead.describe_key().key_id(&key).send().await.unwrap();
+
+    // A subset of the operations under constraints at least as strict.
+    lead.create_grant()
+        .key_id(&key)
+        .grantee_principal(worker)
+        .operations(GrantOperation::Encrypt)
+        .constraints(
+            GrantConstraints::builder()
+                .encryption_context_equals("team", "a")
+                .encryption_context_equals("env", "prod")
+                .build(),
+        )
+        .send()
+        .await
+        .unwrap();
+
+    let more_ops = lead
+        .create_grant()
+        .key_id(&key)
+        .grantee_principal(worker)
+        .operations(GrantOperation::Decrypt)
+        .constraints(GrantConstraints::builder().encryption_context_subset("team", "a").build())
+        .send()
+        .await
+        .unwrap_err();
+    assert_eq!(code(&more_ops), "AccessDeniedException");
+    let looser = lead
+        .create_grant()
+        .key_id(&key)
+        .grantee_principal(worker)
+        .operations(GrantOperation::Encrypt)
+        .send()
+        .await
+        .unwrap_err();
+    assert_eq!(code(&looser), "AccessDeniedException");
+}
