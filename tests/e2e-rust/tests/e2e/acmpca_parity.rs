@@ -101,7 +101,7 @@ async fn issue_pem(
     csr: &str,
     template: &str,
     api: Option<ApiPassthrough>,
-) -> Result<String, aws_sdk_acmpca::Error> {
+) -> Result<String, Option<String>> {
     let arn = pca
         .issue_certificate()
         .certificate_authority_arn(ca)
@@ -111,7 +111,8 @@ async fn issue_pem(
         .set_api_passthrough(api)
         .validity(days(30))
         .send()
-        .await?
+        .await
+        .map_err(|e| e.code().map(str::to_string))?
         .certificate_arn()
         .unwrap()
         .to_string();
@@ -278,7 +279,7 @@ async fn passthrough_templates_and_csr_extensions() {
 
     // A blank template needs API passthrough; unknown templates are refused.
     let err = issue_pem(&pca, &ca, &csr, "BlankEndEntityCertificate/V1", None).await.unwrap_err();
-    assert_eq!(err.code(), Some("InvalidArgsException"));
+    assert_eq!(err.as_deref(), Some("InvalidArgsException"));
 
     // Custom attributes cannot be mixed with standard ones.
     let mixed = ApiPassthrough::builder()
@@ -290,7 +291,7 @@ async fn passthrough_templates_and_csr_extensions() {
         )
         .build();
     let err = issue_pem(&pca, &ca, &csr, "EndEntityCertificate_APIPassthrough/V1", Some(mixed)).await.unwrap_err();
-    assert_eq!(err.code(), Some("InvalidArgsException"));
+    assert_eq!(err.as_deref(), Some("InvalidArgsException"));
     let custom_only = ApiPassthrough::builder()
         .subject(
             Asn1Subject::builder()
