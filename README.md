@@ -184,6 +184,7 @@ crates/
   mws-proto-restxml restXml protocol runtime (HTTP binding, routing, XML, errors)
   mws-proto-json    awsJson1.0/1.1 protocol runtime (X-Amz-Target, JSON, errors)
   mws-proto-restjson restJson1 protocol runtime (HTTP bindings, JSON bodies, errors)
+  mws-proto-cbor    Smithy RPC v2 CBOR protocol runtime (CBOR codec, routing, errors)
   mws-xml           XML writer and reader shared by the XML protocols
   mws-server        HTTP front door: authenticates, routes by signing name; the
                     /_mws control API, scenarios, snapshots and persistence
@@ -200,6 +201,7 @@ crates/
     mws-s3control   S3 Control: access points, Object Lambda access points, account Block Public Access
     mws-lambda      Lambda: functions that really run on local runtimes via the Runtime API
     mws-logs        CloudWatch Logs: log events, filter patterns, Insights queries, live tail
+    mws-cloudwatch  CloudWatch: metrics, metric math, alarms that act, dashboards, Contributor Insights
     mws-sqs         SQS: standard and FIFO queues, long polling, dead-letter queues, redrive
     mws-ssm         SSM Parameter Store: versioned parameters, KMS SecureStrings, policies, sharing
     mws-events      EventBridge: buses, rules with event patterns, targets that really receive events
