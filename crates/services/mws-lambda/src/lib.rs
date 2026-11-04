@@ -22,6 +22,7 @@ mod aliases;
 mod code;
 mod config_ops;
 mod esm;
+mod esm_stream;
 mod function_url;
 mod functions;
 mod handler;
@@ -39,6 +40,7 @@ use std::sync::{Arc, RwLock, RwLockReadGuard, RwLockWriteGuard};
 use mws_core::{HttpRequest, HttpResponse, RequestContext, Service, ServiceError};
 
 pub use esm::{QueueFacts, QueueMessage, QueueMessageAttribute, QueueSource};
+pub use esm_stream::{StreamPosition, StreamRead, StreamRecord, StreamShard, StreamSource};
 pub use names::FunctionRef;
 pub use service_invoke::{ServiceInvocation, ServiceInvocationResult, ServiceInvokeError};
 use state::State;
@@ -52,6 +54,8 @@ pub(crate) struct Inner {
     logs: std::sync::OnceLock<mws_logs::Logs>,
     /// The queues event source mappings poll, when SQS is wired in.
     queues: std::sync::OnceLock<Arc<dyn esm::QueueSource>>,
+    /// The streams event source mappings poll, when Kinesis is wired in.
+    streams: std::sync::OnceLock<Arc<dyn esm_stream::StreamSource>>,
     pollers: esm::Pollers,
 }
 
@@ -88,6 +92,7 @@ impl Lambda {
                 s3,
                 logs: std::sync::OnceLock::new(),
                 queues: std::sync::OnceLock::new(),
+                streams: std::sync::OnceLock::new(),
                 pollers: esm::Pollers::default(),
             }),
         }

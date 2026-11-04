@@ -96,7 +96,7 @@ impl Lambda {
     /// Remember the context of a request (so pollers can act later) and
     /// start the pollers if they are not running.
     pub(crate) fn observe(&self, ctx: &RequestContext) {
-        if self.inner.queues.get().is_none() {
+        if self.inner.queues.get().is_none() && self.inner.streams.get().is_none() {
             return;
         }
         let offset = ctx.received_at - chrono::Utc::now();
@@ -119,7 +119,9 @@ impl Lambda {
             st.event_source_mappings
                 .iter()
                 .filter(|(_, m)| m.config.state.as_deref() == Some("Enabled"))
-                .filter(|(_, m)| m.config.event_source_arn.as_deref().is_some_and(is_sqs))
+                .filter(|(_, m)| {
+                    m.config.event_source_arn.as_deref().is_some_and(|a| is_sqs(a) || crate::esm_stream::is_kinesis(a))
+                })
                 .map(|(uuid, m)| (uuid.clone(), m.config.clone(), m.account_id.clone(), m.region.clone()))
                 .collect()
         };
@@ -129,7 +131,13 @@ impl Lambda {
             }
             let lambda = self.clone();
             tokio::spawn(async move {
-                if let Err(e) = lambda.poll_once(&config, &account, &region).await {
+                let stream = config.event_source_arn.as_deref().is_some_and(crate::esm_stream::is_kinesis);
+                let polled = if stream {
+                    lambda.poll_stream(&uuid, &config, &account, &region).await
+                } else {
+                    lambda.poll_once(&config, &account, &region).await
+                };
+                if let Err(e) = polled {
                     tracing::debug!(mapping = %uuid, "event source mapping poll failed: {}", e.message);
                 }
                 lambda.inner.pollers.busy.lock().expect("poller lock poisoned").remove(&uuid);
@@ -139,7 +147,7 @@ impl Lambda {
 
     /// A context for work done on behalf of `account` in `region`, at the
     /// emulated time now.
-    fn poller_context(&self, account: &str, region: &str) -> Option<RequestContext> {
+    pub(crate) fn poller_context(&self, account: &str, region: &str) -> Option<RequestContext> {
         let (template, offset) = self.inner.pollers.template.lock().expect("poller lock poisoned").clone()?;
         let mut ctx = template;
         ctx.request_id = uuid::Uuid::new_v4().to_string();
@@ -151,7 +159,11 @@ impl Lambda {
     }
 
     /// The function's execution role as a caller, with `ctx`'s other facts.
-    fn role_context(&self, ctx: &RequestContext, function_arn: &str) -> Result<RequestContext, ServiceError> {
+    pub(crate) fn role_context(
+        &self,
+        ctx: &RequestContext,
+        function_arn: &str,
+    ) -> Result<RequestContext, ServiceError> {
         let f = names::parse_function(ctx, function_arn, None)?;
         let role = {
             let st = self.read();

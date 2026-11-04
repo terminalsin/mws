@@ -269,6 +269,9 @@ impl Events {
                 return Err(validation("Target must not be the event bus the rule is on."));
             }
         }
+        if matches!(service, "kinesis" | "firehose") && t.role_arn.is_none() {
+            return Err(validation(format!("Parameter(s) RoleArn must be specified for target: {}.", t.id)));
+        }
         if service == "sqs"
             && resource.ends_with(".fifo")
             && t.sqs_parameters.as_ref().and_then(|p| p.message_group_id.as_ref()).is_none()

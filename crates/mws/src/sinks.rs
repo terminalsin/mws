@@ -217,3 +217,57 @@ impl mws_events::ClockSource for AcmExpiryEvents {
             .collect()
     }
 }
+
+/// EventBridge targets that are Kinesis data streams, written as the
+/// target's role.
+pub struct KinesisTarget(pub mws_kinesis::Kinesis);
+
+fn target_error(e: mws_core::ServiceError) -> TargetError {
+    TargetError {
+        code: e.code.to_string(),
+        message: e.message.to_string(),
+        retryable: e.status >= 500 || e.code.contains("Throughput"),
+    }
+}
+
+#[async_trait::async_trait]
+impl TargetSink for KinesisTarget {
+    async fn deliver(&self, inv: TargetInvocation<'_>) -> Result<(), TargetError> {
+        let ctx = inv.role_context()?;
+        let partition_key = inv.partition_key.map(str::to_string).unwrap_or_else(|| uuid::Uuid::new_v4().to_string());
+        self.0
+            .put_record(
+                &ctx,
+                mws_kinesis::generated::types::PutRecordInput {
+                    stream_arn: Some(inv.target_arn.to_string()),
+                    partition_key: Some(partition_key),
+                    data: inv.payload.as_bytes().to_vec(),
+                    ..Default::default()
+                },
+            )
+            .map(|_| ())
+            .map_err(target_error)
+    }
+}
+
+/// EventBridge targets that are Firehose streams, written as the target's
+/// role.
+pub struct FirehoseTarget(pub mws_firehose::Firehose);
+
+#[async_trait::async_trait]
+impl TargetSink for FirehoseTarget {
+    async fn deliver(&self, inv: TargetInvocation<'_>) -> Result<(), TargetError> {
+        let ctx = inv.role_context()?;
+        let name = inv.target_arn.rsplit_once("deliverystream/").map(|(_, n)| n).unwrap_or(inv.target_arn);
+        self.0
+            .put_record(
+                &ctx,
+                mws_firehose::generated::types::PutRecordInput {
+                    delivery_stream_name: name.to_string(),
+                    record: mws_firehose::generated::types::Record { data: inv.payload.as_bytes().to_vec() },
+                },
+            )
+            .map(|_| ())
+            .map_err(target_error)
+    }
+}

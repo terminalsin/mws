@@ -114,6 +114,10 @@ pub struct EventSourceMapping {
     pub region: String,
     pub config: types::EventSourceMappingConfiguration,
     pub tags: BTreeMap<String, String>,
+    /// Stream sources: progress per shard.
+    pub shards: BTreeMap<String, crate::esm_stream::ShardProgress>,
+    /// When the mapping was created (where `LATEST` starts).
+    pub created: Option<chrono::DateTime<chrono::Utc>>,
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
