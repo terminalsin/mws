@@ -20,6 +20,12 @@ pub use error::{ErrorFault, ErrorField, ErrorValue, ServiceError};
 pub use service::{HttpRequest, HttpResponse, RequestContext, Service, StreamingBody};
 pub use validate::{render_list, Validator};
 
+/// Re-exports used by generated code.
+#[doc(hidden)]
+pub mod __private {
+    pub use fancy_regex;
+}
+
 /// Settings that describe the simulated AWS partition and account.
 #[derive(Debug, Clone)]
 pub struct Environment {

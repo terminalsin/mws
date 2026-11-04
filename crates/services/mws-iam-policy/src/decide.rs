@@ -3,7 +3,7 @@
 //! cross-account requests:
 //! <https://docs.aws.amazon.com/IAM/latest/UserGuide/reference_policies_evaluation-logic.html>
 
-use crate::{Evaluation, Policy, Request};
+use crate::{Evaluation, Policy, PrincipalMatch, Request};
 
 /// A parsed policy plus where it came from, for reporting.
 #[derive(Debug, Clone)]
@@ -165,8 +165,17 @@ pub fn decide(set: &PolicySet, req: &Request<'_>) -> Decision {
     if set.cross_account && !resource.as_ref().is_some_and(|(_, e)| e.allowed()) {
         return Decision { allowed: false, deny_reason: Some(DenyReason::NoResourceAllow), matched: vec![] };
     }
+    //    A grant to the user or the role session itself is not limited by
+    //    the permissions boundary or session policies; a grant to the role a
+    //    session belongs to is limited by both, since it joins the role's
+    //    permissions before the session is created.
+    //    <https://docs.aws.amazon.com/IAM/latest/UserGuide/access_policies_boundaries.html>
+    let boundary_ok = boundary.as_ref().is_none_or(|(_, b)| b.allowed());
     if let Some((src, e)) = resource.as_ref().filter(|_| !set.cross_account) {
-        if e.allowed_directly() && session_ok {
+        let granted = e.allowed_as(PrincipalMatch::Direct)
+            || (e.allowed_as(PrincipalMatch::Wildcard) && session_ok)
+            || (e.allowed_as(PrincipalMatch::Role) && session_ok && boundary_ok);
+        if granted {
             let matched = e.allows.iter().map(|(i, _)| (src.clone(), *i)).collect();
             return Decision { allowed: true, deny_reason: None, matched };
         }

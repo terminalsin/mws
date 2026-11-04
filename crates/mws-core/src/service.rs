@@ -77,6 +77,10 @@ impl RequestContext {
         ctx.insert("aws:MultiFactorAuthPresent".into(), vec![mfa.to_string()]);
         if let Some(s) = &c.session {
             ctx.insert("aws:TokenIssueTime".into(), vec![s.issued_at.format("%Y-%m-%dT%H:%M:%SZ").to_string()]);
+            if s.mfa_authenticated {
+                let age = (self.received_at - s.issued_at).num_seconds().max(0);
+                ctx.insert("aws:MultiFactorAuthAge".into(), vec![age.to_string()]);
+            }
             if let Some(si) = &s.source_identity {
                 ctx.insert("aws:SourceIdentity".into(), vec![si.clone()]);
             }

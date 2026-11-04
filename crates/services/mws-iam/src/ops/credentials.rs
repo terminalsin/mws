@@ -675,7 +675,7 @@ impl Iam {
     ) -> Result<types::UploadServerCertificateResponse, ServiceError> {
         let path = input.path.unwrap_or_else(|| "/".into());
         let arn = self.entity_arn("server-certificate", &path, &input.server_certificate_name);
-        let tags = tags_from_wire(input.tags);
+        let tags = tags_from_wire(input.tags)?;
         self.authorize_with(ctx, "UploadServerCertificate", &arn, request_tag_context(&tags))?;
         let (spki, expiration) = parse_cert(&input.certificate_body)?;
         if let Some(chain) = &input.certificate_chain {
@@ -824,7 +824,7 @@ impl Iam {
         ctx: &RequestContext,
         input: types::TagServerCertificateRequest,
     ) -> Result<(), ServiceError> {
-        let tags = tags_from_wire(Some(input.tags));
+        let tags = tags_from_wire(Some(input.tags))?;
         let arn = self.server_cert_arn(&input.server_certificate_name);
         self.authorize_with(ctx, "TagServerCertificate", &arn, request_tag_context(&tags))?;
         let mut state = self.write();
