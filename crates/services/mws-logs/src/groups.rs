@@ -99,6 +99,9 @@ impl Logs {
         let g = GroupRef::own(ctx, &input.log_group_name);
         let tags = input.tags.clone().unwrap_or_default();
         self.authorize_group(ctx, "CreateLogGroup", &g, None, request_tag_conditions(&tags))?;
+        if input.log_group_name.get(..4).is_some_and(|p| p.eq_ignore_ascii_case("aws/")) {
+            return Err(errors::invalid_parameter("Log groups starting with AWS/ are reserved for AWS."));
+        }
         if !tags.is_empty() {
             self.authorize_group(ctx, "TagResource", &g, None, request_tag_conditions(&tags))?;
             check_tags(0, &tags)?;

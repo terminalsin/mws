@@ -14,6 +14,7 @@ members = [
     "crates/mws-server",
     "crates/mws-store",
     "crates/mws-event-pattern",
+    "crates/mws-schedule",
     "crates/mws",
     "crates/services/mws-iam",
     "crates/services/mws-iam-policy",
@@ -48,6 +49,7 @@ rust-version = "1.85"
 # internal
 mws-core = { path = "crates/mws-core" }
 mws-event-pattern = { path = "crates/mws-event-pattern" }
+mws-schedule = { path = "crates/mws-schedule" }
 mws-sigv4 = { path = "crates/mws-sigv4" }
 mws-smithy = { path = "crates/mws-smithy" }
 mws-codegen = { path = "crates/mws-codegen" }

@@ -481,13 +481,10 @@ impl Lambda {
             let mut st = self.write();
             let func = Self::function_mut(&mut st, &f)?;
             match f.qualifier.as_deref() {
+                // Like AWS, this leaves the function's event source
+                // mappings in place: they are deleted on their own.
                 None => {
                     st.functions.remove(&f.arn());
-                    let arn = f.arn();
-                    st.event_source_mappings.retain(|_, m| {
-                        m.config.function_arn.as_deref().map(|a| a.split(':').take(7).collect::<Vec<_>>().join(":"))
-                            != Some(arn.clone())
-                    });
                 }
                 Some("$LATEST") => {
                     return Err(errors::invalid_parameter_value(

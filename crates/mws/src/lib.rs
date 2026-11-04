@@ -132,7 +132,7 @@ fn build_with_store(config: Config, store: Option<Arc<Store>>) -> Mws {
     let organizations = Organizations::new(iam.clone());
     iam.set_organizations(organizations.view());
     let s3 = S3::new().with_kms(kms.clone());
-    let logs = Logs::new().with_s3(s3.clone()).with_kms(kms.clone());
+    let logs = Logs::new().with_s3(s3.clone()).with_kms(kms.clone()).with_sts(sts.clone());
     let route53 = Route53::new().with_kms(kms.clone()).with_logs(logs.clone());
     let sqs = Sqs::new().with_kms(kms.clone());
     let kinesis = Kinesis::new().with_kms(kms.clone());
@@ -175,6 +175,9 @@ fn build_with_store(config: Config, store: Option<Arc<Store>>) -> Mws {
         partition: config.iam.partition.clone(),
     }));
     lambda.set_queue_source(Arc::new(links::LambdaFromSqs(sqs.clone())));
+    lambda.add_destination_sink(Arc::new(links::LambdaDestination::Sqs(sqs.clone())));
+    lambda.add_destination_sink(Arc::new(links::LambdaDestination::Sns(sns.clone())));
+    lambda.add_destination_sink(Arc::new(links::LambdaDestination::Events(events.clone())));
     logs.add_subscription_target(Arc::new(links::LogsToLambda(lambda.clone())));
     logs.add_subscription_target(Arc::new(links::LogsToKinesis { kinesis: kinesis.clone(), sts: sts.clone() }));
     logs.add_subscription_target(Arc::new(links::LogsToFirehose { firehose: firehose.clone(), sts: sts.clone() }));

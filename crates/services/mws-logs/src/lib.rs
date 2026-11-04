@@ -16,6 +16,11 @@
 //! Other services write logs through [`Logs::put_log_events_as_service`],
 //! checked against the account's resource policies the way AWS services
 //! that deliver logs (Route 53 query logging, ...) are.
+//!
+//! Queries run in all three Logs Insights languages: the Logs Insights
+//! language, OpenSearch SQL and OpenSearch PPL. Scheduled
+//! queries run on the emulated clock as their execution role and deliver
+//! their results to S3 or a lookup table.
 
 #[allow(clippy::all, dead_code, unused_imports, non_snake_case, non_camel_case_types)]
 pub mod generated {
@@ -36,6 +41,8 @@ mod names;
 mod policies;
 mod public;
 mod queries;
+mod scheduled;
+mod sqlppl;
 mod state;
 mod subscriptions;
 mod tasks;
@@ -65,6 +72,10 @@ pub struct Logs {
     /// writes that come without one.
     template: Arc<Mutex<Option<(RequestContext, chrono::Duration)>>>,
     metric_publisher: Arc<std::sync::RwLock<Option<Arc<dyn MetricPublisher>>>>,
+    /// Scheduled queries assume their roles through STS.
+    sts: Option<mws_sts::Sts>,
+    /// Whether the scheduled query runner is started.
+    scheduler: Arc<std::sync::atomic::AtomicBool>,
 }
 
 impl Logs {
@@ -81,6 +92,12 @@ impl Logs {
     /// KMS keys for log group encryption come from here.
     pub fn with_kms(mut self, kms: Kms) -> Self {
         self.kms = Some(kms);
+        self
+    }
+
+    /// Scheduled queries run as their execution role, assumed here.
+    pub fn with_sts(mut self, sts: mws_sts::Sts) -> Self {
+        self.sts = Some(sts);
         self
     }
 

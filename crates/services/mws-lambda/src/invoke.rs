@@ -7,6 +7,7 @@ use std::time::Duration;
 use base64::Engine;
 use mws_core::{ConditionContext, RequestContext, ServiceError};
 
+use crate::destinations::DestinationMessage;
 use crate::generated::{errors, types};
 use crate::names::{self, FunctionRef};
 use crate::runtime::{Job, LaunchError, LaunchSpec, Outcome};
@@ -387,12 +388,17 @@ impl Lambda {
 
     async fn process_event(&self, ctx: RequestContext, f: FunctionRef, payload: Vec<u8>) {
         let queued = std::time::Instant::now();
-        let config = {
+        let (config, dead_letter) = {
             let st = self.read();
-            st.functions.get(&f.arn()).and_then(|func| {
-                let q = f.qualifier.clone().unwrap_or_else(|| "$LATEST".into());
-                func.event_invoke_configs.get(&q).cloned()
-            })
+            let func = st.functions.get(&f.arn());
+            let q = f.qualifier.clone().unwrap_or_else(|| "$LATEST".into());
+            (
+                func.and_then(|func| func.event_invoke_configs.get(&q).cloned()),
+                func.and_then(|func| func.version_for(f.qualifier.as_deref()))
+                    .and_then(|v| v.config.dead_letter_config.as_ref())
+                    .and_then(|d| d.target_arn.clone())
+                    .filter(|a| !a.is_empty()),
+            )
         };
         let retries = config.as_ref().and_then(|c| c.maximum_retry_attempts).unwrap_or(2).clamp(0, 2) as usize;
         let max_age =
@@ -412,20 +418,62 @@ impl Lambda {
                     return;
                 }
                 Ok(ran) => last = Some(ran),
-                Err(e) => tracing::warn!(function = %f.qualified_arn(), "asynchronous invocation failed: {e}"),
+                Err(e) => {
+                    tracing::warn!(function = %f.qualified_arn(), "asynchronous invocation failed: {e}");
+                    let error = serde_json::json!({ "errorType": e.code, "errorMessage": e.message });
+                    last = Some(Ran {
+                        outcome: Outcome {
+                            payload: error.to_string().into_bytes(),
+                            function_error: Some("Unhandled".into()),
+                            logs: String::new(),
+                        },
+                        executed_version: f.qualifier.clone().unwrap_or_else(|| "$LATEST".into()),
+                    });
+                }
             }
             if attempts > retries {
                 break;
             }
             tokio::time::sleep(RETRY_DELAYS[(attempts - 1).min(RETRY_DELAYS.len() - 1)]).await;
         }
-        if let Some(ran) = last {
-            self.deliver(&ctx, &f, config.as_ref(), &payload, &ran, attempts, condition).await;
+        let Some(ran) = last else { return };
+        self.deliver(&ctx, &f, config.as_ref(), &payload, &ran, attempts, condition).await;
+        if let Some(queue) = dead_letter {
+            self.send_dead_letter(&ctx, &f, &queue, &payload, &ran).await;
         }
     }
 
-    /// Send an asynchronous invocation record to its destination. Lambda
-    /// functions are the destinations MWS can reach.
+    /// Send an event the function failed to its dead-letter queue or
+    /// topic: the event itself, with `RequestID`, `ErrorCode` and
+    /// `ErrorMessage` attributes.
+    async fn send_dead_letter(&self, ctx: &RequestContext, f: &FunctionRef, target: &str, request: &[u8], ran: &Ran) {
+        let error: serde_json::Value = serde_json::from_slice(&ran.outcome.payload).unwrap_or_default();
+        let mut error_message = error
+            .get("errorMessage")
+            .and_then(|m| m.as_str())
+            .map(str::to_string)
+            .unwrap_or_else(|| String::from_utf8_lossy(&ran.outcome.payload).into_owned());
+        if error_message.len() > 1024 {
+            let mut cut = 1024;
+            while !error_message.is_char_boundary(cut) {
+                cut -= 1;
+            }
+            error_message.truncate(cut);
+        }
+        let message = DestinationMessage {
+            body: String::from_utf8_lossy(request).into_owned(),
+            string_attributes: vec![
+                ("RequestID".into(), ctx.request_id.clone()),
+                ("ErrorMessage".into(), error_message),
+            ],
+            number_attributes: vec![("ErrorCode".into(), "200".into())],
+            detail_type: String::new(),
+            function_arn: format!("{}:{}", f.arn(), ran.executed_version),
+        };
+        self.send_to_destination(ctx, &f.qualified_arn(), target, &message).await;
+    }
+
+    /// Send an asynchronous invocation record to its destination.
     #[allow(clippy::too_many_arguments)]
     async fn deliver(
         &self,
@@ -437,42 +485,53 @@ impl Lambda {
         attempts: usize,
         condition: &str,
     ) {
+        let success = condition == "Success";
         let dest = config.and_then(|c| c.destination_config.as_ref()).and_then(|d| {
-            if condition == "Success" {
+            if success {
                 d.on_success.as_ref().and_then(|s| s.destination.clone())
             } else {
                 d.on_failure.as_ref().and_then(|s| s.destination.clone())
             }
         });
         let Some(dest) = dest else { return };
-        let parse = |b: &[u8]| serde_json::from_slice::<serde_json::Value>(b).unwrap_or(serde_json::Value::Null);
-        let mut response_context = serde_json::json!({ "statusCode": 200, "executedVersion": ran.executed_version });
-        if let Some(e) = &ran.outcome.function_error {
-            response_context["functionError"] = serde_json::Value::String(e.clone());
-        }
-        let record = serde_json::json!({
-            "version": "1.0",
-            "timestamp": chrono::Utc::now().format("%Y-%m-%dT%H:%M:%S%.3fZ").to_string(),
-            "requestContext": {
-                "requestId": uuid::Uuid::new_v4().to_string(),
-                "functionArn": format!("{}:{}", f.arn(), ran.executed_version),
-                "condition": condition,
-                "approximateInvokeCount": attempts,
-            },
-            "requestPayload": parse(request),
-            "responseContext": response_context,
-            "responsePayload": parse(&ran.outcome.payload),
-        });
-        if dest.contains(":lambda:") && dest.contains(":function:") {
-            match names::parse_function(ctx, &dest, None) {
-                // The destination runs as its own asynchronous invocation.
-                Ok(target) => self.enqueue(ctx, &target, record.to_string().into_bytes()),
-                Err(e) => tracing::warn!("invalid destination {dest}: {e}"),
-            }
-        } else {
-            tracing::info!(destination = %dest, "MWS does not emulate this destination; record dropped: {record}");
-        }
+        let record = invocation_record(ctx, f, request, ran, attempts, condition);
+        let message = DestinationMessage {
+            body: record.to_string(),
+            detail_type: format!("Lambda Function Invocation Result - {}", if success { "Success" } else { "Failure" }),
+            function_arn: format!("{}:{}", f.arn(), ran.executed_version),
+            ..Default::default()
+        };
+        self.send_to_destination(ctx, &f.qualified_arn(), &dest, &message).await;
     }
+}
+
+/// The record an asynchronous invocation destination gets.
+fn invocation_record(
+    ctx: &RequestContext,
+    f: &FunctionRef,
+    request: &[u8],
+    ran: &Ran,
+    attempts: usize,
+    condition: &str,
+) -> serde_json::Value {
+    let parse = |b: &[u8]| serde_json::from_slice::<serde_json::Value>(b).unwrap_or(serde_json::Value::Null);
+    let mut response_context = serde_json::json!({ "statusCode": 200, "executedVersion": ran.executed_version });
+    if let Some(e) = &ran.outcome.function_error {
+        response_context["functionError"] = serde_json::Value::String(e.clone());
+    }
+    serde_json::json!({
+        "version": "1.0",
+        "timestamp": chrono::Utc::now().format("%Y-%m-%dT%H:%M:%S%.3fZ").to_string(),
+        "requestContext": {
+            "requestId": ctx.request_id,
+            "functionArn": format!("{}:{}", f.arn(), ran.executed_version),
+            "condition": condition,
+            "approximateInvokeCount": attempts,
+        },
+        "requestPayload": parse(request),
+        "responseContext": response_context,
+        "responsePayload": parse(&ran.outcome.payload),
+    })
 }
 
 fn throttled() -> ServiceError {

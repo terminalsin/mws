@@ -2620,6 +2620,8 @@ dependencies = [
  "mws-kms",
  "mws-proto-json",
  "mws-s3",
+ "mws-schedule",
+ "mws-sts",
  "rand",
  "regex",
  "serde",
@@ -2802,6 +2804,13 @@ dependencies = [
  "serde_json",
  "tokio",
  "uuid",
+]
+
+[[package]]
+name = "mws-schedule"
+version = "0.1.0"
+dependencies = [
+ "chrono",
 ]
 
 [[package]]

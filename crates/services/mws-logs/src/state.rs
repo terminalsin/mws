@@ -164,6 +164,8 @@ pub struct ScheduledQuery {
     pub record: types::GetScheduledQueryResponse,
     pub tags: BTreeMap<String, String>,
     pub history: Vec<types::TriggerHistoryRecord>,
+    /// Firings up to this time (epoch ms) have been looked at.
+    pub evaluated_until: Option<i64>,
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
