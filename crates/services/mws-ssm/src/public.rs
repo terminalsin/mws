@@ -165,7 +165,7 @@ pub fn read(ctx: &RequestContext, action: &str, input: &str, name: &str) -> Resu
         None => (name, None),
     };
     ctx.authorize(&format!("ssm:{action}"), &arn(ctx, bare), ConditionContext::new())?;
-    let not_found = || crate::generated::errors::parameter_not_found(format!("Parameter {input} not found."));
+    let not_found = || crate::names::not_found(input);
     let found = catalogue(&ctx.region).into_iter().find(|p| p.name == bare).ok_or_else(not_found)?;
     match selector {
         None | Some("1") => {}
