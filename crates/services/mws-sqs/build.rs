@@ -9,5 +9,6 @@ fn main() {
         "model/sqs.json",
         "sqs_query_generated.rs",
         "http://queue.amazonaws.com/doc/2012-11-05/",
+        "InvalidParameterValue",
     );
 }

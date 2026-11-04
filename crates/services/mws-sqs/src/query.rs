@@ -27,6 +27,19 @@ pub async fn handle(sqs: &Sqs, ctx: &RequestContext, request: &HttpRequest) -> H
             params.insert("QueueUrl", format!("{}{path}", base.trim_end_matches('/')));
         }
     }
+    // As over awsJson, unknown attribute names are `InvalidAttributeName`
+    // rather than a validation error.
+    if params.get("Action") == Some("GetQueueAttributes") {
+        let unknown = params
+            .indexes("AttributeName")
+            .into_iter()
+            .filter_map(|i| params.get(&format!("AttributeName.{i}")))
+            .find(|n| !crate::attributes::known(n));
+        if let Some(name) = unknown {
+            let e = to_query(crate::attributes::unknown_attribute(name));
+            return mws_proto_query::error_response(&q::SERVICE_INFO, &ctx.request_id, &e);
+        }
+    }
     q::dispatch(&Bridge(sqs), ctx, &params).await
 }
 
