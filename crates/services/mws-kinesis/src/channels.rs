@@ -277,8 +277,7 @@ impl Kinesis {
         _input: types::DescribeAccountSettingsInput,
     ) -> Result<types::DescribeAccountSettingsOutput, ServiceError> {
         let account = ctx.caller.account_id.clone();
-        let resource = format!("arn:{}:kinesis:{}:{account}:*", ctx.partition, ctx.region);
-        authorize(ctx, "kinesis:DescribeAccountSettings", &resource, None, &BTreeMap::new(), ConditionContext::new())?;
+        crate::names::authorize_account(ctx, "kinesis:DescribeAccountSettings")?;
         let mut st = self.settled(ctx);
         Ok(types::DescribeAccountSettingsOutput {
             minimum_throughput_billing_commitment: Some(Self::commitment(&mut st, &account, now_ms(ctx))),
@@ -291,8 +290,7 @@ impl Kinesis {
         input: types::UpdateAccountSettingsInput,
     ) -> Result<types::UpdateAccountSettingsOutput, ServiceError> {
         let account = ctx.caller.account_id.clone();
-        let resource = format!("arn:{}:kinesis:{}:{account}:*", ctx.partition, ctx.region);
-        authorize(ctx, "kinesis:UpdateAccountSettings", &resource, None, &BTreeMap::new(), ConditionContext::new())?;
+        crate::names::authorize_account(ctx, "kinesis:UpdateAccountSettings")?;
         let now = now_ms(ctx);
         let mut st = self.settled(ctx);
         Self::commitment(&mut st, &account, now);

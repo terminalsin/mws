@@ -683,6 +683,7 @@ impl Acm {
                     status: "SUCCESS".into(),
                     requested_method: None,
                     requested_status: None,
+                    renewal_status: None,
                 })
                 .collect(),
             method_update: None,
@@ -699,6 +700,7 @@ impl Acm {
             pca_certificate_arn: None,
             emails_sent: 0,
             expiry_event_at: None,
+            metric_at: None,
         };
         st.certificates.insert(arn.clone(), cert);
         let o = st.acme_orders.get_mut(&order.id).expect("order exists");

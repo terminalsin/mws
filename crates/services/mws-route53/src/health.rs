@@ -1,22 +1,16 @@
-//! Health checks. MWS stores and returns their configuration; it does not
-//! probe endpoints.
+//! Health checks: their configuration, and what the checkers in
+//! [`crate::probe`] report about them.
 
 use std::collections::BTreeMap;
 
 use mws_core::{RequestContext, ServiceError};
 
 use crate::generated::{errors, types};
-use crate::state::{HealthCheck, State};
+use crate::state::HealthCheck;
 use crate::{arn, max_items, Route53};
 
 pub(crate) fn no_such_health_check(id: &str) -> ServiceError {
     errors::no_such_health_check(format!("No health check exists with the specified ID {id}"))
-}
-
-impl State {
-    pub(crate) fn health_check_mut(&mut self, id: &str) -> Result<&mut HealthCheck, ServiceError> {
-        self.health_checks.get_mut(id).ok_or_else(|| no_such_health_check(id))
-    }
 }
 
 /// Fill in the defaults Route 53 reports for omitted settings.
@@ -64,7 +58,7 @@ impl Route53 {
         self.authorize(ctx, "CreateHealthCheck", "*")?;
         validate(&input.health_check_config)?;
         let config = with_defaults(input.health_check_config);
-        let mut st = self.lock();
+        let mut st = self.lock(ctx);
         if let Some(existing) = st.health_checks.values().find(|h| h.check.caller_reference == input.caller_reference) {
             // Same caller reference and settings is an idempotent retry.
             if existing.check.health_check_config == config {
@@ -94,6 +88,8 @@ impl Route53 {
             cloud_watch_alarm_configuration: None,
         };
         st.health_checks.insert(id.clone(), HealthCheck { check: check.clone(), tags: BTreeMap::new() });
+        drop(st);
+        self.ensure_prober();
         Ok(types::CreateHealthCheckResponse {
             health_check: check,
             location: format!("https://route53.amazonaws.com/2013-04-01/healthcheck/{id}"),
@@ -107,8 +103,8 @@ impl Route53 {
     ) -> Result<types::GetHealthCheckResponse, ServiceError> {
         let id = &input.health_check_id;
         self.authorize(ctx, "GetHealthCheck", &arn(ctx, "healthcheck", id))?;
-        let st = self.lock();
-        let h = st.health_checks.get(id).ok_or_else(|| no_such_health_check(id))?;
+        let st = self.lock(ctx);
+        let h = st.health_check(id)?;
         Ok(types::GetHealthCheckResponse { health_check: h.check.clone() })
     }
 
@@ -118,7 +114,7 @@ impl Route53 {
         _input: types::GetHealthCheckCountRequest,
     ) -> Result<types::GetHealthCheckCountResponse, ServiceError> {
         self.authorize(ctx, "GetHealthCheckCount", "*")?;
-        Ok(types::GetHealthCheckCountResponse { health_check_count: self.lock().health_checks.len() as i64 })
+        Ok(types::GetHealthCheckCountResponse { health_check_count: self.lock(ctx).health_checks.len() as i64 })
     }
 
     pub(crate) fn list_health_checks(
@@ -128,7 +124,7 @@ impl Route53 {
     ) -> Result<types::ListHealthChecksResponse, ServiceError> {
         self.authorize(ctx, "ListHealthChecks", "*")?;
         let limit = max_items(input.max_items, 100, 1000);
-        let st = self.lock();
+        let st = self.lock(ctx);
         let all: Vec<&HealthCheck> = st
             .health_checks
             .values()
@@ -151,7 +147,7 @@ impl Route53 {
     ) -> Result<types::UpdateHealthCheckResponse, ServiceError> {
         let id = input.health_check_id.clone();
         self.authorize(ctx, "UpdateHealthCheck", &arn(ctx, "healthcheck", &id))?;
-        let mut st = self.lock();
+        let mut st = self.lock(ctx);
         let h = st.health_check_mut(&id)?;
         if let Some(v) = input.health_check_version {
             if v != h.check.health_check_version {
@@ -200,10 +196,8 @@ impl Route53 {
     ) -> Result<types::DeleteHealthCheckResponse, ServiceError> {
         let id = input.health_check_id;
         self.authorize(ctx, "DeleteHealthCheck", &arn(ctx, "healthcheck", &id))?;
-        let mut st = self.lock();
-        if !st.health_checks.contains_key(&id) {
-            return Err(no_such_health_check(&id));
-        }
+        let mut st = self.lock(ctx);
+        st.health_check(&id)?;
         let in_use =
             st.zones.values().flat_map(|z| z.records.values()).any(|r| r.health_check_id.as_deref() == Some(&id));
         if in_use {
@@ -236,9 +230,9 @@ const CHECKERS: &[(&str, &str)] = &[
 ];
 
 impl Route53 {
-    fn endpoint_check(&self, id: &str) -> Result<types::HealthCheckConfig, ServiceError> {
-        let st = self.lock();
-        let check = st.health_checks.get(id).ok_or_else(|| no_such_health_check(id))?;
+    fn endpoint_check(&self, ctx: &RequestContext, id: &str) -> Result<types::HealthCheckConfig, ServiceError> {
+        let st = self.lock(ctx);
+        let check = st.health_check(id)?;
         let config = check.check.health_check_config.clone();
         if matches!(config.r#type.as_str(), "CALCULATED" | "CLOUDWATCH_METRIC" | "RECOVERY_CONTROL") {
             return Err(errors::invalid_input(format!(
@@ -249,7 +243,7 @@ impl Route53 {
         Ok(config)
     }
 
-    /// MWS does not probe endpoints: every checker reports success.
+    /// Every checker region reports the observation of MWS's one checker.
     pub(crate) fn get_health_check_status(
         &self,
         ctx: &RequestContext,
@@ -257,22 +251,9 @@ impl Route53 {
     ) -> Result<types::GetHealthCheckStatusResponse, ServiceError> {
         let id = &input.health_check_id;
         self.authorize(ctx, "GetHealthCheckStatus", &arn(ctx, "healthcheck", id))?;
-        let config = self.endpoint_check(id)?;
-        let status = match config.r#type.as_str() {
-            "TCP" => "Success: TCP connection established".to_string(),
-            _ => "Success: HTTP Status Code 200, OK".to_string(),
-        };
-        let now = chrono::Utc::now();
-        Ok(types::GetHealthCheckStatusResponse {
-            health_check_observations: CHECKERS
-                .iter()
-                .map(|(region, ip)| types::HealthCheckObservation {
-                    region: Some(region.to_string()),
-                    ip_address: Some(ip.to_string()),
-                    status_report: Some(types::StatusReport { status: Some(status.clone()), checked_time: Some(now) }),
-                })
-                .collect(),
-        })
+        self.endpoint_check(ctx, id)?;
+        let (last, _) = self.observations(id);
+        Ok(types::GetHealthCheckStatusResponse { health_check_observations: observations(last) })
     }
 
     pub(crate) fn get_health_check_last_failure_reason(
@@ -282,7 +263,21 @@ impl Route53 {
     ) -> Result<types::GetHealthCheckLastFailureReasonResponse, ServiceError> {
         let id = &input.health_check_id;
         self.authorize(ctx, "GetHealthCheckLastFailureReason", &arn(ctx, "healthcheck", id))?;
-        self.endpoint_check(id)?;
-        Ok(types::GetHealthCheckLastFailureReasonResponse { health_check_observations: Vec::new() })
+        self.endpoint_check(ctx, id)?;
+        let (_, failure) = self.observations(id);
+        Ok(types::GetHealthCheckLastFailureReasonResponse { health_check_observations: observations(failure) })
     }
+}
+
+/// One observation per checker region, or none before the first probe.
+fn observations(seen: Option<crate::probe::Observation>) -> Vec<types::HealthCheckObservation> {
+    let Some(seen) = seen else { return Vec::new() };
+    CHECKERS
+        .iter()
+        .map(|(region, ip)| types::HealthCheckObservation {
+            region: Some(region.to_string()),
+            ip_address: Some(ip.to_string()),
+            status_report: Some(types::StatusReport { status: Some(seen.report.clone()), checked_time: Some(seen.at) }),
+        })
+        .collect()
 }

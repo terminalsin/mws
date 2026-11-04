@@ -21,7 +21,7 @@ impl Route53 {
         let id = strip_id(&input.hosted_zone_id).to_string();
         self.authorize(ctx, "CreateVPCAssociationAuthorization", &arn(ctx, "hostedzone", &id))?;
         crate::zones::check_vpc(&input.vpc)?;
-        let mut st = self.lock();
+        let mut st = self.lock(ctx);
         let zone = st.zone_mut(&id)?;
         if !zone.private {
             return Err(errors::invalid_input(
@@ -46,7 +46,7 @@ impl Route53 {
     ) -> Result<types::DeleteVPCAssociationAuthorizationResponse, ServiceError> {
         let id = strip_id(&input.hosted_zone_id).to_string();
         self.authorize(ctx, "DeleteVPCAssociationAuthorization", &arn(ctx, "hostedzone", &id))?;
-        let mut st = self.lock();
+        let mut st = self.lock(ctx);
         let zone = st.zone_mut(&id)?;
         let Some(pos) = zone.vpc_authorizations.iter().position(|v| same_vpc(v, &input.vpc)) else {
             return Err(errors::vpc_association_authorization_not_found(format!(
@@ -72,7 +72,7 @@ impl Route53 {
                 .map_err(|_| errors::invalid_pagination_token("The pagination token is not valid."))?,
             None => 0,
         };
-        let st = self.lock();
+        let st = self.lock(ctx);
         let zone = st.zone(&id)?;
         let all = &zone.vpc_authorizations;
         Ok(types::ListVPCAssociationAuthorizationsResponse {

@@ -4,6 +4,19 @@
 
 /// Returns the translated pattern, or `None` if `regex` cannot express it.
 pub fn translate(pattern: &str) -> Option<String> {
+    translate_syntax(pattern).filter(|out| regex::Regex::new(out).is_ok())
+}
+
+/// For patterns `regex` cannot express (look-around, back-references):
+/// the translated pattern for `fancy-regex`, which backtracks.
+///
+/// `.` matches newlines here: these patterns guard free text (policy
+/// documents, descriptions) that services accept across lines.
+pub fn translate_fancy(pattern: &str) -> Option<String> {
+    translate_syntax(pattern).map(|out| format!("(?s){out}")).filter(|out| fancy_regex::Regex::new(out).is_ok())
+}
+
+fn translate_syntax(pattern: &str) -> Option<String> {
     // ECMAScript `\w`, `\d`, `\s` are ASCII-only; in `regex` they are Unicode.
     let mut out = String::with_capacity(pattern.len() + 16);
     let mut in_class = false;
@@ -56,7 +69,7 @@ pub fn translate(pattern: &str) -> Option<String> {
             c => out.push(c),
         }
     }
-    regex::Regex::new(&out).ok().map(|_| out)
+    Some(out)
 }
 
 #[cfg(test)]
@@ -72,5 +85,6 @@ mod tests {
         assert!(translate(r"^[\u0009\u000A\u000D -ÿ]+$").is_some());
         assert!(translate(r"^[\p{L}\p{Z}\p{N}_.:/=+\-@]*$").is_some());
         assert!(translate(r"^[a-z0-9]([a-z0-9]|-(?!-)){1,61}[a-z0-9]$").is_none(), "look-ahead is unsupported");
+        assert!(translate_fancy(r"^[a-z0-9]([a-z0-9]|-(?!-)){1,61}[a-z0-9]$").is_some());
     }
 }

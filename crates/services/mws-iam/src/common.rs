@@ -16,6 +16,8 @@ pub const MAX_TAGS: usize = 50;
 pub const MAX_MANAGED_POLICIES_PER_ENTITY: usize = 10;
 pub const MAX_POLICY_VERSIONS: usize = 5;
 pub const MANAGED_POLICY_MAX_SIZE: usize = 6144;
+/// Default quota for a role trust policy (`ACLSizePerRole`).
+pub const TRUST_POLICY_MAX_SIZE: usize = 2048;
 
 /// Read access to one account's IAM namespace.
 pub(crate) struct StateRead<'a> {
@@ -41,6 +43,13 @@ impl Deref for StateWrite<'_> {
     type Target = State;
     fn deref(&self) -> &State {
         &self.guard[&self.account]
+    }
+}
+
+impl StateWrite<'_> {
+    /// Every account's namespace, for changes that cross accounts.
+    pub(crate) fn every_account(&mut self) -> &mut BTreeMap<String, State> {
+        &mut self.guard
     }
 }
 
@@ -156,8 +165,15 @@ pub fn encode_document(doc: &str) -> String {
     out
 }
 
-pub fn tags_from_wire(tags: Option<Vec<types::Tag>>) -> Tags {
-    tags.unwrap_or_default().into_iter().map(|t| (t.key, t.value)).collect()
+/// Tags from a request. Tag keys are case-insensitive, so one request may
+/// not name a key twice in different cases.
+pub fn tags_from_wire(tags: Option<Vec<types::Tag>>) -> Result<Tags, ServiceError> {
+    let tags: Tags = tags.unwrap_or_default().into_iter().map(|t| (t.key, t.value)).collect();
+    let mut seen = std::collections::HashSet::new();
+    if !tags.iter().all(|(k, _)| seen.insert(k.to_lowercase())) {
+        return Err(errors::invalid_input("Duplicate tag keys found. Please note that Tag keys are case insensitive."));
+    }
+    Ok(tags)
 }
 
 pub fn tags_to_wire(tags: &Tags) -> Option<Vec<types::Tag>> {
@@ -259,6 +275,55 @@ pub fn status_str(active: bool) -> &'static str {
         "Active"
     } else {
         "Inactive"
+    }
+}
+
+/// Rewrite every role trust policy that names `arn` as an AWS principal to
+/// name `unique_id` instead. IAM stores principals by unique id, so once a
+/// user or role is deleted its trust grants show (and act as) the old id: a
+/// new entity with the same name does not inherit them.
+pub fn retire_principal(accounts: &mut BTreeMap<String, State>, arn: &str, unique_id: &str) {
+    for state in accounts.values_mut() {
+        for role in state.roles.values_mut() {
+            if role.trust_policy.contains(arn) {
+                if let Some(doc) = replace_principal(&role.trust_policy, arn, unique_id) {
+                    role.trust_policy = doc;
+                }
+            }
+        }
+    }
+}
+
+fn replace_principal(doc: &str, arn: &str, unique_id: &str) -> Option<String> {
+    use serde_json::Value;
+    let mut root: Value = serde_json::from_str(doc).ok()?;
+    let statements: Vec<&mut Value> = match root.get_mut("Statement")? {
+        Value::Array(a) => a.iter_mut().collect(),
+        o @ Value::Object(_) => vec![o],
+        _ => return None,
+    };
+    let mut changed = false;
+    for s in statements {
+        for key in ["Principal", "NotPrincipal"] {
+            match s.get_mut(key).and_then(|p| p.get_mut("AWS")) {
+                Some(Value::String(v)) if v == arn => {
+                    *v = unique_id.to_string();
+                    changed = true;
+                }
+                Some(Value::Array(list)) => {
+                    for v in list.iter_mut().filter(|v| v.as_str() == Some(arn)) {
+                        *v = Value::String(unique_id.to_string());
+                        changed = true;
+                    }
+                }
+                _ => {}
+            }
+        }
+    }
+    if changed {
+        serde_json::to_string(&root).ok()
+    } else {
+        None
     }
 }
 

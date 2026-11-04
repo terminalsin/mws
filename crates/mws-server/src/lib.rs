@@ -163,6 +163,24 @@ impl Gateway {
         remote: Option<SocketAddr>,
         now: chrono::DateTime<Utc>,
     ) -> HttpResponse {
+        for service in self.services.values().flatten() {
+            let Some(alternate) = service.alternate_signature(&request) else { continue };
+            let service = service.clone();
+            let alternate = match alternate {
+                Ok(a) => a,
+                Err(e) => return service.render_error(&request_id, &e),
+            };
+            let resolved = match self.resolve(&alternate.access_key_id, alternate.session_token.as_deref(), now) {
+                Ok(r) => r,
+                Err(e) => return service.render_error(&request_id, &e.into_service_error()),
+            };
+            if let Err(e) = (alternate.verify)(&resolved.secret_access_key, now) {
+                return service.render_error(&request_id, &e);
+            }
+            let region = alternate.region.unwrap_or_else(|| self.env.default_region.clone());
+            let ctx = self.context(request_id, region, resolved.caller, remote, now);
+            return service.handle(ctx, request).await;
+        }
         let parsed = match mws_sigv4::parse(&request) {
             Ok(p) => p,
             Err(SigV4Error::Missing) => {
@@ -227,7 +245,13 @@ impl Gateway {
             Err(e) => return service.render_error(&request_id, &sigv4_error(e)),
         };
 
-        let ctx = self.context(request_id, parsed.scope.region.clone(), resolved.caller, remote, now);
+        // A SigV4a request valid in every Region (`X-Amz-Region-Set: *`)
+        // runs in the default Region.
+        let region = match parsed.scope.region.as_str() {
+            "" => self.env.default_region.clone(),
+            r => r.to_string(),
+        };
+        let ctx = self.context(request_id, region, resolved.caller, remote, now);
         service.handle(ctx, request).await
     }
 

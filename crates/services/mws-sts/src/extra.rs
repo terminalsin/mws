@@ -199,6 +199,8 @@ impl Sts {
         self.iam().note_role_used(&role, &ctx.region);
         Ok(types::AssumeRoleWithSAMLResponse {
             credentials: Some(issued.credentials),
+            session_token_utilization: Some(issued.token_utilization),
+            session_token_size: Some(issued.token_size),
             assumed_role_user: Some(assumed_role_user),
             packed_policy_size,
             subject: assertion.subject.clone(),
@@ -207,7 +209,6 @@ impl Sts {
             audience: Some(audience),
             name_qualifier: Some(qualifier),
             source_identity,
-            ..Default::default()
         })
     }
 
@@ -282,7 +283,12 @@ impl Sts {
                 mfa_authenticated: false,
             },
         );
-        Ok(types::AssumeRootResponse { credentials: Some(issued.credentials), ..Default::default() })
+        Ok(types::AssumeRootResponse {
+            credentials: Some(issued.credentials),
+            session_token_utilization: Some(issued.token_utilization),
+            session_token_size: Some(issued.token_size),
+            ..Default::default()
+        })
     }
 
     pub(crate) async fn decode_authorization_message_impl(

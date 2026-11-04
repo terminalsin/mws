@@ -61,7 +61,7 @@ fn check_name(name: &str) -> Result<(), ServiceError> {
 
 /// The account in the request must be the caller's (or the caller must be
 /// allowed into it through IAM, which the ARN check covers).
-fn account(ctx: &RequestContext, account_id: &str) -> Result<String, ServiceError> {
+pub(crate) fn account(ctx: &RequestContext, account_id: &str) -> Result<String, ServiceError> {
     if account_id.len() != 12 || !account_id.bytes().all(|b| b.is_ascii_digit()) {
         return Err(invalid("Account id is not valid"));
     }
@@ -69,7 +69,7 @@ fn account(ctx: &RequestContext, account_id: &str) -> Result<String, ServiceErro
     Ok(account_id.to_string())
 }
 
-fn tags_context(tags: &[types::Tag]) -> ConditionContext {
+pub(crate) fn tags_context(tags: &[types::Tag]) -> ConditionContext {
     let mut c = ConditionContext::new();
     for t in tags {
         c.insert(format!("aws:RequestTag/{}", t.key), vec![t.value.clone()]);
@@ -115,6 +115,37 @@ fn check_policy(policy: &str, arn: &str) -> Result<(), ServiceError> {
         }
     }
     mws_iam_policy::Policy::parse(policy, mws_iam_policy::PolicyKind::Resource).map_err(|e| malformed(&e.0))?;
+    Ok(())
+}
+
+/// Scopes name up to ten prefixes (each at most 256 characters, `*` only
+/// at the end) and S3's object and listing permissions.
+fn check_scope(scope: &types::Scope) -> Result<(), ServiceError> {
+    const PERMISSIONS: &[&str] = &[
+        "GetObject",
+        "GetObjectAttributes",
+        "ListMultipartUploadParts",
+        "ListBucket",
+        "ListBucketMultipartUploads",
+        "PutObject",
+        "DeleteObject",
+        "AbortMultipartUpload",
+    ];
+    let prefixes = scope.prefixes.as_deref().unwrap_or_default();
+    if prefixes.len() > 10 {
+        return Err(invalid("A scope can have at most 10 prefixes"));
+    }
+    for p in prefixes {
+        let star = p.find('*');
+        if p.is_empty() || p.len() > 256 || star.is_some_and(|i| i != p.len() - 1) {
+            return Err(invalid(format!("Invalid prefix in scope: {p}")));
+        }
+    }
+    for p in scope.permissions.as_deref().unwrap_or_default() {
+        if !PERMISSIONS.contains(&p.as_str()) {
+            return Err(invalid(format!("Invalid permission in scope: {p}")));
+        }
+    }
     Ok(())
 }
 
@@ -187,8 +218,20 @@ impl S3Control {
         c.insert("s3:DataAccessPointAccount".into(), vec![account.clone()]);
         ctx.authorize("s3:CreateAccessPoint", &arn, c)?;
         check_name(&input.name)?;
-        if input.bucket.contains("--x-s3") {
-            return Err(invalid("Directory bucket access points are not supported."));
+        let directory = input.bucket.ends_with("--x-s3");
+        if directory {
+            // `name--usw2-az1--xa-s3` for bucket `bucket--usw2-az1--x-s3`.
+            let zone = input.bucket.trim_end_matches("--x-s3").rsplit_once("--").map(|(_, z)| z).unwrap_or_default();
+            if zone.is_empty() || !input.name.ends_with(&format!("--{zone}--xa-s3")) {
+                return Err(invalid(format!(
+                    "The access point name must be suffixed with the zone ID of the directory bucket followed by --xa-s3 (--{zone}--xa-s3)."
+                )));
+            }
+        } else if input.scope.is_some() {
+            return Err(invalid("Scope is only supported for access points attached to directory buckets."));
+        }
+        if let Some(scope) = &input.scope {
+            check_scope(scope)?;
         }
         let owner = match &self.s3 {
             Some(s3) => Some(
@@ -210,7 +253,8 @@ impl S3Control {
                 "Your previous request to create the named accesspoint succeeded and you already own it.",
             ));
         }
-        let alias = format!("{}-{}-s3alias", input.name, random_suffix(34));
+        let alias =
+            if directory { input.name.clone() } else { format!("{}-{}-s3alias", input.name, random_suffix(34)) };
         st.access_points.insert(
             arn.clone(),
             AccessPoint {
@@ -290,7 +334,7 @@ impl S3Control {
             .read()
             .access_points
             .values()
-            .filter(|a| a.account_id == account && a.region == ctx.region)
+            .filter(|a| a.account_id == account && a.region == ctx.region && !a.directory())
             .filter(|a| input.bucket.as_deref().is_none_or(|b| a.bucket == b))
             .map(|a| types::AccessPoint {
                 name: a.name.clone(),
@@ -686,11 +730,99 @@ impl S3Control {
     // ---- tags --------------------------------------------------------------
 
     fn with_tags<R>(&self, arn: &str, f: impl FnOnce(&mut BTreeMap<String, String>) -> R) -> Result<R, ServiceError> {
+        // Access Grants resources and Storage Lens groups keep their tags
+        // beside them.
+        let other = self.access_grants_resource_exists(arn) || self.storage_lens_group_exists(arn);
         let mut st = self.write();
+        if other {
+            return Ok(f(st.resource_tags.entry(arn.to_string()).or_default()));
+        }
         match st.access_points.get_mut(arn) {
             Some(a) => Ok(f(&mut a.tags)),
             None => Err(no_such_access_point()),
         }
+    }
+
+    // ---- directory bucket access points --------------------------------------
+
+    pub fn list_access_points_for_directory_buckets(
+        &self,
+        ctx: &RequestContext,
+        input: types::ListAccessPointsForDirectoryBucketsRequest,
+    ) -> Result<types::ListAccessPointsForDirectoryBucketsResult, ServiceError> {
+        let account = account(ctx, &input.account_id)?;
+        ctx.authorize("s3express:ListAccessPointsForDirectoryBuckets", "*", ConditionContext::new())?;
+        let items: Vec<types::AccessPoint> = self
+            .read()
+            .access_points
+            .values()
+            .filter(|a| a.account_id == account && a.region == ctx.region && a.directory())
+            .filter(|a| input.directory_bucket.as_deref().is_none_or(|b| a.bucket == b))
+            .map(|a| types::AccessPoint {
+                name: a.name.clone(),
+                network_origin: a.network_origin().to_string(),
+                vpc_configuration: a.vpc_id.clone().map(|vpc_id| types::VpcConfiguration { vpc_id }),
+                bucket: a.bucket.clone(),
+                access_point_arn: Some(a.arn.clone()),
+                alias: Some(a.alias.clone()),
+                bucket_account_id: Some(a.bucket_account_id.clone()),
+                data_source_id: None,
+                data_source_type: None,
+            })
+            .collect();
+        let (page, next) = paginate(&items, input.next_token.as_deref(), input.max_results);
+        Ok(types::ListAccessPointsForDirectoryBucketsResult { access_point_list: Some(page), next_token: next })
+    }
+
+    fn directory_ap(&self, account: &str, name: &str) -> Result<AccessPoint, ServiceError> {
+        let ap = self.find_ap(account, name)?;
+        if !ap.directory() {
+            return Err(invalid("Scope is only supported for access points attached to directory buckets."));
+        }
+        Ok(ap)
+    }
+
+    pub fn put_access_point_scope(
+        &self,
+        ctx: &RequestContext,
+        input: types::PutAccessPointScopeRequest,
+    ) -> Result<(), ServiceError> {
+        let account = account(ctx, &input.account_id)?;
+        let arn = ap_arn(ctx, &account, short_name(&input.name));
+        ctx.authorize("s3express:PutAccessPointScope", &arn, ConditionContext::new())?;
+        check_scope(&input.scope)?;
+        let ap = self.directory_ap(&account, &input.name)?;
+        if let Some(a) = self.write().access_points.get_mut(&ap.arn) {
+            a.scope = Some(input.scope);
+        }
+        Ok(())
+    }
+
+    pub fn get_access_point_scope(
+        &self,
+        ctx: &RequestContext,
+        input: types::GetAccessPointScopeRequest,
+    ) -> Result<types::GetAccessPointScopeResult, ServiceError> {
+        let account = account(ctx, &input.account_id)?;
+        let arn = ap_arn(ctx, &account, short_name(&input.name));
+        ctx.authorize("s3express:GetAccessPointScope", &arn, ConditionContext::new())?;
+        let ap = self.directory_ap(&account, &input.name)?;
+        Ok(types::GetAccessPointScopeResult { scope: Some(ap.scope.unwrap_or_default()) })
+    }
+
+    pub fn delete_access_point_scope(
+        &self,
+        ctx: &RequestContext,
+        input: types::DeleteAccessPointScopeRequest,
+    ) -> Result<(), ServiceError> {
+        let account = account(ctx, &input.account_id)?;
+        let arn = ap_arn(ctx, &account, short_name(&input.name));
+        ctx.authorize("s3express:DeleteAccessPointScope", &arn, ConditionContext::new())?;
+        let ap = self.directory_ap(&account, &input.name)?;
+        if let Some(a) = self.write().access_points.get_mut(&ap.arn) {
+            a.scope = None;
+        }
+        Ok(())
     }
 
     pub fn tag_resource(

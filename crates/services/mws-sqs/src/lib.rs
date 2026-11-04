@@ -31,6 +31,7 @@ mod attributes;
 mod handler;
 mod md5;
 mod messages;
+mod metrics;
 mod moves;
 mod names;
 mod public;
@@ -44,6 +45,7 @@ use mws_core::{HttpRequest, HttpResponse, RequestContext, Service, ServiceError}
 use mws_kms::Kms;
 
 pub use md5::{md5_of_attributes, md5_of_body};
+pub use metrics::{MetricPublisher, QueueMetric};
 pub use public::{ServiceMessage, ServiceMessageAttribute, ServiceSendError};
 use state::State;
 
@@ -54,6 +56,8 @@ pub struct Sqs {
     /// Woken whenever messages may have become receivable, for long polls.
     arrivals: Arc<tokio::sync::Notify>,
     kms: Option<Kms>,
+    /// `AWS/SQS` CloudWatch metrics.
+    meter: Arc<metrics::Meter>,
 }
 
 impl Sqs {
@@ -95,6 +99,7 @@ impl Service for Sqs {
     }
 
     async fn handle(&self, ctx: RequestContext, request: HttpRequest) -> HttpResponse {
+        self.observe_clock(ctx.received_at);
         // SQS answers unknown attribute names with `InvalidAttributeName`
         // before the model's enum constraint would reject them.
         if generated::operation_for(&request) == Some("GetQueueAttributes") {
@@ -118,6 +123,7 @@ impl Service for Sqs {
         operation: &str,
         input: serde_json::Value,
     ) -> Result<serde_json::Value, ServiceError> {
+        self.observe_clock(ctx.received_at);
         generated::invoke(self, &ctx, operation, input).await
     }
 
@@ -129,12 +135,14 @@ impl Service for Sqs {
     fn import_state(&self, state: serde_json::Value) -> Result<(), String> {
         let state: State = serde_json::from_value(state).map_err(|e| format!("invalid SQS state: {e}"))?;
         *self.lock() = state;
+        self.reset_metrics();
         self.arrivals.notify_waiters();
         Ok(())
     }
 
     fn reset_state(&self) {
         *self.lock() = State::default();
+        self.reset_metrics();
         self.arrivals.notify_waiters();
     }
 }

@@ -62,6 +62,9 @@ pub struct Message {
     /// When it was first enqueued (`SentTimestamp`); retention counts
     /// from here, also after a move to a dead-letter queue.
     pub sent_at: i64,
+    /// When retention starts counting, if not `sent_at`: FIFO queues
+    /// reset it when a message moves to a dead-letter queue.
+    pub enqueued_at: Option<i64>,
     /// Hidden until then: the send delay, then each visibility timeout.
     pub visible_at: i64,
     pub receive_count: u32,
@@ -186,7 +189,7 @@ impl Queue {
     /// Drop messages past the retention period and stale FIFO records.
     pub fn expire(&mut self, now: i64) {
         let retention = self.int_attr("MessageRetentionPeriod") * 1000;
-        self.messages.retain(|m| m.sent_at + retention > now);
+        self.messages.retain(|m| m.enqueued_at.unwrap_or(m.sent_at) + retention > now);
         self.dedup.retain(|_, d| d.at + 300_000 > now);
         self.receive_attempts.retain(|_, a| a.at + 300_000 > now);
     }

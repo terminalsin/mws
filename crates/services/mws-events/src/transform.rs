@@ -93,7 +93,13 @@ fn render(t: &types::InputTransformer, event: &Value, reserved: &Reserved<'_>) -
     values.insert("aws.events.rule-arn".into(), Value::String(reserved.rule_arn.into()));
     values.insert("aws.events.rule-name".into(), Value::String(reserved.rule_name.into()));
     values.insert("aws.events.event.ingestion-time".into(), Value::String(reserved.ingestion_time.into()));
-    values.insert("aws.events.event".into(), event.clone());
+    // `<aws.events.event>` is the envelope without `detail`;
+    // `<aws.events.event.json>` is the whole event.
+    let mut envelope = event.clone();
+    if let Value::Object(m) = &mut envelope {
+        m.remove("detail");
+    }
+    values.insert("aws.events.event".into(), envelope);
     values.insert("aws.events.event.json".into(), event.clone());
 
     let template: Vec<char> = t.input_template.chars().collect();
@@ -180,6 +186,11 @@ mod tests {
         assert_eq!(render(&mk(r#"{"id": <i>, "count": <n>}"#), &event, &r), r#"{"id": "i-1", "count": 3}"#);
         assert_eq!(render(&mk(r#""instance <i> has <n>""#), &event, &r), r#""instance i-1 has 3""#);
         assert_eq!(render(&mk(r#"{"rule": "<aws.events.rule-name>"}"#), &event, &r), r#"{"rule": "r"}"#);
+        assert_eq!(render(&mk("<aws.events.event>"), &event, &r), r#"{"id":"e1"}"#);
+        assert_eq!(
+            render(&mk("<aws.events.event.json>"), &event, &r),
+            r#"{"detail":{"instance":"i-1","state":"running","n":3},"id":"e1"}"#
+        );
         assert_eq!(select(&event, "$.detail.state"), Some(&json!("running")));
         assert_eq!(select(&event, "$['detail']['n']"), Some(&json!(3)));
     }

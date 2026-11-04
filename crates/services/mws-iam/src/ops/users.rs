@@ -50,7 +50,7 @@ impl Iam {
     ) -> Result<types::CreateUserResponse, ServiceError> {
         let path = input.path.unwrap_or_else(|| "/".into());
         let arn = self.entity_arn("user", &path, &input.user_name);
-        let tags = tags_from_wire(input.tags);
+        let tags = tags_from_wire(input.tags)?;
         let mut cond = request_tag_context(&tags);
         if let Some(b) = &input.permissions_boundary {
             cond.insert("iam:PermissionsBoundary".into(), vec![b.clone()]);
@@ -213,13 +213,15 @@ impl Iam {
         if state.mfa_devices.values().any(|d| d.user.as_deref() == Some(key.as_str())) {
             return Err(conflict("delete MFA device"));
         }
-        state.users.remove(&input.user_name.to_lowercase());
+        if let Some(user) = state.users.remove(&input.user_name.to_lowercase()) {
+            retire_principal(state.every_account(), &user.arn, &user.id);
+        }
         Ok(())
     }
 
     pub fn tag_user(&self, ctx: &RequestContext, input: types::TagUserRequest) -> Result<(), ServiceError> {
         let arn = self.user_arn_or_default(&input.user_name);
-        let tags = tags_from_wire(Some(input.tags));
+        let tags = tags_from_wire(Some(input.tags))?;
         self.authorize_with(ctx, "TagUser", &arn, request_tag_context(&tags))?;
         let mut state = self.write();
         let user = state.user_mut(&input.user_name).ok_or_else(|| no_such_user(&input.user_name))?;

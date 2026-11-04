@@ -12,7 +12,7 @@ use serde_json::{json, Value};
 const ACCOUNT: &str = "123456789012";
 const B64: base64::engine::GeneralPurpose = base64::engine::general_purpose::STANDARD;
 
-fn base32_decode(s: &str) -> Vec<u8> {
+pub(crate) fn base32_decode(s: &str) -> Vec<u8> {
     const ALPHABET: &[u8] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZ234567";
     let (mut bits, mut acc, mut out) = (0u32, 0u64, vec![]);
     for c in s.trim_end_matches('=').bytes() {
@@ -27,7 +27,7 @@ fn base32_decode(s: &str) -> Vec<u8> {
 }
 
 /// RFC 6238 TOTP (SHA-1, 6 digits) at `offset` 30-second steps from now.
-fn totp(seed: &[u8], offset: i64) -> String {
+pub(crate) fn totp(seed: &[u8], offset: i64) -> String {
     let step = (now_secs() / 30 + offset) as u64;
     let key = aws_lc_rs::hmac::Key::new(aws_lc_rs::hmac::HMAC_SHA1_FOR_LEGACY_USE_ONLY, seed);
     let mac = aws_lc_rs::hmac::sign(&key, &step.to_be_bytes());

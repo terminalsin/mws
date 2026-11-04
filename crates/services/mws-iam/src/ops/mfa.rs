@@ -179,7 +179,7 @@ impl Iam {
     ) -> Result<types::CreateVirtualMFADeviceResponse, ServiceError> {
         let path = input.path.unwrap_or_else(|| "/".into());
         let serial = self.arn(&format!("mfa{path}{}", input.virtual_mfa_device_name));
-        let tags = tags_from_wire(input.tags);
+        let tags = tags_from_wire(input.tags)?;
         self.authorize_with(ctx, "CreateVirtualMFADevice", &serial, request_tag_context(&tags))?;
         let mut state = self.write();
         if state.mfa_devices.values().any(|d| d.name.eq_ignore_ascii_case(&input.virtual_mfa_device_name)) {
@@ -363,7 +363,7 @@ impl Iam {
     }
 
     pub fn tag_mfa_device(&self, ctx: &RequestContext, input: types::TagMFADeviceRequest) -> Result<(), ServiceError> {
-        let tags = tags_from_wire(Some(input.tags));
+        let tags = tags_from_wire(Some(input.tags))?;
         self.authorize_with(ctx, "TagMFADevice", &input.serial_number, request_tag_context(&tags))?;
         let mut state = self.write();
         merge_tags(&mut state.device_mut(&input.serial_number)?.tags, tags, "TagsPerMFADevice")

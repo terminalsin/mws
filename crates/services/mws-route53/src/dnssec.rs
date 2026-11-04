@@ -166,7 +166,7 @@ impl Route53 {
             ));
         }
         let point = self.ksk_public_point(ctx, &arn(ctx, "hostedzone", &zone_id), &input.key_management_service_arn)?;
-        let mut st = self.lock();
+        let mut st = self.lock(ctx);
         let zone = st.zone(&zone_id)?;
         if zone.private {
             return Err(errors::invalid_input(
@@ -206,7 +206,7 @@ impl Route53 {
     ) -> Result<types::ChangeInfo, ServiceError> {
         let zone_id = strip_id(zone_id).to_string();
         self.authorize(ctx, action, &arn(ctx, "hostedzone", &zone_id))?;
-        let mut st = self.lock();
+        let mut st = self.lock(ctx);
         let zone = st.zone_mut(&zone_id)?;
         if !zone.ksks.contains_key(name) {
             return Err(no_such_ksk(name));
@@ -276,7 +276,7 @@ impl Route53 {
     ) -> Result<types::EnableHostedZoneDNSSECResponse, ServiceError> {
         let zone_id = strip_id(&input.hosted_zone_id).to_string();
         self.authorize(ctx, "EnableHostedZoneDNSSEC", &arn(ctx, "hostedzone", &zone_id))?;
-        let mut st = self.lock();
+        let mut st = self.lock(ctx);
         let zone = st.zone_mut(&zone_id)?;
         if zone.private {
             return Err(errors::invalid_input(
@@ -299,7 +299,7 @@ impl Route53 {
     ) -> Result<types::DisableHostedZoneDNSSECResponse, ServiceError> {
         let zone_id = strip_id(&input.hosted_zone_id).to_string();
         self.authorize(ctx, "DisableHostedZoneDNSSEC", &arn(ctx, "hostedzone", &zone_id))?;
-        let mut st = self.lock();
+        let mut st = self.lock(ctx);
         let zone = st.zone_mut(&zone_id)?;
         if zone.ksks.is_empty() && !zone.dnssec_signing {
             return Err(errors::dnssec_not_found(format!(
@@ -317,7 +317,7 @@ impl Route53 {
     ) -> Result<types::GetDNSSECResponse, ServiceError> {
         let zone_id = strip_id(&input.hosted_zone_id).to_string();
         self.authorize(ctx, "GetDNSSEC", &arn(ctx, "hostedzone", &zone_id))?;
-        let st = self.lock();
+        let st = self.lock(ctx);
         let zone = st.zone(&zone_id)?;
         Ok(types::GetDNSSECResponse {
             status: types::DNSSECStatus {

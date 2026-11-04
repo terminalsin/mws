@@ -12,7 +12,9 @@
 //! streams that stay open and push records as they arrive. Streams
 //! encrypted with KMS check the producer's `kms:GenerateDataKey` and the
 //! reader's `kms:Decrypt` through MWS KMS. Every call is authorized through
-//! IAM together with stream and consumer resource policies.
+//! IAM together with stream and consumer resource policies. Reads and
+//! writes publish the `AWS/Kinesis` CloudWatch metrics, shard-level ones
+//! for the metrics enhanced monitoring enabled.
 //!
 //! Other services (CloudWatch Logs subscriptions, EventBridge targets,
 //! Firehose, Lambda event source mappings) act on streams as callers:
@@ -26,6 +28,7 @@ pub mod generated {
 mod channels;
 mod consumers;
 mod handler;
+pub mod metrics;
 mod names;
 mod records;
 pub mod shards;
@@ -38,6 +41,7 @@ use std::sync::{Arc, Mutex, MutexGuard};
 use mws_core::{HttpRequest, HttpResponse, RequestContext, Service, ServiceError};
 use mws_kms::Kms;
 
+pub use metrics::{KinesisMetric, MetricPublisher};
 pub use names::{split_arn, stream_arn};
 use state::State;
 
@@ -50,6 +54,8 @@ pub struct Kinesis {
     arrivals: Arc<tokio::sync::Notify>,
     /// Open `SubscribeToShard` subscriptions: (consumer ARN, shard id).
     subscriptions: consumers::Subscriptions,
+    /// Where `AWS/Kinesis` metrics go.
+    metric_publisher: Arc<std::sync::RwLock<Option<Arc<dyn MetricPublisher>>>>,
 }
 
 impl Kinesis {
