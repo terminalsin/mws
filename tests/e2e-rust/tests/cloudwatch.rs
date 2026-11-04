@@ -980,3 +980,114 @@ async fn iam_policies_gate_cloudwatch_actions() {
     let err = cw.put_dashboard().dashboard_name("d").dashboard_body("{\"widgets\":[]}").send().await.unwrap_err();
     assert_eq!(code(&err.into_service_error()), "AccessDenied");
 }
+
+#[tokio::test]
+async fn metric_streams_deliver_json_records_to_firehose() {
+    use aws_sdk_firehose::types::{BufferingHints, ExtendedS3DestinationConfiguration};
+    let mws = Mws::start().await;
+    let cfg = mws.root_sdk_config().await;
+    let cw = Client::new(&cfg);
+    let iam = aws_sdk_iam::Client::new(&cfg);
+    let trust = |svc: &str| {
+        format!(
+            r#"{{"Version":"2012-10-17","Statement":[{{"Effect":"Allow","Principal":{{"Service":"{svc}"}},"Action":"sts:AssumeRole"}}]}}"#
+        )
+    };
+    let allow = |actions: &str| {
+        format!(r#"{{"Version":"2012-10-17","Statement":[{{"Effect":"Allow","Action":{actions},"Resource":"*"}}]}}"#)
+    };
+    let delivery = iam
+        .create_role()
+        .role_name("delivery")
+        .assume_role_policy_document(trust("firehose.amazonaws.com"))
+        .send()
+        .await
+        .unwrap();
+    iam.put_role_policy()
+        .role_name("delivery")
+        .policy_name("p")
+        .policy_document(allow(r#"["s3:*"]"#))
+        .send()
+        .await
+        .unwrap();
+    let streams = iam
+        .create_role()
+        .role_name("metric-streams")
+        .assume_role_policy_document(trust("streams.metrics.cloudwatch.amazonaws.com"))
+        .send()
+        .await
+        .unwrap();
+    iam.put_role_policy()
+        .role_name("metric-streams")
+        .policy_name("p")
+        .policy_document(allow(r#"["firehose:PutRecord","firehose:PutRecordBatch"]"#))
+        .send()
+        .await
+        .unwrap();
+    let s3 = Mws::s3(&cfg);
+    s3.create_bucket().bucket("metrics").send().await.unwrap();
+    let fh = aws_sdk_firehose::Client::new(&cfg);
+    fh.create_delivery_stream()
+        .delivery_stream_name("metrics")
+        .extended_s3_destination_configuration(
+            ExtendedS3DestinationConfiguration::builder()
+                .role_arn(delivery.role().unwrap().arn())
+                .bucket_arn("arn:aws:s3:::metrics")
+                .buffering_hints(BufferingHints::builder().interval_in_seconds(0).size_in_mbs(1).build())
+                .build()
+                .unwrap(),
+        )
+        .send()
+        .await
+        .unwrap();
+    for _ in 0..100 {
+        let d = fh.describe_delivery_stream().delivery_stream_name("metrics").send().await.unwrap();
+        if d.delivery_stream_description().unwrap().delivery_stream_status().as_str() == "ACTIVE" {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(100)).await;
+    }
+
+    cw.put_metric_stream()
+        .name("all")
+        .firehose_arn("arn:aws:firehose:us-east-1:123456789012:deliverystream/metrics")
+        .role_arn(streams.role().unwrap().arn())
+        .output_format(MetricStreamOutputFormat::Json)
+        .include_filters(MetricStreamFilter::builder().namespace("Shop").build())
+        .send()
+        .await
+        .unwrap();
+    cw.put_metric_data()
+        .namespace("Shop")
+        .metric_data(datum("Orders", 4.0, now_secs()))
+        .metric_data(datum("Orders", 6.0, now_secs()))
+        .send()
+        .await
+        .unwrap();
+    cw.put_metric_data().namespace("Other").metric_data(datum("Ignored", 1.0, now_secs())).send().await.unwrap();
+    // The minute ends; the next minute's tick streams it.
+    let (status, _) = mws.control("POST", "/_mws/clock", Some(r#"{"advanceSeconds": 61}"#)).await;
+    assert_eq!(status, 200);
+    cw.list_metric_streams().send().await.unwrap();
+    let mut body = String::new();
+    for _ in 0..100 {
+        let _ = fh.list_delivery_streams().send().await;
+        let listed = s3.list_objects_v2().bucket("metrics").send().await.unwrap();
+        if let Some(o) = listed.contents().first() {
+            let got = s3.get_object().bucket("metrics").key(o.key().unwrap()).send().await.unwrap();
+            body = String::from_utf8(got.body.collect().await.unwrap().into_bytes().to_vec()).unwrap();
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(100)).await;
+    }
+    let lines: Vec<serde_json::Value> = body.lines().map(|l| serde_json::from_str(l).unwrap()).collect();
+    assert_eq!(lines.len(), 1, "{body}");
+    let r = &lines[0];
+    assert_eq!(r["metric_stream_name"], "all");
+    assert_eq!(r["namespace"], "Shop");
+    assert_eq!(r["metric_name"], "Orders");
+    assert_eq!(r["dimensions"]["Service"], "checkout");
+    assert_eq!(r["value"]["sum"], 10.0);
+    assert_eq!(r["value"]["count"], 2.0);
+    assert_eq!(r["unit"], "Count");
+}

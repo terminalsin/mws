@@ -22,12 +22,25 @@ const FORMATS: &[&str] = &["json", "opentelemetry0.7", "opentelemetry1.0"];
 /// Where metric stream records go: Kinesis Data Firehose.
 pub trait MetricStreamDelivery: Send + Sync {
     /// Put `records` into the delivery stream `firehose_arn`, assuming
-    /// `role_arn` as `streams.metrics.cloudwatch.amazonaws.com`.
-    fn deliver(&self, firehose_arn: &str, role_arn: &str, records: Vec<Vec<u8>>) -> Result<(), String>;
+    /// `role_arn` as `streams.metrics.cloudwatch.amazonaws.com` for the
+    /// metric stream `stream_arn`. `ctx` is in the stream's account and
+    /// Region (for the endpoint and the emulated clock); its caller is not
+    /// consulted.
+    fn deliver(
+        &self,
+        ctx: &RequestContext,
+        stream_arn: &str,
+        firehose_arn: &str,
+        role_arn: &str,
+        records: Vec<Vec<u8>>,
+    ) -> Result<(), String>;
 }
 
 /// One stream's batch, ready to hand over.
 pub(crate) struct Batch {
+    account: String,
+    region: String,
+    stream_arn: String,
     firehose_arn: String,
     role_arn: String,
     records: Vec<Vec<u8>>,
@@ -139,6 +152,9 @@ pub(crate) fn due_batches(region: &mut Region, account: &str, region_name: &str,
         stream.delivered_until = Some(minute);
         if !records.is_empty() {
             out.push(Batch {
+                account: account.to_string(),
+                region: region_name.to_string(),
+                stream_arn: stream.arn.clone(),
                 firehose_arn: stream.config.firehose_arn.clone(),
                 role_arn: stream.config.role_arn.clone(),
                 records,
@@ -150,9 +166,16 @@ pub(crate) fn due_batches(region: &mut Region, account: &str, region_name: &str,
 
 impl CloudWatch {
     pub(crate) fn deliver_batches(&self, batches: Vec<Batch>) {
+        if batches.is_empty() {
+            return;
+        }
         let Some(sink) = self.inner.streams.get().cloned() else { return };
+        let Some(template) = self.inner.template.lock().expect("template lock poisoned").clone() else { return };
         for b in batches {
-            if let Err(e) = sink.deliver(&b.firehose_arn, &b.role_arn, b.records) {
+            let mut ctx =
+                RequestContext { region: b.region.clone(), received_at: self.clock_now(), ..template.clone() };
+            ctx.caller.account_id = b.account.clone();
+            if let Err(e) = sink.deliver(&ctx, &b.stream_arn, &b.firehose_arn, &b.role_arn, b.records) {
                 tracing::debug!(firehose = %b.firehose_arn, error = %e, "metric stream delivery failed");
             }
         }
