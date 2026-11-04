@@ -368,7 +368,7 @@ impl Route53 {
     ) -> Result<types::CreateTrafficPolicyResponse, ServiceError> {
         self.authorize(ctx, "CreateTrafficPolicy", "*")?;
         let doc = parse_document(&input.document)?;
-        let mut st = self.lock();
+        let mut st = self.lock(ctx);
         if st.traffic_policies.values().any(|p| p.name == input.name) {
             return Err(errors::traffic_policy_already_exists(format!(
                 "A traffic policy with the name {} already exists.",
@@ -412,7 +412,7 @@ impl Route53 {
     ) -> Result<types::CreateTrafficPolicyVersionResponse, ServiceError> {
         self.authorize(ctx, "CreateTrafficPolicyVersion", &arn(ctx, "trafficpolicy", &input.id))?;
         let doc = parse_document(&input.document)?;
-        let mut st = self.lock();
+        let mut st = self.lock(ctx);
         let p = st.traffic_policies.get_mut(&input.id).ok_or_else(|| no_such_policy(&input.id, None))?;
         if doc.record_type != p.record_type {
             return Err(invalid(format!(
@@ -448,7 +448,7 @@ impl Route53 {
         input: types::GetTrafficPolicyRequest,
     ) -> Result<types::GetTrafficPolicyResponse, ServiceError> {
         self.authorize(ctx, "GetTrafficPolicy", &arn(ctx, "trafficpolicy", &input.id))?;
-        let st = self.lock();
+        let st = self.lock(ctx);
         Ok(types::GetTrafficPolicyResponse { traffic_policy: st.policy_version(&input.id, input.version)?.clone() })
     }
 
@@ -458,7 +458,7 @@ impl Route53 {
         input: types::UpdateTrafficPolicyCommentRequest,
     ) -> Result<types::UpdateTrafficPolicyCommentResponse, ServiceError> {
         self.authorize(ctx, "UpdateTrafficPolicyComment", &arn(ctx, "trafficpolicy", &input.id))?;
-        let mut st = self.lock();
+        let mut st = self.lock(ctx);
         st.policy_version(&input.id, input.version)?;
         let v =
             st.traffic_policies.get_mut(&input.id).and_then(|p| p.versions.get_mut(&input.version)).expect("checked");
@@ -472,7 +472,7 @@ impl Route53 {
         input: types::DeleteTrafficPolicyRequest,
     ) -> Result<types::DeleteTrafficPolicyResponse, ServiceError> {
         self.authorize(ctx, "DeleteTrafficPolicy", &arn(ctx, "trafficpolicy", &input.id))?;
-        let mut st = self.lock();
+        let mut st = self.lock(ctx);
         st.policy_version(&input.id, input.version)?;
         let in_use = st
             .traffic_policy_instances
@@ -498,7 +498,7 @@ impl Route53 {
     ) -> Result<types::ListTrafficPoliciesResponse, ServiceError> {
         self.authorize(ctx, "ListTrafficPolicies", "*")?;
         let limit = max_items(input.max_items, 100, 100);
-        let st = self.lock();
+        let st = self.lock(ctx);
         let all: Vec<&TrafficPolicy> = st
             .traffic_policies
             .values()
@@ -524,7 +524,7 @@ impl Route53 {
             Some(m) => m.parse().map_err(|_| errors::invalid_input(format!("Invalid input: {m} is not a version.")))?,
             None => 0,
         };
-        let st = self.lock();
+        let st = self.lock(ctx);
         let p = st.policy(&input.id)?;
         let all: Vec<&types::TrafficPolicy> = p.versions.range(start..).map(|(_, v)| v).collect();
         let next = all.get(limit);
@@ -543,7 +543,7 @@ impl Route53 {
     ) -> Result<types::CreateTrafficPolicyInstanceResponse, ServiceError> {
         let zone_id = strip_id(&input.hosted_zone_id).to_string();
         self.authorize(ctx, "CreateTrafficPolicyInstance", &arn(ctx, "hostedzone", &zone_id))?;
-        let mut st = self.lock();
+        let mut st = self.lock(ctx);
         let zone_name = st.zone(&zone_id)?.name.clone();
         let policy = st.policy_version(&input.traffic_policy_id, input.traffic_policy_version)?.clone();
         let name = names::normalize(&input.name).filter(|n| names::in_zone(n, &zone_name)).ok_or_else(|| {
@@ -590,7 +590,7 @@ impl Route53 {
         input: types::GetTrafficPolicyInstanceRequest,
     ) -> Result<types::GetTrafficPolicyInstanceResponse, ServiceError> {
         self.authorize(ctx, "GetTrafficPolicyInstance", &arn(ctx, "trafficpolicyinstance", &input.id))?;
-        let st = self.lock();
+        let st = self.lock(ctx);
         let instance =
             st.traffic_policy_instances.get(&input.id).cloned().ok_or_else(|| no_such_instance(&input.id))?;
         Ok(types::GetTrafficPolicyInstanceResponse { traffic_policy_instance: instance })
@@ -602,7 +602,7 @@ impl Route53 {
         input: types::UpdateTrafficPolicyInstanceRequest,
     ) -> Result<types::UpdateTrafficPolicyInstanceResponse, ServiceError> {
         self.authorize(ctx, "UpdateTrafficPolicyInstance", &arn(ctx, "trafficpolicyinstance", &input.id))?;
-        let mut st = self.lock();
+        let mut st = self.lock(ctx);
         let current = st.traffic_policy_instances.get(&input.id).cloned().ok_or_else(|| no_such_instance(&input.id))?;
         let policy = st.policy_version(&input.traffic_policy_id, input.traffic_policy_version)?.clone();
         if policy.r#type != current.traffic_policy_type {
@@ -627,7 +627,7 @@ impl Route53 {
         input: types::DeleteTrafficPolicyInstanceRequest,
     ) -> Result<types::DeleteTrafficPolicyInstanceResponse, ServiceError> {
         self.authorize(ctx, "DeleteTrafficPolicyInstance", &arn(ctx, "trafficpolicyinstance", &input.id))?;
-        let mut st = self.lock();
+        let mut st = self.lock(ctx);
         let instance = st.traffic_policy_instances.remove(&input.id).ok_or_else(|| no_such_instance(&input.id))?;
         st.clear_instance_records(&instance);
         Ok(types::DeleteTrafficPolicyInstanceResponse {})
@@ -640,7 +640,7 @@ impl Route53 {
     ) -> Result<types::GetTrafficPolicyInstanceCountResponse, ServiceError> {
         self.authorize(ctx, "GetTrafficPolicyInstanceCount", "*")?;
         Ok(types::GetTrafficPolicyInstanceCountResponse {
-            traffic_policy_instance_count: self.lock().traffic_policy_instances.len() as i32,
+            traffic_policy_instance_count: self.lock(ctx).traffic_policy_instances.len() as i32,
         })
     }
 
@@ -650,7 +650,7 @@ impl Route53 {
         input: types::ListTrafficPolicyInstancesRequest,
     ) -> Result<types::ListTrafficPolicyInstancesResponse, ServiceError> {
         self.authorize(ctx, "ListTrafficPolicyInstances", "*")?;
-        let st = self.lock();
+        let st = self.lock(ctx);
         let page = page_instances(
             st.traffic_policy_instances.values(),
             input.hosted_zone_id_marker.as_deref(),
@@ -675,7 +675,7 @@ impl Route53 {
     ) -> Result<types::ListTrafficPolicyInstancesByHostedZoneResponse, ServiceError> {
         let zone_id = strip_id(&input.hosted_zone_id).to_string();
         self.authorize(ctx, "ListTrafficPolicyInstancesByHostedZone", &arn(ctx, "hostedzone", &zone_id))?;
-        let st = self.lock();
+        let st = self.lock(ctx);
         st.zone(&zone_id)?;
         let page = page_instances(
             st.traffic_policy_instances.values().filter(|i| i.hosted_zone_id == zone_id),
@@ -703,7 +703,7 @@ impl Route53 {
             "ListTrafficPolicyInstancesByPolicy",
             &arn(ctx, "trafficpolicy", &input.traffic_policy_id),
         )?;
-        let st = self.lock();
+        let st = self.lock(ctx);
         st.policy_version(&input.traffic_policy_id, input.traffic_policy_version)?;
         let page = page_instances(
             st.traffic_policy_instances.values().filter(|i| {

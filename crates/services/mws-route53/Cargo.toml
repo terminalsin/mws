@@ -18,9 +18,12 @@ mws-logs.workspace = true
 mws-proto-json.workspace = true
 mws-proto-restxml.workspace = true
 rand.workspace = true
+rustls.workspace = true
+rustls-pki-types.workspace = true
 serde.workspace = true
 serde_json.workspace = true
-tokio.workspace = true
+tokio = { workspace = true, features = ["io-util"] }
+tokio-rustls.workspace = true
 
 [build-dependencies]
 mws-codegen.workspace = true
