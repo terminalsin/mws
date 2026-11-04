@@ -1,6 +1,5 @@
 //! Aliases: friendly names for keys, scoped to an account and Region.
 
-use chrono::Utc;
 use mws_core::{ConditionContext, RequestContext, ServiceError};
 
 use super::{alias_arn, page, require_not_pending_deletion, Access};
@@ -50,7 +49,7 @@ impl Kms {
         if st.aliases.contains_key(&arn) {
             return Err(errors::already_exists(format!("An alias with the name {arn} already exists")));
         }
-        let now = Utc::now();
+        let now = ctx.received_at;
         st.aliases.insert(
             arn.clone(),
             Alias { arn, name: input.alias_name, target_key_id: key_id, created_at: now, updated_at: now },
@@ -88,7 +87,7 @@ impl Kms {
         let key_id = new.key_id.clone();
         let alias = st.aliases.get_mut(&arn).ok_or_else(|| errors::not_found(format!("Alias {arn} is not found.")))?;
         alias.target_key_id = key_id;
-        alias.updated_at = Utc::now();
+        alias.updated_at = ctx.received_at;
         Ok(())
     }
 

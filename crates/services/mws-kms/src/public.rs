@@ -8,7 +8,6 @@
 
 use std::collections::BTreeMap;
 
-use chrono::Utc;
 use mws_core::{ConditionContext, RequestContext, ServiceError};
 use mws_iam_policy::{Policy, PolicyKind, PrincipalInfo, Request};
 
@@ -174,6 +173,7 @@ impl Kms {
     /// The AWS managed key for `service` (`alias/aws/<service>`) in the
     /// caller's account and Region, created on first use as AWS does.
     pub fn aws_managed_key(&self, ctx: &RequestContext, service: &str) -> String {
+        self.observe(ctx);
         let account = &ctx.caller.account_id;
         let name = format!("alias/aws/{service}");
         let alias_arn = ops::alias_arn(&ctx.partition, &ctx.region, account, &name);
@@ -184,8 +184,8 @@ impl Kms {
         let key_id = uuid::Uuid::new_v4().to_string();
         let arn = ops::key_arn(&ctx.partition, &ctx.region, account, &key_id);
         let secret = crypto::generate(Spec::Symmetric).expect("symmetric keys always generate");
-        let now = Utc::now();
-        let material = ops::new_material(secret, None);
+        let now = ctx.received_at;
+        let material = ops::new_material(secret, None, now);
         st.keys.insert(
             arn.clone(),
             Key {
