@@ -22,15 +22,9 @@ fn check_schedule(expr: &str) -> Result<(), ServiceError> {
     if !ok {
         return Err(errors::validation(format!("Invalid schedule expression: {expr}. Use cron(...) or rate(...).")));
     }
-    if let Some(r) = expr.strip_prefix("rate(").and_then(|r| r.strip_suffix(')')) {
-        let mut parts = r.split_whitespace();
-        let n = parts.next().and_then(|n| n.parse::<u32>().ok());
-        let unit = parts.next();
-        if n.is_none_or(|n| n == 0)
-            || !unit.is_some_and(|u| ["minute", "minutes", "hour", "hours", "day", "days"].contains(&u))
-        {
-            return Err(errors::validation(format!("Invalid rate expression: {expr}")));
-        }
+    if mws_schedule::Schedule::parse(expr).is_none() {
+        let what = if expr.starts_with("rate(") { "rate" } else { "cron" };
+        return Err(errors::validation(format!("Invalid {what} expression: {expr}")));
     }
     Ok(())
 }
@@ -770,10 +764,8 @@ impl Logs {
         self.authorize(ctx, "CreateScheduledQuery", &a, request_tag_conditions(&tags))?;
         check_tags(0, &tags)?;
         check_schedule(&input.schedule_expression)?;
-        if input.query_language == "CWLI" {
-            crate::insights::parse(&input.query_string)
-                .map_err(|e| errors::validation(format!("Invalid query: {e}")))?;
-        }
+        crate::sqlppl::compile(&input.query_language, &input.query_string)
+            .map_err(|e| errors::validation(format!("Invalid query: {e}")))?;
         if !input.execution_role_arn.starts_with("arn:") {
             return Err(errors::validation("executionRoleArn must be an IAM role ARN."));
         }
@@ -806,7 +798,8 @@ impl Logs {
             creation_time: Some(now),
             last_updated_time: Some(now),
         };
-        r.scheduled_queries.insert(a.clone(), ScheduledQuery { record, tags, history: Vec::new() });
+        r.scheduled_queries
+            .insert(a.clone(), ScheduledQuery { record, tags, history: Vec::new(), evaluated_until: Some(now) });
         Ok(types::CreateScheduledQueryResponse { scheduled_query_arn: Some(a), state: Some(state) })
     }
 
@@ -833,10 +826,8 @@ impl Logs {
         let a = self.scheduled_arn(ctx, &input.identifier)?;
         self.authorize(ctx, "UpdateScheduledQuery", &a, ConditionContext::new())?;
         check_schedule(&input.schedule_expression)?;
-        if input.query_language == "CWLI" {
-            crate::insights::parse(&input.query_string)
-                .map_err(|e| errors::validation(format!("Invalid query: {e}")))?;
-        }
+        crate::sqlppl::compile(&input.query_language, &input.query_string)
+            .map_err(|e| errors::validation(format!("Invalid query: {e}")))?;
         let now = now_ms(ctx);
         let mut st = self.lock();
         let q = st.region(&ctx.caller.account_id, &ctx.region).scheduled_queries.get_mut(&a).ok_or_else(|| {

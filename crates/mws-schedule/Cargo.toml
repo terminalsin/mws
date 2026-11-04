@@ -1,0 +1,9 @@
+[package]
+name = "mws-schedule"
+description = "AWS schedule expressions (`rate(...)` and six-field `cron(...)`): parsing and the times they fire at."
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+chrono.workspace = true

@@ -130,12 +130,30 @@ pub enum Command {
     Fields(Vec<Named>),
     Display(Vec<String>),
     Filter(Expr),
-    ParseGlob { field: Expr, pattern: Regex, names: Vec<String> },
-    ParseRegex { field: Expr, pattern: Regex },
-    Stats { aggs: Vec<Named>, by: Vec<Named> },
+    ParseGlob {
+        field: Expr,
+        pattern: Regex,
+        names: Vec<String>,
+    },
+    ParseRegex {
+        field: Expr,
+        pattern: Regex,
+    },
+    Stats {
+        aggs: Vec<Named>,
+        by: Vec<Named>,
+    },
     Sort(Vec<(Expr, bool)>),
     Limit(usize),
     Dedup(Vec<String>),
+    /// Every field of every record is a column (SQL `SELECT *`, PPL).
+    AllFields,
+    /// Compute fields without making them the columns (PPL `eval`).
+    Eval(Vec<Named>),
+    /// Drop fields (PPL `fields - a, b`).
+    Remove(Vec<String>),
+    /// PPL `rename a as b`.
+    Rename(Vec<(String, String)>),
 }
 
 #[derive(Debug, Clone)]
@@ -143,7 +161,7 @@ pub struct Query {
     pub commands: Vec<Command>,
 }
 
-const AGGREGATES: &[&str] = &[
+pub(crate) const AGGREGATES: &[&str] = &[
     "count",
     "count_distinct",
     "sum",
@@ -161,7 +179,7 @@ const AGGREGATES: &[&str] = &[
 // ---- tokenizer ------------------------------------------------------------------
 
 #[derive(Debug, Clone, PartialEq)]
-enum Tok {
+pub(crate) enum Tok {
     Ident(String),
     Num(f64),
     Str(String),
@@ -191,7 +209,7 @@ fn duration_ms(n: f64, unit: &str) -> Option<i64> {
     Some((n * ms) as i64)
 }
 
-fn tokenize(s: &str) -> Result<Vec<Tok>, String> {
+pub(crate) fn tokenize(s: &str) -> Result<Vec<Tok>, String> {
     let c: Vec<char> = s.chars().collect();
     let mut out = Vec::new();
     let mut i = 0;
@@ -304,7 +322,7 @@ fn tokenize(s: &str) -> Result<Vec<Tok>, String> {
             continue;
         }
         let two: String = c[i..(i + 2).min(c.len())].iter().collect();
-        if ["!=", "<=", ">=", "=~", "==", "&&", "||"].contains(&two.as_str()) {
+        if ["!=", "<>", "<=", ">=", "=~", "==", "&&", "||"].contains(&two.as_str()) {
             out.push(Tok::Op(two));
             i += 2;
             continue;
@@ -324,7 +342,7 @@ fn tokenize(s: &str) -> Result<Vec<Tok>, String> {
 }
 
 /// Split a query into commands on `|` outside strings and regexes.
-fn split_commands(q: &str) -> Vec<String> {
+pub(crate) fn split_commands(q: &str) -> Vec<String> {
     let mut out = Vec::new();
     let mut cur = String::new();
     let mut quote: Option<char> = None;
@@ -366,27 +384,31 @@ fn split_commands(q: &str) -> Vec<String> {
 
 // ---- parser ----------------------------------------------------------------------
 
-struct P {
-    toks: Vec<Tok>,
-    pos: usize,
+/// The expression parser. `sql` switches on the SQL and PPL forms
+/// (`IS [NOT] NULL`, `BETWEEN`, `IN (...)`, `LIKE` wildcards and the
+/// OpenSearch function names).
+pub(crate) struct P {
+    pub(crate) toks: Vec<Tok>,
+    pub(crate) pos: usize,
+    pub(crate) sql: bool,
 }
 
 impl P {
-    fn peek(&self) -> Option<&Tok> {
+    pub(crate) fn peek(&self) -> Option<&Tok> {
         self.toks.get(self.pos)
     }
 
-    fn next(&mut self) -> Option<Tok> {
+    pub(crate) fn next(&mut self) -> Option<Tok> {
         let t = self.toks.get(self.pos).cloned();
         self.pos += 1;
         t
     }
 
-    fn at_kw(&self, kw: &str) -> bool {
+    pub(crate) fn at_kw(&self, kw: &str) -> bool {
         matches!(self.peek(), Some(Tok::Ident(w)) if w.eq_ignore_ascii_case(kw))
     }
 
-    fn eat_kw(&mut self, kw: &str) -> bool {
+    pub(crate) fn eat_kw(&mut self, kw: &str) -> bool {
         if self.at_kw(kw) {
             self.pos += 1;
             true
@@ -395,15 +417,15 @@ impl P {
         }
     }
 
-    fn at_op(&self, op: &str) -> bool {
+    pub(crate) fn at_op(&self, op: &str) -> bool {
         matches!(self.peek(), Some(Tok::Op(o)) if o == op)
     }
 
-    fn done(&self) -> bool {
+    pub(crate) fn done(&self) -> bool {
         self.pos >= self.toks.len()
     }
 
-    fn expr(&mut self) -> Result<Expr, String> {
+    pub(crate) fn expr(&mut self) -> Result<Expr, String> {
         let mut l = self.and()?;
         while self.eat_kw("or") || self.at_op("||") && self.next().is_some() {
             let r = self.and()?;
@@ -430,6 +452,11 @@ impl P {
 
     fn cmp(&mut self) -> Result<Expr, String> {
         let l = self.add()?;
+        if self.sql {
+            if let Some(e) = self.sql_cmp(&l)? {
+                return Ok(e);
+            }
+        }
         let negated = if self.at_kw("not")
             && matches!(self.toks.get(self.pos + 1), Some(Tok::Ident(w)) if w.eq_ignore_ascii_case("like") || w.eq_ignore_ascii_case("in"))
         {
@@ -440,20 +467,23 @@ impl P {
         };
         if self.eat_kw("like") {
             let r = self.add()?;
+            let r = if self.sql { sql_like(r)? } else { r };
             return Ok(Expr::Like(Box::new(l), Box::new(r), negated));
         }
         if self.eat_kw("in") {
-            if self.next() != Some(Tok::LBracket) {
-                return Err("expected '[' after in".into());
-            }
+            let close = match self.next() {
+                Some(Tok::LBracket) => Tok::RBracket,
+                Some(Tok::LParen) if self.sql => Tok::RParen,
+                _ => return Err("expected '[' after in".into()),
+            };
             let mut items = Vec::new();
-            while self.peek() != Some(&Tok::RBracket) {
+            while self.peek() != Some(&close) {
                 items.push(self.add()?);
                 if self.peek() == Some(&Tok::Comma) {
                     self.pos += 1;
                 }
                 if self.done() {
-                    return Err("expected ']'".into());
+                    return Err(format!("expected '{}'", if close == Tok::RParen { ')' } else { ']' }));
                 }
             }
             self.pos += 1;
@@ -462,7 +492,7 @@ impl P {
         let op = match self.peek() {
             Some(Tok::Op(o)) => match o.as_str() {
                 "=" | "==" => Some(BinOp::Eq),
-                "!=" => Some(BinOp::Ne),
+                "!=" | "<>" => Some(BinOp::Ne),
                 "<" => Some(BinOp::Lt),
                 "<=" => Some(BinOp::Le),
                 ">" => Some(BinOp::Gt),
@@ -486,7 +516,7 @@ impl P {
         }
     }
 
-    fn add(&mut self) -> Result<Expr, String> {
+    pub(crate) fn add(&mut self) -> Result<Expr, String> {
         let mut l = self.mul()?;
         loop {
             let op = if self.at_op("+") {
@@ -524,7 +554,7 @@ impl P {
         Ok(l)
     }
 
-    fn unary(&mut self) -> Result<Expr, String> {
+    pub(crate) fn unary(&mut self) -> Result<Expr, String> {
         if self.at_op("-") {
             self.pos += 1;
             return Ok(Expr::Unary('-', Box::new(self.unary()?)));
@@ -550,6 +580,14 @@ impl P {
                 if self.peek() == Some(&Tok::LParen) {
                     self.pos += 1;
                     let mut args = Vec::new();
+                    // `COUNT(DISTINCT x)`
+                    if self.sql && name.eq_ignore_ascii_case("count") && self.eat_kw("distinct") {
+                        let e = self.expr()?;
+                        if self.next() != Some(Tok::RParen) {
+                            return Err("expected ')'".into());
+                        }
+                        return Ok(Expr::Call("count_distinct".into(), vec![e]));
+                    }
                     while self.peek() != Some(&Tok::RParen) {
                         args.push(self.expr()?);
                         if self.peek() == Some(&Tok::Comma) {
@@ -559,6 +597,9 @@ impl P {
                         }
                     }
                     self.pos += 1;
+                    if self.sql {
+                        return sql_call(&name.to_lowercase(), args);
+                    }
                     return Ok(Expr::Call(name.to_lowercase(), args));
                 }
                 match name.to_lowercase().as_str() {
@@ -572,7 +613,7 @@ impl P {
     }
 
     /// `expr [as name]` items separated by commas, up to `stop` keyword.
-    fn named_list(&mut self, stop: Option<&str>) -> Result<Vec<Named>, String> {
+    pub(crate) fn named_list(&mut self, stop: Option<&str>) -> Result<Vec<Named>, String> {
         let mut out = Vec::new();
         loop {
             let start = self.pos;
@@ -598,7 +639,7 @@ impl P {
     }
 
     /// The default column name for an unnamed expression: its text.
-    fn source_text(&self, start: usize) -> String {
+    pub(crate) fn source_text(&self, start: usize) -> String {
         let mut s = String::new();
         for t in &self.toks[start..self.pos] {
             let piece = match t {
@@ -620,6 +661,90 @@ impl P {
             s.push_str(&piece);
         }
         s
+    }
+}
+
+impl P {
+    /// The SQL/PPL comparison forms: `IS [NOT] NULL` and
+    /// `[NOT] BETWEEN a AND b`.
+    fn sql_cmp(&mut self, l: &Expr) -> Result<Option<Expr>, String> {
+        if self.eat_kw("is") {
+            let negated = self.eat_kw("not");
+            if !self.eat_kw("null") {
+                return Err(format!("expected NULL, found {}", describe(self.peek())));
+            }
+            let present = Expr::Call("ispresent".into(), vec![l.clone()]);
+            return Ok(Some(if negated { present } else { Expr::Not(Box::new(present)) }));
+        }
+        let negated = self.at_kw("not")
+            && matches!(self.toks.get(self.pos + 1), Some(Tok::Ident(w)) if w.eq_ignore_ascii_case("between"));
+        if negated {
+            self.pos += 1;
+        }
+        if self.eat_kw("between") {
+            let lo = self.add()?;
+            if !self.eat_kw("and") {
+                return Err("expected AND in BETWEEN".into());
+            }
+            let hi = self.add()?;
+            let e = Expr::Bin(
+                BinOp::And,
+                Box::new(Expr::Bin(BinOp::Ge, Box::new(l.clone()), Box::new(lo))),
+                Box::new(Expr::Bin(BinOp::Le, Box::new(l.clone()), Box::new(hi))),
+            );
+            return Ok(Some(if negated { Expr::Not(Box::new(e)) } else { e }));
+        }
+        Ok(None)
+    }
+}
+
+/// A SQL `LIKE` pattern (`%` any run, `_` one character), which matches
+/// the whole value, ignoring case as OpenSearch does.
+fn sql_like(pattern: Expr) -> Result<Expr, String> {
+    let Expr::Lit(V::Str(p)) = pattern else { return Ok(pattern) };
+    let mut re = String::from("(?is)^");
+    for ch in p.chars() {
+        match ch {
+            '%' => re.push_str(".*"),
+            '_' => re.push('.'),
+            c => re.push_str(&regex::escape(&c.to_string())),
+        }
+    }
+    re.push('$');
+    Regex::new(&re).map(Expr::Regex).map_err(|e| e.to_string())
+}
+
+/// OpenSearch SQL/PPL functions, as the Logs Insights functions that
+/// compute the same thing.
+fn sql_call(name: &str, mut args: Vec<Expr>) -> Result<Expr, String> {
+    let call = |n: &str, args: Vec<Expr>| Ok(Expr::Call(n.into(), args));
+    match name {
+        "lower" | "lcase" => call("tolower", args),
+        "upper" | "ucase" => call("toupper", args),
+        "length" | "char_length" | "character_length" => call("strlen", args),
+        "ln" => call("log", args),
+        "ifnull" | "nvl" => call("coalesce", args),
+        "dc" | "distinct_count" => call("count_distinct", args),
+        "percentile" | "perc" | "percentile_approx" => call("pct", args),
+        "stddev_samp" | "stddev_pop" | "std" => call("stddev", args),
+        "isnull" => Ok(Expr::Not(Box::new(Expr::Call("ispresent".into(), args)))),
+        "isnotnull" => call("ispresent", args),
+        // `span(@timestamp, 5m)`: time buckets.
+        "span" => call("bin", args.into_iter().skip(1).collect()),
+        "like" if args.len() == 2 => {
+            let pattern = sql_like(args.pop().expect("two arguments"))?;
+            let field = args.pop().expect("two arguments");
+            Ok(Expr::Like(Box::new(field), Box::new(pattern), false))
+        }
+        // 1-based positions.
+        "substring" | "substr" => {
+            if args.len() >= 2 {
+                let pos = args.remove(1);
+                args.insert(1, Expr::Bin(BinOp::Sub, Box::new(pos), Box::new(Expr::Lit(V::Num(1.0)))));
+            }
+            call("substr", args)
+        }
+        _ => call(name, args),
     }
 }
 
@@ -659,7 +784,7 @@ pub fn parse(query: &str) -> Result<Query, String> {
     let mut commands = Vec::new();
     for text in split_commands(query) {
         let toks = tokenize(&text)?;
-        let mut p = P { toks, pos: 0 };
+        let mut p = P { toks, pos: 0, sql: false };
         let Some(Tok::Ident(cmd)) = p.next() else {
             return Err(format!("unexpected symbol found {}", text.split_whitespace().next().unwrap_or("")));
         };
@@ -741,7 +866,7 @@ pub fn parse(query: &str) -> Result<Query, String> {
     Ok(Query { commands })
 }
 
-fn contains_aggregate(e: &Expr) -> bool {
+pub(crate) fn contains_aggregate(e: &Expr) -> bool {
     match e {
         Expr::Call(name, args) => AGGREGATES.contains(&name.as_str()) || args.iter().any(contains_aggregate),
         Expr::Bin(_, a, b) | Expr::Like(a, b, _) => contains_aggregate(a) || contains_aggregate(b),
@@ -1013,10 +1138,50 @@ pub fn execute(q: &Query, mut records: Vec<Record>, limit: usize) -> Output {
     // matched for an aggregating query.
     let mut matched_before_stats = None;
     let mut sorted = false;
+    let mut all = false;
     let mut row_limit = limit;
     for c in &q.commands {
         match c {
+            Command::AllFields => all = true,
+            Command::Eval(items) => {
+                for r in &mut records {
+                    for item in items {
+                        let v = eval(&item.expr, r);
+                        r.insert(item.name.clone(), v);
+                    }
+                }
+                if !all {
+                    for item in items {
+                        if !fields.contains(&item.name) {
+                            fields.push(item.name.clone());
+                        }
+                    }
+                }
+            }
+            Command::Remove(names) => {
+                for r in &mut records {
+                    for n in names {
+                        r.remove(n);
+                    }
+                }
+                fields.retain(|f| !names.contains(f));
+            }
+            Command::Rename(pairs) => {
+                for r in &mut records {
+                    for (from, to) in pairs {
+                        if let Some(v) = r.remove(from) {
+                            r.insert(to.clone(), v);
+                        }
+                    }
+                }
+                for f in &mut fields {
+                    if let Some((_, to)) = pairs.iter().find(|(from, _)| from == f) {
+                        *f = to.clone();
+                    }
+                }
+            }
             Command::Fields(items) => {
+                all = false;
                 for r in &mut records {
                     for item in items {
                         if !matches!(&item.expr, Expr::Field(f) if *f == item.name) {
@@ -1094,6 +1259,7 @@ pub fn execute(q: &Query, mut records: Vec<Record>, limit: usize) -> Output {
                 records = out;
                 fields = by.iter().chain(aggs.iter()).map(|n| n.name.clone()).collect();
                 aggregated = true;
+                all = false;
             }
             Command::Sort(keys) => {
                 records.sort_by(|a, b| {
@@ -1145,7 +1311,7 @@ pub fn execute(q: &Query, mut records: Vec<Record>, limit: usize) -> Output {
         });
     }
     records.truncate(row_limit);
-    let columns: Vec<String> = match display {
+    let columns: Vec<String> = match display.clone() {
         Some(d) => d,
         None if !fields.is_empty() => fields,
         None => vec!["@timestamp".into(), "@message".into(), "@logStream".into(), "@log".into()],
@@ -1153,8 +1319,14 @@ pub fn execute(q: &Query, mut records: Vec<Record>, limit: usize) -> Output {
     let rows = records
         .iter()
         .map(|r| {
-            let mut row: Vec<(String, String)> =
-                columns.iter().filter_map(|c| r.get(c).and_then(V::display).map(|v| (c.clone(), v))).collect();
+            let mut row: Vec<(String, String)> = if all && display.is_none() {
+                r.iter()
+                    .filter(|(k, _)| *k != "@ptr")
+                    .filter_map(|(k, v)| v.display().map(|v| (k.clone(), v)))
+                    .collect()
+            } else {
+                columns.iter().filter_map(|c| r.get(c).and_then(V::display).map(|v| (c.clone(), v))).collect()
+            };
             if !aggregated {
                 if let Some(p) = r.get("@ptr").and_then(V::display) {
                     row.push(("@ptr".into(), p));

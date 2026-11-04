@@ -18,6 +18,7 @@ mod lambda;
 mod lambda_sqs;
 mod lambda_urls;
 mod logs;
+mod logs_queries;
 mod logs_subscriptions;
 mod object_lambda;
 mod organizations;
