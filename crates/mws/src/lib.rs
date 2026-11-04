@@ -151,6 +151,7 @@ fn build_with_store(config: Config, store: Option<Arc<Store>>) -> Mws {
     let ssm = Ssm::new(kms.clone());
     let events = Events::new().with_lambda(lambda.clone()).with_logs(logs.clone()).with_sts(sts.clone());
     events.register_target_sink("sqs", Arc::new(sinks::SqsTarget(sqs.clone())));
+    events.set_health_checks(Arc::new(sinks::Route53HealthChecks(route53.clone())));
     let secretsmanager = SecretsManager::new(kms.clone()).with_lambda(lambda.clone());
     ssm.set_secrets_manager(Arc::new(SsmSecretReferences(secretsmanager.clone())));
     let sns = Sns::new()

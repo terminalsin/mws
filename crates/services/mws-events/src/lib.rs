@@ -54,7 +54,7 @@ use std::sync::{Arc, Mutex, MutexGuard, OnceLock, RwLock};
 use mws_core::{HttpRequest, HttpResponse, RequestContext, Service, ServiceError};
 
 pub use deliver::{TargetError, TargetInvocation, TargetSink};
-pub use public::{ClockSource, ServiceEvent};
+pub use public::{ClockSource, HealthChecks, ServiceEvent};
 use state::State;
 
 pub(crate) struct Inner {
@@ -64,6 +64,7 @@ pub(crate) struct Inner {
     sts: OnceLock<mws_sts::Sts>,
     sinks: RwLock<BTreeMap<String, Arc<dyn TargetSink>>>,
     clock_sources: RwLock<Vec<Arc<dyn ClockSource>>>,
+    health_checks: OnceLock<Arc<dyn HealthChecks>>,
     /// The most recent request's context, for work that happens later
     /// (deliveries, schedules, replays): its authorizer and endpoint.
     template: Mutex<Option<RequestContext>>,
@@ -94,6 +95,7 @@ impl Events {
                 sts: OnceLock::new(),
                 sinks: RwLock::new(BTreeMap::new()),
                 clock_sources: RwLock::new(Vec::new()),
+                health_checks: OnceLock::new(),
                 template: Mutex::new(None),
                 clock_offset_ms: AtomicI64::new(0),
                 scheduler: AtomicBool::new(false),
@@ -129,6 +131,15 @@ impl Events {
     /// reaches them.
     pub fn register_clock_source(&self, source: Arc<dyn ClockSource>) {
         self.inner.clock_sources.write().expect("clock source lock poisoned").push(source);
+    }
+
+    /// Route global endpoints on these health checks.
+    pub fn set_health_checks(&self, checks: Arc<dyn HealthChecks>) {
+        let _ = self.inner.health_checks.set(checks);
+    }
+
+    pub(crate) fn health_checks(&self) -> Option<&Arc<dyn HealthChecks>> {
+        self.inner.health_checks.get()
     }
 
     pub(crate) fn sink(&self, service: &str) -> Option<Arc<dyn TargetSink>> {
