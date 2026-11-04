@@ -99,8 +99,10 @@ pub struct PrincipalInfo {
     /// The account of the principal.
     pub account_id: String,
     /// ARNs that identify the principal directly: a user ARN, an
-    /// assumed-role session ARN and its role ARN, a federated user ARN.
+    /// assumed-role session ARN, a federated user ARN.
     pub arns: Vec<String>,
+    /// For an assumed-role session, the ARN of its role.
+    pub role_arn: Option<String>,
     /// Set for AWS service principals, e.g. `ec2.amazonaws.com`.
     pub service: Option<String>,
     /// Set for web identity / SAML federation: the provider ARN.
@@ -121,8 +123,15 @@ pub struct Request<'a> {
 /// How a statement's `Principal` matched.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum PrincipalMatch {
-    /// The statement names the principal itself (or `*`).
+    /// The statement names the principal itself: the user, or the role
+    /// session (not its role).
     Direct,
+    /// The statement matches everyone (`*`).
+    Wildcard,
+    /// The statement names the IAM role an assumed-role session belongs to.
+    /// Session policies and the role's permissions boundary still limit
+    /// what such a grant allows.
+    Role,
     /// The statement names the principal's whole account, delegating the
     /// decision to the account's identity policies.
     Account,
@@ -145,8 +154,14 @@ impl Evaluation {
     pub fn allowed(&self) -> bool {
         !self.allows.is_empty()
     }
+    /// Some allow statement names the principal (not just its account).
     pub fn allowed_directly(&self) -> bool {
-        self.allows.iter().any(|(_, m)| *m == PrincipalMatch::Direct)
+        self.allows.iter().any(|(_, m)| *m != PrincipalMatch::Account)
+    }
+
+    /// Whether some allow statement matched the principal in `how`.
+    pub fn allowed_as(&self, how: PrincipalMatch) -> bool {
+        self.allows.iter().any(|(_, m)| *m == how)
     }
 }
 
@@ -351,12 +366,23 @@ fn parse_principal(v: &Value, negated: bool) -> Result<PrincipalMatcher, PolicyE
         _ => return err("Syntax errors in policy."),
     }
     for a in &p.aws {
-        let ok = a == "*" || (a.len() == 12 && a.chars().all(|c| c.is_ascii_digit())) || a.starts_with("arn:");
+        // IAM allows `*` on its own, never as part of an ARN; unique ids
+        // (`AIDA...`, `AROA...`) are how IAM shows principals that have been
+        // deleted since the policy was saved.
+        let ok = a == "*"
+            || (a.len() == 12 && a.chars().all(|c| c.is_ascii_digit()))
+            || (a.starts_with("arn:") && !a.contains(['*', '?']))
+            || is_unique_id(a);
         if !ok {
             return err(format!("Invalid principal in policy: \"AWS\":\"{a}\""));
         }
     }
     Ok(p)
+}
+
+/// An IAM unique id such as `AIDAJQABLZS4A3QDU576Q`.
+pub fn is_unique_id(s: &str) -> bool {
+    s.len() == 21 && s.starts_with('A') && s.bytes().all(|b| b.is_ascii_uppercase() || b.is_ascii_digit())
 }
 
 fn match_principal(p: &PrincipalMatcher, who: &PrincipalInfo) -> Option<PrincipalMatch> {
@@ -370,10 +396,10 @@ fn match_principal(p: &PrincipalMatcher, who: &PrincipalInfo) -> Option<Principa
 
 fn principal_match_inner(p: &PrincipalMatcher, who: &PrincipalInfo) -> Option<PrincipalMatch> {
     if p.any {
-        return Some(PrincipalMatch::Direct);
+        return Some(PrincipalMatch::Wildcard);
     }
     if who.anonymous {
-        return p.aws.iter().any(|a| a == "*").then_some(PrincipalMatch::Direct);
+        return p.aws.iter().any(|a| a == "*").then_some(PrincipalMatch::Wildcard);
     }
     if let Some(svc) = &who.service {
         if p.service.iter().any(|s| s == svc) {
@@ -388,13 +414,17 @@ fn principal_match_inner(p: &PrincipalMatcher, who: &PrincipalInfo) -> Option<Pr
     let mut best = None;
     for a in &p.aws {
         if a == "*" {
-            return Some(PrincipalMatch::Direct);
+            return Some(PrincipalMatch::Wildcard);
         }
         if who.arns.iter().any(|arn| arn == a) {
             return Some(PrincipalMatch::Direct);
         }
+        if who.role_arn.as_deref() == Some(a.as_str()) {
+            best = Some(PrincipalMatch::Role);
+            continue;
+        }
         let account_root = is_account_root(a);
-        if account_root.as_deref() == Some(who.account_id.as_str()) && !who.account_id.is_empty() {
+        if account_root.as_deref() == Some(who.account_id.as_str()) && !who.account_id.is_empty() && best.is_none() {
             best = Some(PrincipalMatch::Account);
         }
     }

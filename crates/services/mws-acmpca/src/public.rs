@@ -2,6 +2,7 @@
 
 use base64::Engine;
 use bytes::Bytes;
+use chrono::{DateTime, Utc};
 use http::{Method, StatusCode};
 use mws_core::{HttpRequest, HttpResponse};
 
@@ -52,12 +53,12 @@ impl PrivateCa {
         ocsp_get_body(request).is_some()
     }
 
-    pub(crate) fn public_response(&self, request: &HttpRequest) -> Option<HttpResponse> {
+    pub(crate) fn public_response(&self, request: &HttpRequest, now: DateTime<Utc>) -> Option<HttpResponse> {
         let der = if is_ocsp_post(request) { request.body().to_vec() } else { ocsp_get_body(request)? };
-        Some(response(StatusCode::OK, OCSP_RESPONSE, self.ocsp(&der), false))
+        Some(response(StatusCode::OK, OCSP_RESPONSE, self.ocsp(&der, now), false))
     }
 
-    fn ocsp(&self, der: &[u8]) -> Vec<u8> {
+    fn ocsp(&self, der: &[u8], now: DateTime<Utc>) -> Vec<u8> {
         use revocation::status;
         let Some(req) = revocation::parse_request(der) else {
             return revocation::error_response(status::MALFORMED_REQUEST);
@@ -72,6 +73,6 @@ impl PrivateCa {
         if revocation::ocsp_config(ca).is_none() || ca.status == "DELETED" {
             return revocation::error_response(status::UNAUTHORIZED);
         }
-        revocation::respond(ca, &req, &ids).unwrap_or_else(|_| revocation::error_response(status::INTERNAL_ERROR))
+        revocation::respond(ca, &req, &ids, now).unwrap_or_else(|_| revocation::error_response(status::INTERNAL_ERROR))
     }
 }

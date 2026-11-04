@@ -43,6 +43,8 @@ pub struct Region {
     pub datasets: BTreeMap<String, Option<String>>,
     /// Tags by resource ARN.
     pub tags: BTreeMap<String, BTreeMap<String, String>>,
+    /// Counts the datapoints put, so alarms re-evaluate when data arrives.
+    pub puts: u64,
 }
 
 /// A metric's identity: namespace, name and dimensions (sorted by name).
@@ -137,6 +139,8 @@ pub struct Alarm {
     /// While a composite alarm's suppressor waits or extends.
     pub suppressed_until: Option<DateTime<Utc>>,
     pub last_evaluated: Option<DateTime<Utc>>,
+    /// The Region's `puts` at the last evaluation.
+    pub seen_puts: u64,
     /// The configuration as put (tags moved to the region's tag map).
     pub metric: Option<types::PutMetricAlarmInput>,
     pub composite: Option<types::PutCompositeAlarmInput>,

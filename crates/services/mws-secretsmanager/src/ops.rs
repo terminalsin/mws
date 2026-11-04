@@ -56,6 +56,75 @@ fn merge_tags(existing: &mut Vec<types::Tag>, new: &[types::Tag]) {
     }
 }
 
+pub const MAX_VERSIONS: usize = 100;
+pub const MAX_LABELS: usize = 20;
+
+/// The versions-per-secret and staging-labels-per-secret quotas, for
+/// adding version `new_version` (if not there yet) and attaching `stages`.
+/// Unlabelled versions more than a day old don't count: Secrets Manager
+/// removes them to make room.
+pub fn check_quotas(
+    s: &Secret,
+    new_version: Option<&str>,
+    stages: &[String],
+    now: DateTime<Utc>,
+) -> Result<(), ServiceError> {
+    let adding = new_version.is_some_and(|id| s.version(id).is_none());
+    let removable =
+        s.versions.iter().filter(|v| v.stages.is_empty() && now - v.created > chrono::Duration::hours(24)).count();
+    if adding && s.versions.len() + 1 - removable > MAX_VERSIONS {
+        return Err(errors::limit_exceeded(
+            "You have exceeded the maximum number of versions (100) allowed for this secret. Secrets Manager removes versions without staging labels once they are more than 24 hours old.",
+        ));
+    }
+    let mut labels: Vec<&str> = s.versions.iter().flat_map(|v| v.stages.iter().map(String::as_str)).collect();
+    labels.extend(stages.iter().map(String::as_str));
+    if stages.iter().any(|x| x == CURRENT) && s.staged(CURRENT).is_some() {
+        // Moving AWSCURRENT leaves AWSPREVIOUS behind.
+        labels.push(crate::state::PREVIOUS);
+    }
+    labels.sort_unstable();
+    labels.dedup();
+    let count = labels.len();
+    if count > MAX_LABELS {
+        return Err(errors::limit_exceeded(
+            "You have exceeded the maximum number of staging labels (20) attached across all versions of this secret.",
+        ));
+    }
+    Ok(())
+}
+
+/// The words of a search string or attribute, lowercased, as the Secrets
+/// Manager search splits them: at anything but letters and digits, where
+/// lowercase turns to uppercase, and between letters and digits
+/// (`credsDatabase#892` is `creds`, `database`, `892`).
+pub fn words(s: &str) -> Vec<String> {
+    let mut out = Vec::new();
+    let mut cur = String::new();
+    let mut prev: Option<char> = None;
+    for c in s.chars() {
+        if !c.is_alphanumeric() {
+            if !cur.is_empty() {
+                out.push(std::mem::take(&mut cur));
+            }
+            prev = None;
+            continue;
+        }
+        if let Some(p) = prev {
+            let split = (p.is_lowercase() && c.is_uppercase()) || (p.is_alphabetic() != c.is_alphabetic());
+            if split && !cur.is_empty() {
+                out.push(std::mem::take(&mut cur));
+            }
+        }
+        cur.extend(c.to_lowercase());
+        prev = Some(c);
+    }
+    if !cur.is_empty() {
+        out.push(cur);
+    }
+    out
+}
+
 /// The page of `items` a `NextToken` selects.
 pub fn paginate<T>(
     items: Vec<T>,
@@ -131,6 +200,9 @@ impl SecretsManager {
         if !regions.is_empty() {
             ctx.authorize("secretsmanager:ReplicateSecretToRegions", &arn, c)?;
         }
+        if let Some(done) = self.repeated_create(ctx, &account, &name, input.client_request_token.as_deref(), &value)? {
+            return Ok(done);
+        }
         self.check_name_free(ctx, &account, &ctx.region, &name)?;
         let now = ctx.received_at;
         let version_id = value.as_ref().map(|_| input.client_request_token.clone().unwrap_or_else(names::new_token));
@@ -180,6 +252,41 @@ impl SecretsManager {
             _ => None,
         };
         Ok(types::CreateSecretResponse { arn: Some(arn), name: Some(name), version_id, replication_status })
+    }
+
+    /// A retried `CreateSecret`: the secret exists with a version for the
+    /// same `ClientRequestToken` holding the same value, so the request is
+    /// ignored and answered as before.
+    fn repeated_create(
+        &self,
+        ctx: &RequestContext,
+        account: &str,
+        name: &str,
+        token: Option<&str>,
+        value: &Option<Plain>,
+    ) -> Result<Option<types::CreateSecretResponse>, ServiceError> {
+        let (Some(token), Some(value)) = (token, value) else { return Ok(None) };
+        let existing = {
+            let st = self.lock();
+            st.secrets
+                .values()
+                .find(|s| s.account == account && s.region == ctx.region && s.name == name && s.deletion_date.is_none())
+                .cloned()
+        };
+        let Some(s) = existing else { return Ok(None) };
+        let Some(sealed) = s.version(token).and_then(|v| v.value.as_ref()) else { return Ok(None) };
+        match self.unseal(ctx, &s.region, &s.arn, token, sealed) {
+            Ok(p) if &p == value => Ok(Some(types::CreateSecretResponse {
+                arn: Some(s.arn.clone()),
+                name: Some(s.name.clone()),
+                version_id: Some(token.to_string()),
+                replication_status: self.replication_status(&s),
+            })),
+            Ok(_) => {
+                Err(errors::resource_exists("You can't modify an existing version, you can only create a new version."))
+            }
+            Err(_) => Ok(None),
+        }
     }
 
     /// A name can be taken again only once its secret is gone.
@@ -234,6 +341,7 @@ impl SecretsManager {
                 ));
             }
         }
+        check_quotas(secret, Some(token), stages, ctx.received_at)?;
         let sealed = self.seal(ctx, &secret.region, secret.kms_key_id.as_deref(), &secret.arn, token, value)?;
         let now = ctx.received_at;
         let stages_out = self.update(&secret.arn, |s| {
@@ -269,7 +377,12 @@ impl SecretsManager {
         let value = Plain::from_input(input.secret_string, input.secret_binary)?
             .ok_or_else(|| errors::invalid_request("You must provide either SecretString or SecretBinary."))?;
         let token = input.client_request_token.unwrap_or_else(names::new_token);
-        let stages = input.version_stages.unwrap_or_else(|| vec![CURRENT.into()]);
+        let mut stages = input.version_stages.unwrap_or_else(|| vec![CURRENT.into()]);
+        // The first version with a value becomes AWSCURRENT whatever labels
+        // the request asked for.
+        if s.versions.iter().all(|v| v.value.is_none()) && !stages.iter().any(|x| x == CURRENT) {
+            stages.push(CURRENT.into());
+        }
         let stages = self.add_version(ctx, &s, &token, &value, &stages, false)?;
         Ok(types::PutSecretValueResponse {
             arn: Some(s.arn),
@@ -552,6 +665,9 @@ impl SecretsManager {
         check_live(&s)?;
         check_primary(&s)?;
         let stage = input.version_stage.clone();
+        if input.move_to_version_id.is_some() {
+            check_quotas(&s, None, std::slice::from_ref(&stage), ctx.received_at)?;
+        }
         let now = ctx.received_at;
         self.update(&s.arn, |st| {
             let holder = st.staged(&stage).map(|v| v.id.clone());
@@ -618,12 +734,34 @@ impl SecretsManager {
             ("secretsmanager:ForceDeleteWithoutRecovery", input.force_delete_without_recovery.map(|b| b.to_string())),
             ("secretsmanager:RecoveryWindowInDays", window.map(|d| d.to_string())),
         ]);
-        let s = self.find(ctx, &input.secret_id, "secretsmanager:DeleteSecret", c)?;
         if force && window.is_some() {
             return Err(errors::invalid_parameter(
                 "You can't use ForceDeleteWithoutRecovery in conjunction with RecoveryWindowInDays.",
             ));
         }
+        let s = match self.find(ctx, &input.secret_id, "secretsmanager:DeleteSecret", c) {
+            Ok(s) => s,
+            // Forcibly deleting a secret that is already gone (or never
+            // existed) succeeds.
+            Err(e) if force && e.code == "ResourceNotFoundException" => {
+                let (arn, name) = match input.secret_id.strip_prefix("arn:") {
+                    Some(_) => {
+                        let name = input.secret_id.rsplit_once(":secret:").map(|(_, n)| n.to_string());
+                        (input.secret_id.clone(), name.unwrap_or_else(|| input.secret_id.clone()))
+                    }
+                    None => (
+                        names::new_arn(&ctx.partition, &ctx.region, &names::account_of(ctx), &input.secret_id),
+                        input.secret_id.clone(),
+                    ),
+                };
+                return Ok(types::DeleteSecretResponse {
+                    arn: Some(arn),
+                    name: Some(name),
+                    deletion_date: Some(ctx.received_at),
+                });
+            }
+            Err(e) => return Err(e),
+        };
         let days = window.unwrap_or(30);
         if !force && !(7..=30).contains(&days) {
             return Err(errors::invalid_parameter(
@@ -716,23 +854,22 @@ impl SecretsManager {
                 all
             }
         };
-        let fold = matches!(key, "description" | "all");
-        let norm = |x: &str| if fold { x.to_lowercase() } else { x.to_string() };
+        // Names and tags match by case-sensitive prefix; descriptions word
+        // by word, ignoring case; owning services by prefix ignoring case;
+        // a search over every attribute (`all`) word by word.
         f.values.iter().flatten().any(|raw| {
             let (negate, value) = match raw.strip_prefix('!') {
                 Some(v) => (true, v),
                 None => (false, raw.as_str()),
             };
-            let hit = if key == "all" {
-                value.split_whitespace().all(|word| {
-                    let w = word.to_lowercase();
-                    attrs.iter().any(|a| {
-                        a.to_lowercase().split(|c: char| !c.is_alphanumeric()).any(|p| p.starts_with(&w))
-                            || a.to_lowercase().starts_with(&w)
-                    })
-                })
-            } else {
-                attrs.iter().any(|a| norm(a).starts_with(&norm(value)))
+            let hit = match key {
+                "description" | "all" => {
+                    let wanted = words(value);
+                    let have: Vec<String> = attrs.iter().flat_map(|a| words(a)).collect();
+                    !wanted.is_empty() && wanted.iter().all(|w| have.iter().any(|h| h.starts_with(w.as_str())))
+                }
+                "owning-service" => attrs.iter().any(|a| a.to_lowercase().starts_with(&value.to_lowercase())),
+                _ => attrs.iter().any(|a| a.starts_with(value)),
             };
             hit != negate
         })
@@ -859,5 +996,18 @@ impl SecretsManager {
         })?;
         self.sync_replicas(ctx, &s.arn, &[]);
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::words;
+
+    #[test]
+    fn search_words_split_like_secrets_manager() {
+        assert_eq!(words("credsDatabase#892"), ["creds", "database", "892"]);
+        assert_eq!(words("prod/db_main v2"), ["prod", "db", "main", "v", "2"]);
+        assert_eq!(words("API key"), ["api", "key"]);
+        assert!(words("/_=#").is_empty());
     }
 }

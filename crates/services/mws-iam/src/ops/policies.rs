@@ -128,7 +128,7 @@ impl Iam {
     ) -> Result<types::CreatePolicyResponse, ServiceError> {
         let path = input.path.unwrap_or_else(|| "/".into());
         let arn = self.arn(&format!("policy{path}{}", input.policy_name));
-        let tags = tags_from_wire(input.tags);
+        let tags = tags_from_wire(input.tags)?;
         self.authorize_with(ctx, "CreatePolicy", &arn, request_tag_context(&tags))?;
         validate_policy(&input.policy_document, PolicyKind::Identity)?;
         if policy_size(&input.policy_document) > MANAGED_POLICY_MAX_SIZE {
@@ -318,6 +318,9 @@ impl Iam {
         self.authorize(ctx, "DeletePolicyVersion", &input.policy_arn)?;
         let mut state = self.write();
         let p = state.policies.get_mut(&input.policy_arn).ok_or_else(|| no_such_policy(&input.policy_arn))?;
+        if p.aws_managed {
+            return Err(ServiceError::client("AccessDenied", 403, "AWS managed policies cannot be modified."));
+        }
         if p.default_version == input.version_id {
             return Err(errors::delete_conflict("Cannot delete the default version of a policy."));
         }
@@ -340,6 +343,9 @@ impl Iam {
         self.authorize(ctx, "SetDefaultPolicyVersion", &input.policy_arn)?;
         let mut state = self.write();
         let p = state.policies.get_mut(&input.policy_arn).ok_or_else(|| no_such_policy(&input.policy_arn))?;
+        if p.aws_managed {
+            return Err(ServiceError::client("AccessDenied", 403, "AWS managed policies cannot be modified."));
+        }
         if !p.versions.iter().any(|v| v.id == input.version_id) {
             return Err(errors::no_such_entity(format!(
                 "Policy {} version {} does not exist.",
@@ -352,7 +358,7 @@ impl Iam {
     }
 
     pub fn tag_policy(&self, ctx: &RequestContext, input: types::TagPolicyRequest) -> Result<(), ServiceError> {
-        let tags = tags_from_wire(Some(input.tags));
+        let tags = tags_from_wire(Some(input.tags))?;
         self.authorize_with(ctx, "TagPolicy", &input.policy_arn, request_tag_context(&tags))?;
         let mut state = self.write();
         let p = state.policies.get_mut(&input.policy_arn).ok_or_else(|| no_such_policy(&input.policy_arn))?;

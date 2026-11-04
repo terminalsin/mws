@@ -107,6 +107,48 @@ impl S3 {
     }
 }
 
+impl S3 {
+    /// Replicate an existing version on request (S3 Batch Replication):
+    /// `ctx` must be allowed `s3:InitiateReplication`; the copy itself is
+    /// made as the bucket's replication role. Returns the result message.
+    pub fn replicate_existing(
+        &self,
+        ctx: &RequestContext,
+        bucket: &str,
+        key: &str,
+        version_id: Option<&str>,
+    ) -> Result<&'static str, mws_core::ServiceError> {
+        let mut st = self.write();
+        let b = st.bucket(bucket)?;
+        let policy = b.policy.clone();
+        ctx.authorize_with_resource_policy(
+            "s3:InitiateReplication",
+            &object_arn(ctx, bucket, key),
+            policy.as_deref(),
+            ConditionContext::new(),
+        )?;
+        if b.replication.is_none() {
+            return Err(crate::errors::invalid_request("Replication configuration is not found on the source bucket"));
+        }
+        let version = match version_id {
+            Some(v) => b.version(key, v).map(|v| v.version_id.clone()),
+            None => b.latest(key).map(|v| v.version_id.clone()),
+        }
+        .ok_or_else(|| crate::errors::no_such_key(key))?;
+        replicate_one(ctx, &mut st, bucket, key, &version);
+        let status =
+            st.buckets.get(bucket).and_then(|b| b.version(key, &version)).and_then(|v| v.replication_status.clone());
+        match status.as_deref() {
+            Some("COMPLETED") => Ok("Successful"),
+            _ => Err(mws_core::ServiceError::client(
+                "ReplicationFailed",
+                400,
+                "The object could not be replicated: no rule matched or the replication role was denied",
+            )),
+        }
+    }
+}
+
 fn replicate_one(ctx: &RequestContext, st: &mut State, bucket: &str, key: &str, version_id: &str) {
     let Some(src) = st.buckets.get(bucket) else { return };
     let Some(config) = src.replication.clone() else { return };

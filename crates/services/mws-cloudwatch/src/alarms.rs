@@ -410,7 +410,27 @@ impl CloudWatch {
                 "The parameters ChildrenOfAlarmName and ParentsOfAlarmName are mutually exclusive and you have specified both.",
             ));
         }
-        let types_wanted = input.alarm_types.clone().unwrap_or_else(|| vec!["MetricAlarm".to_string()]);
+        let family = input.children_of_alarm_name.is_some() || input.parents_of_alarm_name.is_some();
+        if family
+            && (input.alarm_names.is_some()
+                || input.alarm_name_prefix.is_some()
+                || input.state_value.is_some()
+                || input.action_prefix.is_some())
+        {
+            let which =
+                if input.children_of_alarm_name.is_some() { "ChildrenOfAlarmName" } else { "ParentsOfAlarmName" };
+            return Err(errors::validation(format!(
+                "If {which} is specified, no other parameters except MaxRecords and NextToken can be specified."
+            )));
+        }
+        // Children are metric and composite alarms, parents composite
+        // alarms, whatever AlarmTypes would default to. (AlarmTypes is
+        // tolerated here, as SDK callers commonly pass it.)
+        let types_wanted = if family && input.alarm_types.is_none() {
+            vec!["MetricAlarm".to_string(), "CompositeAlarm".to_string()]
+        } else {
+            input.alarm_types.clone().unwrap_or_else(|| vec!["MetricAlarm".to_string()])
+        };
         let st = self.lock();
         let mut found: Vec<Alarm> = Vec::new();
         if let Some(r) = st.region_ref(&ctx.caller.account_id, &ctx.region) {
@@ -502,22 +522,7 @@ impl CloudWatch {
                             m.period,
                             m.unit.clone(),
                         )],
-                        (None, Some(qs)) => qs
-                            .iter()
-                            .filter_map(|q| q.metric_stat.as_ref())
-                            .map(|ms| {
-                                (
-                                    crate::state::MetricKey::new(
-                                        ms.metric.namespace.as_deref().unwrap_or_default(),
-                                        ms.metric.metric_name.as_deref().unwrap_or_default(),
-                                        ms.metric.dimensions.as_deref(),
-                                    ),
-                                    Some(ms.stat.clone()),
-                                    Some(ms.period),
-                                    ms.unit.clone(),
-                                )
-                            })
-                            .collect(),
+                        // Not alarms on metric math that uses the metric.
                         _ => Vec::new(),
                     };
                 let hit = keys.iter().any(|(k, stat, period, unit)| {
@@ -549,16 +554,16 @@ impl CloudWatch {
         let now = now(ctx);
         let mut st = self.lock();
         let region = st.region(&ctx.caller.account_id, &ctx.region);
-        let missing: Vec<&String> =
-            input.alarm_names.iter().filter(|n| !region.alarms.contains_key(n.as_str())).collect();
-        if !missing.is_empty() {
-            return Err(errors::resource_not_found(format!(
-                "{} alarm{} not found: [{}]",
-                missing.len(),
-                if missing.len() == 1 { "" } else { "s" },
-                missing.iter().map(|s| s.as_str()).collect::<Vec<_>>().join(", ")
-            )));
+        let kind = |n: &String| region.alarms.get(n.as_str()).map(|a| a.alarm_type.as_str());
+        if input.alarm_names.iter().filter(|n| kind(n) == Some("CompositeAlarm")).count() > 1 {
+            return Err(errors::validation("You can delete at most one composite alarm in one DeleteAlarms call."));
         }
+        if input.alarm_names.len() > 1 && input.alarm_names.iter().any(|n| kind(n) == Some("LogAlarm")) {
+            return Err(errors::validation("Log alarms cannot be deleted in a batch. Delete one log alarm per call."));
+        }
+        // Incorrect names do not stop the correct ones from being deleted.
+        let missing: Vec<String> =
+            input.alarm_names.iter().filter(|n| !region.alarms.contains_key(n.as_str())).cloned().collect();
         // An alarm a remaining composite alarm's rule names cannot go.
         for n in &input.alarm_names {
             let parent = region.alarms.values().find(|a| {
@@ -581,6 +586,14 @@ impl CloudWatch {
                 let data = json!({"version": "1.0", "type": "Delete", "deletedAlarm": self.alarm_json(&a)});
                 push_history(region, config_history(&a, "deleted", now, data));
             }
+        }
+        if !missing.is_empty() {
+            return Err(errors::resource_not_found(format!(
+                "{} alarm{} not found: [{}]",
+                missing.len(),
+                if missing.len() == 1 { "" } else { "s" },
+                missing.join(", ")
+            )));
         }
         Ok(())
     }
@@ -654,6 +667,14 @@ impl CloudWatch {
             if !region.alarms.contains_key(&input.alarm_name) {
                 return Err(errors::resource_not_found(format!("Alarm {} not found", input.alarm_name)));
             }
+            // The state holds until the alarm's next evaluation.
+            let puts = region.puts;
+            if let Some(a) = region.alarms.get_mut(&input.alarm_name) {
+                if a.alarm_type == "MetricAlarm" {
+                    a.last_evaluated = Some(now);
+                    a.seen_puts = puts;
+                }
+            }
             let mut out = Vec::new();
             if let Some(t) = crate::evaluate::transition(
                 region,
@@ -694,10 +715,11 @@ impl CloudWatch {
                                 .as_ref()
                                 .is_none_or(|c| h.alarm_contributor_id.as_ref() == Some(c))
                             && input.history_item_type.as_ref().is_none_or(|t| h.history_item_type.as_ref() == Some(t))
-                            && input
-                                .alarm_types
-                                .as_ref()
-                                .is_none_or(|ts| h.alarm_type.as_ref().is_some_and(|t| ts.contains(t)))
+                            && h.alarm_type.as_ref().is_some_and(|t| match &input.alarm_types {
+                                Some(ts) => ts.contains(t),
+                                // Metric alarms only, unless AlarmTypes asks.
+                                None => t == "MetricAlarm",
+                            })
                             && input.start_date.is_none_or(|s| h.timestamp.is_some_and(|t| t >= s))
                             && input.end_date.is_none_or(|e| h.timestamp.is_some_and(|t| t <= e))
                     })

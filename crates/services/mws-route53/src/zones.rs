@@ -7,7 +7,7 @@ use rand::Rng;
 
 use crate::generated::{errors, types};
 use crate::names;
-use crate::state::{record_key, State, Zone};
+use crate::state::{record_key, vpc_key, State, Zone};
 use crate::{arn, max_items, new_id, strip_id, Route53};
 
 pub(crate) fn no_such_zone(id: &str) -> ServiceError {
@@ -15,10 +15,6 @@ pub(crate) fn no_such_zone(id: &str) -> ServiceError {
 }
 
 impl State {
-    pub(crate) fn zone(&self, id: &str) -> Result<&Zone, ServiceError> {
-        self.zones.get(id).ok_or_else(|| no_such_zone(id))
-    }
-
     pub(crate) fn zone_mut(&mut self, id: &str) -> Result<&mut Zone, ServiceError> {
         self.zones.get_mut(id).ok_or_else(|| no_such_zone(id))
     }
@@ -93,7 +89,7 @@ impl Route53 {
         if let Some(vpc) = &input.vpc {
             check_vpc(vpc)?;
         }
-        let mut st = self.lock();
+        let mut st = self.lock(ctx);
         let delegation_set_id = input.delegation_set_id.as_deref().map(|d| strip_id(d).to_string());
         if let Some(ds) = &delegation_set_id {
             if private {
@@ -150,6 +146,7 @@ impl Route53 {
             dnssec_signing: false,
             vpc_authorizations: Vec::new(),
             accelerated_recovery: false,
+            vpc_accounts: BTreeMap::new(),
         };
         let soa = types::ResourceRecordSet {
             name: name.clone(),
@@ -189,7 +186,7 @@ impl Route53 {
     ) -> Result<types::GetHostedZoneResponse, ServiceError> {
         let id = strip_id(&input.id);
         self.authorize(ctx, "GetHostedZone", &arn(ctx, "hostedzone", id))?;
-        let st = self.lock();
+        let st = self.lock(ctx);
         let z = st.zone(id)?;
         Ok(types::GetHostedZoneResponse {
             hosted_zone: z.wire(),
@@ -204,7 +201,7 @@ impl Route53 {
         _input: types::GetHostedZoneCountRequest,
     ) -> Result<types::GetHostedZoneCountResponse, ServiceError> {
         self.authorize(ctx, "GetHostedZoneCount", "*")?;
-        Ok(types::GetHostedZoneCountResponse { hosted_zone_count: self.lock().zones.len() as i64 })
+        Ok(types::GetHostedZoneCountResponse { hosted_zone_count: self.lock(ctx).zones.len() as i64 })
     }
 
     pub(crate) fn list_hosted_zones(
@@ -214,7 +211,7 @@ impl Route53 {
     ) -> Result<types::ListHostedZonesResponse, ServiceError> {
         self.authorize(ctx, "ListHostedZones", "*")?;
         let limit = max_items(input.max_items, 100, 100);
-        let st = self.lock();
+        let st = self.lock(ctx);
         let delegation_set = input.delegation_set_id.as_deref().map(strip_id);
         if let Some(ds) = delegation_set {
             if !st.delegation_sets.contains_key(ds) {
@@ -261,7 +258,7 @@ impl Route53 {
             None => None,
         };
         let limit = max_items(input.max_items, 100, 100);
-        let st = self.lock();
+        let st = self.lock(ctx);
         let mut zones: Vec<&Zone> = st.zones.values().collect();
         zones.sort_by(|a, b| (names::sort_key(&a.name), &a.id).cmp(&(names::sort_key(&b.name), &b.id)));
         let start_id = input.hosted_zone_id.as_deref().map(strip_id).unwrap_or_default();
@@ -291,7 +288,7 @@ impl Route53 {
     ) -> Result<types::UpdateHostedZoneCommentResponse, ServiceError> {
         let id = strip_id(&input.id);
         self.authorize(ctx, "UpdateHostedZoneComment", &arn(ctx, "hostedzone", id))?;
-        let mut st = self.lock();
+        let mut st = self.lock(ctx);
         let z = st.zone_mut(id)?;
         z.comment = input.comment.filter(|c| !c.is_empty());
         Ok(types::UpdateHostedZoneCommentResponse { hosted_zone: z.wire() })
@@ -304,7 +301,7 @@ impl Route53 {
     ) -> Result<types::DeleteHostedZoneResponse, ServiceError> {
         let id = strip_id(&input.id);
         self.authorize(ctx, "DeleteHostedZone", &arn(ctx, "hostedzone", id))?;
-        let mut st = self.lock();
+        let mut st = self.lock(ctx);
         let z = st.zone(id)?;
         let only_required = z.records.values().all(|r| r.name == z.name && (r.r#type == "SOA" || r.r#type == "NS"));
         if !only_required {
@@ -329,7 +326,7 @@ impl Route53 {
     ) -> Result<types::GetChangeResponse, ServiceError> {
         let id = strip_id(&input.id);
         self.authorize(ctx, "GetChange", &arn(ctx, "change", id))?;
-        let st = self.lock();
+        let st = self.lock(ctx);
         let c = st.changes.get(id).ok_or_else(|| {
             errors::no_such_change(format!("A change with the specified change ID does not exist: {id}"))
         })?;
@@ -352,10 +349,21 @@ impl Route53 {
         let id = strip_id(&input.hosted_zone_id);
         self.authorize(ctx, "AssociateVPCWithHostedZone", &arn(ctx, "hostedzone", id))?;
         check_vpc(&input.vpc)?;
-        let mut st = self.lock();
-        let z = st.zone_mut(id)?;
+        let caller = ctx.caller.account_id.as_str();
+        let mut all = self.lock_all();
+        // Another account's zone takes an authorization from its owner.
+        let owner = all.zone_owner(id).map(str::to_string);
+        let Some(owner) = owner else { return Err(no_such_zone(id)) };
+        let state = all.accounts.get_mut(&owner).expect("owner exists");
+        let z = state.zones.get_mut(id).expect("zone exists");
         if !z.private {
             return Err(errors::public_zone_vpc_association("Public hosted zones cannot be associated with VPCs."));
+        }
+        if owner != caller && !z.vpc_authorizations.iter().any(|v| same_vpc(v, &input.vpc)) {
+            return Err(errors::not_authorized(format!(
+                "The VPC: {} has not authorized to associate with your hosted zone.",
+                input.vpc.vpc_id.as_deref().unwrap_or_default()
+            )));
         }
         if z.vpcs.iter().any(|v| same_vpc(v, &input.vpc)) {
             return Err(errors::conflicting_domain_exists(format!(
@@ -363,8 +371,16 @@ impl Route53 {
                 input.vpc.vpc_id.as_deref().unwrap_or_default()
             )));
         }
+        if z.vpcs.len() as i64 >= crate::limits::MAX_VPCS_ASSOCIATED_BY_ZONE {
+            return Err(errors::limits_exceeded(
+                "This operation can't be completed because the hosted zone has reached the limit on the number of VPCs that can be associated with it.",
+            ));
+        }
+        if owner != caller {
+            z.vpc_accounts.insert(vpc_key(&input.vpc), caller.to_string());
+        }
         z.vpcs.push(input.vpc);
-        Ok(types::AssociateVPCWithHostedZoneResponse { change_info: st.new_change(input.comment) })
+        Ok(types::AssociateVPCWithHostedZoneResponse { change_info: state.new_change(input.comment) })
     }
 
     pub(crate) fn disassociate_vpc_from_hosted_zone(
@@ -374,8 +390,18 @@ impl Route53 {
     ) -> Result<types::DisassociateVPCFromHostedZoneResponse, ServiceError> {
         let id = strip_id(&input.hosted_zone_id);
         self.authorize(ctx, "DisassociateVPCFromHostedZone", &arn(ctx, "hostedzone", id))?;
-        let mut st = self.lock();
-        let z = st.zone_mut(id)?;
+        let caller = ctx.caller.account_id.as_str();
+        let mut all = self.lock_all();
+        let owner = all.zone_owner(id).map(str::to_string);
+        let Some(owner) = owner else { return Err(no_such_zone(id)) };
+        let state = all.accounts.get_mut(&owner).expect("owner exists");
+        let z = state.zones.get_mut(id).expect("zone exists");
+        // The zone's owner, or the account whose VPC it is, may disassociate.
+        let key = vpc_key(&input.vpc);
+        if owner != caller && z.vpc_accounts.get(&key).map(String::as_str) != Some(caller) {
+            drop(all);
+            return Err(self.lock(ctx).access_denied());
+        }
         let Some(pos) = z.vpcs.iter().position(|v| same_vpc(v, &input.vpc)) else {
             return Err(errors::vpc_association_not_found(format!(
                 "The specified VPC {} is not associated with the hosted zone {id}.",
@@ -388,7 +414,8 @@ impl Route53 {
             ));
         }
         z.vpcs.remove(pos);
-        Ok(types::DisassociateVPCFromHostedZoneResponse { change_info: st.new_change(input.comment) })
+        z.vpc_accounts.remove(&key);
+        Ok(types::DisassociateVPCFromHostedZoneResponse { change_info: state.new_change(input.comment) })
     }
 
     pub(crate) fn list_hosted_zones_by_vpc(
@@ -398,29 +425,33 @@ impl Route53 {
     ) -> Result<types::ListHostedZonesByVPCResponse, ServiceError> {
         self.authorize(ctx, "ListHostedZonesByVPC", "*")?;
         let limit = max_items(input.max_items, 100, 100);
-        let st = self.lock();
+        let caller = ctx.caller.account_id.as_str();
+        let all = self.lock_all();
         let vpc = types::VPC { vpc_id: Some(input.vpc_id), vpc_region: Some(input.vpc_region) };
-        let matching: Vec<&Zone> = st
-            .zones
-            .values()
-            .filter(|z| z.vpcs.iter().any(|v| same_vpc(v, &vpc)))
-            .filter(|z| input.next_token.as_deref().is_none_or(|t| z.id.as_str() >= t))
+        let key = vpc_key(&vpc);
+        // The caller's own zones, and other accounts' zones the caller
+        // associated its VPC with.
+        let mut matching: Vec<(&str, &Zone)> = all
+            .all_zones()
+            .filter(|(owner, z)| {
+                z.vpcs.iter().any(|v| same_vpc(v, &vpc))
+                    && (*owner == caller || z.vpc_accounts.get(&key).map(String::as_str) == Some(caller))
+            })
+            .filter(|(_, z)| input.next_token.as_deref().is_none_or(|t| z.id.as_str() >= t))
             .collect();
+        matching.sort_by(|a, b| a.1.id.cmp(&b.1.id));
         Ok(types::ListHostedZonesByVPCResponse {
             hosted_zone_summaries: matching
                 .iter()
                 .take(limit)
-                .map(|z| types::HostedZoneSummary {
+                .map(|(owner, z)| types::HostedZoneSummary {
                     hosted_zone_id: z.id.clone(),
                     name: names::display(&z.name),
-                    owner: types::HostedZoneOwner {
-                        owning_account: Some(ctx.caller.account_id.clone()),
-                        owning_service: None,
-                    },
+                    owner: types::HostedZoneOwner { owning_account: Some(owner.to_string()), owning_service: None },
                 })
                 .collect(),
             max_items: limit as i32,
-            next_token: matching.get(limit).map(|z| z.id.clone()),
+            next_token: matching.get(limit).map(|(_, z)| z.id.clone()),
         })
     }
 }

@@ -232,3 +232,53 @@ fn cross_account_needs_both_sides() {
     set.resource = None;
     assert_eq!(decide(&set, &r).deny_reason, Some(DenyReason::NoResourceAllow));
 }
+
+#[test]
+fn resource_grants_to_a_role_are_limited_but_grants_to_its_session_are_not() {
+    let session_arn = "arn:aws:sts::123456789012:assumed-role/app/s1";
+    let role_arn = "arn:aws:iam::123456789012:role/app";
+    let who = PrincipalInfo {
+        account_id: "123456789012".into(),
+        arns: vec![session_arn.into()],
+        role_arn: Some(role_arn.into()),
+        ..Default::default()
+    };
+    let c = ConditionContext::new();
+    let req = Request { action: "s3:GetObject", resource: "arn:aws:s3:::b/k", principal: &who, context: &c };
+    let bucket = |p: &str| {
+        sourced(
+            "bucket",
+            &format!(
+                r#"{{"Version":"2012-10-17","Statement":{{"Effect":"Allow","Principal":{{"AWS":"{p}"}},"Action":"s3:GetObject","Resource":"arn:aws:s3:::b/*"}}}}"#
+            ),
+            PolicyKind::Resource,
+        )
+    };
+    let iam_only = r#"{"Version":"2012-10-17","Statement":{"Effect":"Allow","Action":"iam:*","Resource":"*"}}"#;
+    let with = |resource, boundary: bool, session: bool| PolicySet {
+        resource: Some(resource),
+        boundary: boundary.then(|| sourced("boundary", iam_only, PolicyKind::Identity)),
+        session: if session { vec![sourced("session", iam_only, PolicyKind::Identity)] } else { vec![] },
+        ..Default::default()
+    };
+    // Named by role ARN: allowed alone, but a boundary or session policy
+    // that does not allow the action limits it.
+    assert!(decide(&with(bucket(role_arn), false, false), &req).allowed);
+    assert!(!decide(&with(bucket(role_arn), true, false), &req).allowed);
+    assert!(!decide(&with(bucket(role_arn), false, true), &req).allowed);
+    // Named by session ARN: neither limits it.
+    assert!(decide(&with(bucket(session_arn), true, true), &req).allowed);
+}
+
+#[test]
+fn principals_reject_partial_wildcards_and_accept_unique_ids() {
+    let doc = |p: &str| {
+        format!(
+            r#"{{"Version":"2012-10-17","Statement":{{"Effect":"Allow","Principal":{{"AWS":"{p}"}},"Action":"sts:AssumeRole"}}}}"#
+        )
+    };
+    let err = Policy::parse(&doc("arn:aws:iam::123456789012:user/*"), PolicyKind::Trust).unwrap_err();
+    assert_eq!(err.0, r#"Invalid principal in policy: "AWS":"arn:aws:iam::123456789012:user/*""#);
+    Policy::parse(&doc("AIDAJQABLZS4A3QDU576Q"), PolicyKind::Trust).unwrap();
+    Policy::parse(&doc("*"), PolicyKind::Trust).unwrap();
+}

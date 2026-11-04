@@ -5,6 +5,7 @@
 use mws_core::{ConditionContext, RequestContext, ServiceError};
 use serde_json::{json, Value};
 
+use crate::endpoints::EndpointRoute;
 use crate::generated::types;
 use crate::names::{validation, BusRef};
 use crate::pattern::Pattern;
@@ -90,7 +91,7 @@ impl Events {
             return Err(validation("Total size of the entries in the request is over the limit."));
         }
         let endpoint_bus = match &input.endpoint_id {
-            Some(id) => Some(self.endpoint_primary_bus(ctx, id)?),
+            Some(id) => Some(self.endpoint_route(ctx, id)?),
             None => None,
         };
         let mut results = Vec::new();
@@ -121,7 +122,7 @@ impl Events {
         &self,
         ctx: &RequestContext,
         entry: &types::PutEventsRequestEntry,
-        endpoint_bus: Option<&BusRef>,
+        endpoint: Option<&EndpointRoute>,
     ) -> Result<String, EntryFailure> {
         let detail = check_entry(entry.source.as_deref(), entry.detail_type.as_deref(), entry.detail.as_deref())
             .map_err(EntryFailure::Entry)?;
@@ -133,9 +134,14 @@ impl Events {
                 "Not authorized for the source.",
             )));
         }
-        let bus = match (endpoint_bus, entry.event_bus_name.as_deref()) {
+        let named = |b: &BusRef| match entry.event_bus_name.as_deref() {
+            Some(name) if !name.starts_with("arn:") => BusRef { name: name.to_string(), ..b.clone() },
+            _ => b.clone(),
+        };
+        let replica = endpoint.and_then(|e| e.replica.as_ref()).map(named);
+        let bus = match (endpoint.map(|e| &e.bus), entry.event_bus_name.as_deref()) {
             (Some(b), None) => b.clone(),
-            (Some(b), Some(name)) if !name.starts_with("arn:") => BusRef { name: name.to_string(), ..b.clone() },
+            (Some(b), Some(name)) if !name.starts_with("arn:") => named(b),
             (_, name) => {
                 BusRef::parse(ctx, name).map_err(|e| EntryFailure::Entry(entry_error("InvalidArgument", e.message)))?
             }
@@ -162,6 +168,10 @@ impl Events {
             detail,
         );
         self.ingest(ctx, &bus, &event, None);
+        // Global endpoints replicate the event to the other Region's bus.
+        if let Some(r) = replica.filter(|r| *r != bus) {
+            self.ingest(ctx, &r, &event, None);
+        }
         Ok(id)
     }
 

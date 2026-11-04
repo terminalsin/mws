@@ -80,7 +80,7 @@ impl Iam {
         input: types::CreateSAMLProviderRequest,
     ) -> Result<types::CreateSAMLProviderResponse, ServiceError> {
         let arn = self.entity_arn("saml-provider", "/", &input.name);
-        let tags = tags_from_wire(input.tags);
+        let tags = tags_from_wire(input.tags)?;
         self.authorize_with(ctx, "CreateSAMLProvider", &arn, request_tag_context(&tags))?;
         check_mode(&input.assertion_encryption_mode)?;
         let valid_until = parse_metadata(&input.saml_metadata_document)?;
@@ -229,7 +229,7 @@ impl Iam {
         ctx: &RequestContext,
         input: types::TagSAMLProviderRequest,
     ) -> Result<(), ServiceError> {
-        let tags = tags_from_wire(Some(input.tags));
+        let tags = tags_from_wire(Some(input.tags))?;
         self.authorize_with(ctx, "TagSAMLProvider", &input.saml_provider_arn, request_tag_context(&tags))?;
         let mut state = self.write();
         let p = state

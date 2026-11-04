@@ -16,6 +16,21 @@ pub struct State {
     pub object_lambdas: BTreeMap<String, ObjectLambda>,
     /// Account-level Block Public Access, by account.
     pub public_access_blocks: BTreeMap<String, types::PublicAccessBlockConfiguration>,
+    /// Batch Operations jobs by id.
+    pub jobs: BTreeMap<String, crate::jobs::Job>,
+    /// Access Grants instances by "account/region".
+    pub access_grants: BTreeMap<String, crate::access_grants::Instance>,
+    /// Tags of resources that do not hold their own (Access Grants
+    /// resources, Storage Lens groups), by ARN.
+    pub resource_tags: BTreeMap<String, BTreeMap<String, String>>,
+    /// Multi-Region Access Points by "account/name".
+    pub mraps: BTreeMap<String, crate::mrap::Mrap>,
+    /// Multi-Region Access Point requests by request token ARN.
+    pub mrap_requests: BTreeMap<String, crate::mrap::AsyncRequest>,
+    /// Storage Lens dashboards by "account/id".
+    pub storage_lens: BTreeMap<String, crate::storage_lens::Dashboard>,
+    /// Storage Lens groups by "account/name".
+    pub storage_lens_groups: BTreeMap<String, crate::storage_lens::Group>,
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
@@ -37,6 +52,11 @@ pub struct AccessPoint {
 }
 
 impl AccessPoint {
+    /// Whether this access point is attached to a directory bucket.
+    pub fn directory(&self) -> bool {
+        self.bucket.ends_with("--x-s3")
+    }
+
     pub fn network_origin(&self) -> &'static str {
         if self.vpc_id.is_some() {
             "VPC"

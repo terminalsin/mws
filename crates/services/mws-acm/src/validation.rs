@@ -7,9 +7,9 @@ use mws_core::RequestContext;
 use sha2::{Digest, Sha256};
 
 use crate::generated::types;
-use crate::pki;
-use crate::state::{Certificate, DomainValidation, Renewal, State};
+use crate::state::{Certificate, Renewal, State};
 use crate::Acm;
+use crate::{events, pki};
 
 /// Public certificates are valid for 198 days, private ones for 395.
 pub const PUBLIC_VALIDITY_DAYS: i64 = 198;
@@ -119,14 +119,14 @@ impl Acm {
             wanted.iter().map(|r| (r.name.to_ascii_lowercase(), self.record_published(r))).collect();
         let is_published = |name: &str| published.iter().any(|(n, ok)| *ok && same_name(n, name));
 
-        let mut private_renewals = Vec::new();
+        let mut followups = Followups::default();
         {
             let mut st = self.lock();
             let arns: Vec<String> =
                 st.certificates.values().filter(|c| c.account == account).map(|c| c.arn.clone()).collect();
             for arn in arns {
                 let mut cert = st.certificates.get(&arn).cloned().expect("listed");
-                self.advance(&mut st, &mut cert, now, &is_published, &mut private_renewals);
+                self.advance(&mut st, &mut cert, now, &is_published, &mut followups);
                 st.certificates.insert(arn, cert);
             }
             for dv in st.domain_validations.values_mut() {
@@ -136,8 +136,11 @@ impl Acm {
                 }
             }
         }
-        for arn in private_renewals {
+        for arn in followups.private_renewals {
             self.renew_private(ctx, &arn, false);
+        }
+        for arn in followups.renewal_emails {
+            self.send_validation_emails(ctx, &arn, None);
         }
     }
 
@@ -147,7 +150,7 @@ impl Acm {
         c: &mut Certificate,
         now: DateTime<Utc>,
         is_published: &dyn Fn(&str) -> bool,
-        private_renewals: &mut Vec<String>,
+        followups: &mut Followups,
     ) {
         let account = c.account.clone();
         // DNS validation.
@@ -158,10 +161,13 @@ impl Acm {
                 }
             }
             if c.validations.iter().all(|v| v.status == "SUCCESS") {
-                if let Err(e) = issue_public(st, c, now) {
-                    tracing::warn!(arn = %c.arn, error = %e.message, "issuing certificate failed");
-                    c.status = "FAILED".into();
-                    c.failure_reason = Some("OTHER".into());
+                match issue_public(st, c, now) {
+                    Ok(()) => st.pending_events.extend(events::available(c, "ISSUANCE", now)),
+                    Err(e) => {
+                        tracing::warn!(arn = %c.arn, error = %e.message, "issuing certificate failed");
+                        c.status = "FAILED".into();
+                        c.failure_reason = Some("OTHER".into());
+                    }
                 }
             } else if c.created_at.is_some_and(|t| now - t > Duration::hours(VALIDATION_TIMEOUT_HOURS)) {
                 c.status = "VALIDATION_TIMED_OUT".into();
@@ -198,13 +204,18 @@ impl Acm {
             if let Some(end) = not_after {
                 if end <= now {
                     c.status = "EXPIRED".into();
+                    st.pending_events.extend(events::expired(c, now));
                     return;
                 }
                 if end - now <= Duration::days(RENEWAL_WINDOW_DAYS) {
                     match (c.ty.as_str(), c.origin.as_str()) {
-                        ("AMAZON_ISSUED", "AWS_MANAGED") => renew_public(st, c, now, is_published),
+                        ("AMAZON_ISSUED", "AWS_MANAGED") => {
+                            if renew_public(st, c, now, is_published) {
+                                followups.renewal_emails.push(c.arn.clone());
+                            }
+                        }
                         ("PRIVATE", _) if c.renewal.as_ref().is_none_or(|r| r.status != "FAILED") => {
-                            private_renewals.push(c.arn.clone())
+                            followups.private_renewals.push(c.arn.clone())
                         }
                         _ => {}
                     }
@@ -236,10 +247,14 @@ impl Acm {
                 c.issued_at = Some(now);
                 c.status = "ISSUED".into();
                 c.renewal = Some(Renewal { status: "SUCCESS".into(), reason: None, updated_at: now });
+                let e = events::available(c, "RENEWAL", now);
+                st.pending_events.extend(e);
             }
             Err(e) => {
                 tracing::debug!(%arn, explicit, error = %e.message, "private certificate renewal failed");
                 c.renewal = Some(Renewal { status: "FAILED".into(), reason: Some(pca_failure(&e)), updated_at: now });
+                let e = events::renewal_action_required(c, now);
+                st.pending_events.extend(e);
             }
         }
     }
@@ -310,23 +325,55 @@ pub fn issue_public(st: &mut State, c: &mut Certificate, now: DateTime<Utc>) -> 
     Ok(())
 }
 
-/// Managed renewal of an Amazon-issued certificate: renewed when every
-/// domain still validates, otherwise pending (DNS) or waiting for the
-/// owner (email).
-fn renew_public(st: &mut State, c: &mut Certificate, now: DateTime<Utc>, is_published: &dyn Fn(&str) -> bool) {
-    let all_dns_ok = c.validations.iter().all(|v: &DomainValidation| {
-        v.method.as_deref() == Some("DNS") && is_published(&dns_record(&c.account, &v.domain).name)
-    });
-    if all_dns_ok {
-        if issue_public(st, c, now).is_ok() {
-            c.renewal = Some(Renewal { status: "SUCCESS".into(), reason: None, updated_at: now });
+/// Managed renewal of an Amazon-issued certificate. Each domain must
+/// validate again: DNS domains as soon as their record is (still) in
+/// Route 53, email domains once the owner approves the renewal email.
+/// Returns whether renewal emails should go out.
+fn renew_public(st: &mut State, c: &mut Certificate, now: DateTime<Utc>, is_published: &dyn Fn(&str) -> bool) -> bool {
+    let new_cycle = c.renewal.as_ref().is_none_or(|r| r.status == "SUCCESS");
+    let account = c.account.clone();
+    for v in c.validations.iter_mut() {
+        if new_cycle {
+            v.renewal_status = Some("PENDING_VALIDATION".into());
         }
-    } else if c.renewal.as_ref().is_none_or(|r| r.status == "SUCCESS") {
-        let status = if c.validations.iter().any(|v| v.method.as_deref() == Some("EMAIL")) {
-            "PENDING_VALIDATION"
-        } else {
-            "PENDING_AUTO_RENEWAL"
-        };
-        c.renewal = Some(Renewal { status: status.into(), reason: None, updated_at: now });
+        if v.renewal_status.as_deref() == Some("PENDING_VALIDATION")
+            && v.method.as_deref() == Some("DNS")
+            && is_published(&dns_record(&account, &v.domain).name)
+        {
+            v.renewal_status = Some("SUCCESS".into());
+        }
     }
+    if c.validations.iter().all(|v| v.renewal_status.as_deref() == Some("SUCCESS")) {
+        complete_public_renewal(st, c, now);
+        return false;
+    }
+    if !new_cycle {
+        return false;
+    }
+    let email = c.validations.iter().any(|v| v.method.as_deref() == Some("EMAIL"));
+    let status = if email { "PENDING_VALIDATION" } else { "PENDING_AUTO_RENEWAL" };
+    c.renewal = Some(Renewal { status: status.into(), reason: None, updated_at: now });
+    st.pending_events.extend(events::renewal_action_required(c, now));
+    email
+}
+
+/// Issue the renewed certificate once every domain validated again.
+pub fn complete_public_renewal(st: &mut State, c: &mut Certificate, now: DateTime<Utc>) {
+    match issue_public(st, c, now) {
+        Ok(()) => {
+            for v in c.validations.iter_mut() {
+                v.renewal_status = None;
+            }
+            c.renewal = Some(Renewal { status: "SUCCESS".into(), reason: None, updated_at: now });
+            st.pending_events.extend(events::available(c, "RENEWAL", now));
+        }
+        Err(e) => tracing::warn!(arn = %c.arn, error = %e.message, "renewing certificate failed"),
+    }
+}
+
+/// Work `refresh` does after releasing the state lock.
+#[derive(Default)]
+pub(crate) struct Followups {
+    pub private_renewals: Vec<String>,
+    pub renewal_emails: Vec<String>,
 }

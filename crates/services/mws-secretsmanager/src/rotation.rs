@@ -110,6 +110,7 @@ impl SecretsManager {
                 "You can't modify an existing version, you can only create a new version.",
             ));
         }
+        crate::ops::check_quotas(&s, Some(&token), &[PENDING.into()], now)?;
         let from = s.rotation.last_rotated.unwrap_or(now);
         let window = next_window(rules.as_ref(), if immediately { now } else { from });
         self.update(&s.arn, |st| {

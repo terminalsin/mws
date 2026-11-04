@@ -82,7 +82,13 @@ impl<'a> Decoder<'a> {
 
     /// Turn collected errors into AWS's `ValidationError`, if any.
     pub fn finish(self) -> Result<(), ServiceError> {
-        self.validator.finish("ValidationError")
+        self.finish_as("ValidationError")
+    }
+
+    /// Like [`Decoder::finish`], with the code the service uses for
+    /// validation errors.
+    pub fn finish_as(self, code: &'static str) -> Result<(), ServiceError> {
+        self.validator.finish(code)
     }
 
     pub fn has_prefix(&self, key: &str) -> bool {

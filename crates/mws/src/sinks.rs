@@ -223,25 +223,40 @@ impl mws_ssm::ParameterChangeSink for SsmChangeEvents {
     }
 }
 
-/// ACM's daily "ACM Certificate Approaching Expiration" events.
-pub struct AcmExpiryEvents {
+/// ACM's EventBridge events (certificate available, expired, renewal
+/// action required, approaching expiration) and its daily `DaysToExpiry`
+/// metric, both on the emulated clock.
+pub struct AcmEvents {
     pub acm: mws_acm::Acm,
+    pub cloudwatch: mws_cloudwatch::CloudWatch,
     pub partition: String,
 }
 
-impl mws_events::ClockSource for AcmExpiryEvents {
+impl mws_events::ClockSource for AcmEvents {
     fn due_events(&self, now: chrono::DateTime<chrono::Utc>) -> Vec<ServiceEvent> {
-        self.acm
-            .take_expiry_events(now)
+        let events = self.acm.take_events(now);
+        for m in self.acm.take_days_to_expiry(now) {
+            self.cloudwatch.put_metric_as_service(mws_cloudwatch::ServiceMetric {
+                account: m.account,
+                region: m.region,
+                namespace: "AWS/CertificateManager".into(),
+                metric_name: "DaysToExpiry".into(),
+                dimensions: vec![("CertificateArn".into(), m.certificate_arn)],
+                unit: None,
+                timestamp: m.time,
+                values: vec![(m.days, 1.0)],
+            });
+        }
+        events
             .into_iter()
             .map(|e| ServiceEvent {
                 partition: self.partition.clone(),
                 account: e.account,
                 region: e.region,
                 source: "aws.acm".into(),
-                detail_type: "ACM Certificate Approaching Expiration".into(),
-                resources: vec![e.certificate_arn],
-                detail: serde_json::json!({ "DaysToExpiry": e.days_to_expiry, "CommonName": e.common_name }),
+                detail_type: e.detail_type,
+                resources: e.resources,
+                detail: e.detail,
                 time: e.time,
             })
             .collect()
@@ -299,5 +314,14 @@ impl TargetSink for FirehoseTarget {
             )
             .map(|_| ())
             .map_err(target_error)
+    }
+}
+
+/// Route 53 health checks for EventBridge global endpoint failover.
+pub struct Route53HealthChecks(pub mws_route53::Route53);
+
+impl mws_events::HealthChecks for Route53HealthChecks {
+    fn healthy(&self, health_check_arn: &str) -> Option<bool> {
+        self.0.health_check_healthy(health_check_arn)
     }
 }

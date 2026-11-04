@@ -187,3 +187,78 @@ fn presigned_urls_verify() {
     verify(&request, &parsed, "secret", now, VerifyOptions { double_encode_path: false }).unwrap();
     assert!(verify(&request, &parsed, "other", now, VerifyOptions { double_encode_path: false }).is_err());
 }
+
+fn signed_v4a(region_set: &str, body: &str, at: SystemTime) -> http::Request<Vec<u8>> {
+    let creds = Credentials::new(AKID, SECRET, None, None, "test");
+    let identity = creds.into();
+    let params = aws_sigv4::sign::v4a::SigningParams::builder()
+        .identity(&identity)
+        .region_set(region_set)
+        .name("events")
+        .time(at)
+        .settings(SigningSettings::default())
+        .build()
+        .unwrap()
+        .into();
+    let headers = [("host", "abcde.xyz.endpoint.events.amazonaws.com"), ("x-amz-target", "AWSEvents.PutEvents")];
+    let uri = "https://abcde.xyz.endpoint.events.amazonaws.com/";
+    let signable =
+        SignableRequest::new("POST", uri, headers.iter().copied(), SignableBody::Bytes(body.as_bytes())).unwrap();
+    let (instructions, _) = sign(signable, &params).unwrap().into_parts();
+    let mut builder = http::Request::builder().method("POST").uri(uri);
+    for (k, v) in headers {
+        builder = builder.header(k, v);
+    }
+    let mut req = builder.body(body.as_bytes().to_vec()).unwrap();
+    instructions.apply_to_request_http1x(&mut req);
+    req
+}
+
+#[test]
+fn sigv4a_signature_from_sdk_verifies() {
+    let (t, now) = now();
+    let req = signed_v4a("*", r#"{"Entries":[]}"#, t);
+    let parsed = parse(&req).unwrap();
+    assert_eq!(parsed.algorithm, Algorithm::EcdsaP256Sha256);
+    assert_eq!(parsed.scope.service, "events");
+    assert_eq!(parsed.scope.region, "");
+    verify(&req, &parsed, SECRET, now, VerifyOptions::default()).unwrap();
+    assert_eq!(verify(&req, &parsed, "wrong", now, VerifyOptions::default()), Err(SigV4Error::Mismatch));
+
+    let req = signed_v4a("eu-west-1,us-*", "{}", t);
+    let parsed = parse(&req).unwrap();
+    assert_eq!(parsed.scope.region, "eu-west-1");
+    verify(&req, &parsed, SECRET, now, VerifyOptions::default()).unwrap();
+
+    // A changed body no longer verifies.
+    let (parts, _) = req.into_parts();
+    let tampered = http::Request::from_parts(parts, b"{\"x\":1}".to_vec());
+    assert!(verify(&tampered, &parsed, SECRET, now, VerifyOptions::default()).is_err());
+}
+
+#[test]
+fn http2_authority_pseudo_header_verifies() {
+    // Signed by the JavaScript SDK's signer (@smithy/signature-v4), as its
+    // HTTP/2 handler (used by the Kinesis client) does: `:authority` is a
+    // signed header. The server sees it as the URI authority (HTTP/2) or,
+    // translated to HTTP/1, the Host header.
+    let at = DateTime::parse_from_rfc3339("2026-11-04T10:00:00Z").unwrap().with_timezone(&Utc);
+    let auth = "AWS4-HMAC-SHA256 Credential=AKIDEXAMPLE/20261104/us-east-1/kinesis/aws4_request, \
+        SignedHeaders=:authority;content-type;x-amz-content-sha256;x-amz-date, \
+        Signature=fcc90199485139e2e18bc77c10e30336c7ca410a5b047eab74dc9573646295e8";
+    for (uri, host) in [("http://localhost:4566/", None), ("/", Some("localhost:4566"))] {
+        let mut builder = http::Request::builder()
+            .method("POST")
+            .uri(uri)
+            .header("content-type", "application/x-amz-json-1.1")
+            .header("x-amz-date", "20261104T100000Z")
+            .header("x-amz-content-sha256", "9eba409c3e52eed03e0eb744b3961f83b7bbf6306ec8866d6380643056105246")
+            .header("authorization", auth);
+        if let Some(h) = host {
+            builder = builder.header("host", h);
+        }
+        let req = builder.body(br#"{"StreamName":"s"}"#.to_vec()).unwrap();
+        let parsed = parse(&req).unwrap();
+        verify(&req, &parsed, SECRET, at, VerifyOptions::default()).unwrap();
+    }
+}

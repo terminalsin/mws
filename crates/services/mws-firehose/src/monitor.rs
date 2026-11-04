@@ -7,6 +7,25 @@ use serde_json::{json, Value};
 
 use crate::Firehose;
 
+/// An `AWS/Firehose` data point for CloudWatch.
+#[derive(Debug, Clone)]
+pub struct FirehoseMetric {
+    pub account: String,
+    pub region: String,
+    pub namespace: String,
+    pub metric_name: String,
+    pub dimensions: Vec<(String, String)>,
+    pub unit: String,
+    /// Epoch milliseconds.
+    pub timestamp: i64,
+    pub value: f64,
+}
+
+/// Where Firehose publishes its metrics (CloudWatch, wired by `mws`).
+pub trait MetricPublisher: Send + Sync {
+    fn publish(&self, metrics: Vec<FirehoseMetric>);
+}
+
 /// A metric data point: name, unit, value.
 pub(crate) type Point = (String, &'static str, f64);
 
@@ -59,19 +78,21 @@ pub(crate) struct ErrorLog<'a> {
 impl Firehose {
     /// Publish `AWS/Firehose` data points for a delivery stream.
     pub(crate) fn metrics(&self, ctx: &RequestContext, account: &str, stream: &str, points: Vec<Point>) {
-        let Some(cw) = self.inner.cloudwatch.get() else { return };
-        for (name, unit, value) in points {
-            cw.put_metric_as_service(mws_cloudwatch::ServiceMetric {
+        let Some(publisher) = self.inner.metrics.get() else { return };
+        let metrics = points
+            .into_iter()
+            .map(|(name, unit, value)| FirehoseMetric {
                 account: account.to_string(),
                 region: ctx.region.clone(),
                 namespace: "AWS/Firehose".into(),
                 metric_name: name,
                 dimensions: vec![("DeliveryStreamName".into(), stream.to_string())],
-                unit: Some(unit.into()),
-                timestamp: ctx.received_at,
-                values: vec![(value, 1.0)],
-            });
-        }
+                unit: unit.into(),
+                timestamp: ctx.received_at.timestamp_millis(),
+                value,
+            })
+            .collect();
+        publisher.publish(metrics);
     }
 
     /// Write a delivery error to the destination's CloudWatch Logs log

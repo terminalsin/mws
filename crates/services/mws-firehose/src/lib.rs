@@ -53,6 +53,7 @@ use std::sync::{Arc, Mutex, MutexGuard, OnceLock};
 
 use mws_core::{HttpRequest, HttpResponse, RequestContext, Service, ServiceError};
 
+pub use monitor::{FirehoseMetric, MetricPublisher};
 pub use names::stream_arn;
 use state::State;
 
@@ -67,7 +68,7 @@ pub(crate) struct Inner {
     lambda: OnceLock<mws_lambda::Lambda>,
     kinesis: OnceLock<mws_kinesis::Kinesis>,
     logs: OnceLock<mws_logs::Logs>,
-    cloudwatch: OnceLock<mws_cloudwatch::CloudWatch>,
+    metrics: OnceLock<std::sync::Arc<dyn MetricPublisher>>,
     secrets_manager: OnceLock<mws_secretsmanager::SecretsManager>,
     /// The last request's context and clock offset, for background
     /// deliveries.
@@ -123,9 +124,9 @@ impl Firehose {
         let _ = self.inner.logs.set(logs);
     }
 
-    /// `AWS/Firehose` metrics are published here.
-    pub fn set_cloudwatch(&self, cloudwatch: mws_cloudwatch::CloudWatch) {
-        let _ = self.inner.cloudwatch.set(cloudwatch);
+    /// `AWS/Firehose` metrics are published here (CloudWatch).
+    pub fn set_metric_publisher(&self, publisher: std::sync::Arc<dyn MetricPublisher>) {
+        let _ = self.inner.metrics.set(publisher);
     }
 
     /// Destination credentials (`SecretsManagerConfiguration`) are read

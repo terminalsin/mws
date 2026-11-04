@@ -41,6 +41,15 @@ pub struct Zone {
     pub vpc_authorizations: Vec<types::VPC>,
     #[serde(default)]
     pub accelerated_recovery: bool,
+    #[serde(default)]
+    /// VPCs another account associated (through an authorization), by
+    /// `"{region}/{vpc id}"`: that account may list and disassociate them.
+    pub vpc_accounts: BTreeMap<String, String>,
+}
+
+/// The key of a VPC in [`Zone::vpc_accounts`].
+pub fn vpc_key(vpc: &types::VPC) -> String {
+    format!("{}/{}", vpc.vpc_region.as_deref().unwrap_or_default(), vpc.vpc_id.as_deref().unwrap_or_default())
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

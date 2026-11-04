@@ -326,6 +326,9 @@ pub struct Engine<'a> {
     pub queries: &'a [types::MetricDataQuery],
     pub start: DateTime<Utc>,
     pub end: DateTime<Utc>,
+    /// Periods must be multiples of this to get data (see
+    /// [`crate::metrics::retained_resolution`]).
+    pub retained: i64,
     cache: RefCell<BTreeMap<String, Val>>,
     visiting: RefCell<BTreeSet<String>>,
 }
@@ -337,7 +340,16 @@ impl<'a> Engine<'a> {
         start: DateTime<Utc>,
         end: DateTime<Utc>,
     ) -> Self {
-        Self { region, logs: None, queries, start, end, cache: RefCell::default(), visiting: RefCell::default() }
+        Self {
+            region,
+            logs: None,
+            queries,
+            start,
+            end,
+            retained: 1,
+            cache: RefCell::default(),
+            visiting: RefCell::default(),
+        }
     }
 
     pub fn with_logs(mut self, logs: Option<&'a mws_logs::Logs>, account: &'a str, region: &'a str) -> Self {
@@ -365,7 +377,8 @@ impl<'a> Engine<'a> {
             points: BTreeMap::new(),
             metric: Some((key.clone(), stat.to_string())),
         };
-        if let Some(series) = self.region.and_then(|r| r.metrics.get(&key.key())) {
+        let series = self.region.and_then(|r| r.metrics.get(&key.key())).filter(|_| period % self.retained == 0);
+        if let Some(series) = series {
             let starts = buckets(self.start, self.end, period);
             for (t, agg) in aggregates(series, &starts, period, unit) {
                 if let Some(v) = agg.stat(stat) {
@@ -1079,7 +1092,7 @@ impl CloudWatch {
     ) -> Result<types::GetMetricDataOutput, ServiceError> {
         ctx.authorize("cloudwatch:GetMetricData", &names::any(ctx), ConditionContext::new())?;
         self.observe(ctx);
-        let _ = now(ctx);
+        let now = now(ctx);
         validate_queries(&input.metric_data_queries, "MetricDataQueries")?;
         if !input.metric_data_queries.iter().any(|q| q.return_data != Some(false)) {
             return Err(errors::validation("At least one MetricDataQuery must have ReturnData set to true."));
@@ -1089,11 +1102,13 @@ impl CloudWatch {
         }
         let st = self.lock();
         let region = st.region_ref(&ctx.caller.account_id, &ctx.region);
-        let engine = Engine::new(region, &input.metric_data_queries, input.start_time, input.end_time).with_logs(
+        let start = crate::metrics::round_start(input.start_time, now, 60);
+        let mut engine = Engine::new(region, &input.metric_data_queries, start, input.end_time).with_logs(
             self.inner.logs.get(),
             &ctx.caller.account_id,
             &ctx.region,
         );
+        engine.retained = crate::metrics::retained_resolution(start, now);
         let series = results(&engine)?;
         drop(st);
         let ascending = input.scan_by.as_deref() == Some("TimestampAscending");

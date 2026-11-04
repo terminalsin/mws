@@ -124,6 +124,8 @@ pub fn emit_handler(model: &Model, ops: &[&Shape], w: &mut String) {
 #[derive(Default)]
 pub struct Constraints {
     regexes: Vec<String>,
+    /// Patterns that need look-around or back-references.
+    fancy_regexes: Vec<String>,
 }
 
 impl Constraints {
@@ -133,13 +135,19 @@ impl Constraints {
         let pick = |name: &str| member.and_then(|m| m.get_trait(name)).or_else(|| target.get_trait(name)).cloned();
         let mut out = String::new();
         let is_string = matches!(target.ty, ShapeType::String | ShapeType::Enum);
+        // AWS leaves `@sensitive` values out of validation messages.
+        let sensitive = member.is_some_and(|m| m.has_trait("sensitive")) || target.has_trait("sensitive");
         if let Some(b) = Bounds::from_trait(pick("length").as_ref()) {
             let (len, shown) = match target.ty {
                 ShapeType::String | ShapeType::Enum => ("v.chars().count()", "v.as_str()".to_string()),
                 ShapeType::List | ShapeType::Set => ("v.len()", "&::mws_core::render_list(v)".to_string()),
                 _ => ("v.len()", "\"\"".to_string()),
             };
-            let _ = writeln!(out, "d.check_length(&p, {shown}, {len}, {}, {});", opt_u64(b.min), opt_u64(b.max));
+            if sensitive {
+                let _ = writeln!(out, "d.check_length_redacted(&p, {len}, {}, {});", opt_u64(b.min), opt_u64(b.max));
+            } else {
+                let _ = writeln!(out, "d.check_length(&p, {shown}, {len}, {}, {});", opt_u64(b.min), opt_u64(b.max));
+            }
         }
         if is_string {
             if let Some(Value::String(pat)) = pick("pattern") {
@@ -151,10 +159,25 @@ impl Constraints {
                             self.regexes.len() - 1
                         }
                     };
-                    let _ = writeln!(out, "d.check_pattern(&p, v, &RE_{idx}, {});", rust_str(&pat));
+                    let check = if sensitive { "check_pattern_redacted" } else { "check_pattern" };
+                    let _ = writeln!(out, "d.{check}(&p, v, &RE_{idx}, {});", rust_str(&pat));
+                } else if let Some(translated) = regex_compat::translate_fancy(&pat) {
+                    let idx = match self.fancy_regexes.iter().position(|r| *r == translated) {
+                        Some(i) => i,
+                        None => {
+                            self.fancy_regexes.push(translated);
+                            self.fancy_regexes.len() - 1
+                        }
+                    };
+                    // A match that gives up (backtrack limit) is not a violation.
+                    let matched = format!("FANCY_RE_{idx}.is_match(v).unwrap_or(true)");
+                    let _ = if sensitive {
+                        writeln!(out, "d.check_pattern_result_redacted(&p, {matched}, {});", rust_str(&pat))
+                    } else {
+                        writeln!(out, "d.check_pattern_result(&p, v, {matched}, {});", rust_str(&pat))
+                    };
                 } else {
-                    let _ =
-                        writeln!(out, "// pattern {} is not expressible with the regex crate; skipped", rust_str(&pat));
+                    let _ = writeln!(out, "// pattern {} is not supported; skipped", rust_str(&pat));
                 }
             }
         }
@@ -175,6 +198,13 @@ impl Constraints {
             let _ = writeln!(
                 w,
                 "    pub(super) static RE_{i}: ::std::sync::LazyLock<{runtime}::__private::regex::Regex> = ::std::sync::LazyLock::new(|| {runtime}::__private::regex::Regex::new({}).unwrap());",
+                rust_str(pat)
+            );
+        }
+        for (i, pat) in self.fancy_regexes.iter().enumerate() {
+            let _ = writeln!(
+                w,
+                "    pub(super) static FANCY_RE_{i}: ::std::sync::LazyLock<::mws_core::__private::fancy_regex::Regex> = ::std::sync::LazyLock::new(|| ::mws_core::__private::fancy_regex::Regex::new({}).unwrap());",
                 rust_str(pat)
             );
         }

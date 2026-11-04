@@ -1,7 +1,6 @@
 //! Grants: delegated permissions on one key for one grantee.
 
 use base64::Engine;
-use chrono::Utc;
 use mws_core::{ConditionContext, RequestContext, ServiceError};
 
 use super::{caller_principals, page, require_not_pending_deletion, spec, validation, Access};
@@ -43,6 +42,23 @@ fn check_principal(p: &str) -> Result<(), ServiceError> {
         return Err(validation(format!("Invalid principal: {p}")));
     }
     Ok(())
+}
+
+/// Whether `child` constraints allow no more than `parent` ones.
+fn at_least_as_strict(child: Option<&types::GrantConstraints>, parent: Option<&types::GrantConstraints>) -> bool {
+    let Some(parent) = parent else { return true };
+    let Some(child) = child else {
+        return parent.encryption_context_equals.is_none() && parent.encryption_context_subset.is_none();
+    };
+    if let Some(equals) = &parent.encryption_context_equals {
+        return child.encryption_context_equals.as_ref() == Some(equals);
+    }
+    if let Some(subset) = &parent.encryption_context_subset {
+        let contains = |m: &std::collections::BTreeMap<String, String>| subset.iter().all(|(k, v)| m.get(k) == Some(v));
+        return child.encryption_context_equals.as_ref().is_some_and(contains)
+            || child.encryption_context_subset.as_ref().is_some_and(contains);
+    }
+    true
 }
 
 fn new_token() -> String {
@@ -90,7 +106,14 @@ impl Kms {
             cond.insert("kms:GrantConstraintType".into(), types);
         }
         cond.insert("kms:GrantIsForAWSResource".into(), vec!["false".into()]);
+        // A grantee creating grants through a grant can hand on only the
+        // operations it has, under constraints at least as strict as its own.
+        let subset = |parent: &Grant| {
+            input.operations.iter().all(|o| parent.operations.contains(o))
+                && at_least_as_strict(input.constraints.as_ref(), parent.constraints.as_ref())
+        };
         let mut access = Access::new("CreateGrant").grant("CreateGrant");
+        access.grant_filter = Some(&subset);
         access.extra = cond;
         let t = self.authorize_key(ctx, &input.key_id, access)?;
 
@@ -144,7 +167,7 @@ impl Kms {
                 grant_id: grant_id.clone(),
                 key_arn: t.arn,
                 name: input.name,
-                created_at: Utc::now(),
+                created_at: ctx.received_at,
                 grantee_principal: input.grantee_principal,
                 retiring_principal: input.retiring_principal,
                 grantee_service_principal: input.grantee_service_principal,

@@ -62,9 +62,14 @@ pub fn day(t: DateTime<Utc>) -> DateTime<Utc> {
 }
 
 /// Find a secret by name, full ARN or partial ARN (the ARN without the
-/// random suffix). Names resolve in the caller's account and Region.
+/// random suffix). Names resolve in the caller's account and Region; ARNs
+/// may name another account but, as Secrets Manager is Regional, only the
+/// Region the request was sent to.
 pub fn resolve(st: &State, ctx: &RequestContext, secret_id: &str) -> Result<String, ServiceError> {
-    if st.secrets.contains_key(secret_id) {
+    if let Some(s) = st.secrets.get(secret_id) {
+        if s.region != ctx.region {
+            return Err(not_found());
+        }
         return Ok(secret_id.to_string());
     }
     if let Some(rest) = secret_id.strip_prefix("arn:") {
@@ -73,6 +78,9 @@ pub fn resolve(st: &State, ctx: &RequestContext, secret_id: &str) -> Result<Stri
             return Err(not_found());
         }
         let (region, account) = (parts[2], parts[3]);
+        if region != ctx.region {
+            return Err(not_found());
+        }
         let Some(name) = parts[4].strip_prefix("secret:") else { return Err(not_found()) };
         return st
             .secrets
@@ -87,6 +95,16 @@ pub fn resolve(st: &State, ctx: &RequestContext, secret_id: &str) -> Result<Stri
         .find(|s| s.account == account && s.region == ctx.region && s.name == secret_id)
         .map(|s| s.arn.clone())
         .ok_or_else(not_found)
+}
+
+/// The resource a request names when no secret matches it: the ARN as
+/// given, or the name as a partial ARN in the caller's account and Region.
+pub fn requested_arn(ctx: &RequestContext, secret_id: &str) -> String {
+    if secret_id.starts_with("arn:") {
+        secret_id.to_string()
+    } else {
+        format!("arn:{}:secretsmanager:{}:{}:secret:{secret_id}", ctx.partition, ctx.region, account_of(ctx))
+    }
 }
 
 /// The condition keys a secret contributes to every request on it.
@@ -133,13 +151,22 @@ impl SecretsManager {
         action: &str,
         extra: ConditionContext,
     ) -> Result<Secret, ServiceError> {
-        let secret = {
+        let found = {
             let st = self.lock();
-            let arn = resolve(&st, ctx, secret_id)?;
-            st.secrets[&arn].clone()
+            resolve(&st, ctx, secret_id).map(|arn| st.secrets[&arn].clone())
         };
-        self.authorize(ctx, action, &secret, extra)?;
-        Ok(secret)
+        match found {
+            Ok(secret) => {
+                self.authorize(ctx, action, &secret, extra)?;
+                Ok(secret)
+            }
+            Err(missing) => {
+                // IAM decides before the lookup: a caller who may not act
+                // on the id is denied rather than told it doesn't exist.
+                ctx.authorize(action, &requested_arn(ctx, secret_id), extra)?;
+                Err(missing)
+            }
+        }
     }
 
     pub(crate) fn authorize(

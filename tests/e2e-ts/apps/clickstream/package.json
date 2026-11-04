@@ -1,0 +1,22 @@
+{
+  "name": "clickstream",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Clickstream ingestion with Kinesis Data Streams and Firehose delivery to S3",
+  "type": "module",
+  "scripts": {
+    "test": "vitest run",
+    "typecheck": "tsc --noEmit"
+  },
+  "dependencies": {
+    "@aws-sdk/client-kinesis": "^3.1161.0",
+    "@aws-sdk/client-firehose": "^3.1161.0",
+    "@aws-sdk/client-s3": "^3.1161.0",
+    "@aws-sdk/client-iam": "^3.1161.0"
+  },
+  "devDependencies": {
+    "@types/node": "^24.0.0",
+    "typescript": "^7.0.2",
+    "vitest": "^5.1.0"
+  }
+}

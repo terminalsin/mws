@@ -656,7 +656,12 @@ impl Handler for Call {
         let (bucket, key) = (input.bucket.clone(), input.key.clone());
         let out = Call::put_object(self, ctx, input)?;
         let v = out.version_id.clone();
-        self.object_event(ctx, &bucket, &key, v.as_deref(), ("ObjectCreated:Put", "PutObject", None));
+        let what = if self.form_post {
+            ("ObjectCreated:Post", "PostObject", None)
+        } else {
+            ("ObjectCreated:Put", "PutObject", None)
+        };
+        self.object_event(ctx, &bucket, &key, v.as_deref(), what);
         Ok(out)
     }
     async fn put_object_acl(

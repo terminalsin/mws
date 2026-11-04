@@ -77,6 +77,7 @@ impl PrivateCa {
         account: &str,
     ) -> Result<AcmIssued, ServiceError> {
         check_arn(ctx, ca_arn)?;
+        self.advance(ctx.received_at);
         let mut cond = ConditionContext::new();
         cond.insert("acm-pca:TemplateArn".into(), vec![END_ENTITY_TEMPLATE.into()]);
         match issuer {
@@ -90,14 +91,17 @@ impl PrivateCa {
             let st = self.lock();
             st.ca(ca_arn)?.config.key_algorithm.clone()
         };
-        let issued = self.issue_authorized(types::IssueCertificateRequest {
-            certificate_authority_arn: ca_arn.to_string(),
-            csr: csr_pem.as_bytes().to_vec(),
-            signing_algorithm: signing_algorithm(&key_algorithm).into(),
-            template_arn: Some(END_ENTITY_TEMPLATE.into()),
-            validity: types::Validity { value: not_after.timestamp(), r#type: "ABSOLUTE".into() },
-            ..Default::default()
-        })?;
+        let issued = self.issue_authorized(
+            types::IssueCertificateRequest {
+                certificate_authority_arn: ca_arn.to_string(),
+                csr: csr_pem.as_bytes().to_vec(),
+                signing_algorithm: signing_algorithm(&key_algorithm).into(),
+                template_arn: Some(END_ENTITY_TEMPLATE.into()),
+                validity: types::Validity { value: not_after.timestamp(), r#type: "ABSOLUTE".into() },
+                ..Default::default()
+            },
+            ctx.received_at,
+        )?;
         let certificate_arn = issued.certificate_arn.unwrap_or_default();
         let st = self.lock();
         let ca = st.ca(ca_arn)?;

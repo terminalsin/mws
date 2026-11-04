@@ -87,8 +87,9 @@ async fn assume_role_needs_trust_and_identity_permission() {
 async fn trust_naming_a_user_directly_needs_no_identity_policy() {
     let mws = Mws::start().await;
     let trust = r#"{"Version":"2012-10-17","Statement":{"Effect":"Allow","Principal":{"AWS":"arn:aws:iam::123456789012:user/leo"},"Action":"sts:AssumeRole"}}"#;
-    make_role(&mws, "direct", trust, IAM_READ).await;
+    // IAM refuses trust policies naming users that do not exist.
     let (_, leo) = user_with_policy(&mws, "leo", None).await;
+    make_role(&mws, "direct", trust, IAM_READ).await;
     aws_sdk_sts::Client::new(&leo)
         .assume_role()
         .role_arn("arn:aws:iam::123456789012:role/direct")

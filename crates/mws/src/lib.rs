@@ -148,24 +148,27 @@ fn build_with_store(config: Config, store: Option<Arc<Store>>) -> Mws {
         .with_kinesis(kinesis.clone());
     firehose.set_logs(logs.clone());
     lambda.set_logs(logs.clone());
+    s3control.set_sts(sts.clone());
+    s3control.set_lambda(lambda.clone());
     s3.set_object_lambda_invoker(Arc::new(lambda.clone()));
     let ssm = Ssm::new(kms.clone());
     let events = Events::new().with_lambda(lambda.clone()).with_logs(logs.clone()).with_sts(sts.clone());
     events.register_target_sink("sqs", Arc::new(sinks::SqsTarget(sqs.clone())));
+    events.set_health_checks(Arc::new(sinks::Route53HealthChecks(route53.clone())));
     let secretsmanager = SecretsManager::new(kms.clone()).with_lambda(lambda.clone());
     ssm.set_secrets_manager(Arc::new(SsmSecretReferences(secretsmanager.clone())));
     firehose.set_secrets_manager(secretsmanager.clone());
-    let sns = Sns::new().with_lambda(lambda.clone()).with_kms(kms.clone());
+    let sns = Sns::new()
+        .with_lambda(lambda.clone())
+        .with_kms(kms.clone())
+        .with_firehose(firehose.clone())
+        .with_s3(s3.clone());
     s3.add_notification_destination(Arc::new(sns.clone()));
     s3.add_notification_destination(Arc::new(lambda.clone()));
     sns.set_queues(Arc::new(links::SnsToSqs(sqs.clone())));
     s3.add_notification_destination(Arc::new(links::S3ToSqs(sqs.clone())));
     events.register_target_sink("sns", Arc::new(sinks::SnsTarget(sns.clone())));
     s3.set_eventbridge_sink(Arc::new(sinks::S3ToEvents(events.clone())));
-    events.register_clock_source(Arc::new(sinks::AcmExpiryEvents {
-        acm: acm.clone(),
-        partition: config.iam.partition.clone(),
-    }));
     ssm.set_change_sink(Arc::new(sinks::SsmChangeEvents(events.clone())));
     events.register_clock_source(Arc::new(sinks::SsmPolicyEvents {
         ssm: ssm.clone(),
@@ -185,9 +188,15 @@ fn build_with_store(config: Config, store: Option<Arc<Store>>) -> Mws {
         .with_events(events.clone())
         .with_logs(logs.clone())
         .with_kms(kms.clone());
+    events.register_clock_source(Arc::new(sinks::AcmEvents {
+        acm: acm.clone(),
+        cloudwatch: cloudwatch.clone(),
+        partition: config.iam.partition.clone(),
+    }));
     logs.set_metric_publisher(Arc::new(links::LogsToCloudWatch(cloudwatch.clone())));
-    firehose.set_cloudwatch(cloudwatch.clone());
+    firehose.set_metric_publisher(Arc::new(links::FirehoseToCloudWatch(cloudwatch.clone())));
     kinesis.set_metric_publisher(Arc::new(links::KinesisToCloudWatch(cloudwatch.clone())));
+    sqs.set_metric_publisher(Arc::new(links::SqsToCloudWatch(cloudwatch.clone())));
     cloudwatch.set_metric_stream_delivery(Arc::new(links::MetricStreamsToFirehose {
         firehose: firehose.clone(),
         sts: sts.clone(),
