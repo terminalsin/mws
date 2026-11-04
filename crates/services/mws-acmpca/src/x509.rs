@@ -3,11 +3,14 @@
 use chrono::{DateTime, Utc};
 use mws_core::ServiceError;
 use rcgen::{
-    BasicConstraints, CertificateParams, DistinguishedName, DnType, DnValue, ExtendedKeyUsagePurpose, IsCa,
-    KeyIdMethod, KeyPair, KeyUsagePurpose, RsaKeySize, SanType, SerialNumber, SignatureAlgorithm, SubjectPublicKeyInfo,
+    CertificateParams, DistinguishedName, DnType, DnValue, IsCa, KeyIdMethod, KeyPair, RsaKeySize, SerialNumber,
+    SignatureAlgorithm, SubjectPublicKeyInfo,
 };
+use x509_parser::cri_attributes::ParsedCriAttribute;
 use x509_parser::prelude::*;
 
+use crate::der;
+use crate::extensions::{self as ext, Ext, ExtSet};
 use crate::generated::{errors, types};
 
 /// The rcgen algorithm for a CA key and signing algorithm. MWS supports
@@ -49,46 +52,25 @@ pub fn key_for(der: &[u8], alg: &'static SignatureAlgorithm) -> Result<KeyPair, 
 }
 
 /// The X.500 name for an `ASN1Subject`, in the order ACM PCA encodes it.
-pub fn subject_dn(s: &types::ASN1Subject) -> DistinguishedName {
+pub fn subject_dn(s: &types::ASN1Subject) -> Result<DistinguishedName, ServiceError> {
     let mut dn = DistinguishedName::new();
-    let oid = |o: &[u64]| DnType::CustomDnType(o.to_vec());
-    let attrs: [(DnType, &Option<String>); 14] = [
-        (DnType::CountryName, &s.country),
-        (DnType::OrganizationName, &s.organization),
-        (DnType::OrganizationalUnitName, &s.organizational_unit),
-        (oid(&[2, 5, 4, 46]), &s.distinguished_name_qualifier),
-        (DnType::StateOrProvinceName, &s.state),
-        (DnType::CommonName, &s.common_name),
-        (oid(&[2, 5, 4, 5]), &s.serial_number),
-        (DnType::LocalityName, &s.locality),
-        (oid(&[2, 5, 4, 12]), &s.title),
-        (oid(&[2, 5, 4, 4]), &s.surname),
-        (oid(&[2, 5, 4, 42]), &s.given_name),
-        (oid(&[2, 5, 4, 43]), &s.initials),
-        (oid(&[2, 5, 4, 65]), &s.pseudonym),
-        (oid(&[2, 5, 4, 44]), &s.generation_qualifier),
-    ];
-    for (ty, v) in attrs {
-        if let Some(v) = v {
-            let value = match (&ty, rcgen::PrintableString::try_from(v.as_str())) {
-                (DnType::CountryName, Ok(p)) => DnValue::PrintableString(p),
-                _ => DnValue::Utf8String(v.clone()),
-            };
-            dn.push(ty, value);
-        }
+    for (oid, v) in ext::subject_attributes(s)? {
+        let ty = DnType::from_oid(&oid);
+        let value = match (&ty, rcgen::PrintableString::try_from(v.as_str())) {
+            (DnType::CountryName, Ok(p)) => DnValue::PrintableString(p),
+            _ => DnValue::Utf8String(v),
+        };
+        dn.push(ty, value);
     }
-    for a in s.custom_attributes.iter().flatten() {
-        if let Some(parts) = a.object_identifier.split('.').map(|p| p.parse::<u64>().ok()).collect::<Option<Vec<_>>>() {
-            dn.push(DnType::CustomDnType(parts), DnValue::Utf8String(a.value.clone()));
-        }
-    }
-    dn
+    Ok(dn)
 }
 
-/// The CA's certificate signing request, PEM.
-pub fn csr_pem(key: &KeyPair, dn: &DistinguishedName) -> Result<String, ServiceError> {
+/// The CA's certificate signing request, PEM, carrying `extensions`
+/// (from the CA's `CsrExtensions`).
+pub fn csr_pem(key: &KeyPair, dn: &DistinguishedName, extensions: &[Ext]) -> Result<String, ServiceError> {
     let mut params = CertificateParams::default();
     params.distinguished_name = dn.clone();
+    params.custom_extensions = extensions.iter().map(Ext::to_rcgen).collect();
     params
         .serialize_request(key)
         .and_then(|csr| csr.pem())
@@ -98,8 +80,9 @@ pub fn csr_pem(key: &KeyPair, dn: &DistinguishedName) -> Result<String, ServiceE
 /// What MWS needs from a CSR.
 pub struct Csr {
     pub subject: DistinguishedName,
-    pub sans: Vec<SanType>,
     pub spki_der: Vec<u8>,
+    /// The extensions the CSR requests, raw.
+    pub extensions: Vec<Ext>,
 }
 
 fn malformed_csr() -> ServiceError {
@@ -115,32 +98,16 @@ pub fn parse_csr(pem_bytes: &[u8]) -> Result<Csr, ServiceError> {
     csr.verify_signature().map_err(|_| malformed_csr())?;
     let info = &csr.certification_request_info;
     let subject = dn_from_name(&info.subject).ok_or_else(malformed_csr)?;
-    let mut sans = Vec::new();
-    if let Some(exts) = csr.requested_extensions() {
-        for ext in exts {
-            if let ParsedExtension::SubjectAlternativeName(san) = ext {
-                for name in &san.general_names {
-                    let converted = match name {
-                        GeneralName::DNSName(d) => d.to_string().try_into().ok().map(SanType::DnsName),
-                        GeneralName::RFC822Name(e) => e.to_string().try_into().ok().map(SanType::Rfc822Name),
-                        GeneralName::URI(u) => u.to_string().try_into().ok().map(SanType::URI),
-                        GeneralName::IPAddress(ip) => ip_from_bytes(ip).map(SanType::IpAddress),
-                        _ => None,
-                    };
-                    sans.extend(converted);
-                }
+    let mut extensions = Vec::new();
+    for attr in info.iter_attributes() {
+        if let ParsedCriAttribute::ExtensionRequest(req) = attr.parsed_attribute() {
+            for e in &req.extensions {
+                let oid: Vec<u64> = e.oid.iter().ok_or_else(malformed_csr)?.collect();
+                extensions.push(Ext { oid, critical: e.critical, value: e.value.to_vec() });
             }
         }
     }
-    Ok(Csr { subject, sans, spki_der: info.subject_pki.raw.to_vec() })
-}
-
-fn ip_from_bytes(b: &[u8]) -> Option<std::net::IpAddr> {
-    match b.len() {
-        4 => Some(std::net::IpAddr::from(<[u8; 4]>::try_from(b).ok()?)),
-        16 => Some(std::net::IpAddr::from(<[u8; 16]>::try_from(b).ok()?)),
-        _ => None,
-    }
+    Ok(Csr { subject, spki_der: info.subject_pki.raw.to_vec(), extensions })
 }
 
 /// Convert a parsed name, keeping each attribute's string type so chains
@@ -166,64 +133,124 @@ fn dn_from_name(name: &X509Name<'_>) -> Option<DistinguishedName> {
     Some(dn)
 }
 
-/// Certificate shapes from ACM PCA's templates.
+/// A certificate template: what ACM PCA puts in a certificate itself, and
+/// whether the API request's (`ApiPassthrough`) or the CSR's extensions
+/// pass through. Template values win over API values, which win over the
+/// CSR's.
 pub struct Template {
-    pub is_ca: IsCa,
-    pub key_usages: Vec<KeyUsagePurpose>,
-    pub extended_key_usages: Vec<ExtendedKeyUsagePurpose>,
+    pub ca: bool,
+    /// Self-signed by the issuing (root) CA, for its own CSR.
+    pub root: bool,
+    pub path_len: Option<u8>,
+    pub basic_constraints_critical: bool,
+    /// Key usage bits in RFC 5280 order, when the template sets them.
+    pub key_usage: Option<[bool; 9]>,
+    pub extended_key_usages: Vec<Vec<u64>>,
+    pub api_passthrough: bool,
+    pub csr_passthrough: bool,
 }
 
-pub const ROOT_TEMPLATE: &str = "RootCACertificate/V1";
+const DS: usize = 0;
+const KE: usize = 2;
+const KCS: usize = 5;
+const CRL: usize = 6;
 
-/// Look up `arn:aws:acm-pca:::template/{name}`.
-pub fn template(arn: &str) -> Result<(String, Template), ServiceError> {
+fn bits(set: &[usize]) -> Option<[bool; 9]> {
+    let mut b = [false; 9];
+    for i in set {
+        b[*i] = true;
+    }
+    Some(b)
+}
+
+const SERVER_AUTH: &[u64] = &[1, 3, 6, 1, 5, 5, 7, 3, 1];
+const CLIENT_AUTH: &[u64] = &[1, 3, 6, 1, 5, 5, 7, 3, 2];
+const CODE_SIGNING: &[u64] = &[1, 3, 6, 1, 5, 5, 7, 3, 3];
+const OCSP_SIGNING: &[u64] = &[1, 3, 6, 1, 5, 5, 7, 3, 9];
+
+/// Look up `arn:aws:acm-pca:::template/{name}/V1`.
+pub fn template(arn: &str) -> Result<Template, ServiceError> {
+    let unsupported = || errors::invalid_args(format!("The template ARN {arn} is not supported."));
     let name = arn
         .split_once(":template/")
-        .map(|(_, n)| n.to_string())
+        .map(|(_, n)| n)
         .ok_or_else(|| errors::invalid_args(format!("The template ARN {arn} is not valid.")))?;
-    use ExtendedKeyUsagePurpose as E;
-    use KeyUsagePurpose as K;
-    let ca = |constraint| Template {
-        is_ca: IsCa::Ca(constraint),
-        key_usages: vec![K::DigitalSignature, K::KeyCertSign, K::CrlSign],
+    let name = name.strip_suffix("/V1").ok_or_else(unsupported)?;
+    let (base, api, csr) = if let Some(b) = name.strip_suffix("_APICSRPassthrough") {
+        (b, true, true)
+    } else if let Some(b) = name.strip_suffix("_APIPassthrough") {
+        (b, true, false)
+    } else if let Some(b) = name.strip_suffix("_CSRPassthrough") {
+        (b, false, true)
+    } else {
+        (name, false, false)
+    };
+    let end_entity = |key_usage, ekus: &[&[u64]]| Template {
+        ca: false,
+        root: false,
+        path_len: None,
+        basic_constraints_critical: true,
+        key_usage,
+        extended_key_usages: ekus.iter().map(|o| o.to_vec()).collect(),
+        api_passthrough: api,
+        csr_passthrough: csr,
+    };
+    let ca = |root: bool, path_len: Option<u8>, key_usage| Template {
+        ca: true,
+        root,
+        path_len,
+        basic_constraints_critical: true,
+        key_usage,
         extended_key_usages: vec![],
+        api_passthrough: api,
+        csr_passthrough: csr,
     };
-    let end_entity = |ekus| Template {
-        is_ca: IsCa::ExplicitNoCa,
-        key_usages: vec![K::DigitalSignature, K::KeyEncipherment],
-        extended_key_usages: ekus,
+    let path_len = |prefix: &str| -> Option<u8> {
+        base.strip_prefix(prefix)?.strip_prefix("_PathLen")?.parse::<u8>().ok().filter(|n| *n <= 3)
     };
-    let t = match name.as_str() {
-        "EndEntityCertificate/V1" => end_entity(vec![E::ServerAuth, E::ClientAuth]),
-        "EndEntityServerAuthCertificate/V1" => end_entity(vec![E::ServerAuth]),
-        "EndEntityClientAuthCertificate/V1" => end_entity(vec![E::ClientAuth]),
-        "CodeSigningCertificate/V1" => Template {
-            is_ca: IsCa::ExplicitNoCa,
-            key_usages: vec![K::DigitalSignature],
-            extended_key_usages: vec![E::CodeSigning],
-        },
-        "OCSPSigningCertificate/V1" => Template {
-            is_ca: IsCa::ExplicitNoCa,
-            key_usages: vec![K::DigitalSignature],
-            extended_key_usages: vec![E::OcspSigning],
-        },
-        ROOT_TEMPLATE => ca(BasicConstraints::Unconstrained),
-        "SubordinateCACertificate_PathLen0/V1" => ca(BasicConstraints::Constrained(0)),
-        "SubordinateCACertificate_PathLen1/V1" => ca(BasicConstraints::Constrained(1)),
-        "SubordinateCACertificate_PathLen2/V1" => ca(BasicConstraints::Constrained(2)),
-        "SubordinateCACertificate_PathLen3/V1" => ca(BasicConstraints::Constrained(3)),
-        _ => return Err(errors::invalid_args(format!("The template ARN {arn} is not supported."))),
+    let t = match base {
+        "EndEntityCertificate" => end_entity(bits(&[DS, KE]), &[SERVER_AUTH, CLIENT_AUTH]),
+        "EndEntityServerAuthCertificate" => end_entity(bits(&[DS, KE]), &[SERVER_AUTH]),
+        "EndEntityClientAuthCertificate" => end_entity(bits(&[DS, KE]), &[CLIENT_AUTH]),
+        "CodeSigningCertificate" => end_entity(bits(&[DS]), &[CODE_SIGNING]),
+        "OCSPSigningCertificate" => end_entity(bits(&[DS]), &[OCSP_SIGNING]),
+        "RootCACertificate" => ca(true, None, bits(&[DS, KCS, CRL])),
+        "BlankEndEntityCertificate" if api => Template { basic_constraints_critical: false, ..end_entity(None, &[]) },
+        "BlankEndEntityCertificate_CriticalBasicConstraints" if api => end_entity(None, &[]),
+        "BlankRootCACertificate" if api => ca(true, None, None),
+        _ => {
+            if let Some(n) = path_len("SubordinateCACertificate") {
+                ca(false, Some(n), bits(&[DS, KCS, CRL]))
+            } else if let Some(n) = path_len("BlankSubordinateCACertificate").filter(|_| api) {
+                ca(false, Some(n), None)
+            } else if let Some(n) = path_len("BlankRootCACertificate").filter(|_| api) {
+                ca(true, Some(n), None)
+            } else {
+                return Err(unsupported());
+            }
+        }
     };
-    Ok((name, t))
+    Ok(t)
 }
 
 fn to_offset(t: DateTime<Utc>) -> ::time::OffsetDateTime {
     ::time::OffsetDateTime::from_unix_timestamp(t.timestamp()).unwrap_or(::time::OffsetDateTime::UNIX_EPOCH)
 }
 
+/// Extensions a CSR may not dictate: the CA sets these itself.
+const CA_CONTROLLED: [&[u64]; 5] = [
+    ext::BASIC_CONSTRAINTS,
+    ext::SUBJECT_KEY_IDENTIFIER,
+    ext::AUTHORITY_KEY_IDENTIFIER,
+    ext::CRL_DISTRIBUTION_POINTS,
+    ext::AUTHORITY_INFO_ACCESS,
+];
+
 pub struct Issue<'a> {
     pub csr: &'a Csr,
     pub template: Template,
+    /// `ApiPassthrough`, used only by templates that pass it through.
+    pub api: Option<&'a types::ApiPassthrough>,
     pub not_before: DateTime<Utc>,
     pub not_after: DateTime<Utc>,
     /// 16 random bytes, high bit cleared.
@@ -235,40 +262,68 @@ pub struct Issue<'a> {
 }
 
 impl Issue<'_> {
-    fn params(&self) -> CertificateParams {
+    /// The certificate's extensions: CSR passthrough, then API passthrough,
+    /// then the template's own, each overriding the one before.
+    fn extensions(&self) -> Result<ExtSet, ServiceError> {
+        let mut set = ExtSet::default();
+        let t = &self.template;
+        for e in &self.csr.extensions {
+            if CA_CONTROLLED.contains(&e.oid.as_slice()) {
+                continue;
+            }
+            // Every template takes the subject alternative names from the CSR.
+            if t.csr_passthrough || e.oid == ext::SUBJECT_ALT_NAME {
+                set.set(e.clone());
+            }
+        }
+        if t.api_passthrough {
+            if let Some(extensions) = self.api.and_then(|a| a.extensions.as_ref()) {
+                for e in ext::api_extensions(extensions)? {
+                    set.set(e);
+                }
+            }
+        }
+        set.set(Ext::new(
+            ext::BASIC_CONSTRAINTS,
+            t.basic_constraints_critical,
+            ext::basic_constraints(t.ca, t.path_len),
+        ));
+        if let Some(bits) = &t.key_usage {
+            set.set(Ext::new(ext::KEY_USAGE, true, ext::key_usage_bits(bits)));
+        }
+        if !t.extended_key_usages.is_empty() {
+            set.set(Ext::new(ext::EXTENDED_KEY_USAGE, false, ext::extended_key_usage(&t.extended_key_usages)));
+        }
+        set.set(Ext::new(ext::SUBJECT_KEY_IDENTIFIER, false, ext::subject_key_identifier(&self.csr.spki_der)));
+        if let Some(url) = self.ocsp_url.as_ref().filter(|_| !t.root) {
+            // AuthorityInfoAccess ::= SEQUENCE OF AccessDescription { id-ad-ocsp, [6] uri }
+            let desc =
+                der::seq(&[&der::oid(&[1, 3, 6, 1, 5, 5, 7, 48, 1]), &der::tlv(der::ctx_prim(6), url.as_bytes())]);
+            set.set(Ext::new(ext::AUTHORITY_INFO_ACCESS, false, der::seq(&[&desc])));
+        }
+        Ok(set)
+    }
+
+    fn params(&self) -> Result<CertificateParams, ServiceError> {
         let mut p = CertificateParams::default();
-        p.distinguished_name = self.csr.subject.clone();
-        p.subject_alt_names = self.csr.sans.clone();
+        p.distinguished_name = match self.api.and_then(|a| a.subject.as_ref()).filter(|_| self.template.api_passthrough)
+        {
+            Some(subject) => subject_dn(subject)?,
+            None => self.csr.subject.clone(),
+        };
         p.not_before = to_offset(self.not_before);
         p.not_after = to_offset(self.not_after);
         p.serial_number = Some(SerialNumber::from_slice(&self.serial));
-        p.is_ca = self.template.is_ca.clone();
-        if matches!(p.is_ca, IsCa::ExplicitNoCa) {
-            // rcgen writes `cA FALSE` explicitly, which DER forbids (it is the
-            // default); strict parsers reject that. Emit the canonical empty
-            // BasicConstraints instead, critical as ACM PCA does.
-            p.is_ca = IsCa::NoCa;
-            let mut ext = rcgen::CustomExtension::from_oid_content(&[2, 5, 29, 19], vec![0x30, 0x00]);
-            ext.set_criticality(true);
-            p.custom_extensions.push(ext);
-        }
-        p.key_usages = self.template.key_usages.clone();
-        p.extended_key_usages = self.template.extended_key_usages.clone();
-        p.use_authority_key_identifier_extension = true;
+        // Every extension but the authority key identifier and the CRL
+        // distribution point is written here, so rcgen adds no others.
+        p.is_ca = IsCa::NoCa;
+        p.custom_extensions = self.extensions()?.0.iter().map(Ext::to_rcgen).collect();
+        p.use_authority_key_identifier_extension = !self.template.root;
         p.key_identifier_method = KeyIdMethod::Sha256;
-        if let Some(url) = &self.crl_url {
+        if let Some(url) = self.crl_url.as_ref().filter(|_| !self.template.root) {
             p.crl_distribution_points = vec![rcgen::CrlDistributionPoint { uris: vec![url.clone()] }];
         }
-        if let Some(url) = &self.ocsp_url {
-            // AuthorityInfoAccess ::= SEQUENCE OF AccessDescription { id-ad-ocsp, [6] uri }
-            let desc = crate::der::seq(&[
-                &crate::der::oid(&[1, 3, 6, 1, 5, 5, 7, 48, 1]),
-                &crate::der::tlv(crate::der::ctx_prim(6), url.as_bytes()),
-            ]);
-            let aia = crate::der::seq(&[&desc]);
-            p.custom_extensions.push(rcgen::CustomExtension::from_oid_content(&[1, 3, 6, 1, 5, 5, 7, 1, 1], aia));
-        }
-        p
+        Ok(p)
     }
 
     /// Self-signed (the root CA certificate): the CSR must carry `key`.
@@ -278,10 +333,7 @@ impl Issue<'_> {
                 "A root CA certificate can only be issued for the certificate authority's own CSR.",
             ));
         }
-        let mut params = self.params();
-        params.use_authority_key_identifier_extension = false;
-        params.crl_distribution_points.clear();
-        params.self_signed(key).map(|c| c.pem()).map_err(|e| ServiceError::internal(format!("signing: {e}")))
+        self.params()?.self_signed(key).map(|c| c.pem()).map_err(|e| ServiceError::internal(format!("signing: {e}")))
     }
 
     /// Signed by the CA whose certificate is `issuer_pem` and key `key`.
@@ -290,7 +342,7 @@ impl Issue<'_> {
             .and_then(|p| p.self_signed(key))
             .map_err(|e| ServiceError::internal(format!("loading CA certificate: {e}")))?;
         let spki = SubjectPublicKeyInfo::from_der(&self.csr.spki_der).map_err(|_| malformed_csr())?;
-        self.params()
+        self.params()?
             .signed_by(&spki, &issuer, key)
             .map(|c| c.pem())
             .map_err(|e| ServiceError::internal(format!("signing: {e}")))
