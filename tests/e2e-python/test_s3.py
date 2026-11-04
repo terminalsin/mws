@@ -244,3 +244,94 @@ def test_directory_bucket_sessions(s3):
     assert session["Credentials"]["SessionToken"]
     s3.delete_object(Bucket=name, Key="k")
     s3.delete_bucket(Bucket=name)
+
+
+def _multipart(fields, file_body):
+    import urllib3
+
+    return urllib3.encode_multipart_formdata(list(fields.items()) + [("file", ("upload.txt", file_body))])
+
+
+def _post(url, fields, file_body):
+    body, content_type = _multipart(fields, file_body)
+    req = urllib.request.Request(url, data=body, method="POST", headers={"Content-Type": content_type})
+    try:
+        with urllib.request.urlopen(req) as resp:
+            return resp.status, {k.lower(): v for k, v in resp.headers.items()}, resp.read()
+    except urllib.error.HTTPError as e:
+        return e.code, {k.lower(): v for k, v in e.headers.items()}, e.read()
+
+
+def test_browser_post_uploads_follow_their_policy(endpoint, session_for, bucket):
+    s3v4 = session_for().client(
+        "s3", endpoint_url=endpoint, config=Config(signature_version="s3v4", s3={"addressing_style": "path"})
+    )
+    post = s3v4.generate_presigned_post(
+        bucket,
+        "uploads/${filename}",
+        Fields={"Content-Type": "text/plain", "success_action_status": "201"},
+        Conditions=[
+            {"Content-Type": "text/plain"},
+            {"success_action_status": "201"},
+            ["starts-with", "$key", "uploads/"],
+            ["content-length-range", 1, 64],
+        ],
+        ExpiresIn=60,
+    )
+    status, _, body = _post(post["url"], post["fields"], b"posted")
+    assert status == 201
+    assert b"<Key>uploads/upload.txt</Key>" in body
+    head = s3v4.head_object(Bucket=bucket, Key="uploads/upload.txt")
+    assert head["ContentType"] == "text/plain"
+    assert s3v4.get_object(Bucket=bucket, Key="uploads/upload.txt")["Body"].read() == b"posted"
+
+    status, _, body = _post(post["url"], post["fields"], b"x" * 100)
+    assert status == 400 and b"<Code>EntityTooLarge</Code>" in body
+    status, _, body = _post(post["url"], {**post["fields"], "x-amz-meta-extra": "1"}, b"posted")
+    assert status == 403 and b"Extra input fields: x-amz-meta-extra" in body
+    status, _, body = _post(post["url"], {**post["fields"], "Content-Type": "image/png"}, b"posted")
+    assert status == 403 and b"Policy Condition failed" in body
+    tampered = {**post["fields"], "x-amz-signature": "0" * 64}
+    status, _, body = _post(post["url"], tampered, b"posted")
+    assert status == 403 and b"<Code>SignatureDoesNotMatch</Code>" in body
+
+    plain = s3v4.generate_presigned_post(bucket, "plain", ExpiresIn=60)
+    status, headers, _ = _post(plain["url"], plain["fields"], b"p")
+    assert status == 204
+    assert headers["etag"] == '"83878c91171338902e0fe0fb97a8c47a"'
+    expired = s3v4.generate_presigned_post(bucket, "late", ExpiresIn=-5)
+    status, _, body = _post(expired["url"], expired["fields"], b"p")
+    assert status == 403 and b"Policy expired" in body
+    # Unsigned uploads are the anonymous principal's, which has no access.
+    status, _, _ = _post(f"{endpoint}/{bucket}", {"key": "anon"}, b"p")
+    assert status == 403
+    # Signature Version 2 policies are refused like other SigV2 requests.
+    s3v2 = session_for().client(
+        "s3", endpoint_url=endpoint, config=Config(signature_version="s3", s3={"addressing_style": "path"})
+    )
+    v2 = s3v2.generate_presigned_post(bucket, "v2", ExpiresIn=60)
+    assert "AWSAccessKeyId" in v2["fields"]
+    status, _, body = _post(v2["url"], v2["fields"], b"p")
+    assert status == 400 and b"<Code>InvalidRequest</Code>" in body
+
+
+def test_signature_v2_is_verified_before_it_is_refused(endpoint, session_for, bucket):
+    s3v2 = session_for().client(
+        "s3", endpoint_url=endpoint, config=Config(signature_version="s3", s3={"addressing_style": "path"})
+    )
+    # Bucket-less requests still take SigV2.
+    assert any(b["Name"] == bucket for b in s3v2.list_buckets()["Buckets"])
+    bad = session_for(secret="wrong").client(
+        "s3", endpoint_url=endpoint, config=Config(signature_version="s3", s3={"addressing_style": "path"})
+    )
+    with pytest.raises(ClientError) as e:
+        bad.list_buckets()
+    assert code(e) == "SignatureDoesNotMatch"
+
+
+def test_restore_statuses(s3, bucket):
+    s3.put_object(Bucket=bucket, Key="cold", Body=b"c", StorageClass="GLACIER")
+    first = s3.restore_object(Bucket=bucket, Key="cold", RestoreRequest={"Days": 1})
+    assert first["ResponseMetadata"]["HTTPStatusCode"] == 202
+    again = s3.restore_object(Bucket=bucket, Key="cold", RestoreRequest={"Days": 2})
+    assert again["ResponseMetadata"]["HTTPStatusCode"] == 200

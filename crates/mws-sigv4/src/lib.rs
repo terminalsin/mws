@@ -727,6 +727,12 @@ fn sigv4_encode(s: &str) -> String {
     utf8_percent_encode(s, SIGV4_ENCODE).to_string()
 }
 
+/// Sign an arbitrary string with the SigV4 key for `scope` and return the
+/// hex signature (S3 browser POST policies are signed this way).
+pub fn sign_string(secret_access_key: &str, scope: &CredentialScope, string_to_sign: &str) -> String {
+    hex::encode(hmac(&signing_key(secret_access_key, scope), string_to_sign.as_bytes()))
+}
+
 fn signing_key(secret: &str, scope: &CredentialScope) -> Vec<u8> {
     let k_date = hmac(format!("AWS4{secret}").as_bytes(), scope.date.as_bytes());
     let k_region = hmac(&k_date, scope.region.as_bytes());

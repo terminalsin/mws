@@ -42,8 +42,10 @@ impl Call {
             AuthType::Anonymous => ("", false),
         };
         if sig {
+            let auth = if self.form_post { "POST" } else { auth };
+            let version = if self.sigv2 { "AWS" } else { "AWS4-HMAC-SHA256" };
             c.insert("s3:authType".into(), vec![auth.into()]);
-            c.insert("s3:signatureversion".into(), vec!["AWS4-HMAC-SHA256".into()]);
+            c.insert("s3:signatureversion".into(), vec![version.into()]);
         }
         if let Some(h) = &self.content_sha256 {
             c.insert("s3:x-amz-content-sha256".into(), vec![h.clone()]);
@@ -153,11 +155,31 @@ impl Call {
         if bucket.directory.is_some() {
             return self.authorize_directory(ctx, action, bucket);
         }
+        self.requester_pays(ctx, bucket)?;
         if self.allowed(ctx, action, bucket, &resource, extra.clone()) {
             return Ok(());
         }
         let arn = self.resource_arn(ctx, bucket, &resource);
         Err(self.denied(ctx, action, &arn, bucket, extra))
+    }
+
+    /// Requester Pays: anyone but the bucket owner must accept the charges
+    /// (`x-amz-request-payer: requester`), and anonymous requests are
+    /// refused. Requests that accepted them are answered with
+    /// `x-amz-request-charged: requester`.
+    fn requester_pays(&self, ctx: &RequestContext, bucket: &Bucket) -> Result<(), ServiceError> {
+        if bucket.request_payer != "Requester" {
+            return Ok(());
+        }
+        let anonymous = ctx.caller.kind == CallerKind::Anonymous;
+        if !anonymous && ctx.caller.account_id == bucket.owner {
+            return Ok(());
+        }
+        if anonymous || !self.request_payer {
+            return Err(crate::errors::access_denied("Access Denied"));
+        }
+        self.request_charged.store(true, std::sync::atomic::Ordering::Relaxed);
+        Ok(())
     }
 
     /// Whether `action` is allowed, without building an error.
