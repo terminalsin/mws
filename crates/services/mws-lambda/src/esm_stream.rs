@@ -265,6 +265,8 @@ impl Lambda {
                     let too_old = max_age >= 0 && (now - oldest).num_seconds() > i64::from(max_age);
                     let max_attempts = config.maximum_retry_attempts.unwrap_or(-1);
                     let bisect = config.bisect_batch_on_function_error.unwrap_or(false);
+                    let attempts = progress.attempts + 1;
+                    let give_up = too_old || (max_attempts >= 0 && attempts > max_attempts);
                     self.update_progress(uuid, &shard.shard_id, |p| {
                         if let Some(b) = &before {
                             p.checkpoint = Some(b.clone());
@@ -281,6 +283,26 @@ impl Lambda {
                             p.batch_limit = None;
                         }
                     });
+                    let destination = config
+                        .destination_config
+                        .as_ref()
+                        .and_then(|d| d.on_failure.as_ref())
+                        .and_then(|d| d.destination.clone());
+                    if let (true, Some(destination)) = (give_up, destination) {
+                        let condition = if too_old { "RecordAgeExceeded" } else { "RetryAttemptsExhausted" };
+                        let executed = ran.as_ref().map(|r| r.executed_version.clone()).unwrap_or("$LATEST".into());
+                        let error = ran.as_ref().ok().and_then(|r| r.outcome.function_error.clone());
+                        let records: Vec<&StreamRecord> = batch.iter().map(|(_, r)| *r).collect();
+                        let info = BatchInfo { shard_id: &shard.shard_id, stream_arn: &stream, records: &records };
+                        let body = failure_record(&ctx, function_arn, &executed, error, condition, attempts, &info);
+                        let message = crate::DestinationMessage {
+                            body: body.to_string(),
+                            function_arn: function_arn.to_string(),
+                            detail_type: "Lambda Function Invocation Result - Failure".into(),
+                            ..Default::default()
+                        };
+                        self.send_to_destination(&ctx, function_arn, &destination, &message).await;
+                    }
                 }
             }
         }
@@ -306,6 +328,54 @@ impl Lambda {
             m.config.last_processing_result = Some("OK".into());
         }
     }
+}
+
+/// The batch a stream mapping gave up on.
+struct BatchInfo<'a> {
+    shard_id: &'a str,
+    stream_arn: &'a str,
+    records: &'a [&'a StreamRecord],
+}
+
+/// The record a stream mapping's on-failure destination gets: what
+/// failed, and where the batch is in the shard (the records themselves
+/// stay in the stream).
+fn failure_record(
+    ctx: &RequestContext,
+    function_arn: &str,
+    executed_version: &str,
+    function_error: Option<String>,
+    condition: &str,
+    attempts: i32,
+    batch: &BatchInfo<'_>,
+) -> Value {
+    let time = |t: DateTime<Utc>| t.format("%Y-%m-%dT%H:%M:%S%.3fZ").to_string();
+    let first = batch.records.first();
+    let last = batch.records.last();
+    let mut response = json!({ "statusCode": 200, "executedVersion": executed_version });
+    if let Some(e) = function_error {
+        response["functionError"] = json!(e);
+    }
+    json!({
+        "requestContext": {
+            "requestId": uuid::Uuid::new_v4().to_string(),
+            "functionArn": function_arn,
+            "condition": condition,
+            "approximateInvokeCount": attempts,
+        },
+        "responseContext": response,
+        "version": "1.0",
+        "timestamp": time(ctx.received_at),
+        "KinesisBatchInfo": {
+            "shardId": batch.shard_id,
+            "startSequenceNumber": first.map(|r| r.sequence_number.clone()),
+            "endSequenceNumber": last.map(|r| r.sequence_number.clone()),
+            "approximateArrivalOfFirstRecord": first.map(|r| time(r.approximate_arrival)),
+            "approximateArrivalOfLastRecord": last.map(|r| time(r.approximate_arrival)),
+            "batchSize": batch.records.len(),
+            "streamArn": batch.stream_arn,
+        },
+    })
 }
 
 /// The sequence number of the first item the function reported failed, or

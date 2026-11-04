@@ -543,7 +543,12 @@ async fn outbound_federation_issues_signed_tokens() {
             .send()
             .await
             .unwrap();
-        let tampered = format!("{}x", &token[..token.len() - 1]);
+        // Change the first character of the signature: every bit of it
+        // counts (the last one can be base64 padding bits a decoder
+        // ignores), and the new character always differs from the old.
+        let sig = token.rfind('.').unwrap() + 1;
+        let swap = if token.as_bytes()[sig] == b'A' { "B" } else { "A" };
+        let tampered = format!("{}{swap}{}", &token[..sig], &token[sig + 1..]);
         let err = sts
             .assume_role_with_web_identity()
             .role_arn(format!("arn:aws:iam::{ACCOUNT}:role/outbound-trust"))

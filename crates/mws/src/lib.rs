@@ -173,6 +173,9 @@ fn build_with_store(config: Config, store: Option<Arc<Store>>) -> Mws {
         partition: config.iam.partition.clone(),
     }));
     lambda.set_queue_source(Arc::new(links::LambdaFromSqs(sqs.clone())));
+    lambda.add_destination_sink(Arc::new(links::LambdaDestination::Sqs(sqs.clone())));
+    lambda.add_destination_sink(Arc::new(links::LambdaDestination::Sns(sns.clone())));
+    lambda.add_destination_sink(Arc::new(links::LambdaDestination::Events(events.clone())));
     logs.add_subscription_target(Arc::new(links::LogsToLambda(lambda.clone())));
     logs.add_subscription_target(Arc::new(links::LogsToKinesis { kinesis: kinesis.clone(), sts: sts.clone() }));
     logs.add_subscription_target(Arc::new(links::LogsToFirehose { firehose: firehose.clone(), sts: sts.clone() }));

@@ -18,6 +18,7 @@ mod kinesis_parity;
 mod kinesis_targets;
 mod kms;
 mod lambda;
+mod lambda_destinations;
 mod lambda_sqs;
 mod lambda_urls;
 mod logs;
