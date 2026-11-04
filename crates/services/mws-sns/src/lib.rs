@@ -21,6 +21,7 @@ mod delivery;
 mod errors;
 mod filter;
 mod handler;
+mod kms;
 mod names;
 mod outbox;
 mod platform;
@@ -46,6 +47,8 @@ pub(crate) struct Inner {
     state: Mutex<State>,
     lambda: OnceLock<mws_lambda::Lambda>,
     queues: OnceLock<Arc<dyn QueueDelivery>>,
+    /// Server-side encryption of topics.
+    kms: OnceLock<mws_kms::Kms>,
     /// Where delivery status logs go, and how feedback roles are assumed.
     status_logs: OnceLock<(mws_logs::Logs, mws_sts::Sts)>,
     signer: signing::Signer,
@@ -70,6 +73,7 @@ impl Sns {
                 state: Mutex::new(State::default()),
                 lambda: OnceLock::new(),
                 queues: OnceLock::new(),
+                kms: OnceLock::new(),
                 status_logs: OnceLock::new(),
                 signer: signing::Signer::default(),
             }),
@@ -79,6 +83,12 @@ impl Sns {
     /// Deliver to `lambda` subscriptions through Lambda.
     pub fn with_lambda(self, lambda: mws_lambda::Lambda) -> Self {
         let _ = self.inner.lambda.set(lambda);
+        self
+    }
+
+    /// Encrypt topics with `KmsMasterKeyId` through KMS.
+    pub fn with_kms(self, kms: mws_kms::Kms) -> Self {
+        let _ = self.inner.kms.set(kms);
         self
     }
 

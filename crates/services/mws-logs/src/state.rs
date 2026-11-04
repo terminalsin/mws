@@ -16,6 +16,11 @@ pub struct Event {
     pub message: String,
     /// Unique per Region, in ingestion order; the base of `eventId`.
     pub seq: u64,
+    /// The event as the log group's transformer left it (JSON), kept
+    /// beside the original as CloudWatch Logs does. Logs Insights sees
+    /// this version; filters opt in with `applyOnTransformedLogs`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub transformed: Option<String>,
 }
 
 impl Event {
@@ -23,6 +28,15 @@ impl Event {
     /// message plus 26 bytes of overhead.
     pub fn size(&self) -> i64 {
         self.message.len() as i64 + 26
+    }
+
+    /// The message a feature sees: the transformed version when it asks
+    /// for it and there is one, the original otherwise.
+    pub fn message_for(&self, transformed: bool) -> &str {
+        match (&self.transformed, transformed) {
+            (Some(t), true) => t,
+            _ => &self.message,
+        }
     }
 }
 

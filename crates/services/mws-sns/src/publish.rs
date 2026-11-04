@@ -299,10 +299,11 @@ impl Sns {
         names::check_topic_arn(ctx, &arn, param)?;
         self.authorize_topic(ctx, "sns:Publish", &arn, ConditionContext::new())?;
         let structure = check_message(&r)?;
-        {
+        let topic = {
             let st = self.lock();
-            Self::topic(&st, &arn)?;
-        }
+            Self::topic(&st, &arn)?.clone()
+        };
+        self.seal_for_caller(ctx, &topic)?;
         self.publish_to_topic(ctx, &arn, &r, structure)
     }
 
@@ -423,10 +424,11 @@ impl Sns {
                 "The length of all the messages put together is more than the limit.",
             ));
         }
-        {
+        let topic = {
             let st = self.lock();
-            Self::topic(&st, &input.topic_arn)?;
-        }
+            Self::topic(&st, &input.topic_arn)?.clone()
+        };
+        self.seal_for_caller(ctx, &topic)?;
         let mut successful = Vec::new();
         let mut failed = Vec::new();
         for e in entries {

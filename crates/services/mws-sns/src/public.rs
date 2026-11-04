@@ -121,6 +121,11 @@ impl Sns {
         p: &ServicePublish<'_>,
     ) -> Result<String, ServicePublishError> {
         self.check_service_publish(p)?;
+        let topic = self.lock().topics.get(p.topic_arn).cloned().ok_or(ServicePublishError::NoSuchTopic)?;
+        // Encrypted topics need the key policy to let the service principal
+        // use the key; otherwise the message is lost, as in AWS.
+        self.seal_for_service(&topic, p.service_principal, p.source_arn, p.source_account)
+            .map_err(|e| ServicePublishError::Rejected(format!("{}: {}", e.code, e.message)))?;
         let parsed = names::parse_sns_arn(p.topic_arn).ok_or(ServicePublishError::NoSuchTopic)?;
         let ctx = RequestContext { region: parsed.region, ..ctx.clone() };
         let attributes: BTreeMap<String, MessageAttributeValue> = p

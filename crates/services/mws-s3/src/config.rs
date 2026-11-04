@@ -3,8 +3,9 @@
 //! request payment, replication, object lock, ABAC, and the keyed
 //! analytics / metrics / inventory / Intelligent-Tiering configurations.
 //! Lifecycle rules run in [`crate::lifecycle`] and replication rules in
-//! [`crate::replication`]; MWS does not act on logging, inventory or
-//! notifications.
+//! [`crate::replication`], inventory reports are delivered by
+//! [`crate::inventory`], server access logs by [`crate::access_log`] and
+//! event notifications by [`crate::notifications`].
 
 use std::collections::BTreeMap;
 
@@ -82,6 +83,7 @@ macro_rules! keyed_config {
                             "You are attempting to create a new configuration but have already reached the limit.",
                         ));
                     }
+                    b.configuration_put(stringify!($field), &input.id, ctx.received_at);
                     b.$field.insert(input.id, config);
                     Ok(())
                 })
@@ -89,6 +91,7 @@ macro_rules! keyed_config {
 
             pub fn $del(&self, ctx: &RequestContext, input: types::$del_in) -> Result<(), ServiceError> {
                 self.bucket_write(ctx, &input.bucket, input.expected_bucket_owner.as_deref(), $put_action, |b| {
+                    b.configuration_deleted(stringify!($field), &input.id);
                     b.$field.remove(&input.id).map(|_| ()).ok_or_else(errors::no_such_configuration)
                 })
             }

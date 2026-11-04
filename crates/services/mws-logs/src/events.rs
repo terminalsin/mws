@@ -40,6 +40,28 @@ pub fn cutoff(group: &LogGroup, now: i64) -> i64 {
     group.retention_in_days.map(|d| now - i64::from(d) * DAY_MS).unwrap_or(i64::MIN)
 }
 
+/// The transformer that applies to a log group at ingestion: its own, or
+/// else an account-level `TRANSFORMER_POLICY` whose selection criteria
+/// match it.
+pub fn transformer_for(st: &crate::state::State, g: &GroupRef) -> Option<Vec<types::Processor>> {
+    if let Some(t) = st.group(g).ok().and_then(|group| group.transformer.as_ref()) {
+        return Some(t.processors.clone());
+    }
+    let region = st.region_ref(&g.account, &g.region)?;
+    region
+        .account_policies
+        .values()
+        .filter(|p| p.policy_type.as_deref() == Some("TRANSFORMER_POLICY"))
+        .filter(|p| crate::policies::selection_matches(p.selection_criteria.as_deref(), &g.name))
+        .find_map(|p| {
+            let doc: serde_json::Value = serde_json::from_str(p.policy_document.as_deref()?).ok()?;
+            let mut d = mws_proto_json::Decoder::new();
+            let processors = crate::generated::de::de_processors(&mut d, doc.get("transformerConfig"), "")?;
+            d.finish("InvalidParameterException").ok()?;
+            Some(processors)
+        })
+}
+
 pub struct Accepted {
     pub response: types::PutLogEventsResponse,
     pub stored: Vec<Event>,
@@ -73,6 +95,7 @@ impl Logs {
             )));
         }
         let mut st = self.lock();
+        let processors = transformer_for(&st, g);
         let mut seq = st.next_seq;
         let group = st.group_mut(g)?;
         let retention_cutoff = cutoff(group, now);
@@ -93,7 +116,10 @@ impl Logs {
                 info.expired_log_event_end_index = Some(i);
                 continue;
             }
-            let ev = Event { timestamp: e.timestamp, ingestion_time: now, message: e.message, seq };
+            // Transformation happens at ingestion; an event the
+            // processors cannot handle keeps only its original form.
+            let transformed = processors.as_deref().and_then(|p| crate::transform::run(p, &e.message).ok());
+            let ev = Event { timestamp: e.timestamp, ingestion_time: now, message: e.message, seq, transformed };
             seq += 1;
             stream.first_event_timestamp =
                 Some(stream.first_event_timestamp.map_or(ev.timestamp, |t| t.min(ev.timestamp)));

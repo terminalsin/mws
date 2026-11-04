@@ -11,7 +11,7 @@ use mws_iam_policy::{ConditionContext, Policy, PolicyKind, PrincipalInfo, Reques
 
 use crate::acl;
 use crate::checksum;
-use crate::state::{Bucket, Checksum, ObjectVersion};
+use crate::state::{Bucket, Checksum, ObjectVersion, Sse};
 use crate::S3;
 
 /// An object written by an AWS service principal.
@@ -95,6 +95,15 @@ impl S3 {
 
     /// Write an object as an AWS service principal. Returns the ETag.
     pub fn put_object_as_service(&self, put: ServicePutObject<'_>) -> Result<String, ServicePutError> {
+        self.put_object_as_service_with(put, Sse::default())
+    }
+
+    /// [`S3::put_object_as_service`] with the object's encryption.
+    pub(crate) fn put_object_as_service_with(
+        &self,
+        put: ServicePutObject<'_>,
+        sse: Sse,
+    ) -> Result<String, ServicePutError> {
         // As for any PutObject, an `x-amz-acl` needs only `s3:PutObject`
         // (policies can test it with the `s3:x-amz-acl` condition key).
         self.check_service_access(&put, &["s3:PutObject"])?;
@@ -126,6 +135,7 @@ impl S3 {
                 kind: "FULL_OBJECT".into(),
             }),
             acl: grants,
+            sse,
             data,
             ..ObjectVersion::default()
         };

@@ -41,7 +41,7 @@ impl<'t, 'm> JsonCodec<'t, 'm> {
         let mut out = String::new();
         let _ = writeln!(
             out,
-            "\n#[allow(unused_variables, unused_mut, unused_imports, clippy::all)]\nmod {name} {{\n    use super::*;"
+            "\n#[allow(unused_variables, unused_mut, unused_imports, clippy::all)]\npub(crate) mod {name} {{\n    use super::*;"
         );
         let _ = writeln!(out, "    use {RT}::{{Decoder, Map, Value}};");
         self.constraints.emit_statics(RT, &mut out);
@@ -108,7 +108,7 @@ impl<'t, 'm> JsonCodec<'t, 'm> {
         let is_union = s.ty == ShapeType::Union;
         let _ = writeln!(
             w,
-            "    pub(super) fn {}(d: &mut Decoder, v: Option<&Value>, path: &str) -> Option<types::{ty}> {{",
+            "    pub(crate) fn {}(d: &mut Decoder, v: Option<&Value>, path: &str) -> Option<types::{ty}> {{",
             de_fn_name(s)
         );
         let _ = writeln!(w, "        let obj = d.object(v, if path.is_empty() {{ \"input\" }} else {{ path }})?;");
@@ -167,7 +167,7 @@ impl<'t, 'm> JsonCodec<'t, 'm> {
         let target = self.model.expect(&member.target).clone();
         let _ = writeln!(
             w,
-            "    pub(super) fn {}(d: &mut Decoder, v: Option<&Value>, path: &str) -> Option<{}> {{",
+            "    pub(crate) fn {}(d: &mut Decoder, v: Option<&Value>, path: &str) -> Option<{}> {{",
             de_fn_name(s),
             qualified_type(self.model, &s.id)
         );
@@ -191,7 +191,7 @@ impl<'t, 'm> JsonCodec<'t, 'm> {
         let value_ty = qualified_type(self.model, &val_m.target);
         let _ = writeln!(
             w,
-            "    pub(super) fn {}(d: &mut Decoder, v: Option<&Value>, path: &str) -> Option<::std::collections::BTreeMap<String, {value_ty}>> {{",
+            "    pub(crate) fn {}(d: &mut Decoder, v: Option<&Value>, path: &str) -> Option<::std::collections::BTreeMap<String, {value_ty}>> {{",
             de_fn_name(s)
         );
         let _ = writeln!(w, "        let obj = d.object(v, path)?;");

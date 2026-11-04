@@ -109,10 +109,13 @@ impl Logs {
             let (Some(name), Some(destination)) = (&f.filter_name, &f.destination_arn) else { continue };
             let Some(target) = self.target_for(destination) else { continue };
             let Ok(pattern) = parse_pattern(f.filter_pattern.as_deref()) else { continue };
+            let transformed = f.apply_on_transformed_logs;
             let events: Vec<_> = stored
                 .iter()
-                .filter(|e| pattern.matches(&e.message))
-                .map(|e| json!({"id": event_id(e.seq), "timestamp": e.timestamp, "message": e.message}))
+                .filter(|e| pattern.matches(e.message_for(transformed)))
+                .map(
+                    |e| json!({"id": event_id(e.seq), "timestamp": e.timestamp, "message": e.message_for(transformed)}),
+                )
                 .collect();
             if events.is_empty() {
                 continue;

@@ -40,10 +40,12 @@ fn resolve_pointer(p: &str) -> Option<(GroupRef, String, u64)> {
 /// The record Logs Insights sees for one event.
 pub fn record(g: &GroupRef, stream: &str, e: &Event) -> Record {
     let mut r = Record::new();
-    insights::discover_json(&e.message, &mut r);
+    // Logs Insights queries the transformed version of an event.
+    let message = e.message_for(true);
+    insights::discover_json(message, &mut r);
     r.insert("@timestamp".into(), V::Time(e.timestamp));
     r.insert("@ingestionTime".into(), V::Time(e.ingestion_time));
-    r.insert("@message".into(), V::Str(e.message.clone()));
+    r.insert("@message".into(), V::Str(message.to_string()));
     r.insert("@logStream".into(), V::Str(stream.to_string()));
     r.insert("@log".into(), V::Str(format!("{}:{}", g.account, g.name)));
     r.insert("@ptr".into(), V::Str(pointer(g, stream, e.seq)));
