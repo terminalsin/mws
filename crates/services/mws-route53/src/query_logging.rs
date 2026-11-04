@@ -84,13 +84,14 @@ impl Route53 {
     /// Write one query log line for an answered query, if the zone has a
     /// query logging configuration. Delivery failures are dropped, as in
     /// AWS.
-    pub(crate) fn log_query(&self, zone_name: &str, line: impl FnOnce(&str) -> String) {
+    pub(crate) fn log_query(&self, zone_id: &str, line: impl FnOnce(&str) -> String) {
         let Some(logs) = &self.logs else { return };
         let target = {
-            let st = self.lock();
-            let Some(zone) = st.zones.values().find(|z| z.name == zone_name && !z.private) else { return };
-            let Some(cfg) = st.query_logging.values().find(|q| q.hosted_zone_id == zone.id) else { return };
-            LogTarget::parse(&cfg.cloud_watch_logs_log_group_arn, &zone.id)
+            let st = self.lock_all();
+            let Some(owner) = st.zone_owner(zone_id) else { return };
+            let state = &st.accounts[owner];
+            let Some(cfg) = state.query_logging.values().find(|q| q.hosted_zone_id == zone_id) else { return };
+            LogTarget::parse(&cfg.cloud_watch_logs_log_group_arn, zone_id)
         };
         let now = chrono::Utc::now();
         let event = mws_logs::ServiceLogEvent { timestamp: now.timestamp_millis(), message: line(&target.zone_id) };
@@ -116,7 +117,7 @@ impl Route53 {
                 ),
             })?;
         }
-        let mut st = self.lock();
+        let mut st = self.lock(ctx);
         if st.zone(&zone_id)?.private {
             return Err(errors::invalid_input(
                 "Invalid input: Query logging is not supported for private hosted zones.",
@@ -146,7 +147,7 @@ impl Route53 {
         input: types::GetQueryLoggingConfigRequest,
     ) -> Result<types::GetQueryLoggingConfigResponse, ServiceError> {
         self.authorize(ctx, "GetQueryLoggingConfig", &arn(ctx, "queryloggingconfig", &input.id))?;
-        let st = self.lock();
+        let st = self.lock(ctx);
         let config = st.query_logging.get(&input.id).cloned().ok_or_else(|| no_such(&input.id))?;
         Ok(types::GetQueryLoggingConfigResponse { query_logging_config: config })
     }
@@ -157,7 +158,7 @@ impl Route53 {
         input: types::DeleteQueryLoggingConfigRequest,
     ) -> Result<types::DeleteQueryLoggingConfigResponse, ServiceError> {
         self.authorize(ctx, "DeleteQueryLoggingConfig", &arn(ctx, "queryloggingconfig", &input.id))?;
-        let mut st = self.lock();
+        let mut st = self.lock(ctx);
         st.query_logging.remove(&input.id).ok_or_else(|| no_such(&input.id))?;
         Ok(types::DeleteQueryLoggingConfigResponse {})
     }
@@ -169,7 +170,7 @@ impl Route53 {
     ) -> Result<types::ListQueryLoggingConfigsResponse, ServiceError> {
         self.authorize(ctx, "ListQueryLoggingConfigs", "*")?;
         let limit = max_items(input.max_results, 100, 100);
-        let st = self.lock();
+        let st = self.lock(ctx);
         let zone = input.hosted_zone_id.as_deref().map(strip_id);
         if let Some(z) = zone {
             st.zone(z)?;

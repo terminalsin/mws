@@ -2703,9 +2703,12 @@ dependencies = [
  "mws-proto-json",
  "mws-proto-restxml",
  "rand",
+ "rustls 0.23.46",
+ "rustls-pki-types",
  "serde",
  "serde_json",
  "tokio",
+ "tokio-rustls 0.26.6",
  "uuid",
 ]
 

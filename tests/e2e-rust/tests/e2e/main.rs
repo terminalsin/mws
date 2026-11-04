@@ -26,6 +26,7 @@ mod parity;
 mod policies;
 mod route53;
 mod route53_advanced;
+mod route53_parity;
 mod s3;
 mod s3_access_logs;
 mod s3_inventory;

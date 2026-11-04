@@ -1388,13 +1388,17 @@ async fn global_endpoints_replicate_and_fail_over_on_health_checks() {
         client.put_targets().rule("app").event_bus_name("global").targets(target("q", arn)).send().await.unwrap();
     }
 
+    let healthy_listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let healthy_port = healthy_listener.local_addr().unwrap().port();
     let hc = r53
         .create_health_check()
         .caller_reference("ge")
         .health_check_config(
+            // Route 53's checkers really probe: a port that accepts.
             aws_sdk_route53::types::HealthCheckConfig::builder()
-                .r#type(aws_sdk_route53::types::HealthCheckType::Http)
-                .ip_address("192.0.2.1")
+                .r#type(aws_sdk_route53::types::HealthCheckType::Tcp)
+                .ip_address("127.0.0.1")
+                .port(healthy_port as i32)
                 .build()
                 .unwrap(),
         )

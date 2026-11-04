@@ -35,6 +35,107 @@ fn same_content(a: &types::ResourceRecordSet, b: &types::ResourceRecordSet) -> b
     norm(a) == norm(b)
 }
 
+/// `[Action=CREATE, Name=www.example.com., Type=A, SetIdentifier=null]`, as
+/// Route 53 names a change in its messages.
+fn change_label(change: &types::Change, rr: &types::ResourceRecordSet) -> String {
+    format!(
+        "[Action={}, Name={}, Type={}, SetIdentifier={}]",
+        change.action,
+        names::display(&rr.name),
+        rr.r#type,
+        rr.set_identifier.as_deref().unwrap_or("null")
+    )
+}
+
+/// A record value problem, worded as Route 53's record parser reports it.
+fn bad_value(code: &str, explanation: &str, value: &str) -> String {
+    format!("Invalid Resource Record: 'FATAL problem: {code} ({explanation}) encountered with '{value}''")
+}
+
+/// Whether `v` is a domain name Route 53 accepts in record data.
+fn domain_problem(v: &str) -> Option<(&'static str, &'static str)> {
+    let bare = v.strip_suffix('.').unwrap_or(v);
+    if bare.is_empty() {
+        return (v != ".").then_some(("DomainLabelEmpty", "Domain label is empty"));
+    }
+    if bare.len() > 253 {
+        return Some(("DomainNameTooLong", "Domain name is too long"));
+    }
+    for label in bare.split('.') {
+        if label.is_empty() {
+            return Some(("DomainLabelEmpty", "Domain label is empty"));
+        }
+        if label.len() > 63 {
+            return Some(("DomainLabelTooLong", "Domain label is too long"));
+        }
+    }
+    None
+}
+
+/// Check one value of a record of type `ty`.
+fn check_value(ty: &str, v: &str) -> Option<String> {
+    let fields: Vec<&str> = v.split_whitespace().collect();
+    let u16_ok = |f: &str| f.parse::<u16>().is_ok();
+    let problem = match ty {
+        "A" if v.parse::<Ipv4Addr>().is_err() => {
+            Some(("ARRDATAIllegalIPv4Address", "Value is not a valid IPv4 address"))
+        }
+        "AAAA" if v.parse::<Ipv6Addr>().is_err() => {
+            Some(("AAAARRDATAIllegalIPv6Address", "Value is not a valid IPv6 address"))
+        }
+        "CNAME" | "NS" | "PTR" => domain_problem(v),
+        "MX" if fields.len() != 2 => Some(("MXRRDATANotTwoFields", "Value does not contain exactly two fields")),
+        "MX" if !u16_ok(fields[0]) => Some(("MXRRDATAIllegalPriority", "Priority is not a valid integer")),
+        "MX" => domain_problem(fields[1]),
+        "SRV" if fields.len() != 4 => Some(("SRVRRDATANotFourFields", "Value does not contain exactly four fields")),
+        "SRV" if !fields[..3].iter().all(|f| u16_ok(f)) => {
+            Some(("SRVRRDATAIllegalNumber", "Priority, weight and port must be integers between 0 and 65535"))
+        }
+        "SRV" => domain_problem(fields[3]),
+        "CAA" if fields.len() < 3 || fields[0].parse::<u8>().is_err() => {
+            Some(("CAARRDATAIllegalValue", "Value must be a flag, a tag and a value"))
+        }
+        "TXT" | "SPF" if crate::dns::txt_strings(v).iter().any(|s| s.len() > 255) => {
+            Some(("TXTRDATATooLong", "Value is too long"))
+        }
+        "TXT" | "SPF" if v.len() > 4000 => Some(("TXTRDATATooLong", "Value is too long")),
+        _ => None,
+    };
+    problem.map(|(code, why)| bad_value(code, why, v))
+}
+
+/// The routing policy fields a record set carries.
+fn routing_fields(rr: &types::ResourceRecordSet) -> Vec<&'static str> {
+    let mut out = Vec::new();
+    if rr.weight.is_some() {
+        out.push("weighted");
+    }
+    if rr.region.is_some() {
+        out.push("latency");
+    }
+    if rr.failover.is_some() {
+        out.push("failover");
+    }
+    if rr.geo_location.is_some() {
+        out.push("geolocation");
+    }
+    if rr.multi_value_answer.is_some() {
+        out.push("multivalue answer");
+    }
+    if rr.geo_proximity_location.is_some() {
+        out.push("geoproximity");
+    }
+    if rr.cidr_routing_config.is_some() {
+        out.push("IP-based");
+    }
+    out
+}
+
+/// A record set's routing policy: `None` for simple routing.
+pub(crate) fn routing_policy(rr: &types::ResourceRecordSet) -> Option<&'static str> {
+    routing_fields(rr).first().copied()
+}
+
 /// Checks that do not depend on zone contents. Returns messages.
 fn validate_shape(change: &types::Change, rr: &types::ResourceRecordSet, zone: &Zone) -> Vec<String> {
     let mut msgs = Vec::new();
@@ -49,12 +150,40 @@ fn validate_shape(change: &types::Change, rr: &types::ResourceRecordSet, zone: &
     if [has_alias, has_records, has_tp].iter().filter(|b| **b).count() != 1 {
         let found = if has_alias || has_records || has_tp { "more than one" } else { "none" };
         msgs.push(format!(
-            "Invalid request: Expected exactly one of [AliasTarget, all of [TTL, and ResourceRecords], or TrafficPolicyInstanceId], but found {found} in Change with [Action={}, Name={shown}, Type={}, SetIdentifier={}]",
-            change.action,
-            rr.r#type,
-            rr.set_identifier.as_deref().unwrap_or("null")
+            "Invalid request: Expected exactly one of [AliasTarget, all of [TTL, and ResourceRecords], or TrafficPolicyInstanceId], but found {found} in Change with {}",
+            change_label(change, rr)
         ));
         return msgs;
+    }
+    let policies = routing_fields(rr);
+    if policies.len() > 1 || (policies.is_empty() && rr.set_identifier.is_some()) {
+        let found = if policies.is_empty() { "none" } else { "more than one" };
+        msgs.push(format!(
+            "Invalid request: Expected exactly one of [Weight, Region, Failover, GeoLocation, MultiValueAnswer, GeoProximityLocation, or CidrRoutingConfig], but found {found} in Change with {}",
+            change_label(change, rr)
+        ));
+        return msgs;
+    }
+    if !policies.is_empty() && rr.set_identifier.is_none() {
+        msgs.push(format!(
+            "Invalid request: Missing field 'SetIdentifier' in Change with {}",
+            change_label(change, rr)
+        ));
+        return msgs;
+    }
+    if rr.multi_value_answer.is_some() && has_alias {
+        msgs.push(format!(
+            "Invalid request: Alias records are not supported for multivalue answer routing in Change with {}",
+            change_label(change, rr)
+        ));
+    }
+    if let Some(f) = &rr.failover {
+        if f != "PRIMARY" && f != "SECONDARY" {
+            msgs.push(format!(
+                "Invalid request: Invalid failover value {f} in Change with {}",
+                change_label(change, rr)
+            ));
+        }
     }
     if rr.r#type == "CNAME" && rr.name == zone.name {
         msgs.push(format!(
@@ -63,16 +192,7 @@ fn validate_shape(change: &types::Change, rr: &types::ResourceRecordSet, zone: &
         ));
     }
     let values: Vec<&str> = rr.resource_records.iter().flatten().map(|r| r.value.as_str()).collect();
-    for v in &values {
-        match rr.r#type.as_str() {
-            "A" if v.parse::<Ipv4Addr>().is_err() => msgs
-                .push(format!("ARRDATAIllegalIPv4Address (Value is not a valid IPv4 address) encountered with '{v}'")),
-            "AAAA" if v.parse::<Ipv6Addr>().is_err() => msgs.push(format!(
-                "AAAARRDATAIllegalIPv6Address (Value is not a valid IPv6 address) encountered with '{v}'"
-            )),
-            _ => {}
-        }
-    }
+    msgs.extend(values.iter().filter_map(|v| check_value(&rr.r#type, v)));
     if rr.r#type == "CNAME" && values.len() > 1 {
         msgs.push(format!(
             "RRSet of type CNAME with DNS name {shown} has more than one record, but CNAME records may only have one"
@@ -82,6 +202,107 @@ fn validate_shape(change: &types::Change, rr: &types::ResourceRecordSet, zone: &
         msgs.push(format!("Tried to create resource record set {} but it already exists", describe(rr)));
     }
     msgs
+}
+
+/// Checks on the record sets sharing a name and type once the whole batch
+/// is applied: one routing policy per name and type, unique failover roles,
+/// locations and regions.
+fn validate_group(group: &[&types::ResourceRecordSet], new: &BTreeSet<crate::state::RecordKey>) -> Vec<String> {
+    let mut msgs = Vec::new();
+    if group.len() < 2 {
+        return msgs;
+    }
+    let first = group[0];
+    let shown = names::display(&first.name);
+    let ty = &first.r#type;
+    let is_new =
+        |r: &types::ResourceRecordSet| new.contains(&record_key(&r.name, &r.r#type, r.set_identifier.as_deref()));
+    if let Some(simple) = group.iter().find(|r| routing_policy(r).is_none()) {
+        match group.iter().find(|r| r.set_identifier.is_some() && is_new(r)) {
+            Some(other) if !is_new(simple) => msgs.push(format!(
+                "RRSet with DNS name {shown}, type {ty}, SetIdentifier {} cannot be created as a non-{} set exists with the same name and type.",
+                other.set_identifier.as_deref().unwrap_or("null"),
+                routing_policy(other).unwrap_or_default()
+            )),
+            _ => msgs.push(format!(
+                "RRSet with DNS name {shown}, type {ty} cannot be created as other RRsets exist with the same name and type."
+            )),
+        }
+        return msgs;
+    }
+    // Judge against a record set that was already there, if any.
+    let base = group.iter().find(|r| !is_new(r)).unwrap_or(&first);
+    let kind = routing_policy(base);
+    if let Some(other) = group.iter().find(|r| routing_policy(r) != kind) {
+        msgs.push(format!(
+            "RRSet with DNS name {shown}, type {ty}, SetIdentifier {} cannot be created as a non-{} set exists with the same name and type.",
+            other.set_identifier.as_deref().unwrap_or("null"),
+            routing_policy(other).unwrap_or("simple")
+        ));
+        return msgs;
+    }
+    let mut seen = BTreeSet::new();
+    for r in group {
+        let key = match kind {
+            Some("failover") => r.failover.clone(),
+            Some("latency") => r.region.clone(),
+            Some("geolocation") => r.geo_location.as_ref().map(|g| {
+                format!(
+                    "{}/{}/{}",
+                    g.continent_code.as_deref().unwrap_or_default(),
+                    g.country_code.as_deref().unwrap_or_default(),
+                    g.subdivision_code.as_deref().unwrap_or_default()
+                )
+            }),
+            Some("IP-based") => {
+                r.cidr_routing_config.as_ref().map(|c| format!("{}/{}", c.collection_id, c.location_name))
+            }
+            _ => None,
+        };
+        if let Some(key) = key {
+            if !seen.insert(key.clone()) {
+                msgs.push(format!(
+                    "RRSet with DNS name {shown}, type {ty}, SetIdentifier {} cannot be created because another {} RRSet with the same name and type already uses {key}.",
+                    r.set_identifier.as_deref().unwrap_or("null"),
+                    kind.unwrap_or_default()
+                ));
+            }
+        }
+    }
+    msgs
+}
+
+/// An alias to a record in the same zone needs that record to exist.
+fn validate_alias(
+    rr: &types::ResourceRecordSet,
+    zone: &Zone,
+    records: &std::collections::BTreeMap<crate::state::RecordKey, types::ResourceRecordSet>,
+) -> Option<String> {
+    let alias = rr.alias_target.as_ref()?;
+    if strip_id(&alias.hosted_zone_id) != zone.id {
+        return None;
+    }
+    let target = names::normalize(&alias.dns_name).unwrap_or_else(|| alias.dns_name.clone());
+    let shown = names::display(&target);
+    if !names::in_zone(&target, &zone.name) {
+        return Some(format!(
+            "Tried to create an alias that targets {shown}, type {} in zone {}, but the alias target name does not lie within the target zone",
+            rr.r#type, zone.id
+        ));
+    }
+    if target == rr.name {
+        return Some(format!(
+            "Tried to create an alias that targets {shown}, type {} in zone {}, but the alias target is the alias itself",
+            rr.r#type, zone.id
+        ));
+    }
+    let exists = records.values().any(|r| r.name == target && r.r#type == rr.r#type);
+    (!exists).then(|| {
+        format!(
+            "Tried to create an alias that targets {shown}, type {} in zone {}, but that target was not found",
+            rr.r#type, zone.id
+        )
+    })
 }
 
 impl Route53 {
@@ -107,7 +328,7 @@ impl Route53 {
         cond.insert("route53:ChangeResourceRecordSetsActions".into(), actions_k);
         ctx.authorize("route53:ChangeResourceRecordSets", &arn(ctx, "hostedzone", &id), cond)?;
 
-        let mut st = self.lock();
+        let mut st = self.lock(ctx);
         let health_ids: BTreeSet<String> = st.health_checks.keys().cloned().collect();
         let zone = st.zone(&id)?;
         let mut records = zone.records.clone();
@@ -171,6 +392,46 @@ impl Route53 {
             }
         }
         if msgs.is_empty() {
+            // Aliases and routing groups are judged on the batch's result.
+            for change in input.change_batch.changes.iter().filter(|c| c.action != "DELETE") {
+                let mut rr = change.resource_record_set.clone();
+                rr.name = names::normalize(&rr.name).unwrap_or_default();
+                msgs.extend(validate_alias(&rr, zone, &records));
+            }
+            let touched: BTreeSet<(String, String)> = input
+                .change_batch
+                .changes
+                .iter()
+                .map(|c| {
+                    let rr = &c.resource_record_set;
+                    (names::normalize(&rr.name).unwrap_or_default(), rr.r#type.clone())
+                })
+                .collect();
+            let new: BTreeSet<crate::state::RecordKey> = input
+                .change_batch
+                .changes
+                .iter()
+                .filter(|c| c.action != "DELETE")
+                .map(|c| {
+                    let rr = &c.resource_record_set;
+                    let name = names::normalize(&rr.name).unwrap_or_default();
+                    record_key(&name, &rr.r#type, rr.set_identifier.as_deref())
+                })
+                .collect();
+            for (name, ty) in &touched {
+                let group: Vec<&types::ResourceRecordSet> =
+                    records.values().filter(|r| &r.name == name && &r.r#type == ty).collect();
+                msgs.extend(validate_group(&group, &new));
+            }
+            if records.len() as i64 > crate::limits::MAX_RRSETS_BY_ZONE {
+                msgs.push(format!(
+                    "The hosted zone {} would exceed the limit of {} resource record sets.",
+                    zone.id,
+                    crate::limits::MAX_RRSETS_BY_ZONE
+                ));
+            }
+        }
+        if msgs.is_empty() {
             let apex = |t: &str| records.contains_key(&record_key(&zone.name, t, None));
             if !apex("SOA") {
                 msgs.push("A HostedZone must contain exactly one SOA record.".into());
@@ -198,7 +459,7 @@ impl Route53 {
             return Err(errors::invalid_input("The input is not valid: StartRecordType requires StartRecordName"));
         }
         let limit = max_items(input.max_items, 300, 300);
-        let st = self.lock();
+        let st = self.lock(ctx);
         let zone = st.zone(id)?;
         let start = match &input.start_record_name {
             Some(n) => {

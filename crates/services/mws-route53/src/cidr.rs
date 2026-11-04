@@ -70,7 +70,7 @@ impl Route53 {
         input: types::CreateCidrCollectionRequest,
     ) -> Result<types::CreateCidrCollectionResponse, ServiceError> {
         self.authorize(ctx, "CreateCidrCollection", "*")?;
-        let mut st = self.lock();
+        let mut st = self.lock(ctx);
         if let Some(existing) = st.cidr_collections.values().find(|c| c.name == input.name) {
             if existing.caller_reference == input.caller_reference {
                 // An idempotent retry.
@@ -122,7 +122,7 @@ impl Route53 {
             let cidrs = change.cidr_list.iter().map(|c| parse_cidr(c)).collect::<Result<BTreeSet<_>, _>>()?;
             parsed.push((change.location_name.clone(), change.action.clone(), cidrs));
         }
-        let mut st = self.lock();
+        let mut st = self.lock(ctx);
         let in_use: BTreeSet<(String, String)> = st
             .zones
             .values()
@@ -170,7 +170,7 @@ impl Route53 {
         input: types::DeleteCidrCollectionRequest,
     ) -> Result<types::DeleteCidrCollectionResponse, ServiceError> {
         self.authorize(ctx, "DeleteCidrCollection", &arn(ctx, "cidrcollection", &input.id))?;
-        let mut st = self.lock();
+        let mut st = self.lock(ctx);
         if !st.collection(&input.id)?.locations.is_empty() {
             return Err(errors::cidr_collection_in_use(
                 "This CIDR collection is in use, and isn't empty. Delete all CIDR blocks before deleting the collection.",
@@ -188,7 +188,7 @@ impl Route53 {
         self.authorize(ctx, "ListCidrCollections", "*")?;
         let limit = max_items(input.max_results, 100, 100);
         let start = page_start(input.next_token.as_deref())?;
-        let st = self.lock();
+        let st = self.lock(ctx);
         let mut all: Vec<&CidrCollection> = st.cidr_collections.values().collect();
         all.sort_by(|a, b| a.name.cmp(&b.name));
         Ok(types::ListCidrCollectionsResponse {
@@ -205,7 +205,7 @@ impl Route53 {
         self.authorize(ctx, "ListCidrLocations", &arn(ctx, "cidrcollection", &input.collection_id))?;
         let limit = max_items(input.max_results, 100, 100);
         let start = page_start(input.next_token.as_deref())?;
-        let st = self.lock();
+        let st = self.lock(ctx);
         let c = st.collection(&input.collection_id)?;
         let names: Vec<&String> = c.locations.keys().collect();
         Ok(types::ListCidrLocationsResponse {
@@ -229,7 +229,7 @@ impl Route53 {
         self.authorize(ctx, "ListCidrBlocks", &arn(ctx, "cidrcollection", &input.collection_id))?;
         let limit = max_items(input.max_results, 100, 100);
         let start = page_start(input.next_token.as_deref())?;
-        let st = self.lock();
+        let st = self.lock(ctx);
         let c = st.collection(&input.collection_id)?;
         if let Some(l) = &input.location_name {
             if !c.locations.contains_key(l) {
