@@ -140,7 +140,7 @@ fn build_with_store(config: Config, store: Option<Arc<Store>>) -> Mws {
     events.register_target_sink("sqs", Arc::new(sinks::SqsTarget(sqs.clone())));
     let secretsmanager = SecretsManager::new(kms.clone()).with_lambda(lambda.clone());
     ssm.set_secrets_manager(Arc::new(SsmSecretReferences(secretsmanager.clone())));
-    let sns = Sns::new().with_lambda(lambda.clone());
+    let sns = Sns::new().with_lambda(lambda.clone()).with_kms(kms.clone());
     s3.add_notification_destination(Arc::new(sns.clone()));
     s3.add_notification_destination(Arc::new(lambda.clone()));
     sns.set_queues(Arc::new(links::SnsToSqs(sqs.clone())));

@@ -39,6 +39,11 @@ pub struct Topic {
     /// FIFO deduplication ids seen in the last five minutes.
     pub dedup: BTreeMap<String, Dedup>,
     pub subscriptions_deleted: u64,
+    /// When archiving started (`BeginningArchiveTime`), while the topic
+    /// has an `ArchivePolicy`.
+    pub archive_since: Option<chrono::DateTime<chrono::Utc>>,
+    /// Archived messages, oldest first.
+    pub archive: Vec<crate::publish::Outgoing>,
 }
 
 impl Topic {

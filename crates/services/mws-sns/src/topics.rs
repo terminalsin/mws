@@ -300,19 +300,18 @@ impl Sns {
                 None => deduped.push(t),
             }
         }
-        st.topics.insert(
-            arn.clone(),
-            Topic {
-                arn: arn.clone(),
-                name: input.name,
-                account,
-                region: ctx.region.clone(),
-                attributes: stored,
-                tags: deduped,
-                data_protection_policy: input.data_protection_policy.filter(|d| !d.is_empty()),
-                ..Topic::default()
-            },
-        );
+        let mut topic = Topic {
+            arn: arn.clone(),
+            name: input.name,
+            account,
+            region: ctx.region.clone(),
+            attributes: stored,
+            tags: deduped,
+            data_protection_policy: input.data_protection_policy.filter(|d| !d.is_empty()),
+            ..Topic::default()
+        };
+        topic.sync_archive(ctx.received_at);
+        st.topics.insert(arn.clone(), topic);
         Ok(types::CreateTopicResponse { topic_arn: Some(arn) })
     }
 
@@ -382,9 +381,8 @@ impl Sns {
             None => DEFAULT_DELIVERY_POLICY.to_string(),
         };
         out.insert("EffectiveDeliveryPolicy".into(), effective);
-        if let Some(a) = t.attributes.get("ArchivePolicy").filter(|a| !a.is_empty()) {
-            let _ = a;
-            out.insert("BeginningArchiveTime".into(), mws_proto_query::format_timestamp(&ctx.received_at));
+        if let Some(since) = &t.archive_since {
+            out.insert("BeginningArchiveTime".into(), mws_proto_query::format_timestamp(since));
         }
         Ok(types::GetTopicAttributesResponse { attributes: Some(out) })
     }
@@ -414,6 +412,7 @@ impl Sns {
         } else {
             t.attributes.insert(name, value);
         }
+        t.sync_archive(ctx.received_at);
         Ok(())
     }
 

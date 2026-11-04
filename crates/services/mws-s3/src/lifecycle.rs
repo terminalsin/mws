@@ -70,6 +70,12 @@ fn current_expiry(rule: &types::LifecycleRule, v: &ObjectVersion) -> Option<Date
     }
 }
 
+/// When lifecycle rules will expire the current version `v` of `key`.
+pub fn expiry(b: &Bucket, key: &str, v: &ObjectVersion) -> Option<DateTime<Utc>> {
+    let config = b.lifecycle.as_ref()?;
+    config.rules.iter().filter(|r| enabled(r) && matches(r, key, v)).filter_map(|r| current_expiry(r, v)).min()
+}
+
 /// The `x-amz-expiration` header value for the current version of `key`:
 /// the earliest expiration any enabled rule schedules.
 pub fn expiration_header(b: &Bucket, key: &str, v: &ObjectVersion) -> Option<String> {

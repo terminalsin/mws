@@ -136,6 +136,26 @@ impl Kms {
         crypto::sign(ops::spec(key), &m.secret, algorithm, Message::Raw(message))
     }
 
+    /// Generate a data key as a service principal, after
+    /// [`Kms::key_for_service`] allowed `kms:GenerateDataKey` (S3 writing
+    /// SSE-KMS inventory reports, ...).
+    pub fn generate_data_key_for_service(
+        &self,
+        key_arn: &str,
+        context: &BTreeMap<String, String>,
+        number_of_bytes: usize,
+    ) -> Result<DataKey, ServiceError> {
+        let key = {
+            let st = self.lock();
+            let key = st.key(key_arn)?;
+            ops::require_enabled(key)?;
+            key.clone()
+        };
+        let plaintext = crypto::random_bytes(number_of_bytes);
+        let out = ops::cryptographic::encrypt_with(&key, &plaintext, context, None)?;
+        Ok(DataKey { key_arn: key.arn, plaintext, ciphertext: out.ciphertext })
+    }
+
     /// A key ARN for a key or alias ARN.
     fn arn_from_reference(st: &crate::state::State, key: &str) -> Result<String, ServiceError> {
         if key.contains(":alias/") {

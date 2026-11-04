@@ -37,6 +37,7 @@ mod cors;
 mod directory;
 mod errors;
 mod handler;
+mod inventory;
 mod kms;
 mod lifecycle;
 mod listing;
@@ -44,6 +45,7 @@ mod metadata;
 mod multipart;
 mod notifications;
 mod objects;
+mod parquet;
 mod public;
 mod replication;
 mod select;
@@ -318,6 +320,7 @@ impl Service for S3 {
         input: serde_json::Value,
     ) -> Result<serde_json::Value, ServiceError> {
         self.run_lifecycle(ctx.received_at);
+        self.run_inventory(&ctx);
         let call = self.call(&ctx, None);
         let out = generated::invoke(&call, &ctx, operation, input).await;
         self.replicate(&ctx, call.take_written());
@@ -356,6 +359,7 @@ impl S3 {
             return self.preflight(&ctx, &request);
         }
         self.run_lifecycle(ctx.received_at);
+        self.run_inventory(&ctx);
         if signature_v2(&request) {
             // S3 turned Signature Version 2 off for buckets created since
             // June 2020; every MWS bucket is that new.

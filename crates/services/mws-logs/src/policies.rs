@@ -270,6 +270,14 @@ impl Logs {
         self.authorize(ctx, "PutAccountPolicy", "*", ConditionContext::new())?;
         if input.policy_type == "DATA_PROTECTION_POLICY" {
             check_data_protection_policy(&input.policy_document)?;
+        } else if input.policy_type == "TRANSFORMER_POLICY" {
+            let doc = check_json(&input.policy_document, "Policy document")?;
+            let mut d = mws_proto_json::Decoder::new();
+            let processors =
+                crate::generated::de::de_processors(&mut d, doc.get("transformerConfig"), "transformerConfig")
+                    .ok_or_else(|| errors::invalid_parameter("Policy document must contain a transformerConfig."))?;
+            d.finish("InvalidParameterException")?;
+            crate::transform::validate(&processors).map_err(errors::invalid_parameter)?;
         } else {
             check_json(&input.policy_document, "Policy document")?;
         }

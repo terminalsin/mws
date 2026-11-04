@@ -111,6 +111,9 @@ impl Sns {
             "UnsubscribeURL".into(),
             Value::String(format!("{}/?Action=Unsubscribe&SubscriptionArn={}", base_url(ctx), enc(&sub.arn))),
         );
+        if msg.replayed {
+            out.insert("Replayed".into(), Value::Bool(true));
+        }
         if !msg.attributes.is_empty() {
             let attrs: Map<String, Value> =
                 msg.attributes.iter().map(|(k, v)| (k.clone(), attribute_json(v))).collect();
@@ -153,7 +156,11 @@ impl Sns {
         let origin = Origin::of(topic);
         let subs: Vec<Subscription> = {
             let st = self.lock();
-            st.subscriptions.values().filter(|s| s.topic_arn == topic.arn && !s.pending).cloned().collect()
+            st.subscriptions
+                .values()
+                .filter(|s| s.topic_arn == topic.arn && !s.pending && !crate::archive::paused(s))
+                .cloned()
+                .collect()
         };
         for sub in subs {
             if let Some(policy) = sub.attributes.get("FilterPolicy").filter(|p| !p.is_empty()) {
@@ -165,6 +172,11 @@ impl Sns {
             }
             self.deliver(ctx, &origin, &sub, &msg);
         }
+    }
+
+    /// Deliver one message to one subscription (archive replays).
+    pub(crate) fn deliver_one(&self, ctx: &RequestContext, topic: &Topic, sub: &Subscription, msg: &Outgoing) {
+        self.deliver(ctx, &Origin::of(topic), sub, msg);
     }
 
     fn attempt<'a>(

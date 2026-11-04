@@ -52,6 +52,8 @@ pub struct Bucket {
     pub analytics: BTreeMap<String, types::AnalyticsConfiguration>,
     pub metrics: BTreeMap<String, types::MetricsConfiguration>,
     pub inventory: BTreeMap<String, types::InventoryConfiguration>,
+    /// When each inventory configuration next delivers a report.
+    pub inventory_due: BTreeMap<String, DateTime<Utc>>,
     pub intelligent_tiering: BTreeMap<String, types::IntelligentTieringConfiguration>,
     pub abac: Option<String>,
     /// S3 Metadata: the V2 configuration (journal, inventory, annotation
@@ -97,6 +99,7 @@ impl Default for Bucket {
             analytics: BTreeMap::new(),
             metrics: BTreeMap::new(),
             inventory: BTreeMap::new(),
+            inventory_due: BTreeMap::new(),
             intelligent_tiering: BTreeMap::new(),
             abac: None,
             metadata: None,

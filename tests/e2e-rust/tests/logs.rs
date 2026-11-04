@@ -1334,3 +1334,84 @@ async fn state_round_trips() {
     let got = logs.get_log_events().log_group_name("/keep").log_stream_name("s").send().await.unwrap();
     assert_eq!(got.events()[0].message(), Some("persist me"));
 }
+
+#[tokio::test]
+async fn transformers_apply_at_ingestion() {
+    use aws_sdk_cloudwatchlogs::types::{AddKeyEntry, AddKeys, ParseJson, Processor};
+    let mws = Mws::start().await;
+    let logs = client(&mws).await;
+    let t = now_ms() - 60_000;
+    group_with_events(&logs, "/ingest", "s", &[(t, r#"{"user":"before"}"#)]).await;
+    let config = vec![
+        Processor::builder().parse_json(ParseJson::builder().build()).build(),
+        Processor::builder()
+            .add_keys(
+                AddKeys::builder()
+                    .entries(AddKeyEntry::builder().key("env").value("prod").build().unwrap())
+                    .build()
+                    .unwrap(),
+            )
+            .build(),
+    ];
+    logs.put_transformer().log_group_identifier("/ingest").set_transformer_config(Some(config)).send().await.unwrap();
+    logs.put_log_events()
+        .log_group_name("/ingest")
+        .log_stream_name("s")
+        .log_events(event(t + 1000, r#"{"user":"after"}"#))
+        .send()
+        .await
+        .unwrap();
+
+    // GetLogEvents and FilterLogEvents give back the originals.
+    let got = logs.get_log_events().log_group_name("/ingest").log_stream_name("s").send().await.unwrap();
+    let messages: Vec<&str> = got.events().iter().filter_map(|e| e.message()).collect();
+    assert_eq!(messages, [r#"{"user":"before"}"#, r#"{"user":"after"}"#]);
+    let filtered = logs.filter_log_events().log_group_name("/ingest").filter_pattern("prod").send().await.unwrap();
+    assert!(filtered.events().is_empty());
+
+    // Logs Insights sees the transformed events; earlier events were not
+    // transformed.
+    let q = logs
+        .start_query()
+        .log_group_name("/ingest")
+        .start_time(t / 1000 - 60)
+        .end_time(t / 1000 + 60)
+        .query_string("filter env = \"prod\" | fields user, env, @message")
+        .send()
+        .await
+        .unwrap();
+    let res = logs.get_query_results().query_id(q.query_id().unwrap()).send().await.unwrap();
+    assert_eq!(res.results().len(), 1, "{res:?}");
+    let field = |name: &str| {
+        res.results()[0].iter().find(|f| f.field() == Some(name)).and_then(|f| f.value()).map(str::to_string)
+    };
+    assert_eq!(field("user").as_deref(), Some("after"));
+    assert_eq!(field("env").as_deref(), Some("prod"));
+
+    // An account-level transformer policy covers groups it selects.
+    let policy = serde_json::json!({"transformerConfig": [
+        {"parseJSON": {}},
+        {"addKeys": {"entries": [{"key": "tier", "value": "gold"}]}}
+    ]});
+    logs.put_account_policy()
+        .policy_name("tx")
+        .policy_type(aws_sdk_cloudwatchlogs::types::PolicyType::TransformerPolicy)
+        .policy_document(policy.to_string())
+        .selection_criteria("LogGroupNamePrefix IN [\"/acct\"]")
+        .send()
+        .await
+        .unwrap();
+    group_with_events(&logs, "/acct/app", "s", &[(t, r#"{"n":1}"#)]).await;
+    let q = logs
+        .start_query()
+        .log_group_name("/acct/app")
+        .start_time(t / 1000 - 60)
+        .end_time(t / 1000 + 60)
+        .query_string("fields tier")
+        .send()
+        .await
+        .unwrap();
+    let res = logs.get_query_results().query_id(q.query_id().unwrap()).send().await.unwrap();
+    let tier = res.results()[0].iter().find(|f| f.field() == Some("tier")).and_then(|f| f.value());
+    assert_eq!(tier, Some("gold"));
+}
