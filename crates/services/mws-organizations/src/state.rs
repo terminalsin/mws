@@ -25,6 +25,9 @@ pub struct AccountInfo {
     pub status: String,
     /// `ACTIVE`, `SUSPENDED`, `PENDING_CLOSURE`, `CLOSED`, ...
     pub state: String,
+    /// When CloseAccount closed it (for the rolling 30-day closure quota).
+    #[serde(default)]
+    pub closed_at: Option<DateTime<Utc>>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -194,6 +197,17 @@ impl Org {
     /// Depth of an OU below the root (a child of the root is 1).
     pub fn ou_depth(&self, id: &str) -> usize {
         self.lineage(id).len().saturating_sub(1)
+    }
+
+    /// The tags of a root, OU or account (`aws:ResourceTag/...`).
+    pub fn target_tags(&self, id: &str) -> Tags {
+        if id == self.root_id {
+            return self.root_tags.clone();
+        }
+        if let Some(ou) = self.ous.get(id) {
+            return ou.tags.clone();
+        }
+        self.members.get(id).map(|m| m.tags.clone()).unwrap_or_default()
     }
 
     pub fn type_enabled(&self, ty: &str) -> bool {
