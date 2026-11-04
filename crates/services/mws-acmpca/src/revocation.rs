@@ -34,7 +34,7 @@ pub fn ca_id(arn: &str) -> &str {
     arn.rsplit('/').next().unwrap_or(arn)
 }
 
-fn region(arn: &str) -> &str {
+pub fn region(arn: &str) -> &str {
     arn.split(':').nth(3).unwrap_or("us-east-1")
 }
 
@@ -128,7 +128,7 @@ fn hex_bytes(s: &str) -> Vec<u8> {
 
 /// Regenerate the CA's CRL if CRLs are enabled and it has a certificate.
 /// Revoked certificates stay listed until they expire, and in one more CRL.
-pub fn refresh_crl(ca: &mut Ca) -> Result<(), ServiceError> {
+pub fn refresh_crl(ca: &mut Ca, now: DateTime<Utc>) -> Result<(), ServiceError> {
     let (Some(config), Some(cert_pem)) = (crl_config(ca), ca.cert_pem.clone()) else {
         ca.crl = None;
         return Ok(());
@@ -139,7 +139,6 @@ pub fn refresh_crl(ca: &mut Ca) -> Result<(), ServiceError> {
     let issuer = CertificateParams::from_ca_cert_pem(&cert_pem)
         .and_then(|p| p.self_signed(&key))
         .map_err(|e| ServiceError::internal(format!("loading CA certificate: {e}")))?;
-    let now = Utc::now();
     let previous_crl_end = ca.crl.as_ref().map(|c| c.this_update).unwrap_or(now);
     let revoked_certs = ca
         .certs
@@ -280,8 +279,12 @@ fn reason_code(r: &str) -> u8 {
 }
 
 /// A signed, successful OCSP response from `ca` for `request`.
-pub fn respond(ca: &Ca, request: &OcspRequest<'_>, issuer: &IssuerIds) -> Result<Vec<u8>, ServiceError> {
-    let now = Utc::now();
+pub fn respond(
+    ca: &Ca,
+    request: &OcspRequest<'_>,
+    issuer: &IssuerIds,
+    now: DateTime<Utc>,
+) -> Result<Vec<u8>, ServiceError> {
     let next = now + Duration::hours(OCSP_VALIDITY_HOURS);
     let mut singles = Vec::new();
     for id in &request.cert_ids {

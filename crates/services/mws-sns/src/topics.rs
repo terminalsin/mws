@@ -173,27 +173,7 @@ fn tag_context(tags: &[types::Tag]) -> ConditionContext {
 }
 
 pub(crate) fn validate_data_protection_policy(doc: &str) -> Result<(), ServiceError> {
-    let fail = |why: &str| errors::invalid(format!("DataProtectionPolicy Reason: {why}"));
-    let v: serde_json::Value = serde_json::from_str(doc).map_err(|_| fail("Failed to parse JSON"))?;
-    let obj = v.as_object().ok_or_else(|| fail("Policy must be a JSON object"))?;
-    for key in ["Name", "Version", "Statement"] {
-        if !obj.contains_key(key) {
-            return Err(fail(&format!("Missing required field {key}")));
-        }
-    }
-    if obj.get("Version").and_then(|v| v.as_str()) != Some("2021-06-01") {
-        return Err(fail("Version must be 2021-06-01"));
-    }
-    let statements = obj.get("Statement").and_then(|s| s.as_array()).ok_or_else(|| fail("Statement must be a list"))?;
-    for s in statements {
-        let Some(s) = s.as_object() else { return Err(fail("Statement must be a list of objects")) };
-        for key in ["DataIdentifier", "Operation", "Principal", "DataDirection"] {
-            if !s.contains_key(key) {
-                return Err(fail(&format!("Statement is missing required field {key}")));
-            }
-        }
-    }
-    Ok(())
+    crate::data_protection::DataProtection::parse(doc).map(|_| ())
 }
 
 impl Sns {

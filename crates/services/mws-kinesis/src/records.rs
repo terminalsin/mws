@@ -4,6 +4,7 @@
 use mws_core::{ConditionContext, RequestContext, ServiceError};
 
 use crate::generated::{errors, types};
+use crate::metrics::{latency_ms, Batch};
 use crate::names::{authorize_stream, invalid_argument, now_ms, stream_not_found, StreamRef};
 use crate::shards::{hash_partition_key, parse_sequence_number, sequence_number, Iterator, ITERATOR_TTL_MS};
 use crate::state::{shard_id, Shard, StoredRecord, Stream};
@@ -135,14 +136,27 @@ impl Kinesis {
         if input.dry_run == Some(true) {
             return Err(dry_run());
         }
+        let started = std::time::Instant::now();
         let encryption = self.encryption_for_put(ctx, &r)?;
         let now = now_ms(ctx);
-        let (shard, seq) = {
+        let (shard, seq, mut batch) = {
             let mut st = self.lock();
             let s = usable(&mut st, &r)?;
-            append(s, &entry, now)
+            let (shard, seq) = append(s, &entry, now);
+            (shard, seq, Batch::new(s, now))
         };
         self.arrivals.notify_waiters();
+        let bytes = entry.data.len() as f64;
+        batch.stream("PutRecord.Bytes", "Bytes", bytes);
+        batch.stream("PutRecord.Latency", "Milliseconds", latency_ms(started));
+        batch.stream("PutRecord.Success", "Count", 1.0);
+        batch.stream("IncomingBytes", "Bytes", bytes);
+        batch.stream("IncomingRecords", "Count", 1.0);
+        batch.stream("WriteProvisionedThroughputExceeded", "Count", 0.0);
+        batch.shard(&shard, "IncomingBytes", "Bytes", bytes);
+        batch.shard(&shard, "IncomingRecords", "Count", 1.0);
+        batch.shard(&shard, "WriteProvisionedThroughputExceeded", "Count", 0.0);
+        self.publish(batch);
         Ok(types::PutRecordOutput { shard_id: shard, sequence_number: seq, encryption_type: Some(encryption) })
     }
 
@@ -179,15 +193,20 @@ impl Kinesis {
         if input.dry_run == Some(true) {
             return Err(dry_run());
         }
+        let started = std::time::Instant::now();
         let encryption = self.encryption_for_put(ctx, &r)?;
         let now = now_ms(ctx);
-        let results = {
+        let mut per_shard: std::collections::BTreeMap<String, (f64, f64)> = Default::default();
+        let (results, mut batch) = {
             let mut st = self.lock();
             let s = usable(&mut st, &r)?;
-            entries
+            let results: Vec<types::PutRecordsResultEntry> = entries
                 .iter()
                 .map(|e| {
                     let (shard, seq) = append(s, e, now);
+                    let t = per_shard.entry(shard.clone()).or_default();
+                    t.0 += e.data.len() as f64;
+                    t.1 += 1.0;
                     types::PutRecordsResultEntry {
                         sequence_number: Some(seq),
                         shard_id: Some(shard),
@@ -195,9 +214,29 @@ impl Kinesis {
                         error_message: None,
                     }
                 })
-                .collect()
+                .collect();
+            (results, Batch::new(s, now))
         };
         self.arrivals.notify_waiters();
+        let bytes: f64 = entries.iter().map(|e| e.data.len() as f64).sum();
+        let count = entries.len() as f64;
+        batch.stream("PutRecords.Bytes", "Bytes", bytes);
+        batch.stream("PutRecords.Latency", "Milliseconds", latency_ms(started));
+        batch.stream("PutRecords.Success", "Count", 1.0);
+        batch.stream("PutRecords.Records", "Count", count);
+        batch.stream("PutRecords.TotalRecords", "Count", count);
+        batch.stream("PutRecords.SuccessfulRecords", "Count", count);
+        batch.stream("PutRecords.FailedRecords", "Count", 0.0);
+        batch.stream("PutRecords.ThrottledRecords", "Count", 0.0);
+        batch.stream("IncomingBytes", "Bytes", bytes);
+        batch.stream("IncomingRecords", "Count", count);
+        batch.stream("WriteProvisionedThroughputExceeded", "Count", 0.0);
+        for (shard, (b, n)) in &per_shard {
+            batch.shard(shard, "IncomingBytes", "Bytes", *b);
+            batch.shard(shard, "IncomingRecords", "Count", *n);
+            batch.shard(shard, "WriteProvisionedThroughputExceeded", "Count", 0.0);
+        }
+        self.publish(batch);
         Ok(types::PutRecordsOutput {
             failed_record_count: Some(0),
             records: results,
@@ -280,6 +319,7 @@ impl Kinesis {
         if let Some(dk) = data_key {
             self.check_decrypt(ctx, &r.arn, &dk)?;
         }
+        let started = std::time::Instant::now();
         let st = self.lock();
         let s = r.get(&st)?;
         let Some(shard) = s.shards.iter().find(|sh| sh.index == it.shard) else {
@@ -296,13 +336,40 @@ impl Kinesis {
             (true, false) => None,
             _ => Some(Iterator { counter: read.next_counter, issued: now, ..it.clone() }.encode()),
         };
+        let child_shards = read.end_of_closed_shard.then(|| children(s, shard));
+        let mut batch = Batch::new(s, now);
+        let id = shard.id();
+        drop(st);
+        let bytes: f64 = read.records.iter().map(|r| r.data.len() as f64).sum();
+        let count = read.records.len() as f64;
+        let age = iterator_age(&read.records, now);
+        batch.stream("GetRecords.Bytes", "Bytes", bytes);
+        batch.stream("GetRecords.IteratorAgeMilliseconds", "Milliseconds", age);
+        batch.stream("GetRecords.Latency", "Milliseconds", latency_ms(started));
+        batch.stream("GetRecords.Records", "Count", count);
+        batch.stream("GetRecords.Success", "Count", 1.0);
+        batch.stream("ReadProvisionedThroughputExceeded", "Count", 0.0);
+        batch.shard(&id, "OutgoingBytes", "Bytes", bytes);
+        batch.shard(&id, "OutgoingRecords", "Count", count);
+        batch.shard(&id, "IteratorAgeMilliseconds", "Milliseconds", age);
+        batch.shard(&id, "ReadProvisionedThroughputExceeded", "Count", 0.0);
+        self.publish(batch);
         Ok(types::GetRecordsOutput {
             records: read.records,
             next_shard_iterator: next,
             millis_behind_latest: Some(read.millis_behind),
-            child_shards: read.end_of_closed_shard.then(|| children(s, shard)),
+            child_shards,
         })
     }
+}
+
+/// How old the last record a read returned is (0 when it returned none),
+/// for the `IteratorAgeMilliseconds` metrics.
+pub(crate) fn iterator_age(records: &[types::Record], now: i64) -> f64 {
+    records
+        .last()
+        .and_then(|r| r.approximate_arrival_timestamp)
+        .map_or(0.0, |t| (now - t.timestamp_millis()).max(0) as f64)
 }
 
 /// What one read of a shard returned.

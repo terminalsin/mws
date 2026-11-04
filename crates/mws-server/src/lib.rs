@@ -245,7 +245,13 @@ impl Gateway {
             Err(e) => return service.render_error(&request_id, &sigv4_error(e)),
         };
 
-        let ctx = self.context(request_id, parsed.scope.region.clone(), resolved.caller, remote, now);
+        // A SigV4a request valid in every Region (`X-Amz-Region-Set: *`)
+        // runs in the default Region.
+        let region = match parsed.scope.region.as_str() {
+            "" => self.env.default_region.clone(),
+            r => r.to_string(),
+        };
+        let ctx = self.context(request_id, region, resolved.caller, remote, now);
         service.handle(ctx, request).await
     }
 

@@ -193,6 +193,36 @@ impl mws_events::ClockSource for SsmPolicyEvents {
     }
 }
 
+/// Parameter Store's "Parameter Store Change" events (create, update,
+/// delete, label), put on the parameter's account's default bus.
+pub struct SsmChangeEvents(pub Events);
+
+impl mws_ssm::ParameterChangeSink for SsmChangeEvents {
+    fn parameter_changed(&self, ctx: &RequestContext, c: mws_ssm::ParameterChange) {
+        let mut detail = serde_json::json!({
+            "operation": c.operation,
+            "name": c.name,
+            "type": c.parameter_type,
+        });
+        if let Some(d) = c.description {
+            detail["description"] = serde_json::json!(d);
+        }
+        self.0.put_service_event(
+            ctx,
+            ServiceEvent {
+                partition: c.partition,
+                account: c.account,
+                region: c.region,
+                source: "aws.ssm".into(),
+                detail_type: "Parameter Store Change".into(),
+                resources: vec![c.arn],
+                detail,
+                time: c.time,
+            },
+        );
+    }
+}
+
 /// ACM's daily "ACM Certificate Approaching Expiration" events.
 pub struct AcmExpiryEvents {
     pub acm: mws_acm::Acm,
@@ -269,5 +299,14 @@ impl TargetSink for FirehoseTarget {
             )
             .map(|_| ())
             .map_err(target_error)
+    }
+}
+
+/// Route 53 health checks for EventBridge global endpoint failover.
+pub struct Route53HealthChecks(pub mws_route53::Route53);
+
+impl mws_events::HealthChecks for Route53HealthChecks {
+    fn healthy(&self, health_check_arn: &str) -> Option<bool> {
+        self.0.health_check_healthy(health_check_arn)
     }
 }

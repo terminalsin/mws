@@ -194,6 +194,11 @@ impl Sns {
                 return Err(errors::invalid(format!("Invalid protocol type: {protocol}")));
             }
             check_endpoint(&st, &protocol, &endpoint)?;
+            if protocol == "sqs" && !topic.is_fifo() && endpoint.ends_with(".fifo") {
+                return Err(errors::invalid(
+                    "Invalid parameter: Endpoint Reason: FIFO SQS Queues can not be subscribed to standard SNS topics",
+                ));
+            }
             for (k, v) in &attributes {
                 if !SETTABLE.contains(&k.as_str()) {
                     return Err(errors::invalid(format!("Attributes Reason: Unknown attribute {k}")));

@@ -133,13 +133,19 @@ impl Constraints {
         let pick = |name: &str| member.and_then(|m| m.get_trait(name)).or_else(|| target.get_trait(name)).cloned();
         let mut out = String::new();
         let is_string = matches!(target.ty, ShapeType::String | ShapeType::Enum);
+        // AWS leaves `@sensitive` values out of validation messages.
+        let sensitive = member.is_some_and(|m| m.has_trait("sensitive")) || target.has_trait("sensitive");
         if let Some(b) = Bounds::from_trait(pick("length").as_ref()) {
             let (len, shown) = match target.ty {
                 ShapeType::String | ShapeType::Enum => ("v.chars().count()", "v.as_str()".to_string()),
                 ShapeType::List | ShapeType::Set => ("v.len()", "&::mws_core::render_list(v)".to_string()),
                 _ => ("v.len()", "\"\"".to_string()),
             };
-            let _ = writeln!(out, "d.check_length(&p, {shown}, {len}, {}, {});", opt_u64(b.min), opt_u64(b.max));
+            if sensitive {
+                let _ = writeln!(out, "d.check_length_redacted(&p, {len}, {}, {});", opt_u64(b.min), opt_u64(b.max));
+            } else {
+                let _ = writeln!(out, "d.check_length(&p, {shown}, {len}, {}, {});", opt_u64(b.min), opt_u64(b.max));
+            }
         }
         if is_string {
             if let Some(Value::String(pat)) = pick("pattern") {
@@ -151,7 +157,8 @@ impl Constraints {
                             self.regexes.len() - 1
                         }
                     };
-                    let _ = writeln!(out, "d.check_pattern(&p, v, &RE_{idx}, {});", rust_str(&pat));
+                    let check = if sensitive { "check_pattern_redacted" } else { "check_pattern" };
+                    let _ = writeln!(out, "d.{check}(&p, v, &RE_{idx}, {});", rust_str(&pat));
                 } else {
                     let _ =
                         writeln!(out, "// pattern {} is not expressible with the regex crate; skipped", rust_str(&pat));

@@ -336,7 +336,11 @@ fn build_parts(error: &ServiceError, type_name: Option<String>, query_error: Opt
     let type_name = type_name.unwrap_or_else(|| code.to_string());
     let mut body = Map::new();
     body.insert("__type".into(), Value::String(type_name));
-    body.insert("message".into(), Value::String(error.message.clone()));
+    // AWS leaves `message` out of errors that have none (Parameter Store's
+    // `ParameterNotFound` is just `{"__type":"ParameterNotFound"}`).
+    if !error.message.is_empty() {
+        body.insert("message".into(), Value::String(error.message.clone()));
+    }
     for f in &error.fields {
         let v = match &f.value {
             ErrorValue::String(s) => Value::String(s.clone()),

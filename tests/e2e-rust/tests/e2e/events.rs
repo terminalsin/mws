@@ -1206,6 +1206,60 @@ async fn ssm_parameter_policies_send_events_on_the_emulated_clock() {
 }
 
 #[tokio::test]
+async fn ssm_parameter_changes_send_parameter_store_change_events() {
+    let mws = Mws::start().await;
+    let cfg = mws.root_sdk_config().await;
+    let eb = Client::new(&cfg);
+    let sqs = aws_sdk_sqs::Client::new(&cfg);
+    let ssm = aws_sdk_ssm::Client::new(&cfg);
+    let (url, queue) = open_queue(&sqs, "ssm-changes").await;
+    eb.put_rule()
+        .name("ssm-changes")
+        .event_pattern(r#"{"source":["aws.ssm"],"detail-type":["Parameter Store Change"]}"#)
+        .send()
+        .await
+        .unwrap();
+    eb.put_targets().rule("ssm-changes").targets(target("q", &queue)).send().await.unwrap();
+
+    use aws_sdk_ssm::types::ParameterType;
+    ssm.put_parameter()
+        .name("/app/flag")
+        .value("on")
+        .r#type(ParameterType::String)
+        .description("Feature flag")
+        .send()
+        .await
+        .unwrap();
+    ssm.put_parameter().name("/app/flag").value("off").overwrite(true).send().await.unwrap();
+    ssm.label_parameter_version().name("/app/flag").labels("prod").send().await.unwrap();
+    ssm.delete_parameter().name("/app/flag").send().await.unwrap();
+
+    let mut seen = Vec::new();
+    while seen.len() < 4 {
+        let messages = eventually(10, || async {
+            let r = sqs.receive_message().queue_url(&url).max_number_of_messages(10).send().await.unwrap();
+            r.messages.filter(|m| !m.is_empty())
+        })
+        .await;
+        for m in messages {
+            sqs.delete_message().queue_url(&url).receipt_handle(m.receipt_handle().unwrap()).send().await.unwrap();
+            seen.push(serde_json::from_str::<serde_json::Value>(m.body().unwrap()).unwrap());
+        }
+    }
+    let mut ops: Vec<_> = seen.iter().map(|e| e["detail"]["operation"].as_str().unwrap().to_string()).collect();
+    ops.sort();
+    assert_eq!(ops, ["Create", "Delete", "LabelParameterVersion", "Update"]);
+    let create = seen.iter().find(|e| e["detail"]["operation"] == "Create").unwrap();
+    assert_eq!(create["source"], "aws.ssm");
+    assert_eq!(create["account"], ACCOUNT);
+    assert_eq!(create["resources"][0], format!("arn:aws:ssm:us-east-1:{ACCOUNT}:parameter/app/flag"));
+    assert_eq!(create["detail"]["name"], "/app/flag");
+    assert_eq!(create["detail"]["type"], "String");
+    assert_eq!(create["detail"]["description"], "Feature flag");
+    mws.stop().await;
+}
+
+#[tokio::test]
 async fn acm_sends_approaching_expiration_events_daily() {
     let mws = Mws::start().await;
     let cfg = mws.root_sdk_config().await;
@@ -1273,5 +1327,184 @@ async fn acm_sends_approaching_expiration_events_daily() {
     eb.list_rules().send().await.unwrap();
     let e = next().await;
     assert_eq!(e["detail"]["DaysToExpiry"], 28);
+    mws.stop().await;
+}
+
+/// A queue in `region` that EventBridge may send to.
+async fn regional_queue(sqs: &aws_sdk_sqs::Client, region: &str, name: &str) -> (String, String) {
+    let url = sqs.create_queue().queue_name(name).send().await.unwrap().queue_url.unwrap();
+    let arn = format!("arn:aws:sqs:{region}:{ACCOUNT}:{name}");
+    let policy = serde_json::json!({"Version":"2012-10-17","Statement":[{
+        "Effect":"Allow","Principal":{"Service":"events.amazonaws.com"},
+        "Action":"sqs:SendMessage","Resource":arn}]});
+    sqs.set_queue_attributes()
+        .queue_url(&url)
+        .attributes(aws_sdk_sqs::types::QueueAttributeName::Policy, policy.to_string())
+        .send()
+        .await
+        .unwrap();
+    (url, arn)
+}
+
+/// The `n` of every event waiting in the queue, deleting them.
+async fn drain(sqs: &aws_sdk_sqs::Client, url: &str) -> Vec<i64> {
+    let mut out = Vec::new();
+    loop {
+        let r = sqs.receive_message().queue_url(url).max_number_of_messages(10).send().await.unwrap();
+        let messages = r.messages.unwrap_or_default();
+        if messages.is_empty() {
+            return out;
+        }
+        for m in messages {
+            let v: serde_json::Value = serde_json::from_str(m.body().unwrap()).unwrap();
+            out.push(v["detail"]["n"].as_i64().unwrap());
+            sqs.delete_message().queue_url(url).receipt_handle(m.receipt_handle().unwrap()).send().await.unwrap();
+        }
+    }
+}
+
+#[tokio::test]
+async fn global_endpoints_replicate_and_fail_over_on_health_checks() {
+    let mws = Mws::start().await;
+    let cfg = mws.root_sdk_config().await;
+    let west_cfg = cfg.to_builder().region(aws_config::Region::new("us-west-2")).build();
+    let eb = Client::new(&cfg);
+    let west = Client::new(&west_cfg);
+    let r53 = aws_sdk_route53::Client::new(&cfg);
+    let (east_q, east_arn) = regional_queue(&aws_sdk_sqs::Client::new(&cfg), "us-east-1", "east").await;
+    let west_sqs = aws_sdk_sqs::Client::new(&west_cfg);
+    let (west_q, west_arn) = regional_queue(&west_sqs, "us-west-2", "west").await;
+    let east_sqs = aws_sdk_sqs::Client::new(&cfg);
+    for (client, arn) in [(&eb, &east_arn), (&west, &west_arn)] {
+        client.create_event_bus().name("global").send().await.unwrap();
+        client
+            .put_rule()
+            .name("app")
+            .event_bus_name("global")
+            .event_pattern(r#"{"source":["app"]}"#)
+            .send()
+            .await
+            .unwrap();
+        client.put_targets().rule("app").event_bus_name("global").targets(target("q", arn)).send().await.unwrap();
+    }
+
+    let hc = r53
+        .create_health_check()
+        .caller_reference("ge")
+        .health_check_config(
+            aws_sdk_route53::types::HealthCheckConfig::builder()
+                .r#type(aws_sdk_route53::types::HealthCheckType::Http)
+                .ip_address("192.0.2.1")
+                .build()
+                .unwrap(),
+        )
+        .send()
+        .await
+        .unwrap();
+    let hc_id = hc.health_check().unwrap().id().to_string();
+    let routing = RoutingConfig::builder()
+        .failover_config(
+            FailoverConfig::builder()
+                .primary(
+                    Primary::builder().health_check(format!("arn:aws:route53:::healthcheck/{hc_id}")).build().unwrap(),
+                )
+                .secondary(Secondary::builder().route("us-west-2").build().unwrap())
+                .build(),
+        )
+        .build();
+    let buses = ["us-east-1", "us-west-2"].map(|r| {
+        EndpointEventBus::builder()
+            .event_bus_arn(format!("arn:aws:events:{r}:{ACCOUNT}:event-bus/global"))
+            .build()
+            .unwrap()
+    });
+    eb.create_endpoint()
+        .name("ge")
+        .routing_config(routing)
+        .role_arn(format!("arn:aws:iam::{ACCOUNT}:role/replication"))
+        .set_event_buses(Some(buses.to_vec()))
+        .send()
+        .await
+        .unwrap();
+    let endpoint_id = eb.describe_endpoint().name("ge").send().await.unwrap().endpoint_id.unwrap();
+
+    // The SDK signs PutEvents to a global endpoint with SigV4a.
+    let put = |n: i64| {
+        let eb = eb.clone();
+        let endpoint_id = endpoint_id.clone();
+        async move {
+            let out = eb
+                .put_events()
+                .endpoint_id(endpoint_id)
+                .entries(entry("app", "Thing", serde_json::json!({"n": n})))
+                .send()
+                .await
+                .unwrap();
+            assert_eq!(out.failed_entry_count(), 0);
+        }
+    };
+    let settle = || tokio::time::sleep(Duration::from_millis(1500));
+
+    // Healthy primary, replication on: the primary gets the event and the
+    // secondary a replica.
+    put(1).await;
+    settle().await;
+    assert_eq!(drain(&east_sqs, &east_q).await, vec![1]);
+    assert_eq!(drain(&west_sqs, &west_q).await, vec![1]);
+
+    // Without replication, only the primary.
+    eb.update_endpoint()
+        .name("ge")
+        .replication_config(ReplicationConfig::builder().state(ReplicationState::Disabled).build())
+        .send()
+        .await
+        .unwrap();
+    put(2).await;
+    settle().await;
+    assert_eq!(drain(&east_sqs, &east_q).await, vec![2]);
+    assert!(drain(&west_sqs, &west_q).await.is_empty());
+
+    // Inverting the health check fails over to the secondary, as AWS
+    // suggests for testing failover; restoring it fails back.
+    r53.update_health_check().health_check_id(&hc_id).inverted(true).send().await.unwrap();
+    put(3).await;
+    settle().await;
+    assert!(drain(&east_sqs, &east_q).await.is_empty());
+    assert_eq!(drain(&west_sqs, &west_q).await, vec![3]);
+    r53.update_health_check().health_check_id(&hc_id).inverted(false).send().await.unwrap();
+    put(4).await;
+    settle().await;
+    assert_eq!(drain(&east_sqs, &east_q).await, vec![4]);
+    assert!(drain(&west_sqs, &west_q).await.is_empty());
+    mws.stop().await;
+}
+
+#[tokio::test]
+async fn input_transformer_reserved_event_variables() {
+    let mws = Mws::start().await;
+    let cfg = mws.root_sdk_config().await;
+    let eb = Client::new(&cfg);
+    let sqs = aws_sdk_sqs::Client::new(&cfg);
+    let (url, arn) = regional_queue(&sqs, "us-east-1", "reserved").await;
+    eb.put_rule().name("r").event_pattern(r#"{"source":["app"]}"#).send().await.unwrap();
+    let t = Target::builder()
+        .id("q")
+        .arn(&arn)
+        .input_transformer(
+            InputTransformer::builder()
+                .input_template(r#"{"envelope": <aws.events.event>, "full": <aws.events.event.json>, "rule": "<aws.events.rule-name>"}"#)
+                .build()
+                .unwrap(),
+        )
+        .build()
+        .unwrap();
+    eb.put_targets().rule("r").targets(t).send().await.unwrap();
+    eb.put_events().entries(entry("app", "Thing", serde_json::json!({"n": 7}))).send().await.unwrap();
+    let got = receive_one(&sqs, &url).await;
+    // `<aws.events.event>` is the envelope without `detail`.
+    assert_eq!(got["envelope"]["source"], "app");
+    assert!(got["envelope"].get("detail").is_none());
+    assert_eq!(got["full"]["detail"]["n"], 7);
+    assert_eq!(got["rule"], "r");
     mws.stop().await;
 }
