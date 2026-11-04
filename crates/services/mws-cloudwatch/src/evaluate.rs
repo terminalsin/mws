@@ -233,18 +233,10 @@ fn op_words(op: &str) -> &'static str {
     }
 }
 
-/// The new state of a metric alarm, with its reason and reason data, or
-/// `None` to leave it as it is.
-pub fn evaluate_metric_alarm(region: &Region, a: &Alarm, now: DateTime<Utc>) -> Option<(String, String, String)> {
-    let m = a.metric.as_ref()?;
-    if m.evaluation_criteria.is_some() {
-        return None;
-    }
-    let n = m.evaluation_periods? as i64;
-    let mdp = m.datapoints_to_alarm.map(i64::from).unwrap_or(n);
-    let op = m.comparison_operator.as_deref()?;
-    let period = m
-        .period
+/// The period a metric alarm evaluates (of its returned query for metric
+/// math alarms).
+fn alarm_period(m: &types::PutMetricAlarmInput) -> i64 {
+    m.period
         .or_else(|| {
             let qs = m.metrics.as_ref()?;
             let returning =
@@ -256,7 +248,34 @@ pub fn evaluate_metric_alarm(region: &Region, a: &Alarm, now: DateTime<Utc>) -> 
                 .or(returning.period)
                 .or_else(|| qs.iter().find_map(|q| q.metric_stat.as_ref().map(|s| s.period)))
         })
-        .unwrap_or(60) as i64;
+        .unwrap_or(60) as i64
+}
+
+/// Whether a metric alarm evaluates now. CloudWatch evaluates an alarm
+/// once per period (every minute at most, every 10 or 30 seconds for
+/// high-resolution alarms), so a state set by `SetAlarmState` holds until
+/// the next evaluation. MWS also evaluates as soon as new data arrives,
+/// and right after the alarm is created or updated.
+fn due(region: &Region, a: &Alarm, now: DateTime<Utc>) -> bool {
+    let Some(last) = a.last_evaluated else { return true };
+    if region.puts != a.seen_puts {
+        return true;
+    }
+    let interval = a.metric.as_ref().map(alarm_period).unwrap_or(60).clamp(1, 60);
+    now.timestamp().div_euclid(interval) != last.timestamp().div_euclid(interval)
+}
+
+/// The new state of a metric alarm, with its reason and reason data, or
+/// `None` to leave it as it is.
+pub fn evaluate_metric_alarm(region: &Region, a: &Alarm, now: DateTime<Utc>) -> Option<(String, String, String)> {
+    let m = a.metric.as_ref()?;
+    if m.evaluation_criteria.is_some() {
+        return None;
+    }
+    let n = m.evaluation_periods? as i64;
+    let mdp = m.datapoints_to_alarm.map(i64::from).unwrap_or(n);
+    let op = m.comparison_operator.as_deref()?;
+    let period = alarm_period(m);
     let end = align(now, period) + Duration::seconds(period);
     let start = end - Duration::seconds(period * n);
     #[allow(clippy::type_complexity)]
@@ -266,7 +285,20 @@ pub fn evaluate_metric_alarm(region: &Region, a: &Alarm, now: DateTime<Utc>) -> 
                 let key = MetricKey::new(m.namespace.as_deref().unwrap_or_default(), name, m.dimensions.as_deref());
                 let stat = m.statistic.clone().or(m.extended_statistic.clone()).unwrap_or_else(|| "Average".into());
                 let engine = Engine::new(Some(region), &[], start, end);
-                (engine.metric_series(&key, &stat, period, m.unit.as_deref()).points, BTreeMap::new(), stat)
+                let points = engine.metric_series(&key, &stat, period, m.unit.as_deref()).points;
+                // `EvaluateLowSampleCountPercentile: ignore`: a percentile
+                // over too few samples (10 / (1 - p)) to be statistically
+                // significant leaves the state as it is.
+                if m.evaluate_low_sample_count_percentile.as_deref() == Some("ignore") {
+                    if let Some(crate::stats::Stat::Percentile(p)) = crate::stats::Stat::parse(&stat) {
+                        let needed = if p < 100.0 { 10.0 / (1.0 - p / 100.0) } else { 0.0 };
+                        let counts = engine.metric_series(&key, "SampleCount", period, m.unit.as_deref()).points;
+                        if points.keys().any(|t| counts.get(t).is_some_and(|c| *c < needed)) {
+                            return None;
+                        }
+                    }
+                }
+                (points, BTreeMap::new(), stat)
             }
             (None, Some(qs)) => {
                 let engine = Engine::new(Some(region), qs, start, end);
@@ -389,19 +421,25 @@ pub fn evaluate_metric_alarm(region: &Region, a: &Alarm, now: DateTime<Utc>) -> 
     }
 }
 
+/// A new state, its reason and its reason data.
+type Decision = (String, String, String);
+
 /// Evaluate every metric alarm of a Region, then its composites.
 pub fn evaluate_region(region: &mut Region, account: &str, region_name: &str, now: DateTime<Utc>) -> Vec<Transition> {
-    let decisions: Vec<(String, (String, String, String))> = region
+    let evaluated: Vec<(String, Option<Decision>)> = region
         .alarms
         .values()
-        .filter(|a| a.alarm_type == "MetricAlarm")
-        .filter_map(|a| evaluate_metric_alarm(region, a, now).map(|d| (a.name().to_string(), d)))
+        .filter(|a| a.alarm_type == "MetricAlarm" && due(region, a, now))
+        .map(|a| (a.name().to_string(), evaluate_metric_alarm(region, a, now)))
         .collect();
+    let puts = region.puts;
     let mut out = Vec::new();
-    for (name, (value, reason, data)) in decisions {
+    for (name, decision) in evaluated {
         if let Some(a) = region.alarms.get_mut(&name) {
             a.last_evaluated = Some(now);
+            a.seen_puts = puts;
         }
+        let Some((value, reason, data)) = decision else { continue };
         if let Some(t) = transition(region, account, region_name, &name, &value, &reason, Some(data), now) {
             out.push(t);
         }

@@ -165,13 +165,15 @@ impl CloudWatch {
         }
         let mut st = self.lock();
         let region = st.region(&ctx.caller.account_id, GLOBAL);
-        if let Some(missing) = input.dashboard_names.iter().find(|n| !region.dashboards.contains_key(n.as_str())) {
-            return Err(errors::dashboard_not_found_error(format!("Dashboard {missing} does not exist")));
-        }
+        // As many as possible are deleted, even when some do not exist.
+        let missing = input.dashboard_names.iter().find(|n| !region.dashboards.contains_key(n.as_str())).cloned();
         for n in &input.dashboard_names {
             if let Some(d) = region.dashboards.remove(n) {
                 region.tags.remove(&d.arn);
             }
+        }
+        if let Some(missing) = missing {
+            return Err(errors::dashboard_not_found_error(format!("Dashboard {missing} does not exist")));
         }
         Ok(types::DeleteDashboardsOutput {})
     }
