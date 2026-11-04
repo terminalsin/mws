@@ -42,3 +42,33 @@ jobs:
       - run: pytest -q tests/e2e-python
         env:
           MWS_LAMBDA_PYTHON: ${{ steps.python.outputs.python-path }}
+
+  # Example applications written against the AWS SDK for JavaScript v3
+  # (tests/e2e-ts), run against the MWS binary.
+  typescript:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: mws-binary
+      - run: cargo build -p mws
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: npm
+          cache-dependency-path: tests/e2e-ts/package-lock.json
+      - run: npm ci
+        working-directory: tests/e2e-ts
+      - run: npm run typecheck
+        working-directory: tests/e2e-ts
+      # Lambda functions in the examples run on this job's `node`.
+      - run: |
+          RUST_LOG=warn MWS_LISTEN=127.0.0.1:4566 nohup target/debug/mws > mws.log 2>&1 &
+          for _ in $(seq 100); do curl -sf http://127.0.0.1:4566/_mws/health > /dev/null && exit 0; sleep 0.1; done
+          cat mws.log; exit 1
+      - run: npm test
+        working-directory: tests/e2e-ts
+      - if: failure()
+        run: cat mws.log
