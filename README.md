@@ -216,6 +216,11 @@ crates are protocol or infrastructure code, never service logic.
 ## Testing
 
 ```sh
-cargo test --workspace
-cargo build -p mws && pip install -r tests/e2e-python/requirements.txt && pytest tests/e2e-python
+cargo test --workspace --all-targets
+cargo build --workspace --bins && pip install -r tests/e2e-python/requirements.txt && pytest tests/e2e-python
 ```
+
+The Rust SDK tests are one binary (`tests/e2e-rust/tests/e2e/`, a module per
+service); run one service's with `cargo test -p mws-e2e --test e2e sqs::`.
+Building the binary with `--workspace` reuses the test build's artifacts;
+`-p mws` alone resolves features differently and recompiles ~30 crates.
