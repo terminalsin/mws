@@ -13,6 +13,8 @@ use sha2::{Digest, Sha256};
 use subtle::ConstantTimeEq;
 
 const ALGORITHM: &str = "AWS4-HMAC-SHA256";
+/// SigV4a: asymmetric, multi-Region signing.
+const ALGORITHM_A: &str = "AWS4-ECDSA-P256-SHA256";
 const AMZ_DATE_FORMAT: &str = "%Y%m%dT%H%M%SZ";
 /// AWS rejects requests whose timestamp is more than 15 minutes off.
 pub const MAX_CLOCK_SKEW: TimeDelta = TimeDelta::minutes(15);
@@ -113,7 +115,7 @@ pub fn check_payload(
             let key = signing_key(secret_access_key, &parsed.scope);
             let signer = signed.then(|| ChunkSigner {
                 key,
-                prefix: format!("{}\n{}", parsed.amz_date, parsed.scope.scope_string()),
+                prefix: format!("{}\n{}", parsed.amz_date, parsed.scope.scope_string(parsed.algorithm)),
                 previous: parsed.signature.clone(),
             });
             decode_chunks(request.body().as_ref(), signer, trailer).map(Some)
@@ -222,24 +224,68 @@ pub enum SignatureLocation {
     Query,
 }
 
-/// The credential scope: `AKID/date/region/service/aws4_request`.
+/// The credential scope: `AKID/date/region/service/aws4_request`, or for
+/// SigV4a `AKID/date/service/aws4_request` with the Regions in
+/// `X-Amz-Region-Set`.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct CredentialScope {
     pub access_key_id: String,
     pub date: String,
+    /// For SigV4a, the first Region of the region set that names a single
+    /// Region, or empty when the set is a wildcard (`*`).
     pub region: String,
     pub service: String,
 }
 
 impl CredentialScope {
-    fn scope_string(&self) -> String {
-        format!("{}/{}/{}/aws4_request", self.date, self.region, self.service)
+    fn scope_string(&self, algorithm: Algorithm) -> String {
+        match algorithm {
+            Algorithm::HmacSha256 => format!("{}/{}/{}/aws4_request", self.date, self.region, self.service),
+            Algorithm::EcdsaP256Sha256 => format!("{}/{}/aws4_request", self.date, self.service),
+        }
     }
+}
+
+/// The signing algorithm a request names.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Algorithm {
+    /// SigV4: `AWS4-HMAC-SHA256`.
+    HmacSha256,
+    /// SigV4a: `AWS4-ECDSA-P256-SHA256`.
+    EcdsaP256Sha256,
+}
+
+impl Algorithm {
+    fn parse(name: &str) -> Result<Self, SigV4Error> {
+        match name {
+            ALGORITHM => Ok(Self::HmacSha256),
+            ALGORITHM_A => Ok(Self::EcdsaP256Sha256),
+            other => Err(SigV4Error::UnsupportedAlgorithm(other.to_string())),
+        }
+    }
+
+    fn name(self) -> &'static str {
+        match self {
+            Self::HmacSha256 => ALGORITHM,
+            Self::EcdsaP256Sha256 => ALGORITHM_A,
+        }
+    }
+}
+
+/// The first single Region of a SigV4a region set (`us-east-1,eu-*`).
+fn region_from_set(set: Option<&str>) -> String {
+    set.into_iter()
+        .flat_map(|s| s.split(','))
+        .map(str::trim)
+        .find(|r| !r.is_empty() && !r.contains('*'))
+        .unwrap_or_default()
+        .to_string()
 }
 
 /// The signature claims extracted from a request, before verification.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ParsedSignature {
+    pub algorithm: Algorithm,
     pub location: SignatureLocation,
     pub scope: CredentialScope,
     pub signed_headers: Vec<String>,
@@ -270,9 +316,7 @@ fn parse_header<B>(request: &http::Request<B>, auth: &str) -> Result<ParsedSigna
     let (algorithm, rest) = auth.trim().split_once(' ').ok_or_else(|| {
         SigV4Error::Incomplete(format!("Authorization header requires 'Credential' parameter. Authorization header requires 'Signature' parameter. Authorization header requires 'SignedHeaders' parameter. Authorization={auth}"))
     })?;
-    if algorithm != ALGORITHM {
-        return Err(SigV4Error::UnsupportedAlgorithm(algorithm.to_string()));
-    }
+    let algorithm = Algorithm::parse(algorithm)?;
     let mut credential = None;
     let mut signed_headers = None;
     let mut signature = None;
@@ -298,8 +342,9 @@ fn parse_header<B>(request: &http::Request<B>, auth: &str) -> Result<ParsedSigna
     if !missing.is_empty() {
         return Err(SigV4Error::Incomplete(format!("{} Authorization={auth}", missing.join(" "))));
     }
-    let scope = parse_scope(&credential.unwrap())?;
     let headers = request.headers();
+    let region_set = header_str(headers, "x-amz-region-set");
+    let scope = parse_scope(&credential.unwrap(), algorithm, region_set.as_deref())?;
     let amz_date = header_str(headers, "x-amz-date").or_else(|| header_str(headers, "date")).ok_or_else(|| {
         SigV4Error::Incomplete(
             "Authorization header requires existence of either a 'X-Amz-Date' or a 'Date' header.".into(),
@@ -307,6 +352,7 @@ fn parse_header<B>(request: &http::Request<B>, auth: &str) -> Result<ParsedSigna
     })?;
     let timestamp = parse_amz_date(&amz_date)?;
     Ok(ParsedSignature {
+        algorithm,
         location: SignatureLocation::Header,
         scope,
         signed_headers: split_signed_headers(&signed_headers.unwrap()),
@@ -320,10 +366,7 @@ fn parse_header<B>(request: &http::Request<B>, auth: &str) -> Result<ParsedSigna
 
 fn parse_query(params: &[(String, String)]) -> Result<ParsedSignature, SigV4Error> {
     let get = |name: &str| params.iter().find(|(k, _)| k == name).map(|(_, v)| v.clone());
-    let algorithm = get("X-Amz-Algorithm").unwrap_or_default();
-    if algorithm != ALGORITHM {
-        return Err(SigV4Error::UnsupportedAlgorithm(algorithm));
-    }
+    let algorithm = Algorithm::parse(&get("X-Amz-Algorithm").unwrap_or_default())?;
     let required = ["X-Amz-Credential", "X-Amz-Date", "X-Amz-SignedHeaders", "X-Amz-Signature"];
     let missing: Vec<_> = required.iter().filter(|n| get(n).is_none()).collect();
     if !missing.is_empty() {
@@ -345,8 +388,9 @@ fn parse_query(params: &[(String, String)]) -> Result<ParsedSignature, SigV4Erro
         }
     }
     Ok(ParsedSignature {
+        algorithm,
         location: SignatureLocation::Query,
-        scope: parse_scope(&get("X-Amz-Credential").unwrap())?,
+        scope: parse_scope(&get("X-Amz-Credential").unwrap(), algorithm, get("X-Amz-Region-Set").as_deref())?,
         signed_headers: split_signed_headers(&get("X-Amz-SignedHeaders").unwrap()),
         signature: get("X-Amz-Signature").unwrap(),
         timestamp: parse_amz_date(&amz_date)?,
@@ -356,8 +400,25 @@ fn parse_query(params: &[(String, String)]) -> Result<ParsedSignature, SigV4Erro
     })
 }
 
-fn parse_scope(credential: &str) -> Result<CredentialScope, SigV4Error> {
+fn parse_scope(
+    credential: &str,
+    algorithm: Algorithm,
+    region_set: Option<&str>,
+) -> Result<CredentialScope, SigV4Error> {
     let parts: Vec<&str> = credential.split('/').collect();
+    if algorithm == Algorithm::EcdsaP256Sha256 {
+        if parts.len() != 4 || parts[3] != "aws4_request" {
+            return Err(SigV4Error::Incomplete(format!(
+                "Credential should be scoped with a valid terminator: 'aws4_request'. Credential={credential}"
+            )));
+        }
+        return Ok(CredentialScope {
+            access_key_id: parts[0].to_string(),
+            date: parts[1].to_string(),
+            region: region_from_set(region_set),
+            service: parts[2].to_string(),
+        });
+    }
     if parts.len() != 5 || parts[4] != "aws4_request" {
         return Err(SigV4Error::Incomplete(format!(
             "Credential should be scoped to a valid region. Credential={credential}"
@@ -414,6 +475,15 @@ pub fn verify(
     options: VerifyOptions,
 ) -> Result<(), SigV4Error> {
     check_time(parsed, now)?;
+    if parsed.algorithm == Algorithm::EcdsaP256Sha256 {
+        let string_to_sign = string_to_sign(request, parsed, options);
+        return sigv4a::verify(
+            &parsed.scope.access_key_id,
+            secret_access_key,
+            string_to_sign.as_bytes(),
+            &parsed.signature,
+        );
+    }
     let expected = compute_signature(request, parsed, secret_access_key, options);
     if bool::from(expected.as_bytes().ct_eq(parsed.signature.as_bytes())) {
         Ok(())
@@ -459,15 +529,24 @@ pub fn compute_signature(
     secret_access_key: &str,
     options: VerifyOptions,
 ) -> String {
-    let canonical = canonical_request(request, parsed, options);
-    let string_to_sign = format!(
-        "{ALGORITHM}\n{}\n{}\n{}",
-        parsed.amz_date,
-        parsed.scope.scope_string(),
-        hex::encode(Sha256::digest(canonical.as_bytes()))
-    );
+    let string_to_sign = string_to_sign(request, parsed, options);
     let key = signing_key(secret_access_key, &parsed.scope);
     hex::encode(hmac(&key, string_to_sign.as_bytes()))
+}
+
+fn string_to_sign(
+    request: &http::Request<impl AsRef<[u8]>>,
+    parsed: &ParsedSignature,
+    options: VerifyOptions,
+) -> String {
+    let canonical = canonical_request(request, parsed, options);
+    format!(
+        "{}\n{}\n{}\n{}",
+        parsed.algorithm.name(),
+        parsed.amz_date,
+        parsed.scope.scope_string(parsed.algorithm),
+        hex::encode(Sha256::digest(canonical.as_bytes()))
+    )
 }
 
 /// Build the canonical request string (exposed for debugging and tests).
@@ -613,7 +692,7 @@ pub fn presign_url(p: &PresignParams<'_>) -> Result<String, SigV4Error> {
         query.push_str(&sigv4_encode(v));
     };
     add("X-Amz-Algorithm", ALGORITHM);
-    add("X-Amz-Credential", &format!("{}/{}", p.access_key_id, scope.scope_string()));
+    add("X-Amz-Credential", &format!("{}/{}", p.access_key_id, scope.scope_string(Algorithm::HmacSha256)));
     add("X-Amz-Date", &amz_date);
     add("X-Amz-Expires", &p.expires_in.to_string());
     if let Some(t) = p.session_token {
@@ -628,6 +707,7 @@ pub fn presign_url(p: &PresignParams<'_>) -> Result<String, SigV4Error> {
         .body(Vec::<u8>::new())
         .map_err(|_| bad("invalid request"))?;
     let parsed = ParsedSignature {
+        algorithm: Algorithm::HmacSha256,
         location: SignatureLocation::Query,
         scope,
         signed_headers: vec!["host".into()],
@@ -659,6 +739,8 @@ fn hmac(key: &[u8], data: &[u8]) -> Vec<u8> {
     mac.update(data);
     mac.finalize().into_bytes().to_vec()
 }
+
+mod sigv4a;
 
 #[cfg(test)]
 mod tests;

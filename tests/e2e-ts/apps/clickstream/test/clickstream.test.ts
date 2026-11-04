@@ -73,18 +73,21 @@ describe("clickstream", () => {
   });
 
   it("lands the stream in S3 as gzipped, date-partitioned batches", async () => {
-    await clock({ advanceSeconds: 61 });
-
-    const keys = await (async () => {
-      const deadline = Date.now() + 30_000;
-      for (;;) {
+    // Firehose reads the Kinesis stream about once a second, and the buffer
+    // interval starts when it does. Move the clock past the interval until
+    // the batch shows up (usually once, or twice if Firehose hadn't read the
+    // records yet).
+    const keys: string[] = [];
+    for (let attempt = 0; attempt < 5 && keys.length === 0; attempt++) {
+      await clock({ advanceSeconds: 61 });
+      for (let i = 0; i < 10 && keys.length === 0; i++) {
         // Any Firehose call lets it notice the moved clock.
         await firehose.send(new DescribeDeliveryStreamCommand({ DeliveryStreamName: pipeline.deliveryStreamName }));
+        await new Promise((r) => setTimeout(r, 300));
         const { Contents = [] } = await s3.send(new ListObjectsV2Command({ Bucket: pipeline.bucket, Prefix: "clicks/" }));
-        if (Contents.length > 0 || Date.now() > deadline) return Contents.map((o) => o.Key!);
-        await new Promise((r) => setTimeout(r, 500));
+        keys.push(...Contents.map((o) => o.Key!));
       }
-    })();
+    }
     expect(keys.length).toBeGreaterThan(0);
     for (const key of keys) {
       expect(key).toMatch(/^clicks\/year=\d{4}\/month=\d\d\/day=\d\d\/.+-to-s3-\d+-\d{4}-\d\d-\d\d-\d\d-\d\d-\d\d-[0-9a-f-]+\.gz$/);

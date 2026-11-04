@@ -51,18 +51,28 @@ impl Validator {
     }
 
     pub fn check_length(&mut self, path: &str, shown: &str, len: usize, min: Option<u64>, max: Option<u64>) {
+        self.length(&format!("Value '{shown}' at '{path}'"), len, min, max);
+    }
+
+    /// `check_length` for a `@sensitive` member: AWS leaves the value out
+    /// (`Value at 'plaintext' failed to satisfy constraint: ...`).
+    pub fn check_length_redacted(&mut self, path: &str, len: usize, min: Option<u64>, max: Option<u64>) {
+        self.length(&format!("Value at '{path}'"), len, min, max);
+    }
+
+    fn length(&mut self, subject: &str, len: usize, min: Option<u64>, max: Option<u64>) {
         let len = len as u64;
         if let Some(min) = min {
             if len < min {
                 self.errors.push(format!(
-                    "Value '{shown}' at '{path}' failed to satisfy constraint: Member must have length greater than or equal to {min}"
+                    "{subject} failed to satisfy constraint: Member must have length greater than or equal to {min}"
                 ));
             }
         }
         if let Some(max) = max {
             if len > max {
                 self.errors.push(format!(
-                    "Value '{shown}' at '{path}' failed to satisfy constraint: Member must have length less than or equal to {max}"
+                    "{subject} failed to satisfy constraint: Member must have length less than or equal to {max}"
                 ));
             }
         }
@@ -92,6 +102,16 @@ impl Validator {
         if !re.is_match(value) {
             self.errors.push(format!(
                 "Value '{value}' at '{path}' failed to satisfy constraint: Member must satisfy regular expression pattern: {pattern}"
+            ));
+        }
+    }
+
+    /// `check_pattern` for a `@sensitive` member, which AWS leaves out of
+    /// the message.
+    pub fn check_pattern_redacted(&mut self, path: &str, value: &str, re: &regex::Regex, pattern: &str) {
+        if !re.is_match(value) {
+            self.errors.push(format!(
+                "Value at '{path}' failed to satisfy constraint: Member must satisfy regular expression pattern: {pattern}"
             ));
         }
     }
@@ -129,6 +149,17 @@ fn trim_float(v: f64) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn sensitive_values_are_left_out() {
+        let mut v = Validator::new();
+        v.check_length_redacted("plaintext", 4097, Some(1), Some(4096));
+        let e = v.finish("ValidationException").unwrap_err();
+        assert_eq!(
+            e.message,
+            "1 validation error detected: Value at 'plaintext' failed to satisfy constraint: Member must have length less than or equal to 4096"
+        );
+    }
 
     #[test]
     fn validation_message_matches_aws() {

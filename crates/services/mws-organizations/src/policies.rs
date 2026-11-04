@@ -1,12 +1,13 @@
 //! Organization policies: creating them, attaching them to the root, OUs and
 //! accounts, and enabling policy types.
 
+use mws_core::ConditionContext;
 use mws_core::{RequestContext, ServiceError};
-use mws_iam_policy::{policy_size, Policy, PolicyKind};
+use mws_iam_policy::{Policy, PolicyKind};
 
 use crate::access::*;
 use crate::generated::{errors, types};
-use crate::state::{aws_managed, default_policy_for, is_aws_managed, Org, PolicyRec, RCP, SCP};
+use crate::state::{aws_managed, default_policy_for, is_aws_managed, Org, PolicyRec, RCP, RCP_FULL_AWS_ACCESS, SCP};
 use crate::structure::root_wire;
 use crate::Organizations;
 
@@ -51,7 +52,9 @@ fn immutable() -> ServiceError {
 
 /// Check a policy document against its type's grammar and size limit.
 pub(crate) fn validate_content(ty: &str, content: &str) -> Result<(), ServiceError> {
-    if policy_size(content) > max_size(ty) {
+    // Through the API a policy is stored exactly as sent, so whitespace
+    // counts towards the limit (only the console strips it).
+    if content.chars().count() > max_size(ty) {
         return Err(constraint(
             "POLICY_CONTENT_LIMIT_EXCEEDED",
             "You attempted to create a policy that is larger than the maximum size.",
@@ -111,6 +114,15 @@ impl Organizations {
         let mut cond = request_tag_context(&tags);
         cond.insert("organizations:PolicyType".into(), vec![input.r#type.clone()]);
         self.authorize(ctx, "CreatePolicy", "*", cond)?;
+        let id = new_id("p-", 8);
+        if !tags.is_empty() {
+            let arn = {
+                let state = self.lock();
+                let org = state.org_of(&ctx.caller.account_id).ok_or_else(not_in_use)?;
+                org.policy_arn(&ctx.partition, &id, &input.r#type)
+            };
+            self.authorize_tagging(ctx, &arn, &tags)?;
+        }
         let mut state = self.lock();
         let org_id = self.caller_org(&state, ctx, "CreatePolicy", "*", Need::Delegable)?.id.clone();
         let org = state.organizations.get_mut(&org_id).expect("caller's organization exists");
@@ -128,7 +140,7 @@ impl Organizations {
             ));
         }
         let p = PolicyRec {
-            id: new_id("p-", 8),
+            id,
             name: input.name,
             description: input.description,
             ty: input.r#type,
@@ -227,11 +239,12 @@ impl Organizations {
         target_id: &str,
     ) -> Result<(String, String), ServiceError> {
         let (policy_arn, ty, tags) = self.policy_ref(ctx, policy_id)?;
-        let target_arn = self.target_arn_for(ctx, target_id, target_not_found)?;
+        let (target_arn, mut target_cond) = self.target_arn_for(ctx, target_id, target_not_found)?;
         let mut cond = resource_tag_context(&tags);
         cond.insert("organizations:PolicyType".into(), vec![ty.clone()]);
-        self.authorize(ctx, action, &policy_arn, cond.clone())?;
-        self.authorize(ctx, action, &target_arn, single("organizations:PolicyType", ty.clone()))?;
+        self.authorize(ctx, action, &policy_arn, cond)?;
+        target_cond.insert("organizations:PolicyType".into(), vec![ty.clone()]);
+        self.authorize(ctx, action, &target_arn, target_cond)?;
         Ok((policy_arn, ty))
     }
 
@@ -282,8 +295,14 @@ impl Organizations {
                 "The policy isn't attached to the specified target in the specified root.",
             ));
         }
+        if input.policy_id == RCP_FULL_AWS_ACCESS {
+            return Err(invalid(
+                "NON_DETACHABLE_POLICY",
+                "You can't detach the RCPFullAWSAccess policy. It's attached to every root, OU and account while resource control policies are enabled.",
+            ));
+        }
         let same_type = attached.iter().filter(|id| org.policy(id).is_some_and(|p| p.ty == ty)).count();
-        if (ty == SCP || ty == RCP) && same_type <= 1 {
+        if ty == SCP && same_type <= 1 {
             return Err(constraint(
                 "MIN_POLICY_TYPE_ATTACHMENT_LIMIT_EXCEEDED",
                 "You attempted to detach a policy from an entity that would cause the entity to have fewer than the minimum number of policies of a certain type required.",
@@ -315,8 +334,9 @@ impl Organizations {
         ctx: &RequestContext,
         input: types::ListPoliciesForTargetRequest,
     ) -> Result<types::ListPoliciesForTargetResponse, ServiceError> {
-        let arn = self.target_arn_for(ctx, &input.target_id, target_not_found)?;
-        self.authorize(ctx, "ListPoliciesForTarget", &arn, single("organizations:PolicyType", input.filter.clone()))?;
+        let (arn, mut cond) = self.target_arn_for(ctx, &input.target_id, target_not_found)?;
+        cond.insert("organizations:PolicyType".into(), vec![input.filter.clone()]);
+        self.authorize(ctx, "ListPoliciesForTarget", &arn, cond)?;
         let state = self.lock();
         let org = self.caller_org(&state, ctx, "ListPoliciesForTarget", &arn, Need::Read)?;
         if !org.has_target(&input.target_id) {
@@ -365,13 +385,20 @@ impl Organizations {
         Ok(types::ListTargetsForPolicyResponse { targets: Some(targets), next_token })
     }
 
-    fn root_arn_for(&self, ctx: &RequestContext, root: &str) -> Result<String, ServiceError> {
+    fn root_arn_for(
+        &self,
+        ctx: &RequestContext,
+        root: &str,
+        ty: &str,
+    ) -> Result<(String, ConditionContext), ServiceError> {
         let state = self.lock();
         let org = state.org_of(&ctx.caller.account_id).ok_or_else(not_in_use)?;
         if org.root_id != root {
             return Err(root_not_found());
         }
-        Ok(org.root_arn(&ctx.partition))
+        let mut cond = resource_tag_context(&org.root_tags);
+        cond.insert("organizations:PolicyType".into(), vec![ty.to_string()]);
+        Ok((org.root_arn(&ctx.partition), cond))
     }
 
     pub(crate) fn enable_policy_type(
@@ -379,10 +406,10 @@ impl Organizations {
         ctx: &RequestContext,
         input: types::EnablePolicyTypeRequest,
     ) -> Result<types::EnablePolicyTypeResponse, ServiceError> {
-        let arn = self.root_arn_for(ctx, &input.root_id)?;
-        self.authorize(ctx, "EnablePolicyType", &arn, single("organizations:PolicyType", input.policy_type.clone()))?;
+        let (arn, cond) = self.root_arn_for(ctx, &input.root_id, &input.policy_type)?;
+        self.authorize(ctx, "EnablePolicyType", &arn, cond)?;
         let mut state = self.lock();
-        let org_id = self.caller_org(&state, ctx, "EnablePolicyType", &arn, Need::Management)?.id.clone();
+        let org_id = self.caller_org(&state, ctx, "EnablePolicyType", &arn, Need::Delegable)?.id.clone();
         let org = state.organizations.get_mut(&org_id).expect("caller's organization exists");
         if org.feature_set != "ALL" {
             return Err(type_not_available());
@@ -407,10 +434,10 @@ impl Organizations {
         ctx: &RequestContext,
         input: types::DisablePolicyTypeRequest,
     ) -> Result<types::DisablePolicyTypeResponse, ServiceError> {
-        let arn = self.root_arn_for(ctx, &input.root_id)?;
-        self.authorize(ctx, "DisablePolicyType", &arn, single("organizations:PolicyType", input.policy_type.clone()))?;
+        let (arn, cond) = self.root_arn_for(ctx, &input.root_id, &input.policy_type)?;
+        self.authorize(ctx, "DisablePolicyType", &arn, cond)?;
         let mut state = self.lock();
-        let org_id = self.caller_org(&state, ctx, "DisablePolicyType", &arn, Need::Management)?.id.clone();
+        let org_id = self.caller_org(&state, ctx, "DisablePolicyType", &arn, Need::Delegable)?.id.clone();
         let org = state.organizations.get_mut(&org_id).expect("caller's organization exists");
         if !org.type_enabled(&input.policy_type) {
             return Err(type_not_enabled());

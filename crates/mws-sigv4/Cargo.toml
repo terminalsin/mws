@@ -6,6 +6,7 @@ edition.workspace = true
 license.workspace = true
 
 [dependencies]
+aws-lc-rs.workspace = true
 chrono.workspace = true
 hex.workspace = true
 hmac.workspace = true
@@ -16,6 +17,6 @@ subtle.workspace = true
 thiserror.workspace = true
 
 [dev-dependencies]
-aws-sigv4 = { version = "1", features = ["sign-http"] }
+aws-sigv4 = { version = "1", features = ["sign-http", "sigv4a"] }
 aws-credential-types = { version = "1", features = ["hardcoded-credentials"] }
 aws-smithy-runtime-api = { version = "1", features = ["client"] }

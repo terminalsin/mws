@@ -306,3 +306,60 @@ def test_partner_event_sources(events, logs):
     assert event["detail"] == {"x": 1}
     events.delete_partner_event_source(Name=name, Account=ACCOUNT)
     assert events.describe_event_source(Name=name)["State"] == "DELETED"
+
+
+def test_global_endpoint_put_events_is_signed_with_sigv4a(endpoint, session_for):
+    """boto3 signs PutEvents with an EndpointId using SigV4a (awscrt)."""
+    session = session_for()
+    name = f"global-{uid()}"
+    groups = {}
+    for region in ("us-east-1", "us-west-2"):
+        eb = session.client("events", endpoint_url=endpoint, region_name=region)
+        lg = session.client("logs", endpoint_url=endpoint, region_name=region)
+        group = f"/eb/{name}"
+        lg.create_log_group(logGroupName=group)
+        lg.put_resource_policy(
+            policyName=f"eb-{uid()}",
+            policyDocument=json.dumps(
+                {
+                    "Version": "2012-10-17",
+                    "Statement": [
+                        {
+                            "Effect": "Allow",
+                            "Principal": {"Service": "events.amazonaws.com"},
+                            "Action": ["logs:CreateLogStream", "logs:PutLogEvents"],
+                            "Resource": f"arn:aws:logs:{region}:{ACCOUNT}:log-group:{group}:*",
+                        }
+                    ],
+                }
+            ),
+        )
+        eb.create_event_bus(Name=name)
+        eb.put_rule(Name="r", EventBusName=name, EventPattern=json.dumps({"source": ["app"]}))
+        eb.put_targets(
+            Rule="r",
+            EventBusName=name,
+            Targets=[{"Id": "l", "Arn": f"arn:aws:logs:{region}:{ACCOUNT}:log-group:{group}"}],
+        )
+        groups[region] = (lg, group)
+    eb = session.client("events", endpoint_url=endpoint)
+    eb.create_endpoint(
+        Name=name,
+        RoleArn=f"arn:aws:iam::{ACCOUNT}:role/replication",
+        RoutingConfig={
+            "FailoverConfig": {
+                "Primary": {"HealthCheck": "arn:aws:route53:::healthcheck/none"},
+                "Secondary": {"Route": "us-west-2"},
+            }
+        },
+        EventBuses=[{"EventBusArn": f"arn:aws:events:{r}:{ACCOUNT}:event-bus/{name}"} for r in groups],
+    )
+    endpoint_id = eb.describe_endpoint(Name=name)["EndpointId"]
+    out = eb.put_events(
+        EndpointId=endpoint_id,
+        Entries=[{"Source": "app", "DetailType": "Thing", "Detail": json.dumps({"n": 1})}],
+    )
+    assert out["FailedEntryCount"] == 0
+    # Replication is on by default: both Regions see the event.
+    for lg, group in groups.values():
+        assert logged(lg, group)[0]["detail"] == {"n": 1}

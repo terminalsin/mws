@@ -93,24 +93,29 @@ impl State {
         }
         let mut rotated = Vec::new();
         for key in self.keys.values_mut() {
-            if let (Some(period), Some(next)) = (key.rotation_period_days, key.next_rotation) {
-                if next <= now && key.state == "Enabled" {
-                    if let Ok(secret) = crate::crypto::generate(Spec::Symmetric) {
-                        key.materials.push(crate::state::Material {
-                            id: crate::crypto::material_id(&secret),
-                            secret,
-                            created_at: next,
-                            rotation_type: Some("AUTOMATIC".into()),
-                            imported: false,
-                            description: None,
-                            expiration_model: None,
-                            valid_to: None,
-                            pending: false,
-                        });
-                        rotated.push(key.arn.clone());
-                        key.current_material = key.materials.last().map(|m| m.id.clone());
-                    }
-                    key.next_rotation = Some(now + Duration::days(period as i64));
+            // One rotation per period that has passed, each dated when it
+            // was due, so a clock moved years ahead rotates as often as AWS
+            // would have.
+            while let (Some(period), Some(next)) = (key.rotation_period_days, key.next_rotation) {
+                if next > now || key.state != "Enabled" || period <= 0 {
+                    break;
+                }
+                let Ok(secret) = crate::crypto::generate(Spec::Symmetric) else { break };
+                key.materials.push(crate::state::Material {
+                    id: crate::crypto::material_id(&secret),
+                    secret,
+                    created_at: next,
+                    rotation_type: Some("AUTOMATIC".into()),
+                    imported: false,
+                    description: None,
+                    expiration_model: None,
+                    valid_to: None,
+                    pending: false,
+                });
+                key.current_material = key.materials.last().map(|m| m.id.clone());
+                key.next_rotation = Some(next + Duration::days(period as i64));
+                if rotated.last() != Some(&key.arn) {
+                    rotated.push(key.arn.clone());
                 }
             }
             if key.origin == "EXTERNAL" {
@@ -168,6 +173,9 @@ impl State {
         let partition = &ctx.partition;
         if let Some(arn) = parse_kms_arn(input) {
             if let Some(id) = arn.resource.strip_prefix("key/") {
+                if !is_key_id(id) {
+                    return Err(invalid_key_id(input));
+                }
                 let full = key_arn(partition, arn.region, arn.account, id);
                 if arn.region != ctx.region || !self.keys.contains_key(&full) {
                     return Err(key_not_found(&full));
@@ -186,7 +194,7 @@ impl State {
             let account = &ctx.caller.account_id;
             return self.resolve_alias(&alias_arn(partition, &ctx.region, account, input), input);
         }
-        if input.contains(':') || input.contains('/') {
+        if !is_key_id(input) {
             return Err(invalid_key_id(input));
         }
         let full = key_arn(partition, &ctx.region, &ctx.caller.account_id, input);
@@ -206,6 +214,18 @@ impl State {
         }
         Ok(Target { arn, alias: Some(name.to_string()) })
     }
+}
+
+/// Whether `id` has the shape of a key id: a UUID, or `mrk-` and 32 hex
+/// digits for multi-Region keys. Anything else is an invalid key id rather
+/// than a key that does not exist.
+fn is_key_id(id: &str) -> bool {
+    if let Some(hex) = id.strip_prefix("mrk-") {
+        return hex.len() == 32 && hex.bytes().all(|b| b.is_ascii_hexdigit());
+    }
+    let groups: Vec<&str> = id.split('-').collect();
+    groups.iter().map(|g| g.len()).eq([8, 4, 4, 4, 12])
+        && groups.iter().all(|g| g.bytes().all(|b| b.is_ascii_hexdigit()))
 }
 
 fn arn_partition(arn: &str) -> &str {
@@ -320,6 +340,12 @@ fn grant_allows(grant: &Grant, principals: &[String], op: &str, enc: Option<&BTr
     if !grantee || !grant.operations.iter().any(|o| o == op) {
         return false;
     }
+    // Encryption context constraints do not apply to operations that take
+    // no encryption context. A grantee's CreateGrant is held to them
+    // instead by requiring the new grant to be at least as strict.
+    if matches!(op, "DescribeKey" | "RetireGrant" | "CreateGrant") {
+        return true;
+    }
     let Some(constraints) = &grant.constraints else { return true };
     let empty = BTreeMap::new();
     let enc = enc.unwrap_or(&empty);
@@ -345,11 +371,21 @@ pub(crate) struct Access<'a> {
     pub allow_alias: bool,
     pub encryption_context: Option<&'a BTreeMap<String, String>>,
     pub extra: ConditionContext,
+    /// A further test a grant must pass to allow the request
+    /// (`CreateGrant` through a grant may only hand on what it has).
+    pub grant_filter: Option<&'a dyn Fn(&Grant) -> bool>,
 }
 
 impl<'a> Access<'a> {
     pub fn new(action: &'a str) -> Self {
-        Self { action, grant_op: None, allow_alias: false, encryption_context: None, extra: ConditionContext::new() }
+        Self {
+            action,
+            grant_op: None,
+            allow_alias: false,
+            encryption_context: None,
+            extra: ConditionContext::new(),
+            grant_filter: None,
+        }
     }
 
     /// Cryptographic operations: grants apply and aliases are accepted.
@@ -388,6 +424,7 @@ impl Kms {
         key_id: &str,
         access: Access<'_>,
     ) -> Result<Target, ServiceError> {
+        self.observe(ctx);
         let (target, policy, mut cond, granted) = {
             let st = self.lock();
             let target = st.resolve(ctx, key_id, access.allow_alias)?;
@@ -395,9 +432,11 @@ impl Kms {
             let mut cond = key_conditions(key, &st.aliases_for(&target.arn));
             let principals = caller_principals(ctx);
             let granted = access.grant_op.is_some_and(|op| {
-                st.grants
-                    .values()
-                    .any(|g| g.key_arn == target.arn && grant_allows(g, &principals, op, access.encryption_context))
+                st.grants.values().any(|g| {
+                    g.key_arn == target.arn
+                        && grant_allows(g, &principals, op, access.encryption_context)
+                        && access.grant_filter.is_none_or(|f| f(g))
+                })
             });
             if let Some(alias) = &target.alias {
                 cond.insert("kms:RequestAlias".into(), vec![alias.clone()]);
@@ -424,6 +463,7 @@ impl Kms {
         action: &str,
         mut cond: ConditionContext,
     ) -> Result<(), ServiceError> {
+        self.observe(ctx);
         cond.insert("kms:CallerAccount".into(), vec![ctx.caller.account_id.clone()]);
         ctx.authorize(&format!("kms:{action}"), "*", cond)
     }
@@ -433,7 +473,7 @@ impl Kms {
         if let Some(k) = self.lock().keys.get_mut(arn) {
             k.last_usage = Some(crate::state::LastUsage {
                 operation: operation.into(),
-                at: Utc::now(),
+                at: ctx.received_at,
                 request_id: ctx.request_id.clone(),
             });
         }

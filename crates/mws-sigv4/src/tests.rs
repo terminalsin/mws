@@ -188,6 +188,54 @@ fn presigned_urls_verify() {
     assert!(verify(&request, &parsed, "other", now, VerifyOptions { double_encode_path: false }).is_err());
 }
 
+fn signed_v4a(region_set: &str, body: &str, at: SystemTime) -> http::Request<Vec<u8>> {
+    let creds = Credentials::new(AKID, SECRET, None, None, "test");
+    let identity = creds.into();
+    let params = aws_sigv4::sign::v4a::SigningParams::builder()
+        .identity(&identity)
+        .region_set(region_set)
+        .name("events")
+        .time(at)
+        .settings(SigningSettings::default())
+        .build()
+        .unwrap()
+        .into();
+    let headers = [("host", "abcde.xyz.endpoint.events.amazonaws.com"), ("x-amz-target", "AWSEvents.PutEvents")];
+    let uri = "https://abcde.xyz.endpoint.events.amazonaws.com/";
+    let signable =
+        SignableRequest::new("POST", uri, headers.iter().copied(), SignableBody::Bytes(body.as_bytes())).unwrap();
+    let (instructions, _) = sign(signable, &params).unwrap().into_parts();
+    let mut builder = http::Request::builder().method("POST").uri(uri);
+    for (k, v) in headers {
+        builder = builder.header(k, v);
+    }
+    let mut req = builder.body(body.as_bytes().to_vec()).unwrap();
+    instructions.apply_to_request_http1x(&mut req);
+    req
+}
+
+#[test]
+fn sigv4a_signature_from_sdk_verifies() {
+    let (t, now) = now();
+    let req = signed_v4a("*", r#"{"Entries":[]}"#, t);
+    let parsed = parse(&req).unwrap();
+    assert_eq!(parsed.algorithm, Algorithm::EcdsaP256Sha256);
+    assert_eq!(parsed.scope.service, "events");
+    assert_eq!(parsed.scope.region, "");
+    verify(&req, &parsed, SECRET, now, VerifyOptions::default()).unwrap();
+    assert_eq!(verify(&req, &parsed, "wrong", now, VerifyOptions::default()), Err(SigV4Error::Mismatch));
+
+    let req = signed_v4a("eu-west-1,us-*", "{}", t);
+    let parsed = parse(&req).unwrap();
+    assert_eq!(parsed.scope.region, "eu-west-1");
+    verify(&req, &parsed, SECRET, now, VerifyOptions::default()).unwrap();
+
+    // A changed body no longer verifies.
+    let (parts, _) = req.into_parts();
+    let tampered = http::Request::from_parts(parts, b"{\"x\":1}".to_vec());
+    assert!(verify(&tampered, &parsed, SECRET, now, VerifyOptions::default()).is_err());
+}
+
 #[test]
 fn http2_authority_pseudo_header_verifies() {
     // Signed by the JavaScript SDK's signer (@smithy/signature-v4), as its
