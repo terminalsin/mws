@@ -27,6 +27,7 @@ mod route53_advanced;
 mod s3;
 mod s3_access_logs;
 mod s3_inventory;
+mod s3_parity;
 mod secretsmanager;
 mod sns;
 mod sns_archive;
