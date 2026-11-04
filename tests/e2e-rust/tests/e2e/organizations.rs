@@ -141,7 +141,13 @@ async fn service_control_policies_limit_member_accounts() {
     let member_iam = aws_sdk_iam::Client::new(&member);
     member_iam.create_user().user_name("before-scp").send().await.unwrap();
 
-    // Attaching needs the policy type enabled.
+    // An organization with all features starts with SCPs enabled in the
+    // root and FullAWSAccess attached everywhere.
+    let roots = o.orgs.list_roots().send().await.unwrap();
+    let types = roots.roots()[0].policy_types();
+    assert_eq!(types.len(), 1);
+    assert_eq!(types[0].r#type(), Some(&PolicyType::ServiceControlPolicy));
+    assert_eq!(types[0].status().unwrap().as_str(), "ENABLED");
     let scp = o
         .orgs
         .create_policy()
@@ -153,17 +159,15 @@ async fn service_control_policies_limit_member_accounts() {
         .await
         .unwrap();
     let scp_id = scp.policy().unwrap().policy_summary().unwrap().id().unwrap().to_string();
-    let err = o.orgs.attach_policy().policy_id(&scp_id).target_id(&account).send().await.unwrap_err();
-    assert_eq!(err.code(), Some("PolicyTypeNotEnabledException"));
-    let root = o
+    let err = o
         .orgs
         .enable_policy_type()
         .root_id(&o.root_id)
         .policy_type(PolicyType::ServiceControlPolicy)
         .send()
         .await
-        .unwrap();
-    assert_eq!(root.root().unwrap().policy_types()[0].status().unwrap().as_str(), "ENABLED");
+        .unwrap_err();
+    assert_eq!(err.code(), Some("PolicyTypeAlreadyEnabledException"));
     let attached = o
         .orgs
         .list_policies_for_target()
@@ -595,7 +599,6 @@ async fn units_accounts_and_closing() {
 async fn policies_targets_and_resource_policy() {
     let o = org().await;
     let account = o.create_account("target").await;
-    o.orgs.enable_policy_type().root_id(&o.root_id).policy_type(PolicyType::ServiceControlPolicy).send().await.unwrap();
     let created = o
         .orgs
         .create_policy()
@@ -851,4 +854,201 @@ async fn access_key_info_names_member_accounts() {
     let session_key = member.credentials_provider().unwrap().provide_credentials().await.unwrap();
     let info = sts.get_access_key_info().access_key_id(session_key.access_key_id()).send().await.unwrap();
     assert_eq!(info.account(), Some(account.as_str()));
+}
+
+async fn advance_clock(mws: &Mws, days: i64) {
+    let body = format!(r#"{{"advanceSeconds": {}}}"#, days * 86400);
+    let (status, _) = mws.control("POST", "/_mws/clock", Some(&body)).await;
+    assert_eq!(status, 200);
+}
+
+#[tokio::test]
+async fn resource_tags_tagging_and_resource_arns_are_authorized() {
+    let o = org().await;
+    let keep = o.create_account("keep").await;
+    let spare = o.create_account("spare").await;
+    let security = o.create_account("security").await;
+    o.orgs.tag_resource().resource_id(&keep).tags(tag("protected", "true")).send().await.unwrap();
+    let policy = format!(
+        r#"{{"Version":"2012-10-17","Statement":[
+            {{"Effect":"Allow","Action":"organizations:*","Resource":"*"}},
+            {{"Effect":"Deny","Action":"organizations:CloseAccount","Resource":"*","Condition":{{"StringEquals":{{"aws:ResourceTag/protected":"true"}}}}}},
+            {{"Effect":"Deny","Action":"organizations:TagResource","Resource":"*"}},
+            {{"Effect":"Deny","Action":"organizations:RegisterDelegatedAdministrator","Resource":"arn:aws:organizations::123456789012:account/{}/{keep}"}}]}}"#,
+        o.org_id
+    );
+    let (_, cfg) = user_with_policy(&o.mws, "org-operator", Some(&policy)).await;
+    let operator = Orgs::new(&cfg);
+
+    // aws:ResourceTag on the account being closed.
+    let err = operator.close_account().account_id(&keep).send().await.unwrap_err();
+    assert_eq!(err.code(), Some("AccessDeniedException"));
+    operator.close_account().account_id(&spare).send().await.unwrap();
+
+    // Creating with tags also needs organizations:TagResource.
+    let err = operator
+        .create_organizational_unit()
+        .parent_id(&o.root_id)
+        .name("Tagged")
+        .tags(tag("team", "core"))
+        .send()
+        .await
+        .unwrap_err();
+    assert_eq!(err.code(), Some("AccessDeniedException"));
+    operator.create_organizational_unit().parent_id(&o.root_id).name("Untagged").send().await.unwrap();
+
+    // Delegated administrators are authorized on the account's ARN.
+    operator.enable_aws_service_access().service_principal("config.amazonaws.com").send().await.unwrap();
+    let err = operator
+        .register_delegated_administrator()
+        .account_id(&keep)
+        .service_principal("config.amazonaws.com")
+        .send()
+        .await
+        .unwrap_err();
+    assert_eq!(err.code(), Some("AccessDeniedException"));
+    operator
+        .register_delegated_administrator()
+        .account_id(&security)
+        .service_principal("config.amazonaws.com")
+        .send()
+        .await
+        .unwrap();
+
+    // Only the management account and delegated administrators may read
+    // the organization's resource policy.
+    let doc = r#"{"Version":"2012-10-17","Statement":[{"Effect":"Allow","Principal":{"AWS":"arn:aws:iam::123456789012:root"},"Action":"organizations:Describe*","Resource":"*"}]}"#;
+    o.orgs.put_resource_policy().content(doc).send().await.unwrap();
+    let plain = o.create_account("plain").await;
+    let err = Orgs::new(&o.member_config(&plain).await).describe_resource_policy().send().await.unwrap_err();
+    assert_eq!(err.code(), Some("AccessDeniedException"));
+    let delegated = Orgs::new(&o.member_config(&security).await).describe_resource_policy().send().await.unwrap();
+    assert_eq!(delegated.resource_policy().unwrap().content(), Some(doc));
+}
+
+#[tokio::test]
+async fn creating_an_organization_needs_the_service_linked_role() {
+    let mws = Mws::start().await;
+    let orgs_only =
+        r#"{"Version":"2012-10-17","Statement":{"Effect":"Allow","Action":"organizations:*","Resource":"*"}}"#;
+    let (_, cfg) = user_with_policy(&mws, "orgs-only", Some(orgs_only)).await;
+    let err = Orgs::new(&cfg).create_organization().send().await.unwrap_err();
+    assert_eq!(err.code(), Some("AccessDeniedException"));
+
+    let with_slr = r#"{"Version":"2012-10-17","Statement":[
+        {"Effect":"Allow","Action":"organizations:*","Resource":"*"},
+        {"Effect":"Allow","Action":"iam:CreateServiceLinkedRole","Resource":"*","Condition":{"StringEquals":{"iam:AWSServiceName":"organizations.amazonaws.com"}}}]}"#;
+    let (_, cfg) = user_with_policy(&mws, "org-creator", Some(with_slr)).await;
+    Orgs::new(&cfg).create_organization().send().await.unwrap();
+    let roles = aws_sdk_iam::Client::new(&mws.root_sdk_config().await)
+        .list_roles()
+        .path_prefix("/aws-service-role/organizations.amazonaws.com/")
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(roles.roles()[0].role_name(), "AWSServiceRoleForOrganizations");
+}
+
+#[tokio::test]
+async fn waiting_periods_and_expiry_follow_the_clock() {
+    let o = org().await;
+    let created = o.create_account("fresh").await;
+    let err = Orgs::new(&o.member_config(&created).await).leave_organization().send().await.unwrap_err();
+    let reason = match err.into_service_error() {
+        aws_sdk_organizations::operation::leave_organization::LeaveOrganizationError::ConstraintViolationException(
+            e,
+        ) => e.reason().map(|r| r.as_str().to_string()),
+        other => panic!("unexpected {other:?}"),
+    };
+    assert_eq!(reason.as_deref(), Some("WAIT_PERIOD_ACTIVE"));
+
+    // Removing is not subject to the wait; the removed account is invited
+    // back, and the invitation runs out after 15 days.
+    let wanderer = o.create_account("wanderer").await;
+    o.orgs.remove_account_from_organization().account_id(&wanderer).send().await.unwrap();
+    let invite = o
+        .orgs
+        .invite_account_to_organization()
+        .target(HandshakeParty::builder().r#type(HandshakePartyType::Account).id(&wanderer).build().unwrap())
+        .send()
+        .await
+        .unwrap();
+    let handshake = invite.handshake().unwrap();
+    let lifetime = handshake.expiration_timestamp().unwrap().secs() - handshake.requested_timestamp().unwrap().secs();
+    assert_eq!(lifetime, 15 * 86400);
+    let id = handshake.id().unwrap().to_string();
+
+    advance_clock(&o.mws, 16).await;
+    let described = o.orgs.describe_handshake().handshake_id(&id).send().await.unwrap();
+    assert_eq!(described.handshake().unwrap().state().unwrap().as_str(), "EXPIRED");
+    // Four days on, the created account may leave.
+    Orgs::new(&o.member_config(&created).await).leave_organization().send().await.unwrap();
+}
+
+#[tokio::test]
+async fn errors_carry_the_reasons_aws_gives() {
+    use aws_sdk_organizations::operation::attach_policy::AttachPolicyError;
+    use aws_sdk_organizations::operation::create_policy::CreatePolicyError;
+    use aws_sdk_organizations::operation::detach_policy::DetachPolicyError;
+    use aws_sdk_organizations::operation::list_accounts::ListAccountsError;
+    use aws_sdk_organizations::operation::list_handshakes_for_organization::ListHandshakesForOrganizationError;
+    use aws_sdk_organizations::types::{ActionType, HandshakeFilter};
+    let o = org().await;
+
+    let err = o.orgs.list_accounts().next_token("not-a-token").send().await.unwrap_err();
+    match err.into_service_error() {
+        ListAccountsError::InvalidInputException(e) => {
+            assert_eq!(e.reason().map(|r| r.as_str()), Some("INVALID_PAGINATION_TOKEN"))
+        }
+        other => panic!("unexpected {other:?}"),
+    }
+
+    let filter = HandshakeFilter::builder()
+        .action_type(ActionType::InviteAccountToOrganization)
+        .parent_handshake_id("h-abcdefghij")
+        .build();
+    let err = o.orgs.list_handshakes_for_organization().filter(filter).send().await.unwrap_err();
+    match err.into_service_error() {
+        ListHandshakesForOrganizationError::InvalidInputException(e) => {
+            assert_eq!(e.reason().map(|r| r.as_str()), Some("MAX_FILTER_LIMIT_EXCEEDED"))
+        }
+        other => panic!("unexpected {other:?}"),
+    }
+
+    // Policies are stored as sent, so whitespace counts towards the limit.
+    let padded = format!("{}{}", DENY_CREATE_USER, " ".repeat(5120));
+    let err = o
+        .orgs
+        .create_policy()
+        .name("padded")
+        .description("")
+        .r#type(PolicyType::ServiceControlPolicy)
+        .content(padded)
+        .send()
+        .await
+        .unwrap_err();
+    match err.into_service_error() {
+        CreatePolicyError::ConstraintViolationException(e) => {
+            assert_eq!(e.reason().map(|r| r.as_str()), Some("POLICY_CONTENT_LIMIT_EXCEEDED"))
+        }
+        other => panic!("unexpected {other:?}"),
+    }
+
+    // RCPFullAWSAccess stays attached while RCPs are enabled.
+    o.orgs
+        .enable_policy_type()
+        .root_id(&o.root_id)
+        .policy_type(PolicyType::ResourceControlPolicy)
+        .send()
+        .await
+        .unwrap();
+    let err = o.orgs.detach_policy().policy_id("p-RCPFullAWSAccess").target_id(&o.root_id).send().await.unwrap_err();
+    match err.into_service_error() {
+        DetachPolicyError::InvalidInputException(e) => {
+            assert_eq!(e.reason().map(|r| r.as_str()), Some("NON_DETACHABLE_POLICY"))
+        }
+        other => panic!("unexpected {other:?}"),
+    }
+    let err = o.orgs.attach_policy().policy_id("p-FullAWSAccess").target_id(&o.root_id).send().await.unwrap_err();
+    assert!(matches!(err.into_service_error(), AttachPolicyError::DuplicatePolicyAttachmentException(_)));
 }

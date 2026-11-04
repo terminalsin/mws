@@ -24,7 +24,10 @@ mod ops;
 mod public;
 mod state;
 
+use std::sync::atomic::{AtomicI64, Ordering};
 use std::sync::{Arc, Mutex, MutexGuard};
+
+use chrono::{DateTime, Utc};
 
 use mws_core::{HttpRequest, HttpResponse, RequestContext, Service, ServiceError};
 
@@ -35,6 +38,10 @@ use state::State;
 #[derive(Clone, Default)]
 pub struct Kms {
     state: Arc<Mutex<State>>,
+    /// How far the emulated clock (`/_mws/clock`) runs ahead of the wall
+    /// clock, as last seen in a request. Scheduled deletions, automatic
+    /// rotations and expiring imported material follow it.
+    clock_offset_ms: Arc<AtomicI64>,
 }
 
 impl Kms {
@@ -42,9 +49,22 @@ impl Kms {
         Self::default()
     }
 
+    /// Note the emulated time of a request, so that time-driven changes
+    /// happen when the emulated clock reaches them.
+    pub(crate) fn observe(&self, ctx: &RequestContext) {
+        let offset = (ctx.received_at - Utc::now()).num_milliseconds().max(0);
+        self.clock_offset_ms.store(offset, Ordering::Relaxed);
+    }
+
+    /// The emulated time now.
+    pub(crate) fn now(&self) -> DateTime<Utc> {
+        Utc::now() + chrono::Duration::milliseconds(self.clock_offset_ms.load(Ordering::Relaxed))
+    }
+
     fn lock(&self) -> MutexGuard<'_, State> {
+        let now = self.now();
         let mut state = self.state.lock().expect("KMS state lock poisoned");
-        state.sweep(chrono::Utc::now());
+        state.sweep(now);
         state
     }
 }
@@ -60,6 +80,7 @@ impl Service for Kms {
     }
 
     async fn handle(&self, ctx: RequestContext, request: HttpRequest) -> HttpResponse {
+        self.observe(&ctx);
         generated::dispatch(self, &ctx, &request).await
     }
 
@@ -73,6 +94,7 @@ impl Service for Kms {
         operation: &str,
         input: serde_json::Value,
     ) -> Result<serde_json::Value, ServiceError> {
+        self.observe(&ctx);
         generated::invoke(self, &ctx, operation, input).await
     }
 

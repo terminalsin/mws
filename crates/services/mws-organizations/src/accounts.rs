@@ -1,6 +1,6 @@
 //! Member accounts: creating, describing, moving, removing and closing them.
 
-use chrono::Utc;
+use chrono::TimeDelta;
 use mws_core::{ConditionContext, RequestContext, ServiceError};
 
 use crate::access::*;
@@ -9,15 +9,23 @@ use crate::state::{AccountInfo, Member, Org, State};
 use crate::structure::{account_wire, attach_defaults, ORGANIZATIONS_PRINCIPAL};
 use crate::Organizations;
 
+/// Days a created account must wait before it can leave its organization.
+const CREATED_ACCOUNT_WAIT_DAYS: i64 = 4;
+
 impl Organizations {
-    /// The ARN of an account in the caller's organization.
-    fn account_arn_for(&self, ctx: &RequestContext, account: &str) -> Result<String, ServiceError> {
+    /// The ARN of an account in the caller's organization, and its tags as
+    /// `aws:ResourceTag/...` condition keys.
+    pub(crate) fn account_arn_for(
+        &self,
+        ctx: &RequestContext,
+        account: &str,
+    ) -> Result<(String, ConditionContext), ServiceError> {
         let state = self.lock();
         let org = state.org_of(&ctx.caller.account_id).ok_or_else(not_in_use)?;
         if !org.members.contains_key(account) {
             return Err(account_not_found());
         }
-        Ok(org.account_arn(&ctx.partition, account))
+        Ok((org.account_arn(&ctx.partition, account), resource_tag_context(&org.target_tags(account))))
     }
 
     fn new_account_id(&self, state: &State) -> String {
@@ -37,9 +45,19 @@ impl Organizations {
         let tags = tags_from(input.tags)?;
         self.authorize(ctx, "CreateAccount", "*", request_tag_context(&tags))?;
         let role = input.role_name.unwrap_or_else(|| mws_iam::org::DEFAULT_ACCESS_ROLE.to_string());
+        // The account id is chosen up front: tagging the new account needs
+        // organizations:TagResource on its ARN.
+        let (account, arn) = {
+            let state = self.lock();
+            let org = self.caller_org(&state, ctx, "CreateAccount", "*", Need::Management)?;
+            let account = self.new_account_id(&state);
+            let arn = org.account_arn(&ctx.partition, &account);
+            (account, arn)
+        };
+        self.authorize_tagging(ctx, &arn, &tags)?;
         let mut state = self.lock();
         let org_id = self.caller_org(&state, ctx, "CreateAccount", "*", Need::Management)?.id.clone();
-        let now = Utc::now();
+        let now = ctx.received_at;
         let request_id = new_id("car-", 32);
         let email_taken = state.accounts.values().any(|a| a.email.eq_ignore_ascii_case(&input.email));
         let mut status = types::CreateAccountStatus {
@@ -59,7 +77,6 @@ impl Organizations {
             org.create_statuses.insert(request_id, status);
             return Ok(response);
         }
-        let account = self.new_account_id(&state);
         state.accounts.insert(
             account.clone(),
             AccountInfo {
@@ -68,6 +85,7 @@ impl Organizations {
                 email: input.email,
                 status: "ACTIVE".into(),
                 state: "ACTIVE".into(),
+                closed_at: None,
             },
         );
         let org = state.organizations.get_mut(&org_id).expect("caller's organization exists");
@@ -100,6 +118,7 @@ impl Organizations {
     ) -> Result<types::CreateGovCloudAccountResponse, ServiceError> {
         let tags = tags_from(input.tags)?;
         self.authorize(ctx, "CreateGovCloudAccount", "*", request_tag_context(&tags))?;
+        self.authorize_tagging(ctx, "*", &tags)?;
         let state = self.lock();
         self.caller_org(&state, ctx, "CreateGovCloudAccount", "*", Need::Management)?;
         // MWS accounts are never associated with an AWS GovCloud (US)
@@ -150,8 +169,8 @@ impl Organizations {
         ctx: &RequestContext,
         input: types::DescribeAccountRequest,
     ) -> Result<types::DescribeAccountResponse, ServiceError> {
-        let arn = self.account_arn_for(ctx, &input.account_id)?;
-        self.authorize(ctx, "DescribeAccount", &arn, ConditionContext::new())?;
+        let (arn, cond) = self.account_arn_for(ctx, &input.account_id)?;
+        self.authorize(ctx, "DescribeAccount", &arn, cond)?;
         let state = self.lock();
         let org = self.caller_org(&state, ctx, "DescribeAccount", &arn, Need::Read)?;
         if !org.members.contains_key(&input.account_id) {
@@ -180,8 +199,8 @@ impl Organizations {
         ctx: &RequestContext,
         input: types::ListAccountsForParentRequest,
     ) -> Result<types::ListAccountsForParentResponse, ServiceError> {
-        let arn = self.target_arn_for(ctx, &input.parent_id, parent_not_found)?;
-        self.authorize(ctx, "ListAccountsForParent", &arn, ConditionContext::new())?;
+        let (arn, cond) = self.target_arn_for(ctx, &input.parent_id, parent_not_found)?;
+        self.authorize(ctx, "ListAccountsForParent", &arn, cond)?;
         let state = self.lock();
         let org = self.caller_org(&state, ctx, "ListAccountsForParent", &arn, Need::Read)?;
         if !org.has_parent(&input.parent_id) {
@@ -202,11 +221,20 @@ impl Organizations {
         ctx: &RequestContext,
         input: types::MoveAccountRequest,
     ) -> Result<(), ServiceError> {
-        let arn = self.account_arn_for(ctx, &input.account_id)?;
-        let mut cond = ConditionContext::new();
-        cond.insert("organizations:SourceParentId".into(), vec![input.source_parent_id.clone()]);
-        cond.insert("organizations:DestinationParentId".into(), vec![input.destination_parent_id.clone()]);
+        let (arn, cond) = self.account_arn_for(ctx, &input.account_id)?;
         self.authorize(ctx, "MoveAccount", &arn, cond)?;
+        // MoveAccount also acts on the source and destination parents.
+        let source = self.target_arn_for(ctx, &input.source_parent_id, || {
+            errors::source_parent_not_found("We can't find a source root or OU with the ParentId that you specified.")
+        });
+        let destination = self.target_arn_for(ctx, &input.destination_parent_id, || {
+            errors::destination_parent_not_found(
+                "We can't find the destination container (a root or OU) with the ParentId that you specified.",
+            )
+        });
+        for (parent_arn, parent_cond) in [source, destination].into_iter().flatten() {
+            self.authorize(ctx, "MoveAccount", &parent_arn, parent_cond)?;
+        }
         let mut state = self.lock();
         let org_id = self.caller_org(&state, ctx, "MoveAccount", &arn, Need::Management)?.id.clone();
         let org = state.organizations.get_mut(&org_id).expect("caller's organization exists");
@@ -233,8 +261,8 @@ impl Organizations {
         ctx: &RequestContext,
         input: types::RemoveAccountFromOrganizationRequest,
     ) -> Result<(), ServiceError> {
-        let arn = self.account_arn_for(ctx, &input.account_id)?;
-        self.authorize(ctx, "RemoveAccountFromOrganization", &arn, ConditionContext::new())?;
+        let (arn, cond) = self.account_arn_for(ctx, &input.account_id)?;
+        self.authorize(ctx, "RemoveAccountFromOrganization", &arn, cond)?;
         let mut state = self.lock();
         let org_id = self.caller_org(&state, ctx, "RemoveAccountFromOrganization", &arn, Need::Management)?.id.clone();
         let org = state.organizations.get_mut(&org_id).expect("caller's organization exists");
@@ -247,6 +275,16 @@ impl Organizations {
         let mut state = self.lock();
         let org_id = state.org_id_of(&account).ok_or_else(not_in_use)?;
         let org = state.organizations.get_mut(&org_id).expect("caller's organization exists");
+        // Accounts the organization created must wait four days; invited
+        // accounts may leave at once.
+        if let Some(m) = org.members.get(&account) {
+            if m.joined_method == "CREATED" && ctx.received_at < m.joined + TimeDelta::days(CREATED_ACCOUNT_WAIT_DAYS) {
+                return Err(constraint(
+                    "WAIT_PERIOD_ACTIVE",
+                    "After you create an Amazon Web Services account, you must wait until at least four days after the account was created. Invited accounts aren't subject to this waiting period.",
+                ));
+            }
+        }
         remove_member(org, &account)
     }
 
@@ -255,10 +293,18 @@ impl Organizations {
         ctx: &RequestContext,
         input: types::CloseAccountRequest,
     ) -> Result<(), ServiceError> {
-        let arn = self.account_arn_for(ctx, &input.account_id)?;
-        self.authorize(ctx, "CloseAccount", &arn, ConditionContext::new())?;
+        let (arn, cond) = self.account_arn_for(ctx, &input.account_id)?;
+        self.authorize(ctx, "CloseAccount", &arn, cond)?;
         let mut state = self.lock();
         let org = self.caller_org(&state, ctx, "CloseAccount", &arn, Need::Management)?;
+        let now = ctx.received_at;
+        let members = org.members.keys().filter(|a| **a != org.management_account).count();
+        let recent = org
+            .members
+            .keys()
+            .filter_map(|a| state.accounts.get(a)?.closed_at)
+            .filter(|t| *t > now - TimeDelta::days(30))
+            .count();
         if !org.members.contains_key(&input.account_id) {
             return Err(account_not_found());
         }
@@ -272,6 +318,15 @@ impl Organizations {
         if info.status != "ACTIVE" {
             return Err(errors::account_already_closed("You attempted to close an account that is already closed."));
         }
+        // Within a rolling 30 days an organization can close the higher of
+        // 250 or 20% of its member accounts, up to 1,000.
+        if recent >= (members / 5).clamp(250, 1000) {
+            return Err(constraint(
+                "CLOSE_ACCOUNT_QUOTA_EXCEEDED",
+                "You have exceeded close account quota for the past 30 days.",
+            ));
+        }
+        info.closed_at = Some(now);
         // AWS moves the account through PENDING_CLOSURE to SUSPENDED within
         // minutes; MWS completes it at once.
         info.status = "SUSPENDED".into();

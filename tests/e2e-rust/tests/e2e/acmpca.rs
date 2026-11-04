@@ -349,10 +349,10 @@ async fn validation_tags_and_errors() {
         err.meta().message()
     );
 
-    // A never-activated CA is deleted outright.
+    // A never-activated CA is deleted, restorably, like any other.
     pca.delete_certificate_authority().certificate_authority_arn(&ca).send().await.unwrap();
-    let err = pca.describe_certificate_authority().certificate_authority_arn(&ca).send().await.unwrap_err();
-    assert!(err.into_service_error().is_resource_not_found_exception());
+    let desc = pca.describe_certificate_authority().certificate_authority_arn(&ca).send().await.unwrap();
+    assert_eq!(desc.certificate_authority().unwrap().status(), Some(&CertificateAuthorityStatus::Deleted));
 }
 
 #[tokio::test]

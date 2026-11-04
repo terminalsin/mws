@@ -150,6 +150,19 @@ impl Route53 {
         Some((zone.id.clone(), resolve::resolve(zone, qname, qtype, &cx)))
     }
 
+    /// Whether health check `id` (an id or a `healthcheck/` ARN) is
+    /// healthy, as services that route on Route 53 health checks
+    /// (EventBridge global endpoints) see it: what the checkers saw, after
+    /// `Inverted` and `Disabled`, and for calculated checks from their
+    /// children. `None` if there is no such health check.
+    pub fn health_check_healthy(&self, id: &str) -> Option<bool> {
+        let id = id.rsplit_once("healthcheck/").map_or(id, |(_, id)| id);
+        let all = self.lock_all();
+        let state = all.accounts.values().find(|s| s.health_checks.contains_key(id))?;
+        let checks = resolve::health_configs(state.health_checks.iter());
+        Some(self.is_healthy(&checks, id))
+    }
+
     /// The name of hosted zone `id` (lowercase, trailing dot) and whether
     /// it is private.
     pub fn hosted_zone_name(&self, id: &str) -> Option<(String, bool)> {

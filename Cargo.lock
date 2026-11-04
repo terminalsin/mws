@@ -2811,6 +2811,7 @@ name = "mws-sigv4"
 version = "0.1.0"
 dependencies = [
  "aws-credential-types",
+ "aws-lc-rs",
  "aws-sigv4",
  "aws-smithy-runtime-api",
  "chrono",
@@ -2845,6 +2846,7 @@ dependencies = [
  "md-5 0.10.6",
  "mws-codegen",
  "mws-core",
+ "mws-firehose",
  "mws-iam-policy",
  "mws-kms",
  "mws-lambda",
@@ -2857,6 +2859,7 @@ dependencies = [
  "percent-encoding",
  "rand",
  "rcgen",
+ "regex",
  "rustls 0.23.46",
  "rustls-native-certs",
  "rustls-pki-types",
