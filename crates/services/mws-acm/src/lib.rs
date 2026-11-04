@@ -19,8 +19,10 @@
 //!   prevalidated domains are issued by the same public CA.
 //!
 //! Validation, expiry, managed renewal and timeouts follow MWS's emulated
-//! clock and happen when the account next calls ACM. Every operation is
-//! authorized through IAM with ACM's condition keys and `aws:ResourceTag`.
+//! clock: they happen whenever MWS polls [`Acm::take_events`] (which also
+//! hands out ACM's EventBridge events) and, at the latest, when the account
+//! next calls ACM. [`Acm::take_days_to_expiry`] gives the `DaysToExpiry`
+//! CloudWatch metric. Every operation is authorized through IAM with ACM's condition keys and `aws:ResourceTag`.
 
 #[allow(clippy::all, dead_code, unused_imports, non_snake_case, non_camel_case_types)]
 pub mod generated {
@@ -32,7 +34,7 @@ pub mod acme_server;
 pub mod approval;
 mod certs;
 mod common;
-mod expiry;
+mod events;
 mod handler;
 mod jws;
 mod pki;
@@ -40,7 +42,7 @@ mod search;
 mod state;
 mod validation;
 
-pub use expiry::ExpiryEvent;
+pub use events::{AcmEvent, DaysToExpiry};
 
 use std::sync::{Arc, Mutex, MutexGuard};
 
@@ -55,6 +57,8 @@ pub struct Acm {
     pca: Option<mws_acmpca::PrivateCa>,
     route53: Option<mws_route53::Route53>,
     sts: Option<mws_sts::Sts>,
+    /// The last request's context, for lifecycle work the clock drives.
+    template: Arc<Mutex<Option<RequestContext>>>,
 }
 
 impl Acm {
@@ -96,6 +100,7 @@ impl Service for Acm {
     }
 
     async fn handle(&self, ctx: RequestContext, request: HttpRequest) -> HttpResponse {
+        *self.template.lock().expect("ACM template lock poisoned") = Some(ctx.clone());
         if ctx.caller.kind == mws_core::CallerKind::Anonymous {
             if acme_server::is_acme_request(&request) {
                 return self.acme_http(&ctx, &request).await;
