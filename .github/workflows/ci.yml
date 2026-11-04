@@ -15,6 +15,9 @@ jobs:
   rust:
     runs-on: ubuntu-latest
     steps:
+      # Free disk for target/ (the runner starts with ~20 GB). Deleting takes
+      # ~50s, so run it in the background while the job carries on.
+      - run: nohup sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc /opt/hostedtoolcache/CodeQL > /dev/null 2>&1 &
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
         with:
@@ -34,9 +37,12 @@ jobs:
       - run: cargo test --workspace --all-targets
         env:
           MWS_LAMBDA_PYTHON: ${{ steps.python.outputs.python-path }}
+          CARGO_LOG: cargo::core::compiler::fingerprint=info
       # Same feature set as the test build, so only the mws binary links
       # (`-p mws` alone resolves features differently and rebuilds ~30 crates).
       - run: cargo build --workspace --bins && df -h /
+        env:
+          CARGO_LOG: cargo::core::compiler::fingerprint=info
       - run: pytest -q tests/e2e-python
         env:
           MWS_LAMBDA_PYTHON: ${{ steps.python.outputs.python-path }}

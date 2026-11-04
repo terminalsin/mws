@@ -6,8 +6,11 @@
 mod acm;
 mod acmpca;
 mod events;
+mod firehose;
 mod iam;
 mod iam_advanced;
+mod kinesis;
+mod kinesis_targets;
 mod kms;
 mod lambda;
 mod lambda_sqs;
