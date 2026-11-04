@@ -21,8 +21,8 @@ type Sequenced = Result<(Option<String>, Option<String>), Dedup>;
 const MAX_BATCH: usize = 10;
 const DEDUP_WINDOW_MS: i64 = 5 * 60 * 1000;
 
-/// A message on its way out.
-#[derive(Debug, Clone)]
+/// A message on its way out (and, for archiving topics, in the archive).
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct Outgoing {
     pub message_id: String,
     pub subject: Option<String>,
@@ -35,6 +35,9 @@ pub struct Outgoing {
     pub dedup_id: Option<String>,
     pub sequence_number: Option<String>,
     pub timestamp: DateTime<Utc>,
+    /// Redelivered from the archive by a replay.
+    #[serde(default)]
+    pub replayed: bool,
 }
 
 impl Outgoing {
@@ -255,7 +258,13 @@ impl Sns {
             dedup_id: dedup,
             sequence_number: sequence.clone(),
             timestamp: ctx.received_at,
+            replayed: false,
         };
+        if topic.archive_since.is_some() {
+            if let Some(t) = self.lock().topics.get_mut(topic_arn) {
+                t.archive_message(&out, ctx.received_at);
+            }
+        }
         self.fan_out(ctx, &topic, out);
         Ok(types::PublishResponse { message_id: Some(message_id), sequence_number: sequence })
     }
@@ -367,6 +376,7 @@ impl Sns {
             dedup_id: None,
             sequence_number: None,
             timestamp: ctx.received_at,
+            replayed: false,
         };
         let mut st = self.lock();
         let endpoint = st

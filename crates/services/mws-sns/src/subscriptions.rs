@@ -129,7 +129,12 @@ pub(crate) fn validate_attribute(
                 }
             }
         }
-        "DeliveryPolicy" | "ReplayPolicy" => {
+        "ReplayPolicy" => {
+            if !value.is_empty() {
+                crate::archive::parse_replay_policy(value)?;
+            }
+        }
+        "DeliveryPolicy" => {
             if !value.is_empty() && !serde_json::from_str::<serde_json::Value>(value).is_ok_and(|v| v.is_object()) {
                 return Err(errors::invalid(format!("{name}: failed to parse JSON.")));
             }
@@ -195,6 +200,9 @@ impl Sns {
                 }
                 validate_attribute(k, v, &protocol, &attributes)?;
             }
+            if attributes.get("ReplayPolicy").is_some_and(|p| !p.is_empty()) {
+                Self::check_replay_target(topic)?;
+            }
             if protocol == "firehose" && attributes.get("SubscriptionRoleArn").is_none_or(|r| r.is_empty()) {
                 return Err(errors::invalid("Invalid parameter: SubscriptionRoleArn"));
             }
@@ -242,6 +250,9 @@ impl Sns {
             let topic = Self::topic(&st, &input.topic_arn)?.clone();
             (sub, needs_confirmation.then_some(topic))
         };
+        if sub.attributes.contains_key("ReplayPolicy") && !sub.pending {
+            self.replay(ctx, &sub.arn);
+        }
         if let Some(topic) = confirm {
             self.send_confirmation(ctx, &topic, &sub);
             let arn = if input.return_subscription_arn { sub.arn } else { "pending confirmation".to_string() };
@@ -391,6 +402,15 @@ impl Sns {
         let mut st = self.lock();
         let s = st.subscriptions.get_mut(&input.subscription_arn).ok_or_else(errors::subscription_not_found)?;
         validate_attribute(&input.attribute_name, &value, &s.protocol, &s.attributes)?;
+        let replay = input.attribute_name == "ReplayPolicy" && !value.is_empty();
+        if replay {
+            let topic_arn = s.topic_arn.clone();
+            Self::check_replay_target(Self::topic(&st, &topic_arn)?)?;
+        }
+        let s = st.subscriptions.get_mut(&input.subscription_arn).ok_or_else(errors::subscription_not_found)?;
+        if input.attribute_name == "ReplayPolicy" {
+            s.attributes.remove("ReplayStatus");
+        }
         if value.is_empty() {
             s.attributes.remove(&input.attribute_name);
             if input.attribute_name == "FilterPolicy" {
@@ -398,6 +418,11 @@ impl Sns {
             }
         } else {
             s.attributes.insert(input.attribute_name, value);
+        }
+        let (arn, pending) = (s.arn.clone(), s.pending);
+        drop(st);
+        if replay && !pending {
+            self.replay(ctx, &arn);
         }
         Ok(())
     }

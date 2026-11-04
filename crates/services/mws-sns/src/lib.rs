@@ -17,6 +17,7 @@ pub mod generated {
     include!(concat!(env!("OUT_DIR"), "/sns_generated.rs"));
 }
 
+mod archive;
 mod delivery;
 mod errors;
 mod filter;
