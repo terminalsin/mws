@@ -164,6 +164,7 @@ fn build_with_store(config: Config, store: Option<Arc<Store>>) -> Mws {
         acm: acm.clone(),
         partition: config.iam.partition.clone(),
     }));
+    ssm.set_change_sink(Arc::new(sinks::SsmChangeEvents(events.clone())));
     events.register_clock_source(Arc::new(sinks::SsmPolicyEvents {
         ssm: ssm.clone(),
         partition: config.iam.partition.clone(),

@@ -14,7 +14,10 @@ const INVITE: &str = "INVITE";
 const ENABLE_ALL: &str = "ENABLE_ALL_FEATURES";
 const APPROVE_ALL: &str = "APPROVE_ALL_FEATURES";
 const TRANSFER: &str = "TRANSFER_RESPONSIBILITY";
+/// Invitations (and billing transfer invitations) expire after 15 days.
 const HANDSHAKE_LIFETIME_DAYS: i64 = 15;
+/// A request to enable all features stays open for 90 days.
+const ENABLE_ALL_LIFETIME_DAYS: i64 = 90;
 
 fn party(ty: &str, id: &str) -> types::HandshakeParty {
     types::HandshakeParty { id: id.to_string(), r#type: ty.to_string() }
@@ -52,20 +55,33 @@ fn org_resource(state: &State, org: &Org) -> types::HandshakeResource {
 
 fn new_handshake(
     org: &Org,
-    partition: &str,
+    ctx: &RequestContext,
     action: &str,
     parties: Vec<types::HandshakeParty>,
     resources: Vec<types::HandshakeResource>,
 ) -> types::Handshake {
-    let id = new_id("h-", 10);
-    let now = Utc::now();
+    new_handshake_with_id(new_id("h-", 10), org, ctx, action, parties, resources)
+}
+
+fn new_handshake_with_id(
+    id: String,
+    org: &Org,
+    ctx: &RequestContext,
+    action: &str,
+    parties: Vec<types::HandshakeParty>,
+    resources: Vec<types::HandshakeResource>,
+) -> types::Handshake {
+    let partition = &ctx.partition;
+    let now = ctx.received_at;
+    let lifetime =
+        if matches!(action, ENABLE_ALL | APPROVE_ALL) { ENABLE_ALL_LIFETIME_DAYS } else { HANDSHAKE_LIFETIME_DAYS };
     types::Handshake {
         arn: Some(org.handshake_arn(partition, action, &id)),
         id: Some(id),
         parties: Some(parties),
         state: Some("OPEN".into()),
         requested_timestamp: Some(now),
-        expiration_timestamp: Some(now + TimeDelta::days(HANDSHAKE_LIFETIME_DAYS)),
+        expiration_timestamp: Some(now + TimeDelta::days(lifetime)),
         action: Some(action.into()),
         resources: Some(resources),
     }
@@ -129,8 +145,7 @@ impl Organizations {
     }
 
     /// Mark handshakes whose time has run out as expired.
-    fn expire(state: &mut State) {
-        let now = Utc::now();
+    fn expire(state: &mut State, now: DateTime<Utc>) {
         for h in state.handshakes.values_mut() {
             if is_open(h) && h.handshake.expiration_timestamp.is_some_and(|t| t <= now) {
                 h.handshake.state = Some("EXPIRED".into());
@@ -155,8 +170,17 @@ impl Organizations {
     ) -> Result<types::InviteAccountToOrganizationResponse, ServiceError> {
         let tags = tags_from(input.tags)?;
         self.authorize(ctx, "InviteAccountToOrganization", "*", request_tag_context(&tags))?;
+        let handshake_id = new_id("h-", 10);
+        if !tags.is_empty() {
+            let arn = {
+                let state = self.lock();
+                let org = state.org_of(&ctx.caller.account_id).ok_or_else(not_in_use)?;
+                org.handshake_arn(&ctx.partition, INVITE, &handshake_id)
+            };
+            self.authorize_tagging(ctx, &arn, &tags)?;
+        }
         let mut state = self.lock();
-        Self::expire(&mut state);
+        Self::expire(&mut state, ctx.received_at);
         let org = self.caller_org(&state, ctx, "InviteAccountToOrganization", "*", Need::Management)?.clone();
         let target = input.target;
         match target.r#type.as_str() {
@@ -209,9 +233,10 @@ impl Organizations {
         if let Some(notes) = input.notes {
             resources.push(resource("NOTES", notes));
         }
-        let handshake = new_handshake(
+        let handshake = new_handshake_with_id(
+            handshake_id,
             &org,
-            &ctx.partition,
+            ctx,
             INVITE,
             vec![party("ORGANIZATION", &org.id), party(&target.r#type, &target.id)],
             resources,
@@ -230,7 +255,7 @@ impl Organizations {
     ) -> Result<types::EnableAllFeaturesResponse, ServiceError> {
         self.authorize(ctx, "EnableAllFeatures", "*", ConditionContext::new())?;
         let mut state = self.lock();
-        Self::expire(&mut state);
+        Self::expire(&mut state, ctx.received_at);
         let org = self.caller_org(&state, ctx, "EnableAllFeatures", "*", Need::Management)?.clone();
         if org.feature_set == "ALL" {
             return Err(handshake_constraint(
@@ -246,7 +271,7 @@ impl Organizations {
         }
         let parent = new_handshake(
             &org,
-            &ctx.partition,
+            ctx,
             ENABLE_ALL,
             vec![party("ORGANIZATION", &org.id)],
             vec![resource("ORGANIZATION", org.id.clone())],
@@ -258,7 +283,7 @@ impl Organizations {
             }
             let mut child = new_handshake(
                 &org,
-                &ctx.partition,
+                ctx,
                 APPROVE_ALL,
                 vec![party("ORGANIZATION", &org.id), party("ACCOUNT", account)],
                 vec![resource("ORGANIZATION", org.id.clone()), resource("PARENT_HANDSHAKE", parent_id.clone())],
@@ -286,8 +311,22 @@ impl Organizations {
         let arn = self.handshake_arn_for(ctx, &input.handshake_id)?;
         self.authorize(ctx, "AcceptHandshake", &arn, ConditionContext::new())?;
         let account = ctx.caller.account_id.clone();
+        // Joining an organization with all features creates
+        // AWSServiceRoleForOrganizations in the account, which the caller
+        // must be allowed to do.
+        let joins_all_features = {
+            let state = self.lock();
+            state.handshakes.get(&input.handshake_id).is_some_and(|h| {
+                action_of(h) == INVITE
+                    && is_open(h)
+                    && state.organizations.get(&h.org_id).is_some_and(|o| o.feature_set == "ALL")
+            })
+        };
+        if joins_all_features {
+            self.authorize_service_linked_role(ctx, &account)?;
+        }
         let mut state = self.lock();
-        Self::expire(&mut state);
+        Self::expire(&mut state, ctx.received_at);
         let h = state.handshakes.get(&input.handshake_id).cloned().ok_or_else(handshake_not_found)?;
         if !is_recipient(&state, &h, &account) {
             return Err(access_denied());
@@ -313,7 +352,7 @@ impl Organizations {
                     Member {
                         parent: org.root_id.clone(),
                         joined_method: "INVITED".into(),
-                        joined: Utc::now(),
+                        joined: ctx.received_at,
                         tags: h.tags.clone(),
                     },
                 );
@@ -388,7 +427,7 @@ impl Organizations {
     ) -> Result<types::Handshake, ServiceError> {
         let account = ctx.caller.account_id.clone();
         let mut state = self.lock();
-        Self::expire(&mut state);
+        Self::expire(&mut state, ctx.received_at);
         let h = state.handshakes.get(id).cloned().ok_or_else(handshake_not_found)?;
         let allowed =
             if by_recipient { is_recipient(&state, &h, &account) } else { is_originator(&state, &h, &account) };
@@ -424,7 +463,7 @@ impl Organizations {
         let arn = self.handshake_arn_for(ctx, &input.handshake_id)?;
         self.authorize(ctx, "DescribeHandshake", &arn, ConditionContext::new())?;
         let mut state = self.lock();
-        Self::expire(&mut state);
+        Self::expire(&mut state, ctx.received_at);
         let h = state.handshakes.get(&input.handshake_id).ok_or_else(handshake_not_found)?;
         Ok(types::DescribeHandshakeResponse { handshake: Some(h.handshake.clone()) })
     }
@@ -433,7 +472,13 @@ impl Organizations {
         state: &State,
         filter: &Option<types::HandshakeFilter>,
         keep: impl Fn(&HandshakeRec) -> bool,
-    ) -> Vec<types::Handshake> {
+    ) -> Result<Vec<types::Handshake>, ServiceError> {
+        if filter.as_ref().is_some_and(|f| f.action_type.is_some() && f.parent_handshake_id.is_some()) {
+            return Err(invalid(
+                "MAX_FILTER_LIMIT_EXCEEDED",
+                "You can specify only one filter parameter for the operation.",
+            ));
+        }
         let mut out: Vec<&HandshakeRec> = state
             .handshakes
             .values()
@@ -448,7 +493,7 @@ impl Organizations {
             })
             .collect();
         out.sort_by_key(|h| h.handshake.requested_timestamp);
-        out.into_iter().map(|h| h.handshake.clone()).collect()
+        Ok(out.into_iter().map(|h| h.handshake.clone()).collect())
     }
 
     pub(crate) fn list_handshakes_for_account(
@@ -459,8 +504,8 @@ impl Organizations {
         self.authorize(ctx, "ListHandshakesForAccount", "*", ConditionContext::new())?;
         let account = ctx.caller.account_id.clone();
         let mut state = self.lock();
-        Self::expire(&mut state);
-        let all = Self::filtered(&state, &input.filter, |h| is_recipient(&state, h, &account));
+        Self::expire(&mut state, ctx.received_at);
+        let all = Self::filtered(&state, &input.filter, |h| is_recipient(&state, h, &account))?;
         let (handshakes, next_token) = page(all, input.next_token.as_deref(), input.max_results)?;
         Ok(types::ListHandshakesForAccountResponse { handshakes: Some(handshakes), next_token })
     }
@@ -472,9 +517,9 @@ impl Organizations {
     ) -> Result<types::ListHandshakesForOrganizationResponse, ServiceError> {
         self.authorize(ctx, "ListHandshakesForOrganization", "*", ConditionContext::new())?;
         let mut state = self.lock();
-        Self::expire(&mut state);
+        Self::expire(&mut state, ctx.received_at);
         let org_id = self.caller_org(&state, ctx, "ListHandshakesForOrganization", "*", Need::Read)?.id.clone();
-        let all = Self::filtered(&state, &input.filter, |h| h.org_id == org_id);
+        let all = Self::filtered(&state, &input.filter, |h| h.org_id == org_id)?;
         let (handshakes, next_token) = page(all, input.next_token.as_deref(), input.max_results)?;
         Ok(types::ListHandshakesForOrganizationResponse { handshakes: Some(handshakes), next_token })
     }
@@ -489,7 +534,7 @@ impl Organizations {
         let tags = tags_from(input.tags)?;
         self.authorize(ctx, "InviteOrganizationToTransferResponsibility", "*", request_tag_context(&tags))?;
         let mut state = self.lock();
-        Self::expire(&mut state);
+        Self::expire(&mut state, ctx.received_at);
         let org =
             self.caller_org(&state, ctx, "InviteOrganizationToTransferResponsibility", "*", Need::Management)?.clone();
         if input.target.r#type != "ACCOUNT" {
@@ -521,7 +566,7 @@ impl Organizations {
                 "The start date must be the first day of a month at 00:00 UTC.",
             ));
         }
-        if start < start_of_month(Utc::now()) {
+        if start < start_of_month(ctx.received_at) {
             return Err(invalid("START_DATE_TOO_EARLY", "The start date can't be in the past."));
         }
         let active = state.transfers.values().any(|t| {
@@ -551,7 +596,7 @@ impl Organizations {
         }
         let handshake = new_handshake(
             &org,
-            &ctx.partition,
+            ctx,
             TRANSFER,
             vec![party("ORGANIZATION", &org.id), party("ACCOUNT", &target)],
             resources,
@@ -604,7 +649,7 @@ impl Organizations {
     ) -> Result<types::DescribeResponsibilityTransferResponse, ServiceError> {
         self.authorize(ctx, "DescribeResponsibilityTransfer", "*", ConditionContext::new())?;
         let mut state = self.lock();
-        Self::expire(&mut state);
+        Self::expire(&mut state, ctx.received_at);
         let t = Self::caller_transfer(&state, ctx, &input.id)?;
         Ok(types::DescribeResponsibilityTransferResponse { responsibility_transfer: Some(t.transfer.clone()) })
     }
@@ -629,7 +674,7 @@ impl Organizations {
     ) -> Result<types::TerminateResponsibilityTransferResponse, ServiceError> {
         self.authorize(ctx, "TerminateResponsibilityTransfer", "*", ConditionContext::new())?;
         let mut state = self.lock();
-        Self::expire(&mut state);
+        Self::expire(&mut state, ctx.received_at);
         Self::caller_transfer(&state, ctx, &input.id)?;
         let t = state.transfers.get(&input.id).expect("checked above").clone();
         match t.transfer.status.as_deref() {
@@ -645,8 +690,8 @@ impl Organizations {
                         "The responsibility transfer is already ending.",
                     ));
                 }
-                let end = input.end_timestamp.unwrap_or_else(Utc::now);
-                if end < Utc::now() - TimeDelta::minutes(5) {
+                let end = input.end_timestamp.unwrap_or(ctx.received_at);
+                if end < ctx.received_at - TimeDelta::minutes(5) {
                     return Err(invalid("END_DATE_TOO_EARLY", "The end date can't be in the past."));
                 }
                 state.transfers.get_mut(&input.id).expect("exists").transfer.end_timestamp = Some(end);
@@ -671,7 +716,7 @@ impl Organizations {
     ) -> Result<Vec<types::ResponsibilityTransfer>, ServiceError> {
         self.authorize(ctx, action, "*", ConditionContext::new())?;
         let mut state = self.lock();
-        Self::expire(&mut state);
+        Self::expire(&mut state, ctx.received_at);
         let org_id = self.caller_org(&state, ctx, action, "*", Need::Management)?.id.clone();
         let out: Vec<_> = state
             .transfers
