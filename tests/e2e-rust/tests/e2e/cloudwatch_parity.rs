@@ -63,6 +63,12 @@ async fn set_alarm_state_holds_until_the_next_evaluation() {
     tokio::time::sleep(Duration::from_millis(1500)).await;
     assert_eq!(state_of(&cw, "manual").await, Some(StateValue::InsufficientData));
 
+    // The alarm evaluates at each minute boundary: keep the check below
+    // clear of one, so it sees the state set by hand.
+    let second = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_millis() % 60_000;
+    if second > 55_000 {
+        tokio::time::sleep(Duration::from_millis((61_000 - second) as u64)).await;
+    }
     cw.set_alarm_state()
         .alarm_name("manual")
         .state_value(StateValue::Alarm)

@@ -174,6 +174,8 @@ impl Gen<'_, '_> {
         );
         let _ = writeln!(w, "    use de::*;");
         let method = ident(&snake_case(op.name()));
+        let uri =
+            op.get_trait("http").and_then(|h| h.get("uri")).and_then(Value::as_str).unwrap_or_default().to_string();
         match &op.input {
             Some(input_id) => {
                 let input = model.expect(input_id).clone();
@@ -195,7 +197,14 @@ impl Gen<'_, '_> {
                     let _ = writeln!(w, "        let p = {}.to_string();", rust_str(&lower_camel(&m.name)));
                     let expr = self.input_member_expr(m, &target);
                     let _ = writeln!(w, "        let val = {expr};");
-                    let checks = self.constraints.checks(Some(m), &target);
+                    let mut checks = self.constraints.checks(Some(m), &target);
+                    if m.has_trait("httpLabel") && uri.contains(&format!("{{{}+}}", m.name)) {
+                        // A greedy label spans path segments, which the
+                        // models' patterns (written for one segment, e.g.
+                        // S3 Control's `{Mrap+}` taking an ARN) never allow
+                        // for; AWS accepts them.
+                        checks = checks.lines().filter(|l| !l.contains("check_pattern")).collect::<Vec<_>>().join("\n");
+                    }
                     if !checks.is_empty() {
                         let _ = writeln!(w, "        if let Some(v) = &val {{ {checks} }}");
                     }
