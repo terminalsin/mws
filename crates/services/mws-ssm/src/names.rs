@@ -216,8 +216,10 @@ pub fn valid_label(label: &str) -> bool {
         && label.bytes().all(|b| b.is_ascii_alphanumeric() || matches!(b, b'_' | b'.' | b'-'))
 }
 
-pub fn not_found(name: &str) -> ServiceError {
-    errors::parameter_not_found(format!("Parameter {name} not found."))
+/// `ParameterNotFound` for `name`. AWS sends this error with no message at
+/// all (the body is just `{"__type":"ParameterNotFound"}`).
+pub fn not_found(_name: &str) -> ServiceError {
+    errors::parameter_not_found("")
 }
 
 pub fn version_not_found(name: &str, version: &str) -> ServiceError {

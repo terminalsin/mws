@@ -1,7 +1,6 @@
 //! Trusted service access, delegated administrators, the organization's
 //! resource policy, and tags.
 
-use chrono::Utc;
 use mws_core::{ConditionContext, RequestContext, ServiceError};
 
 use crate::access::*;
@@ -120,7 +119,7 @@ impl Organizations {
             ));
         }
         check_principal(&input.service_principal)?;
-        org.services.entry(input.service_principal).or_insert_with(Utc::now);
+        org.services.entry(input.service_principal).or_insert(ctx.received_at);
         Ok(())
     }
 
@@ -170,14 +169,11 @@ impl Organizations {
         ctx: &RequestContext,
         input: types::RegisterDelegatedAdministratorRequest,
     ) -> Result<(), ServiceError> {
-        self.authorize(
-            ctx,
-            "RegisterDelegatedAdministrator",
-            "*",
-            single("organizations:ServicePrincipal", input.service_principal.clone()),
-        )?;
+        let (arn, mut cond) = self.account_arn_for(ctx, &input.account_id)?;
+        cond.insert("organizations:ServicePrincipal".into(), vec![input.service_principal.clone()]);
+        self.authorize(ctx, "RegisterDelegatedAdministrator", &arn, cond)?;
         let mut state = self.lock();
-        let org_id = self.caller_org(&state, ctx, "RegisterDelegatedAdministrator", "*", Need::Management)?.id.clone();
+        let org_id = self.caller_org(&state, ctx, "RegisterDelegatedAdministrator", &arn, Need::Management)?.id.clone();
         check_principal(&input.service_principal)?;
         let suspended = state.accounts.get(&input.account_id).is_some_and(|a| a.status != "ACTIVE");
         let org = state.organizations.get_mut(&org_id).expect("caller's organization exists");
@@ -208,7 +204,7 @@ impl Organizations {
                 "The specified account is already a delegated administrator for this Amazon Web Services service.",
             ));
         }
-        entry.insert(input.service_principal, Utc::now());
+        entry.insert(input.service_principal, ctx.received_at);
         Ok(())
     }
 
@@ -217,15 +213,12 @@ impl Organizations {
         ctx: &RequestContext,
         input: types::DeregisterDelegatedAdministratorRequest,
     ) -> Result<(), ServiceError> {
-        self.authorize(
-            ctx,
-            "DeregisterDelegatedAdministrator",
-            "*",
-            single("organizations:ServicePrincipal", input.service_principal.clone()),
-        )?;
+        let (arn, mut cond) = self.account_arn_for(ctx, &input.account_id)?;
+        cond.insert("organizations:ServicePrincipal".into(), vec![input.service_principal.clone()]);
+        self.authorize(ctx, "DeregisterDelegatedAdministrator", &arn, cond)?;
         let mut state = self.lock();
         let org_id =
-            self.caller_org(&state, ctx, "DeregisterDelegatedAdministrator", "*", Need::Management)?.id.clone();
+            self.caller_org(&state, ctx, "DeregisterDelegatedAdministrator", &arn, Need::Management)?.id.clone();
         check_principal(&input.service_principal)?;
         let org = state.organizations.get_mut(&org_id).expect("caller's organization exists");
         if !org.members.contains_key(&input.account_id) {
@@ -244,7 +237,12 @@ impl Organizations {
         ctx: &RequestContext,
         input: types::ListDelegatedAdministratorsRequest,
     ) -> Result<types::ListDelegatedAdministratorsResponse, ServiceError> {
-        self.authorize(ctx, "ListDelegatedAdministrators", "*", ConditionContext::new())?;
+        let cond = input
+            .service_principal
+            .as_ref()
+            .map(|p| single("organizations:ServicePrincipal", p.clone()))
+            .unwrap_or_default();
+        self.authorize(ctx, "ListDelegatedAdministrators", "*", cond)?;
         let state = self.lock();
         let org = self.caller_org(&state, ctx, "ListDelegatedAdministrators", "*", Need::Read)?;
         if let Some(p) = &input.service_principal {
@@ -282,9 +280,10 @@ impl Organizations {
         ctx: &RequestContext,
         input: types::ListDelegatedServicesForAccountRequest,
     ) -> Result<types::ListDelegatedServicesForAccountResponse, ServiceError> {
-        self.authorize(ctx, "ListDelegatedServicesForAccount", "*", ConditionContext::new())?;
+        let (arn, cond) = self.account_arn_for(ctx, &input.account_id)?;
+        self.authorize(ctx, "ListDelegatedServicesForAccount", &arn, cond)?;
         let state = self.lock();
-        let org = self.caller_org(&state, ctx, "ListDelegatedServicesForAccount", "*", Need::Read)?;
+        let org = self.caller_org(&state, ctx, "ListDelegatedServicesForAccount", &arn, Need::Read)?;
         if !org.members.contains_key(&input.account_id) {
             return Err(account_not_found());
         }
@@ -310,6 +309,15 @@ impl Organizations {
         let tags = tags_from(input.tags)?;
         self.authorize(ctx, "PutResourcePolicy", "*", request_tag_context(&tags))?;
         validate_resource_policy(&input.content)?;
+        let fresh_id = new_id("rp-", 8);
+        if !tags.is_empty() {
+            let arn = {
+                let state = self.lock();
+                let org = state.org_of(&ctx.caller.account_id).ok_or_else(not_in_use)?;
+                org.resource_policy_arn(&ctx.partition, org.resource_policy.as_ref().map_or(&fresh_id, |rp| &rp.id))
+            };
+            self.authorize_tagging(ctx, &arn, &tags)?;
+        }
         let mut state = self.lock();
         let org_id = self.caller_org(&state, ctx, "PutResourcePolicy", "*", Need::Management)?.id.clone();
         let org = state.organizations.get_mut(&org_id).expect("caller's organization exists");
@@ -325,7 +333,7 @@ impl Organizations {
                 existing.content = input.content;
                 existing
             }
-            None => ResourcePolicyRec { id: new_id("rp-", 8), content: input.content, tags },
+            None => ResourcePolicyRec { id: fresh_id, content: input.content, tags },
         };
         let out = resource_policy_wire(org, &rp, &ctx.partition);
         org.resource_policy = Some(rp);
@@ -339,7 +347,7 @@ impl Organizations {
     ) -> Result<types::DescribeResourcePolicyResponse, ServiceError> {
         self.authorize(ctx, "DescribeResourcePolicy", "*", ConditionContext::new())?;
         let state = self.lock();
-        let org = state.org_of(&ctx.caller.account_id).ok_or_else(not_in_use)?;
+        let org = self.caller_org(&state, ctx, "DescribeResourcePolicy", "*", Need::Read)?;
         let rp = org.resource_policy.as_ref().ok_or_else(resource_policy_not_found)?;
         Ok(types::DescribeResourcePolicyResponse {
             resource_policy: Some(resource_policy_wire(org, rp, &ctx.partition)),

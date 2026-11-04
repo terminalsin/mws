@@ -4,7 +4,6 @@
 //! (`@@assign`, `@@append`, `@@remove`, `@@operators_allowed_for_child_policies`).
 //! <https://docs.aws.amazon.com/organizations/latest/userguide/policy-operators.html>
 
-use chrono::Utc;
 use mws_core::{ConditionContext, RequestContext, ServiceError};
 use serde_json::{Map, Value};
 
@@ -133,7 +132,7 @@ impl Organizations {
     ) -> Result<types::DescribeEffectivePolicyResponse, ServiceError> {
         let caller = ctx.caller.account_id.clone();
         let target = input.target_id.clone().unwrap_or_else(|| caller.clone());
-        let arn = {
+        let (arn, cond) = {
             let state = self.lock();
             let org = state.org_of(&caller).ok_or_else(not_in_use)?;
             if target == org.root_id || org.is_ou(&target) {
@@ -145,14 +144,11 @@ impl Organizations {
             if !org.members.contains_key(&target) {
                 return Err(target_not_found());
             }
-            org.account_arn(&ctx.partition, &target)
+            let mut cond = resource_tag_context(&org.target_tags(&target));
+            cond.insert("organizations:PolicyType".into(), vec![input.policy_type.clone()]);
+            (org.account_arn(&ctx.partition, &target), cond)
         };
-        self.authorize(
-            ctx,
-            "DescribeEffectivePolicy",
-            &arn,
-            [("organizations:PolicyType".to_string(), vec![input.policy_type.clone()])].into_iter().collect(),
-        )?;
+        self.authorize(ctx, "DescribeEffectivePolicy", &arn, cond)?;
         let state = self.lock();
         let org = if target == caller {
             state.org_of(&caller).ok_or_else(not_in_use)?
@@ -163,7 +159,7 @@ impl Organizations {
         Ok(types::DescribeEffectivePolicyResponse {
             effective_policy: Some(types::EffectivePolicy {
                 policy_content: Some(content),
-                last_updated_timestamp: Some(Utc::now()),
+                last_updated_timestamp: Some(ctx.received_at),
                 target_id: Some(target),
                 policy_type: Some(input.policy_type),
             }),
@@ -211,7 +207,7 @@ impl Organizations {
             account_id: Some(input.account_id.clone()),
             policy_type: Some(input.policy_type),
             path: Some(org.account_path(&input.account_id)),
-            evaluation_timestamp: Some(Utc::now()),
+            evaluation_timestamp: Some(ctx.received_at),
             next_token,
             effective_policy_validation_errors: Some(errors),
         })

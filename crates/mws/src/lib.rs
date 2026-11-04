@@ -166,6 +166,7 @@ fn build_with_store(config: Config, store: Option<Arc<Store>>) -> Mws {
         acm: acm.clone(),
         partition: config.iam.partition.clone(),
     }));
+    ssm.set_change_sink(Arc::new(sinks::SsmChangeEvents(events.clone())));
     events.register_clock_source(Arc::new(sinks::SsmPolicyEvents {
         ssm: ssm.clone(),
         partition: config.iam.partition.clone(),
@@ -186,6 +187,7 @@ fn build_with_store(config: Config, store: Option<Arc<Store>>) -> Mws {
         .with_kms(kms.clone());
     logs.set_metric_publisher(Arc::new(links::LogsToCloudWatch(cloudwatch.clone())));
     firehose.set_cloudwatch(cloudwatch.clone());
+    kinesis.set_metric_publisher(Arc::new(links::KinesisToCloudWatch(cloudwatch.clone())));
     cloudwatch.set_metric_stream_delivery(Arc::new(links::MetricStreamsToFirehose {
         firehose: firehose.clone(),
         sts: sts.clone(),

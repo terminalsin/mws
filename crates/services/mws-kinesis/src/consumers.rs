@@ -2,7 +2,7 @@
 //! response stays open for five minutes and pushes records as they
 //! arrive.
 
-use std::collections::HashSet;
+use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
@@ -10,8 +10,9 @@ use bytes::Bytes;
 use mws_core::{ConditionContext, HttpResponse, RequestContext, ServiceError, StreamingBody};
 
 use crate::generated::{self, errors, types};
+use crate::metrics::Batch;
 use crate::names::{authorize, authorize_stream, invalid_argument, now_ms, request_tag_context, valid_name, StreamRef};
-use crate::records::{children, position, read_from};
+use crate::records::{children, iterator_age, position, read_from};
 use crate::state::{Consumer, State, TRANSITION_MS};
 use crate::Kinesis;
 
@@ -26,21 +27,47 @@ fn time(ms: i64) -> chrono::DateTime<chrono::Utc> {
     chrono::DateTime::from_timestamp_millis(ms).unwrap_or_default()
 }
 
-/// Open subscriptions, by (consumer ARN, shard id). Not persisted.
+/// A newer `SubscribeToShard` for the same consumer and shard within this
+/// long of a successful one fails; after it, the newer one takes over.
+const TAKEOVER_AFTER: Duration = Duration::from_secs(5);
+
+type SubscriptionKey = (String, String);
+/// The last generation handed out, and the open subscriptions.
+type SubscriptionTable = (u64, HashMap<SubscriptionKey, (u64, tokio::time::Instant)>);
+
+/// Open subscriptions, by (consumer ARN, shard id): a generation number
+/// and when it started. Not persisted.
 #[derive(Clone, Default)]
-pub struct Subscriptions(Arc<Mutex<HashSet<(String, String)>>>);
+pub struct Subscriptions(Arc<Mutex<SubscriptionTable>>);
 
 impl Subscriptions {
-    fn add(&self, key: (String, String)) -> bool {
-        self.0.lock().expect("subscription lock").insert(key)
+    /// Start a subscription, taking over an older one: its generation, or
+    /// `None` when another started less than five seconds ago.
+    fn add(&self, key: SubscriptionKey) -> Option<u64> {
+        let mut g = self.0.lock().expect("subscription lock");
+        if g.1.get(&key).is_some_and(|(_, started)| started.elapsed() < TAKEOVER_AFTER) {
+            return None;
+        }
+        g.0 += 1;
+        let generation = g.0;
+        g.1.insert(key, (generation, tokio::time::Instant::now()));
+        Some(generation)
     }
 
-    fn remove(&self, key: &(String, String)) {
-        self.0.lock().expect("subscription lock").remove(key);
+    /// Whether `generation` is still the subscription for `key`.
+    fn current(&self, key: &SubscriptionKey, generation: u64) -> bool {
+        self.0.lock().expect("subscription lock").1.get(key).is_some_and(|(g, _)| *g == generation)
+    }
+
+    fn remove(&self, key: &SubscriptionKey, generation: u64) {
+        let mut g = self.0.lock().expect("subscription lock");
+        if g.1.get(key).is_some_and(|(g, _)| *g == generation) {
+            g.1.remove(key);
+        }
     }
 
     pub fn clear(&self) {
-        self.0.lock().expect("subscription lock").clear();
+        self.0.lock().expect("subscription lock").1.clear();
     }
 }
 
@@ -190,12 +217,13 @@ impl Kinesis {
 
     /// Validate a subscription: the consumer is active, the shard exists,
     /// and the starting position is valid. Returns the stream ARN, the
-    /// shard index and the counter to start reading at.
+    /// consumer's name, the shard index and the counter to start reading
+    /// at.
     fn open_subscription(
         &self,
         ctx: &RequestContext,
         input: &types::SubscribeToShardInput,
-    ) -> Result<(String, u32, u64), ServiceError> {
+    ) -> Result<(String, String, u32, u64), ServiceError> {
         let mut st = self.settled(ctx);
         let c = st.consumers.get(&input.consumer_arn).ok_or_else(|| consumer_not_found(&input.consumer_arn))?;
         authorize_consumer(ctx, &st, "SubscribeToShard", c)?;
@@ -206,6 +234,7 @@ impl Kinesis {
             )));
         }
         let stream_arn = c.stream_arn.clone();
+        let consumer = c.name.clone();
         let r = StreamRef::from_arn(&stream_arn)?;
         let s = r.get_mut(&mut st)?;
         let Some(sh) = s.shard(&input.shard_id) else {
@@ -226,18 +255,18 @@ impl Kinesis {
         if input.dry_run == Some(true) {
             return Err(errors::dry_run_operation("The request would have succeeded, but the DryRun flag is set."));
         }
-        Ok((stream_arn, index, counter))
+        Ok((stream_arn, consumer, index, counter))
     }
 
     /// One event of a subscription from `counter`; the counter to continue
-    /// from, and whether the shard has ended.
+    /// from, whether the shard has ended, and the stream's metrics batch.
     fn subscription_event(
         &self,
         stream_arn: &str,
         index: u32,
         counter: u64,
         now: i64,
-    ) -> Option<(types::SubscribeToShardEvent, u64, bool)> {
+    ) -> Option<(types::SubscribeToShardEvent, u64, bool, Batch)> {
         let st = self.lock();
         let s = st.streams.get(stream_arn)?;
         let sh = s.shards.iter().find(|x| x.index == index)?;
@@ -253,42 +282,106 @@ impl Kinesis {
             },
             read.next_counter,
             read.end_of_closed_shard,
+            Batch::new(s, now),
         ))
     }
 
+    /// The consumer is still registered and `ACTIVE`.
+    fn consumer_active(&self, consumer_arn: &str) -> bool {
+        self.lock().consumers.get(consumer_arn).is_some_and(|c| c.status == "ACTIVE")
+    }
+
+    /// Publish the metrics of one event a subscription sent.
+    fn event_metrics(
+        &self,
+        mut batch: Batch,
+        consumer: &str,
+        shard: &str,
+        event: &types::SubscribeToShardEvent,
+        now: i64,
+    ) {
+        let bytes: f64 = event.records.iter().map(|r| r.data.len() as f64).sum();
+        let count = event.records.len() as f64;
+        batch.consumer(consumer, "SubscribeToShardEvent.Bytes", "Bytes", bytes);
+        batch.consumer(consumer, "SubscribeToShardEvent.Records", "Count", count);
+        batch.consumer(
+            consumer,
+            "SubscribeToShardEvent.MillisBehindLatest",
+            "Milliseconds",
+            event.millis_behind_latest as f64,
+        );
+        batch.consumer(consumer, "SubscribeToShardEvent.Success", "Count", 1.0);
+        batch.shard(shard, "OutgoingBytes", "Bytes", bytes);
+        batch.shard(shard, "OutgoingRecords", "Count", count);
+        batch.shard(shard, "IteratorAgeMilliseconds", "Milliseconds", iterator_age(&event.records, now));
+        self.publish(batch);
+    }
+
     /// The wire path: an `initial-response`, then events as records
-    /// arrive, for up to five minutes.
+    /// arrive, for up to five minutes. A newer subscription for the same
+    /// consumer and shard takes over after five seconds, and the older one
+    /// ends with `ResourceInUseException`; deregistering the consumer ends
+    /// it with `ResourceNotFoundException`.
     pub(crate) fn subscribe_to_shard_streaming(
         &self,
         ctx: &RequestContext,
         input: types::SubscribeToShardInput,
     ) -> Result<HttpResponse, ServiceError> {
-        let (stream_arn, index, counter) = self.open_subscription(ctx, &input)?;
+        let (stream_arn, consumer, index, counter) = self.open_subscription(ctx, &input)?;
         let key = (input.consumer_arn.clone(), input.shard_id.clone());
-        if !self.subscriptions.add(key.clone()) {
+        let Some(generation) = self.subscriptions.add(key.clone()) else {
             return Err(errors::resource_in_use(format!(
                 "Another active subscription exists for this consumer: {}",
                 input.consumer_arn
             )));
-        }
+        };
         let offset = ctx.received_at - chrono::Utc::now();
         let now = move || (chrono::Utc::now() + offset).timestamp_millis();
-        let Some((first, mut counter, mut ended)) = self.subscription_event(&stream_arn, index, counter, now()) else {
-            self.subscriptions.remove(&key);
+        let started_at = now();
+        let Some((first, mut counter, mut ended, batch)) =
+            self.subscription_event(&stream_arn, index, counter, started_at)
+        else {
+            self.subscriptions.remove(&key, generation);
             return Err(errors::resource_not_found(format!("Stream {stream_arn} not found.")));
         };
+        let mut opened = Batch::new_like(&batch);
+        opened.consumer(&consumer, "SubscribeToShard.Success", "Count", 1.0);
+        self.publish(opened);
+        self.event_metrics(batch, &consumer, &input.shard_id, &first, started_at);
         let head = generated::encode_event_subscribe_to_shard_event_stream(
             &types::SubscribeToShardEventStream::SubscribeToShardEvent(first),
         );
         let (tx, body) = StreamingBody::channel(16);
         let me = self.clone();
+        let consumer_arn = input.consumer_arn.clone();
+        let shard_id = input.shard_id.clone();
         tokio::spawn(async move {
             let started = tokio::time::Instant::now();
             let mut last_sent = tokio::time::Instant::now();
             while !ended && started.elapsed() < SUBSCRIPTION_LIMIT {
                 let notified = me.arrivals.notified();
                 let _ = tokio::time::timeout(Duration::from_millis(200), notified).await;
-                let Some((event, next, end)) = me.subscription_event(&stream_arn, index, counter, now()) else {
+                if !me.subscriptions.current(&key, generation) {
+                    let taken =
+                        types::SubscribeToShardEventStream::ResourceInUseException(types::ResourceInUseException {
+                            message: Some(format!(
+                                "Another active subscription exists for this consumer: {consumer_arn}"
+                            )),
+                        });
+                    let _ = tx.send(Bytes::from(generated::encode_event_subscribe_to_shard_event_stream(&taken))).await;
+                    return;
+                }
+                if !me.consumer_active(&consumer_arn) {
+                    let gone = types::SubscribeToShardEventStream::ResourceNotFoundException(
+                        types::ResourceNotFoundException {
+                            message: Some(format!("Consumer {consumer_arn} not found.")),
+                        },
+                    );
+                    let _ = tx.send(Bytes::from(generated::encode_event_subscribe_to_shard_event_stream(&gone))).await;
+                    break;
+                }
+                let at = now();
+                let Some((event, next, end, batch)) = me.subscription_event(&stream_arn, index, counter, at) else {
                     let gone = types::SubscribeToShardEventStream::ResourceNotFoundException(
                         types::ResourceNotFoundException { message: Some(format!("Stream {stream_arn} not found.")) },
                     );
@@ -300,6 +393,7 @@ impl Kinesis {
                 }
                 counter = next;
                 ended = end;
+                me.event_metrics(batch, &consumer, &shard_id, &event, at);
                 let frame = generated::encode_event_subscribe_to_shard_event_stream(
                     &types::SubscribeToShardEventStream::SubscribeToShardEvent(event),
                 );
@@ -308,7 +402,7 @@ impl Kinesis {
                 }
                 last_sent = tokio::time::Instant::now();
             }
-            me.subscriptions.remove(&key);
+            me.subscriptions.remove(&key, generation);
         });
         let mut resp = mws_proto_json::event_stream_response(&generated::SERVICE_INFO, &ctx.request_id, head);
         resp.extensions_mut().insert(body);
@@ -321,8 +415,8 @@ impl Kinesis {
         ctx: &RequestContext,
         input: types::SubscribeToShardInput,
     ) -> Result<types::SubscribeToShardOutput, ServiceError> {
-        let (stream_arn, index, counter) = self.open_subscription(ctx, &input)?;
-        let (event, _, _) = self
+        let (stream_arn, _, index, counter) = self.open_subscription(ctx, &input)?;
+        let (event, _, _, _) = self
             .subscription_event(&stream_arn, index, counter, now_ms(ctx))
             .ok_or_else(|| errors::resource_not_found(format!("Stream {stream_arn} not found.")))?;
         Ok(types::SubscribeToShardOutput {
