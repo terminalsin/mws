@@ -846,6 +846,20 @@ impl Lambda {
             let window = input.maximum_batching_window_in_seconds.unwrap_or(0);
             self.check_queue_source(ctx, queue, &f.qualified_arn(), batch_size, window)?;
         }
+        if let Some(stream) = input.event_source_arn.as_deref().filter(|a| crate::esm_stream::is_kinesis(a)) {
+            if !(1..=10_000).contains(&batch_size) {
+                return Err(errors::invalid_parameter_value(
+                    "BatchSize must be between 1 and 10000 for Kinesis event sources.",
+                ));
+            }
+            self.check_stream_source(
+                ctx,
+                stream,
+                &f.qualified_arn(),
+                input.starting_position.as_deref(),
+                input.starting_position_timestamp,
+            )?;
+        }
         let uuid = uuid::Uuid::new_v4().to_string();
         let account = names::account_of(ctx);
         let enabled = input.enabled.unwrap_or(true);
@@ -896,6 +910,8 @@ impl Lambda {
                 region: ctx.region.clone(),
                 config: stored,
                 tags: input.tags.unwrap_or_default(),
+                shards: Default::default(),
+                created: Some(ctx.received_at),
             },
         );
         Ok(config)

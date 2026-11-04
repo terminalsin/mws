@@ -35,6 +35,22 @@ pub struct TargetInvocation<'a> {
     pub message_group_id: Option<&'a str>,
     /// Message attributes, set for dead-letter messages.
     pub message_attributes: &'a BTreeMap<String, String>,
+    /// The Kinesis partition key: `KinesisParameters.PartitionKeyPath`
+    /// applied to the event, or the event id.
+    pub partition_key: Option<&'a str>,
+    pub(crate) sts: Option<&'a mws_sts::Sts>,
+}
+
+impl TargetInvocation<'_> {
+    /// The target role's identity, as EventBridge gets it by assuming the
+    /// role, for targets that are reached with it (Kinesis, Firehose).
+    pub fn role_context(&self) -> Result<RequestContext, TargetError> {
+        let Some(role) = self.role_arn else {
+            return Err(TargetError::permanent("AccessDeniedException", "The target has no role."));
+        };
+        let caller = role_caller(self.sts, self.ctx, role, self.source_arn, self.source_account)?;
+        Ok(RequestContext { caller, source_ip: None, ..self.ctx.clone() })
+    }
 }
 
 /// Why a delivery failed.
@@ -165,6 +181,8 @@ impl Events {
                 source_account: &d.bus.account,
                 message_group_id: None,
                 message_attributes: &attributes,
+                partition_key: None,
+                sts: self.inner.sts.get(),
             })
             .await;
         if let Err(e) = result {
@@ -201,6 +219,16 @@ impl Events {
             other => match self.sink(other) {
                 Some(sink) => {
                     let attributes = BTreeMap::new();
+                    let partition_key = d
+                        .target
+                        .kinesis_parameters
+                        .as_ref()
+                        .and_then(|p| transform::select(&d.event, &p.partition_key_path))
+                        .map(|v| match v {
+                            Value::String(s) => s.clone(),
+                            other => other.to_string(),
+                        })
+                        .or_else(|| d.event.get("id").and_then(Value::as_str).map(str::to_string));
                     sink.deliver(TargetInvocation {
                         ctx: &ctx,
                         target_arn: &d.target.arn,
@@ -211,6 +239,8 @@ impl Events {
                         source_account: &d.bus.account,
                         message_group_id: d.target.sqs_parameters.as_ref().and_then(|p| p.message_group_id.as_deref()),
                         message_attributes: &attributes,
+                        partition_key: partition_key.as_deref(),
+                        sts: self.inner.sts.get(),
                     })
                     .await
                 }
@@ -333,29 +363,7 @@ impl Events {
         source_arn: &str,
         source_account: &str,
     ) -> Result<mws_core::Caller, TargetError> {
-        let Some(sts) = self.inner.sts.get() else {
-            return Err(TargetError::permanent("AccessDeniedException", "STS is not available."));
-        };
-        let creds = sts
-            .assume_role_as_service(&mws_sts::ServiceAssume {
-                role_arn: role,
-                service_principal: SERVICE_PRINCIPAL,
-                session_name: "EventBridge",
-                duration_seconds: 3600,
-                source_account: Some(source_account),
-                source_arn: Some(source_arn),
-                now: ctx.received_at,
-            })
-            .map_err(|_| {
-                TargetError::permanent("AccessDeniedException", format!("EventBridge cannot assume the role {role}."))
-            })?;
-        match sts.credential_store().resolve(&creds.access_key_id, Some(&creds.session_token), ctx.received_at) {
-            Ok(Some(r)) => Ok(r.caller),
-            _ => Err(TargetError::permanent(
-                "AccessDeniedException",
-                format!("EventBridge cannot assume the role {role}."),
-            )),
-        }
+        role_caller(self.inner.sts.get(), ctx, role, source_arn, source_account)
     }
 
     fn deliver_bus(&self, ctx: &RequestContext, d: &Delivery) -> Result<(), TargetError> {
@@ -418,5 +426,37 @@ impl Events {
         }
         self.ingest_hops(ctx, &target, &d.event, None, d.hops + 1);
         Ok(())
+    }
+}
+
+/// Assume a target's role as EventBridge.
+fn role_caller(
+    sts: Option<&mws_sts::Sts>,
+    ctx: &RequestContext,
+    role: &str,
+    source_arn: &str,
+    source_account: &str,
+) -> Result<mws_core::Caller, TargetError> {
+    let Some(sts) = sts else {
+        return Err(TargetError::permanent("AccessDeniedException", "STS is not available."));
+    };
+    let creds = sts
+        .assume_role_as_service(&mws_sts::ServiceAssume {
+            role_arn: role,
+            service_principal: SERVICE_PRINCIPAL,
+            session_name: "EventBridge",
+            duration_seconds: 3600,
+            source_account: Some(source_account),
+            source_arn: Some(source_arn),
+            now: ctx.received_at,
+        })
+        .map_err(|_| {
+            TargetError::permanent("AccessDeniedException", format!("EventBridge cannot assume the role {role}."))
+        })?;
+    match sts.credential_store().resolve(&creds.access_key_id, Some(&creds.session_token), ctx.received_at) {
+        Ok(Some(r)) => Ok(r.caller),
+        _ => {
+            Err(TargetError::permanent("AccessDeniedException", format!("EventBridge cannot assume the role {role}.")))
+        }
     }
 }

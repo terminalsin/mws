@@ -228,7 +228,8 @@ impl mws_logs::SubscriptionTarget for LogsToLambda {
         }
     }
 
-    fn deliver(&self, ctx: &RequestContext, arn: &str, source: &mws_logs::SubscriptionSource<'_>, payload: Vec<u8>) {
+    fn deliver(&self, ctx: &RequestContext, arn: &str, source: &mws_logs::SubscriptionSource<'_>, gzipped: Vec<u8>) {
+        let payload = mws_logs::lambda_event(&gzipped);
         for p in Self::principals(&ctx.region) {
             let inv = mws_lambda::ServiceInvocation {
                 function: arn,
@@ -246,5 +247,234 @@ impl mws_logs::SubscriptionTarget for LogsToLambda {
                 }
             }
         }
+    }
+}
+
+/// CloudWatch Logs assuming a subscription's role, as `logs.amazonaws.com`
+/// or the regional principal, whichever the trust policy names.
+fn logs_role_context(
+    sts: &mws_sts::Sts,
+    ctx: &RequestContext,
+    source: &mws_logs::SubscriptionSource<'_>,
+) -> Result<RequestContext, String> {
+    let cannot = || "Make sure you have given CloudWatch Logs permission to assume the provided role.".to_string();
+    let role = source.role_arn.ok_or_else(cannot)?;
+    for principal in LogsToLambda::principals(&ctx.region) {
+        let Ok(creds) = sts.assume_role_as_service(&mws_sts::ServiceAssume {
+            role_arn: role,
+            service_principal: &principal,
+            session_name: "CWLtoKinesisSession",
+            duration_seconds: 3600,
+            source_account: Some(source.account),
+            source_arn: Some(source.log_group_arn),
+            now: ctx.received_at,
+        }) else {
+            continue;
+        };
+        if let Ok(Some(r)) =
+            sts.credential_store().resolve(&creds.access_key_id, Some(&creds.session_token), ctx.received_at)
+        {
+            return Ok(RequestContext { caller: r.caller, source_ip: None, ..ctx.clone() });
+        }
+    }
+    Err(cannot())
+}
+
+/// The Kinesis partition key CloudWatch Logs uses: the log stream for
+/// `ByLogStream`, random for `Random`.
+fn logs_partition_key(source: &mws_logs::SubscriptionSource<'_>) -> String {
+    if source.distribution == "Random" || source.log_stream.is_empty() {
+        uuid::Uuid::new_v4().simple().to_string()
+    } else {
+        source.log_stream.to_string()
+    }
+}
+
+/// Subscription filters delivering to Kinesis data streams, as the
+/// filter's role.
+pub(crate) struct LogsToKinesis {
+    pub kinesis: mws_kinesis::Kinesis,
+    pub sts: mws_sts::Sts,
+}
+
+impl LogsToKinesis {
+    fn put(&self, ctx: &RequestContext, arn: &str, partition_key: String, data: Vec<u8>) -> Result<(), String> {
+        self.kinesis
+            .put_record(
+                ctx,
+                mws_kinesis::generated::types::PutRecordInput {
+                    stream_arn: Some(arn.to_string()),
+                    partition_key: Some(partition_key),
+                    data,
+                    ..Default::default()
+                },
+            )
+            .map(|_| ())
+            .map_err(|e| e.message)
+    }
+}
+
+impl mws_logs::SubscriptionTarget for LogsToKinesis {
+    fn service(&self) -> &'static str {
+        "kinesis"
+    }
+
+    fn check(&self, ctx: &RequestContext, arn: &str, source: &mws_logs::SubscriptionSource<'_>) -> Result<(), String> {
+        let rctx = logs_role_context(&self.sts, ctx, source)
+            .map_err(|m| format!("Could not deliver test message to specified Kinesis stream. {m}"))?;
+        let test = mws_logs::control_message(ctx.received_at.timestamp_millis(), "Kinesis stream");
+        self.put(&rctx, arn, uuid::Uuid::new_v4().simple().to_string(), test).map_err(|_| {
+            "Could not deliver test message to specified Kinesis stream. Check if the given kinesis stream is in ACTIVE state."
+                .to_string()
+        })
+    }
+
+    fn deliver(&self, ctx: &RequestContext, arn: &str, source: &mws_logs::SubscriptionSource<'_>, gzipped: Vec<u8>) {
+        let sent = logs_role_context(&self.sts, ctx, source)
+            .and_then(|rctx| self.put(&rctx, arn, logs_partition_key(source), gzipped));
+        if let Err(e) = sent {
+            tracing::info!(stream = arn, "CloudWatch Logs could not deliver to Kinesis: {e}");
+        }
+    }
+}
+
+/// Subscription filters delivering to Firehose streams, as the filter's
+/// role.
+pub(crate) struct LogsToFirehose {
+    pub firehose: mws_firehose::Firehose,
+    pub sts: mws_sts::Sts,
+}
+
+impl LogsToFirehose {
+    fn put(&self, ctx: &RequestContext, arn: &str, data: Vec<u8>) -> Result<(), String> {
+        let name = arn.rsplit_once("deliverystream/").map(|(_, n)| n).unwrap_or(arn);
+        self.firehose
+            .put_record(
+                ctx,
+                mws_firehose::generated::types::PutRecordInput {
+                    delivery_stream_name: name.to_string(),
+                    record: mws_firehose::generated::types::Record { data },
+                },
+            )
+            .map(|_| ())
+            .map_err(|e| e.message)
+    }
+}
+
+impl mws_logs::SubscriptionTarget for LogsToFirehose {
+    fn service(&self) -> &'static str {
+        "firehose"
+    }
+
+    fn check(&self, ctx: &RequestContext, arn: &str, source: &mws_logs::SubscriptionSource<'_>) -> Result<(), String> {
+        let rctx = logs_role_context(&self.sts, ctx, source)
+            .map_err(|m| format!("Could not deliver test message to specified Firehose stream. {m}"))?;
+        let test = mws_logs::control_message(ctx.received_at.timestamp_millis(), "Firehose");
+        self.put(&rctx, arn, test).map_err(|_| {
+            "Could not deliver test message to specified Firehose stream. Check if the given Firehose stream is in ACTIVE state."
+                .to_string()
+        })
+    }
+
+    fn deliver(&self, ctx: &RequestContext, arn: &str, source: &mws_logs::SubscriptionSource<'_>, gzipped: Vec<u8>) {
+        let sent = logs_role_context(&self.sts, ctx, source).and_then(|rctx| self.put(&rctx, arn, gzipped));
+        if let Err(e) = sent {
+            tracing::info!(stream = arn, "CloudWatch Logs could not deliver to Firehose: {e}");
+        }
+    }
+}
+
+/// Lambda's event source pollers reading Kinesis data streams as the
+/// function's execution role, through Kinesis's own operations.
+pub(crate) struct LambdaFromKinesis(pub mws_kinesis::Kinesis);
+
+impl mws_lambda::StreamSource for LambdaFromKinesis {
+    fn authorize(&self, ctx: &RequestContext, stream_arn: &str, action: &str) -> Result<(), mws_core::ServiceError> {
+        self.0.authorize_caller(ctx, stream_arn, action)
+    }
+
+    fn shards(
+        &self,
+        ctx: &RequestContext,
+        stream_arn: &str,
+    ) -> Result<Vec<mws_lambda::StreamShard>, mws_core::ServiceError> {
+        let mut out = Vec::new();
+        let mut token = None;
+        loop {
+            let page = self.0.list_shards(
+                ctx,
+                mws_kinesis::generated::types::ListShardsInput {
+                    stream_arn: token.is_none().then(|| stream_arn.to_string()),
+                    next_token: token.clone(),
+                    ..Default::default()
+                },
+            )?;
+            out.extend(page.shards.unwrap_or_default().into_iter().map(|s| mws_lambda::StreamShard {
+                shard_id: s.shard_id,
+                parent_shard_id: s.parent_shard_id,
+                adjacent_parent_shard_id: s.adjacent_parent_shard_id,
+            }));
+            match page.next_token {
+                Some(t) => token = Some(t),
+                None => return Ok(out),
+            }
+        }
+    }
+
+    fn iterator(
+        &self,
+        ctx: &RequestContext,
+        stream_arn: &str,
+        shard_id: &str,
+        position: mws_lambda::StreamPosition,
+    ) -> Result<String, mws_core::ServiceError> {
+        let mut input = mws_kinesis::generated::types::GetShardIteratorInput {
+            stream_arn: Some(stream_arn.to_string()),
+            shard_id: shard_id.to_string(),
+            ..Default::default()
+        };
+        input.shard_iterator_type = match position {
+            mws_lambda::StreamPosition::TrimHorizon => "TRIM_HORIZON".into(),
+            mws_lambda::StreamPosition::Latest => "LATEST".into(),
+            mws_lambda::StreamPosition::AtTimestamp(t) => {
+                input.timestamp = Some(t);
+                "AT_TIMESTAMP".into()
+            }
+            mws_lambda::StreamPosition::AfterSequenceNumber(seq) => {
+                input.starting_sequence_number = Some(seq);
+                "AFTER_SEQUENCE_NUMBER".into()
+            }
+        };
+        Ok(self.0.get_shard_iterator(ctx, input)?.shard_iterator.unwrap_or_default())
+    }
+
+    fn read(
+        &self,
+        ctx: &RequestContext,
+        iterator: &str,
+        limit: i32,
+    ) -> Result<mws_lambda::StreamRead, mws_core::ServiceError> {
+        let out = self.0.get_records(
+            ctx,
+            mws_kinesis::generated::types::GetRecordsInput {
+                shard_iterator: iterator.to_string(),
+                limit: Some(limit),
+                ..Default::default()
+            },
+        )?;
+        Ok(mws_lambda::StreamRead {
+            records: out
+                .records
+                .into_iter()
+                .map(|r| mws_lambda::StreamRecord {
+                    sequence_number: r.sequence_number,
+                    partition_key: r.partition_key.unwrap_or_default(),
+                    data: r.data,
+                    approximate_arrival: r.approximate_arrival_timestamp.unwrap_or(ctx.received_at),
+                    encryption_type: r.encryption_type,
+                })
+                .collect(),
+            next_iterator: out.next_shard_iterator,
+        })
     }
 }

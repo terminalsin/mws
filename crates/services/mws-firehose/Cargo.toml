@@ -1,0 +1,37 @@
+[package]
+name = "mws-firehose"
+description = "Amazon Data Firehose for MWS: delivery streams that buffer records (direct put or from Kinesis data streams), transform them (Lambda, decompression, dynamic partitioning) and deliver them to S3, HTTP endpoints, Splunk and OpenSearch, with IAM enforced."
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+async-trait.workspace = true
+base64.workspace = true
+bytes.workspace = true
+chrono.workspace = true
+http.workspace = true
+mws-core.workspace = true
+mws-iam-policy.workspace = true
+mws-kms.workspace = true
+mws-proto-json.workspace = true
+mws-kinesis.workspace = true
+mws-lambda.workspace = true
+mws-s3.workspace = true
+mws-sts.workspace = true
+flate2.workspace = true
+zip.workspace = true
+snap.workspace = true
+rustls.workspace = true
+rustls-native-certs.workspace = true
+rustls-pki-types.workspace = true
+tokio-rustls.workspace = true
+rand.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+tokio = { workspace = true, features = ["io-util"] }
+tracing.workspace = true
+uuid.workspace = true
+
+[build-dependencies]
+mws-codegen.workspace = true

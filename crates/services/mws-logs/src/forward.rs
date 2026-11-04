@@ -1,13 +1,16 @@
 //! Subscription filters that deliver: events written to a log group that
 //! match one of its subscription filters are sent to the filter's
-//! destination as CloudWatch Logs does, a gzipped, base64-encoded
-//! `DATA_MESSAGE` (`{"awslogs":{"data":...}}` for Lambda).
+//! destination as CloudWatch Logs does, a gzipped `DATA_MESSAGE`
+//! (base64-encoded in `{"awslogs":{"data":...}}` for Lambda, the record
+//! data for Kinesis and Firehose).
 //!
 //! Destinations are other services, reached through
-//! [`SubscriptionTarget`]s the `mws` crate registers (Lambda, which already
-//! depends on this crate). `PutSubscriptionFilter` asks the target first,
-//! so a function whose policy does not let CloudWatch Logs invoke it is
-//! refused as in AWS.
+//! [`SubscriptionTarget`]s the `mws` crate registers (Lambda, Kinesis,
+//! Firehose), directly or through a CloudWatch Logs destination
+//! (`PutDestination`, possibly in another account), whose target and role
+//! are used. `PutSubscriptionFilter` asks the target first, so a function
+//! whose policy does not let CloudWatch Logs invoke it, or a role CloudWatch
+//! Logs cannot assume, is refused as in AWS.
 
 use std::io::Write;
 use std::sync::Arc;
@@ -28,6 +31,15 @@ pub struct SubscriptionSource<'a> {
     /// presents.
     pub log_group_arn: &'a str,
     pub account: &'a str,
+    /// The role CloudWatch Logs assumes to write to the destination
+    /// (Kinesis and Firehose), from the filter or the Logs destination.
+    pub role_arn: Option<&'a str>,
+    /// The log stream the events were written to (empty for test
+    /// messages).
+    pub log_stream: &'a str,
+    /// `ByLogStream` or `Random`: how records are spread over Kinesis
+    /// shards.
+    pub distribution: &'a str,
 }
 
 /// A service subscription filters can deliver to.
@@ -38,8 +50,8 @@ pub trait SubscriptionTarget: Send + Sync {
     /// is the message `PutSubscriptionFilter` fails with.
     fn check(&self, ctx: &RequestContext, destination_arn: &str, source: &SubscriptionSource<'_>)
         -> Result<(), String>;
-    /// Deliver one encoded message.
-    fn deliver(&self, ctx: &RequestContext, destination_arn: &str, source: &SubscriptionSource<'_>, payload: Vec<u8>);
+    /// Deliver one gzipped message (JSON `DATA_MESSAGE`).
+    fn deliver(&self, ctx: &RequestContext, destination_arn: &str, source: &SubscriptionSource<'_>, gzipped: Vec<u8>);
 }
 
 fn service_of(arn: &str) -> &str {
@@ -64,6 +76,19 @@ impl Logs {
         *self.template.lock().expect("Logs template lock poisoned") = Some((ctx.clone(), offset));
     }
 
+    /// The target and role a destination ARN delivers to: a CloudWatch
+    /// Logs destination stands for its target, with its role.
+    fn resolve_destination(&self, destination_arn: &str, role_arn: Option<&str>) -> Option<(String, Option<String>)> {
+        let parts: Vec<&str> = destination_arn.splitn(6, ':').collect();
+        if parts.len() == 6 && parts[2] == "logs" {
+            let name = parts[5].strip_prefix("destination:")?;
+            let st = self.lock();
+            let d = st.region_ref(parts[4], parts[3])?.destinations.get(name)?;
+            return Some((d.record.target_arn.clone()?, d.record.role_arn.clone()));
+        }
+        Some((destination_arn.to_string(), role_arn.map(str::to_string)))
+    }
+
     /// `PutSubscriptionFilter`'s check of a destination another service
     /// owns.
     pub(crate) fn check_subscription_target(
@@ -71,11 +96,24 @@ impl Logs {
         ctx: &RequestContext,
         g: &GroupRef,
         destination_arn: &str,
+        role_arn: Option<&str>,
     ) -> Result<(), mws_core::ServiceError> {
-        let Some(target) = self.target_for(destination_arn) else { return Ok(()) };
+        // A Logs destination's owner set up its target; only direct
+        // destinations are tested.
+        if service_of(destination_arn) == "logs" {
+            return Ok(());
+        }
+        let Some((target_arn, role)) = self.resolve_destination(destination_arn, role_arn) else { return Ok(()) };
+        let Some(target) = self.target_for(&target_arn) else { return Ok(()) };
         let arn = format!("{}:*", g.arn());
-        let source = SubscriptionSource { log_group_arn: &arn, account: &g.account };
-        target.check(ctx, destination_arn, &source).map_err(crate::generated::errors::invalid_parameter)
+        let source = SubscriptionSource {
+            log_group_arn: &arn,
+            account: &g.account,
+            role_arn: role.as_deref(),
+            log_stream: "",
+            distribution: "ByLogStream",
+        };
+        target.check(ctx, &target_arn, &source).map_err(crate::generated::errors::invalid_parameter)
     }
 
     /// Send newly stored events to the group's subscription filters.
@@ -107,7 +145,10 @@ impl Logs {
         let arn = format!("{}:*", g.arn());
         for f in filters {
             let (Some(name), Some(destination)) = (&f.filter_name, &f.destination_arn) else { continue };
-            let Some(target) = self.target_for(destination) else { continue };
+            let Some((destination, role)) = self.resolve_destination(destination, f.role_arn.as_deref()) else {
+                continue;
+            };
+            let Some(target) = self.target_for(&destination) else { continue };
             let Ok(pattern) = parse_pattern(f.filter_pattern.as_deref()) else { continue };
             let transformed = f.apply_on_transformed_logs;
             let events: Vec<_> = stored
@@ -128,16 +169,43 @@ impl Logs {
                 "subscriptionFilters": [name],
                 "logEvents": events,
             });
-            let payload = json!({"awslogs": {"data": encode(&message)}});
-            let source = SubscriptionSource { log_group_arn: &arn, account: &g.account };
-            target.deliver(&ctx, destination, &source, payload.to_string().into_bytes());
+            let source = SubscriptionSource {
+                log_group_arn: &arn,
+                account: &g.account,
+                role_arn: role.as_deref(),
+                log_stream: stream,
+                distribution: f.distribution.as_deref().unwrap_or("ByLogStream"),
+            };
+            target.deliver(&ctx, &destination, &source, gzip(&message));
         }
     }
 }
 
-/// gzip, then base64: how CloudWatch Logs packs subscription data.
-pub fn encode(message: &serde_json::Value) -> String {
+/// How CloudWatch Logs packs subscription data: gzipped JSON.
+pub fn gzip(message: &serde_json::Value) -> Vec<u8> {
     let mut gz = flate2::write::GzEncoder::new(Vec::new(), flate2::Compression::default());
     gz.write_all(message.to_string().as_bytes()).expect("writing to memory");
-    base64::engine::general_purpose::STANDARD.encode(gz.finish().expect("writing to memory"))
+    gz.finish().expect("writing to memory")
+}
+
+/// The `{"awslogs":{"data":...}}` event Lambda functions get.
+pub fn lambda_event(gzipped: &[u8]) -> Vec<u8> {
+    json!({"awslogs": {"data": base64::engine::general_purpose::STANDARD.encode(gzipped)}}).to_string().into_bytes()
+}
+
+/// The `CONTROL_MESSAGE` CloudWatch Logs writes to a new Kinesis or
+/// Firehose destination to check its health.
+pub fn control_message(now_ms: i64, what: &str) -> Vec<u8> {
+    gzip(&json!({
+        "messageType": "CONTROL_MESSAGE",
+        "owner": "CloudwatchLogs",
+        "logGroup": "",
+        "logStream": "",
+        "subscriptionFilters": [],
+        "logEvents": [{
+            "id": "",
+            "timestamp": now_ms,
+            "message": format!("CWL CONTROL MESSAGE: Checking health of destination {what}."),
+        }],
+    }))
 }

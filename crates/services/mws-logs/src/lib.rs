@@ -46,7 +46,7 @@ use mws_core::{HttpRequest, HttpResponse, RequestContext, Service, ServiceError}
 use mws_kms::Kms;
 use mws_s3::S3;
 
-pub use forward::{SubscriptionSource, SubscriptionTarget};
+pub use forward::{control_message, lambda_event, SubscriptionSource, SubscriptionTarget};
 pub use public::{ServiceLogError, ServiceLogEvent, ServiceLogWriter};
 use state::State;
 

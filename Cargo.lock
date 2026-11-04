@@ -297,6 +297,29 @@ dependencies = [
 ]
 
 [[package]]
+name = "aws-sdk-firehose"
+version = "1.128.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "e12e4f666a6acc5efb5c6cddf5e41c229a7865dd8e7bb0a537841dbff738437e"
+dependencies = [
+ "arc-swap",
+ "aws-credential-types",
+ "aws-runtime",
+ "aws-smithy-async",
+ "aws-smithy-http",
+ "aws-smithy-json",
+ "aws-smithy-observability",
+ "aws-smithy-runtime",
+ "aws-smithy-runtime-api",
+ "aws-smithy-schema",
+ "aws-smithy-types",
+ "aws-types",
+ "fastrand",
+ "regex-lite",
+ "tracing",
+]
+
+[[package]]
 name = "aws-sdk-iam"
 version = "1.133.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -318,6 +341,30 @@ dependencies = [
  "aws-types",
  "fastrand",
  "http 1.5.0",
+ "regex-lite",
+ "tracing",
+]
+
+[[package]]
+name = "aws-sdk-kinesis"
+version = "1.130.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "f5befbde5678b9703e623643cd016176c6ad42ec42b40ca50c2821b4a49a1397"
+dependencies = [
+ "arc-swap",
+ "aws-credential-types",
+ "aws-runtime",
+ "aws-smithy-async",
+ "aws-smithy-eventstream",
+ "aws-smithy-http",
+ "aws-smithy-json",
+ "aws-smithy-observability",
+ "aws-smithy-runtime",
+ "aws-smithy-runtime-api",
+ "aws-smithy-schema",
+ "aws-smithy-types",
+ "aws-types",
+ "fastrand",
  "regex-lite",
  "tracing",
 ]
@@ -2048,7 +2095,9 @@ dependencies = [
  "mws-acmpca",
  "mws-core",
  "mws-events",
+ "mws-firehose",
  "mws-iam",
+ "mws-kinesis",
  "mws-kms",
  "mws-lambda",
  "mws-logs",
@@ -2162,7 +2211,9 @@ dependencies = [
  "aws-sdk-acmpca",
  "aws-sdk-cloudwatchlogs",
  "aws-sdk-eventbridge",
+ "aws-sdk-firehose",
  "aws-sdk-iam",
+ "aws-sdk-kinesis",
  "aws-sdk-kms",
  "aws-sdk-lambda",
  "aws-sdk-organizations",
@@ -2234,6 +2285,39 @@ dependencies = [
 ]
 
 [[package]]
+name = "mws-firehose"
+version = "0.1.0"
+dependencies = [
+ "async-trait",
+ "base64 0.22.1",
+ "bytes",
+ "chrono",
+ "flate2",
+ "http 1.5.0",
+ "mws-codegen",
+ "mws-core",
+ "mws-iam-policy",
+ "mws-kinesis",
+ "mws-kms",
+ "mws-lambda",
+ "mws-proto-json",
+ "mws-s3",
+ "mws-sts",
+ "rand",
+ "rustls 0.23.46",
+ "rustls-native-certs",
+ "rustls-pki-types",
+ "serde",
+ "serde_json",
+ "snap",
+ "tokio",
+ "tokio-rustls 0.26.6",
+ "tracing",
+ "uuid",
+ "zip",
+]
+
+[[package]]
 name = "mws-iam"
 version = "0.1.0"
 dependencies = [
@@ -2264,6 +2348,29 @@ dependencies = [
  "base64 0.22.1",
  "chrono",
  "serde_json",
+]
+
+[[package]]
+name = "mws-kinesis"
+version = "0.1.0"
+dependencies = [
+ "async-trait",
+ "base64 0.22.1",
+ "bytes",
+ "chrono",
+ "http 1.5.0",
+ "md-5 0.10.6",
+ "mws-codegen",
+ "mws-core",
+ "mws-iam-policy",
+ "mws-kms",
+ "mws-proto-json",
+ "rand",
+ "serde",
+ "serde_json",
+ "tokio",
+ "tracing",
+ "uuid",
 ]
 
 [[package]]
@@ -3351,6 +3458,12 @@ name = "smallvec"
 version = "1.16.4"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "d0d5d4b1981b8bbbb7aed204cae5726d683d5d6ac7e74ec54122ea28f315e7c8"
+
+[[package]]
+name = "snap"
+version = "1.1.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "199905e6153d6405f9728fe44daace35f8f837bbf830bb6e85fbd5828709a886"
 
 [[package]]
 name = "socket2"

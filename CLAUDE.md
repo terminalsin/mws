@@ -33,7 +33,7 @@ override only) see the same behaviour as real AWS. Fidelity beats breadth.
 2. Generate in `build.rs` with the protocol's codegen entry point (add a new
    `mws-proto-<protocol>` runtime + codegen module if the protocol is new).
    Protocols so far: `build_aws_query` (IAM, STS), `build_rest_xml`
-   (Route 53, S3) and `build_aws_json` (ACM PCA, KMS, CloudWatch Logs, SQS).
+   (Route 53, S3) and `build_aws_json` (ACM PCA, KMS, CloudWatch Logs, SQS, Kinesis, Firehose).
    `awsQueryCompatible` models (SQS) also get `build_aws_query_compatible`
    for the awsQuery requests older SDKs still send. Pass the service's validation
    error code in the options (`InvalidInput`, `ValidationException`, ...).
