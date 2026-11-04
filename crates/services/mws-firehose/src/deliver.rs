@@ -12,6 +12,7 @@ use serde_json::{json, Value};
 
 use crate::config;
 use crate::generated::types;
+use crate::monitor::{delivery_metric, destination_label, point, ErrorLog};
 use crate::output::{self, PrefixInputs};
 use crate::processing::{Failed, Out};
 use crate::state::{Buffered, Destination};
@@ -38,15 +39,33 @@ fn hints(kind: &str, config: &Value) -> (usize, i64) {
     (size.max(1) as usize * 1024 * 1024, interval.max(0) * 1000)
 }
 
+/// What a successful delivery delivered.
+#[derive(Debug, Default, Clone, Copy)]
+struct Delivered {
+    records: usize,
+    bytes: usize,
+}
+
+impl Delivered {
+    fn of(records: &[Out]) -> Self {
+        Self { records: records.len(), bytes: records.iter().map(|r| r.data.len()).sum() }
+    }
+}
+
 /// Why a delivery failed, and whether to try again later.
 struct DeliveryError {
     code: String,
     message: String,
+    /// The destination the error log names, when not the configured one
+    /// (an S3 backup bucket).
+    destination: Option<String>,
+    /// The records are handled (backed up to S3): do not retry.
+    give_up: bool,
 }
 
 impl DeliveryError {
     fn new(code: &str, message: impl Into<String>) -> Self {
-        Self { code: code.into(), message: message.into() }
+        Self { code: code.into(), message: message.into(), destination: None, give_up: false }
     }
 }
 
@@ -146,11 +165,13 @@ impl Firehose {
             let Some(ctx) = self.background_context(&region) else { continue };
             let now = ctx.received_at.timestamp_millis();
             let result = self.deliver(&ctx, &job).await;
+            self.report(&ctx, &job, &result).await;
             let mut st = self.lock();
             let Some(s) = st.streams.get_mut(&job.stream_arn) else { continue };
             let Some(d) = s.destinations.iter_mut().find(|d| d.id == job.destination.id) else { continue };
             match result {
-                Ok(()) => d.failing_since = None,
+                Ok(_) => d.failing_since = None,
+                Err(e) if e.give_up => d.failing_since = None,
                 Err(e) => {
                     let since = *d.failing_since.get_or_insert(now);
                     if now - since < S3_RETRY_MS {
@@ -167,14 +188,98 @@ impl Firehose {
         }
     }
 
-    async fn deliver(&self, ctx: &RequestContext, job: &Job) -> Result<(), DeliveryError> {
+    /// Metrics and the error log for one delivery attempt.
+    async fn report(&self, ctx: &RequestContext, job: &Job, result: &Result<Delivered, DeliveryError>) {
+        let d = &job.destination;
+        let metric = delivery_metric(&d.kind);
+        let mut points = Vec::new();
+        match result {
+            Ok(done) => {
+                let oldest = job.records.iter().map(|r| r.arrival).min().unwrap_or(ctx.received_at.timestamp_millis());
+                let freshness = (ctx.received_at.timestamp_millis() - oldest).max(0) as f64 / 1000.0;
+                points.push(point(format!("{metric}.Records"), "Count", done.records as f64));
+                points.push(point(format!("{metric}.Bytes"), "Bytes", done.bytes as f64));
+                points.push(point(format!("{metric}.Success"), "None", 1.0));
+                points.push(point(format!("{metric}.DataFreshness"), "Seconds", freshness));
+            }
+            Err(e) => {
+                points.push(point(format!("{metric}.Success"), "None", 0.0));
+                let effective = config::effective(&d.kind, &d.config);
+                self.log_error(
+                    ctx,
+                    &effective,
+                    ErrorLog {
+                        stream_arn: &job.stream_arn,
+                        account: &job.account,
+                        version: job.version,
+                        destination: e.destination.clone().unwrap_or_else(|| destination_label(&d.kind, &effective)),
+                        code: &e.code,
+                        message: &e.message,
+                        processor: None,
+                    },
+                )
+                .await;
+            }
+        }
+        self.metrics(ctx, &job.account, &job.stream_name, points);
+    }
+
+    /// Log the records processing could not handle (one entry per error)
+    /// and publish the processing metrics.
+    async fn report_processing(
+        &self,
+        ctx: &RequestContext,
+        job: &Job,
+        effective: &Value,
+        processing: Option<&types::ProcessingConfiguration>,
+        processed: &crate::processing::Processed,
+    ) {
+        let lambda = processing
+            .filter(|p| p.enabled.unwrap_or(false))
+            .is_some_and(|p| p.processors.iter().flatten().any(|p| p.r#type == "Lambda"));
+        if lambda {
+            let processing_failed = processed.failed.iter().any(|f| f.output_type == "processing-failed");
+            let ok = Delivered::of(&processed.ok);
+            self.metrics(
+                ctx,
+                &job.account,
+                &job.stream_name,
+                vec![
+                    point("ExecuteProcessing.Success", "None", if processing_failed { 0.0 } else { 1.0 }),
+                    point("SucceedProcessing.Records", "Count", ok.records as f64),
+                    point("SucceedProcessing.Bytes", "Bytes", ok.bytes as f64),
+                ],
+            );
+        }
+        let mut seen = std::collections::BTreeSet::new();
+        for f in &processed.failed {
+            if !seen.insert((f.error_code.clone(), f.lambda_arn.clone())) {
+                continue;
+            }
+            self.log_error(
+                ctx,
+                effective,
+                ErrorLog {
+                    stream_arn: &job.stream_arn,
+                    account: &job.account,
+                    version: job.version,
+                    destination: destination_label(&job.destination.kind, effective),
+                    code: &f.error_code,
+                    message: &f.error_message,
+                    processor: f.lambda_arn.as_deref(),
+                },
+            )
+            .await;
+        }
+    }
+
+    async fn deliver(&self, ctx: &RequestContext, job: &Job) -> Result<Delivered, DeliveryError> {
         let d = &job.destination;
         let effective = config::effective(&d.kind, &d.config);
         let role = effective.get("role_arn").and_then(Value::as_str).map(str::to_string);
         let processing: Option<types::ProcessingConfiguration> =
             effective.get("processing_configuration").and_then(|v| serde_json::from_value(v.clone()).ok());
-        let dynamic =
-            effective.pointer("/dynamic_partitioning_configuration/enabled").and_then(Value::as_bool).unwrap_or(false);
+        let dynamic = config::dynamic_partitioning(&effective);
         match d.kind.as_str() {
             "extended_s3" => {
                 let s3: types::ExtendedS3DestinationConfiguration = config::typed(&d.kind, &d.config);
@@ -182,10 +287,19 @@ impl Firehose {
                 if s3.s3_backup_mode.as_deref() == Some("Enabled") {
                     if let Some(backup) = &s3.s3_backup_configuration {
                         let plain = plain_out(&job.records);
-                        self.write_s3(ctx, job, &backup_target(backup), &plain, false).await?;
+                        let backed_up = self.write_s3(ctx, job, &backup_target(backup), &plain, false).await;
+                        let mut points =
+                            vec![point("BackupToS3.Success", "None", if backed_up.is_ok() { 1.0 } else { 0.0 })];
+                        if backed_up.is_ok() {
+                            let n = Delivered::of(&plain);
+                            points.push(point("BackupToS3.Records", "Count", n.records as f64));
+                            points.push(point("BackupToS3.Bytes", "Bytes", n.bytes as f64));
+                        }
+                        self.metrics(ctx, &job.account, &job.stream_name, points);
+                        backed_up?;
                     }
                 }
-                let processed = self
+                let mut processed = self
                     .process(
                         ctx,
                         &job.stream_arn,
@@ -196,6 +310,22 @@ impl Firehose {
                         job.records.clone(),
                     )
                     .await;
+                if config::format_conversion(&effective) {
+                    // Conversion reads the schema from the AWS Glue Data
+                    // Catalog, which MWS does not have: the table is never
+                    // found.
+                    tracing::info!(stream = %job.stream_arn, "Firehose cannot convert record formats: MWS has no AWS Glue Data Catalog");
+                    let ok = std::mem::take(&mut processed.ok);
+                    processed.failed.extend(ok.into_iter().map(|r| Failed {
+                        source: r.source,
+                        data: r.data,
+                        output_type: "format-conversion-failed",
+                        error_code: "DataFormatConversion.EntityNotFound".into(),
+                        error_message: "The specified table/database could not be found. Ensure that the table/database exists and that the values provided in the schema configuration are correct, especially with regards to casing.".into(),
+                        lambda_arn: None,
+                    }));
+                }
+                self.report_processing(ctx, job, &effective, processing.as_ref(), &processed).await;
                 let target = S3Target {
                     role: s3.role_arn.clone(),
                     bucket_arn: s3.bucket_arn.clone(),
@@ -210,7 +340,8 @@ impl Firehose {
                     file_extension: s3.file_extension.clone(),
                 };
                 self.write_s3(ctx, job, &target, &processed.ok, dynamic).await?;
-                self.write_errors(ctx, job, &target, &processed.failed).await
+                self.write_errors(ctx, job, &target, &processed.failed).await?;
+                Ok(Delivered::of(&processed.ok))
             }
             "redshift" => {
                 // Firehose stages Redshift data in S3, then runs COPY; MWS
@@ -228,8 +359,21 @@ impl Firehose {
                         job.records.clone(),
                     )
                     .await;
+                self.report_processing(ctx, job, &effective, processing.as_ref(), &processed).await;
                 self.write_s3(ctx, job, &target, &processed.ok, false).await?;
-                self.write_errors(ctx, job, &target, &processed.failed).await
+                self.write_errors(ctx, job, &target, &processed.failed).await?;
+                let staged = Delivered::of(&processed.ok);
+                self.metrics(
+                    ctx,
+                    &job.account,
+                    &job.stream_name,
+                    vec![
+                        point("DeliveryToS3.Records", "Count", staged.records as f64),
+                        point("DeliveryToS3.Bytes", "Bytes", staged.bytes as f64),
+                        point("DeliveryToS3.Success", "None", 1.0),
+                    ],
+                );
+                Ok(staged)
             }
             _ => self.deliver_http_like(ctx, job, &effective, role.as_deref(), processing.as_ref()).await,
         }
@@ -245,7 +389,7 @@ impl Firehose {
         effective: &Value,
         role: Option<&str>,
         processing: Option<&types::ProcessingConfiguration>,
-    ) -> Result<(), DeliveryError> {
+    ) -> Result<Delivered, DeliveryError> {
         let d = &job.destination;
         let backup: types::S3DestinationConfiguration =
             effective.get("s3_configuration").and_then(|v| serde_json::from_value(v.clone()).ok()).unwrap_or_default();
@@ -253,16 +397,19 @@ impl Firehose {
         let mode = effective.get("s3_backup_mode").and_then(Value::as_str).unwrap_or_default().to_string();
         let processed =
             self.process(ctx, &job.stream_arn, &job.account, role, processing, false, job.records.clone()).await;
+        self.report_processing(ctx, job, effective, processing, &processed).await;
         self.write_errors(ctx, job, &backup, &processed.failed).await?;
         if matches!(mode.as_str(), "AllData" | "AllEvents" | "AllDocuments") {
             self.write_s3(ctx, job, &backup, &processed.ok, false).await?;
         }
         if processed.ok.is_empty() {
-            return Ok(());
+            return Ok(Delivered::default());
         }
         let (failed_type, result) = match d.kind.as_str() {
-            "http_endpoint" => ("http-endpoint-failed", send_http_endpoint(effective, &processed.ok).await),
-            "splunk" => ("splunk-failed", send_splunk(effective, &processed.ok).await),
+            "http_endpoint" => {
+                ("http-endpoint-failed", self.send_http_endpoint(ctx, job, effective, role, &processed.ok).await)
+            }
+            "splunk" => ("splunk-failed", self.send_splunk(ctx, job, effective, role, &processed.ok).await),
             "elasticsearch" => {
                 ("elasticsearch-failed", send_bulk(effective, "cluster_endpoint", ctx, &processed.ok).await)
             }
@@ -282,7 +429,7 @@ impl Firehose {
                 Err(DeliveryError::new("Iceberg.Unreachable", "MWS does not emulate Iceberg tables.")),
             ),
         };
-        let Err(e) = result else { return Ok(()) };
+        let Err(e) = result else { return Ok(Delivered::of(&processed.ok)) };
         let retry_ms =
             effective.pointer("/retry_options/duration_in_seconds").and_then(Value::as_i64).unwrap_or(300) * 1000;
         let now = ctx.received_at.timestamp_millis();
@@ -303,7 +450,9 @@ impl Firehose {
             })
             .collect();
         self.write_errors(ctx, job, &S3Target { error_prefix: backup.error_prefix.clone(), ..backup.clone() }, &failed)
-            .await
+            .await?;
+        // The records are in the S3 backup now; the attempt still failed.
+        Err(DeliveryError { give_up: true, ..e })
     }
 
     /// Write records to S3 as one object per partition (one object without
@@ -395,8 +544,14 @@ impl Firehose {
             request["SSEKMSKeyId"] = json!(k);
         }
         mws_core::Service::invoke(s3, rctx, "PutObject", request).await.map(|_| ()).map_err(|e| {
-            let code = if e.code.contains("AccessDenied") { "S3.AccessDenied" } else { "S3.PutObjectFailed" };
-            DeliveryError::new(code, e.message)
+            let c: &str = &e.code;
+            // Firehose names S3's error codes `S3.<code>`.
+            let code = match c {
+                "KMS.DisabledException" => "S3.KMS.KeyDisabled".to_string(),
+                c if c.contains("AccessDenied") && !c.starts_with("KMS.") => "S3.AccessDenied".to_string(),
+                c => format!("S3.{c}"),
+            };
+            DeliveryError { destination: Some(target.bucket_arn.clone()), ..DeliveryError::new(&code, e.message) }
         })
     }
 }
@@ -448,76 +603,144 @@ fn gzip(data: &[u8]) -> Vec<u8> {
     output::compress("GZIP", data, "")
 }
 
-/// Firehose's HTTP endpoint delivery request.
-async fn send_http_endpoint(c: &Value, records: &[Out]) -> Result<(), DeliveryError> {
-    let h: types::HttpEndpointDestinationConfiguration = serde_json::from_value(c.clone()).unwrap_or_default();
-    let request_id = uuid::Uuid::new_v4().to_string();
-    let body = json!({
-        "requestId": request_id,
-        "timestamp": chrono::Utc::now().timestamp_millis(),
-        "records": records
-            .iter()
-            .map(|r| json!({"data": base64::engine::general_purpose::STANDARD.encode(&r.data)}))
-            .collect::<Vec<_>>(),
-    });
-    let mut headers = vec![
-        ("Content-Type".to_string(), "application/json".to_string()),
-        ("X-Amz-Firehose-Protocol-Version".to_string(), "1.0".to_string()),
-        ("X-Amz-Firehose-Request-Id".to_string(), request_id.clone()),
-        ("User-Agent".to_string(), "Amazon Kinesis Data Firehose Agent/1.0".to_string()),
-    ];
-    if let Some(key) = &h.endpoint_configuration.access_key {
-        headers.push(("X-Amz-Firehose-Access-Key".to_string(), key.clone()));
-    }
-    let request = h.request_configuration.clone().unwrap_or_default();
-    if let Some(attrs) = &request.common_attributes {
-        let map: serde_json::Map<String, Value> =
-            attrs.iter().map(|a| (a.attribute_name.clone(), json!(a.attribute_value))).collect();
-        headers.push(("X-Amz-Firehose-Common-Attributes".to_string(), json!({"commonAttributes": map}).to_string()));
-    }
-    let mut payload = body.to_string().into_bytes();
-    if request.content_encoding.as_deref() == Some("GZIP") {
-        headers.push(("Content-Encoding".to_string(), "gzip".to_string()));
-        payload = gzip(&payload);
-    }
-    let resp =
-        http::send(http::Request { method: "POST", url: &h.endpoint_configuration.url, headers, body: Some(payload) })
-            .await
-            .map_err(|m| DeliveryError::new("HttpEndpoint.DestinationException", m))?;
-    if resp.status != 200 {
-        return Err(DeliveryError::new(
-            "HttpEndpoint.InvalidResponseFromDestination",
-            format!(
-                "Received the following response from the endpoint destination. {}: {}",
-                resp.status,
-                String::from_utf8_lossy(&resp.body)
-            ),
-        ));
-    }
-    Ok(())
-}
-
-/// Splunk HTTP Event Collector delivery.
-async fn send_splunk(c: &Value, records: &[Out]) -> Result<(), DeliveryError> {
-    let s: types::SplunkDestinationConfiguration = serde_json::from_value(c.clone()).unwrap_or_default();
-    let path = if s.hec_endpoint_type == "Raw" { "/services/collector/raw" } else { "/services/collector/event" };
-    let url = format!("{}{path}", s.hec_endpoint.trim_end_matches('/'));
-    let body: Vec<u8> = records.iter().flat_map(|r| r.data.iter().copied()).collect();
-    let headers = vec![
-        ("Authorization".to_string(), format!("Splunk {}", s.hec_token.unwrap_or_default())),
-        ("Content-Type".to_string(), "application/json".to_string()),
-        ("X-Splunk-Request-Channel".to_string(), uuid::Uuid::new_v4().to_string()),
-    ];
-    let resp = http::send(http::Request { method: "POST", url: &url, headers, body: Some(body) })
+impl Firehose {
+    /// Firehose's HTTP endpoint delivery request. The endpoint must answer
+    /// 200 with a JSON body echoing the request id.
+    async fn send_http_endpoint(
+        &self,
+        ctx: &RequestContext,
+        job: &Job,
+        c: &Value,
+        role: Option<&str>,
+        records: &[Out],
+    ) -> Result<(), DeliveryError> {
+        let h: types::HttpEndpointDestinationConfiguration = serde_json::from_value(c.clone()).unwrap_or_default();
+        let secret = match c.get("secrets_manager_configuration") {
+            Some(sm) => self
+                .secret_value(ctx, &job.stream_arn, &job.account, sm, role, "api_key")
+                .await
+                .map_err(|m| DeliveryError::new("HttpEndpoint.SecretsManagerAccessDenied", m))?,
+            None => None,
+        };
+        let request_id = uuid::Uuid::new_v4().to_string();
+        let body = json!({
+            "requestId": request_id,
+            "timestamp": ctx.received_at.timestamp_millis(),
+            "records": records
+                .iter()
+                .map(|r| json!({"data": base64::engine::general_purpose::STANDARD.encode(&r.data)}))
+                .collect::<Vec<_>>(),
+        });
+        let mut headers = vec![
+            ("Content-Type".to_string(), "application/json".to_string()),
+            ("X-Amz-Firehose-Protocol-Version".to_string(), "1.0".to_string()),
+            ("X-Amz-Firehose-Request-Id".to_string(), request_id.clone()),
+            ("X-Amz-Firehose-Source-Arn".to_string(), job.stream_arn.clone()),
+            ("User-Agent".to_string(), "Amazon Kinesis Data Firehose Agent/1.0".to_string()),
+        ];
+        if let Some(key) = secret.as_ref().or(h.endpoint_configuration.access_key.as_ref()) {
+            headers.push(("X-Amz-Firehose-Access-Key".to_string(), key.clone()));
+        }
+        let request = h.request_configuration.clone().unwrap_or_default();
+        if let Some(attrs) = &request.common_attributes {
+            let map: serde_json::Map<String, Value> =
+                attrs.iter().map(|a| (a.attribute_name.clone(), json!(a.attribute_value))).collect();
+            headers
+                .push(("X-Amz-Firehose-Common-Attributes".to_string(), json!({"commonAttributes": map}).to_string()));
+        }
+        let mut payload = body.to_string().into_bytes();
+        if request.content_encoding.as_deref() == Some("GZIP") {
+            headers.push(("Content-Encoding".to_string(), "gzip".to_string()));
+            payload = gzip(&payload);
+        }
+        let resp = http::send(http::Request {
+            method: "POST",
+            url: &h.endpoint_configuration.url,
+            headers,
+            body: Some(payload),
+        })
         .await
-        .map_err(|m| DeliveryError::new("Splunk.ProxyWithoutStickySessions", m))?;
-    if resp.status != 200 {
-        return Err(DeliveryError::new(
-            "Splunk.InvalidToken",
-            format!("The HEC endpoint answered {}: {}", resp.status, String::from_utf8_lossy(&resp.body)),
-        ));
+        .map_err(|m| {
+            DeliveryError::new(
+                "HttpEndpoint.ConnectionFailed",
+                format!("Unable to connect to the destination endpoint. {m}"),
+            )
+        })?;
+        if resp.status != 200 {
+            return Err(DeliveryError::new(
+                "HttpEndpoint.DestinationException",
+                format!(
+                    "The following response was received from the endpoint destination. {}: {}",
+                    resp.status,
+                    String::from_utf8_lossy(&resp.body)
+                ),
+            ));
+        }
+        let echoed = serde_json::from_slice::<Value>(&resp.body)
+            .ok()
+            .and_then(|v| v.get("requestId").and_then(Value::as_str).map(str::to_string));
+        if echoed.as_deref() != Some(request_id.as_str()) {
+            return Err(DeliveryError::new(
+                "HttpEndpoint.InvalidResponseFromDestination",
+                format!(
+                    "The response received from the specified endpoint is invalid. Contact the owner of the endpoint to resolve the issue. Response for request {request_id} is not recognized as valid JSON or has unexpected fields. Raw response received: {} {}",
+                    resp.status,
+                    String::from_utf8_lossy(&resp.body)
+                ),
+            ));
+        }
+        Ok(())
     }
-    Ok(())
+
+    /// Splunk HTTP Event Collector delivery.
+    async fn send_splunk(
+        &self,
+        ctx: &RequestContext,
+        job: &Job,
+        c: &Value,
+        role: Option<&str>,
+        records: &[Out],
+    ) -> Result<(), DeliveryError> {
+        let s: types::SplunkDestinationConfiguration = serde_json::from_value(c.clone()).unwrap_or_default();
+        let secret = match c.get("secrets_manager_configuration") {
+            Some(sm) => self
+                .secret_value(ctx, &job.stream_arn, &job.account, sm, role, "hec_token")
+                .await
+                .map_err(|m| DeliveryError::new("Splunk.SecretsManagerAccessDenied", m))?,
+            None => None,
+        };
+        let path = if s.hec_endpoint_type == "Raw" { "/services/collector/raw" } else { "/services/collector/event" };
+        let url = format!("{}{path}", s.hec_endpoint.trim_end_matches('/'));
+        let body: Vec<u8> = records.iter().flat_map(|r| r.data.iter().copied()).collect();
+        let token = secret.or(s.hec_token).unwrap_or_default();
+        let headers = vec![
+            ("Authorization".to_string(), format!("Splunk {token}")),
+            ("Content-Type".to_string(), "application/json".to_string()),
+            ("X-Splunk-Request-Channel".to_string(), uuid::Uuid::new_v4().to_string()),
+        ];
+        let resp = http::send(http::Request { method: "POST", url: &url, headers, body: Some(body) }).await.map_err(|m| {
+            DeliveryError::new(
+                "Splunk.ConnectionTimeout",
+                format!("The connection to Splunk timed out. This might be a transient error and the request will be retried. {m}"),
+            )
+        })?;
+        if resp.status != 200 {
+            let text = String::from_utf8_lossy(&resp.body);
+            let (code, message) = match resp.status {
+                401 | 403 => {
+                    ("Splunk.InvalidToken", "The HEC token is invalid. Update Firehose with a valid HEC token.")
+                }
+                404 => ("Splunk.URLNotFound", "The requested URL was not found on the Splunk server."),
+                400 => ("Splunk.InvalidDataFormat", "The data is not formatted correctly."),
+                _ => ("Splunk.ServerError", "Data delivery to Splunk failed due to a server error from a Splunk node."),
+            };
+            return Err(DeliveryError::new(
+                code,
+                format!("{message} The HEC endpoint answered {}: {text}", resp.status),
+            ));
+        }
+        Ok(())
+    }
 }
 
 /// The index name with its rotation suffix.

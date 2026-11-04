@@ -521,6 +521,27 @@ impl mws_kinesis::MetricPublisher for KinesisToCloudWatch {
     }
 }
 
+/// Firehose publishing its `AWS/Firehose` metrics into CloudWatch.
+pub struct FirehoseToCloudWatch(pub mws_cloudwatch::CloudWatch);
+
+impl mws_firehose::MetricPublisher for FirehoseToCloudWatch {
+    fn publish(&self, metrics: Vec<mws_firehose::FirehoseMetric>) {
+        for m in metrics {
+            let Some(timestamp) = chrono::DateTime::from_timestamp_millis(m.timestamp) else { continue };
+            self.0.put_metric_as_service(mws_cloudwatch::ServiceMetric {
+                account: m.account,
+                region: m.region,
+                namespace: m.namespace,
+                metric_name: m.metric_name,
+                dimensions: m.dimensions,
+                unit: Some(m.unit),
+                timestamp,
+                values: vec![(m.value, 1.0)],
+            });
+        }
+    }
+}
+
 /// SQS publishing its `AWS/SQS` queue metrics into CloudWatch.
 pub struct SqsToCloudWatch(pub mws_cloudwatch::CloudWatch);
 

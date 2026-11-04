@@ -6,6 +6,7 @@ use mws_core::{RequestContext, ServiceError};
 use mws_kinesis::generated::types as kt;
 use serde_json::Value;
 
+use crate::monitor::point;
 use crate::names::invalid_argument;
 use crate::records::{buffer, record_id};
 use crate::state::{Buffered, KinesisOrigin};
@@ -156,12 +157,26 @@ impl Firehose {
             if read.is_empty() {
                 continue;
             }
-            let mut st = self.lock();
-            let Some(s) = st.streams.get_mut(&src.arn) else { continue };
-            for (shard, seq) in positions {
-                s.kinesis_positions.insert(shard, seq);
-            }
-            buffer(s, read);
+            let points = vec![
+                point("DataReadFromKinesisStream.Records", "Count", read.len() as f64),
+                point(
+                    "DataReadFromKinesisStream.Bytes",
+                    "Bytes",
+                    read.iter().map(|r| r.data.len()).sum::<usize>() as f64,
+                ),
+            ];
+            let name = {
+                let mut st = self.lock();
+                let Some(s) = st.streams.get_mut(&src.arn) else { continue };
+                for (shard, seq) in positions {
+                    s.kinesis_positions.insert(shard, seq);
+                }
+                buffer(s, read);
+                s.name.clone()
+            };
+            let region = src.arn.split(':').nth(3).unwrap_or_default().to_string();
+            let mctx = RequestContext { region, ..ctx.clone() };
+            self.metrics(&mctx, &src.account, &name, points);
         }
     }
 }

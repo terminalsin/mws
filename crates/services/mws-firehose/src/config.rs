@@ -182,10 +182,32 @@ fn kind_defaults(kind: &str, m: &mut Map<String, Value>) {
     set_default(m, "cloud_watch_logging_options", json!({"enabled": false}));
 }
 
+/// Whether an Extended S3 configuration enables dynamic partitioning.
+pub fn dynamic_partitioning(config: &Value) -> bool {
+    config.pointer("/dynamic_partitioning_configuration/enabled").and_then(Value::as_bool).unwrap_or(false)
+}
+
+/// Whether an Extended S3 configuration enables data format conversion
+/// (`Enabled` defaults to true when the configuration is given).
+pub fn format_conversion(config: &Value) -> bool {
+    config
+        .get("data_format_conversion_configuration")
+        .filter(|c| c.is_object())
+        .is_some_and(|c| c.get("enabled").and_then(Value::as_bool).unwrap_or(true))
+}
+
 /// The configuration with defaults applied, as delivery reads it.
 pub fn effective(kind: &str, config: &Value) -> Value {
     let mut m = config.as_object().cloned().unwrap_or_default();
     if kind == "extended_s3" {
+        // Dynamic partitioning and format conversion buffer 128 MiB by
+        // default.
+        let config = Value::Object(m.clone());
+        if (dynamic_partitioning(&config) || format_conversion(&config))
+            && config.pointer("/buffering_hints/size_in_m_bs").is_none()
+        {
+            set_default(&mut m, "buffering_hints", json!({"size_in_m_bs": 128}));
+        }
         m = s3_description(&Value::Object(m)).as_object().cloned().unwrap_or_default();
     }
     kind_defaults(kind, &mut m);

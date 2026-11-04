@@ -10,6 +10,7 @@ mod cloudwatch;
 mod cloudwatch_parity;
 mod events;
 mod firehose;
+mod firehose_monitoring;
 mod iam;
 mod iam_advanced;
 mod iam_parity;

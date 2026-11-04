@@ -146,6 +146,7 @@ fn build_with_store(config: Config, store: Option<Arc<Store>>) -> Mws {
         .with_kms(kms.clone())
         .with_lambda(lambda.clone())
         .with_kinesis(kinesis.clone());
+    firehose.set_logs(logs.clone());
     lambda.set_logs(logs.clone());
     s3control.set_sts(sts.clone());
     s3control.set_lambda(lambda.clone());
@@ -156,6 +157,7 @@ fn build_with_store(config: Config, store: Option<Arc<Store>>) -> Mws {
     events.set_health_checks(Arc::new(sinks::Route53HealthChecks(route53.clone())));
     let secretsmanager = SecretsManager::new(kms.clone()).with_lambda(lambda.clone());
     ssm.set_secrets_manager(Arc::new(SsmSecretReferences(secretsmanager.clone())));
+    firehose.set_secrets_manager(secretsmanager.clone());
     let sns = Sns::new()
         .with_lambda(lambda.clone())
         .with_kms(kms.clone())
@@ -195,6 +197,7 @@ fn build_with_store(config: Config, store: Option<Arc<Store>>) -> Mws {
         partition: config.iam.partition.clone(),
     }));
     logs.set_metric_publisher(Arc::new(links::LogsToCloudWatch(cloudwatch.clone())));
+    firehose.set_metric_publisher(Arc::new(links::FirehoseToCloudWatch(cloudwatch.clone())));
     kinesis.set_metric_publisher(Arc::new(links::KinesisToCloudWatch(cloudwatch.clone())));
     sqs.set_metric_publisher(Arc::new(links::SqsToCloudWatch(cloudwatch.clone())));
     cloudwatch.set_metric_stream_delivery(Arc::new(links::MetricStreamsToFirehose {

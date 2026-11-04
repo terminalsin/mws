@@ -43,15 +43,28 @@ fn validate_destination(kind: &str, config: &Value) -> Result<(), ServiceError> 
     if kind == "extended_s3" {
         let prefix = effective.get("prefix").and_then(Value::as_str).unwrap_or_default();
         let error_prefix = effective.get("error_output_prefix").and_then(Value::as_str).unwrap_or_default();
-        let dynamic =
-            effective.pointer("/dynamic_partitioning_configuration/enabled").and_then(Value::as_bool).unwrap_or(false);
+        let dynamic = config::dynamic_partitioning(&effective);
+        let conversion = config::format_conversion(&effective);
         if (prefix.contains("!{") || dynamic) && error_prefix.is_empty() {
             return Err(invalid_argument(
                 "ErrorOutputPrefix cannot be null or empty when Prefix contains expressions or dynamic partitioning is enabled.",
             ));
         }
+        let size = effective.pointer("/buffering_hints/size_in_m_bs").and_then(Value::as_i64).unwrap_or(5);
+        if conversion {
+            if size < 64 {
+                return Err(invalid_argument(
+                    "BufferingHints.SizeInMBs must be at least 64 when data format conversion is enabled.",
+                ));
+            }
+            let compression = effective.get("compression_format").and_then(Value::as_str).unwrap_or("UNCOMPRESSED");
+            if compression != "UNCOMPRESSED" {
+                return Err(invalid_argument(
+                    "CompressionFormat must be UNCOMPRESSED when data format conversion is enabled.",
+                ));
+            }
+        }
         if dynamic {
-            let size = effective.pointer("/buffering_hints/size_in_m_bs").and_then(Value::as_i64).unwrap_or(5);
             if size < 64 {
                 return Err(invalid_argument(
                     "BufferingHints.SizeInMBs must be at least 64 when Dynamic Partitioning is enabled.",
