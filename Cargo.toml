@@ -9,6 +9,7 @@ members = [
     "crates/mws-proto-restxml",
     "crates/mws-proto-json",
     "crates/mws-proto-restjson",
+    "crates/mws-proto-cbor",
     "crates/mws-xml",
     "crates/mws-server",
     "crates/mws-store",
@@ -33,6 +34,7 @@ members = [
     "crates/services/mws-acm",
     "crates/services/mws-kinesis",
     "crates/services/mws-firehose",
+    "crates/services/mws-cloudwatch",
     "tests/e2e-rust",
 ]
 
@@ -53,6 +55,7 @@ mws-proto-query = { path = "crates/mws-proto-query" }
 mws-proto-restxml = { path = "crates/mws-proto-restxml" }
 mws-proto-json = { path = "crates/mws-proto-json" }
 mws-proto-restjson = { path = "crates/mws-proto-restjson" }
+mws-proto-cbor = { path = "crates/mws-proto-cbor" }
 mws-xml = { path = "crates/mws-xml" }
 mws-server = { path = "crates/mws-server" }
 mws-store = { path = "crates/mws-store" }
@@ -76,6 +79,7 @@ mws-sns = { path = "crates/services/mws-sns" }
 mws-acm = { path = "crates/services/mws-acm" }
 mws-kinesis = { path = "crates/services/mws-kinesis" }
 mws-firehose = { path = "crates/services/mws-firehose" }
+mws-cloudwatch = { path = "crates/services/mws-cloudwatch" }
 
 # external
 async-trait = "0.1"

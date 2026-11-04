@@ -30,6 +30,7 @@ mod groups;
 mod handler;
 pub mod insights;
 mod livetail;
+mod metrics;
 mod misc;
 mod names;
 mod policies;
@@ -47,6 +48,7 @@ use mws_kms::Kms;
 use mws_s3::S3;
 
 pub use forward::{control_message, lambda_event, SubscriptionSource, SubscriptionTarget};
+pub use metrics::{FilterMetric, MetricPublisher};
 pub use public::{ServiceLogError, ServiceLogEvent, ServiceLogWriter};
 use state::State;
 
@@ -62,6 +64,7 @@ pub struct Logs {
     /// The last request's context and clock offset, for deliveries of
     /// writes that come without one.
     template: Arc<Mutex<Option<(RequestContext, chrono::Duration)>>>,
+    metric_publisher: Arc<std::sync::RwLock<Option<Arc<dyn MetricPublisher>>>>,
 }
 
 impl Logs {

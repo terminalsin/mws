@@ -478,3 +478,87 @@ impl mws_lambda::StreamSource for LambdaFromKinesis {
         })
     }
 }
+
+/// CloudWatch Logs metric filters publish their metrics into CloudWatch.
+pub struct LogsToCloudWatch(pub mws_cloudwatch::CloudWatch);
+
+impl mws_logs::MetricPublisher for LogsToCloudWatch {
+    fn publish(&self, metrics: Vec<mws_logs::FilterMetric>) {
+        for m in metrics {
+            let Some(timestamp) = chrono::DateTime::from_timestamp_millis(m.timestamp) else { continue };
+            self.0.put_metric_as_service(mws_cloudwatch::ServiceMetric {
+                account: m.account,
+                region: m.region,
+                namespace: m.namespace,
+                metric_name: m.metric_name,
+                dimensions: m.dimensions,
+                unit: m.unit,
+                timestamp,
+                values: vec![(m.value, 1.0)],
+            });
+        }
+    }
+}
+
+/// CloudWatch metric streams putting their records into Firehose, as the
+/// stream's role assumed by `streams.metrics.cloudwatch.amazonaws.com`.
+pub(crate) struct MetricStreamsToFirehose {
+    pub firehose: mws_firehose::Firehose,
+    pub sts: mws_sts::Sts,
+}
+
+impl mws_cloudwatch::MetricStreamDelivery for MetricStreamsToFirehose {
+    fn deliver(
+        &self,
+        ctx: &RequestContext,
+        stream_arn: &str,
+        firehose_arn: &str,
+        role_arn: &str,
+        records: Vec<Vec<u8>>,
+    ) -> Result<(), String> {
+        let creds = self
+            .sts
+            .assume_role_as_service(&mws_sts::ServiceAssume {
+                role_arn,
+                service_principal: "streams.metrics.cloudwatch.amazonaws.com",
+                session_name: "MetricStreams",
+                duration_seconds: 3600,
+                source_account: Some(&ctx.caller.account_id),
+                source_arn: Some(stream_arn),
+                now: ctx.received_at,
+            })
+            .map_err(|e| format!("CloudWatch could not assume {role_arn}: {e:?}"))?;
+        let resolved = self
+            .sts
+            .credential_store()
+            .resolve(&creds.access_key_id, Some(&creds.session_token), ctx.received_at)
+            .map_err(|e| format!("{e:?}"))?
+            .ok_or_else(|| "the role session could not be resolved".to_string())?;
+        let rctx = RequestContext { caller: resolved.caller, source_ip: None, ..ctx.clone() };
+        let name = firehose_arn.rsplit_once("deliverystream/").map(|(_, n)| n).unwrap_or(firehose_arn);
+        // Firehose takes up to 1,000 KiB per record: pack the lines.
+        let mut chunk: Vec<u8> = Vec::new();
+        let mut chunks = Vec::new();
+        for r in records {
+            if !chunk.is_empty() && chunk.len() + r.len() > 1_000_000 {
+                chunks.push(std::mem::take(&mut chunk));
+            }
+            chunk.extend(r);
+        }
+        if !chunk.is_empty() {
+            chunks.push(chunk);
+        }
+        for data in chunks {
+            self.firehose
+                .put_record(
+                    &rctx,
+                    mws_firehose::generated::types::PutRecordInput {
+                        delivery_stream_name: name.to_string(),
+                        record: mws_firehose::generated::types::Record { data },
+                    },
+                )
+                .map_err(|e| e.message)?;
+        }
+        Ok(())
+    }
+}

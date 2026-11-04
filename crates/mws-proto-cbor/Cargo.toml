@@ -1,0 +1,14 @@
+[package]
+name = "mws-proto-cbor"
+description = "Runtime for the Smithy rpcv2Cbor protocol (POST /service/{S}/operation/{O}, CBOR bodies), layered on the awsJson document model."
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+base64.workspace = true
+bytes.workspace = true
+http.workspace = true
+mws-core.workspace = true
+mws-proto-json.workspace = true
+serde_json.workspace = true
