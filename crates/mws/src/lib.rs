@@ -10,6 +10,7 @@ use mws_acm::Acm;
 use mws_acmpca::PrivateCa;
 use mws_cloudwatch::CloudWatch;
 use mws_core::Environment;
+use mws_ec2::{BackendChoice, Ec2};
 use mws_events::Events;
 use mws_firehose::Firehose;
 use mws_iam::{Iam, IamConfig};
@@ -40,6 +41,12 @@ pub struct Config {
     /// their signatures (`MWS_SKIP_FEDERATION_SIGNATURE_VERIFICATION=1`),
     /// for test suites that hand-craft them. AWS always verifies them.
     pub skip_federation_signature_verification: bool,
+    /// What runs EC2 instances (`MWS_EC2_BACKEND`: `auto`, `docker` or
+    /// `metadata`). The binary defaults to `auto` (Docker when a daemon
+    /// answers); the library default runs nothing.
+    pub ec2_backend: BackendChoice,
+    /// The Docker-compatible CLI (`MWS_EC2_DOCKER`, e.g. `podman`).
+    pub ec2_docker_cli: Option<String>,
 }
 
 impl Config {
@@ -59,7 +66,21 @@ impl Config {
         let path = |var: &str| std::env::var_os(var).filter(|v| !v.is_empty()).map(PathBuf::from);
         let skip = std::env::var("MWS_SKIP_FEDERATION_SIGNATURE_VERIFICATION")
             .is_ok_and(|v| matches!(v.as_str(), "1" | "true" | "yes"));
-        Self { iam, db: path("MWS_DB"), scenario: path("MWS_SCENARIO"), skip_federation_signature_verification: skip }
+        let ec2_backend = match std::env::var("MWS_EC2_BACKEND") {
+            Ok(v) => BackendChoice::parse(&v).unwrap_or_else(|| {
+                tracing::warn!("unknown MWS_EC2_BACKEND {v:?}; using auto");
+                BackendChoice::Auto
+            }),
+            Err(_) => BackendChoice::Auto,
+        };
+        Self {
+            iam,
+            db: path("MWS_DB"),
+            scenario: path("MWS_SCENARIO"),
+            skip_federation_signature_verification: skip,
+            ec2_backend,
+            ec2_docker_cli: std::env::var("MWS_EC2_DOCKER").ok().filter(|v| !v.is_empty()),
+        }
     }
 }
 
@@ -82,6 +103,7 @@ pub struct Mws {
     pub kinesis: Kinesis,
     pub firehose: Firehose,
     pub cloudwatch: CloudWatch,
+    pub ec2: Ec2,
 }
 
 /// Build the gateway with every service MWS emulates.
@@ -204,6 +226,9 @@ fn build_with_store(config: Config, store: Option<Arc<Store>>) -> Mws {
         firehose: firehose.clone(),
         sts: sts.clone(),
     }));
+    let ec2 = Ec2::new(config.ec2_backend.resolve(config.ec2_docker_cli.as_deref()));
+    tracing::info!(backend = ec2.backend_name(), "EC2 compute backend");
+    ec2.set_instance_roles(Arc::new(links::Ec2InstanceRoles { iam: iam.clone(), sts: sts.clone() }));
     let mut gateway = Gateway::builder();
     if let Some(store) = store {
         gateway = gateway.store(store);
@@ -236,6 +261,7 @@ fn build_with_store(config: Config, store: Option<Arc<Store>>) -> Mws {
         .service(Arc::new(kinesis.clone()))
         .service(Arc::new(firehose.clone()))
         .service(Arc::new(cloudwatch.clone()))
+        .service(Arc::new(ec2.clone()))
         .build();
     Mws {
         gateway,
@@ -254,6 +280,7 @@ fn build_with_store(config: Config, store: Option<Arc<Store>>) -> Mws {
         kinesis,
         firehose,
         cloudwatch,
+        ec2,
     }
 }
 

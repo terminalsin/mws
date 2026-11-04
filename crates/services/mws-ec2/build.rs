@@ -1,0 +1,134 @@
+//! EC2's model has over 800 operations, and generating code for all of them
+//! makes this crate take many minutes to compile. Only the operations MWS
+//! implements are generated; the rest answer `NotImplemented`. Add an
+//! operation here before implementing it in `handler.rs`.
+
+const OPERATIONS: &[&str] = &[
+    // Regions, zones, account
+    "DescribeRegions",
+    "DescribeAvailabilityZones",
+    "DescribeAccountAttributes",
+    "DescribeInstanceTypes",
+    "DescribeInstanceTypeOfferings",
+    // VPCs
+    "CreateVpc",
+    "DeleteVpc",
+    "DescribeVpcs",
+    "ModifyVpcAttribute",
+    "DescribeVpcAttribute",
+    "CreateDefaultVpc",
+    "AssociateVpcCidrBlock",
+    "DisassociateVpcCidrBlock",
+    // Subnets
+    "CreateSubnet",
+    "DeleteSubnet",
+    "DescribeSubnets",
+    "ModifySubnetAttribute",
+    "CreateDefaultSubnet",
+    // Security groups
+    "CreateSecurityGroup",
+    "DeleteSecurityGroup",
+    "DescribeSecurityGroups",
+    "AuthorizeSecurityGroupIngress",
+    "AuthorizeSecurityGroupEgress",
+    "RevokeSecurityGroupIngress",
+    "RevokeSecurityGroupEgress",
+    "DescribeSecurityGroupRules",
+    "ModifySecurityGroupRules",
+    "UpdateSecurityGroupRuleDescriptionsIngress",
+    "UpdateSecurityGroupRuleDescriptionsEgress",
+    // Route tables
+    "CreateRouteTable",
+    "DeleteRouteTable",
+    "DescribeRouteTables",
+    "CreateRoute",
+    "DeleteRoute",
+    "ReplaceRoute",
+    "AssociateRouteTable",
+    "DisassociateRouteTable",
+    "ReplaceRouteTableAssociation",
+    // Gateways
+    "CreateInternetGateway",
+    "DeleteInternetGateway",
+    "DescribeInternetGateways",
+    "AttachInternetGateway",
+    "DetachInternetGateway",
+    "CreateNatGateway",
+    "DeleteNatGateway",
+    "DescribeNatGateways",
+    // Elastic IPs
+    "AllocateAddress",
+    "ReleaseAddress",
+    "AssociateAddress",
+    "DisassociateAddress",
+    "DescribeAddresses",
+    // Network interfaces
+    "CreateNetworkInterface",
+    "DeleteNetworkInterface",
+    "DescribeNetworkInterfaces",
+    "AttachNetworkInterface",
+    "DetachNetworkInterface",
+    "ModifyNetworkInterfaceAttribute",
+    // Network ACLs and DHCP options
+    "DescribeNetworkAcls",
+    "CreateNetworkAcl",
+    "DeleteNetworkAcl",
+    "CreateNetworkAclEntry",
+    "DeleteNetworkAclEntry",
+    "ReplaceNetworkAclEntry",
+    "ReplaceNetworkAclAssociation",
+    "DescribeDhcpOptions",
+    "CreateDhcpOptions",
+    "DeleteDhcpOptions",
+    "AssociateDhcpOptions",
+    // Key pairs
+    "CreateKeyPair",
+    "ImportKeyPair",
+    "DeleteKeyPair",
+    "DescribeKeyPairs",
+    // Images
+    "DescribeImages",
+    "RegisterImage",
+    "DeregisterImage",
+    "CreateImage",
+    "CopyImage",
+    "DescribeImageAttribute",
+    "ModifyImageAttribute",
+    // Instances
+    "RunInstances",
+    "DescribeInstances",
+    "StartInstances",
+    "StopInstances",
+    "RebootInstances",
+    "TerminateInstances",
+    "DescribeInstanceStatus",
+    "DescribeInstanceAttribute",
+    "ModifyInstanceAttribute",
+    "ModifyInstanceMetadataOptions",
+    "GetConsoleOutput",
+    "AssociateIamInstanceProfile",
+    "DisassociateIamInstanceProfile",
+    "ReplaceIamInstanceProfileAssociation",
+    "DescribeIamInstanceProfileAssociations",
+    // Tags
+    "CreateTags",
+    "DeleteTags",
+    "DescribeTags",
+    // EBS
+    "CreateVolume",
+    "DeleteVolume",
+    "DescribeVolumes",
+    "AttachVolume",
+    "DetachVolume",
+    "CreateSnapshot",
+    "DeleteSnapshot",
+    "DescribeSnapshots",
+];
+
+fn main() {
+    mws_codegen::build_ec2_query(
+        "model/ec2.json",
+        "ec2_generated.rs",
+        mws_codegen::Ec2QueryOptions { operations: Some(OPERATIONS.iter().map(|s| s.to_string()).collect()) },
+    );
+}

@@ -31,7 +31,7 @@ use std::sync::{Arc, Mutex, OnceLock, RwLock};
 use chrono::{DateTime, Utc};
 use mws_core::{HttpRequest, HttpResponse, RequestContext, Service, ServiceError, SessionKind};
 
-pub use api::{arn_account, DelegationGrant, OidcProviderView, OutboundKey, RoleView, UserView};
+pub use api::{arn_account, DelegationGrant, InstanceProfileView, OidcProviderView, OutboundKey, RoleView, UserView};
 pub use org::{AccountOrganization, OrganizationView};
 pub use state::State;
 

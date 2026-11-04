@@ -1,0 +1,16 @@
+[package]
+name = "mws-proto-ec2"
+description = "Runtime for the ec2Query protocol (form-encoded requests with flattened lists, XML responses without a Result wrapper)."
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+async-trait.workspace = true
+base64.workspace = true
+bytes.workspace = true
+chrono.workspace = true
+http.workspace = true
+mws-core.workspace = true
+mws-proto-query.workspace = true
+mws-xml.workspace = true

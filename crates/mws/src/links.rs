@@ -702,3 +702,46 @@ impl mws_lambda::DestinationSink for LambdaDestination {
         }
     }
 }
+
+/// Instance profiles for EC2: IAM resolves them, and instance metadata
+/// hands out the role's credentials, assumed by `ec2.amazonaws.com` with the
+/// instance id as the session name, as in AWS.
+pub(crate) struct Ec2InstanceRoles {
+    pub iam: mws_iam::Iam,
+    pub sts: mws_sts::Sts,
+}
+
+impl mws_ec2::InstanceRoleCredentials for Ec2InstanceRoles {
+    fn instance_profile(&self, account: &str, name_or_arn: &str) -> Option<mws_ec2::InstanceProfile> {
+        let p = self.iam.instance_profile(account, name_or_arn)?;
+        Some(mws_ec2::InstanceProfile { arn: p.arn, id: p.id, role_arn: p.role_arn })
+    }
+
+    fn credentials(
+        &self,
+        role_arn: &str,
+        instance_arn: &str,
+        now: chrono::DateTime<chrono::Utc>,
+    ) -> Option<mws_ec2::RoleCredentials> {
+        let instance_id = instance_arn.rsplit('/').next().unwrap_or(instance_arn);
+        let account = instance_arn.split(':').nth(4);
+        let c = self
+            .sts
+            .assume_role_as_service(&mws_sts::ServiceAssume {
+                role_arn,
+                service_principal: "ec2.amazonaws.com",
+                session_name: instance_id,
+                duration_seconds: 6 * 3600,
+                source_account: account,
+                source_arn: Some(instance_arn),
+                now,
+            })
+            .ok()?;
+        Some(mws_ec2::RoleCredentials {
+            access_key_id: c.access_key_id,
+            secret_access_key: c.secret_access_key,
+            session_token: c.session_token,
+            expiration: c.expiration,
+        })
+    }
+}
