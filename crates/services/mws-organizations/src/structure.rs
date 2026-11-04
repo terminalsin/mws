@@ -2,12 +2,11 @@
 
 use std::collections::BTreeMap;
 
-use chrono::Utc;
 use mws_core::{ConditionContext, RequestContext, ServiceError};
 
 use crate::access::*;
 use crate::generated::{errors, types};
-use crate::state::{default_policy_for, AccountInfo, Member, Org, Ou, State};
+use crate::state::{default_policy_for, AccountInfo, Member, Org, Ou, State, SCP};
 use crate::Organizations;
 
 /// OUs can nest five levels below the root.
@@ -79,23 +78,25 @@ pub(crate) fn ensure_account_info(state: &mut State, account: &str) {
         email: format!("mws+{account}@example.com"),
         status: "ACTIVE".into(),
         state: "ACTIVE".into(),
+        closed_at: None,
     });
 }
 
 impl Organizations {
-    /// The ARN of a root, OU or account in the caller's organization.
+    /// The ARN of a root, OU or account in the caller's organization, and
+    /// its tags as `aws:ResourceTag/...` condition keys.
     pub(crate) fn target_arn_for(
         &self,
         ctx: &RequestContext,
         target: &str,
         missing: fn() -> ServiceError,
-    ) -> Result<String, ServiceError> {
+    ) -> Result<(String, ConditionContext), ServiceError> {
         let state = self.lock();
         let org = state.org_of(&ctx.caller.account_id).ok_or_else(not_in_use)?;
         if !org.has_target(target) {
             return Err(missing());
         }
-        Ok(org.target_arn(&ctx.partition, target))
+        Ok((org.target_arn(&ctx.partition, target), resource_tag_context(&org.target_tags(target))))
     }
 
     pub(crate) fn create_organization(
@@ -106,6 +107,9 @@ impl Organizations {
         self.authorize(ctx, "CreateOrganization", "*", ConditionContext::new())?;
         let account = ctx.caller.account_id.clone();
         let feature_set = input.feature_set.unwrap_or_else(|| "ALL".into());
+        if feature_set == "ALL" {
+            self.authorize_service_linked_role(ctx, &account)?;
+        }
         let mut state = self.lock();
         if state.org_of(&account).is_some() {
             return Err(errors::already_in_organization("The AWS account is already a member of an organization."));
@@ -113,13 +117,13 @@ impl Organizations {
         ensure_account_info(&mut state, &account);
         let id = new_id("o-", 10);
         let root_id = new_id("r-", 4);
-        let now = Utc::now();
+        let now = ctx.received_at;
         let mut members = BTreeMap::new();
         members.insert(
             account.clone(),
             Member { parent: root_id.clone(), joined_method: "INVITED".into(), joined: now, tags: Default::default() },
         );
-        let org = Org {
+        let mut org = Org {
             id: id.clone(),
             management_account: account.clone(),
             feature_set: feature_set.clone(),
@@ -136,6 +140,14 @@ impl Organizations {
             create_statuses: Default::default(),
             resource_policy: None,
         };
+        // With all features, service control policies start enabled in the
+        // root, with FullAWSAccess attached everywhere.
+        if feature_set == "ALL" {
+            org.policy_types.insert(SCP.into(), "ENABLED".into());
+            for target in org.all_targets() {
+                attach_defaults(&mut org, &target);
+            }
+        }
         let out = org_wire(&state, &org, &ctx.partition);
         state.organizations.insert(id, org);
         drop(state);
@@ -199,9 +211,19 @@ impl Organizations {
         ctx: &RequestContext,
         input: types::CreateOrganizationalUnitRequest,
     ) -> Result<types::CreateOrganizationalUnitResponse, ServiceError> {
-        let parent_arn = self.target_arn_for(ctx, &input.parent_id, parent_not_found)?;
+        let (parent_arn, mut cond) = self.target_arn_for(ctx, &input.parent_id, parent_not_found)?;
         let tags = tags_from(input.tags)?;
-        self.authorize(ctx, "CreateOrganizationalUnit", &parent_arn, request_tag_context(&tags))?;
+        cond.extend(request_tag_context(&tags));
+        self.authorize(ctx, "CreateOrganizationalUnit", &parent_arn, cond)?;
+        let (id, arn) = {
+            let state = self.lock();
+            let org = state.org_of(&ctx.caller.account_id).ok_or_else(not_in_use)?;
+            let suffix = org.root_id.trim_start_matches("r-").to_string();
+            let id = new_id(&format!("ou-{suffix}-"), 8);
+            let arn = org.ou_arn(&ctx.partition, &id);
+            (id, arn)
+        };
+        self.authorize_tagging(ctx, &arn, &tags)?;
         let mut state = self.lock();
         let org_id =
             self.caller_org(&state, ctx, "CreateOrganizationalUnit", &parent_arn, Need::Management)?.id.clone();
@@ -224,8 +246,6 @@ impl Organizations {
                 "You have reached the maximum number of OUs in your organization.",
             ));
         }
-        let suffix = org.root_id.trim_start_matches("r-").to_string();
-        let id = new_id(&format!("ou-{suffix}-"), 8);
         let ou = Ou { id: id.clone(), name: input.name, parent: input.parent_id, tags };
         org.ous.insert(id.clone(), ou.clone());
         attach_defaults(org, &id);
@@ -237,8 +257,8 @@ impl Organizations {
         ctx: &RequestContext,
         input: types::DescribeOrganizationalUnitRequest,
     ) -> Result<types::DescribeOrganizationalUnitResponse, ServiceError> {
-        let arn = self.ou_arn_for(ctx, &input.organizational_unit_id)?;
-        self.authorize(ctx, "DescribeOrganizationalUnit", &arn, ConditionContext::new())?;
+        let (arn, cond) = self.ou_arn_for(ctx, &input.organizational_unit_id)?;
+        self.authorize(ctx, "DescribeOrganizationalUnit", &arn, cond)?;
         let state = self.lock();
         let org = self.caller_org(&state, ctx, "DescribeOrganizationalUnit", &arn, Need::Read)?;
         let ou = org.ous.get(&input.organizational_unit_id).ok_or_else(ou_not_found)?;
@@ -250,8 +270,8 @@ impl Organizations {
         ctx: &RequestContext,
         input: types::UpdateOrganizationalUnitRequest,
     ) -> Result<types::UpdateOrganizationalUnitResponse, ServiceError> {
-        let arn = self.ou_arn_for(ctx, &input.organizational_unit_id)?;
-        self.authorize(ctx, "UpdateOrganizationalUnit", &arn, ConditionContext::new())?;
+        let (arn, cond) = self.ou_arn_for(ctx, &input.organizational_unit_id)?;
+        self.authorize(ctx, "UpdateOrganizationalUnit", &arn, cond)?;
         let mut state = self.lock();
         let org_id = self.caller_org(&state, ctx, "UpdateOrganizationalUnit", &arn, Need::Management)?.id.clone();
         let org = state.organizations.get_mut(&org_id).expect("caller's organization exists");
@@ -274,8 +294,8 @@ impl Organizations {
         ctx: &RequestContext,
         input: types::DeleteOrganizationalUnitRequest,
     ) -> Result<(), ServiceError> {
-        let arn = self.ou_arn_for(ctx, &input.organizational_unit_id)?;
-        self.authorize(ctx, "DeleteOrganizationalUnit", &arn, ConditionContext::new())?;
+        let (arn, cond) = self.ou_arn_for(ctx, &input.organizational_unit_id)?;
+        self.authorize(ctx, "DeleteOrganizationalUnit", &arn, cond)?;
         let mut state = self.lock();
         let org_id = self.caller_org(&state, ctx, "DeleteOrganizationalUnit", &arn, Need::Management)?.id.clone();
         let org = state.organizations.get_mut(&org_id).expect("caller's organization exists");
@@ -293,13 +313,13 @@ impl Organizations {
         Ok(())
     }
 
-    fn ou_arn_for(&self, ctx: &RequestContext, ou: &str) -> Result<String, ServiceError> {
+    fn ou_arn_for(&self, ctx: &RequestContext, ou: &str) -> Result<(String, ConditionContext), ServiceError> {
         let state = self.lock();
         let org = state.org_of(&ctx.caller.account_id).ok_or_else(not_in_use)?;
         if !org.is_ou(ou) {
             return Err(ou_not_found());
         }
-        Ok(org.ou_arn(&ctx.partition, ou))
+        Ok((org.ou_arn(&ctx.partition, ou), resource_tag_context(&org.target_tags(ou))))
     }
 
     pub(crate) fn list_organizational_units_for_parent(
@@ -307,8 +327,8 @@ impl Organizations {
         ctx: &RequestContext,
         input: types::ListOrganizationalUnitsForParentRequest,
     ) -> Result<types::ListOrganizationalUnitsForParentResponse, ServiceError> {
-        let arn = self.target_arn_for(ctx, &input.parent_id, parent_not_found)?;
-        self.authorize(ctx, "ListOrganizationalUnitsForParent", &arn, ConditionContext::new())?;
+        let (arn, cond) = self.target_arn_for(ctx, &input.parent_id, parent_not_found)?;
+        self.authorize(ctx, "ListOrganizationalUnitsForParent", &arn, cond)?;
         let state = self.lock();
         let org = self.caller_org(&state, ctx, "ListOrganizationalUnitsForParent", &arn, Need::Read)?;
         if !org.has_parent(&input.parent_id) {
@@ -325,8 +345,8 @@ impl Organizations {
         ctx: &RequestContext,
         input: types::ListChildrenRequest,
     ) -> Result<types::ListChildrenResponse, ServiceError> {
-        let arn = self.target_arn_for(ctx, &input.parent_id, parent_not_found)?;
-        self.authorize(ctx, "ListChildren", &arn, ConditionContext::new())?;
+        let (arn, cond) = self.target_arn_for(ctx, &input.parent_id, parent_not_found)?;
+        self.authorize(ctx, "ListChildren", &arn, cond)?;
         let state = self.lock();
         let org = self.caller_org(&state, ctx, "ListChildren", &arn, Need::Read)?;
         if !org.has_parent(&input.parent_id) {
@@ -350,15 +370,15 @@ impl Organizations {
         input: types::ListParentsRequest,
     ) -> Result<types::ListParentsResponse, ServiceError> {
         let missing = || errors::child_not_found("You specified a child that doesn't exist.");
-        let arn = {
+        let (arn, cond) = {
             let state = self.lock();
             let org = state.org_of(&ctx.caller.account_id).ok_or_else(not_in_use)?;
             if !org.is_ou(&input.child_id) && !org.members.contains_key(&input.child_id) {
                 return Err(missing());
             }
-            org.target_arn(&ctx.partition, &input.child_id)
+            (org.target_arn(&ctx.partition, &input.child_id), resource_tag_context(&org.target_tags(&input.child_id)))
         };
-        self.authorize(ctx, "ListParents", &arn, ConditionContext::new())?;
+        self.authorize(ctx, "ListParents", &arn, cond)?;
         let state = self.lock();
         let org = self.caller_org(&state, ctx, "ListParents", &arn, Need::Read)?;
         let parent = org.parent_of(&input.child_id).ok_or_else(missing)?;

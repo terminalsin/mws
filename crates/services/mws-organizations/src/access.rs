@@ -13,6 +13,7 @@ use rand::Rng;
 
 use crate::generated::errors;
 use crate::state::{Org, State, Tags};
+use crate::structure::ORGANIZATIONS_PRINCIPAL;
 use crate::Organizations;
 
 pub(crate) const MAX_TAGS: usize = 50;
@@ -106,7 +107,7 @@ pub(crate) fn page<T>(
             .strip_prefix("mws-")
             .and_then(|n| n.parse::<usize>().ok())
             .filter(|n| *n <= items.len())
-            .ok_or_else(|| invalid("INVALID_NEXT_TOKEN", "The specified NextToken is not valid."))?,
+            .ok_or_else(|| invalid("INVALID_PAGINATION_TOKEN", "The specified NextToken is not valid."))?,
     };
     let size = max_results.map(|m| m.max(1) as usize).unwrap_or(DEFAULT_PAGE);
     let end = (start + size).min(items.len());
@@ -185,6 +186,34 @@ impl Organizations {
         context: ConditionContext,
     ) -> Result<(), ServiceError> {
         ctx.authorize(&format!("organizations:{action}"), resource, context)
+    }
+
+    /// Creating a resource with tags also needs `organizations:TagResource`
+    /// on it, as AWS documents for every operation that takes `Tags`.
+    pub(crate) fn authorize_tagging(&self, ctx: &RequestContext, arn: &str, tags: &Tags) -> Result<(), ServiceError> {
+        if tags.is_empty() {
+            return Ok(());
+        }
+        self.authorize(ctx, "TagResource", arn, request_tag_context(tags))
+    }
+
+    /// Organizations creates `AWSServiceRoleForOrganizations` in `account`
+    /// on the caller's behalf (CreateOrganization, accepting an invitation to
+    /// an organization with all features), so the caller needs
+    /// `iam:CreateServiceLinkedRole` unless the role is already there.
+    pub(crate) fn authorize_service_linked_role(
+        &self,
+        ctx: &RequestContext,
+        account: &str,
+    ) -> Result<(), ServiceError> {
+        let arn = format!(
+            "arn:{}:iam::{account}:role/aws-service-role/{ORGANIZATIONS_PRINCIPAL}/AWSServiceRoleForOrganizations",
+            ctx.partition
+        );
+        if self.iam.role_by_arn(&arn).is_some() {
+            return Ok(());
+        }
+        ctx.authorize("iam:CreateServiceLinkedRole", &arn, single("iam:AWSServiceName", ORGANIZATIONS_PRINCIPAL))
     }
 
     /// Organizations' half: the organization the caller belongs to, if the
