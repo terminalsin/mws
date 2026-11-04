@@ -65,6 +65,7 @@ pub use access_points::{
     ObjectLambdaInvoker, Transformation,
 };
 pub use auth::policy_is_public;
+pub use checksum::compute as compute_checksum;
 pub use notifications::{event_message, EventBridgeSink, NotificationDestination, NotificationSource, ObjectEvent};
 pub use public::{ServicePutError, ServicePutObject};
 use state::State;
@@ -299,8 +300,12 @@ fn looks_like_s3(request: &HttpRequest) -> bool {
     let path = request.uri().path();
     if path == "/" || path.is_empty() {
         // `GET /` is ListBuckets, which S3 refuses anonymously with
-        // `AccessDenied`. Other methods on `/` belong to other services.
-        return request.method() == Method::GET;
+        // `AccessDenied`. Other methods on `/`, and query-protocol `GET`s
+        // (`/?Action=...`, such as SNS's SubscribeURL), belong to other
+        // services.
+        let query_api =
+            request.uri().query().unwrap_or("").split('&').any(|p| p.starts_with("Action=") || p == "Action");
+        return request.method() == Method::GET && !query_api;
     }
     // Bucket names never start with `_`, so `/_mws/...` (the control API)
     // and `/_aws/...` (other services' side channels) are not S3's.
