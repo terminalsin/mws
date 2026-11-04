@@ -8,6 +8,7 @@ use std::sync::Arc;
 
 use mws_acm::Acm;
 use mws_acmpca::PrivateCa;
+use mws_cloudwatch::CloudWatch;
 use mws_core::Environment;
 use mws_events::Events;
 use mws_firehose::Firehose;
@@ -80,6 +81,7 @@ pub struct Mws {
     pub acm: Acm,
     pub kinesis: Kinesis,
     pub firehose: Firehose,
+    pub cloudwatch: CloudWatch,
 }
 
 /// Build the gateway with every service MWS emulates.
@@ -174,6 +176,13 @@ fn build_with_store(config: Config, store: Option<Arc<Store>>) -> Mws {
     events.register_target_sink("kinesis", Arc::new(sinks::KinesisTarget(kinesis.clone())));
     events.register_target_sink("firehose", Arc::new(sinks::FirehoseTarget(firehose.clone())));
     sns.set_delivery_status_logs(logs.clone(), sts.clone());
+    let cloudwatch = CloudWatch::new()
+        .with_sns(sns.clone())
+        .with_lambda(lambda.clone())
+        .with_events(events.clone())
+        .with_logs(logs.clone())
+        .with_kms(kms.clone());
+    logs.set_metric_publisher(Arc::new(links::LogsToCloudWatch(cloudwatch.clone())));
     let mut gateway = Gateway::builder();
     if let Some(store) = store {
         gateway = gateway.store(store);
@@ -205,6 +214,7 @@ fn build_with_store(config: Config, store: Option<Arc<Store>>) -> Mws {
         .service(Arc::new(sns.clone()))
         .service(Arc::new(kinesis.clone()))
         .service(Arc::new(firehose.clone()))
+        .service(Arc::new(cloudwatch.clone()))
         .build();
     Mws {
         gateway,
@@ -222,6 +232,7 @@ fn build_with_store(config: Config, store: Option<Arc<Store>>) -> Mws {
         acm,
         kinesis,
         firehose,
+        cloudwatch,
     }
 }
 

@@ -109,6 +109,9 @@ impl Gen<'_, '_> {
         self.emit_dispatch(&ops, w);
 
         json_codec::emit_invoke(model, &ops, "de", "ser", self.options.validation_error, &mut out);
+        if service.has_trait("smithy.protocols#rpcv2Cbor") {
+            emit_cbor(model, service, &ops, &output_closure, &mut out);
+        }
         let mut codec = JsonCodec::new(model, &self.types);
         out.push_str(&codec.de_module(&input_closure, "de"));
         out.push_str(&codec.ser_module(&output_closure, "ser"));
@@ -258,4 +261,74 @@ impl Gen<'_, '_> {
             }
         }
     }
+}
+
+/// rpcv2Cbor on top of the awsJson document model: a table of the output
+/// shapes (where timestamps, blobs and floats sit, which CBOR encodes
+/// differently from JSON) and `dispatch_cbor`, which runs requests through
+/// `invoke`.
+fn emit_cbor(model: &Model, service: &Shape, ops: &[&Shape], closure: &BTreeSet<String>, w: &mut String) {
+    use mws_smithy::ShapeType;
+    let index: std::collections::BTreeMap<&str, usize> =
+        closure.iter().enumerate().map(|(i, id)| (id.as_str(), i)).collect();
+    let _ = writeln!(
+        w,
+        "\n/// The output shapes, for rpcv2Cbor encoding.\npub static CBOR_SHAPES: &[::mws_proto_cbor::Kind] = &["
+    );
+    for id in closure {
+        let s = model.expect(id);
+        let kind = match s.ty {
+            ShapeType::Structure | ShapeType::Union => {
+                let members: Vec<String> = s
+                    .members
+                    .iter()
+                    .map(|m| format!("({}, {})", rust_str(&m.name), index[m.target.as_str()]))
+                    .collect();
+                format!("Struct(&[{}])", members.join(", "))
+            }
+            ShapeType::List | ShapeType::Set => {
+                format!("List({})", index[s.member.as_ref().expect("list member").target.as_str()])
+            }
+            ShapeType::Map => format!("Map({})", index[s.value.as_ref().expect("map value").target.as_str()]),
+            ShapeType::Timestamp => "Timestamp".into(),
+            ShapeType::Blob => "Blob".into(),
+            ShapeType::Float => "Float".into(),
+            ShapeType::Double => "Double".into(),
+            _ => "Plain".into(),
+        };
+        let _ = writeln!(w, "    ::mws_proto_cbor::Kind::{kind}, // {id}");
+    }
+    let _ = writeln!(w, "];");
+    let _ = writeln!(w, "\n/// The `CBOR_SHAPES` entry of an operation's output; `None` for no output.\npub fn cbor_output(operation: &str) -> Option<usize> {{\n    match operation {{");
+    for op in ops {
+        if let Some(o) = &op.output {
+            let _ = writeln!(w, "        {} => Some({}),", rust_str(op.name()), index[o.as_str()]);
+        }
+    }
+    let _ = writeln!(w, "        _ => None,\n    }}\n}}");
+    let _ = writeln!(
+        w,
+        "\n/// The `{{ServiceName}}` of rpcv2Cbor request paths.\npub const CBOR_SERVICE: &str = {};",
+        rust_str(service.name())
+    );
+    let _ = writeln!(
+        w,
+        r#"
+/// Decode an rpcv2Cbor request, run the matching handler method, and encode the result.
+pub async fn dispatch_cbor<H: Handler + ?Sized>(handler: &H, ctx: &RequestContext, req: &HttpRequest) -> HttpResponse {{
+    let run = async {{
+        let op = ::mws_proto_cbor::operation(CBOR_SERVICE, req)?;
+        let body = ::mws_proto_cbor::decode_body(req.body())?;
+        let out = invoke(handler, ctx, op, body).await?;
+        Ok::<_, ServiceError>((op, out))
+    }};
+    match run.await {{
+        Ok((op, out)) => {{
+            let body = cbor_output(op).map(|root| ::mws_proto_cbor::encode(&out, CBOR_SHAPES, root));
+            ::mws_proto_cbor::response(&ctx.request_id, body)
+        }}
+        Err(e) => ::mws_proto_cbor::error_response(&SERVICE_INFO, &ctx.request_id, &e),
+    }}
+}}"#
+    );
 }

@@ -51,6 +51,9 @@ pub fn query_compatible_codes(model: &Model, errors: &BTreeSet<String>) -> Vec<(
 pub fn emit_errors(model: &Model, errors: &BTreeSet<String>, codes: ErrorCodes, w: &mut String) {
     let _ = writeln!(w, "\n/// Constructors for every error the model declares.\npub mod errors {{");
     let _ = writeln!(w, "    #[allow(unused_imports)]\n    use ::mws_core::{{ErrorFault, ErrorValue, ServiceError}};");
+    // `FooException` is `foo()`, unless the model also has a `Foo` error
+    // (CloudWatch: `ResourceNotFound` and `ResourceNotFoundException`).
+    let names: BTreeSet<&str> = errors.iter().map(|id| model.expect(id).name()).collect();
     for id in errors {
         let s = model.expect(id);
         let (code, status) = match codes {
@@ -59,7 +62,10 @@ pub fn emit_errors(model: &Model, errors: &BTreeSet<String>, codes: ErrorCodes, 
             ErrorCodes::QueryCompatible => (s.name().to_string(), error_code_and_status(s, true).1),
         };
         let fault = if s.get_trait("error").and_then(Value::as_str) == Some("server") { "Server" } else { "Client" };
-        let fn_name = snake_case(s.name().strip_suffix("Exception").unwrap_or(s.name()));
+        let fn_name = match s.name().strip_suffix("Exception") {
+            Some(base) if !names.contains(base) => snake_case(base),
+            _ => snake_case(s.name()),
+        };
         let _ = writeln!(w, "    /// `{code}` (HTTP {status}), from `{id}`.");
         let _ = writeln!(w, "    pub const {}: &str = {};", fn_name.to_ascii_uppercase(), rust_str(&code));
         let _ = writeln!(

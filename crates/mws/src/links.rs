@@ -478,3 +478,24 @@ impl mws_lambda::StreamSource for LambdaFromKinesis {
         })
     }
 }
+
+/// CloudWatch Logs metric filters publish their metrics into CloudWatch.
+pub struct LogsToCloudWatch(pub mws_cloudwatch::CloudWatch);
+
+impl mws_logs::MetricPublisher for LogsToCloudWatch {
+    fn publish(&self, metrics: Vec<mws_logs::FilterMetric>) {
+        for m in metrics {
+            let Some(timestamp) = chrono::DateTime::from_timestamp_millis(m.timestamp) else { continue };
+            self.0.put_metric_as_service(mws_cloudwatch::ServiceMetric {
+                account: m.account,
+                region: m.region,
+                namespace: m.namespace,
+                metric_name: m.metric_name,
+                dimensions: m.dimensions,
+                unit: m.unit,
+                timestamp,
+                values: vec![(m.value, 1.0)],
+            });
+        }
+    }
+}

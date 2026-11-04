@@ -123,6 +123,7 @@ impl Logs {
             self.store_events(&g, stream, events, now_ms).map_err(|e| ServiceLogError::Rejected(e.message))?;
         self.tails.publish(&g, stream, &accepted.stored);
         self.forward(None, &g, stream, &accepted.stored);
+        self.publish_metrics(&g, &accepted.stored);
         Ok(())
     }
 }

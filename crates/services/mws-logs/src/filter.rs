@@ -577,7 +577,7 @@ fn glob(pattern: &str, text: &str) -> bool {
     Regex::new(&re).is_ok_and(|r| r.is_match(text))
 }
 
-fn scalar_text(v: &Value) -> String {
+pub(crate) fn scalar_text(v: &Value) -> String {
     match v {
         Value::String(s) => s.clone(),
         other => other.to_string(),
