@@ -9,8 +9,8 @@ use mws_core::{ConditionContext, RequestContext, ServiceError};
 
 use crate::generated::{errors, types};
 use crate::names::{
-    authorize, authorize_stream, invalid_argument, not_active, now_ms, request_tag_context, stream_arn, valid_name,
-    validate_tags, StreamRef,
+    authorize, authorize_account, authorize_stream, invalid_argument, not_active, now_ms, request_tag_context,
+    stream_arn, valid_name, validate_tags, StreamRef,
 };
 use crate::shards::{new_shard, rescale, sequence_number, uniform_ranges};
 use crate::state::{State, Stream, TRANSITION_MS};
@@ -21,6 +21,11 @@ const MAX_RETENTION: i32 = 8760;
 const ON_DEMAND_SHARDS: i32 = 4;
 const ON_DEMAND_STREAM_LIMIT: i32 = 50;
 const DEFAULT_MAX_RECORD_KIB: i32 = 1024;
+const DAY_MS: i64 = 86_400_000;
+/// `UpdateShardCount` calls per stream per rolling 24 hours.
+const MAX_SHARD_COUNT_UPDATES: usize = 10;
+/// `UpdateShardCount` cannot scale a stream beyond this many shards.
+const MAX_STREAM_SHARDS: i32 = 10_000;
 /// Open `NextToken`s for `ListShards` and `ListStreams` last this long.
 const TOKEN_TTL_MS: i64 = 300_000;
 
@@ -302,8 +307,7 @@ impl Kinesis {
         input: types::ListStreamsInput,
     ) -> Result<types::ListStreamsOutput, ServiceError> {
         let account = ctx.caller.account_id.clone();
-        let any = stream_arn(&ctx.partition, &ctx.region, &account, "*");
-        authorize(ctx, "kinesis:ListStreams", &any, None, &BTreeMap::new(), ConditionContext::new())?;
+        authorize_account(ctx, "kinesis:ListStreams")?;
         if input.next_token.is_some() && input.exclusive_start_stream_name.is_some() {
             return Err(invalid_argument("NextToken and ExclusiveStartStreamName cannot be provided together."));
         }
@@ -414,7 +418,13 @@ impl Kinesis {
                         let a = id.strip_prefix("shardId-").and_then(|n| n.parse::<i64>().ok()).unwrap_or(-1);
                         idx > a
                     }
-                    "AT_TRIM_HORIZON" | "FROM_TRIM_HORIZON" => true,
+                    // The shards open at the trim horizon, which closed
+                    // shards past retention have already left.
+                    "AT_TRIM_HORIZON" => {
+                        let t = (now - i64::from(s.retention_hours) * 3_600_000).max(s.created_at);
+                        sh.created_at <= t && sh.closed_at.is_none_or(|c| c > t)
+                    }
+                    "FROM_TRIM_HORIZON" => true,
                     "AT_LATEST" => sh.open(),
                     "AT_TIMESTAMP" | "FROM_TIMESTAMP" => {
                         let Some(t) = ts(f) else {
@@ -516,6 +526,18 @@ impl Kinesis {
             )));
         }
         let current = s.open_shards().count() as i32;
+        s.shard_count_updates.retain(|t| t + DAY_MS > now);
+        if s.shard_count_updates.len() >= MAX_SHARD_COUNT_UPDATES {
+            return Err(errors::limit_exceeded(format!(
+                "UpdateShardCount cannot be called more than {MAX_SHARD_COUNT_UPDATES} times in a rolling 24-hour period for stream {} under account {}.",
+                s.name, s.account
+            )));
+        }
+        if target > MAX_STREAM_SHARDS {
+            return Err(errors::limit_exceeded(format!(
+                "UpdateShardCount cannot scale up to more than {MAX_STREAM_SHARDS} shards in a stream. Target shard count: {target}"
+            )));
+        }
         if target > current * 2 {
             return Err(errors::limit_exceeded(format!(
                 "UpdateShardCount cannot scale up over double your current open shard count. Current open shard count: {current} Target shard count: {target}"
@@ -535,6 +557,7 @@ impl Kinesis {
         if target != current {
             rescale(s, target, now);
         }
+        s.shard_count_updates.push(now);
         transition(s, "UPDATING", now);
         Ok(types::UpdateShardCountOutput {
             stream_name: Some(s.name.clone()),
@@ -558,8 +581,9 @@ impl Kinesis {
         if s.mode == mode {
             return Err(invalid_argument(format!("Stream {} is already in {mode} mode.", s.name)));
         }
-        // Capacity mode can change twice within 24 hours.
-        if s.last_mode_change.is_some_and(|t| t + 86_400_000 > now) && s.created_at + 86_400_000 > now {
+        // Capacity mode can change twice per rolling 24 hours.
+        s.mode_changes.retain(|t| t + DAY_MS > now);
+        if s.mode_changes.len() >= 2 {
             return Err(errors::limit_exceeded(format!(
                 "Stream {} under account {} has had its capacity mode changed too many times in the last 24 hours.",
                 s.name, s.account
@@ -569,7 +593,7 @@ impl Kinesis {
             return Err(invalid_argument("Warm throughput is only supported for streams in ON_DEMAND mode."));
         }
         s.mode = mode.clone();
-        s.last_mode_change = Some(now);
+        s.mode_changes.push(now);
         if mode == "ON_DEMAND" {
             s.warm_throughput_mibps = input.warm_throughput_mi_bps;
         } else {
@@ -933,8 +957,7 @@ impl Kinesis {
         _input: types::DescribeLimitsInput,
     ) -> Result<types::DescribeLimitsOutput, ServiceError> {
         let account = ctx.caller.account_id.clone();
-        let any = stream_arn(&ctx.partition, &ctx.region, &account, "*");
-        authorize(ctx, "kinesis:DescribeLimits", &any, None, &BTreeMap::new(), ConditionContext::new())?;
+        authorize_account(ctx, "kinesis:DescribeLimits")?;
         let st = self.settled(ctx);
         let on_demand = st
             .streams

@@ -11,6 +11,7 @@ mod firehose;
 mod iam;
 mod iam_advanced;
 mod kinesis;
+mod kinesis_parity;
 mod kinesis_targets;
 mod kms;
 mod lambda;

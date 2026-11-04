@@ -136,7 +136,10 @@ pub struct Stream {
     pub distribution: String,
     /// For `AUTO` distribution: the next shard round-robin picks.
     pub round_robin: u64,
-    pub last_mode_change: Option<i64>,
+    /// When the capacity mode changed (twice per 24 hours at most).
+    pub mode_changes: Vec<i64>,
+    /// When `UpdateShardCount` was called (ten per 24 hours at most).
+    pub shard_count_updates: Vec<i64>,
 }
 
 impl Stream {
