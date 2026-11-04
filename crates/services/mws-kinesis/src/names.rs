@@ -150,6 +150,13 @@ pub fn authorize(
     ctx.authorize_with_resource_policy(action, resource, policy, extra).map_err(kinesis_denial)
 }
 
+/// Authorize an action that names no resource (`ListStreams`,
+/// `DescribeLimits`, account settings): IAM sees the resource `*`, so only
+/// statements with `"Resource": "*"` (or a wildcard matching it) grant it.
+pub fn authorize_account(ctx: &RequestContext, action: &str) -> Result<(), ServiceError> {
+    ctx.authorize(action, "*", ConditionContext::new()).map_err(kinesis_denial)
+}
+
 /// Authorize `action` on a stream, as the request's caller.
 pub fn authorize_stream(
     ctx: &RequestContext,
