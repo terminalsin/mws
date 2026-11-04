@@ -20,6 +20,10 @@ pub struct DomainValidation {
     pub requested_method: Option<String>,
     #[serde(default)]
     pub requested_status: Option<String>,
+    /// The domain's validation during a managed renewal that needs it
+    /// again (`PENDING_VALIDATION` until approved or found, then `SUCCESS`).
+    #[serde(default)]
+    pub renewal_status: Option<String>,
 }
 
 /// A `DOMAIN_VALIDATION_METHOD` update in progress or finished.
@@ -85,6 +89,9 @@ pub struct Certificate {
     /// sent (they are daily).
     #[serde(default)]
     pub expiry_event_at: Option<DateTime<Utc>>,
+    /// When the `DaysToExpiry` metric was last published (daily).
+    #[serde(default)]
+    pub metric_at: Option<DateTime<Utc>>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -196,4 +203,7 @@ pub struct State {
     /// Nonces handed out and not yet used. Not worth keeping across restarts.
     #[serde(skip)]
     pub nonces: HashSet<String>,
+    /// EventBridge events waiting for the clock source to collect them.
+    #[serde(skip)]
+    pub pending_events: Vec<crate::events::AcmEvent>,
 }

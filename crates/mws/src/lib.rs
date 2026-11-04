@@ -160,10 +160,6 @@ fn build_with_store(config: Config, store: Option<Arc<Store>>) -> Mws {
     s3.add_notification_destination(Arc::new(links::S3ToSqs(sqs.clone())));
     events.register_target_sink("sns", Arc::new(sinks::SnsTarget(sns.clone())));
     s3.set_eventbridge_sink(Arc::new(sinks::S3ToEvents(events.clone())));
-    events.register_clock_source(Arc::new(sinks::AcmExpiryEvents {
-        acm: acm.clone(),
-        partition: config.iam.partition.clone(),
-    }));
     events.register_clock_source(Arc::new(sinks::SsmPolicyEvents {
         ssm: ssm.clone(),
         partition: config.iam.partition.clone(),
@@ -182,6 +178,11 @@ fn build_with_store(config: Config, store: Option<Arc<Store>>) -> Mws {
         .with_events(events.clone())
         .with_logs(logs.clone())
         .with_kms(kms.clone());
+    events.register_clock_source(Arc::new(sinks::AcmEvents {
+        acm: acm.clone(),
+        cloudwatch: cloudwatch.clone(),
+        partition: config.iam.partition.clone(),
+    }));
     logs.set_metric_publisher(Arc::new(links::LogsToCloudWatch(cloudwatch.clone())));
     cloudwatch.set_metric_stream_delivery(Arc::new(links::MetricStreamsToFirehose {
         firehose: firehose.clone(),
