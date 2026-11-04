@@ -414,7 +414,6 @@ impl CloudWatch {
         if family
             && (input.alarm_names.is_some()
                 || input.alarm_name_prefix.is_some()
-                || input.alarm_types.is_some()
                 || input.state_value.is_some()
                 || input.action_prefix.is_some())
         {
@@ -425,8 +424,9 @@ impl CloudWatch {
             )));
         }
         // Children are metric and composite alarms, parents composite
-        // alarms, whatever AlarmTypes would default to.
-        let types_wanted = if family {
+        // alarms, whatever AlarmTypes would default to. (AlarmTypes is
+        // tolerated here, as SDK callers commonly pass it.)
+        let types_wanted = if family && input.alarm_types.is_none() {
             vec!["MetricAlarm".to_string(), "CompositeAlarm".to_string()]
         } else {
             input.alarm_types.clone().unwrap_or_else(|| vec!["MetricAlarm".to_string()])

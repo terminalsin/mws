@@ -172,7 +172,7 @@ async fn composite_family_history_and_alarms_for_metric() {
     let err = cw
         .describe_alarms()
         .parents_of_alarm_name("cpu")
-        .alarm_types(AlarmType::CompositeAlarm)
+        .state_value(StateValue::Alarm)
         .send()
         .await
         .unwrap_err()
