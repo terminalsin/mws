@@ -5,6 +5,7 @@ use mws_core::{ConditionContext, RequestContext, ServiceError};
 use rand::Rng;
 
 use crate::generated::{errors, types};
+use crate::monitor::point;
 use crate::names::{authorize, invalid_argument, not_found, now_ms, StreamRef};
 use crate::state::{Buffered, DeliveryStream, State};
 use crate::Firehose;
@@ -55,9 +56,25 @@ impl Firehose {
         authorize(ctx, &st, "PutRecord", &r, ConditionContext::new())?;
         let s = writable(&mut st, &r)?;
         let id = record_id();
+        let bytes = input.record.data.len() as f64;
         let rec = Buffered { record_id: id.clone(), data: input.record.data, arrival: now_ms(ctx), kinesis: None };
         buffer(s, vec![rec]);
-        Ok(types::PutRecordOutput { record_id: id, encrypted: encrypted(s) })
+        let out = types::PutRecordOutput { record_id: id, encrypted: encrypted(s) };
+        let (account, name) = (s.account.clone(), s.name.clone());
+        drop(st);
+        self.metrics(
+            ctx,
+            &account,
+            &name,
+            vec![
+                point("IncomingBytes", "Bytes", bytes),
+                point("IncomingRecords", "Count", 1.0),
+                point("IncomingPutRequests", "Count", 1.0),
+                point("PutRecord.Bytes", "Bytes", bytes),
+                point("PutRecord.Requests", "Count", 1.0),
+            ],
+        );
+        Ok(out)
     }
 
     pub fn put_record_batch(
@@ -88,7 +105,25 @@ impl Firehose {
             });
             buffered.push(Buffered { record_id: id, data: rec.data, arrival: now, kinesis: None });
         }
+        let count = buffered.len() as f64;
         buffer(s, buffered);
-        Ok(types::PutRecordBatchOutput { failed_put_count: 0, encrypted: encrypted(s), request_responses: responses })
+        let out =
+            types::PutRecordBatchOutput { failed_put_count: 0, encrypted: encrypted(s), request_responses: responses };
+        let (account, name) = (s.account.clone(), s.name.clone());
+        drop(st);
+        self.metrics(
+            ctx,
+            &account,
+            &name,
+            vec![
+                point("IncomingBytes", "Bytes", total as f64),
+                point("IncomingRecords", "Count", count),
+                point("IncomingPutRequests", "Count", 1.0),
+                point("PutRecordBatch.Bytes", "Bytes", total as f64),
+                point("PutRecordBatch.Records", "Count", count),
+                point("PutRecordBatch.Requests", "Count", 1.0),
+            ],
+        );
+        Ok(out)
     }
 }

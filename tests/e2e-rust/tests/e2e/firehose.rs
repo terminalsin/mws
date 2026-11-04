@@ -23,16 +23,16 @@ const ACCOUNT: &str = "123456789012";
 
 const TRUST: &str = r#"{"Version":"2012-10-17","Statement":[{"Effect":"Allow","Principal":{"Service":"firehose.amazonaws.com"},"Action":"sts:AssumeRole"}]}"#;
 
-fn code<E: ProvideErrorMetadata>(e: &E) -> String {
+pub(crate) fn code<E: ProvideErrorMetadata>(e: &E) -> String {
     e.code().unwrap_or_default().to_string()
 }
 
-fn stream_arn(name: &str) -> String {
+pub(crate) fn stream_arn(name: &str) -> String {
     format!("arn:aws:firehose:us-east-1:{ACCOUNT}:deliverystream/{name}")
 }
 
 /// A delivery role allowed `actions`, and a bucket to deliver to.
-async fn role_and_bucket(mws: &Mws, role: &str, bucket: &str, actions: &str) -> String {
+pub(crate) async fn role_and_bucket(mws: &Mws, role: &str, bucket: &str, actions: &str) -> String {
     let cfg = mws.root_sdk_config().await;
     let iam = aws_sdk_iam::Client::new(&cfg);
     let created = iam.create_role().role_name(role).assume_role_policy_document(TRUST).send().await.unwrap();
@@ -43,7 +43,7 @@ async fn role_and_bucket(mws: &Mws, role: &str, bucket: &str, actions: &str) -> 
     created.role().unwrap().arn().to_string()
 }
 
-async fn wait_status(f: &Client, name: &str, status: DeliveryStreamStatus) {
+pub(crate) async fn wait_status(f: &Client, name: &str, status: DeliveryStreamStatus) {
     for _ in 0..100 {
         let d = f.describe_delivery_stream().delivery_stream_name(name).send().await.unwrap();
         if d.delivery_stream_description().unwrap().delivery_stream_status() == &status {
@@ -69,7 +69,7 @@ fn s3_config(role: &str, bucket: &str) -> ExtendedS3DestinationConfiguration {
 
 /// Wait until the bucket holds `n` objects under `prefix`; returns their
 /// keys and contents.
-async fn objects(mws: &Mws, f: &Client, bucket: &str, prefix: &str, n: usize) -> Vec<(String, Vec<u8>)> {
+pub(crate) async fn objects(mws: &Mws, f: &Client, bucket: &str, prefix: &str, n: usize) -> Vec<(String, Vec<u8>)> {
     let s3 = Mws::s3(&mws.root_sdk_config().await);
     for _ in 0..100 {
         // Any Firehose request carries the emulated clock to deliveries.
@@ -383,13 +383,19 @@ async fn delivery_role_without_access_writes_nothing() {
 
 /// An HTTPS listener with a self-signed `localhost` certificate that MWS
 /// trusts (through `SSL_CERT_FILE`): Firehose only delivers over HTTPS.
-async fn https_listener() -> (tokio::net::TcpListener, tokio_rustls::TlsAcceptor) {
-    let cert = rcgen::generate_simple_self_signed(vec!["localhost".to_string()]).unwrap();
-    let dir = std::env::temp_dir().join(format!("mws-firehose-{}", std::process::id()));
-    std::fs::create_dir_all(&dir).unwrap();
-    let pem = dir.join("ca.pem");
-    std::fs::write(&pem, cert.cert.pem()).unwrap();
-    std::env::set_var("SSL_CERT_FILE", &pem);
+pub(crate) async fn https_listener() -> (tokio::net::TcpListener, tokio_rustls::TlsAcceptor) {
+    // One certificate for every test in the process: SSL_CERT_FILE is
+    // process-wide.
+    static CERT: std::sync::OnceLock<rcgen::CertifiedKey> = std::sync::OnceLock::new();
+    let cert = CERT.get_or_init(|| {
+        let cert = rcgen::generate_simple_self_signed(vec!["localhost".to_string()]).unwrap();
+        let dir = std::env::temp_dir().join(format!("mws-firehose-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let pem = dir.join("ca.pem");
+        std::fs::write(&pem, cert.cert.pem()).unwrap();
+        std::env::set_var("SSL_CERT_FILE", &pem);
+        cert
+    });
     let provider = std::sync::Arc::new(rustls::crypto::aws_lc_rs::default_provider());
     let tls = rustls::ServerConfig::builder_with_provider(provider)
         .with_safe_default_protocol_versions()
@@ -424,7 +430,14 @@ async fn one_request(listener: tokio::net::TcpListener, acceptor: tokio_rustls::
                 buf.extend_from_slice(&chunk[..n]);
             }
             let body = buf[end + 4..end + 4 + len].to_vec();
-            let reply = r#"{"requestId":"x","timestamp":1}"#;
+            // Firehose requires the response to echo the request id.
+            let id = head
+                .lines()
+                .find_map(|l| {
+                    l.to_ascii_lowercase().strip_prefix("x-amz-firehose-request-id:").map(|v| v.trim().to_string())
+                })
+                .unwrap_or_default();
+            let reply = format!(r#"{{"requestId":"{id}","timestamp":1}}"#);
             let response = format!(
                 "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{reply}",
                 reply.len()

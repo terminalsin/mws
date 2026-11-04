@@ -8,6 +8,7 @@ mod acmpca;
 mod cloudwatch;
 mod events;
 mod firehose;
+mod firehose_monitoring;
 mod iam;
 mod iam_advanced;
 mod kinesis;

@@ -17,6 +17,14 @@
 //!   requests; Redshift: the intermediate S3 objects. Snowflake and
 //!   Iceberg tables are not emulated: their records go to the S3 backup.
 //!
+//! Data format conversion needs the AWS Glue Data Catalog, which MWS does
+//! not have: records go to the `format-conversion-failed` error output, as
+//! they do in AWS when the schema's table cannot be found.
+//!
+//! Delivery errors go to the destination's CloudWatch Logs log stream when
+//! error logging is enabled, `AWS/Firehose` metrics are published to
+//! CloudWatch, and destination credentials can come from Secrets Manager.
+//!
 //! Data transformation runs the configured processors: Lambda (invoked
 //! with the processor's role), decompression, CloudWatch Logs message
 //! extraction, record de-aggregation, JQ-style metadata extraction for
@@ -32,6 +40,7 @@ mod config;
 mod deliver;
 mod handler;
 mod http;
+mod monitor;
 mod names;
 mod output;
 mod processing;
@@ -57,6 +66,9 @@ pub(crate) struct Inner {
     kms: OnceLock<mws_kms::Kms>,
     lambda: OnceLock<mws_lambda::Lambda>,
     kinesis: OnceLock<mws_kinesis::Kinesis>,
+    logs: OnceLock<mws_logs::Logs>,
+    cloudwatch: OnceLock<mws_cloudwatch::CloudWatch>,
+    secrets_manager: OnceLock<mws_secretsmanager::SecretsManager>,
     /// The last request's context and clock offset, for background
     /// deliveries.
     template: Mutex<Option<(RequestContext, chrono::Duration)>>,
@@ -104,6 +116,22 @@ impl Firehose {
     pub fn with_kinesis(self, kinesis: mws_kinesis::Kinesis) -> Self {
         let _ = self.inner.kinesis.set(kinesis);
         self
+    }
+
+    /// Delivery errors are logged here, when a destination enables it.
+    pub fn set_logs(&self, logs: mws_logs::Logs) {
+        let _ = self.inner.logs.set(logs);
+    }
+
+    /// `AWS/Firehose` metrics are published here.
+    pub fn set_cloudwatch(&self, cloudwatch: mws_cloudwatch::CloudWatch) {
+        let _ = self.inner.cloudwatch.set(cloudwatch);
+    }
+
+    /// Destination credentials (`SecretsManagerConfiguration`) are read
+    /// from here.
+    pub fn set_secrets_manager(&self, secrets_manager: mws_secretsmanager::SecretsManager) {
+        let _ = self.inner.secrets_manager.set(secrets_manager);
     }
 
     fn lock(&self) -> MutexGuard<'_, State> {
