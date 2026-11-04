@@ -1206,6 +1206,60 @@ async fn ssm_parameter_policies_send_events_on_the_emulated_clock() {
 }
 
 #[tokio::test]
+async fn ssm_parameter_changes_send_parameter_store_change_events() {
+    let mws = Mws::start().await;
+    let cfg = mws.root_sdk_config().await;
+    let eb = Client::new(&cfg);
+    let sqs = aws_sdk_sqs::Client::new(&cfg);
+    let ssm = aws_sdk_ssm::Client::new(&cfg);
+    let (url, queue) = open_queue(&sqs, "ssm-changes").await;
+    eb.put_rule()
+        .name("ssm-changes")
+        .event_pattern(r#"{"source":["aws.ssm"],"detail-type":["Parameter Store Change"]}"#)
+        .send()
+        .await
+        .unwrap();
+    eb.put_targets().rule("ssm-changes").targets(target("q", &queue)).send().await.unwrap();
+
+    use aws_sdk_ssm::types::ParameterType;
+    ssm.put_parameter()
+        .name("/app/flag")
+        .value("on")
+        .r#type(ParameterType::String)
+        .description("Feature flag")
+        .send()
+        .await
+        .unwrap();
+    ssm.put_parameter().name("/app/flag").value("off").overwrite(true).send().await.unwrap();
+    ssm.label_parameter_version().name("/app/flag").labels("prod").send().await.unwrap();
+    ssm.delete_parameter().name("/app/flag").send().await.unwrap();
+
+    let mut seen = Vec::new();
+    while seen.len() < 4 {
+        let messages = eventually(10, || async {
+            let r = sqs.receive_message().queue_url(&url).max_number_of_messages(10).send().await.unwrap();
+            r.messages.filter(|m| !m.is_empty())
+        })
+        .await;
+        for m in messages {
+            sqs.delete_message().queue_url(&url).receipt_handle(m.receipt_handle().unwrap()).send().await.unwrap();
+            seen.push(serde_json::from_str::<serde_json::Value>(m.body().unwrap()).unwrap());
+        }
+    }
+    let mut ops: Vec<_> = seen.iter().map(|e| e["detail"]["operation"].as_str().unwrap().to_string()).collect();
+    ops.sort();
+    assert_eq!(ops, ["Create", "Delete", "LabelParameterVersion", "Update"]);
+    let create = seen.iter().find(|e| e["detail"]["operation"] == "Create").unwrap();
+    assert_eq!(create["source"], "aws.ssm");
+    assert_eq!(create["account"], ACCOUNT);
+    assert_eq!(create["resources"][0], format!("arn:aws:ssm:us-east-1:{ACCOUNT}:parameter/app/flag"));
+    assert_eq!(create["detail"]["name"], "/app/flag");
+    assert_eq!(create["detail"]["type"], "String");
+    assert_eq!(create["detail"]["description"], "Feature flag");
+    mws.stop().await;
+}
+
+#[tokio::test]
 async fn acm_sends_approaching_expiration_events_daily() {
     let mws = Mws::start().await;
     let cfg = mws.root_sdk_config().await;

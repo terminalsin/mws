@@ -125,8 +125,10 @@ async fn parameters_versions_labels_and_history() {
     let deleted = ssm.delete_parameters().names("/a1").names("/zzz").send().await.unwrap();
     assert_eq!(deleted.deleted_parameters(), ["/a1"]);
     assert_eq!(deleted.invalid_parameters(), ["/zzz"]);
-    let err = ssm.get_parameter().name("/missing").send().await.unwrap_err();
-    assert_eq!(code(err.into_service_error()), "ParameterNotFound");
+    let err = ssm.get_parameter().name("/missing").send().await.unwrap_err().into_service_error();
+    // AWS's ParameterNotFound body is just `{"__type":"ParameterNotFound"}`.
+    assert_eq!(err.message(), None);
+    assert_eq!(code(err), "ParameterNotFound");
 }
 
 #[tokio::test]
