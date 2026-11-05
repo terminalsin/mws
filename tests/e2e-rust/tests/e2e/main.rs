@@ -20,6 +20,8 @@ mod elb_logs;
 mod elbv2;
 mod elbv2_api;
 mod elbv2_auth;
+mod ecr;
+mod ecr_public;
 mod events;
 mod firehose;
 mod firehose_monitoring;

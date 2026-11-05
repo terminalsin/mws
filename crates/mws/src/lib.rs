@@ -18,6 +18,8 @@ use mws_core::Environment;
 use mws_ec2::{BackendChoice, Ec2};
 use mws_eks::Eks;
 use mws_elb::{Elb, ElbConfig};
+use mws_ecr::Ecr;
+use mws_ecr_public::EcrPublic;
 use mws_events::Events;
 use mws_firehose::Firehose;
 use mws_globalaccelerator::GlobalAccelerator;
@@ -77,6 +79,15 @@ pub struct Config {
     /// The host address database ports are published on (`MWS_RDS_BIND`,
     /// default `127.0.0.1`).
     pub rds_bind: Option<String>,
+    /// The registry host ECR repository URIs name
+    /// (`MWS_ECR_REGISTRY_HOST`, e.g. `localhost:4566`; `{account}` and
+    /// `{region}` are replaced). AWS's `<account>.dkr.ecr.<region>.amazonaws.com`
+    /// when unset.
+    pub ecr_registry_host: Option<String>,
+    /// The registry host (and path) ECR Public repository URIs name
+    /// (`MWS_ECR_PUBLIC_REGISTRY_HOST`, e.g. `localhost:4566/public.ecr.aws`);
+    /// `public.ecr.aws` when unset.
+    pub ecr_public_registry_host: Option<String>,
 }
 
 impl Config {
@@ -123,6 +134,8 @@ impl Config {
             rds_backend,
             rds_docker_cli: var("MWS_RDS_DOCKER").or_else(|| var("MWS_EC2_DOCKER")),
             rds_bind: var("MWS_RDS_BIND"),
+            ecr_registry_host: std::env::var("MWS_ECR_REGISTRY_HOST").ok().filter(|v| !v.is_empty()),
+            ecr_public_registry_host: std::env::var("MWS_ECR_PUBLIC_REGISTRY_HOST").ok().filter(|v| !v.is_empty()),
         }
     }
 }
@@ -160,6 +173,8 @@ pub struct Mws {
     pub ses: Ses,
     pub rds: Rds,
     pub eks: Eks,
+    pub ecr: Ecr,
+    pub ecr_public: EcrPublic,
 }
 
 /// Build the gateway with every service MWS emulates.
@@ -343,6 +358,16 @@ fn build_with_store(config: Config, store: Option<Arc<Store>>) -> Mws {
         iam: iam.clone(),
         autoscaling: autoscaling.clone(),
     }));
+    let ecr = Ecr::new().with_kms(kms.clone());
+    ecr.exclude_registry_prefix(mws_ecr_public::REGISTRY_PATH_PREFIX);
+    let ecr_public = EcrPublic::new();
+    if let Some(host) = &config.ecr_public_registry_host {
+        ecr_public.set_registry_host(host.clone());
+    }
+    ecr.set_event_sink(Arc::new(sinks::EcrToEvents(events.clone())));
+    if let Some(host) = &config.ecr_registry_host {
+        ecr.set_registry_host(host.clone());
+    }
     let mut gateway = Gateway::builder();
     if let Some(store) = store {
         gateway = gateway.store(store);
@@ -396,6 +421,8 @@ fn build_with_store(config: Config, store: Option<Arc<Store>>) -> Mws {
         .service(Arc::new(ses.v2()))
         .service(Arc::new(ses.clone()))
         .service(Arc::new(eks.clone()))
+        .service(Arc::new(ecr.clone()))
+        .service(Arc::new(ecr_public.clone()))
         .build();
     Mws {
         gateway,
@@ -428,6 +455,8 @@ fn build_with_store(config: Config, store: Option<Arc<Store>>) -> Mws {
         ses,
         rds,
         eks,
+        ecr,
+        ecr_public,
     }
 }
 

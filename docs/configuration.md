@@ -46,6 +46,8 @@ See [State, scenarios and snapshots](state.md) for how the two interact.
 | `MWS_RDS_BACKEND` | `auto` | How RDS databases run. `docker` runs each DB instance (or Aurora cluster) as a PostgreSQL, MySQL or MariaDB container, `metadata` runs nothing (resources only change state), and `auto` uses Docker when a daemon answers and `metadata` otherwise. |
 | `MWS_RDS_DOCKER` | `MWS_EC2_DOCKER`, then `docker` | The Docker-compatible CLI the RDS backend drives. |
 | `MWS_RDS_BIND` | `127.0.0.1` | The host address database ports are published on. Endpoints report this address and the published port. |
+| `MWS_ECR_REGISTRY_HOST` | unset (AWS's `<account>.dkr.ecr.<region>.amazonaws.com`) | The registry host ECR repository URIs and `proxyEndpoint` name, such as `localhost:4566`, so `docker push $(repositoryUri)` reaches MWS. `{account}` and `{region}` are replaced. |
+| `MWS_ECR_PUBLIC_REGISTRY_HOST` | unset (`public.ecr.aws`) | The registry host and path ECR Public repository URIs name, such as `localhost:4566/public.ecr.aws`. |
 
 EC2 instances reach the instance metadata service and the AWS endpoint
 through the host, so when using the Docker backend MWS must listen on an
