@@ -1,6 +1,6 @@
 # Services
 
-MWS emulates 22 AWS services. Each is generated from AWS's official Smithy
+MWS emulates 29 AWS services. Each is generated from AWS's official Smithy
 model, so every operation in the model is routed and validated; operations
 outside the implemented set answer `NotImplemented`. Each service's page lists
 its features in a table: ✅ supported, 🟡 partial, ❌ not supported yet.
@@ -27,7 +27,10 @@ Every service shares the same foundations:
 | [Organizations](organizations.md) | 63 / 63 | Organizations, OUs, real member accounts, SCPs and RCPs enforced on every call |
 | [KMS](kms.md) | 56 / 56 | Symmetric, asymmetric, HMAC and post-quantum keys with real cryptography, key policies, grants, rotation |
 | [Private CA](acm-pca.md) | 23 / 23 | Root and subordinate CAs issuing real X.509 certificates, CRLs in S3, OCSP, audit reports |
+| [Connector for SCEP](pca-connector-scep.md) | 12 / 12 | Real SCEP endpoints enrolling devices with certificates from a Private CA shared through RAM |
 | [Certificate Manager](acm.md) | 40 / 40 | Public certificates with real DNS validation through Route 53, private certificates, imports, expiry events |
+| [Resource Access Manager](ram.md) | 35 / 35 | Shares that grant real cross-account access to Private CAs, invitations, organization sharing, managed permissions |
+| [Security Hub](securityhub.md) | 126 / 126 | ASFF findings with every filter, workflow and history, insights, automation rules, standards and controls, members and Organizations delegated administration, central configuration, the V2 OCSF API with exports to S3 |
 | [Secrets Manager](secretsmanager.md) | 23 / 23 | KMS-sealed secret versions, staging labels, rotation that runs your Lambda function, replicas |
 
 ## Storage
@@ -42,9 +45,16 @@ Every service shares the same foundations:
 | Service | Operations | What's emulated |
 | --- | --- | --- |
 | [Lambda](lambda.md) | 68 / 88 | Python, Node.js and custom runtimes that really run, SQS and Kinesis event sources, destinations, function URLs |
-| [EC2 and VPC](ec2.md) | 120 / 811 | Default VPCs, subnets, security groups, NAT gateways and VPC endpoints that filter and route real Docker traffic, AMIs, instances as Docker containers, instance metadata and profiles |
+| [Global Accelerator](globalaccelerator.md) | 56 / 56 | Static anycast IPs, listeners, endpoint groups with health from EC2 and ELB, custom routing port mappings, BYOIP, cross-account attachments |
+| [EC2 and VPC](ec2.md) | 164 / 811 | Default VPCs, subnets, security groups, NAT gateways and VPC endpoints that filter and route real Docker traffic, AMIs, instances as Docker containers, instance metadata and profiles |
+| [EC2 Auto Scaling](autoscaling.md) | 68 / 68 | Groups that launch, replace and terminate real EC2 instances, lifecycle hooks, suspended processes, simple, step and target tracking policies driven by CloudWatch alarms, schedules, instance refreshes, warm pools, load balancer registration |
+| [EC2 Image Builder](imagebuilder.md) | 77 / 77 | Components, recipes and pipelines whose builds launch EC2 instances, run AWSTOE components and produce real AMIs, distribution, lifecycle policies |
+| [Elastic Load Balancing](elb.md) | 80 / 80 | Application, Network and Classic Load Balancers whose listeners really proxy: rules, stickiness, HTTPS with ACM certificates, mutual TLS, Lambda targets, health checks, metrics |
+| [RDS and Aurora](rds.md) | 103 / 168 | PostgreSQL, MySQL and MariaDB instances and Aurora clusters that really run in Docker, snapshots and restores, read replicas, global databases, managed master passwords |
+| [EKS](eks.md) | 70 / 70 | Clusters in your VPC, managed node groups as Auto Scaling groups, add-ons, access entries, Pod Identity, OIDC providers |
 | [ECS](ecs.md) | 88 / 88 | Clusters, tasks as Docker containers with awsvpc interfaces, services with rolling deployments and circuit breakers, task metadata, secrets and awslogs |
 | [Route 53](route53.md) | 71 / 71 | Public and private hosted zones, all routing policies, health checks, DNSSEC key management, an optional real DNS responder |
+| [Amplify Hosting](amplify.md) | 37 / 37 | Apps and branches whose deployments are really served: manual and S3 deploys, Git builds, rewrites, basic auth, custom domains |
 
 ## Application integration
 
@@ -52,6 +62,7 @@ Every service shares the same foundations:
 | --- | --- | --- |
 | [SQS](sqs.md) | 23 / 23 | Standard and FIFO queues, visibility timeouts, long polling, dead-letter queues, redrive, SSE |
 | [SNS](sns.md) | 42 / 42 | Topics, filter policies and signed deliveries to SQS, Lambda, HTTP and more, FIFO topics |
+| [SES v1 and v2](ses.md) | 187 / 187 | Verified identities (Route 53 DKIM), the sandbox, an outbox, templates, event destinations, receipt rules fed by a local SMTP listener |
 | [EventBridge](events.md) | 57 / 57 | Buses, the full event pattern language, schedules, archives and replays, API destinations |
 | [SSM Parameter Store](ssm.md) | 19 / 152 | Versioned and labelled parameters, KMS SecureStrings, parameter policies, public parameters |
 
@@ -93,8 +104,35 @@ with the permissions AWS would use:
 - S3, SQS, SNS, Secrets Manager, SSM and others encrypt with KMS keys.
 - ACM validates certificates through Route 53 and issues private certificates
   from Private CA, which writes its CRLs into S3.
+- RAM shares Private CAs across accounts and with Connector for SCEP, whose
+  SCEP endpoints issue device certificates from the shared CA.
 - Secrets Manager rotation runs your Lambda function; SSM resolves Secrets
   Manager references.
 - EC2 instances, ECS tasks and Lambda functions receive role credentials from STS.
+- Amplify deploys sites from S3 buckets (as `amplify.amazonaws.com`) and
+  verifies custom domains through Route 53.
+- Global Accelerator endpoints and custom routing subnets are checked against
+  EC2 and Elastic Load Balancing, and endpoint health follows the instances'
+  state and the load balancers' target health.
+- Load balancers place themselves in EC2 subnets, serve ACM certificates,
+  forward to EC2 instances, IP addresses and Lambda functions, read trust
+  stores from S3 and publish CloudWatch metrics.
+- RDS places databases in EC2 subnets and security groups, keeps managed
+  master passwords in Secrets Manager (and rotates them), encrypts with KMS,
+  and sends events to EventBridge and SNS.
 - Marketplace Metering and the Entitlement Service share one Marketplace
   catalog of products, subscriptions and entitlements.
+- Security Hub registers its delegated administrator in Organizations, sends
+  findings events to EventBridge and exports findings to S3 with KMS.
+- Auto Scaling groups launch and terminate EC2 instances, register them with
+  load balancers, scale on CloudWatch alarms they create, publish group
+  metrics and notify SNS, SQS and EventBridge.
+- Image Builder launches EC2 instances, creates and copies AMIs, writes SSM
+  parameters, logs to CloudWatch Logs and S3, notifies SNS and emits
+  EventBridge events.
+- SES verifies domains through Route 53, publishes events to SNS, EventBridge,
+  Firehose and CloudWatch, and its receipt rules write to S3, invoke Lambda and
+  publish to SNS.
+- EKS creates cluster security groups in EC2 and runs managed node groups as
+  Auto Scaling groups with EKS launch templates and IAM instance profiles,
+  from AMIs SSM publishes.

@@ -699,6 +699,7 @@ impl Acm {
             acme_account_id: Some(account.id.clone()),
             pca_certificate_arn: None,
             emails_sent: 0,
+            in_use_by: Vec::new(),
             expiry_event_at: None,
             metric_at: None,
         };

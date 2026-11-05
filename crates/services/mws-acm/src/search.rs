@@ -133,7 +133,7 @@ fn result(c: &Certificate, info: Option<&CertInfo>) -> types::CertificateSearchR
             created_at: c.created_at,
             exported: Some(c.exported),
             imported_at: c.imported_at,
-            in_use: Some(false),
+            in_use: Some(!c.in_use_by.is_empty()),
             issued_at: c.issued_at,
             renewal_eligibility,
             revoked_at: c.revoked_at,

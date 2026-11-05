@@ -57,6 +57,16 @@ pub struct Route53 {
     /// checkers start over when state is loaded.
     health: Arc<Mutex<probe::Runs>>,
     prober_started: Arc<std::sync::atomic::AtomicBool>,
+    /// What resolves alias targets outside Route 53.
+    alias_resolvers: Arc<std::sync::RwLock<Vec<Arc<dyn AliasTargetResolver>>>>,
+}
+
+/// Resolves alias targets that live in another service (an AWS resource's
+/// DNS name in its service's hosted zone), for DNS answers.
+pub trait AliasTargetResolver: Send + Sync {
+    /// The values of `record_type` records for `dns_name` in hosted zone
+    /// `hosted_zone_id`; `None` if this resolver doesn't know the target.
+    fn resolve(&self, hosted_zone_id: &str, dns_name: &str, record_type: &str) -> Option<Vec<String>>;
 }
 
 impl Route53 {
@@ -76,6 +86,16 @@ impl Route53 {
     pub fn with_logs(mut self, logs: mws_logs::Logs) -> Self {
         self.logs = Some(logs);
         self
+    }
+
+    /// Resolve alias targets outside Route 53 with `resolver` too.
+    pub fn add_alias_resolver(&self, resolver: Arc<dyn AliasTargetResolver>) {
+        self.alias_resolvers.write().expect("alias resolver lock poisoned").push(resolver);
+    }
+
+    fn resolve_external_alias(&self, zone_id: &str, dns_name: &str, record_type: &str) -> Option<Vec<String>> {
+        let resolvers = self.alias_resolvers.read().expect("alias resolver lock poisoned").clone();
+        resolvers.iter().find_map(|r| r.resolve(zone_id, dns_name, record_type))
     }
 
     /// The state of the caller's account.
@@ -146,7 +166,13 @@ impl Route53 {
         let state = &all.accounts[owner];
         let checks = resolve::health_configs(state.health_checks.iter());
         let healthy = |id: &str| self.is_healthy(&checks, id);
-        let cx = resolve::Context { cidr_collections: &state.cidr_collections, healthy: &healthy, client };
+        let external = |zone: &str, name: &str, ty: &str| self.resolve_external_alias(zone, name, ty);
+        let cx = resolve::Context {
+            cidr_collections: &state.cidr_collections,
+            healthy: &healthy,
+            client,
+            external: &external,
+        };
         Some((zone.id.clone(), resolve::resolve(zone, qname, qtype, &cx)))
     }
 

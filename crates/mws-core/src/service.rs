@@ -280,6 +280,15 @@ pub trait Service: Send + Sync {
         false
     }
 
+    /// Whether this service serves `request` itself, outside AWS request
+    /// authentication: a website on a host of its own, which may carry an
+    /// `Authorization` header of its own (HTTP basic auth). The gateway
+    /// hands such requests over as anonymous before looking for a
+    /// signature.
+    fn serves_unauthenticated(&self, _request: &HttpRequest) -> bool {
+        false
+    }
+
     /// Whether this service will accept the given unsigned request. Some STS
     /// operations (e.g. `AssumeRoleWithWebIdentity`) need no signature.
     fn accepts_unsigned(&self, _request: &HttpRequest) -> bool {
