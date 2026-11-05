@@ -1,0 +1,24 @@
+[package]
+name = "mws-autoscaling"
+description = "Amazon EC2 Auto Scaling for MWS: groups that launch and replace real MWS EC2 instances, lifecycle hooks, scaling policies, scheduled actions, warm pools and instance refreshes."
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+async-trait.workspace = true
+chrono.workspace = true
+mws-core.workspace = true
+mws-ec2.workspace = true
+mws-proto-json.workspace = true
+mws-proto-query.workspace = true
+mws-schedule.workspace = true
+rand.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+tokio.workspace = true
+tracing.workspace = true
+uuid.workspace = true
+
+[build-dependencies]
+mws-codegen.workspace = true
