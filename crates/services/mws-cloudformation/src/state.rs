@@ -15,6 +15,7 @@ pub struct State {
     /// days).
     pub stacks: BTreeMap<String, Stack>,
     pub drift_detections: BTreeMap<String, DriftDetection>,
+    pub stack_sets: BTreeMap<String, crate::stacksets::StackSet>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]

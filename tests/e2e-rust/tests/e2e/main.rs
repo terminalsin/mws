@@ -9,6 +9,7 @@ mod acmpca_parity;
 mod amplify;
 mod autoscaling;
 mod cloudformation;
+mod cloudformation_stacksets;
 mod cloudwatch;
 mod cloudwatch_parity;
 mod ec2;

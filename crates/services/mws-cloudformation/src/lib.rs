@@ -23,6 +23,7 @@ mod ops;
 mod parameters;
 mod policy;
 mod providers;
+mod stacksets;
 mod state;
 mod template;
 
@@ -42,6 +43,31 @@ use crate::state::State;
 /// `cloudformation.amazonaws.com`, giving the identity to deploy with.
 pub trait RoleAssumer: Send + Sync {
     fn assume(&self, role_arn: &str, session_name: &str, now: chrono::DateTime<chrono::Utc>) -> Result<Caller, String>;
+
+    /// The caller that signs with credentials STS issued (role chaining:
+    /// a StackSets administration role assuming execution roles).
+    fn resolve(
+        &self,
+        access_key_id: &str,
+        session_token: Option<&str>,
+        now: chrono::DateTime<chrono::Utc>,
+    ) -> Option<Caller> {
+        let _ = (access_key_id, session_token, now);
+        None
+    }
+
+    /// The identity service-managed StackSets deploy with in an
+    /// Organizations member account: the account's StackSets execution
+    /// role, created on first use as AWS's service-linked role does.
+    fn org_member(
+        &self,
+        member_account: &str,
+        management_account: &str,
+        now: chrono::DateTime<chrono::Utc>,
+    ) -> Result<Caller, String> {
+        let _ = (now, management_account);
+        Err(format!("Account {member_account} cannot be deployed to"))
+    }
 }
 
 pub(crate) struct Inner {
@@ -158,6 +184,17 @@ impl CloudFormation {
         let mut c = ctx.clone();
         c.request_id = uuid::Uuid::new_v4().to_string();
         svc.invoke(c, operation, input).await
+    }
+
+    pub(crate) fn role_assumer(&self) -> Option<Arc<dyn RoleAssumer>> {
+        self.inner.roles.read().expect("roles lock poisoned").clone()
+    }
+
+    /// `ctx` with calls marked as made via CloudFormation.
+    pub(crate) fn via(&self, ctx: &RequestContext) -> RequestContext {
+        let mut c = ctx.clone();
+        c.authorizer = Arc::new(ViaCloudFormation(ctx.authorizer.clone()));
+        c
     }
 
     /// The identity a stack deploys with: `ctx` marked as called via

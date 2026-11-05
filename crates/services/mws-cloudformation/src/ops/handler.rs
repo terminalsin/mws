@@ -282,4 +282,178 @@ impl Handler for CloudFormation {
     ) -> Result<types::DescribeTypeOutput, ServiceError> {
         self.describe_type_op(ctx, input)
     }
+
+    async fn activate_organizations_access(
+        &self,
+        ctx: &RequestContext,
+        input: types::ActivateOrganizationsAccessInput,
+    ) -> Result<types::ActivateOrganizationsAccessOutput, ServiceError> {
+        let _ = input;
+        self.activate_organizations_access_op(ctx).await?;
+        Ok(Default::default())
+    }
+
+    async fn deactivate_organizations_access(
+        &self,
+        ctx: &RequestContext,
+        input: types::DeactivateOrganizationsAccessInput,
+    ) -> Result<types::DeactivateOrganizationsAccessOutput, ServiceError> {
+        let _ = input;
+        self.deactivate_organizations_access_op(ctx).await?;
+        Ok(Default::default())
+    }
+
+    async fn describe_organizations_access(
+        &self,
+        ctx: &RequestContext,
+        input: types::DescribeOrganizationsAccessInput,
+    ) -> Result<types::DescribeOrganizationsAccessOutput, ServiceError> {
+        self.describe_organizations_access_op(ctx, input).await
+    }
+
+    async fn create_stack_set(
+        &self,
+        ctx: &RequestContext,
+        input: types::CreateStackSetInput,
+    ) -> Result<types::CreateStackSetOutput, ServiceError> {
+        self.create_stack_set_op(ctx, input).await
+    }
+
+    async fn update_stack_set(
+        &self,
+        ctx: &RequestContext,
+        input: types::UpdateStackSetInput,
+    ) -> Result<types::UpdateStackSetOutput, ServiceError> {
+        self.update_stack_set_op(ctx, input).await
+    }
+
+    async fn delete_stack_set(
+        &self,
+        ctx: &RequestContext,
+        input: types::DeleteStackSetInput,
+    ) -> Result<types::DeleteStackSetOutput, ServiceError> {
+        self.delete_stack_set_op(ctx, input).await?;
+        Ok(Default::default())
+    }
+
+    async fn list_stack_sets(
+        &self,
+        ctx: &RequestContext,
+        input: types::ListStackSetsInput,
+    ) -> Result<types::ListStackSetsOutput, ServiceError> {
+        self.list_stack_sets_op(ctx, input).await
+    }
+
+    async fn describe_stack_set(
+        &self,
+        ctx: &RequestContext,
+        input: types::DescribeStackSetInput,
+    ) -> Result<types::DescribeStackSetOutput, ServiceError> {
+        self.describe_stack_set_op(ctx, input).await
+    }
+
+    async fn create_stack_instances(
+        &self,
+        ctx: &RequestContext,
+        input: types::CreateStackInstancesInput,
+    ) -> Result<types::CreateStackInstancesOutput, ServiceError> {
+        self.create_stack_instances_op(ctx, input).await
+    }
+
+    async fn update_stack_instances(
+        &self,
+        ctx: &RequestContext,
+        input: types::UpdateStackInstancesInput,
+    ) -> Result<types::UpdateStackInstancesOutput, ServiceError> {
+        self.update_stack_instances_op(ctx, input).await
+    }
+
+    async fn delete_stack_instances(
+        &self,
+        ctx: &RequestContext,
+        input: types::DeleteStackInstancesInput,
+    ) -> Result<types::DeleteStackInstancesOutput, ServiceError> {
+        self.delete_stack_instances_op(ctx, input).await
+    }
+
+    async fn describe_stack_instance(
+        &self,
+        ctx: &RequestContext,
+        input: types::DescribeStackInstanceInput,
+    ) -> Result<types::DescribeStackInstanceOutput, ServiceError> {
+        self.describe_stack_instance_op(ctx, input).await
+    }
+
+    async fn list_stack_instances(
+        &self,
+        ctx: &RequestContext,
+        input: types::ListStackInstancesInput,
+    ) -> Result<types::ListStackInstancesOutput, ServiceError> {
+        self.list_stack_instances_op(ctx, input).await
+    }
+
+    async fn describe_stack_set_operation(
+        &self,
+        ctx: &RequestContext,
+        input: types::DescribeStackSetOperationInput,
+    ) -> Result<types::DescribeStackSetOperationOutput, ServiceError> {
+        self.describe_stack_set_operation_op(ctx, input).await
+    }
+
+    async fn list_stack_set_operations(
+        &self,
+        ctx: &RequestContext,
+        input: types::ListStackSetOperationsInput,
+    ) -> Result<types::ListStackSetOperationsOutput, ServiceError> {
+        self.list_stack_set_operations_op(ctx, input).await
+    }
+
+    async fn list_stack_set_operation_results(
+        &self,
+        ctx: &RequestContext,
+        input: types::ListStackSetOperationResultsInput,
+    ) -> Result<types::ListStackSetOperationResultsOutput, ServiceError> {
+        self.list_stack_set_operation_results_op(ctx, input).await
+    }
+
+    async fn stop_stack_set_operation(
+        &self,
+        ctx: &RequestContext,
+        input: types::StopStackSetOperationInput,
+    ) -> Result<types::StopStackSetOperationOutput, ServiceError> {
+        self.stop_stack_set_operation_op(ctx, input).await?;
+        Ok(Default::default())
+    }
+
+    async fn detect_stack_set_drift(
+        &self,
+        ctx: &RequestContext,
+        input: types::DetectStackSetDriftInput,
+    ) -> Result<types::DetectStackSetDriftOutput, ServiceError> {
+        self.detect_stack_set_drift_op(ctx, input).await
+    }
+
+    async fn list_stack_instance_resource_drifts(
+        &self,
+        ctx: &RequestContext,
+        input: types::ListStackInstanceResourceDriftsInput,
+    ) -> Result<types::ListStackInstanceResourceDriftsOutput, ServiceError> {
+        self.list_stack_instance_resource_drifts_op(ctx, input).await
+    }
+
+    async fn list_stack_set_auto_deployment_targets(
+        &self,
+        ctx: &RequestContext,
+        input: types::ListStackSetAutoDeploymentTargetsInput,
+    ) -> Result<types::ListStackSetAutoDeploymentTargetsOutput, ServiceError> {
+        self.list_stack_set_auto_deployment_targets_op(ctx, input).await
+    }
+
+    async fn import_stacks_to_stack_set(
+        &self,
+        ctx: &RequestContext,
+        input: types::ImportStacksToStackSetInput,
+    ) -> Result<types::ImportStacksToStackSetOutput, ServiceError> {
+        self.import_stacks_to_stack_set_op(ctx, input).await
+    }
 }

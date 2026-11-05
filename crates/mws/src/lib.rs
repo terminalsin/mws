@@ -346,7 +346,7 @@ fn build_with_store(config: Config, store: Option<Arc<Store>>) -> Mws {
         autoscaling: autoscaling.clone(),
     }));
     let cloudformation = CloudFormation::new();
-    cloudformation.set_role_assumer(Arc::new(links::CloudFormationRoles(sts.clone())));
+    cloudformation.set_role_assumer(Arc::new(links::CloudFormationRoles(sts.clone(), iam.clone())));
     let authorizer = iam.authorizer();
     let credential_stores =
         [iam.credential_store(), sts.credential_store(), s3.credential_store(), s3.object_lambda_credential_store()];

@@ -142,6 +142,42 @@ impl Iam {
         );
     }
 
+    /// The execution role service-managed CloudFormation StackSets deploy
+    /// with in a member account (`stacksets-exec-<hash>`), created on first
+    /// use as AWS does when it first deploys there. Returns its ARN.
+    pub fn ensure_stacksets_execution_role(&self, account_id: &str, management_account_id: &str) -> String {
+        use std::hash::{Hash, Hasher};
+        let partition = self.inner.config.partition.clone();
+        let mut h = std::collections::hash_map::DefaultHasher::new();
+        management_account_id.hash(&mut h);
+        let name = format!("stacksets-exec-{:016x}", h.finish());
+        let arn = format!("arn:{partition}:iam::{account_id}:role/{name}");
+        let mut state = self.inner.write_account(account_id);
+        state.roles.entry(name.to_lowercase()).or_insert_with(|| Role {
+            name: name.clone(),
+            path: "/".into(),
+            id: ids::unique_id("AROA"),
+            arn: arn.clone(),
+            created: Utc::now(),
+            trust_policy: format!(
+                r#"{{"Version":"2012-10-17","Statement":[{{"Effect":"Allow","Principal":{{"Service":"member.org.stacksets.cloudformation.amazonaws.com"}},"Action":"sts:AssumeRole","Condition":{{"StringEquals":{{"aws:SourceAccount":"{management_account_id}"}}}}}}]}}"#
+            ),
+            description: None,
+            max_session_duration: 3600,
+            permissions_boundary: None,
+            tags: vec![],
+            inline: [(
+                "AdministratorAccess".to_string(),
+                r#"{"Version":"2012-10-17","Statement":[{"Effect":"Allow","Action":"*","Resource":"*"}]}"#.to_string(),
+            )]
+            .into_iter()
+            .collect(),
+            attached: Default::default(),
+            last_used: None,
+        });
+        arn
+    }
+
     /// Whether centralized root access lets the management account (or the
     /// IAM delegated administrator) start root sessions in member accounts.
     pub fn org_root_sessions_enabled(&self, management_account_id: &str) -> bool {

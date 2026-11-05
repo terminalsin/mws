@@ -310,7 +310,7 @@ pub(crate) fn required_capabilities(template: &Template) -> (Vec<String>, Vec<St
     (caps, iam.into_iter().collect())
 }
 
-fn check_capabilities(template: &Template, given: &[String]) -> Result<(), ServiceError> {
+pub(crate) fn check_capabilities(template: &Template, given: &[String]) -> Result<(), ServiceError> {
     let (needed, _) = required_capabilities(template);
     for c in needed {
         let ok = given.contains(&c);
