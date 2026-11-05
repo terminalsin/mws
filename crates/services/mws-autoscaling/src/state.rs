@@ -85,6 +85,8 @@ pub struct Member {
     pub image_id: Option<String>,
     pub protected_from_scale_in: bool,
     pub weighted_capacity: Option<String>,
+    /// Launched on the Spot market.
+    pub spot: bool,
     pub launched_at: DateTime<Utc>,
     /// When it entered `InService` (the health check grace period counts
     /// from here).
