@@ -42,6 +42,7 @@ members = [
     "crates/services/mws-ec2",
     "crates/services/mws-ram",
     "crates/services/mws-pca-connector-scep",
+    "crates/services/mws-securityhub",
     "tests/e2e-rust",
 ]
 
@@ -94,6 +95,7 @@ mws-cloudwatch = { path = "crates/services/mws-cloudwatch" }
 mws-ec2 = { path = "crates/services/mws-ec2" }
 mws-ram = { path = "crates/services/mws-ram" }
 mws-pca-connector-scep = { path = "crates/services/mws-pca-connector-scep" }
+mws-securityhub = { path = "crates/services/mws-securityhub" }
 
 # external
 async-trait = "0.1"

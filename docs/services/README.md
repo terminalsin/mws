@@ -1,6 +1,6 @@
 # Services
 
-MWS emulates 24 AWS services. Each is generated from AWS's official Smithy
+MWS emulates 25 AWS services. Each is generated from AWS's official Smithy
 model, so every operation in the model is routed and validated; operations
 outside the implemented set answer `NotImplemented`. Each service's page lists
 its features in a table: ✅ supported, 🟡 partial, ❌ not supported yet.
@@ -30,6 +30,7 @@ Every service shares the same foundations:
 | [Connector for SCEP](pca-connector-scep.md) | 12 / 12 | Real SCEP endpoints enrolling devices with certificates from a Private CA shared through RAM |
 | [Certificate Manager](acm.md) | 40 / 40 | Public certificates with real DNS validation through Route 53, private certificates, imports, expiry events |
 | [Resource Access Manager](ram.md) | 35 / 35 | Shares that grant real cross-account access to Private CAs, invitations, organization sharing, managed permissions |
+| [Security Hub](securityhub.md) | 126 / 126 | ASFF findings with every filter, workflow and history, insights, automation rules, standards and controls, members and Organizations delegated administration, central configuration, the V2 OCSF API with exports to S3 |
 | [Secrets Manager](secretsmanager.md) | 23 / 23 | KMS-sealed secret versions, staging labels, rotation that runs your Lambda function, replicas |
 
 ## Storage
@@ -44,7 +45,7 @@ Every service shares the same foundations:
 | Service | Operations | What's emulated |
 | --- | --- | --- |
 | [Lambda](lambda.md) | 68 / 88 | Python, Node.js and custom runtimes that really run, SQS and Kinesis event sources, destinations, function URLs |
-| [EC2 and VPC](ec2.md) | 107 / 811 | Default VPCs, subnets, security groups, AMIs, instances as Docker containers, instance metadata and profiles |
+| [EC2 and VPC](ec2.md) | 120 / 811 | Default VPCs, subnets, security groups, NAT gateways and VPC endpoints that filter and route real Docker traffic, AMIs, instances as Docker containers, instance metadata and profiles |
 | [Route 53](route53.md) | 71 / 71 | Public and private hosted zones, all routing policies, health checks, DNSSEC key management, an optional real DNS responder |
 
 ## Application integration
@@ -101,3 +102,5 @@ with the permissions AWS would use:
 - EC2 instances and Lambda functions receive role credentials from STS.
 - Marketplace Metering and the Entitlement Service share one Marketplace
   catalog of products, subscriptions and entitlements.
+- Security Hub registers its delegated administrator in Organizations, sends
+  findings events to EventBridge and exports findings to S3 with KMS.

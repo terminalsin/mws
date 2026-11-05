@@ -11,7 +11,7 @@ mod docker;
 
 use std::sync::Arc;
 
-pub use docker::DockerBackend;
+pub use docker::{DockerBackend, DEFAULT_NETFILTER_IMAGE};
 
 /// The VPC network an instance joins. Backends that isolate networks give
 /// each VPC its own.
@@ -45,6 +45,63 @@ pub struct LaunchSpec {
     pub ssh_public_key: Option<String>,
     /// Environment for the instance (SDK endpoint, Region, IMDS endpoint).
     pub env: Vec<(String, String)>,
+}
+
+/// An IP protocol (and ports) a filter rule matches.
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub enum Protocol {
+    All,
+    /// TCP to a destination port range.
+    Tcp(u16, u16),
+    Udp(u16, u16),
+    /// ICMP of a type (and code); `None` matches any.
+    Icmp(Option<u8>, Option<u8>),
+    /// Any other IP protocol number.
+    Number(u8),
+}
+
+/// A security group rule, flattened: traffic of `protocol` from (ingress)
+/// or to (egress) `cidr` is allowed.
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub struct AllowRule {
+    pub protocol: Protocol,
+    pub cidr: String,
+}
+
+/// A network ACL entry, in rule number order.
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub struct AclRule {
+    pub protocol: Protocol,
+    pub cidr: String,
+    pub allow: bool,
+}
+
+/// Whether traffic leaving the VPC for `cidr` has somewhere to go (a route
+/// to an internet gateway with a public address, a working NAT gateway, a
+/// gateway endpoint), by longest prefix first.
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub struct RouteRule {
+    pub cidr: String,
+    pub reachable: bool,
+}
+
+/// What may reach an instance and what it may reach, as EC2 decides it:
+/// its security groups (stateful), its subnet's network ACL (stateless,
+/// for traffic crossing the subnet boundary) and its subnet's route table
+/// (for traffic leaving the VPC). MWS itself (the AWS APIs and instance
+/// metadata) and DNS stay reachable, as the metadata service and the
+/// Amazon DNS server are in EC2.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Hash)]
+pub struct Firewall {
+    pub subnet_cidr: String,
+    pub vpc_cidrs: Vec<String>,
+    pub ingress: Vec<AllowRule>,
+    pub egress: Vec<AllowRule>,
+    pub acl_ingress: Vec<AclRule>,
+    pub acl_egress: Vec<AclRule>,
+    pub routes: Vec<RouteRule>,
+    /// The TCP port MWS serves on (always reachable on the host).
+    pub service_port: Option<u16>,
 }
 
 /// A running instance, as the backend knows it.
@@ -100,6 +157,24 @@ pub trait ComputeBackend: Send + Sync {
 
     /// Tear down the network of a deleted VPC, if the backend made one.
     async fn delete_network(&self, vpc_id: &str) -> Result<(), BackendError>;
+
+    /// Whether instances have real network traffic for
+    /// [`ComputeBackend::apply_firewall`] to filter.
+    fn filters_traffic(&self) -> bool {
+        false
+    }
+
+    /// Make an instance's traffic follow `firewall`, replacing what an
+    /// earlier call set.
+    async fn apply_firewall(&self, _handle: &str, _firewall: &Firewall) -> Result<(), BackendError> {
+        Ok(())
+    }
+
+    /// Tell a booting instance its network is set up (it waits for this
+    /// before running user data).
+    async fn network_ready(&self, _handle: &str) -> Result<(), BackendError> {
+        Ok(())
+    }
 }
 
 /// Runs nothing: instances exist only as EC2 metadata and move through

@@ -37,6 +37,7 @@ mws-route53.workspace = true
 mws-s3.workspace = true
 mws-s3control.workspace = true
 mws-secretsmanager.workspace = true
+mws-securityhub.workspace = true
 mws-server.workspace = true
 mws-sns.workspace = true
 mws-sts.workspace = true
