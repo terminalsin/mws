@@ -1032,10 +1032,30 @@ impl ImageBuilder {
                 b.note(format!("Wrote {value} to SSM parameter {}", p.parameter_name));
             }
             for lt in d.launch_template_configurations.iter().flatten() {
-                b.note(format!(
-                    "Launch template {} not updated: EC2 launch templates are not emulated",
-                    lt.launch_template_id
-                ));
+                let acct = lt.account_id.clone().unwrap_or_else(|| b.account.clone());
+                let Some(value) = by_account.get(&acct).cloned() else {
+                    return Err(fail(
+                        &region,
+                        format!(
+                            "No AMI was distributed to account {acct} for launch template {}.",
+                            lt.launch_template_id
+                        ),
+                    ));
+                };
+                let lctx = self.service_ctx(&b.svc, &acct, &region);
+                let version = ec2link::update_launch_template(
+                    &ec2,
+                    &lctx,
+                    &lt.launch_template_id,
+                    &value,
+                    &format!("Image Builder: {}", b.image.arn.clone().unwrap_or_default()),
+                    lt.set_default_version,
+                )
+                .await
+                .map_err(|e| {
+                    fail(&region, format!("Updating launch template {} failed: {}", lt.launch_template_id, e.message))
+                })?;
+                b.note(format!("Launch template {} version {version} uses {value}", lt.launch_template_id));
             }
         }
         Ok(out)
