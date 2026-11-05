@@ -49,6 +49,8 @@ aws-sdk-rds = "1"
 aws-sdk-eks = "1"
 aws-sdk-efs = "1"
 aws-sdk-codeartifact = "1"
+aws-sdk-ecr = "1"
+aws-sdk-ecrpublic = "1"
 aws-smithy-http-client = { version = "1", features = ["rustls-aws-lc"] }
 aws-smithy-runtime-api = { version = "1", features = ["client"] }
 zip.workspace = true

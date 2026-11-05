@@ -19,6 +19,8 @@ use mws_cloudwatch::CloudWatch;
 use mws_codeartifact::CodeArtifact;
 use mws_core::Environment;
 use mws_ec2::{BackendChoice, Ec2};
+use mws_ecr::Ecr;
+use mws_ecr_public::EcrPublic;
 use mws_efs::Efs;
 use mws_eks::Eks;
 use mws_elb::{Elb, ElbConfig};
@@ -94,6 +96,15 @@ pub struct Config {
     /// Where EFS keeps file system data, one directory per file system
     /// (`MWS_EFS_DIR`). `mws-efs` in the temp directory when unset.
     pub efs_dir: Option<PathBuf>,
+    /// The registry host ECR repository URIs name
+    /// (`MWS_ECR_REGISTRY_HOST`, e.g. `localhost:4566`; `{account}` and
+    /// `{region}` are replaced). AWS's `<account>.dkr.ecr.<region>.amazonaws.com`
+    /// when unset.
+    pub ecr_registry_host: Option<String>,
+    /// The registry host (and path) ECR Public repository URIs name
+    /// (`MWS_ECR_PUBLIC_REGISTRY_HOST`, e.g. `localhost:4566/public.ecr.aws`);
+    /// `public.ecr.aws` when unset.
+    pub ecr_public_registry_host: Option<String>,
 }
 
 impl Config {
@@ -151,6 +162,8 @@ impl Config {
             eks_docker_cli: var("MWS_EKS_DOCKER").or_else(|| var("MWS_EC2_DOCKER")),
             eks_bind: var("MWS_EKS_BIND"),
             efs_dir: path("MWS_EFS_DIR"),
+            ecr_registry_host: std::env::var("MWS_ECR_REGISTRY_HOST").ok().filter(|v| !v.is_empty()),
+            ecr_public_registry_host: std::env::var("MWS_ECR_PUBLIC_REGISTRY_HOST").ok().filter(|v| !v.is_empty()),
         }
     }
 }
@@ -191,6 +204,8 @@ pub struct Mws {
     pub efs: Efs,
     pub codeartifact: CodeArtifact,
     pub cloudtrail: CloudTrail,
+    pub ecr: Ecr,
+    pub ecr_public: EcrPublic,
 }
 
 /// Build the gateway with every service MWS emulates.
@@ -391,6 +406,16 @@ fn build_with_store(config: Config, store: Option<Arc<Store>>) -> Mws {
         .with_sns(sns.clone())
         .with_events(events.clone());
     cloudtrail.set_organizations(organizations.view());
+    let ecr = Ecr::new().with_kms(kms.clone());
+    ecr.exclude_registry_prefix(mws_ecr_public::REGISTRY_PATH_PREFIX);
+    let ecr_public = EcrPublic::new();
+    if let Some(host) = &config.ecr_public_registry_host {
+        ecr_public.set_registry_host(host.clone());
+    }
+    ecr.set_event_sink(Arc::new(sinks::EcrToEvents(events.clone())));
+    if let Some(host) = &config.ecr_registry_host {
+        ecr.set_registry_host(host.clone());
+    }
     let mut gateway = Gateway::builder();
     if let Some(store) = store {
         gateway = gateway.store(store);
@@ -450,6 +475,8 @@ fn build_with_store(config: Config, store: Option<Arc<Store>>) -> Mws {
         // CloudTrail records every API call the gateway dispatches.
         .service(Arc::new(CloudTrailData::new(cloudtrail.clone())))
         .observer(Arc::new(cloudtrail.clone()))
+        .service(Arc::new(ecr.clone()))
+        .service(Arc::new(ecr_public.clone()))
         .build();
     Mws {
         gateway,
@@ -485,6 +512,8 @@ fn build_with_store(config: Config, store: Option<Arc<Store>>) -> Mws {
         efs,
         codeartifact,
         cloudtrail,
+        ecr,
+        ecr_public,
     }
 }
 

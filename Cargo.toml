@@ -17,6 +17,7 @@ members = [
     "crates/mws-event-pattern",
     "crates/mws-schedule",
     "crates/mws-parquet",
+    "crates/mws-oci",
     "crates/mws",
     "crates/services/mws-iam",
     "crates/services/mws-iam-policy",
@@ -56,6 +57,9 @@ members = [
     "crates/services/mws-codeartifact",
     "crates/services/mws-cloudtrail",
     "crates/services/mws-cloudtrail-data",
+    "crates/services/mws-ecr",
+    "crates/services/mws-ecr-public",
+
     "tests/e2e-rust",
 ]
 
@@ -71,6 +75,7 @@ mws-core = { path = "crates/mws-core" }
 mws-event-pattern = { path = "crates/mws-event-pattern" }
 mws-schedule = { path = "crates/mws-schedule" }
 mws-parquet = { path = "crates/mws-parquet" }
+mws-oci = { path = "crates/mws-oci" }
 mws-sigv4 = { path = "crates/mws-sigv4" }
 mws-smithy = { path = "crates/mws-smithy" }
 mws-codegen = { path = "crates/mws-codegen" }
@@ -122,6 +127,8 @@ mws-rds = { path = "crates/services/mws-rds" }
 mws-eks = { path = "crates/services/mws-eks" }
 mws-efs = { path = "crates/services/mws-efs" }
 mws-codeartifact = { path = "crates/services/mws-codeartifact" }
+mws-ecr = { path = "crates/services/mws-ecr" }
+mws-ecr-public = { path = "crates/services/mws-ecr-public" }
 
 # external
 async-trait = "0.1"

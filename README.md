@@ -110,6 +110,8 @@ SDKs, S3 addressing, host-prefixed endpoints and calling as other identities.
 | [RDS and Aurora](docs/services/rds.md) | 168 / 168 | awsQuery |
 | [EKS](docs/services/eks.md) | 70 / 70 | restJson1 |
 | [EFS](docs/services/efs.md) | 31 / 31 | restJson1 |
+| [ECR](docs/services/ecr.md) | 62 / 62 | awsJson 1.1, Docker registry v2 |
+| [ECR Public](docs/services/ecr-public.md) | 23 / 23 | awsJson 1.1, Docker registry v2 |
 | [Route 53](docs/services/route53.md) | 71 / 71 | restXml |
 | [Amplify Hosting](docs/services/amplify.md) | 37 / 37 | restJson1 |
 | [Global Accelerator](docs/services/globalaccelerator.md) | 56 / 56 | awsJson 1.1 |

@@ -52,6 +52,8 @@ See [State, scenarios and snapshots](state.md) for how the two interact.
 | `MWS_EKS_K3S_IMAGE` | `rancher/k3s:<tag for the version>` | The API server image; `{version}` is replaced by the cluster's Kubernetes minor version. |
 | `MWS_EFS_DIR` | `mws-efs` in the temp directory | Where EFS keeps file system data, one directory per file system. EC2 instances in Docker mount it at `/var/lib/mws-efs`. |
 | `MWS_CODEARTIFACT_<CONNECTION>_URL` | the public registry | Where a CodeArtifact external connection fetches packages, such as `MWS_CODEARTIFACT_NPMJS_URL=http://localhost:4873` for `public:npmjs` (or `_PYPI_URL`, `_MAVEN_CENTRAL_URL`, `_CRATES_IO_URL`, `_RUBY_GEMS_ORG_URL`; `_NUGET_ORG_URL` names a V3 service index). An empty value turns the connection off. |
+| `MWS_ECR_REGISTRY_HOST` | unset (AWS's `<account>.dkr.ecr.<region>.amazonaws.com`) | The registry host ECR repository URIs and `proxyEndpoint` name, such as `localhost:4566`, so `docker push $(repositoryUri)` reaches MWS. `{account}` and `{region}` are replaced. |
+| `MWS_ECR_PUBLIC_REGISTRY_HOST` | unset (`public.ecr.aws`) | The registry host and path ECR Public repository URIs name, such as `localhost:4566/public.ecr.aws`. |
 
 EC2 instances reach the instance metadata service and the AWS endpoint
 through the host, and EKS API servers call MWS's token and authorization

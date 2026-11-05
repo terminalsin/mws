@@ -229,6 +229,13 @@ impl Gateway {
                 }
                 let err = sigv4_error(e);
                 return match self.services.values().flatten().find(|s| s.recognizes(&request)) {
+                    // An `Authorization` header of the service's own that
+                    // names no caller (a registry's anonymous bearer token).
+                    Some(service) if service.anonymous_credentials(&request) => {
+                        let ctx =
+                            self.context(request_id, self.env.default_region.clone(), Caller::anonymous(), remote, now);
+                        service.handle(ctx, request).await
+                    }
                     Some(service) => service.render_error(&request_id, &err),
                     None => self.fallback_error(&request_id, &err),
                 };
