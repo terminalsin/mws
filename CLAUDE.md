@@ -61,4 +61,5 @@ override only) see the same behaviour as real AWS. Fidelity beats breadth.
 On pull requests CI runs only what a change affects (`.github/scripts/plan.py`,
 see docs/testing.md). It matches e2e modules to services by name, so name a
 new module after its service crate (`<svc>.rs`, `<svc>_<topic>.rs`) or add an
-alias in `MODULE_ALIASES`.
+alias in `MODULE_ALIASES`. Docker-backed tests run one at a time per runner
+(`.config/nextest.toml`): put `docker` in the module or test name.
