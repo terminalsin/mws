@@ -177,9 +177,12 @@ impl Rds {
     ) -> Result<t::DBCluster, ServiceError> {
         let Launch { from_snapshot, recovery, drop_snapshot } = launch;
         let id = rec.cluster.db_cluster_identifier.clone().unwrap_or_default();
+        let max = self.quota(ctx, crate::quotas::DB_CLUSTERS);
         self.with_region(ctx, |r| {
-            if r.clusters.len() >= 40 {
-                return Err(errors::db_cluster_quota_exceeded_fault("Cannot create more than 40 DB clusters."));
+            if r.clusters.len() as i64 >= max {
+                return Err(errors::db_cluster_quota_exceeded_fault(format!(
+                    "Cannot create more than {max} DB clusters."
+                )));
             }
             if r.clusters.contains_key(&id) {
                 return Err(errors::db_cluster_already_exists_fault("DB Cluster already exists"));

@@ -37,10 +37,12 @@
 | Docker backend | ✅ | `MWS_EC2_BACKEND=docker` runs each instance as a container: the AMI's image on a Docker network per VPC with the instance's IP and hostname, CPU and memory limits from the instance type, the key pair in `authorized_keys`, user data at first boot, `docker logs` as console output, `CreateImage` as `docker commit`. Podman works too. |
 | Metadata backend | ✅ | `MWS_EC2_BACKEND=metadata` runs nothing; instances only change state. |
 | Instance metadata service | ✅ | `/_aws/ec2/metadata/<instance-id>/` with IMDSv1 and IMDSv2 tokens, network, placement, public keys, tags, user data and the identity document. |
+| Launch extensions | ✅ | Other services add to launches: [EFS](efs.md) shares its file systems into Docker instances and installs a mount helper; its mount targets are requester-managed interfaces in your subnets. |
 | Instance profiles | ✅ | Role credentials assumed by `ec2.amazonaws.com`; `RunInstances` checks `iam:PassRole`. |
+| Quotas | ✅ | Pending and running instances count against the On-Demand vCPU quota of their instance class (1152 vCPUs per class by default, or AWS's new-account 5 standard vCPUs with `MWS_QUOTA_PROFILE=new-account`: `VcpuLimitExceeded`), and Elastic IPs, VPCs and security group rules against theirs; raise them with [Service Quotas](servicequotas.md). |
 | EBS volumes and snapshots | ✅ | Volumes, snapshots and their copies, modifications, attributes, sharing, locks, archive tiers, fast snapshot restores, the Recycle Bin, encryption by default and root volume replacement. With the Docker backend each volume is a Docker volume mounted at its device path in the instance, and snapshots copy its data. |
 | Launch templates | ✅ | Versions (from a source version), `$Latest` and `$Default`, `ModifyLaunchTemplate`, `GetLaunchTemplateData`; `RunInstances` with a launch template merges its data under the call's parameters and tags instances with `aws:ec2launchtemplate:*`. |
-| Spot, Auto Scaling | ❌ | Not yet. |
+| Spot instances | 🟡 | `RunInstances` with `InstanceMarketOptions` (or a launch template's) of market type `spot` launches Spot instances: `InstanceLifecycle: spot`, a `SpotInstanceRequestId`, and the `instance-lifecycle` and `spot-instance-request-id` filters. Spot requests, fleets, prices and interruptions are not emulated. |
 
 ## Access control
 

@@ -1,6 +1,6 @@
 [package]
 name = "mws-eks"
-description = "Amazon EKS for MWS: clusters, managed node groups on EC2, add-ons, access entries and identity providers."
+description = "Amazon EKS for MWS: clusters with real Kubernetes API servers, managed node groups on Auto Scaling, add-ons, access entries and identity providers."
 version.workspace = true
 edition.workspace = true
 license.workspace = true
@@ -8,19 +8,24 @@ license.workspace = true
 [dependencies]
 async-trait.workspace = true
 base64.workspace = true
+bytes.workspace = true
 chrono.workspace = true
 hex.workspace = true
 http.workspace = true
 mws-core.workspace = true
 mws-proto-json.workspace = true
 mws-proto-restjson.workspace = true
+mws-servicequotas.workspace = true
+mws-sigv4.workspace = true
 mws-sts.workspace = true
+percent-encoding.workspace = true
 rand.workspace = true
 rcgen.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 sha2.workspace = true
 time.workspace = true
+tokio = { workspace = true, features = ["process", "io-util"] }
 tracing.workspace = true
 uuid.workspace = true
 

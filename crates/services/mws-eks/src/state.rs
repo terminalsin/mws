@@ -43,6 +43,26 @@ pub(crate) struct ClusterRec {
     pub certificate_authorities: Vec<CaRec>,
     pub updates: Vec<UpdateRec>,
     pub insights_refresh: Option<InsightsRefresh>,
+    /// The Kubernetes API server, when a control plane backend runs one.
+    pub control_plane: Option<ControlPlaneRec>,
+}
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[serde(default)]
+pub(crate) struct ControlPlaneRec {
+    /// The backend's name for it (the container).
+    pub id: String,
+    /// Kubernetes minor version the server runs (or is being moved to).
+    pub version: String,
+    pub ready: bool,
+    /// Why it failed to start.
+    pub error: Option<String>,
+    /// The cluster creator's principal ARN: in `CONFIG_MAP` and
+    /// `API_AND_CONFIG_MAP` clusters, an implicit `system:masters` member.
+    pub creator: Option<String>,
+    /// Where it was asked to call MWS's webhooks.
+    pub webhook_base: String,
+    pub service_cidr: String,
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]

@@ -37,18 +37,18 @@ fn trust(service: &str) -> String {
 }
 
 /// Roles, a VPC with subnets in two zones, and clients.
-struct Env {
-    eks: Client,
-    ec2: aws_sdk_ec2::Client,
-    iam: aws_sdk_iam::Client,
-    cluster_role: String,
-    node_role: String,
-    pod_role: String,
-    subnets: Vec<String>,
-    vpc: String,
+pub(crate) struct Env {
+    pub(crate) eks: Client,
+    pub(crate) ec2: aws_sdk_ec2::Client,
+    pub(crate) iam: aws_sdk_iam::Client,
+    pub(crate) cluster_role: String,
+    pub(crate) node_role: String,
+    pub(crate) pod_role: String,
+    pub(crate) subnets: Vec<String>,
+    pub(crate) vpc: String,
 }
 
-async fn env(mws: &Mws) -> Env {
+pub(crate) async fn env(mws: &Mws) -> Env {
     let cfg = mws.root_sdk_config().await;
     let iam = aws_sdk_iam::Client::new(&cfg);
     let ec2 = aws_sdk_ec2::Client::new(&cfg);
@@ -91,7 +91,7 @@ async fn env(mws: &Mws) -> Env {
 }
 
 impl Env {
-    async fn cluster(&self, name: &str, mode: AuthenticationMode) -> aws_sdk_eks::types::Cluster {
+    pub(crate) async fn cluster(&self, name: &str, mode: AuthenticationMode) -> aws_sdk_eks::types::Cluster {
         let c = self
             .eks
             .create_cluster()
@@ -120,7 +120,7 @@ impl Env {
         panic!("node group {nodegroup} has {} nodes, not {want}", nodes.len());
     }
 
-    async fn instances(&self, nodegroup: &str) -> Vec<aws_sdk_ec2::types::Instance> {
+    pub(crate) async fn instances(&self, nodegroup: &str) -> Vec<aws_sdk_ec2::types::Instance> {
         let out = self
             .ec2
             .describe_instances()
@@ -1289,6 +1289,8 @@ async fn node_groups_are_auto_scaling_groups() {
 
     // The group launches the nodes, from the template.
     let nodes = e.nodes("custom", 2).await;
+    // SPOT capacity: every node is a Spot instance.
+    assert!(nodes.iter().all(|i| i.instance_lifecycle() == Some(&aws_sdk_ec2::types::InstanceLifecycleType::Spot)));
     assert!(nodes.iter().all(|i| i.instance_type() == Some(&InstanceType::M5Large)));
     let image = e.ec2.describe_images().image_ids(nodes[0].image_id().unwrap()).send().await.unwrap();
     assert_eq!(image.images()[0].name(), Some("amazon-eks-node-al2023-x86_64-standard-1.33-v20250101"));

@@ -7,6 +7,9 @@ use crate::generated::{errors, types};
 use crate::util::{self, text};
 use crate::Eks;
 
+/// Service Quotas: Fargate profiles per cluster.
+const FARGATE_PROFILES_QUOTA: &str = "L-33415657";
+
 fn not_found(cluster: &str, name: &str) -> ServiceError {
     errors::resource_not_found(format!("No Fargate Profile found with name: {name}."))
         .with_field("clusterName", text(cluster))
@@ -22,6 +25,7 @@ impl Eks {
         let cluster = input.cluster_name.clone();
         let name = input.fargate_profile_name.clone();
         let cluster_arn = util::cluster_arn(ctx, &cluster);
+        let max_profiles = self.quota(ctx, FARGATE_PROFILES_QUOTA);
         let (cluster_subnets, vpc_id) = {
             let mut st = self.write();
             let rec = util::cluster(&mut st, ctx, &cluster)?;
@@ -43,6 +47,12 @@ impl Eks {
                 ))
                 .with_field("clusterName", text(&cluster))
                 .with_field("fargateProfileName", text(&name)));
+            }
+            if rec.fargate_profiles.len() >= max_profiles {
+                return Err(errors::resource_limit_exceeded(format!(
+                    "You have reached the limit of {max_profiles} Fargate profiles for cluster {cluster}."
+                ))
+                .with_field("clusterName", text(&cluster)));
             }
             if rec.fargate_profiles.values().any(|f| matches!(f.status.as_deref(), Some("CREATING" | "DELETING"))) {
                 return Err(errors::resource_limit_exceeded(

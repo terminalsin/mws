@@ -202,6 +202,8 @@ fn instance_filter(i: &t::Instance, rec: &InstanceRecord, name: &str) -> Option<
         }
         "network-interface.mac-address" => enis.iter().filter_map(|n| n.mac_address.clone()).collect(),
         "state-reason-code" => i.state_reason.as_ref().map(|r| s(&r.code)).unwrap_or_default(),
+        "instance-lifecycle" => i.instance_lifecycle.clone().into_iter().collect(),
+        "spot-instance-request-id" => i.spot_instance_request_id.clone().into_iter().collect(),
         "metadata-options.http-tokens" => i.metadata_options.as_ref().map(|m| s(&m.http_tokens)).unwrap_or_default(),
         "metadata-options.http-endpoint" => {
             i.metadata_options.as_ref().map(|m| s(&m.http_endpoint)).unwrap_or_default()
@@ -397,6 +399,13 @@ impl Ec2 {
                 });
             }
         }
+        let spot = match input.instance_market_options.as_ref().and_then(|m| m.market_type.as_deref()) {
+            None => false,
+            Some("spot") => true,
+            Some(other) => {
+                return Err(err("Unsupported", format!("The market type '{other}' is not supported for this request.")))
+            }
+        };
         let image_id = input.image_id.clone().ok_or_else(|| missing_parameter("ImageId"))?;
         let image = self.find_image(ctx, &image_id)?;
         if image.record.image.state.as_deref() != Some("available") {
@@ -567,15 +576,18 @@ impl Ec2 {
             .unwrap_or(subnet.map_public_ip_on_launch == Some(true));
         let endpoint = ctx.endpoint.clone();
         let mut launched: Vec<(String, u64, LaunchSpec)> = Vec::new();
+        let vcpu_quota = crate::quotas::vcpu_quota(&instance_type);
+        let vcpu_limit = self.quota(&account, &ctx.region, ("ec2", vcpu_quota), ctx.received_at);
         let instances = self.with_region(ctx, |r| -> Result<Vec<t::Instance>, ServiceError> {
-            let running = r.instances.values().filter(|i| !matches!(state_name(i).as_str(), "terminated" | "shutting-down")).count();
-            if running + input.min_count as usize > 20 {
+            let used = crate::quotas::running_vcpus(r, vcpu_quota);
+            let per_instance = itype.vcpus as f64;
+            if used + per_instance * input.min_count as f64 > vcpu_limit {
                 return Err(err(
-                    "InstanceLimitExceeded",
-                    format!("You have requested more instances ({}) than your current instance limit of 20 allows for the specified instance type. Please visit http://aws.amazon.com/contact-us/ec2-request to request an adjustment to this limit.", running + input.min_count as usize),
+                    "VcpuLimitExceeded",
+                    format!("You have requested more vCPU capacity than your current vCPU limit of {vcpu_limit} allows for the instance bucket that the specified instance type belongs to. Please visit http://aws.amazon.com/contact-us/ec2-request to request an adjustment to this limit."),
                 ));
             }
-            let room = 20 - running;
+            let room = ((vcpu_limit - used) / per_instance).floor().max(0.0).min(u32::MAX as f64) as usize;
             let count = (input.max_count as usize).min(room).max(input.min_count as usize);
             if let Some(ip) = primary_spec.as_ref().and_then(|p| p.private_ip_address.clone()).or_else(|| input.private_ip_address.clone()) {
                 if count > 1 {
@@ -716,6 +728,8 @@ impl Ec2 {
                     }),
                     maintenance_options: Some(t::InstanceMaintenanceOptions { auto_recovery: Some("default".into()), ..Default::default() }),
                     network_performance_options: Some(t::InstanceNetworkPerformanceOptions { bandwidth_weighting: Some("default".into()) }),
+                    instance_lifecycle: spot.then(|| "spot".to_string()),
+                    spot_instance_request_id: spot.then(|| new_id("sir")[..12].to_string()),
                     ..Default::default()
                 };
                 let role_arn = profile.as_ref().and_then(|p| p.role_arn.clone());
@@ -780,6 +794,7 @@ impl Ec2 {
                     ssh_public_key: key.as_ref().map(|k| k.public_key.clone()),
                     env,
                     volumes: data_volumes,
+                    extras: Default::default(),
                 };
                 launched.push((instance_id.clone(), 1, spec));
                 r.instances.insert(instance_id.clone(), rec);
@@ -787,7 +802,8 @@ impl Ec2 {
             }
             Ok(out)
         })?;
-        for (id, gen, spec) in launched {
+        for (id, gen, mut spec) in launched {
+            self.extend_launch(&mut spec);
             self.transition(ctx, &account, &id, gen, Transition::Launch(Box::new(spec))).await;
         }
         Ok(t::Reservation {
@@ -888,6 +904,10 @@ impl Ec2 {
         self.authorize_instances(ctx, "StartInstances", &input.instance_ids, input.dry_run)?;
         let account = account_of(ctx);
         let region = ctx.region.clone();
+        let limits: std::collections::BTreeMap<&str, f64> = crate::quotas::VCPU_QUOTAS
+            .iter()
+            .map(|code| (*code, self.quota(&account, &region, ("ec2", code), ctx.received_at)))
+            .collect();
         let (changes, todo) = self.with_region(ctx, |r| {
             for id in &input.instance_ids {
                 let st = state_name(&r.instances[id]);
@@ -895,6 +915,25 @@ impl Ec2 {
                     return Err(err(
                         "IncorrectInstanceState",
                         format!("The instance '{id}' is not in a state from which it can be started."),
+                    ));
+                }
+            }
+            let mut wanted: std::collections::BTreeMap<&str, f64> = Default::default();
+            for id in &input.instance_ids {
+                let rec = &r.instances[id];
+                if state_name(rec) != "stopped" {
+                    continue;
+                }
+                let ty = rec.instance.instance_type.as_deref().unwrap_or_default();
+                let vcpus = catalog::instance_type(ty).map_or(1.0, |t| t.vcpus as f64);
+                *wanted.entry(crate::quotas::vcpu_quota(ty)).or_default() += vcpus;
+            }
+            for (code, want) in wanted {
+                let limit = limits.get(code).copied().unwrap_or(f64::INFINITY);
+                if crate::quotas::running_vcpus(r, code) + want > limit {
+                    return Err(err(
+                        "VcpuLimitExceeded",
+                        format!("You have requested more vCPU capacity than your current vCPU limit of {limit} allows for the instance bucket that the specified instance type belongs to. Please visit http://aws.amazon.com/contact-us/ec2-request to request an adjustment to this limit."),
                     ));
                 }
             }

@@ -326,6 +326,27 @@ impl mws_events::HealthChecks for Route53HealthChecks {
     }
 }
 
+/// GuardDuty's findings and scan results on the account's default bus.
+pub struct GuardDutyToEvents(pub Events);
+
+impl mws_guardduty::EventSink for GuardDutyToEvents {
+    fn put_event(&self, ctx: &RequestContext, e: mws_guardduty::GuardDutyEvent) {
+        self.0.put_service_event(
+            ctx,
+            ServiceEvent {
+                partition: e.partition,
+                account: e.account,
+                region: e.region,
+                source: "aws.guardduty".into(),
+                detail_type: e.detail_type,
+                resources: Vec::new(),
+                detail: e.detail,
+                time: e.time,
+            },
+        );
+    }
+}
+
 /// EC2 Image Builder image state changes, as the EventBridge event
 /// "EC2 Image Builder Image State Change".
 pub struct ImageBuilderEvents(pub Events);
@@ -351,6 +372,28 @@ impl mws_imagebuilder::ImageEvents for ImageBuilderEvents {
                 resources: vec![c.image_build_version_arn.clone()],
                 detail,
                 time: c.time,
+            },
+        );
+    }
+}
+
+/// ECR's `aws.ecr` events (image pushes, deletes, scans), put on the
+/// registry's account's default bus.
+pub struct EcrToEvents(pub Events);
+
+impl mws_ecr::EventSink for EcrToEvents {
+    fn event(&self, ctx: &RequestContext, e: mws_ecr::EcrEvent) {
+        self.0.put_service_event(
+            ctx,
+            ServiceEvent {
+                partition: e.partition,
+                account: e.account,
+                region: e.region,
+                source: "aws.ecr".into(),
+                detail_type: e.detail_type,
+                resources: e.resources,
+                detail: e.detail,
+                time: e.time,
             },
         );
     }

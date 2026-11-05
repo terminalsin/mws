@@ -219,6 +219,7 @@ impl Elb {
             ip_address_type: ip_type,
             target_control_port: input.target_control_port,
         };
+        let max_target_groups = self.limit(ctx, "target-groups");
         let out = self.with_region(ctx, |r| {
             if let Some(existing) = r.target_groups.values().find(|g| g.name() == input.name) {
                 let e = &existing.tg;
@@ -238,7 +239,7 @@ impl Elb {
                     input.name
                 )));
             }
-            if r.target_groups.len() >= catalog::limit("target-groups") {
+            if r.target_groups.len() >= max_target_groups {
                 return Err(errors::too_many_target_groups(
                     "You have reached the maximum number of target groups for your account",
                 ));

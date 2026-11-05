@@ -1,12 +1,13 @@
 # Amazon EKS
 
-> Crate: [`mws-eks`](../../crates/services/mws-eks) · Tests: [`tests/e2e-rust/tests/e2e/eks.rs`](../../tests/e2e-rust/tests/e2e/eks.rs)
+> Crate: [`mws-eks`](../../crates/services/mws-eks) · Tests: [`eks.rs`](../../tests/e2e-rust/tests/e2e/eks.rs), [`eks_kubernetes.rs`](../../tests/e2e-rust/tests/e2e/eks_kubernetes.rs)
 
 All 70 operations of the EKS model (restJson1) are implemented. EKS manages
 the control plane's metadata and the AWS resources a cluster owns: the cluster
 security group, managed node groups as real Auto Scaling groups of EC2 instances, their IAM instance
-profiles and access entries. No Kubernetes API server runs behind the cluster
-endpoint.
+profiles and access entries. When Docker is available each cluster also runs
+a real Kubernetes API server (k3s), so `aws eks update-kubeconfig` and
+`kubectl` work against it, with IAM authentication through access entries.
 
 Resources move through EKS's states (`CREATING`, `UPDATING`, `DELETING`) and
 settle on the next request, so SDK waiters (`ClusterActive`,
@@ -25,7 +26,7 @@ service principal.
 | Create, describe, list, delete | ✅ | Kubernetes 1.28–1.35 (default 1.34), platform versions, standard and extended support windows. |
 | VPC configuration | ✅ | Subnets must exist, share a VPC and span two Availability Zones; endpoint access and public CIDRs; service CIDR avoids the VPC range. |
 | Cluster security group | ✅ | `eks-cluster-sg-<name>-<n>` created in the VPC with a self-referencing rule, tagged `kubernetes.io/cluster/<name>=owned`, deleted with the cluster. |
-| Endpoint, OIDC issuer, certificate authority | ✅ | `https://<id>.gr7.<region>.eks.amazonaws.com`, `https://oidc.eks.<region>.amazonaws.com/id/<id>`, a real self-signed `kubernetes` CA. |
+| Endpoint, OIDC issuer, certificate authority | ✅ | With the k3s backend, the API server's `https://127.0.0.1:<port>` and its CA; without it, `https://<id>.gr7.<region>.eks.amazonaws.com` and a self-signed `kubernetes` CA. The OIDC issuer is `https://oidc.eks.<region>.amazonaws.com/id/<id>`. |
 | `UpdateClusterConfig` | ✅ | Endpoint access, VPC, logging, access config, upgrade policy, zonal shift, Auto Mode, remote networks, deletion protection, control plane scaling; one kind of change per call. |
 | `UpdateClusterVersion` | ✅ | Next minor version only, node version skew check unless `force`. |
 | Updates | ✅ | `DescribeUpdate`, `ListUpdates` (per node group, add-on or capability), `CancelUpdate`. |
@@ -34,6 +35,24 @@ service principal.
 | Certificate authority rotation | ✅ | Create, activate, delete and list CAs; the cluster bundle carries every distributed CA. |
 | EKS Connector | ✅ | `RegisterCluster` (pending, activation code) and `DeregisterCluster`; `ListClusters include=all`. |
 | Insights | 🟡 | Computed from cluster state (version skew, add-on compatibility, AL2 end of support, deprecated APIs), not from a running cluster. |
+
+## Kubernetes API
+
+With `MWS_EKS_BACKEND=k3s` (or `auto`, the binary's default, when a Docker
+daemon answers) every cluster runs a k3s server container
+`mws-eks-<name>-<id>` for its Kubernetes version (image per minor, override
+with `MWS_EKS_K3S_IMAGE`). The cluster stays `CREATING` until the API server
+is ready, `UpdateClusterVersion` restarts it on the next version's image with
+its data kept, and `DeleteCluster` removes the container and its volume.
+
+| Feature | Status | Details |
+| --- | :---: | --- |
+| API server | ✅ | A real kube-apiserver, scheduler and controller manager (k3s, SQLite datastore); `DescribeCluster` reports its endpoint and CA. |
+| IAM authentication | ✅ | A token webhook checks `aws eks get-token` / `aws-iam-authenticator` tokens (a presigned STS `GetCallerIdentity` signing `x-k8s-aws-id`): the SigV4 signature, the cluster name, the 15-minute limit and the credentials, so expired sessions and deleted keys stop working. |
+| Access entries | ✅ | The username (with `{{SessionName}}`, `{{AccountID}}`, ... templates), Kubernetes groups and `extra` (`arn`, `canonicalArn`, `sessionName`, ...) come from the caller's access entry; principals without one are unauthenticated. In `API_AND_CONFIG_MAP` and `CONFIG_MAP` mode the cluster creator is `kubernetes-admin` in `system:masters`. |
+| Access policies | ✅ | An authorization webhook grants what the entry's access policies allow (cluster admin, admin, edit, view, admin view), at cluster or namespace scope; Kubernetes RBAC for the entry's groups applies as well. |
+| Nodes | 🟡 | Each managed node group instance is registered as a `Ready` Node (named by its private DNS name, `aws:///<az>/<id>` provider ID, EKS and topology labels, taints, capacity by instance type) and removed when the instance goes. No kubelet runs, so pods are scheduled but never start. |
+| Control plane logs | ✅ | The enabled log types go to the `/aws/eks/<cluster>/cluster` log group (created by EKS) in EKS's streams: `kube-apiserver-<hex>` (server output), `kube-apiserver-audit-<hex>` (the API server's audit events, Metadata level), `authenticator-<hex>` (aws-iam-authenticator's `access granted` / `access denied` lines), `kube-controller-manager-<hex>` and `kube-scheduler-<hex>`. k3s runs the components in one process, so their output is told apart by the Go source file each line names. |
 
 ## Managed node groups
 
@@ -50,7 +69,7 @@ service principal.
 | Labels, taints, update config, node repair | ✅ | Stored and returned, with EKS's validation. |
 | Remote access | ✅ | A `eks-remoteAccess-*` security group opening SSH when no source groups are given. |
 | Customer launch templates | ✅ | Copied into EKS's launch template: their instance type, user data, block devices, security groups and AMI (for `CUSTOM`) are kept, and EKS adds the instance profile. |
-| Spot capacity | 🟡 | The group's instances distribution and capacity rebalancing are set for Spot, but Auto Scaling launches on demand. |
+| Spot capacity | ✅ | `SPOT` node groups get an all-Spot instances distribution with capacity rebalancing, and their nodes are Spot instances (`InstanceLifecycle: spot`). |
 
 ## Access, identity and add-ons
 
@@ -70,8 +89,8 @@ service principal.
 
 | Feature | Status | Details |
 | --- | :---: | --- |
-| Kubernetes API | ❌ | No API server or kubelet runs, so `kubectl` cannot reach the endpoint and nodes, Fargate pods, add-ons and capabilities run no workloads. |
-| Control plane logs | ❌ | Logging settings are stored; nothing is written to CloudWatch Logs. |
+| Workloads | ❌ | No kubelet runs (it would need privileged containers), so pods, Fargate pods, add-ons and capabilities run nothing. Without Docker there is no API server at all. |
+| Control plane logs without Docker | ❌ | With the metadata backend there is no API server, so nothing is written to CloudWatch Logs. |
 | Events and metrics | ❌ | EKS publishes no EventBridge events or CloudWatch metrics. |
 
 See also: [all services](README.md) · [EC2 and VPC](ec2.md) · [authentication and authorization](../security.md).

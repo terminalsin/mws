@@ -13,16 +13,26 @@ use mws_acm::Acm;
 use mws_acmpca::PrivateCa;
 use mws_amplify::Amplify;
 use mws_autoscaling::AutoScaling;
+use mws_ce::CostExplorer;
 use mws_cloudformation::CloudFormation;
+use mws_cloudtrail::CloudTrail;
+use mws_cloudtrail_data::CloudTrailData;
 use mws_cloudwatch::CloudWatch;
+use mws_codeartifact::CodeArtifact;
 use mws_core::{Environment, Service};
 use mws_ec2::{BackendChoice, Ec2};
+use mws_ecr::Ecr;
+use mws_ecr_public::EcrPublic;
+use mws_efs::Efs;
 use mws_eks::Eks;
+use mws_elasticache::ElastiCache;
 use mws_elb::{Elb, ElbConfig};
 use mws_events::Events;
 use mws_firehose::Firehose;
 use mws_globalaccelerator::GlobalAccelerator;
+use mws_guardduty::GuardDuty;
 use mws_iam::{Iam, IamConfig};
+use mws_identitystore::IdentityStore;
 use mws_imagebuilder::ImageBuilder;
 use mws_kinesis::Kinesis;
 use mws_kms::Kms;
@@ -40,10 +50,15 @@ use mws_s3control::S3Control;
 use mws_secretsmanager::SecretsManager;
 use mws_securityhub::SecurityHub;
 use mws_server::{Gateway, Scenario, Store};
+pub use mws_servicequotas::catalog::Profile as QuotaProfile;
+use mws_servicequotas::ServiceQuotas;
 use mws_ses::Ses;
 use mws_sns::Sns;
 use mws_sqs::Sqs;
 use mws_ssm::Ssm;
+use mws_ssoadmin::SsoAdmin;
+use mws_ssooidc::SsoOidc;
+use mws_ssoportal::SsoPortal;
 use mws_sts::Sts;
 
 #[derive(Debug, Clone, Default)]
@@ -64,6 +79,10 @@ pub struct Config {
     pub ec2_backend: BackendChoice,
     /// The Docker-compatible CLI (`MWS_EC2_DOCKER`, e.g. `podman`).
     pub ec2_docker_cli: Option<String>,
+    /// Which quota values accounts start with (`MWS_QUOTA_PROFILE`:
+    /// `established`, the default, or `new-account` for AWS's exact
+    /// new-account defaults such as 5 standard EC2 vCPUs).
+    pub quota_profile: QuotaProfile,
     /// Treat SES identities as verified as soon as they are created
     /// (`MWS_SES_AUTO_VERIFY=1`), instead of waiting for the verification
     /// link to be followed or the DNS records to appear. AWS never does.
@@ -78,6 +97,36 @@ pub struct Config {
     /// The host address database ports are published on (`MWS_RDS_BIND`,
     /// default `127.0.0.1`).
     pub rds_bind: Option<String>,
+    /// What runs EKS clusters' Kubernetes API servers (`MWS_EKS_BACKEND`:
+    /// `auto`, `k3s` or `metadata`). The binary defaults to `auto` (k3s in
+    /// Docker when a daemon answers); the library default runs nothing.
+    pub eks_backend: mws_eks::kube::BackendChoice,
+    /// The Docker-compatible CLI for EKS (`MWS_EKS_DOCKER`; falls back to
+    /// `MWS_EC2_DOCKER`).
+    pub eks_docker_cli: Option<String>,
+    /// The host address API servers are published on (`MWS_EKS_BIND`,
+    /// default `127.0.0.1`).
+    pub eks_bind: Option<String>,
+    /// Where EFS keeps file system data, one directory per file system
+    /// (`MWS_EFS_DIR`). `mws-efs` in the temp directory when unset.
+    pub efs_dir: Option<PathBuf>,
+    /// The registry host ECR repository URIs name
+    /// (`MWS_ECR_REGISTRY_HOST`, e.g. `localhost:4566`; `{account}` and
+    /// `{region}` are replaced). AWS's `<account>.dkr.ecr.<region>.amazonaws.com`
+    /// when unset.
+    pub ecr_registry_host: Option<String>,
+    /// The registry host (and path) ECR Public repository URIs name
+    /// (`MWS_ECR_PUBLIC_REGISTRY_HOST`, e.g. `localhost:4566/public.ecr.aws`);
+    /// `public.ecr.aws` when unset.
+    pub ecr_public_registry_host: Option<String>,
+    /// What runs ElastiCache nodes (`MWS_ELASTICACHE_BACKEND`: `auto`,
+    /// `docker` or `metadata`). The binary defaults to `auto`; the library
+    /// default runs nothing.
+    pub elasticache_backend: mws_elasticache::BackendChoice,
+    /// The Docker-compatible CLI for ElastiCache (`MWS_ELASTICACHE_DOCKER`).
+    pub elasticache_docker_cli: Option<String>,
+    /// The host ElastiCache endpoints name (`MWS_ELASTICACHE_HOST`,
+    pub elasticache_host: Option<String>,
 }
 
 impl Config {
@@ -104,12 +153,33 @@ impl Config {
             }),
             Err(_) => BackendChoice::Auto,
         };
+        let quota_profile = match std::env::var("MWS_QUOTA_PROFILE") {
+            Ok(v) if !v.is_empty() => QuotaProfile::parse(&v).unwrap_or_else(|| {
+                tracing::warn!("unknown MWS_QUOTA_PROFILE {v:?}; using established");
+                Default::default()
+            }),
+            _ => Default::default(),
+        };
         let rds_backend = match std::env::var("MWS_RDS_BACKEND") {
             Ok(v) => mws_rds::BackendChoice::parse(&v).unwrap_or_else(|| {
                 tracing::warn!("unknown MWS_RDS_BACKEND {v:?}; using auto");
                 mws_rds::BackendChoice::Auto
             }),
             Err(_) => mws_rds::BackendChoice::Auto,
+        };
+        let eks_backend = match std::env::var("MWS_EKS_BACKEND") {
+            Ok(v) => mws_eks::kube::BackendChoice::parse(&v).unwrap_or_else(|| {
+                tracing::warn!("unknown MWS_EKS_BACKEND {v:?}; using auto");
+                mws_eks::kube::BackendChoice::Auto
+            }),
+            Err(_) => mws_eks::kube::BackendChoice::Auto,
+        };
+        let elasticache_backend = match std::env::var("MWS_ELASTICACHE_BACKEND") {
+            Ok(v) => mws_elasticache::BackendChoice::parse(&v).unwrap_or_else(|| {
+                tracing::warn!("unknown MWS_ELASTICACHE_BACKEND {v:?}; using auto");
+                mws_elasticache::BackendChoice::Auto
+            }),
+            Err(_) => mws_elasticache::BackendChoice::Auto,
         };
         let var = |name: &str| std::env::var(name).ok().filter(|v| !v.is_empty());
         Self {
@@ -119,11 +189,21 @@ impl Config {
             skip_federation_signature_verification: skip,
             ec2_backend,
             ec2_docker_cli: std::env::var("MWS_EC2_DOCKER").ok().filter(|v| !v.is_empty()),
+            quota_profile,
             ses_auto_verify: std::env::var("MWS_SES_AUTO_VERIFY")
                 .is_ok_and(|v| matches!(v.as_str(), "1" | "true" | "yes")),
             rds_backend,
             rds_docker_cli: var("MWS_RDS_DOCKER").or_else(|| var("MWS_EC2_DOCKER")),
             rds_bind: var("MWS_RDS_BIND"),
+            eks_backend,
+            eks_docker_cli: var("MWS_EKS_DOCKER").or_else(|| var("MWS_EC2_DOCKER")),
+            eks_bind: var("MWS_EKS_BIND"),
+            efs_dir: path("MWS_EFS_DIR"),
+            ecr_registry_host: std::env::var("MWS_ECR_REGISTRY_HOST").ok().filter(|v| !v.is_empty()),
+            ecr_public_registry_host: std::env::var("MWS_ECR_PUBLIC_REGISTRY_HOST").ok().filter(|v| !v.is_empty()),
+            elasticache_backend,
+            elasticache_docker_cli: var("MWS_ELASTICACHE_DOCKER"),
+            elasticache_host: var("MWS_ELASTICACHE_HOST"),
         }
     }
 }
@@ -148,11 +228,14 @@ pub struct Mws {
     pub firehose: Firehose,
     pub cloudwatch: CloudWatch,
     pub ec2: Ec2,
+    pub guardduty: GuardDuty,
     pub amplify: Amplify,
     pub globalaccelerator: GlobalAccelerator,
     pub marketplace_entitlement: Entitlement,
     pub marketplace_metering: Metering,
     pub cloudformation: CloudFormation,
+    pub servicequotas: ServiceQuotas,
+    pub ce: CostExplorer,
     pub ram: Ram,
     pub scep: ScepConnector,
     pub securityhub: SecurityHub,
@@ -162,6 +245,12 @@ pub struct Mws {
     pub ses: Ses,
     pub rds: Rds,
     pub eks: Eks,
+    pub efs: Efs,
+    pub codeartifact: CodeArtifact,
+    pub cloudtrail: CloudTrail,
+    pub ecr: Ecr,
+    pub ecr_public: EcrPublic,
+    pub elasticache: ElastiCache,
 }
 
 /// Build the gateway with every service MWS emulates.
@@ -236,6 +325,7 @@ fn build_with_store(config: Config, store: Option<Arc<Store>>) -> Mws {
     s3control.set_lambda(lambda.clone());
     s3.set_object_lambda_invoker(Arc::new(lambda.clone()));
     let ssm = Ssm::new(kms.clone());
+    let codeartifact = CodeArtifact::new(Some(kms.clone()));
     let events = Events::new().with_lambda(lambda.clone()).with_logs(logs.clone()).with_sts(sts.clone());
     events.register_target_sink("sqs", Arc::new(sinks::SqsTarget(sqs.clone())));
     events.set_health_checks(Arc::new(sinks::Route53HealthChecks(route53.clone())));
@@ -291,16 +381,38 @@ fn build_with_store(config: Config, store: Option<Arc<Store>>) -> Mws {
     let ec2 = Ec2::new(config.ec2_backend.resolve(config.ec2_docker_cli.as_deref()));
     tracing::info!(backend = ec2.backend_name(), "EC2 compute backend");
     ec2.set_instance_roles(Arc::new(links::Ec2InstanceRoles { iam: iam.clone(), sts: sts.clone() }));
+    let guardduty = GuardDuty::new();
+    guardduty.set_event_sink(Arc::new(sinks::GuardDutyToEvents(events.clone())));
+    guardduty.set_finding_exporter(Arc::new(links::GuardDutyToS3(s3.clone())));
+    guardduty.set_organizations(Arc::new(links::GuardDutyOrganizations(organizations.clone())));
     let amplify = Amplify::with_services(s3.clone(), route53.clone());
     let globalaccelerator = GlobalAccelerator::new();
     globalaccelerator.add_endpoint_directory(Arc::new(links::GlobalAcceleratorEc2(ec2.clone())));
     route53.add_alias_resolver(Arc::new(links::Route53ToGlobalAccelerator(globalaccelerator.clone())));
     let marketplace_entitlement = Entitlement::new(config.iam.account_id.clone());
     let marketplace_metering = Metering::new(marketplace_entitlement.clone());
+    let servicequotas = ServiceQuotas::new();
+    servicequotas.set_profile(config.quota_profile);
+    servicequotas.set_organizations(Arc::new(links::QuotaOrganizations(organizations.clone())));
+    servicequotas.set_usage_source(Arc::new(links::QuotaUsage { ec2: ec2.clone(), s3: s3.clone(), iam: iam.clone() }));
+    servicequotas.set_metric_publisher(Arc::new(links::UsageToCloudWatch(cloudwatch.clone())));
+    ec2.set_service_quotas(servicequotas.clone());
+    s3.set_service_quotas(servicequotas.clone());
+    iam.set_service_quotas(servicequotas.clone());
+    lambda.set_service_quotas(servicequotas.clone());
+    cloudwatch.set_service_quotas(servicequotas.clone());
+    let ce = CostExplorer::new();
+    ce.set_account_directory(Arc::new(links::CostAccounts(organizations.clone())));
+    ce.set_anomaly_notifier(Arc::new(links::AnomalyAlerts(sns.clone())));
+    let identitystore = IdentityStore::new(iam.clone());
+    let ssoadmin = SsoAdmin::new(iam.clone(), identitystore.clone(), organizations.clone(), kms.clone());
+    let ssooidc = SsoOidc::new(identitystore.clone(), ssoadmin.clone(), sts.clone());
+    let ssoportal = SsoPortal::new(ssooidc.clone(), ssoadmin.clone(), sts.clone(), organizations.clone());
     let securityhub = SecurityHub::new();
     securityhub.set_organizations(Arc::new(links::SecurityHubOrganizations(organizations.clone())));
     securityhub.set_event_sink(Arc::new(links::SecurityHubToEvents(events.clone())));
     securityhub.set_export_sink(Arc::new(links::SecurityHubExports(s3.clone())));
+    guardduty.set_security_hub(Arc::new(links::GuardDutyToSecurityHub(securityhub.clone())));
     let imagebuilder = ImageBuilder::with_ec2(ec2.clone());
     imagebuilder.set_s3(Arc::new(s3.clone()));
     imagebuilder.set_ssm(Arc::new(ssm.clone()));
@@ -344,7 +456,52 @@ fn build_with_store(config: Config, store: Option<Arc<Store>>) -> Mws {
         ec2: ec2.clone(),
         iam: iam.clone(),
         autoscaling: autoscaling.clone(),
+        logs: logs.clone(),
     }));
+    eks.set_credentials(vec![iam.credential_store(), sts.credential_store()]);
+    if let Some(cp) = config.eks_backend.resolve(config.eks_docker_cli.as_deref(), config.eks_bind.as_deref()) {
+        tracing::info!(backend = cp.name(), "EKS Kubernetes control plane backend");
+        eks.set_control_plane(cp);
+    }
+    let efs = Efs::new(ec2.clone(), kms.clone(), config.efs_dir.clone().unwrap_or_else(Efs::default_root));
+    ec2.add_launch_extension(efs.instance_support());
+    let cloudtrail = CloudTrail::new()
+        .with_s3(s3.clone())
+        .with_logs(logs.clone())
+        .with_sts(sts.clone())
+        .with_kms(kms.clone())
+        .with_sns(sns.clone())
+        .with_events(events.clone());
+    cloudtrail.set_organizations(organizations.view());
+    let ecr = Ecr::new().with_kms(kms.clone());
+    ecr.exclude_registry_prefix(mws_ecr_public::REGISTRY_PATH_PREFIX);
+    let ecr_public = EcrPublic::new();
+    if let Some(host) = &config.ecr_public_registry_host {
+        ecr_public.set_registry_host(host.clone());
+    }
+    ecr.set_event_sink(Arc::new(sinks::EcrToEvents(events.clone())));
+    if let Some(host) = &config.ecr_registry_host {
+        ecr.set_registry_host(host.clone());
+    }
+    lambda.set_image_source(Arc::new(links::LambdaImages(ecr.clone())));
+    autoscaling.set_service_quotas(servicequotas.clone());
+    elb.set_service_quotas(servicequotas.clone());
+    rds.set_service_quotas(servicequotas.clone());
+    eks.set_service_quotas(servicequotas.clone());
+    let mut elasticache_options = mws_elasticache::Options::default();
+    if let Some(h) = &config.elasticache_host {
+        elasticache_options.advertise_host = h.clone();
+    }
+    let elasticache = ElastiCache::with_options(
+        config.elasticache_backend.resolve(config.elasticache_docker_cli.as_deref()),
+        elasticache_options,
+    );
+    tracing::info!(backend = elasticache.backend_name(), "ElastiCache engine backend");
+    elasticache
+        .set_network(Arc::new(links::ElastiCacheNetwork { ec2: ec2.clone(), partition: config.iam.partition.clone() }));
+    elasticache.set_snapshot_bucket(Arc::new(links::ElastiCacheSnapshots(s3.clone())));
+    elasticache.set_event_notifier(Arc::new(links::ElastiCacheNotifications(sns.clone())));
+    elasticache.set_metric_publisher(Arc::new(links::ElastiCacheToCloudWatch(cloudwatch.clone())));
     let cloudformation = CloudFormation::new();
     cloudformation.set_role_assumer(Arc::new(links::CloudFormationRoles(sts.clone(), iam.clone())));
     let authorizer = iam.authorizer();
@@ -372,6 +529,7 @@ fn build_with_store(config: Config, store: Option<Arc<Store>>) -> Mws {
         Arc::new(firehose.clone()),
         Arc::new(cloudwatch.clone()),
         Arc::new(ec2.clone()),
+        Arc::new(guardduty.clone()),
         Arc::new(amplify.clone()),
         Arc::new(globalaccelerator.clone()),
         Arc::new(rds.clone()),
@@ -379,6 +537,12 @@ fn build_with_store(config: Config, store: Option<Arc<Store>>) -> Mws {
         // its own `X-Amz-Target`.
         Arc::new(marketplace_metering.clone()),
         Arc::new(marketplace_entitlement.clone()),
+        Arc::new(servicequotas.clone()),
+        Arc::new(ce.clone()),
+        Arc::new(identitystore),
+        Arc::new(ssoadmin),
+        Arc::new(ssooidc),
+        Arc::new(ssoportal),
         Arc::new(ram.clone()),
         Arc::new(scep.clone()),
         Arc::new(securityhub.clone()),
@@ -392,6 +556,13 @@ fn build_with_store(config: Config, store: Option<Arc<Store>>) -> Mws {
         Arc::new(ses.v2()),
         Arc::new(ses.clone()),
         Arc::new(eks.clone()),
+        Arc::new(efs.clone()),
+        Arc::new(codeartifact.clone()),
+        Arc::new(cloudtrail.clone()),
+        Arc::new(CloudTrailData::new(cloudtrail.clone())),
+        Arc::new(ecr.clone()),
+        Arc::new(ecr_public.clone()),
+        Arc::new(elasticache.clone()),
         Arc::new(cloudformation.clone()),
     ];
     // CloudFormation deploys resources through the other services' APIs.
@@ -403,6 +574,10 @@ fn build_with_store(config: Config, store: Option<Arc<Store>>) -> Mws {
     let mut gateway = gateway
         .scenario_principal(config.iam.root_access_key_id.clone())
         .environment(Environment { partition: config.iam.partition.clone(), ..Environment::default() })
+        .request_observer(Arc::new(servicequotas.clone()))
+        .request_observer(Arc::new(ce.clone()))
+        // CloudTrail records every API call the gateway dispatches.
+        .observer(Arc::new(cloudtrail.clone()))
         .authorizer(authorizer);
     for c in credential_stores {
         gateway = gateway.credentials(c);
@@ -429,11 +604,14 @@ fn build_with_store(config: Config, store: Option<Arc<Store>>) -> Mws {
         firehose,
         cloudwatch,
         ec2,
+        guardduty,
         amplify,
         globalaccelerator,
         marketplace_entitlement,
         marketplace_metering,
         cloudformation,
+        servicequotas,
+        ce,
         ram,
         scep,
         securityhub,
@@ -443,6 +621,12 @@ fn build_with_store(config: Config, store: Option<Arc<Store>>) -> Mws {
         ses,
         rds,
         eks,
+        efs,
+        codeartifact,
+        cloudtrail,
+        ecr,
+        ecr_public,
+        elasticache,
     }
 }
 

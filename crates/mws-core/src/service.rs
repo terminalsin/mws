@@ -295,6 +295,14 @@ pub trait Service: Send + Sync {
         false
     }
 
+    /// Whether `request` carries credentials of this service's own that
+    /// name no caller (a container registry's anonymous bearer token). The
+    /// gateway hands such requests to [`Service::handle`] as anonymous
+    /// instead of refusing their `Authorization` header.
+    fn anonymous_credentials(&self, _request: &HttpRequest) -> bool {
+        false
+    }
+
     /// Run `operation` with its input as JSON keyed by Smithy member names
     /// (the shape `aws ... --cli-input-json` takes) and return its output
     /// the same way. MWS uses this to apply scenario files; the input is

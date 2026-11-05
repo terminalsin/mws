@@ -1180,6 +1180,108 @@ impl mws_securityhub::ExportSink for SecurityHubExports {
     }
 }
 
+/// GuardDuty's view of AWS Organizations: accounts, and delegated
+/// administration registered with the caller's permissions.
+pub(crate) struct GuardDutyOrganizations(pub mws_organizations::Organizations);
+
+impl mws_guardduty::OrganizationLink for GuardDutyOrganizations {
+    fn organization(&self, account: &str) -> Option<mws_guardduty::OrgInfo> {
+        let o = self.0.organization_of(account)?;
+        Some(mws_guardduty::OrgInfo {
+            id: o.id,
+            management_account: o.management_account,
+            accounts: o
+                .accounts
+                .into_iter()
+                .map(|a| mws_guardduty::OrgAccount { id: a.id, email: a.email, joined: a.joined, status: a.status })
+                .collect(),
+        })
+    }
+
+    fn register_admin(&self, ctx: &RequestContext, admin: &str) -> Result<(), mws_core::ServiceError> {
+        // AWS makes these Organizations calls with the caller's credentials.
+        for action in ["organizations:EnableAWSServiceAccess", "organizations:RegisterDelegatedAdministrator"] {
+            ctx.authorize(action, "*", mws_core::ConditionContext::new())?;
+        }
+        self.0
+            .register_delegated_administrator_for_service(
+                &ctx.caller.account_id,
+                admin,
+                mws_guardduty::SERVICE_PRINCIPAL,
+                chrono::Utc::now(),
+            )
+            .map_err(guardduty_delegation_error)
+    }
+
+    fn deregister_admin(&self, ctx: &RequestContext, admin: &str) -> Result<(), mws_core::ServiceError> {
+        ctx.authorize("organizations:DeregisterDelegatedAdministrator", "*", mws_core::ConditionContext::new())?;
+        self.0
+            .deregister_delegated_administrator_for_service(
+                &ctx.caller.account_id,
+                admin,
+                mws_guardduty::SERVICE_PRINCIPAL,
+            )
+            .map_err(guardduty_delegation_error)
+    }
+}
+
+fn guardduty_delegation_error(e: mws_organizations::DelegationError) -> mws_core::ServiceError {
+    use mws_organizations::DelegationError;
+    let message = match e {
+        DelegationError::NotManagementAccount => "the caller is not the management account of an organization",
+        DelegationError::AccountNotInOrganization => "the account is not a member of the organization",
+        DelegationError::ManagementAccount => "the management account cannot be a delegated administrator",
+        DelegationError::NotAllFeatures => "the organization does not have all features enabled",
+    };
+    mws_core::ServiceError::client("BadRequestException", 400, message)
+}
+
+/// GuardDuty publishing destinations: findings exported into S3 as
+/// `guardduty.amazonaws.com`, SSE-KMS under the destination's key.
+pub(crate) struct GuardDutyToS3(pub mws_s3::S3);
+
+impl mws_guardduty::FindingExporter for GuardDutyToS3 {
+    fn export(&self, _ctx: &RequestContext, e: mws_guardduty::FindingExport) -> Result<(), String> {
+        let path = e.destination_arn.rsplit(":::").next().unwrap_or_default();
+        let (bucket, prefix) = path.split_once('/').unwrap_or((path, ""));
+        let key = match prefix.trim_end_matches('/') {
+            "" => e.key.clone(),
+            p => format!("{p}/{}", e.key),
+        };
+        let put = mws_s3::ServicePutObject {
+            bucket,
+            key: &key,
+            body: e.body,
+            content_type: "application/octet-stream",
+            service_principal: mws_guardduty::SERVICE_PRINCIPAL,
+            source_account: &e.account,
+            source_arn: &e.detector_arn,
+            acl: None,
+            partition: &e.partition,
+        };
+        self.0.put_object_as_service_kms(put, &e.kms_key_arn).map(|_| ()).map_err(|err| err.to_string())
+    }
+}
+
+/// GuardDuty findings imported into Security Hub as product `aws/guardduty`.
+pub(crate) struct GuardDutyToSecurityHub(pub mws_securityhub::SecurityHub);
+
+impl mws_guardduty::SecurityHubSink for GuardDutyToSecurityHub {
+    fn import_findings(&self, ctx: &RequestContext, account: &str, region: &str, findings: Vec<serde_json::Value>) {
+        let r = self.0.import_findings_as_service(
+            ctx,
+            account,
+            region,
+            "aws/guardduty",
+            mws_guardduty::SERVICE_PRINCIPAL,
+            findings,
+        );
+        for (id, code, message) in r.failed {
+            tracing::debug!(%id, %code, %message, "Security Hub rejected a GuardDuty finding");
+        }
+    }
+}
+
 /// Route 53 alias records that target an accelerator's DNS name answer with
 /// its static IP addresses.
 pub(crate) struct Route53ToGlobalAccelerator(pub mws_globalaccelerator::GlobalAccelerator);
@@ -1300,5 +1402,270 @@ impl mws_rds::ExportStore for RdsExports {
             .await
             .map(|_| ())
             .map_err(|e| format!("{}: {}", e.code, e.message))
+    }
+}
+
+/// Lambda container images come from ECR. Resolving one at
+/// `CreateFunction`/`UpdateFunctionCode` is a pull by the caller; starting
+/// an execution environment fetches the resolved digest as Lambda.
+pub struct LambdaImages(pub mws_ecr::Ecr);
+
+impl LambdaImages {
+    fn convert(&self, image: mws_ecr::PulledImage) -> mws_lambda::ContainerImage {
+        let blob = |d: &mws_oci::Descriptor, data: bytes::Bytes| mws_lambda::ImageBlob {
+            digest: d.digest.clone(),
+            media_type: d.media_type.clone(),
+            data,
+        };
+        mws_lambda::ContainerImage {
+            resolved_uri: self.0.image_uri(&image.location, &image.resolved_digest),
+            resolved_digest: image.resolved_digest,
+            digest: image.digest,
+            manifest: bytes::Bytes::from(image.manifest.into_bytes()),
+            manifest_media_type: image.media_type,
+            config: blob(&image.config, image.config_data),
+            layers: image.layers.into_iter().map(|(d, data)| blob(&d, data)).collect(),
+        }
+    }
+}
+
+impl mws_lambda::ImageSource for LambdaImages {
+    fn resolve(
+        &self,
+        ctx: &RequestContext,
+        uri: &str,
+        architecture: &str,
+    ) -> Result<mws_lambda::ContainerImage, mws_lambda::ImageError> {
+        let location =
+            self.0.locate_image(uri, &ctx.caller.account_id, &ctx.region).ok_or(mws_lambda::ImageError::Invalid)?;
+        match self.0.pull_image(Some(ctx), &location, architecture) {
+            Ok(image) => Ok(self.convert(image)),
+            Err(mws_ecr::PullError::NotFound) => Err(mws_lambda::ImageError::NotFound),
+            Err(mws_ecr::PullError::AccessDenied) => Err(mws_lambda::ImageError::AccessDenied),
+            Err(mws_ecr::PullError::Unsupported) => Err(mws_lambda::ImageError::Unsupported),
+        }
+    }
+
+    fn fetch(
+        &self,
+        account: &str,
+        region: &str,
+        resolved_uri: &str,
+        architecture: &str,
+    ) -> Option<mws_lambda::ContainerImage> {
+        let location = self.0.locate_image(resolved_uri, account, region)?;
+        self.0.pull_image(None, &location, architecture).ok().map(|i| self.convert(i))
+    }
+}
+
+/// Usage of the quotas other services enforce, for Service Quotas.
+pub struct QuotaUsage {
+    pub ec2: mws_ec2::Ec2,
+    pub s3: mws_s3::S3,
+    pub iam: mws_iam::Iam,
+}
+
+impl mws_servicequotas::UsageSource for QuotaUsage {
+    fn usage(&self, account: &str, region: &str, service: &str, code: &str) -> Option<f64> {
+        match (service, code) {
+            ("s3", "L-DC2B2D3D") => Some(self.s3.bucket_count(account) as f64),
+            ("iam", "L-FE177D64") => Some(self.iam.role_count(account) as f64),
+            ("ec2" | "vpc", _) => self.ec2.quota_usage(account, region, service, code),
+            _ => None,
+        }
+    }
+}
+
+/// Service Quotas publishing `AWS/Usage` metrics into CloudWatch.
+pub struct UsageToCloudWatch(pub mws_cloudwatch::CloudWatch);
+
+impl mws_servicequotas::MetricPublisher for UsageToCloudWatch {
+    fn publish(&self, data: Vec<mws_servicequotas::UsageDatum>) {
+        for d in data {
+            self.0.put_metric_as_service(mws_cloudwatch::ServiceMetric {
+                account: d.account,
+                region: d.region,
+                namespace: d.namespace,
+                metric_name: d.metric_name,
+                dimensions: d.dimensions,
+                unit: Some(d.unit),
+                timestamp: d.timestamp,
+                values: vec![(d.value, 1.0)],
+            });
+        }
+    }
+}
+
+/// Organizations as Service Quotas sees it (quota request templates).
+pub struct QuotaOrganizations(pub mws_organizations::Organizations);
+
+impl mws_servicequotas::OrganizationDirectory for QuotaOrganizations {
+    fn account(&self, account_id: &str) -> Option<mws_servicequotas::OrgAccount> {
+        let m = self.0.member_account(account_id)?;
+        Some(mws_servicequotas::OrgAccount {
+            management_account_id: m.management_account_id,
+            all_features: m.all_features,
+            joined_method: m.joined_method,
+            joined: m.joined,
+        })
+    }
+}
+
+/// Consolidated billing and account names for Cost Explorer.
+pub struct CostAccounts(pub mws_organizations::Organizations);
+
+impl mws_ce::AccountDirectory for CostAccounts {
+    fn payer(&self, account: &str) -> Option<String> {
+        self.0.member_account(account).map(|m| m.management_account_id)
+    }
+
+    fn name(&self, account: &str) -> Option<String> {
+        self.0.member_account(account).map(|m| m.name).filter(|n| !n.is_empty())
+    }
+}
+
+/// Cost anomaly alerts, published by `costalerts.amazonaws.com`.
+pub struct AnomalyAlerts(pub mws_sns::Sns);
+
+impl mws_ce::AnomalyNotifier for AnomalyAlerts {
+    fn notify(&self, ctx: &RequestContext, alert: mws_ce::AnomalyAlert) -> Result<(), String> {
+        self.0
+            .publish_as_service(
+                ctx,
+                &mws_sns::ServicePublish {
+                    topic_arn: &alert.topic_arn,
+                    service_principal: "costalerts.amazonaws.com",
+                    source_arn: &alert.subscription_arn,
+                    source_account: &alert.account,
+                    message: alert.message,
+                    subject: Some(alert.subject),
+                    attributes: Default::default(),
+                    message_group_id: None,
+                    message_deduplication_id: None,
+                },
+            )
+            .map(|_| ())
+            .map_err(|e| e.to_string())
+    }
+}
+
+/// ElastiCache subnet groups and security groups, read from EC2.
+pub(crate) struct ElastiCacheNetwork {
+    pub ec2: mws_ec2::Ec2,
+    pub partition: String,
+}
+
+fn subnet_info(s: mws_ec2::network::SubnetView) -> mws_elasticache::SubnetInfo {
+    mws_elasticache::SubnetInfo {
+        subnet_id: s.subnet_id,
+        vpc_id: s.vpc_id,
+        availability_zone: s.availability_zone,
+        ipv6: s.ipv6,
+    }
+}
+
+impl mws_elasticache::NetworkView for ElastiCacheNetwork {
+    fn subnet(&self, account: &str, region: &str, subnet_id: &str) -> Option<mws_elasticache::SubnetInfo> {
+        self.ec2.subnet_view(account, region, &self.partition, subnet_id).map(subnet_info)
+    }
+    fn default_subnets(&self, account: &str, region: &str) -> Vec<mws_elasticache::SubnetInfo> {
+        self.ec2.default_subnet_views(account, region, &self.partition).into_iter().map(subnet_info).collect()
+    }
+    fn security_group_vpc(&self, account: &str, region: &str, group_id: &str) -> Option<String> {
+        self.ec2.security_group_vpc(account, region, &self.partition, group_id)
+    }
+    fn default_security_group(&self, account: &str, region: &str, vpc_id: &str) -> Option<String> {
+        self.ec2.default_security_group(account, region, &self.partition, vpc_id)
+    }
+}
+
+/// ElastiCache snapshot exports to, and seeds from, S3, as
+/// `elasticache.amazonaws.com`.
+pub(crate) struct ElastiCacheSnapshots(pub mws_s3::S3);
+
+impl mws_elasticache::SnapshotBucket for ElastiCacheSnapshots {
+    fn export(
+        &self,
+        ctx: &RequestContext,
+        bucket: &str,
+        key: &str,
+        body: Vec<u8>,
+        source_arn: &str,
+    ) -> Result<(), mws_core::ServiceError> {
+        let account = source_arn.split(':').nth(4).unwrap_or_default();
+        let put = mws_s3::ServicePutObject {
+            bucket,
+            key,
+            body,
+            content_type: "application/octet-stream",
+            service_principal: "elasticache.amazonaws.com",
+            source_account: account,
+            source_arn,
+            acl: None,
+            partition: &ctx.partition,
+        };
+        let invalid =
+            |m: String| mws_core::ServiceError::new("InvalidParameterValue", 400, mws_core::ErrorFault::Client, m);
+        match self.0.put_object_as_service(put) {
+            Ok(_) => Ok(()),
+            Err(mws_s3::ServicePutError::NoSuchBucket) => Err(invalid(format!("The S3 bucket {bucket} does not exist."))),
+            Err(mws_s3::ServicePutError::AccessDenied { .. }) => Err(invalid(format!(
+                "No permission to access S3 bucket {bucket}: grant elasticache.amazonaws.com s3:PutObject in the bucket policy."
+            ))),
+            Err(e) => Err(invalid(format!("Could not write to S3 bucket {bucket}: {e}"))),
+        }
+    }
+
+    fn read(&self, s3_arn: &str) -> Option<Vec<u8>> {
+        let path = s3_arn.split(":::").nth(1)?;
+        let (bucket, key) = path.split_once('/')?;
+        self.0.object_bytes(bucket, key)
+    }
+}
+
+/// ElastiCache event notifications, published to SNS as
+/// `elasticache.amazonaws.com`.
+pub(crate) struct ElastiCacheNotifications(pub mws_sns::Sns);
+
+impl mws_elasticache::EventNotifier for ElastiCacheNotifications {
+    fn notify(&self, ctx: &RequestContext, topic_arn: &str, source_arn: &str, message: &str) {
+        let id = source_arn.rsplit(':').next().unwrap_or_default();
+        let account = source_arn.split(':').nth(4).unwrap_or_default();
+        let body = serde_json::json!({ message: id }).to_string();
+        let p = mws_sns::ServicePublish {
+            topic_arn,
+            service_principal: "elasticache.amazonaws.com",
+            source_arn,
+            source_account: account,
+            message: body,
+            subject: Some(message.to_string()),
+            attributes: Default::default(),
+            message_group_id: None,
+            message_deduplication_id: None,
+        };
+        if let Err(e) = self.0.publish_as_service(ctx, &p) {
+            tracing::debug!("ElastiCache notification to {topic_arn}: {e}");
+        }
+    }
+}
+
+/// ElastiCache publishes its `AWS/ElastiCache` metrics into CloudWatch.
+pub struct ElastiCacheToCloudWatch(pub mws_cloudwatch::CloudWatch);
+
+impl mws_elasticache::MetricPublisher for ElastiCacheToCloudWatch {
+    fn publish(&self, metrics: Vec<mws_elasticache::CacheMetric>) {
+        for m in metrics {
+            let Some(timestamp) = chrono::DateTime::from_timestamp_millis(m.timestamp) else { continue };
+            self.0.put_metric_as_service(mws_cloudwatch::ServiceMetric {
+                account: m.account,
+                region: m.region,
+                namespace: "AWS/ElastiCache".into(),
+                metric_name: m.metric_name.into(),
+                dimensions: m.dimensions,
+                unit: Some(m.unit.into()),
+                timestamp,
+                values: vec![(m.value, 1.0)],
+            });
+        }
     }
 }
