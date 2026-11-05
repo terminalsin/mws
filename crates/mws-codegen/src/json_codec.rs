@@ -9,7 +9,7 @@ use std::fmt::Write;
 use mws_smithy::{Member, Model, Shape, ShapeType};
 
 use crate::common::{de_fn_name, qualified_type, ser_fn_name, Constraints};
-use crate::naming::{ident, lower_camel, rust_str, snake_case, type_name};
+use crate::naming::{lower_camel, rust_str, type_name};
 use crate::rust_types::{field_name, presence, Presence, TypeGen};
 
 const RT: &str = "::mws_proto_json";
@@ -358,7 +358,6 @@ pub fn emit_invoke(model: &Model, ops: &[&Shape], de_mod: &str, ser_mod: &str, v
     );
     let _ = writeln!(w, "    match operation {{");
     for op in ops {
-        let method = ident(&snake_case(op.name()));
         let _ = writeln!(w, "        {} => {{", rust_str(op.name()));
         match &op.input {
             Some(i) => {
@@ -369,10 +368,10 @@ pub fn emit_invoke(model: &Model, ops: &[&Shape], de_mod: &str, ser_mod: &str, v
                     de_fn_name(model.expect(i))
                 );
                 let _ = writeln!(w, "            d.finish({})?;", rust_str(validation_error));
-                let _ = writeln!(w, "            let out = handler.{method}(ctx, input).await?;");
+                let _ = writeln!(w, "            let out = {}?;", crate::common::handler_call(op, "input"));
             }
             None => {
-                let _ = writeln!(w, "            let out = handler.{method}(ctx, ()).await?;");
+                let _ = writeln!(w, "            let out = {}?;", crate::common::handler_call(op, "()"));
             }
         }
         match &op.output {

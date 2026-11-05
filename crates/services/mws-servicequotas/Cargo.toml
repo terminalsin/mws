@@ -1,0 +1,20 @@
+[package]
+name = "mws-servicequotas"
+description = "Service Quotas for MWS: AWS quota codes and default values, increase requests approved on the emulated clock, quota request templates, utilization reports and AWS/Usage metrics; other services enforce the applied values."
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+async-trait.workspace = true
+chrono.workspace = true
+mws-core.workspace = true
+mws-proto-json.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+tokio = { workspace = true, features = ["rt", "time"] }
+tracing.workspace = true
+uuid.workspace = true
+
+[build-dependencies]
+mws-codegen.workspace = true

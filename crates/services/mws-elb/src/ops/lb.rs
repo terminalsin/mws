@@ -188,6 +188,14 @@ impl Elb {
         let id = names::hex_id(16);
         let arn = names::arn(ctx, &account, &format!("loadbalancer/{}/{}/{id}", names::type_prefix(&ty), input.name));
         self.authorize_create(ctx, "CreateLoadBalancer", &arn, &tags)?;
+        let limit = self.limit(
+            ctx,
+            match ty.as_str() {
+                "network" => "network-load-balancers",
+                "gateway" => "gateway-load-balancers",
+                _ => "application-load-balancers",
+            },
+        );
 
         let result = self.with_region(ctx, |r| {
             if let Some(existing) = r.load_balancers.values().find(|l| l.name() == input.name) {
@@ -204,11 +212,6 @@ impl Elb {
                 )));
             }
             let count = r.load_balancers.values().filter(|l| l.ty() == ty).count();
-            let limit = catalog::limit(match ty.as_str() {
-                "network" => "network-load-balancers",
-                "gateway" => "gateway-load-balancers",
-                _ => "application-load-balancers",
-            });
             if count >= limit {
                 return Err(errors::too_many_load_balancers(
                     "You have reached the maximum number of load balancers for your account",

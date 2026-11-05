@@ -21,6 +21,7 @@ mod ids;
 mod managed;
 mod ops;
 pub mod org;
+mod reserved;
 mod state;
 mod wire;
 
@@ -33,6 +34,7 @@ use mws_core::{HttpRequest, HttpResponse, RequestContext, Service, ServiceError,
 
 pub use api::{arn_account, DelegationGrant, InstanceProfileView, OidcProviderView, OutboundKey, RoleView, UserView};
 pub use org::{AccountOrganization, OrganizationView};
+pub use reserved::ReservedRoleSpec;
 pub use state::State;
 
 tokio::task_local! {
@@ -75,6 +77,8 @@ pub(crate) struct Inner {
     /// is always present; AWS Organizations adds member accounts.
     pub accounts: RwLock<BTreeMap<String, State>>,
     pub organizations: OnceLock<Arc<dyn OrganizationView>>,
+    /// Applied quota values (roles per account, managed policies per role).
+    pub quotas: OnceLock<mws_servicequotas::ServiceQuotas>,
     /// Activity the authorizer noted and IAM has yet to fold into `accounts`.
     pub activity: Mutex<activity::Pending>,
 }
@@ -97,6 +101,7 @@ impl Iam {
                 created_at: Utc::now(),
                 accounts: RwLock::new(BTreeMap::new()),
                 organizations: OnceLock::new(),
+                quotas: OnceLock::new(),
                 activity: Mutex::new(activity::Pending::default()),
             }),
         };
@@ -120,6 +125,26 @@ impl Iam {
     /// belongs to and which SCPs and RCPs apply.
     pub fn set_organizations(&self, view: Arc<dyn OrganizationView>) {
         let _ = self.inner.organizations.set(view);
+    }
+
+    /// Read applied quota values from Service Quotas (defaults otherwise).
+    pub fn set_service_quotas(&self, quotas: mws_servicequotas::ServiceQuotas) {
+        let _ = self.inner.quotas.set(quotas);
+    }
+
+    /// The applied value of an IAM quota for the current account. Never
+    /// call with the IAM state lock held.
+    pub(crate) fn quota(&self, ctx: &RequestContext, code: &str) -> usize {
+        let value = match self.inner.quotas.get() {
+            Some(q) => q.applied_value(&self.current_account(), "us-east-1", "iam", code, ctx.received_at),
+            None => mws_servicequotas::catalog::quota("iam", code).map_or(f64::INFINITY, |d| d.value),
+        };
+        value.clamp(0.0, usize::MAX as f64) as usize
+    }
+
+    /// The number of roles in `account`.
+    pub fn role_count(&self, account: &str) -> usize {
+        self.inner.accounts.read().expect("IAM state lock poisoned").get(account).map_or(0, |s| s.roles.len())
     }
 
     /// The organization `account_id` belongs to, if any.

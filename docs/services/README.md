@@ -1,5 +1,6 @@
 # Services
 
+MWS emulates 33 AWS services. Each is generated from AWS's official Smithy
 MWS emulates 30 AWS services. Each is generated from AWS's official Smithy
 model, so every operation in the model is routed and validated; operations
 outside the implemented set answer `NotImplemented`. Each service's page lists
@@ -25,6 +26,7 @@ Every service shares the same foundations:
 | [IAM](iam.md) | 180 / 180 | Users, groups, roles, policies, boundaries, MFA, certificates, access advisor, credential report, policy simulator |
 | [STS](sts.md) | 11 / 11 | `AssumeRole` and its variants, web identity and SAML federation with signature checks, session tags, `AssumeRoot` |
 | [Organizations](organizations.md) | 63 / 63 | Organizations, OUs, real member accounts, SCPs and RCPs enforced on every call |
+| [IAM Identity Center](identity-center.md) | 109 / 109 | Users and groups, permission sets provisioned as real `AWSReservedSSO_*` roles, device and PKCE sign-in, portal credentials, `CreateTokenWithIAM` |
 | [KMS](kms.md) | 56 / 56 | Symmetric, asymmetric, HMAC and post-quantum keys with real cryptography, key policies, grants, rotation |
 | [Private CA](acm-pca.md) | 23 / 23 | Root and subordinate CAs issuing real X.509 certificates, CRLs in S3, OCSP, audit reports |
 | [Connector for SCEP](pca-connector-scep.md) | 12 / 12 | Real SCEP endpoints enrolling devices with certificates from a Private CA shared through RAM |
@@ -40,6 +42,7 @@ Every service shares the same foundations:
 | --- | --- | --- |
 | [S3](s3.md) | 111 / 112 | Objects, multipart, versioning, checksums, policies, SSE, lifecycle, replication, notifications, Select, directory buckets |
 | [S3 Control](s3control.md) | 97 / 97 | Access points, Object Lambda, Batch Operations, Access Grants, multi-Region access points, Storage Lens |
+| [EFS](efs.md) | 31 / 31 | File systems as real directories, mount targets in VPC subnets, access points, policies, replication, mounts from Docker instances |
 
 ## Compute and networking
 
@@ -53,8 +56,16 @@ Every service shares the same foundations:
 | [Elastic Load Balancing](elb.md) | 80 / 80 | Application, Network and Classic Load Balancers whose listeners really proxy: rules, stickiness, HTTPS with ACM certificates, mutual TLS, Lambda targets, health checks, metrics |
 | [RDS and Aurora](rds.md) | 103 / 168 | PostgreSQL, MySQL and MariaDB instances and Aurora clusters that really run in Docker, snapshots and restores, read replicas, global databases, managed master passwords |
 | [EKS](eks.md) | 70 / 70 | Clusters in your VPC, managed node groups as Auto Scaling groups, add-ons, access entries, Pod Identity, OIDC providers |
+| [ECR](ecr.md) | 62 / 62 | A real Docker registry (`docker push`/`pull` with `GetAuthorizationToken`), lifecycle policies, replication, creation templates |
+| [ECR Public](ecr-public.md) | 23 / 23 | Public registries with aliases and catalog data, anonymous pulls, authenticated pushes |
 | [Route 53](route53.md) | 71 / 71 | Public and private hosted zones, all routing policies, health checks, DNSSEC key management, an optional real DNS responder |
 | [Amplify Hosting](amplify.md) | 37 / 37 | Apps and branches whose deployments are really served: manual and S3 deploys, Git builds, rewrites, basic auth, custom domains |
+
+## Databases
+
+| Service | Operations | What's emulated |
+| --- | --- | --- |
+| [ElastiCache](elasticache.md) | 77 / 77 | Valkey, Redis OSS and Memcached nodes as Docker containers, replication and cluster mode with failover and resharding, RBAC, TLS, CloudWatch metrics, snapshots to S3, serverless caches, global datastores |
 
 ## Application integration
 
@@ -79,12 +90,23 @@ Every service shares the same foundations:
 | --- | --- | --- |
 | [CloudWatch](cloudwatch.md) | 55 / 55 | Metrics, statistics and percentiles, metric math, alarms that act, dashboards, metric streams |
 | [CloudWatch Logs](logs.md) | 118 / 118 | Log events, filter patterns, Logs Insights, live tail, subscriptions, metric filters, exports |
+| [CloudTrail](cloudtrail.md) | 61 / 61 | Every API call recorded; trails delivering to S3, CloudWatch Logs and EventBridge; event history; Insights; Lake SQL queries, imports and channels |
 
 ## Marketplace
 
 | Service | Operations | What's emulated |
 | --- | --- | --- |
 | [Marketplace Metering and Entitlement](marketplace.md) | 5 / 5 | SaaS registration tokens, batch and hourly metering with AWS's dedup and time windows, signed `RegisterUsage`, entitlements, a seedable catalog |
+
+## Developer tools
+
+| Service | Operations | What's emulated |
+| --- | --- | --- |
+| [CodeArtifact](codeartifact.md) | 48 / 48 | Domains, repositories with upstreams and external connections, package groups, and npm, PyPI, Maven, Cargo, RubyGems, NuGet and Swift endpoints real clients use |
+## Cost and usage management
+
+| [Service Quotas](servicequotas.md) | 26 / 26 | AWS's quota codes and defaults, increase requests that services enforce, `AWS/Usage` metrics for quota alarms |
+| [Cost Explorer](ce.md) | 47 / 47 | Seeded and derived cost data, grouping and filters, forecasts, cost categories, allocation tags, anomaly alerts |
 
 ## How services connect
 
@@ -124,6 +146,11 @@ with the permissions AWS would use:
   and sends events to EventBridge and SNS.
 - Marketplace Metering and the Entitlement Service share one Marketplace
   catalog of products, subscriptions and entitlements.
+- EC2, S3, IAM, Lambda, Auto Scaling, ELB, RDS and EKS enforce Service
+  Quotas' applied values, and usage is published to CloudWatch's
+  `AWS/Usage` namespace.
+- Cost Explorer charges API calls at their request prices, follows
+  Organizations for consolidated billing and sends anomaly alerts to SNS.
 - Security Hub registers its delegated administrator in Organizations, sends
   findings events to EventBridge and exports findings to S3 with KMS.
 - Auto Scaling groups launch and terminate EC2 instances, register them with
@@ -138,3 +165,10 @@ with the permissions AWS would use:
 - EKS creates cluster security groups in EC2 and runs managed node groups as
   Auto Scaling groups with EKS launch templates and IAM instance profiles,
   from AMIs SSM publishes.
+- EFS mount targets are network interfaces in EC2 subnets, and Docker-backed
+  instances mount EFS file systems, subject to security groups and the file
+  system policy.
+- CodeArtifact authorization tokens act as the IAM principal that requested
+  them, and domains are encrypted with KMS keys.
+- CloudTrail records every API call and delivers it to S3 (log and signed
+  digest files), CloudWatch Logs, SNS and EventBridge.

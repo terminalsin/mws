@@ -25,19 +25,27 @@ mod firewall;
 mod handler;
 pub mod imds;
 mod keys;
+pub mod network;
 mod ops;
 mod public;
+mod quotas;
 mod state;
 mod util;
 mod volumes;
 
-use std::sync::{Arc, Mutex, MutexGuard, OnceLock};
+use std::sync::{Arc, Mutex, MutexGuard, OnceLock, RwLock};
 
 use mws_core::{HttpRequest, HttpResponse, RequestContext, Service, ServiceError};
 
-pub use backend::{BackendChoice, CommandOutput, ComputeBackend, DockerBackend, MetadataBackend, VolumeMount};
+pub use backend::{
+    BackendChoice, CommandOutput, ComputeBackend, DockerBackend, HostMount, LaunchExtension, LaunchExtras,
+    MetadataBackend, VolumeMount,
+};
 pub use ops::launch_template::ResolvedLaunchTemplate;
-pub use public::{InstanceInfo, SecurityGroupInfo, SubnetInfo, VpcInfo};
+pub use public::{
+    availability_zones, InstanceInfo, InstanceNetwork, SecurityGroupInfo, ServiceInterface, ServiceInterfaceError,
+    ServiceInterfaceRequest, SubnetInfo, VpcInfo,
+};
 use state::{RegionState, State};
 
 /// Credentials for an instance profile's role, as instance metadata serves
@@ -77,9 +85,11 @@ pub(crate) struct Inner {
     state: Mutex<State>,
     backend: Arc<dyn ComputeBackend>,
     roles: OnceLock<Arc<dyn InstanceRoleCredentials>>,
+    quotas: OnceLock<mws_servicequotas::ServiceQuotas>,
     imds: imds::ImdsState,
     firewalls: firewall::Applied,
     volume_jobs: volumes::VolumeQueue,
+    extensions: RwLock<Vec<Arc<dyn LaunchExtension>>>,
 }
 
 /// The EC2 service. Cheap to clone; clones share state.
@@ -101,9 +111,11 @@ impl Ec2 {
                 state: Mutex::new(State::default()),
                 backend,
                 roles: OnceLock::new(),
+                quotas: OnceLock::new(),
                 imds: Default::default(),
                 firewalls: Default::default(),
                 volume_jobs: Default::default(),
+                extensions: RwLock::default(),
             }),
         }
     }
@@ -111,6 +123,21 @@ impl Ec2 {
     /// Hand instance profile credentials out through instance metadata.
     pub fn set_instance_roles(&self, roles: Arc<dyn InstanceRoleCredentials>) {
         let _ = self.inner.roles.set(roles);
+    }
+
+    /// Let another service add mounts, boot hooks and the like to every
+    /// instance launch.
+    pub fn add_launch_extension(&self, extension: Arc<dyn LaunchExtension>) {
+        self.inner.extensions.write().expect("EC2 extensions lock poisoned").push(extension);
+    }
+
+    /// What the launch extensions add to `spec`.
+    pub(crate) fn extend_launch(&self, spec: &mut backend::LaunchSpec) {
+        let extensions = self.inner.extensions.read().expect("EC2 extensions lock poisoned").clone();
+        for e in extensions {
+            let extras = e.extend(spec);
+            spec.extras.merge(extras);
+        }
     }
 
     pub fn backend_name(&self) -> &'static str {

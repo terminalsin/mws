@@ -222,27 +222,38 @@ impl Rds {
         _input: t::DescribeAccountAttributesMessage,
     ) -> Result<t::AccountAttributesMessage, ServiceError> {
         authorize(ctx, "DescribeAccountAttributes", "*", ConditionContext::new())?;
+        let q = |code| self.quota(ctx, code);
+        let (instances, storage_max, parameter_groups, snapshots, subnet_groups, replicas, clusters, cluster_snapshots) = (
+            q(crate::quotas::DB_INSTANCES),
+            q(crate::quotas::ALLOCATED_STORAGE),
+            q(crate::quotas::PARAMETER_GROUPS),
+            q(crate::quotas::MANUAL_SNAPSHOTS),
+            q(crate::quotas::SUBNET_GROUPS),
+            q(crate::quotas::READ_REPLICAS),
+            q(crate::quotas::DB_CLUSTERS),
+            q(crate::quotas::MANUAL_CLUSTER_SNAPSHOTS),
+        );
         let used = self.with_region(ctx, |r| {
             let storage: i64 = r.instances.values().map(|i| i.db.allocated_storage.unwrap_or(0) as i64).sum();
             vec![
-                ("DBInstances", r.instances.len() as i64, 40),
+                ("DBInstances", r.instances.len() as i64, instances),
                 ("ReservedDBInstances", 0, 40),
-                ("AllocatedStorage", storage, 100000),
+                ("AllocatedStorage", storage, storage_max),
                 ("DBSecurityGroups", 0, 25),
                 ("AuthorizationsPerDBSecurityGroup", 0, 20),
                 (
                     "DBParameterGroups",
                     r.parameter_groups.values().filter(|g| !g.name.starts_with("default.")).count() as i64,
-                    50,
+                    parameter_groups,
                 ),
                 (
                     "ManualSnapshots",
                     r.snapshots.values().filter(|s| s.snapshot.snapshot_type.as_deref() == Some("manual")).count()
                         as i64,
-                    100,
+                    snapshots,
                 ),
                 ("EventSubscriptions", r.event_subscriptions.len() as i64, 20),
-                ("DBSubnetGroups", r.subnet_groups.len() as i64, 50),
+                ("DBSubnetGroups", r.subnet_groups.len() as i64, subnet_groups),
                 (
                     "OptionGroups",
                     r.option_groups
@@ -252,8 +263,8 @@ impl Rds {
                     20,
                 ),
                 ("SubnetsPerDBSubnetGroup", 0, 20),
-                ("ReadReplicasPerMaster", 0, 15),
-                ("DBClusters", r.clusters.len() as i64, 40),
+                ("ReadReplicasPerMaster", 0, replicas),
+                ("DBClusters", r.clusters.len() as i64, clusters),
                 (
                     "DBClusterParameterGroups",
                     r.cluster_parameter_groups.values().filter(|g| !g.name.starts_with("default.")).count() as i64,
@@ -266,7 +277,7 @@ impl Rds {
                         .values()
                         .filter(|s| s.snapshot.snapshot_type.as_deref() == Some("manual"))
                         .count() as i64,
-                    100,
+                    cluster_snapshots,
                 ),
                 ("CustomEndpointsPerDBCluster", 0, 5),
             ]

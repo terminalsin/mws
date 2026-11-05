@@ -17,6 +17,7 @@ http-body-util.workspace = true
 hyper.workspace = true
 hyper-util.workspace = true
 mws-core.workspace = true
+mws-servicequotas.workspace = true
 mws-event-pattern.workspace = true
 mws-iam-policy.workspace = true
 mws-logs.workspace = true
