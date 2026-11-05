@@ -27,10 +27,11 @@
 //! so attaching or detaching a volume commits the container's disk and
 //! recreates it with the new mounts: processes restart, files stay.
 
-use std::collections::HashMap;
 use std::process::Stdio;
 
 use tokio::process::Command;
+
+use std::collections::HashMap;
 
 use super::{
     AclRule, AllowRule, BackendError, CommandOutput, ComputeBackend, Firewall, LaunchSpec, Launched, Protocol,
@@ -75,11 +76,10 @@ pub struct DockerBackend {
     /// The address `host-gateway` stands for (where MWS listens), once
     /// looked up.
     host_gateway: std::sync::Mutex<Option<String>>,
+    helper_image: String,
     /// Serializes network creation, so concurrent launches into one VPC do
     /// not race to create its network.
     networks: tokio::sync::Mutex<()>,
-    /// The image that copies EBS volume data.
-    helper_image: String,
     /// How each container was launched, by handle, so it can be recreated
     /// with other volumes.
     specs: std::sync::Mutex<HashMap<String, LaunchSpec>>,
@@ -97,60 +97,13 @@ impl DockerBackend {
             cli: cli.into(),
             netfilter_image: (!off).then_some(image),
             host_gateway: std::sync::Mutex::new(None),
-            networks: tokio::sync::Mutex::new(()),
             helper_image: std::env::var("MWS_EC2_HELPER_IMAGE")
                 .ok()
                 .filter(|v| !v.is_empty())
                 .unwrap_or_else(|| "alpine:3.20".into()),
+            networks: tokio::sync::Mutex::new(()),
             specs: Default::default(),
         }
-    }
-
-    fn volume_name(id: &str) -> String {
-        format!("mws-ebs-{id}")
-    }
-
-    async fn volume_exists(&self, id: &str) -> bool {
-        self.run(&["volume".into(), "inspect".into(), Self::volume_name(id)]).await.is_ok()
-    }
-
-    async fn ensure_volume(&self, id: &str) -> Result<(), BackendError> {
-        self.run(&[
-            "volume".into(),
-            "create".into(),
-            "--label".into(),
-            format!("mws.ec2.ebs={id}"),
-            Self::volume_name(id),
-        ])
-        .await
-        .map(drop)
-    }
-
-    /// Copy one Docker volume's files into another.
-    async fn copy_volume(&self, from: &str, to: &str) -> Result<(), BackendError> {
-        self.run(&[
-            "run".into(),
-            "--rm".into(),
-            "--network".into(),
-            "none".into(),
-            "-v".into(),
-            format!("{}:/from:ro", Self::volume_name(from)),
-            "-v".into(),
-            format!("{}:/to", Self::volume_name(to)),
-            "--entrypoint".into(),
-            "/bin/sh".into(),
-            self.helper_image.clone(),
-            "-c".into(),
-            "cp -a /from/. /to/".into(),
-        ])
-        .await
-        .map(drop)
-    }
-
-    /// The image an instance's disk is committed to when its volumes
-    /// change.
-    fn volumes_image(instance_id: &str) -> String {
-        format!("mws-ec2-{instance_id}:volumes")
     }
 
     /// Run the CLI with `input` on its standard input.
@@ -202,34 +155,45 @@ impl DockerBackend {
         Some(ip)
     }
 
-    /// Whether a daemon answers (blocking; used once at startup).
-    pub fn daemon_available(&self) -> bool {
-        std::process::Command::new(&self.cli)
-            .args(["version", "--format", "{{.Server.Version}}"])
-            .stdin(Stdio::null())
-            .stdout(Stdio::null())
-            .stderr(Stdio::null())
-            .status()
-            .is_ok_and(|s| s.success())
+    fn volume_name(id: &str) -> String {
+        format!("mws-ebs-{id}")
     }
 
-    async fn run(&self, args: &[String]) -> Result<String, BackendError> {
-        let out = Command::new(&self.cli)
-            .args(args)
-            .stdin(Stdio::null())
-            .output()
-            .await
-            .map_err(|e| BackendError(format!("running {}: {e}", self.cli)))?;
-        if out.status.success() {
-            Ok(String::from_utf8_lossy(&out.stdout).trim().to_string())
-        } else {
-            Err(BackendError(format!(
-                "{} {} failed: {}",
-                self.cli,
-                args.first().map(String::as_str).unwrap_or_default(),
-                String::from_utf8_lossy(&out.stderr).trim()
-            )))
-        }
+    async fn volume_exists(&self, id: &str) -> bool {
+        self.run(&["volume".into(), "inspect".into(), Self::volume_name(id)]).await.is_ok()
+    }
+
+    async fn ensure_volume(&self, id: &str) -> Result<(), BackendError> {
+        self.run(&[
+            "volume".into(),
+            "create".into(),
+            "--label".into(),
+            format!("mws.ec2.ebs={id}"),
+            Self::volume_name(id),
+        ])
+        .await
+        .map(drop)
+    }
+
+    /// Copy one Docker volume's files into another.
+    async fn copy_volume(&self, from: &str, to: &str) -> Result<(), BackendError> {
+        self.run(&[
+            "run".into(),
+            "--rm".into(),
+            "--network".into(),
+            "none".into(),
+            "-v".into(),
+            format!("{}:/from:ro", Self::volume_name(from)),
+            "-v".into(),
+            format!("{}:/to", Self::volume_name(to)),
+            "--entrypoint".into(),
+            "/bin/sh".into(),
+            self.helper_image.clone(),
+            "-c".into(),
+            "cp -a /from/. /to/".into(),
+        ])
+        .await
+        .map(drop)
     }
 
     /// Create (and with `start`, run) the container for `spec`.
@@ -306,6 +270,42 @@ impl DockerBackend {
         let handle = id.lines().last().unwrap_or_default().to_string();
         self.specs.lock().expect("specs lock poisoned").insert(handle.clone(), spec.clone());
         Ok(handle)
+    }
+
+    /// Whether a daemon answers (blocking; used once at startup).
+    pub fn daemon_available(&self) -> bool {
+        std::process::Command::new(&self.cli)
+            .args(["version", "--format", "{{.Server.Version}}"])
+            .stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .status()
+            .is_ok_and(|s| s.success())
+    }
+
+    async fn run(&self, args: &[String]) -> Result<String, BackendError> {
+        let out = Command::new(&self.cli)
+            .args(args)
+            .stdin(Stdio::null())
+            .output()
+            .await
+            .map_err(|e| BackendError(format!("running {}: {e}", self.cli)))?;
+        if out.status.success() {
+            Ok(String::from_utf8_lossy(&out.stdout).trim().to_string())
+        } else {
+            Err(BackendError(format!(
+                "{} {} failed: {}",
+                self.cli,
+                args.first().map(String::as_str).unwrap_or_default(),
+                String::from_utf8_lossy(&out.stderr).trim()
+            )))
+        }
+    }
+
+    /// The image an instance's disk is committed to when its volumes
+    /// change.
+    fn volumes_image(instance_id: &str) -> String {
+        format!("mws-ec2-{instance_id}:volumes")
     }
 
     fn network_name(vpc_id: &str) -> String {

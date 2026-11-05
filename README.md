@@ -7,7 +7,7 @@
 [![CI](https://github.com/terminalsin/mws/actions/workflows/ci.yml/badge.svg?branch=master)](https://github.com/terminalsin/mws/actions/workflows/ci.yml)
 [![License: MIT OR Apache-2.0](https://img.shields.io/badge/license-MIT%20OR%20Apache--2.0-blue.svg)](#license)
 [![Rust 1.85+](https://img.shields.io/badge/rust-1.85%2B-orange.svg)](https://www.rust-lang.org)
-[![Services](https://img.shields.io/badge/AWS%20services-25-success.svg)](docs/services/README.md)
+[![Services](https://img.shields.io/badge/AWS%20services-26-success.svg)](docs/services/README.md)
 
 [Getting started](docs/getting-started.md) ·
 [Services](docs/services/README.md) ·
@@ -103,10 +103,11 @@ SDKs, S3 addressing, host-prefixed endpoints and calling as other identities.
 | [S3](docs/services/s3.md) | 111 / 112 | restXml |
 | [S3 Control](docs/services/s3control.md) | 97 / 97 | restXml |
 | [Lambda](docs/services/lambda.md) | 68 / 88 | restJson1 |
-| [EC2 and VPC](docs/services/ec2.md) | 120 / 811 | ec2Query |
+| [EC2 and VPC](docs/services/ec2.md) | 164 / 811 | ec2Query |
 | [EC2 Image Builder](docs/services/imagebuilder.md) | 77 / 77 | restJson1 |
 | [Elastic Load Balancing](docs/services/elb.md) | 80 / 80 | awsQuery |
 | [Route 53](docs/services/route53.md) | 71 / 71 | restXml |
+| [Amplify Hosting](docs/services/amplify.md) | 37 / 37 | restJson1 |
 | [Global Accelerator](docs/services/globalaccelerator.md) | 56 / 56 | awsJson 1.1 |
 | [Private CA](docs/services/acm-pca.md) | 23 / 23 | awsJson 1.1 |
 | [Certificate Manager (ACM)](docs/services/acm.md) | 40 / 40 | awsJson 1.1 |

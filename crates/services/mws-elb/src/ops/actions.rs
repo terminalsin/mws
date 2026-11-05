@@ -245,12 +245,15 @@ pub(crate) fn normalize(
                 if c.client_secret.is_none() && c.use_existing_client_secret != Some(true) {
                     return Err(validation("A client secret must be specified for an authenticate-oidc action"));
                 }
+                if c.use_existing_client_secret == Some(true) || c.client_secret.is_none() {
+                    c.client_secret = existing_secret(r, &c.issuer, &c.client_id);
+                }
                 c.scope.get_or_insert_with(|| "openid".into());
                 c.session_cookie_name.get_or_insert_with(|| "AWSELBAuthSessionCookie".into());
                 c.session_timeout.get_or_insert(604_800);
                 c.on_unauthenticated_request.get_or_insert_with(|| "authenticate".into());
-                // ELB never shows the secret again.
-                c.client_secret = None;
+                // Kept for the token endpoint; [`redact`] hides it from
+                // API responses, as ELB never shows it again.
                 c.use_existing_client_secret = None;
                 a.authenticate_oidc_config = Some(c);
             }
@@ -273,4 +276,24 @@ pub(crate) fn normalize(
         out.push(a);
     }
     Ok(out)
+}
+
+/// The client secret already stored for this IdP client.
+fn existing_secret(r: &RegionState, issuer: &str, client_id: &str) -> Option<String> {
+    let listeners = r.listeners.values().flat_map(|l| l.listener.default_actions.iter().flatten());
+    let rules = r.rules.values().flat_map(|x| x.rule.actions.iter().flatten());
+    listeners
+        .chain(rules)
+        .filter_map(|a| a.authenticate_oidc_config.as_ref())
+        .find(|c| c.issuer == issuer && c.client_id == client_id)
+        .and_then(|c| c.client_secret.clone())
+}
+
+/// Hide OIDC client secrets from API responses.
+pub(crate) fn redact(actions: &mut Option<Vec<t::Action>>) {
+    for a in actions.iter_mut().flatten() {
+        if let Some(c) = a.authenticate_oidc_config.as_mut() {
+            c.client_secret = None;
+        }
+    }
 }

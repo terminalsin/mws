@@ -6,14 +6,17 @@
 mod acm;
 mod acmpca;
 mod acmpca_parity;
+mod amplify;
 mod cloudwatch;
 mod cloudwatch_parity;
 mod ec2;
 mod ec2_docker;
 mod ec2_networking;
 mod elb_classic;
+mod elb_logs;
 mod elbv2;
 mod elbv2_api;
+mod elbv2_auth;
 mod events;
 mod firehose;
 mod firehose_monitoring;

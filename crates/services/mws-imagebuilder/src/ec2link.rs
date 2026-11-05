@@ -202,6 +202,50 @@ pub async fn copy_image(
     out.image_id.ok_or_else(|| ServiceError::internal("CopyImage returned no image"))
 }
 
+/// Add a version of a launch template that launches `image_id`, based on
+/// the template's latest version, and make it the default when asked.
+/// Returns the new version number.
+pub async fn update_launch_template(
+    ec2: &Ec2,
+    ctx: &RequestContext,
+    launch_template_id: &str,
+    image_id: &str,
+    description: &str,
+    set_default: bool,
+) -> Result<i64, ServiceError> {
+    let out = ec2
+        .create_launch_template_version(
+            ctx,
+            e::CreateLaunchTemplateVersionRequest {
+                launch_template_id: Some(launch_template_id.into()),
+                source_version: Some("$Latest".into()),
+                version_description: Some(description.into()),
+                launch_template_data: e::RequestLaunchTemplateData {
+                    image_id: Some(image_id.into()),
+                    ..Default::default()
+                },
+                ..Default::default()
+            },
+        )
+        .await?;
+    let version = out
+        .launch_template_version
+        .and_then(|v| v.version_number)
+        .ok_or_else(|| ServiceError::internal("CreateLaunchTemplateVersion returned no version"))?;
+    if set_default {
+        ec2.modify_launch_template(
+            ctx,
+            e::ModifyLaunchTemplateRequest {
+                launch_template_id: Some(launch_template_id.into()),
+                default_version: Some(version.to_string()),
+                ..Default::default()
+            },
+        )
+        .await?;
+    }
+    Ok(version)
+}
+
 pub async fn add_launch_permissions(
     ec2: &Ec2,
     ctx: &RequestContext,

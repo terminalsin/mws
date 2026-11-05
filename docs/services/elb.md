@@ -1,6 +1,6 @@
 # Elastic Load Balancing
 
-> Crate: [`mws-elb`](../../crates/services/mws-elb) · Tests: [`elbv2.rs`](../../tests/e2e-rust/tests/e2e/elbv2.rs), [`elbv2_api.rs`](../../tests/e2e-rust/tests/e2e/elbv2_api.rs), [`elb_classic.rs`](../../tests/e2e-rust/tests/e2e/elb_classic.rs)
+> Crate: [`mws-elb`](../../crates/services/mws-elb) · Tests: [`elbv2.rs`](../../tests/e2e-rust/tests/e2e/elbv2.rs), [`elbv2_api.rs`](../../tests/e2e-rust/tests/e2e/elbv2_api.rs), [`elb_classic.rs`](../../tests/e2e-rust/tests/e2e/elb_classic.rs), [`elbv2_auth.rs`](../../tests/e2e-rust/tests/e2e/elbv2_auth.rs), [`elb_logs.rs`](../../tests/e2e-rust/tests/e2e/elb_logs.rs)
 
 All 51 ELBv2 operations (Application, Network and Gateway Load Balancers, API
 version 2015-12-01) and all 29 Classic Load Balancer operations (2012-06-01),
@@ -40,9 +40,15 @@ reach the registered targets.
 | CloudWatch metrics | ✅ | `AWS/ApplicationELB`, `AWS/NetworkELB`, `AWS/GatewayELB` and `AWS/ELB` with AWS's dimensions: request counts, HTTP code classes, response times, connection errors, flows, processed bytes, healthy and unhealthy host counts. |
 | Loopback targets | 🟡 | MWS also accepts `127.0.0.0/8` IP targets so processes on the host can sit behind a load balancer; AWS refuses them. |
 | Instance targets | 🟡 | Reached at the instance's private IP, so only instances that really run (the EC2 Docker backend) answer. |
-| Authentication actions | ❌ | `authenticate-oidc`, `authenticate-cognito` and `jwt-validation` are validated, but requests that reach them get a 500. |
-| Gateway Load Balancer traffic | ❌ | GENEVE encapsulation is not emulated; GWLB listeners exist only in the control plane. |
-| Access and connection logs | ❌ | Not written to S3 yet. |
+| OIDC authentication | ✅ | `authenticate-oidc` runs the authorization code flow: unauthenticated requests are redirected to the IdP (`state`, `scope`, extra params), `/oauth2/idpresponse` exchanges the code at the token endpoint (client secret as HTTP Basic, ID token issuer and audience checked) and reads the user info endpoint, then sets `AWSELBAuthSessionCookie-0` and returns to the original URL. Targets get `x-amzn-oidc-accesstoken`, `-identity` and `-data` (ES256, padded base64url, `signer`/`kid` header); the public keys are served at `public-keys.auth.elb.<region>.amazonaws.com/<kid>` and `/_aws/elb/public-keys/<region>/<kid>`. `deny` answers 401, `allow` passes through, IdP failures answer 561. The client secret is never returned by the API; `UseExistingClientSecret` keeps it. |
+| JWT validation | ✅ | `jwt-validation` checks the `Authorization: Bearer` token's signature against the JWKS endpoint (RS256/384/512, ES256/384, cached five minutes), `iss`, `exp`, `nbf` and the additional claims (`single-string`, `string-array`, `space-separated-values`), answering 401 with `WWW-Authenticate: Bearer error=...`. |
+| IdP TLS | 🟡 | ELB does not verify the IdP's server certificate, so local IdPs with self-signed certificates work. |
+| Cognito authentication | ❌ | MWS has no Cognito user pools, so requests reaching `authenticate-cognito` get a 500. |
+| Gateway Load Balancer traffic | ❌ | Traffic reaches a GWLB through Gateway Load Balancer endpoints used as VPC route targets. MWS does not route VPC packets (EC2 containers use Docker networking), so nothing could send GWLB traffic; GENEVE forwarding is therefore not emulated and GWLB listeners exist only in the control plane. |
+| Access logs | ✅ | ALB (one line per request, AWS's field order including rule priority, actions run, trace and connection ids), NLB TLS listeners and Classic (HTTP and TCP/SSL) logs, written as AWS names them under `{prefix/}AWSLogs/{account}/elasticloadbalancing/{region}/yyyy/mm/dd/` when each interval (5 minutes; Classic 5 or 60) ends on the emulated clock; gzip except Classic. The bucket policy must allow `logdelivery.elasticloadbalancing.amazonaws.com` or the Region's ELB account; turning logging on writes `ELBAccessLogTestFile` and fails with `Access Denied for bucket` otherwise. |
+| Connection logs | ✅ | ALB HTTPS listeners log each TLS handshake (protocol, cipher, latency, client certificate, verify status, connection trace id). |
+| Health check logs | ❌ | `health_check_logs.s3.*` is validated (and the bucket checked) but nothing is written. |
+| Log details | 🟡 | `error_reason` and `classification` are always `-`; `chosen_cert_arn` is the listener's default certificate; byte counts are estimated from headers and `Content-Length`. |
 | Security groups on traffic | ❌ | Not enforced. |
 
 See also: [all services](README.md) · [configuration](../configuration.md).

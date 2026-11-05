@@ -153,33 +153,116 @@ pub(crate) async fn serve_tcp(elb: Elb, spec: FrontSpec, listener: tokio::net::T
         let spec = spec.clone();
         tokio::spawn(async move {
             let _ = stream.set_nodelay(true);
+            let begun = Instant::now();
+            let created = elb.now();
             if spec.protocol == "TLS" || spec.protocol == "HTTPS" {
                 let settings = elb.tls_settings(&spec);
                 let Some(config) = super::tls::server_config(&elb, &settings) else { return };
                 let Ok(tls) = tokio_rustls::TlsAcceptor::from(config).accept(stream).await else { return };
-                relay(elb, spec, tls, client, local).await;
+                let handshake = begun.elapsed();
+                let mut info = super::tls::info(tls.get_ref().1);
+                info.certificate = settings.certificates.first().cloned();
+                let flow = relay(elb.clone(), spec.clone(), tls, client, local).await;
+                let conn = Conn { client, local, begun, created, handshake, tls: Some(info) };
+                access_log(&elb, &spec, &conn, flow);
             } else {
-                relay(elb, spec, stream, client, local).await;
+                let flow = relay(elb.clone(), spec.clone(), stream, client, local).await;
+                let conn = Conn { client, local, begun, created, handshake: Duration::ZERO, tls: None };
+                access_log(&elb, &spec, &conn, flow);
             }
         });
     }
 }
 
-async fn relay<S>(elb: Elb, spec: FrontSpec, mut inbound: S, client: SocketAddr, local: SocketAddr)
+/// One finished connection, for the access log.
+struct Conn {
+    client: SocketAddr,
+    local: SocketAddr,
+    begun: Instant,
+    created: chrono::DateTime<chrono::Utc>,
+    handshake: Duration,
+    tls: Option<super::tls::TlsInfo>,
+}
+
+/// What a relayed connection did: the target, how long connecting to it
+/// took, and the bytes received from and sent to the client.
+struct Relayed {
+    target: SocketAddr,
+    connect: Duration,
+    received: u64,
+    sent: u64,
+}
+
+/// Access log entries: Network Load Balancers log TLS listeners only;
+/// Classic Load Balancers log TCP and SSL listeners too.
+fn access_log(elb: &Elb, spec: &FrontSpec, c: &Conn, flow: Option<Relayed>) {
+    use crate::logs;
+    if spec.classic.is_none() && c.tls.is_none() {
+        return;
+    }
+    let Some(dest) = elb.log_destination(spec, logs::Stream::Access) else { return };
+    let now = elb.now();
+    let (received, sent) = flow.as_ref().map(|f| (f.received, f.sent)).unwrap_or((0, 0));
+    let (cipher, proto) = c.tls.as_ref().map(|t| (t.cipher.as_str(), t.version.as_str())).unwrap_or(("-", "-"));
+    let line = if let Some(name) = &spec.classic {
+        let (backend, connect, total) = match &flow {
+            Some(f) => (
+                f.target.to_string(),
+                format!("{:.6}", f.connect.as_secs_f64()),
+                format!("{:.6}", c.begun.elapsed().as_secs_f64()),
+            ),
+            None => ("-".to_string(), "-1".to_string(), "-1".to_string()),
+        };
+        let response = if flow.is_some() { "0.000001" } else { "-1" };
+        format!(
+            "{} {name} {} {backend} {connect} {total} {response} - - {received} {sent} \"- - - \" \"-\" {} {}",
+            logs::micros(now),
+            c.client,
+            logs::dash(cipher),
+            logs::dash(proto),
+        )
+    } else {
+        let proto = match proto {
+            "TLSv1.3" => "tlsv13",
+            "TLSv1.2" => "tlsv12",
+            _ => "-",
+        };
+        let tls = c.tls.as_ref();
+        format!(
+            "tls 2.0 {} {} {} {} {} {} {} {received} {sent} - {} - {} {proto} - {} - - - {}",
+            logs::seconds(now),
+            names::lb_dimension(&spec.lb_arn),
+            spec.key.rsplit('/').next().unwrap_or_default(),
+            c.client,
+            c.local,
+            c.begun.elapsed().as_millis(),
+            c.handshake.as_millis(),
+            logs::dash(tls.and_then(|t| t.certificate.as_deref()).unwrap_or_default()),
+            logs::dash(cipher),
+            logs::dash(tls.and_then(|t| t.sni.as_deref()).unwrap_or_default()),
+            logs::seconds(c.created),
+        )
+    };
+    elb.record_log(spec, logs::Stream::Access, dest, line);
+}
+
+async fn relay<S>(elb: Elb, spec: FrontSpec, mut inbound: S, client: SocketAddr, local: SocketAddr) -> Option<Relayed>
 where
     S: AsyncRead + AsyncWrite + Unpin + Send,
 {
     let Some(target) = decide(&elb, &spec, client, false) else {
         flow_metrics(&spec, None, 0.0, true).send(elb.metrics());
-        return;
+        return None;
     };
+    let begun = Instant::now();
     let Ok(Ok(upstream)) = tokio::time::timeout(Duration::from_secs(10), TcpStream::connect(target.addr)).await else {
         flow_metrics(&spec, target.tg_arn.as_deref(), 0.0, true).send(elb.metrics());
-        return;
+        return None;
     };
+    let connect = begun.elapsed();
     let _ = upstream.set_nodelay(true);
     let bytes = if target.tls {
-        let Ok(mut up) = super::tls::connect_insecure(upstream, target.addr).await else { return };
+        let Ok(mut up) = super::tls::connect_insecure(upstream, target.addr).await else { return None };
         if target.proxy_protocol {
             let _ = up.write_all(&proxy_v2_header(client, local)).await;
         }
@@ -191,8 +274,9 @@ where
         }
         tokio::io::copy_bidirectional(&mut inbound, &mut up).await
     };
-    let total = bytes.map(|(a, b)| (a + b) as f64).unwrap_or(0.0);
-    flow_metrics(&spec, target.tg_arn.as_deref(), total, false).send(elb.metrics());
+    let (received, sent) = bytes.unwrap_or((0, 0));
+    flow_metrics(&spec, target.tg_arn.as_deref(), (received + sent) as f64, false).send(elb.metrics());
+    Some(Relayed { target: target.addr, connect, received, sent })
 }
 
 struct Flow {

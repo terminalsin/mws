@@ -489,6 +489,21 @@ impl Elb {
                         "The value of '{kind}.s3.bucket' cannot be empty when '{kind}.s3.enabled' is true"
                     )));
                 }
+                // ELB writes a test file when logging is turned on or
+                // pointed somewhere new.
+                let changed = ["enabled", "bucket", "prefix"].iter().any(|f| {
+                    let k = format!("{kind}.s3.{f}");
+                    next.get(&k) != lb.attributes.get(&k)
+                });
+                if changed && next.get(&format!("{kind}.s3.enabled")).map(String::as_str) == Some("true") {
+                    let arn = lb.arn().to_string();
+                    let mut parts = arn.split(':');
+                    let (region, account) = (parts.nth(3).unwrap_or_default(), parts.next().unwrap_or_default());
+                    let bucket = next.get(&format!("{kind}.s3.bucket")).cloned().unwrap_or_default();
+                    let prefix = next.get(&format!("{kind}.s3.prefix")).cloned().unwrap_or_default();
+                    self.check_log_bucket(&arn, account, region, &bucket, &prefix)
+                        .map_err(errors::invalid_configuration_request)?;
+                }
             }
             lb.attributes = next;
             Ok(lb_attributes(lb))

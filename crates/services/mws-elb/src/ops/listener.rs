@@ -234,6 +234,8 @@ impl Elb {
         })?;
         self.claim_certificates(&arn, cert_arns);
         self.reconcile();
+        let mut out = out;
+        super::actions::redact(&mut out.default_actions);
         Ok(t::CreateListenerOutput { listeners: Some(vec![out]) })
     }
 
@@ -302,6 +304,8 @@ impl Elb {
             arns.iter().map(|a| find_listener(r, a).map(|l| l.listener.clone())).collect()
         })?;
         let (items, next) = names::page(&all, input.marker.as_deref(), input.page_size, 400)?;
+        let mut items = items;
+        items.iter_mut().for_each(|l| super::actions::redact(&mut l.default_actions));
         Ok(t::DescribeListenersOutput { listeners: Some(items), next_marker: next })
     }
 
@@ -411,6 +415,8 @@ impl Elb {
         };
         self.release_certificates_keeping(&input.listener_arn, dropped);
         self.reconcile();
+        let mut out = out;
+        super::actions::redact(&mut out.default_actions);
         Ok(t::ModifyListenerOutput { listeners: Some(vec![out]) })
     }
 

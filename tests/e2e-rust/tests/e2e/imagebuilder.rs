@@ -9,8 +9,8 @@ use aws_sdk_ec2::types::Filter;
 use aws_sdk_imagebuilder::error::ProvideErrorMetadata;
 use aws_sdk_imagebuilder::types::{
     AmiDistributionConfiguration, ComponentConfiguration, ComponentParameter, ContainerRepositoryService,
-    ContainerType, Distribution, ImageStatus, LaunchPermissionConfiguration, LifecyclePolicyDetail,
-    LifecyclePolicyDetailAction, LifecyclePolicyDetailActionType, LifecyclePolicyDetailFilter,
+    ContainerType, Distribution, ImageStatus, LaunchPermissionConfiguration, LaunchTemplateConfiguration,
+    LifecyclePolicyDetail, LifecyclePolicyDetailAction, LifecyclePolicyDetailActionType, LifecyclePolicyDetailFilter,
     LifecyclePolicyDetailFilterType, LifecyclePolicyResourceSelection, LifecyclePolicyResourceType,
     LifecyclePolicyStatus, Ownership, PipelineExecutionStartCondition, ResourceState, ResourceStatus, Schedule,
     SsmParameterConfiguration, TargetContainerRepository, WorkflowConfiguration, WorkflowStepActionType, WorkflowType,
@@ -1433,4 +1433,136 @@ async fn components_run_on_docker_instances() {
     assert_eq!(bad.state().unwrap().status(), Some(&ImageStatus::Failed));
     let reason = bad.state().unwrap().reason().unwrap_or_default().to_string();
     assert!(reason.contains("Run"), "{reason}");
+}
+
+/// Distributions add a launch template version that launches the new AMI.
+#[tokio::test]
+async fn distribution_updates_launch_templates() {
+    let mws = Mws::start().await;
+    let ib = client(&mws).await;
+    let ec2 = ec2_in(&mws, "us-east-1").await;
+    let s = setup(&mws, &ib, "lt").await;
+    let alpine = ec2
+        .describe_images()
+        .owners("amazon")
+        .filters(Filter::builder().name("name").values("mws-alpine-*").build())
+        .send()
+        .await
+        .unwrap()
+        .images()[0]
+        .image_id()
+        .unwrap()
+        .to_string();
+    let lt = |name: &'static str| {
+        let ec2 = ec2.clone();
+        let alpine = alpine.clone();
+        async move {
+            ec2.create_launch_template()
+                .launch_template_name(name)
+                .launch_template_data(
+                    aws_sdk_ec2::types::RequestLaunchTemplateData::builder()
+                        .image_id(alpine)
+                        .instance_type(aws_sdk_ec2::types::InstanceType::T3Micro)
+                        .build(),
+                )
+                .send()
+                .await
+                .unwrap()
+                .launch_template()
+                .unwrap()
+                .launch_template_id()
+                .unwrap()
+                .to_string()
+        }
+    };
+    let default_lt = lt("routers").await;
+    let latest_only = lt("canary").await;
+
+    let dist = ib
+        .create_distribution_configuration()
+        .name("with-templates")
+        .distributions(
+            Distribution::builder()
+                .region("us-east-1")
+                .launch_template_configurations(
+                    LaunchTemplateConfiguration::builder()
+                        .launch_template_id(&default_lt)
+                        .set_default_version(true)
+                        .build()
+                        .unwrap(),
+                )
+                .launch_template_configurations(
+                    LaunchTemplateConfiguration::builder().launch_template_id(&latest_only).build().unwrap(),
+                )
+                .build()
+                .unwrap(),
+        )
+        .send()
+        .await
+        .unwrap()
+        .distribution_configuration_arn
+        .unwrap();
+    let image = ib
+        .create_image()
+        .image_recipe_arn(&s.recipe)
+        .infrastructure_configuration_arn(&s.infra)
+        .distribution_configuration_arn(&dist)
+        .send()
+        .await
+        .unwrap()
+        .image_build_version_arn
+        .unwrap();
+    let image = wait_for_image(&ib, &image).await;
+    assert_eq!(image.state().unwrap().status(), Some(&ImageStatus::Available), "{:?}", image.state());
+    let ami = image.output_resources().unwrap().amis()[0].image().unwrap().to_string();
+
+    let default = ec2
+        .describe_launch_template_versions()
+        .launch_template_id(&default_lt)
+        .versions("$Default")
+        .send()
+        .await
+        .unwrap();
+    let v = &default.launch_template_versions()[0];
+    assert_eq!(v.version_number(), Some(2));
+    assert_eq!(v.launch_template_data().unwrap().image_id(), Some(ami.as_str()));
+    // The rest of the template data carries over from the latest version.
+    assert_eq!(v.launch_template_data().unwrap().instance_type(), Some(&aws_sdk_ec2::types::InstanceType::T3Micro));
+
+    let canary = ec2.describe_launch_templates().launch_template_ids(&latest_only).send().await.unwrap();
+    let canary = &canary.launch_templates()[0];
+    assert_eq!(canary.latest_version_number(), Some(2));
+    assert_eq!(canary.default_version_number(), Some(1));
+
+    // A template that doesn't exist fails the distribution.
+    let missing = ib
+        .create_distribution_configuration()
+        .name("missing-template")
+        .distributions(
+            Distribution::builder()
+                .region("us-east-1")
+                .launch_template_configurations(
+                    LaunchTemplateConfiguration::builder().launch_template_id("lt-0123456789abcdef0").build().unwrap(),
+                )
+                .build()
+                .unwrap(),
+        )
+        .send()
+        .await
+        .unwrap()
+        .distribution_configuration_arn
+        .unwrap();
+    let failed = ib
+        .create_image()
+        .image_recipe_arn(&s.recipe)
+        .infrastructure_configuration_arn(&s.infra)
+        .distribution_configuration_arn(&missing)
+        .send()
+        .await
+        .unwrap()
+        .image_build_version_arn
+        .unwrap();
+    let failed = wait_for_image(&ib, &failed).await;
+    assert_eq!(failed.state().unwrap().status(), Some(&ImageStatus::Failed));
+    assert!(failed.state().unwrap().reason().unwrap().contains("lt-0123456789abcdef0"), "{:?}", failed.state());
 }

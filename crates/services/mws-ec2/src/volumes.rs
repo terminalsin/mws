@@ -132,7 +132,8 @@ impl Ec2 {
                     }
                 }
             }
-            // The new container needs its firewall (and waits for it).
+            // The rebuilt container starts without the instance's firewall.
+            self.inner.firewalls.rules.lock().expect("lock").remove(instance_id);
             self.firewall_on_boot(account, region, instance_id, &new_handle).await;
         }
         Ok(())
