@@ -40,6 +40,7 @@ members = [
     "crates/services/mws-firehose",
     "crates/services/mws-cloudwatch",
     "crates/services/mws-ec2",
+    "crates/services/mws-imagebuilder",
     "tests/e2e-rust",
 ]
 
@@ -90,6 +91,7 @@ mws-kinesis = { path = "crates/services/mws-kinesis" }
 mws-firehose = { path = "crates/services/mws-firehose" }
 mws-cloudwatch = { path = "crates/services/mws-cloudwatch" }
 mws-ec2 = { path = "crates/services/mws-ec2" }
+mws-imagebuilder = { path = "crates/services/mws-imagebuilder" }
 
 # external
 async-trait = "0.1"
@@ -134,3 +136,4 @@ zip = { version = "2", default-features = false, features = ["deflate"] }
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 uuid = { version = "1", features = ["v4"] }
 x509-parser = { version = "0.16", features = ["verify"] }
+yaml-rust2 = "0.10"

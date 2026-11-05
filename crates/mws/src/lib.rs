@@ -14,6 +14,7 @@ use mws_ec2::{BackendChoice, Ec2};
 use mws_events::Events;
 use mws_firehose::Firehose;
 use mws_iam::{Iam, IamConfig};
+use mws_imagebuilder::ImageBuilder;
 use mws_kinesis::Kinesis;
 use mws_kms::Kms;
 use mws_lambda::Lambda;
@@ -108,6 +109,7 @@ pub struct Mws {
     pub ec2: Ec2,
     pub marketplace_entitlement: Entitlement,
     pub marketplace_metering: Metering,
+    pub imagebuilder: ImageBuilder,
 }
 
 /// Build the gateway with every service MWS emulates.
@@ -235,6 +237,12 @@ fn build_with_store(config: Config, store: Option<Arc<Store>>) -> Mws {
     ec2.set_instance_roles(Arc::new(links::Ec2InstanceRoles { iam: iam.clone(), sts: sts.clone() }));
     let marketplace_entitlement = Entitlement::new(config.iam.account_id.clone());
     let marketplace_metering = Metering::new(marketplace_entitlement.clone());
+    let imagebuilder = ImageBuilder::with_ec2(ec2.clone());
+    imagebuilder.set_s3(Arc::new(s3.clone()));
+    imagebuilder.set_ssm(Arc::new(ssm.clone()));
+    imagebuilder.set_sns(Arc::new(sns.clone()));
+    imagebuilder.set_logs(Arc::new(logs.clone()));
+    imagebuilder.set_events(Arc::new(sinks::ImageBuilderEvents(events.clone())));
     let mut gateway = Gateway::builder();
     if let Some(store) = store {
         gateway = gateway.store(store);
@@ -272,6 +280,7 @@ fn build_with_store(config: Config, store: Option<Arc<Store>>) -> Mws {
         // its own `X-Amz-Target`.
         .service(Arc::new(marketplace_metering.clone()))
         .service(Arc::new(marketplace_entitlement.clone()))
+        .service(Arc::new(imagebuilder.clone()))
         .build();
     Mws {
         gateway,
@@ -293,6 +302,7 @@ fn build_with_store(config: Config, store: Option<Arc<Store>>) -> Mws {
         ec2,
         marketplace_entitlement,
         marketplace_metering,
+        imagebuilder,
     }
 }
 

@@ -43,6 +43,7 @@ Every service shares the same foundations:
 | --- | --- | --- |
 | [Lambda](lambda.md) | 68 / 88 | Python, Node.js and custom runtimes that really run, SQS and Kinesis event sources, destinations, function URLs |
 | [EC2 and VPC](ec2.md) | 107 / 811 | Default VPCs, subnets, security groups, AMIs, instances as Docker containers, instance metadata and profiles |
+| [EC2 Image Builder](imagebuilder.md) | 77 / 77 | Components, recipes and pipelines whose builds launch EC2 instances, run AWSTOE components and produce real AMIs, distribution, lifecycle policies |
 | [Route 53](route53.md) | 71 / 71 | Public and private hosted zones, all routing policies, health checks, DNSSEC key management, an optional real DNS responder |
 
 ## Application integration
@@ -97,3 +98,6 @@ with the permissions AWS would use:
 - EC2 instances and Lambda functions receive role credentials from STS.
 - Marketplace Metering and the Entitlement Service share one Marketplace
   catalog of products, subscriptions and entitlements.
+- Image Builder launches EC2 instances, creates and copies AMIs, writes SSM
+  parameters, logs to CloudWatch Logs and S3, notifies SNS and emits
+  EventBridge events.

@@ -47,6 +47,14 @@ pub struct LaunchSpec {
     pub env: Vec<(String, String)>,
 }
 
+/// What a command run inside an instance produced.
+#[derive(Debug, Clone, Default)]
+pub struct CommandOutput {
+    pub exit_code: i32,
+    pub stdout: String,
+    pub stderr: String,
+}
+
 /// A running instance, as the backend knows it.
 #[derive(Debug, Clone)]
 pub struct Launched {
@@ -100,6 +108,14 @@ pub trait ComputeBackend: Send + Sync {
 
     /// Tear down the network of a deleted VPC, if the backend made one.
     async fn delete_network(&self, vpc_id: &str) -> Result<(), BackendError>;
+
+    /// Run a shell script inside a running instance, as root (what the SSM
+    /// agent does for Run Command and EC2 Image Builder). `None` when the
+    /// backend runs nothing, so there is nowhere to run it.
+    async fn exec(&self, handle: &str, script: &str) -> Result<Option<CommandOutput>, BackendError> {
+        let _ = (handle, script);
+        Ok(None)
+    }
 }
 
 /// Runs nothing: instances exist only as EC2 metadata and move through

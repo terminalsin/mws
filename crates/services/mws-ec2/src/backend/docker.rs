@@ -16,7 +16,7 @@ use std::process::Stdio;
 
 use tokio::process::Command;
 
-use super::{BackendError, ComputeBackend, LaunchSpec, Launched};
+use super::{BackendError, CommandOutput, ComputeBackend, LaunchSpec, Launched};
 
 /// What the container runs for OS images. The user data and key arrive as
 /// environment variables.
@@ -228,6 +228,30 @@ impl ComputeBackend for DockerBackend {
     async fn create_image(&self, handle: &str, image_ref: &str) -> Result<String, BackendError> {
         self.run(&["commit".into(), handle.into(), image_ref.into()]).await?;
         Ok(image_ref.to_string())
+    }
+
+    async fn exec(&self, handle: &str, script: &str) -> Result<Option<CommandOutput>, BackendError> {
+        // Prefer bash, as the SSM agent does; small images only have sh.
+        let out = Command::new(&self.cli)
+            .args([
+                "exec",
+                "-u",
+                "0",
+                handle,
+                "/bin/sh",
+                "-c",
+                "if command -v bash >/dev/null 2>&1; then exec bash -c \"$0\"; else exec sh -c \"$0\"; fi",
+                script,
+            ])
+            .stdin(Stdio::null())
+            .output()
+            .await
+            .map_err(|e| BackendError(format!("running {}: {e}", self.cli)))?;
+        Ok(Some(CommandOutput {
+            exit_code: out.status.code().unwrap_or(-1),
+            stdout: String::from_utf8_lossy(&out.stdout).into_owned(),
+            stderr: String::from_utf8_lossy(&out.stderr).into_owned(),
+        }))
     }
 
     async fn delete_image(&self, image_ref: &str) -> Result<(), BackendError> {
