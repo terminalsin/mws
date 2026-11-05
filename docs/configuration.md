@@ -46,12 +46,19 @@ See [State, scenarios and snapshots](state.md) for how the two interact.
 | `MWS_RDS_BACKEND` | `auto` | How RDS databases run. `docker` runs each DB instance (or Aurora cluster) as a PostgreSQL, MySQL or MariaDB container, `metadata` runs nothing (resources only change state), and `auto` uses Docker when a daemon answers and `metadata` otherwise. |
 | `MWS_RDS_DOCKER` | `MWS_EC2_DOCKER`, then `docker` | The Docker-compatible CLI the RDS backend drives. |
 | `MWS_RDS_BIND` | `127.0.0.1` | The host address database ports are published on. Endpoints report this address and the published port. |
+| `MWS_EKS_BACKEND` | `auto` | What runs EKS clusters' Kubernetes API servers. `k3s` runs a k3s server container per cluster, `metadata` runs none (clusters are EKS metadata only), and `auto` uses k3s when a Docker daemon answers and `metadata` otherwise. |
+| `MWS_EKS_DOCKER` | `MWS_EC2_DOCKER`, then `docker` | The Docker-compatible CLI the EKS backend drives. |
+| `MWS_EKS_BIND` | `127.0.0.1` | The host address API server ports are published on; cluster endpoints report it. |
+| `MWS_EKS_K3S_IMAGE` | `rancher/k3s:<tag for the version>` | The API server image; `{version}` is replaced by the cluster's Kubernetes minor version. |
+| `MWS_EFS_DIR` | `mws-efs` in the temp directory | Where EFS keeps file system data, one directory per file system. EC2 instances in Docker mount it at `/var/lib/mws-efs`. |
+| `MWS_CODEARTIFACT_<CONNECTION>_URL` | the public registry | Where a CodeArtifact external connection fetches packages, such as `MWS_CODEARTIFACT_NPMJS_URL=http://localhost:4873` for `public:npmjs` (or `_PYPI_URL`, `_MAVEN_CENTRAL_URL`, `_CRATES_IO_URL`, `_RUBY_GEMS_ORG_URL`; `_NUGET_ORG_URL` names a V3 service index). An empty value turns the connection off. |
 | `MWS_ECR_REGISTRY_HOST` | unset (AWS's `<account>.dkr.ecr.<region>.amazonaws.com`) | The registry host ECR repository URIs and `proxyEndpoint` name, such as `localhost:4566`, so `docker push $(repositoryUri)` reaches MWS. `{account}` and `{region}` are replaced. |
 | `MWS_ECR_PUBLIC_REGISTRY_HOST` | unset (`public.ecr.aws`) | The registry host and path ECR Public repository URIs name, such as `localhost:4566/public.ecr.aws`. |
 
 EC2 instances reach the instance metadata service and the AWS endpoint
-through the host, so when using the Docker backend MWS must listen on an
-address containers can reach (the default `0.0.0.0` does).
+through the host, and EKS API servers call MWS's token and authorization
+webhooks at `host.docker.internal`, so with the Docker backends MWS must
+listen on an address containers can reach (the default `0.0.0.0` does).
 
 ## Client-side settings
 

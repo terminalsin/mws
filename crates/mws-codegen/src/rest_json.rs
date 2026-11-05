@@ -20,7 +20,7 @@ use serde_json::Value;
 
 use crate::common::{self, Constraints};
 use crate::json_codec::JsonCodec;
-use crate::naming::{ident, lower_camel, rust_str, snake_case, type_name};
+use crate::naming::{lower_camel, rust_str, snake_case, type_name};
 use crate::rust_types::{field_name, presence, Presence, TypeGen};
 use crate::xml_ser::is_http_bound;
 
@@ -35,11 +35,19 @@ pub struct RestJsonOptions {
     /// A JSON key some services (Lambda) add to error bodies naming the
     /// fault: `User` for client errors, `Service` for server errors.
     pub error_fault_key: Option<&'static str>,
+    /// A JSON key some services (EFS) repeat the error code under in
+    /// error bodies.
+    pub error_code_key: Option<&'static str>,
 }
 
 impl Default for RestJsonOptions {
     fn default() -> Self {
-        Self { validation_error: "ValidationException", error_message_key: "message", error_fault_key: None }
+        Self {
+            validation_error: "ValidationException",
+            error_message_key: "message",
+            error_fault_key: None,
+            error_code_key: None,
+        }
     }
 }
 
@@ -85,9 +93,13 @@ impl Gen<'_, '_, '_> {
             Some(k) => format!("Some({})", rust_str(k)),
             None => "None".into(),
         };
+        let code_key = match self.options.error_code_key {
+            Some(k) => format!("Some({})", rust_str(k)),
+            None => "None".into(),
+        };
         let _ = writeln!(
             w,
-            "\npub const SERVICE_INFO: ServiceInfo = ServiceInfo {{ validation_error: {}, error_message_key: {}, error_fault_key: {fault_key} }};",
+            "\npub const SERVICE_INFO: ServiceInfo = ServiceInfo {{ validation_error: {}, error_message_key: {}, error_fault_key: {fault_key}, error_code_key: {code_key} }};",
             rust_str(self.options.validation_error),
             rust_str(self.options.error_message_key),
         );
@@ -127,7 +139,6 @@ impl Gen<'_, '_, '_> {
             snake_case(op.name())
         );
         let _ = writeln!(w, "    use hb::*;");
-        let method = ident(&snake_case(op.name()));
         match &op.input {
             Some(input_id) => {
                 let input = model.expect(input_id).clone();
@@ -160,10 +171,10 @@ impl Gen<'_, '_, '_> {
                     let _ = writeln!(w, "    }}");
                 }
                 let _ = writeln!(w, "    rd.finish(SERVICE_INFO.validation_error)?;");
-                let _ = writeln!(w, "    let mut out = handler.{method}(ctx, input).await?;");
+                let _ = writeln!(w, "    let mut out = {}?;", crate::common::handler_call(op, "input"));
             }
             None => {
-                let _ = writeln!(w, "    let mut out = handler.{method}(ctx, ()).await?;");
+                let _ = writeln!(w, "    let mut out = {}?;", crate::common::handler_call(op, "()"));
             }
         }
         let info = "&SERVICE_INFO";

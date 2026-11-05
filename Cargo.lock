@@ -314,6 +314,56 @@ dependencies = [
 ]
 
 [[package]]
+name = "aws-sdk-cloudtrail"
+version = "1.130.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "93c1480de7ad8f56caa394c710d960048972b75bf4a18749be024a15fa4cf774"
+dependencies = [
+ "arc-swap",
+ "aws-credential-types",
+ "aws-runtime",
+ "aws-smithy-async",
+ "aws-smithy-http",
+ "aws-smithy-json",
+ "aws-smithy-observability",
+ "aws-smithy-runtime",
+ "aws-smithy-runtime-api",
+ "aws-smithy-schema",
+ "aws-smithy-types",
+ "aws-types",
+ "bytes",
+ "fastrand",
+ "http 1.5.0",
+ "regex-lite",
+ "tracing",
+]
+
+[[package]]
+name = "aws-sdk-cloudtraildata"
+version = "1.120.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "74dc98872c2edd29d2604a5118ad8fff127aa112e641c4f33cb94a0292e2615e"
+dependencies = [
+ "arc-swap",
+ "aws-credential-types",
+ "aws-runtime",
+ "aws-smithy-async",
+ "aws-smithy-http",
+ "aws-smithy-json",
+ "aws-smithy-observability",
+ "aws-smithy-runtime",
+ "aws-smithy-runtime-api",
+ "aws-smithy-schema",
+ "aws-smithy-types",
+ "aws-types",
+ "bytes",
+ "fastrand",
+ "http 1.5.0",
+ "regex-lite",
+ "tracing",
+]
+
+[[package]]
 name = "aws-sdk-cloudwatch"
 version = "1.140.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -369,6 +419,31 @@ dependencies = [
 ]
 
 [[package]]
+name = "aws-sdk-codeartifact"
+version = "1.122.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "5fbb8a1a375178c3ecdf3942ae625898b5b1fcd6c0b1823a3a9c202cb805713d"
+dependencies = [
+ "arc-swap",
+ "aws-credential-types",
+ "aws-runtime",
+ "aws-smithy-async",
+ "aws-smithy-http",
+ "aws-smithy-json",
+ "aws-smithy-observability",
+ "aws-smithy-runtime",
+ "aws-smithy-runtime-api",
+ "aws-smithy-schema",
+ "aws-smithy-types",
+ "aws-types",
+ "bytes",
+ "fastrand",
+ "http 1.5.0",
+ "regex-lite",
+ "tracing",
+]
+
+[[package]]
 name = "aws-sdk-ec2"
 version = "1.275.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -388,6 +463,79 @@ dependencies = [
  "aws-smithy-types",
  "aws-smithy-xml",
  "aws-types",
+ "fastrand",
+ "http 1.5.0",
+ "regex-lite",
+ "tracing",
+]
+
+[[package]]
+name = "aws-sdk-ecr"
+version = "1.138.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "1aecb6e71c02b1eab61918637b688fc89e1aca2c59827ce4b43303dc349454a5"
+dependencies = [
+ "arc-swap",
+ "aws-credential-types",
+ "aws-runtime",
+ "aws-smithy-async",
+ "aws-smithy-http",
+ "aws-smithy-json",
+ "aws-smithy-observability",
+ "aws-smithy-runtime",
+ "aws-smithy-runtime-api",
+ "aws-smithy-schema",
+ "aws-smithy-types",
+ "aws-types",
+ "bytes",
+ "fastrand",
+ "http 1.5.0",
+ "regex-lite",
+ "tracing",
+]
+
+[[package]]
+name = "aws-sdk-ecrpublic"
+version = "1.122.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "4281d24d5a84f82e1caf6e44463e429b4e84efd036494007021c08d2dc7f182f"
+dependencies = [
+ "arc-swap",
+ "aws-credential-types",
+ "aws-runtime",
+ "aws-smithy-async",
+ "aws-smithy-http",
+ "aws-smithy-json",
+ "aws-smithy-observability",
+ "aws-smithy-runtime",
+ "aws-smithy-runtime-api",
+ "aws-smithy-schema",
+ "aws-smithy-types",
+ "aws-types",
+ "fastrand",
+ "regex-lite",
+ "tracing",
+]
+
+[[package]]
+name = "aws-sdk-efs"
+version = "1.123.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "8ec7aa536d618a904b162341cfab06d260f57c92ebe1326ec16984e6d54f7d85"
+dependencies = [
+ "arc-swap",
+ "aws-credential-types",
+ "aws-runtime",
+ "aws-smithy-async",
+ "aws-smithy-http",
+ "aws-smithy-json",
+ "aws-smithy-observability",
+ "aws-smithy-runtime",
+ "aws-smithy-runtime-api",
+ "aws-smithy-schema",
+ "aws-smithy-types",
+ "aws-types",
+ "bytes",
  "fastrand",
  "http 1.5.0",
  "regex-lite",
@@ -1639,6 +1787,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "chrono-tz"
+version = "0.10.4"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "a6139a8597ed92cf816dfb33f5dd6cf0bb93a6adc938f11039f371bc5bcd26c3"
+dependencies = [
+ "chrono",
+ "phf 0.12.1",
+]
+
+[[package]]
 name = "cipher"
 version = "0.4.4"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2838,9 +2996,15 @@ dependencies = [
  "mws-acmpca",
  "mws-amplify",
  "mws-autoscaling",
+ "mws-cloudtrail",
+ "mws-cloudtrail-data",
  "mws-cloudwatch",
+ "mws-codeartifact",
  "mws-core",
  "mws-ec2",
+ "mws-ecr",
+ "mws-ecr-public",
+ "mws-efs",
  "mws-eks",
  "mws-elb",
  "mws-events",
@@ -2992,6 +3156,52 @@ dependencies = [
 ]
 
 [[package]]
+name = "mws-cloudtrail"
+version = "0.1.0"
+dependencies = [
+ "async-trait",
+ "aws-lc-rs",
+ "base64 0.22.1",
+ "chrono",
+ "flate2",
+ "hex",
+ "md-5 0.10.6",
+ "mws-codegen",
+ "mws-core",
+ "mws-events",
+ "mws-iam",
+ "mws-iam-policy",
+ "mws-kms",
+ "mws-logs",
+ "mws-proto-json",
+ "mws-s3",
+ "mws-sns",
+ "mws-sts",
+ "rand 0.8.8",
+ "regex",
+ "serde",
+ "serde_json",
+ "sha2 0.10.9",
+ "tokio",
+ "tracing",
+ "uuid",
+]
+
+[[package]]
+name = "mws-cloudtrail-data"
+version = "0.1.0"
+dependencies = [
+ "async-trait",
+ "mws-cloudtrail",
+ "mws-codegen",
+ "mws-core",
+ "mws-proto-json",
+ "mws-proto-restjson",
+ "serde",
+ "serde_json",
+]
+
+[[package]]
 name = "mws-cloudwatch"
 version = "0.1.0"
 dependencies = [
@@ -3018,6 +3228,41 @@ dependencies = [
  "tokio",
  "tracing",
  "uuid",
+]
+
+[[package]]
+name = "mws-codeartifact"
+version = "0.1.0"
+dependencies = [
+ "async-trait",
+ "base64 0.22.1",
+ "bytes",
+ "chrono",
+ "flate2",
+ "hex",
+ "http 1.5.0",
+ "md-5 0.10.6",
+ "mws-codegen",
+ "mws-core",
+ "mws-iam-policy",
+ "mws-kms",
+ "mws-proto-json",
+ "mws-proto-restjson",
+ "rand 0.8.8",
+ "roxmltree",
+ "rustls 0.23.46",
+ "rustls-native-certs",
+ "rustls-pki-types",
+ "serde",
+ "serde_json",
+ "sha1 0.10.7",
+ "sha2 0.10.9",
+ "tokio",
+ "tokio-rustls 0.26.6",
+ "tracing",
+ "uuid",
+ "yaml-rust2",
+ "zip",
 ]
 
 [[package]]
@@ -3058,9 +3303,15 @@ dependencies = [
  "aws-sdk-acmpca",
  "aws-sdk-amplify",
  "aws-sdk-autoscaling",
+ "aws-sdk-cloudtrail",
+ "aws-sdk-cloudtraildata",
  "aws-sdk-cloudwatch",
  "aws-sdk-cloudwatchlogs",
+ "aws-sdk-codeartifact",
  "aws-sdk-ec2",
+ "aws-sdk-ecr",
+ "aws-sdk-ecrpublic",
+ "aws-sdk-efs",
  "aws-sdk-eks",
  "aws-sdk-elasticloadbalancing",
  "aws-sdk-elasticloadbalancingv2",
@@ -3089,6 +3340,7 @@ dependencies = [
  "aws-sdk-sqs",
  "aws-sdk-ssm",
  "aws-sdk-sts",
+ "aws-sigv4",
  "aws-smithy-http-client",
  "aws-smithy-runtime-api",
  "aws-smithy-types",
@@ -3097,9 +3349,13 @@ dependencies = [
  "chrono",
  "cms",
  "flate2",
+ "form_urlencoded",
+ "hex",
  "md-5 0.10.6",
  "mws",
+ "mws-codeartifact",
  "mws-ec2",
+ "mws-eks",
  "mws-rds",
  "mws-route53",
  "mws-s3",
@@ -3113,6 +3369,7 @@ dependencies = [
  "rustls 0.23.46",
  "rustls-pki-types",
  "serde_json",
+ "sha1 0.10.7",
  "sha2 0.10.9",
  "time",
  "tokio",
@@ -3148,11 +3405,82 @@ dependencies = [
 ]
 
 [[package]]
+name = "mws-ecr"
+version = "0.1.0"
+dependencies = [
+ "async-trait",
+ "base64 0.22.1",
+ "bytes",
+ "chrono",
+ "form_urlencoded",
+ "http 1.5.0",
+ "mws-codegen",
+ "mws-core",
+ "mws-iam-policy",
+ "mws-kms",
+ "mws-oci",
+ "mws-proto-json",
+ "rand 0.8.8",
+ "regex",
+ "serde",
+ "serde_json",
+ "tokio",
+ "tracing",
+ "uuid",
+]
+
+[[package]]
+name = "mws-ecr-public"
+version = "0.1.0"
+dependencies = [
+ "async-trait",
+ "base64 0.22.1",
+ "bytes",
+ "chrono",
+ "form_urlencoded",
+ "http 1.5.0",
+ "mws-codegen",
+ "mws-core",
+ "mws-iam-policy",
+ "mws-oci",
+ "mws-proto-json",
+ "rand 0.8.8",
+ "serde",
+ "serde_json",
+ "tokio",
+ "uuid",
+]
+
+[[package]]
+name = "mws-efs"
+version = "0.1.0"
+dependencies = [
+ "async-trait",
+ "bytes",
+ "chrono",
+ "form_urlencoded",
+ "http 1.5.0",
+ "mws-codegen",
+ "mws-core",
+ "mws-ec2",
+ "mws-iam-policy",
+ "mws-kms",
+ "mws-proto-json",
+ "mws-proto-restjson",
+ "rand 0.8.8",
+ "serde",
+ "serde_json",
+ "tracing",
+ "uuid",
+]
+
+[[package]]
 name = "mws-eks"
 version = "0.1.0"
 dependencies = [
  "async-trait",
  "base64 0.22.1",
+ "bytes",
  "chrono",
  "hex",
  "http 1.5.0",
@@ -3160,13 +3488,16 @@ dependencies = [
  "mws-core",
  "mws-proto-json",
  "mws-proto-restjson",
+ "mws-sigv4",
  "mws-sts",
+ "percent-encoding",
  "rand 0.8.8",
  "rcgen",
  "serde",
  "serde_json",
  "sha2 0.10.9",
  "time",
+ "tokio",
  "tracing",
  "uuid",
 ]
@@ -3336,6 +3667,7 @@ dependencies = [
  "async-trait",
  "base64 0.22.1",
  "chrono",
+ "chrono-tz",
  "hex",
  "http 1.5.0",
  "mws-codegen",
@@ -3490,6 +3822,25 @@ dependencies = [
  "mws-core",
  "mws-marketplace-entitlement",
  "mws-proto-json",
+ "serde",
+ "serde_json",
+ "sha2 0.10.9",
+ "uuid",
+]
+
+[[package]]
+name = "mws-oci"
+version = "0.1.0"
+dependencies = [
+ "base64 0.22.1",
+ "bytes",
+ "chrono",
+ "form_urlencoded",
+ "hex",
+ "hmac 0.12.1",
+ "http 1.5.0",
+ "mws-core",
+ "rand 0.8.8",
  "serde",
  "serde_json",
  "sha2 0.10.9",
@@ -4210,12 +4561,30 @@ checksum = "9b4f627cb1b25917193a259e49bdad08f671f8d9708acfd5fe0a8c1455d87220"
 
 [[package]]
 name = "phf"
+version = "0.12.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "913273894cec178f401a31ec4b656318d95473527be05c0752cc41cdc32be8b7"
+dependencies = [
+ "phf_shared 0.12.1",
+]
+
+[[package]]
+name = "phf"
 version = "0.13.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "c1562dc717473dbaa4c1f85a36410e03c047b2e7df7f45ee938fbef64ae7fadf"
 dependencies = [
- "phf_shared",
+ "phf_shared 0.13.1",
  "serde",
+]
+
+[[package]]
+name = "phf_shared"
+version = "0.12.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "06005508882fb681fd97892ecff4b7fd0fee13ef1aa569f8695dae7ab9099981"
+dependencies = [
+ "siphasher",
 ]
 
 [[package]]
@@ -5197,7 +5566,7 @@ dependencies = [
  "log",
  "parking_lot",
  "percent-encoding",
- "phf",
+ "phf 0.13.1",
  "pin-project-lite",
  "postgres-protocol",
  "postgres-types",

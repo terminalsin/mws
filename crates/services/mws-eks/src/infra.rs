@@ -99,6 +99,17 @@ pub struct NodeGroupTemplate {
     pub version: String,
 }
 
+/// An instance a node group runs, as a Kubernetes node.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct InstanceFacts {
+    pub instance_id: String,
+    pub private_ip: String,
+    pub private_dns_name: String,
+    pub availability_zone: String,
+    pub instance_type: String,
+    pub image_id: String,
+}
+
 /// A node group's Auto Scaling group as it is now.
 #[derive(Debug, Clone, Default)]
 pub struct GroupState {
@@ -178,6 +189,9 @@ pub trait Infrastructure: Send + Sync {
 
     /// The group, or `None` when it no longer exists.
     async fn node_group_state(&self, scope: &Scope<'_>, group: &str) -> Option<GroupState>;
+
+    /// The named instances that are pending or running.
+    async fn instances(&self, scope: &Scope<'_>, ids: &[String]) -> Vec<InstanceFacts>;
 
     /// Delete the group (terminating its instances) and the launch template.
     async fn delete_node_group(&self, scope: &Scope<'_>, group: &str, template_id: Option<&str>);

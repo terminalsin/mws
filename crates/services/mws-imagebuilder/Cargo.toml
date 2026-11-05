@@ -9,6 +9,7 @@ license.workspace = true
 async-trait.workspace = true
 base64.workspace = true
 chrono.workspace = true
+chrono-tz.workspace = true
 http.workspace = true
 mws-core.workspace = true
 mws-proto-json.workspace = true

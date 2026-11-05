@@ -33,6 +33,8 @@ pub struct ServiceInfo {
     /// A key naming the fault (`User` / `Service`), for services that send
     /// one.
     pub error_fault_key: Option<&'static str>,
+    /// A key some services (EFS) repeat the error code under in the body.
+    pub error_code_key: Option<&'static str>,
 }
 
 /// A response body.
@@ -220,6 +222,10 @@ pub fn error_body(info: &ServiceInfo, error: &ServiceError) -> Value {
         };
         body.insert(k.to_string(), Value::String(fault.into()));
     }
+    if let Some(k) = info.error_code_key {
+        let code = if error.code == "AccessDenied" { "AccessDeniedException" } else { &error.code };
+        body.insert(k.to_string(), Value::String(code.to_string()));
+    }
     body.insert(info.error_message_key.to_string(), Value::String(error.message.clone()));
     for f in &error.fields {
         let v = match &f.value {
@@ -258,6 +264,7 @@ mod tests {
             validation_error: "ValidationException",
             error_message_key: "Message",
             error_fault_key: Some("Type"),
+            error_code_key: None,
         };
         let resp = error_response(&info, "rid", &ServiceError::client("ResourceNotFoundException", 404, "nope"));
         assert_eq!(resp.status(), 404);

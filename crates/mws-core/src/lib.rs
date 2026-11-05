@@ -10,6 +10,7 @@ mod error;
 pub mod eventstream;
 pub mod ids;
 mod service;
+pub mod trail;
 mod validate;
 
 pub use auth::{
@@ -18,6 +19,7 @@ pub use auth::{
 };
 pub use error::{ErrorFault, ErrorField, ErrorValue, ServiceError};
 pub use service::{AlternateSignature, HttpRequest, HttpResponse, RequestContext, Service, StreamingBody};
+pub use trail::{ApiCall, ApiCallObserver};
 pub use validate::{render_list, Validator};
 
 /// Re-exports used by generated code.
