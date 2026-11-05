@@ -33,6 +33,13 @@ fn parse_schedule(s: &t::Schedule) -> Result<Option<mws_schedule::Schedule>, Ser
     let parsed = mws_schedule::Schedule::parse(expr).ok_or_else(|| {
         invalid_parameter_value(format!("The value supplied for parameter 'scheduleExpression' is not valid. '{expr}' is not a valid cron expression."))
     })?;
+    if let Some(tz) = &s.timezone {
+        if tz.parse::<chrono_tz::Tz>().is_err() {
+            return Err(invalid_parameter_value(format!(
+                "The value supplied for parameter 'timezone' is not valid. '{tz}' is not an IANA time zone."
+            )));
+        }
+    }
     if let Some(c) = &s.pipeline_execution_start_condition {
         if !matches!(c.as_str(), "EXPRESSION_MATCH_ONLY" | "EXPRESSION_MATCH_AND_DEPENDENCY_UPDATES_AVAILABLE") {
             return Err(invalid_parameter_value(format!(
@@ -50,7 +57,20 @@ fn next_run(
     after: chrono::DateTime<chrono::Utc>,
 ) -> Option<String> {
     let parsed = parse_schedule(schedule).ok().flatten()?;
-    parsed.fires_between(anchor, after, after + chrono::Duration::days(800), 1).first().map(|t| date(*t))
+    fires(schedule, &parsed, anchor, after, after + chrono::Duration::days(800)).map(date)
+}
+
+/// The first time a schedule fires in `(after, until]`, reading its cron
+/// fields in the schedule's time zone (UTC when it names none).
+fn fires(
+    schedule: &t::Schedule,
+    parsed: &mws_schedule::Schedule,
+    anchor: chrono::DateTime<chrono::Utc>,
+    after: chrono::DateTime<chrono::Utc>,
+    until: chrono::DateTime<chrono::Utc>,
+) -> Option<chrono::DateTime<chrono::Utc>> {
+    let tz = schedule.timezone.as_deref().and_then(|z| z.parse::<chrono_tz::Tz>().ok()).unwrap_or(chrono_tz::UTC);
+    parsed.fires_between_in(&tz, anchor, after, until, 1).first().copied()
 }
 
 impl ImageBuilder {
@@ -442,7 +462,7 @@ impl ImageBuilder {
                     }
                     let Some(schedule) = p.pipeline.schedule.clone() else { continue };
                     let Ok(Some(parsed)) = parse_schedule(&schedule) else { continue };
-                    if parsed.fires_between(checked, checked, now, 1).is_empty() {
+                    if fires(&schedule, &parsed, checked, checked, now).is_none() {
                         continue;
                     }
                     p.pipeline.date_next_run = next_run(&schedule, now, now);

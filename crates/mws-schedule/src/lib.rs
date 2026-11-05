@@ -92,6 +92,19 @@ impl Schedule {
         until: DateTime<Utc>,
         limit: usize,
     ) -> Vec<DateTime<Utc>> {
+        self.fires_between_in(&Utc, anchor, after, until, limit)
+    }
+
+    /// Like [`Schedule::fires_between`], with `cron` fields read as wall
+    /// clock time in `tz` (rates are unaffected).
+    pub fn fires_between_in<Tz: TimeZone>(
+        &self,
+        tz: &Tz,
+        anchor: DateTime<Utc>,
+        after: DateTime<Utc>,
+        until: DateTime<Utc>,
+        limit: usize,
+    ) -> Vec<DateTime<Utc>> {
         let mut out = Vec::new();
         match self {
             Schedule::Rate(period) => {
@@ -115,7 +128,8 @@ impl Schedule {
                 // Look at most a year of minutes ahead per call.
                 let mut steps = 0;
                 while t <= until && out.len() < limit && steps < 60 * 24 * 366 {
-                    if c.matches(t) {
+                    let local = Utc.from_utc_datetime(&t.with_timezone(tz).naive_local());
+                    if c.matches(local) {
                         out.push(t);
                     }
                     t += Duration::minutes(1);
@@ -297,5 +311,14 @@ mod tests {
         let c = Schedule::parse("cron(30 9 ? * FRI *)").unwrap();
         let f = c.fires_between(anchor, anchor, anchor + Duration::days(7), 10);
         assert_eq!(f, vec![Utc.with_ymd_and_hms(2026, 1, 2, 9, 30, 0).unwrap()]);
+    }
+
+    #[test]
+    fn fires_in_a_time_zone() {
+        let s = Schedule::parse("cron(0 9 * * ? *)").unwrap();
+        let tz = chrono::FixedOffset::east_opt(-5 * 3600).unwrap();
+        let start = Utc.with_ymd_and_hms(2026, 1, 1, 0, 0, 0).unwrap();
+        let next = s.fires_between_in(&tz, start, start, start + Duration::days(2), 1);
+        assert_eq!(next, vec![Utc.with_ymd_and_hms(2026, 1, 1, 14, 0, 0).unwrap()]);
     }
 }
