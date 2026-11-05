@@ -3,8 +3,12 @@
 
 use std::time::Duration;
 
-use tokio::io::{AsyncBufReadExt, AsyncReadExt, AsyncWriteExt, BufReader};
+use tokio::io::{AsyncBufReadExt, AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt, BufReader};
 use tokio::net::TcpStream;
+
+/// A plain or TLS connection.
+pub trait Stream: AsyncRead + AsyncWrite + Unpin + Send {}
+impl<T: AsyncRead + AsyncWrite + Unpin + Send> Stream for T {}
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Resp {
@@ -65,34 +69,73 @@ impl From<std::io::Error> for RespError {
 
 pub type Result<T> = std::result::Result<T, RespError>;
 
+async fn tcp(host: &str, port: u16) -> Result<TcpStream> {
+    let stream = tokio::time::timeout(Duration::from_secs(3), TcpStream::connect((host, port)))
+        .await
+        .map_err(|_| RespError(format!("connecting to {host}:{port} timed out")))??;
+    let _ = stream.set_nodelay(true);
+    Ok(stream)
+}
+
 pub struct Client {
-    stream: BufReader<TcpStream>,
+    stream: BufReader<Box<dyn Stream>>,
 }
 
 const TIMEOUT: Duration = Duration::from_secs(30);
 
 impl Client {
     pub async fn connect(host: &str, port: u16) -> Result<Self> {
-        let stream = tokio::time::timeout(Duration::from_secs(3), TcpStream::connect((host, port)))
-            .await
-            .map_err(|_| RespError(format!("connecting to {host}:{port} timed out")))??;
-        let _ = stream.set_nodelay(true);
-        Ok(Self { stream: BufReader::new(stream) })
+        let stream = tcp(host, port).await?;
+        Ok(Self { stream: BufReader::new(Box::new(stream)) })
+    }
+
+    /// Connect over TLS, trusting `config`'s roots (encryption in transit).
+    pub async fn connect_tls(host: &str, port: u16, config: std::sync::Arc<rustls::ClientConfig>) -> Result<Self> {
+        let stream = tcp(host, port).await?;
+        let name = rustls_pki_types::ServerName::try_from(host.to_string())
+            .map_err(|e| RespError(format!("invalid server name {host}: {e}")))?;
+        let tls = tokio::time::timeout(
+            Duration::from_secs(5),
+            tokio_rustls::TlsConnector::from(config).connect(name, stream),
+        )
+        .await
+        .map_err(|_| RespError(format!("TLS handshake with {host}:{port} timed out")))??;
+        Ok(Self { stream: BufReader::new(Box::new(tls)) })
+    }
+
+    /// Connect (over TLS when `tls` is set) and authenticate.
+    pub async fn connect_with(
+        host: &str,
+        port: u16,
+        tls: Option<std::sync::Arc<rustls::ClientConfig>>,
+        auth: &Auth,
+    ) -> Result<Self> {
+        let mut c = match tls {
+            Some(config) => Self::connect_tls(host, port, config).await?,
+            None => Self::connect(host, port).await?,
+        };
+        c.authenticate(auth).await?;
+        Ok(c)
+    }
+
+    async fn authenticate(&mut self, auth: &Auth) -> Result<()> {
+        match auth {
+            Auth::None => {}
+            Auth::Password(p) => {
+                self.ok(&["AUTH", p]).await?;
+            }
+            Auth::User(u, p) => {
+                self.ok(&["AUTH", u, p]).await?;
+            }
+        }
+        Ok(())
     }
 
     /// Connect and authenticate (as `default` with the AUTH token, or as
     /// `user`).
     pub async fn connect_auth(host: &str, port: u16, auth: &Auth) -> Result<Self> {
         let mut c = Self::connect(host, port).await?;
-        match auth {
-            Auth::None => {}
-            Auth::Password(p) => {
-                c.ok(&["AUTH", p]).await?;
-            }
-            Auth::User(u, p) => {
-                c.ok(&["AUTH", u, p]).await?;
-            }
-        }
+        c.authenticate(auth).await?;
         Ok(c)
     }
 

@@ -1068,3 +1068,66 @@ async fn iam_controls_access() {
         .unwrap();
     dev.delete_cache_cluster().cache_cluster_id("small").send().await.unwrap();
 }
+
+#[tokio::test]
+async fn cloudwatch_metrics() {
+    let mws = Mws::start().await;
+    let ec = client(&mws).await;
+    ec.create_cache_cluster()
+        .cache_cluster_id("metered")
+        .engine("valkey")
+        .cache_node_type("cache.r7g.large")
+        .num_cache_nodes(1)
+        .send()
+        .await
+        .unwrap();
+    ec.create_cache_cluster()
+        .cache_cluster_id("metered-mc")
+        .engine("memcached")
+        .cache_node_type("cache.t4g.micro")
+        .num_cache_nodes(2)
+        .send()
+        .await
+        .unwrap();
+    // Minutes close on the emulated clock, which ElastiCache reads from
+    // requests.
+    let (status, _) = mws.control("POST", "/_mws/clock", Some(r#"{"advanceSeconds":180}"#)).await;
+    assert_eq!(status, 200);
+    ec.describe_cache_clusters().send().await.unwrap();
+
+    let cw = aws_sdk_cloudwatch::Client::new(&mws.root_sdk_config().await);
+    let listed = cw.list_metrics().namespace("AWS/ElastiCache").send().await.unwrap();
+    let names: Vec<_> = listed.metrics().iter().filter_map(|m| m.metric_name()).collect();
+    for want in ["CPUUtilization", "CurrConnections", "CacheHits", "FreeableMemory", "IsMaster", "GetHits", "CmdGet"] {
+        assert!(names.contains(&want), "{want} missing from {names:?}");
+    }
+    let now = aws_sdk_cloudwatch::primitives::DateTime::from_secs(chrono::Utc::now().timestamp() + 3600);
+    let start = aws_sdk_cloudwatch::primitives::DateTime::from_secs(chrono::Utc::now().timestamp() - 3600);
+    let out = cw
+        .get_metric_statistics()
+        .namespace("AWS/ElastiCache")
+        .metric_name("FreeableMemory")
+        .dimensions(aws_sdk_cloudwatch::types::Dimension::builder().name("CacheClusterId").value("metered").build())
+        .dimensions(aws_sdk_cloudwatch::types::Dimension::builder().name("CacheNodeId").value("0001").build())
+        .start_time(start)
+        .end_time(now)
+        .period(7200)
+        .statistics(aws_sdk_cloudwatch::types::Statistic::Maximum)
+        .send()
+        .await
+        .unwrap();
+    // An idle cache.r7g.large has its 13.07 GiB free.
+    assert!(out.datapoints()[0].maximum().unwrap() > 13.0 * 1024.0 * 1024.0 * 1024.0, "{:?}", out.datapoints());
+    let mc = cw
+        .list_metrics()
+        .namespace("AWS/ElastiCache")
+        .metric_name("CurrItems")
+        .dimensions(
+            aws_sdk_cloudwatch::types::DimensionFilter::builder().name("CacheClusterId").value("metered-mc").build(),
+        )
+        .send()
+        .await
+        .unwrap();
+    // One series per node.
+    assert_eq!(mc.metrics().len(), 2);
+}

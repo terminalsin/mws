@@ -68,6 +68,15 @@ async fn wait_snapshot(ec: &Client, name: &str) {
     panic!("snapshot {name} never became available");
 }
 
+type Tls = Option<std::sync::Arc<rustls::ClientConfig>>;
+
+/// A TLS client trusting the CA of MWS's node certificates.
+async fn ca_client(mws: &Mws) -> Tls {
+    let (status, _, ca) = mws.raw("GET", "/_aws/elasticache/ca.pem", &[], b"").await;
+    assert_eq!(status, 200);
+    Some(mws_elasticache::tls::client_config(std::str::from_utf8(&ca).unwrap()).unwrap())
+}
+
 fn endpoint(e: Option<&aws_sdk_elasticache::types::Endpoint>) -> (String, u16) {
     let e = e.expect("endpoint");
     (e.address().unwrap().to_string(), e.port().unwrap() as u16)
@@ -79,9 +88,9 @@ async fn text(c: &mut Redis, args: &[&str]) -> Option<String> {
 
 /// Wait until `GET key` on a connection answers `want` (replication is
 /// asynchronous).
-async fn eventually_get(host: &str, port: u16, auth: &Auth, key: &str, want: &str) {
+async fn eventually_get(host: &str, port: u16, tls: &Tls, auth: &Auth, key: &str, want: &str) {
     for _ in 0..100 {
-        if let Ok(mut c) = Redis::connect_auth(host, port, auth).await {
+        if let Ok(mut c) = Redis::connect_with(host, port, tls.clone(), auth).await {
             if c.cmd(&["GET", key]).await.ok().and_then(|r| r.as_text()).as_deref() == Some(want) {
                 return;
             }
@@ -94,6 +103,8 @@ async fn eventually_get(host: &str, port: u16, auth: &Auth, key: &str, want: &st
 #[tokio::test]
 async fn replication_group_with_auth_and_failover() {
     let Some((mws, ec)) = start().await else { return };
+    // AUTH needs encryption in transit, so the nodes speak TLS.
+    let tls = ca_client(&mws).await;
     let token = "an-auth-token-of-sixteen-plus";
     ec.create_replication_group()
         .replication_group_id("docker-sessions")
@@ -113,18 +124,18 @@ async fn replication_group_with_auth_and_failover() {
     let (rhost, rport) = endpoint(ng.reader_endpoint());
 
     // Without the token the node refuses commands.
-    let mut anon = Redis::connect(&host, port).await.unwrap();
+    let mut anon = Redis::connect_with(&host, port, tls.clone(), &Auth::None).await.unwrap();
     let r = anon.cmd(&["GET", "x"]).await.unwrap();
     assert!(format!("{r:?}").contains("NOAUTH"), "{r:?}");
 
     let auth = Auth::Password(token.into());
-    let mut c = Redis::connect_auth(&host, port, &auth).await.unwrap();
+    let mut c = Redis::connect_with(&host, port, tls.clone(), &auth).await.unwrap();
     assert_eq!(text(&mut c, &["SET", "user:1", "alice"]).await.as_deref(), Some("OK"));
     let role = c.cmd(&["ROLE"]).await.unwrap();
     assert_eq!(role.items()[0].as_text().as_deref(), Some("master"));
     // The reader endpoint reaches the replica, which has the data.
-    eventually_get(&rhost, rport, &auth, "user:1", "alice").await;
-    let mut r = Redis::connect_auth(&rhost, rport, &auth).await.unwrap();
+    eventually_get(&rhost, rport, &tls, &auth, "user:1", "alice").await;
+    let mut r = Redis::connect_with(&rhost, rport, tls.clone(), &auth).await.unwrap();
     assert_eq!(r.cmd(&["ROLE"]).await.unwrap().items()[0].as_text().as_deref(), Some("slave"));
 
     // Failover promotes the replica; the primary endpoint follows it.
@@ -132,7 +143,7 @@ async fn replication_group_with_auth_and_failover() {
     wait_group(&ec, "docker-sessions").await;
     let mut promoted = None;
     for _ in 0..100 {
-        if let Ok(mut c) = Redis::connect_auth(&host, port, &auth).await {
+        if let Ok(mut c) = Redis::connect_with(&host, port, tls.clone(), &auth).await {
             if c.cmd(&["SET", "user:2", "bob"]).await.ok().and_then(|r| r.as_text()).as_deref() == Some("OK") {
                 promoted = Some(c);
                 break;
@@ -155,8 +166,8 @@ async fn replication_group_with_auth_and_failover() {
         .unwrap();
     wait_group(&ec, "docker-sessions").await;
     let new_auth = Auth::Password(new_token.into());
-    eventually_get(&host, port, &new_auth, "user:2", "bob").await;
-    eventually_get(&host, port, &auth, "user:2", "bob").await;
+    eventually_get(&host, port, &tls, &new_auth, "user:2", "bob").await;
+    eventually_get(&host, port, &tls, &auth, "user:2", "bob").await;
 
     ec.delete_replication_group().replication_group_id("docker-sessions").send().await.unwrap();
     wait_containers_gone("docker-sessions").await;
@@ -326,8 +337,152 @@ async fn memcached_and_parameter_groups() {
         tokio::time::sleep(Duration::from_millis(200)).await;
     }
     assert_eq!(policy, "allkeys-lru");
+
+    // CloudWatch metrics come from the node's own counters.
+    let mut c = Redis::connect(&host, port).await.unwrap();
+    text(&mut c, &["SET", "a", "1"]).await;
+    for _ in 0..3 {
+        assert_eq!(text(&mut c, &["GET", "a"]).await.as_deref(), Some("1"));
+    }
+    assert_eq!(c.cmd(&["GET", "missing"]).await.unwrap(), mws_elasticache::resp::Resp::Bulk(None));
+    // Let the sampler read the node, then close the minute.
+    tokio::time::sleep(Duration::from_secs(7)).await;
+    let (status, _) = mws.control("POST", "/_mws/clock", Some(r#"{"advanceSeconds":120}"#)).await;
+    assert_eq!(status, 200);
+    ec.describe_cache_clusters().send().await.unwrap();
+    let cw = aws_sdk_cloudwatch::Client::new(&mws.root_sdk_config().await);
+    // Counters are summed; gauges such as IsMaster read their Maximum,
+    // since the window can span more than one closed minute.
+    let stat = |name: &'static str, statistic: aws_sdk_cloudwatch::types::Statistic| {
+        let cw = cw.clone();
+        async move {
+            let now = aws_sdk_cloudwatch::primitives::DateTime::from_secs(chrono::Utc::now().timestamp() + 3600);
+            let start = aws_sdk_cloudwatch::primitives::DateTime::from_secs(chrono::Utc::now().timestamp() - 3600);
+            let out = cw
+                .get_metric_statistics()
+                .namespace("AWS/ElastiCache")
+                .metric_name(name)
+                .dimensions(
+                    aws_sdk_cloudwatch::types::Dimension::builder()
+                        .name("CacheClusterId")
+                        .value("docker-valkey")
+                        .build(),
+                )
+                .dimensions(aws_sdk_cloudwatch::types::Dimension::builder().name("CacheNodeId").value("0001").build())
+                .start_time(start)
+                .end_time(now)
+                .period(7200)
+                .statistics(statistic.clone())
+                .send()
+                .await
+                .unwrap();
+            let d = out.datapoints().first();
+            match statistic {
+                aws_sdk_cloudwatch::types::Statistic::Maximum => d.and_then(|d| d.maximum()),
+                _ => d.and_then(|d| d.sum()),
+            }
+            .unwrap_or(-1.0)
+        }
+    };
+    let sum = |name| stat(name, aws_sdk_cloudwatch::types::Statistic::Sum);
+    let max = |name| stat(name, aws_sdk_cloudwatch::types::Statistic::Maximum);
+    assert_eq!(sum("CacheHits").await, 3.0);
+    assert_eq!(sum("CacheMisses").await, 1.0);
+    assert!(sum("GetTypeCmds").await >= 4.0);
+    assert!(sum("SetTypeCmds").await >= 1.0);
+    assert_eq!(max("IsMaster").await, 1.0);
+    assert!(max("BytesUsedForCache").await > 0.0);
     ec.delete_cache_cluster().cache_cluster_id("docker-valkey").send().await.unwrap();
     wait_containers_gone("docker-valkey").await;
     wait_containers_gone("docker-memcached").await;
+    mws.stop().await;
+}
+
+#[tokio::test]
+async fn encryption_in_transit() {
+    let Some((mws, ec)) = start().await else { return };
+    // Clients trust the CA MWS signs node certificates with.
+    let (status, _, ca) = mws.raw("GET", "/_aws/elasticache/ca.pem", &[], b"").await;
+    assert_eq!(status, 200);
+    let ca = String::from_utf8(ca).unwrap();
+    assert!(ca.starts_with("-----BEGIN CERTIFICATE-----"), "{ca}");
+    let tls = mws_elasticache::tls::client_config(&ca).unwrap();
+    assert!(ca_client(&mws).await.is_some());
+
+    let token = "a-tls-auth-token-of-sixteen";
+    ec.create_replication_group()
+        .replication_group_id("docker-tls")
+        .replication_group_description("tls")
+        .engine("valkey")
+        .cache_node_type("cache.t4g.micro")
+        .num_cache_clusters(2)
+        .transit_encryption_enabled(true)
+        .auth_token(token)
+        .send()
+        .await
+        .unwrap();
+    let g = wait_group(&ec, "docker-tls").await;
+    assert_eq!(g.transit_encryption_enabled(), Some(true));
+    let ng = &g.node_groups()[0];
+    let (host, port) = endpoint(ng.primary_endpoint());
+    let (rhost, rport) = endpoint(ng.reader_endpoint());
+    let auth = Auth::Password(token.into());
+
+    // Plain RESP gets nowhere: the port speaks TLS.
+    if let Ok(mut plain) = Redis::connect(&host, port).await {
+        assert!(plain.cmd(&["PING"]).await.is_err());
+    }
+    let mut c = Redis::connect_with(&host, port, Some(tls.clone()), &auth).await.unwrap();
+    assert_eq!(text(&mut c, &["SET", "secret", "sauce"]).await.as_deref(), Some("OK"));
+    // Replication runs over TLS too.
+    let mut found = false;
+    for _ in 0..100 {
+        if let Ok(mut r) = Redis::connect_with(&rhost, rport, Some(tls.clone()), &auth).await {
+            if r.cmd(&["GET", "secret"]).await.ok().and_then(|v| v.as_text()).as_deref() == Some("sauce") {
+                found = true;
+                break;
+            }
+        }
+        tokio::time::sleep(Duration::from_millis(200)).await;
+    }
+    assert!(found, "replica never received the key over TLS");
+    ec.delete_replication_group().replication_group_id("docker-tls").send().await.unwrap();
+
+    // Encryption in transit turned on for a running group.
+    ec.create_replication_group()
+        .replication_group_id("docker-upgrade")
+        .replication_group_description("upgrade")
+        .engine("redis")
+        .cache_node_type("cache.t4g.micro")
+        .num_cache_clusters(1)
+        .send()
+        .await
+        .unwrap();
+    let g = wait_group(&ec, "docker-upgrade").await;
+    let (host, port) = endpoint(g.node_groups()[0].primary_endpoint());
+    let mut c = Redis::connect(&host, port).await.unwrap();
+    assert_eq!(text(&mut c, &["SET", "k", "v"]).await.as_deref(), Some("OK"));
+    ec.modify_replication_group()
+        .replication_group_id("docker-upgrade")
+        .transit_encryption_enabled(true)
+        .transit_encryption_mode(aws_sdk_elasticache::types::TransitEncryptionMode::Required)
+        .apply_immediately(true)
+        .send()
+        .await
+        .unwrap();
+    let mut upgraded = false;
+    for _ in 0..100 {
+        if let Ok(mut c) = Redis::connect_with(&host, port, Some(tls.clone()), &Auth::None).await {
+            if c.cmd(&["GET", "k"]).await.ok().and_then(|v| v.as_text()).as_deref() == Some("v") {
+                upgraded = true;
+                break;
+            }
+        }
+        tokio::time::sleep(Duration::from_millis(200)).await;
+    }
+    assert!(upgraded, "the group never served TLS");
+    ec.delete_replication_group().replication_group_id("docker-upgrade").send().await.unwrap();
+    wait_containers_gone("docker-tls").await;
+    wait_containers_gone("docker-upgrade").await;
     mws.stop().await;
 }

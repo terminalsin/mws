@@ -25,16 +25,19 @@ pub mod backend;
 mod catalog;
 mod engine;
 mod handler;
+pub mod metrics;
 mod ops;
 pub mod proxy;
 pub mod resp;
 mod state;
+pub mod tls;
 
 use std::sync::{Arc, Mutex, MutexGuard, OnceLock};
 
 use mws_core::{HttpRequest, HttpResponse, RequestContext, Service, ServiceError};
 
 pub use backend::{BackendChoice, DockerBackend, EngineBackend, EngineKind, MetadataBackend};
+pub use metrics::{CacheMetric, MetricPublisher};
 use state::{RegionState, State};
 
 /// A VPC subnet, as ElastiCache sees it.
@@ -95,6 +98,9 @@ impl Default for Options {
     }
 }
 
+/// Where the CA certificate for encryption in transit is served.
+pub const CA_PATH: &str = "/_aws/elasticache/ca.pem";
+
 pub(crate) struct Inner {
     state: Mutex<State>,
     backend: Arc<dyn EngineBackend>,
@@ -103,6 +109,11 @@ pub(crate) struct Inner {
     bucket: OnceLock<Arc<dyn SnapshotBucket>>,
     notifier: OnceLock<Arc<dyn EventNotifier>>,
     proxies: proxy::Proxies,
+    /// The CA node certificates come from (generated on first use).
+    pki: Mutex<tls::Pki>,
+    /// A TLS client trusting `pki`'s CA, for that CA's certificate.
+    tls_client: Mutex<Option<(String, Arc<rustls::ClientConfig>)>>,
+    meter: metrics::Meter,
 }
 
 /// The ElastiCache service. Cheap to clone; clones share state.
@@ -132,6 +143,9 @@ impl ElastiCache {
                 bucket: OnceLock::new(),
                 notifier: OnceLock::new(),
                 proxies: Default::default(),
+                pki: Mutex::new(tls::Pki::default()),
+                tls_client: Mutex::new(None),
+                meter: Default::default(),
             }),
         }
     }
@@ -180,6 +194,63 @@ impl ElastiCache {
         &self.inner.proxies
     }
 
+    /// The CA and server certificate of nodes with encryption in transit.
+    pub(crate) fn pki(&self) -> tls::Pki {
+        let mut pki = self.inner.pki.lock().expect("ElastiCache PKI lock poisoned");
+        if pki.is_empty() {
+            let names = tls::server_names(&self.options().advertise_host, &engine::connect_host(self));
+            match tls::Pki::generate(&names) {
+                Ok(p) => *pki = p,
+                Err(e) => tracing::error!("ElastiCache: generating the TLS CA failed: {e}"),
+            }
+        }
+        pki.clone()
+    }
+
+    /// The PEM certificate of the CA that signs node certificates (served
+    /// at `/_aws/elasticache/ca.pem`). Clients connecting to caches with
+    /// encryption in transit trust it.
+    pub fn ca_certificate_pem(&self) -> String {
+        self.pki().ca_cert_pem
+    }
+
+    /// A TLS client for nodes listening on `port` with encryption in
+    /// transit, or `None` for plain nodes.
+    pub(crate) fn tls_client_for(&self, port: u16) -> Option<Arc<rustls::ClientConfig>> {
+        let tls = {
+            let st = self.lock();
+            st.regions.values().any(|r| {
+                r.clusters.values().any(|c| {
+                    c.info.transit_encryption_enabled == Some(true) && c.nodes.values().any(|n| n.port == port)
+                }) || r.serverless.values().any(|s| s.node.port == port)
+            })
+        };
+        if !tls {
+            return None;
+        }
+        let ca = self.ca_certificate_pem();
+        let mut cached = self.inner.tls_client.lock().expect("ElastiCache TLS lock poisoned");
+        if let Some((pem, config)) = cached.as_ref() {
+            if *pem == ca {
+                return Some(config.clone());
+            }
+        }
+        match tls::client_config(&ca) {
+            Ok(config) => {
+                *cached = Some((ca, config.clone()));
+                Some(config)
+            }
+            Err(e) => {
+                tracing::error!("ElastiCache: TLS client: {e}");
+                None
+            }
+        }
+    }
+
+    pub(crate) fn meter(&self) -> &metrics::Meter {
+        &self.inner.meter
+    }
+
     pub(crate) fn lock(&self) -> MutexGuard<'_, State> {
         self.inner.state.lock().expect("ElastiCache state lock poisoned")
     }
@@ -223,12 +294,25 @@ impl Service for ElastiCache {
     }
 
     async fn handle(&self, ctx: RequestContext, request: HttpRequest) -> HttpResponse {
+        if request.uri().path() == CA_PATH {
+            return http::Response::builder()
+                .status(200)
+                .header(http::header::CONTENT_TYPE, "application/x-pem-file")
+                .body(bytes::Bytes::from(self.ca_certificate_pem()))
+                .expect("static response parts are valid");
+        }
+        self.observe_clock(ctx.received_at);
         let params = mws_proto_query::read_params(&request);
         generated::dispatch(self, &ctx, &params).await
     }
 
     fn render_error(&self, request_id: &str, error: &ServiceError) -> HttpResponse {
         mws_proto_query::error_response(&generated::SERVICE_INFO, request_id, error)
+    }
+
+    /// The CA certificate for encryption in transit is public.
+    fn accepts_unsigned(&self, request: &HttpRequest) -> bool {
+        request.method() == http::Method::GET && request.uri().path() == CA_PATH
     }
 
     async fn invoke(
@@ -241,11 +325,22 @@ impl Service for ElastiCache {
     }
 
     fn export_state(&self) -> Option<serde_json::Value> {
-        serde_json::to_value(&*self.lock()).ok()
+        let mut v = serde_json::to_value(&*self.lock()).ok()?;
+        let pki = self.inner.pki.lock().expect("ElastiCache PKI lock poisoned").clone();
+        if let (false, Some(o)) = (pki.is_empty(), v.as_object_mut()) {
+            o.insert("pki".into(), serde_json::to_value(pki).ok()?);
+        }
+        Some(v)
     }
 
-    fn import_state(&self, state: serde_json::Value) -> Result<(), String> {
+    fn import_state(&self, mut state: serde_json::Value) -> Result<(), String> {
+        let pki = state.as_object_mut().and_then(|o| o.remove("pki"));
         let state: State = serde_json::from_value(state).map_err(|e| format!("invalid ElastiCache state: {e}"))?;
+        if let Some(p) = pki {
+            let p: tls::Pki =
+                serde_json::from_value(p).map_err(|e| format!("invalid ElastiCache certificates: {e}"))?;
+            *self.inner.pki.lock().expect("ElastiCache PKI lock poisoned") = p;
+        }
         *self.lock() = state;
         engine::reattach(self);
         Ok(())

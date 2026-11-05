@@ -59,7 +59,7 @@ Every service shares the same foundations:
 
 | Service | Operations | What's emulated |
 | --- | --- | --- |
-| [ElastiCache](elasticache.md) | 77 / 77 | Valkey, Redis OSS and Memcached nodes as Docker containers, replication and cluster mode with failover and resharding, RBAC, snapshots to S3, serverless caches, global datastores |
+| [ElastiCache](elasticache.md) | 77 / 77 | Valkey, Redis OSS and Memcached nodes as Docker containers, replication and cluster mode with failover and resharding, RBAC, TLS, CloudWatch metrics, snapshots to S3, serverless caches, global datastores |
 
 ## Application integration
 

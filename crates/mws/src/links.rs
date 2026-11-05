@@ -1302,3 +1302,24 @@ impl mws_elasticache::EventNotifier for ElastiCacheNotifications {
         }
     }
 }
+
+/// ElastiCache publishes its `AWS/ElastiCache` metrics into CloudWatch.
+pub struct ElastiCacheToCloudWatch(pub mws_cloudwatch::CloudWatch);
+
+impl mws_elasticache::MetricPublisher for ElastiCacheToCloudWatch {
+    fn publish(&self, metrics: Vec<mws_elasticache::CacheMetric>) {
+        for m in metrics {
+            let Some(timestamp) = chrono::DateTime::from_timestamp_millis(m.timestamp) else { continue };
+            self.0.put_metric_as_service(mws_cloudwatch::ServiceMetric {
+                account: m.account,
+                region: m.region,
+                namespace: "AWS/ElastiCache".into(),
+                metric_name: m.metric_name.into(),
+                dimensions: m.dimensions,
+                unit: Some(m.unit.into()),
+                timestamp,
+                values: vec![(m.value, 1.0)],
+            });
+        }
+    }
+}

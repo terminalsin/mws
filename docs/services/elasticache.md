@@ -27,7 +27,7 @@ All 77 operations are generated from the AWS model (awsQuery) and implemented. W
 | Parameter groups | ✅ | Every Valkey/Redis OSS/Memcached family with their parameters, allowed values and defaults; changes reach running nodes with `CONFIG SET`. |
 | Subnet groups | ✅ | Subnets and VPCs read from EC2 (`InvalidSubnet` for unknown ones); a default group in the default VPC. |
 | Cache security groups | ✅ | As for current accounts (no EC2-Classic): creation is refused and the rest answer `CacheSecurityGroupNotFound`. |
-| Encryption in transit | 🟡 | Recorded and validated (AUTH needs it, as in AWS), but nodes do not serve TLS. |
+| Encryption in transit | ✅ | Nodes with `TransitEncryptionEnabled` (and every serverless cache) listen with TLS only, replicate and run the cluster bus over TLS, and present a certificate from MWS's own CA: fetch it from `GET /_aws/elasticache/ca.pem` (unsigned) and trust it, for example `redis-cli --tls --cacert ca.pem`. Turning it on or off for a running cluster-mode-disabled group switches the nodes' listeners in place. `preferred` mode behaves like `required`: one port can't speak both. |
 | Encryption at rest | 🟡 | Recorded only. |
 | Restricted commands | ❌ | `CONFIG`, `SHUTDOWN` and other commands ElastiCache blocks are allowed. |
 | Engine upgrades | 🟡 | Versions change in the metadata; running nodes keep their image. |
@@ -52,7 +52,8 @@ All 77 operations are generated from the AWS model (awsQuery) and implemented. W
 | Reserved nodes | ✅ | Offerings for every node type, duration and payment option; purchases are recorded. |
 | Service updates | ✅ | Engine patch updates with update actions per group or cluster, node-level status, `BatchApplyUpdateAction`/`BatchStopUpdateAction`. |
 | IAM | ✅ | Every operation authorizes `elasticache:<Action>` with ElastiCache's condition keys (`CacheNodeType`, `EngineVersion`, `TransitEncryptionEnabled`, ...). IAM authentication for users is not supported. |
-| CloudWatch metrics and log delivery | ❌ | Not published; log delivery configurations are recorded only. |
+| CloudWatch metrics | ✅ | `AWS/ElastiCache` metrics per node (`CacheClusterId`, `CacheNodeId`) every minute on the emulated clock, from the nodes' own `INFO` and `stats`: `CPUUtilization`, `EngineCPUUtilization`, `FreeableMemory`, `BytesUsedForCache`, `DatabaseMemoryUsagePercentage`, `CurrConnections`, `NewConnections`, `CurrItems`, `CacheHits`, `CacheMisses`, `CacheHitRate`, `GetTypeCmds`, `SetTypeCmds`, `Evictions`, `Reclaimed`, `NetworkBytesIn`/`Out`, `IsMaster`, `ReplicationLag`, `ReplicationBytes`, `MemoryFragmentationRatio`, and Memcached's `GetHits`, `GetMisses`, `CmdGet`, `CmdSet`, `BytesUsedForCacheItems`, ... Serverless caches publish by `clusterId`, with `ElastiCacheProcessingUnits` counted as one per command. With the metadata backend nodes report as idle. |
+| Log delivery | ❌ | Slow log and engine log delivery configurations are recorded only. |
 | EC2 instances reaching nodes | ❌ | Nodes listen on the host, not inside the emulated VPC's Docker network. |
 
 See also: [all services](README.md) · [authentication and authorization](../security.md).

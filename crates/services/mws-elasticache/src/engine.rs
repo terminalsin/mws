@@ -21,6 +21,19 @@ use crate::ElastiCache;
 
 pub(crate) const INTERNAL_USER: &str = "mws-internal";
 pub(crate) const CLUSTER_BUS_PORT: &str = "16379";
+const TLS_CERT: &str = "/tls/server.crt";
+const TLS_KEY: &str = "/tls/server.key";
+const TLS_CA: &str = "/tls/ca.crt";
+
+/// The certificate files a node with encryption in transit needs.
+pub(crate) fn tls_files(svc: &ElastiCache) -> Vec<(String, Vec<u8>)> {
+    let pki = svc.pki();
+    vec![
+        (TLS_CERT.into(), pki.server_cert_pem.into_bytes()),
+        (TLS_KEY.into(), pki.server_key_pem.into_bytes()),
+        (TLS_CA.into(), pki.ca_cert_pem.into_bytes()),
+    ]
+}
 
 /// Whether an engine version has ACLs (Redis OSS 6+, every Valkey).
 pub(crate) fn acl_capable(engine: EngineKind, version: &str) -> bool {
@@ -48,7 +61,58 @@ pub(crate) fn connect_host(svc: &ElastiCache) -> String {
 }
 
 async fn connect(svc: &ElastiCache, port: u16, auth: &Auth) -> Result<Client, String> {
-    Client::connect_auth(&connect_host(svc), port, auth).await.map_err(|e| e.0)
+    Client::connect_with(&connect_host(svc), port, svc.tls_client_for(port), auth).await.map_err(|e| e.0)
+}
+
+/// A raw connection to a node (Memcached), over TLS when the node uses it.
+async fn raw_connect(svc: &ElastiCache, port: u16) -> Result<Box<dyn resp::Stream>, String> {
+    let host = connect_host(svc);
+    let tcp = tokio::time::timeout(Duration::from_secs(3), tokio::net::TcpStream::connect((host.as_str(), port)))
+        .await
+        .map_err(|_| "connect timed out".to_string())?
+        .map_err(|e| e.to_string())?;
+    match svc.tls_client_for(port) {
+        None => Ok(Box::new(tcp)),
+        Some(config) => {
+            let name = rustls_pki_types::ServerName::try_from(host.clone()).map_err(|e| e.to_string())?;
+            let tls = tokio_rustls::TlsConnector::from(config).connect(name, tcp).await.map_err(|e| e.to_string())?;
+            Ok(Box::new(tls))
+        }
+    }
+}
+
+/// A Valkey/Redis OSS node's `INFO everything`, parsed.
+pub(crate) async fn redis_info(
+    svc: &ElastiCache,
+    port: u16,
+    auth: &Auth,
+) -> Option<(std::collections::HashMap<String, f64>, bool)> {
+    let mut c = connect(svc, port, auth).await.ok()?;
+    let text = c.ok(&["INFO", "everything"]).await.ok()?.as_text()?;
+    Some(crate::metrics::parse_info(&text))
+}
+
+/// A Memcached node's `stats`, parsed.
+pub(crate) async fn memcached_stats(
+    svc: &ElastiCache,
+    port: u16,
+) -> Option<(std::collections::HashMap<String, f64>, bool)> {
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+    let mut s = raw_connect(svc, port).await.ok()?;
+    s.write_all(b"stats\r\n").await.ok()?;
+    let mut text = String::new();
+    let mut buf = vec![0u8; 8192];
+    for _ in 0..50 {
+        let n = tokio::time::timeout(Duration::from_secs(2), s.read(&mut buf)).await.ok()?.ok()?;
+        if n == 0 {
+            break;
+        }
+        text.push_str(&String::from_utf8_lossy(&buf[..n]));
+        if text.ends_with("END\r\n") {
+            break;
+        }
+    }
+    Some((crate::metrics::parse_stats(&text), true))
 }
 
 /// Wait until a node answers (PING, or a TCP connection for Memcached).
@@ -57,7 +121,7 @@ async fn wait_ready(svc: &ElastiCache, engine: EngineKind, port: u16, auth: &Aut
     let mut last = String::new();
     for _ in 0..600 {
         if engine == EngineKind::Memcached {
-            match tokio::net::TcpStream::connect((host.as_str(), port)).await {
+            match raw_connect(svc, port).await {
                 Ok(mut s) => {
                     use tokio::io::{AsyncReadExt, AsyncWriteExt};
                     if s.write_all(b"version\r\n").await.is_ok() {
@@ -69,10 +133,10 @@ async fn wait_ready(svc: &ElastiCache, engine: EngineKind, port: u16, auth: &Aut
                         }
                     }
                 }
-                Err(e) => last = e.to_string(),
+                Err(e) => last = e,
             }
         } else {
-            match Client::connect_auth(&host, port, auth).await {
+            match Client::connect_with(&host, port, svc.tls_client_for(port), auth).await {
                 Ok(mut c) => match c.cmd(&["PING"]).await {
                     Ok(resp::Resp::Simple(s)) if s == "PONG" => return Ok(()),
                     Ok(other) => last = format!("{other:?}"),
@@ -100,6 +164,7 @@ pub(crate) fn engine_args(
     tokens: &AuthTokens,
     internal: Option<&str>,
     advertise_host: &str,
+    tls: bool,
 ) -> Vec<String> {
     let nt = catalog::node_type(node_type).unwrap_or(&catalog::NODE_TYPES[3]);
     let mut a: Vec<String> = Vec::new();
@@ -127,9 +192,24 @@ pub(crate) fn engine_args(
         if get("error_on_memory_exhausted", "0") == "1" {
             push(&["-M"]);
         }
+        if tls {
+            let ssl = format!("ssl_chain_cert={TLS_CERT},ssl_key={TLS_KEY},ssl_ca_cert={TLS_CA}");
+            push(&["-Z", "-o", &ssl]);
+        }
         return a;
     }
-    push(&["--port", &port.to_string(), "--bind", "0.0.0.0", "--protected-mode", "no"]);
+    if tls {
+        // Encryption in transit: the node's only listener speaks TLS.
+        push(&["--port", "0", "--tls-port", &port.to_string()]);
+        push(&["--tls-cert-file", TLS_CERT, "--tls-key-file", TLS_KEY, "--tls-ca-cert-file", TLS_CA]);
+        push(&["--tls-auth-clients", "no", "--tls-replication", "yes"]);
+        if cluster_mode {
+            push(&["--tls-cluster", "yes"]);
+        }
+    } else {
+        push(&["--port", &port.to_string()]);
+    }
+    push(&["--bind", "0.0.0.0", "--protected-mode", "no"]);
     push(&["--save", "", "--appendonly", "no", "--dir", "/data", "--dbfilename", "dump.rdb"]);
     push(&["--maxmemory", &nt.maxmemory().to_string()]);
     let acl = acl_capable(engine, version);
@@ -188,6 +268,7 @@ pub(crate) fn plan(svc: &ElastiCache, key: &str, r: &RegionState, cluster_ids: &
             None => (c.auth.clone(), c.internal_password.clone()),
         };
         let nt = catalog::node_type(&node_type).unwrap_or(&catalog::NODE_TYPES[3]);
+        let tls = c.info.transit_encryption_enabled == Some(true);
         for (node_id, rt) in &c.nodes {
             if rt.handle.is_some() {
                 continue;
@@ -202,6 +283,7 @@ pub(crate) fn plan(svc: &ElastiCache, key: &str, r: &RegionState, cluster_ids: &
                 &tokens,
                 internal.as_deref(),
                 &svc.options().advertise_host,
+                tls,
             );
             jobs.push(NodeJob {
                 cluster_id: id.clone(),
@@ -218,7 +300,7 @@ pub(crate) fn plan(svc: &ElastiCache, key: &str, r: &RegionState, cluster_ids: &
                     args,
                     memory_mib: (nt.memory_mib() * 5 / 4).max(256),
                     vcpus: nt.vcpus,
-                    files: Vec::new(),
+                    files: if tls || engine.is_redis_like() { tls_files(svc) } else { Vec::new() },
                 },
             });
         }
@@ -704,6 +786,73 @@ pub(crate) fn run_everywhere(svc: &ElastiCache, nodes: Vec<(u16, Auth)>, command
     });
 }
 
+/// Turn encryption in transit on (or off) on running nodes: they keep
+/// their port, which then speaks TLS (or plain RESP). `commands` run
+/// first, over the old protocol.
+pub(crate) fn switch_tls(svc: &ElastiCache, nodes: Vec<(u16, Auth)>, commands: Vec<Vec<String>>, enable: bool) {
+    if !svc.runs_engines() || nodes.is_empty() {
+        return;
+    }
+    let svc = svc.clone();
+    spawn(async move {
+        let host = connect_host(&svc);
+        // Before the switch the state already names the new protocol.
+        let old = if enable {
+            None
+        } else {
+            match crate::tls::client_config(&svc.ca_certificate_pem()) {
+                Ok(c) => Some(c),
+                Err(e) => {
+                    tracing::warn!("ElastiCache TLS switch: {e}");
+                    return;
+                }
+            }
+        };
+        for (port, auth) in nodes {
+            let p = port.to_string();
+            let Ok(mut c) = Client::connect_with(&host, port, old.clone(), &auth).await else { continue };
+            for cmd in &commands {
+                let refs: Vec<&str> = cmd.iter().map(String::as_str).collect();
+                let _ = c.ok(&refs).await;
+            }
+            let switch: Vec<&str> = if enable {
+                vec![
+                    "CONFIG",
+                    "SET",
+                    "tls-cert-file",
+                    TLS_CERT,
+                    "tls-key-file",
+                    TLS_KEY,
+                    "tls-ca-cert-file",
+                    TLS_CA,
+                    "tls-auth-clients",
+                    "no",
+                    "tls-replication",
+                    "yes",
+                ]
+            } else {
+                vec!["CONFIG", "SET", "tls-replication", "no"]
+            };
+            if let Err(e) = c.ok(&switch).await {
+                tracing::warn!("ElastiCache TLS switch on port {port}: {e}");
+                continue;
+            }
+            // Free the port, then listen on it with the new protocol. The
+            // connection survives closing the listener.
+            let (close, open) = if enable { ("port", "tls-port") } else { ("tls-port", "port") };
+            if let Err(e) = c.ok(&["CONFIG", "SET", close, "0"]).await {
+                tracing::warn!("ElastiCache TLS switch on port {port}: {e}");
+                continue;
+            }
+            if let Err(e) = c.ok(&["CONFIG", "SET", open, &p]).await {
+                tracing::warn!("ElastiCache TLS switch on port {port}: {e}");
+            }
+            // Replicas reconnect to their primary with the new protocol.
+            let _ = c.cmd(&["CLIENT", "KILL", "TYPE", "master"]).await;
+        }
+    });
+}
+
 /// The ports and admin auth of every running node of a replication group
 /// or standalone cluster.
 pub(crate) fn nodes_of(r: &RegionState, rg: Option<&str>, cluster: Option<&str>) -> Vec<(u16, Auth)> {
@@ -1056,6 +1205,8 @@ pub(crate) fn start_serverless(svc: &ElastiCache, ctx: &RequestContext, key: &st
                 &AuthTokens::default(),
                 c.internal_password.as_deref(),
                 &svc.options().advertise_host,
+                // Serverless caches always encrypt in transit.
+                true,
             );
             let (account, region) = key.split_once('/').unwrap_or((&key, ""));
             let seed = c.seed_snapshot.as_ref().and_then(|s| r.serverless_snapshots.get(s)).map(|s| s.data.clone());
@@ -1073,7 +1224,7 @@ pub(crate) fn start_serverless(svc: &ElastiCache, ctx: &RequestContext, key: &st
                     args,
                     memory_mib: 1024,
                     vcpus: 2,
-                    files: vec![],
+                    files: tls_files(&svc),
                 },
                 serverless_auth(&c),
                 engine,

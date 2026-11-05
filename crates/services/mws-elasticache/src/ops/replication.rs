@@ -806,6 +806,7 @@ pub(crate) async fn modify(
 ) -> Result<t::ModifyReplicationGroupResult, ServiceError> {
     let id = input.replication_group_id.to_ascii_lowercase();
     let key = region_key(ctx);
+    let mut tls_change = None;
     let (shown, commands, failover_to, users_changed) = svc.with_region(ctx, |r| {
         let g = r.replication_groups.get(&id).cloned().ok_or_else(|| not_found(&id))?;
         let resource = g.info.arn.clone().unwrap_or_default();
@@ -957,6 +958,14 @@ pub(crate) async fn modify(
             }
         }
         if let Some(te) = input.transit_encryption_enabled {
+            if (g.info.transit_encryption_enabled == Some(true)) != te {
+                if g.cluster_enabled() {
+                    return Err(combination(
+                        "TransitEncryptionEnabled cannot be changed on a cluster mode enabled replication group.",
+                    ));
+                }
+                tls_change = Some(te);
+            }
             g.info.transit_encryption_enabled = Some(te);
             g.info.transit_encryption_mode =
                 te.then(|| input.transit_encryption_mode.clone().unwrap_or_else(|| "preferred".into()));
@@ -1116,7 +1125,12 @@ pub(crate) async fn modify(
         Ok((shown, commands, failover_to, users_changed))
     })?;
     let nodes = svc.with_key(&key, ctx, |r| engine::nodes_of(r, Some(&id), None));
-    engine::run_everywhere(svc, nodes, commands);
+    match tls_change {
+        // The nodes still speak the old protocol: run the other changes,
+        // then switch their listeners.
+        Some(enable) => engine::switch_tls(svc, nodes, commands, enable),
+        None => engine::run_everywhere(svc, nodes, commands),
+    }
     if users_changed {
         engine::sync_users(svc, ctx, &key, &id);
     }
