@@ -30,6 +30,10 @@ pub(crate) struct TlsInfo {
     pub version: String,
     pub cipher: String,
     pub client_chain: Vec<Vec<u8>>,
+    /// The SNI name the client sent.
+    pub sni: Option<String>,
+    /// The listener's default certificate.
+    pub certificate: Option<String>,
 }
 
 struct Candidate {
@@ -239,6 +243,25 @@ pub(crate) async fn connect_insecure_alpn(
     tokio_rustls::TlsConnector::from(Arc::new(config)).connect(name, stream).await
 }
 
+/// TLS to `host` (SNI), without verifying its certificate: identity
+/// providers that load balancers call (token, user info and JWKS
+/// endpoints), which locally are usually self-signed.
+pub(crate) async fn connect_insecure_named(
+    stream: TcpStream,
+    host: &str,
+) -> std::io::Result<tokio_rustls::client::TlsStream<TcpStream>> {
+    let p = provider();
+    let mut config = rustls::ClientConfig::builder_with_provider(p.clone())
+        .with_safe_default_protocol_versions()
+        .map_err(std::io::Error::other)?
+        .dangerous()
+        .with_custom_certificate_verifier(Arc::new(AcceptAnyServer(p)))
+        .with_no_client_auth();
+    config.alpn_protocols = vec![b"http/1.1".to_vec()];
+    let name = rustls_pki_types::ServerName::try_from(host.to_string()).map_err(std::io::Error::other)?;
+    tokio_rustls::TlsConnector::from(Arc::new(config)).connect(name, stream).await
+}
+
 /// What a finished handshake negotiated.
 pub(crate) fn info(conn: &rustls::ServerConnection) -> TlsInfo {
     let version = match conn.protocol_version() {
@@ -251,6 +274,8 @@ pub(crate) fn info(conn: &rustls::ServerConnection) -> TlsInfo {
         version: version.into(),
         cipher,
         client_chain: conn.peer_certificates().map(|c| c.iter().map(|d| d.to_vec()).collect()).unwrap_or_default(),
+        sni: conn.server_name().map(str::to_string),
+        certificate: None,
     }
 }
 

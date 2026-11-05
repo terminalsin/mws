@@ -929,6 +929,124 @@ impl mws_securityhub::FindingEventSink for SecurityHubToEvents {
     }
 }
 
+/// RDS placing subnet groups and security groups in EC2's VPCs.
+pub(crate) struct RdsNetwork(pub mws_ec2::Ec2);
+
+impl RdsNetwork {
+    fn subnet(s: mws_ec2::SubnetInfo) -> mws_rds::Subnet {
+        mws_rds::Subnet { subnet_id: s.subnet_id, vpc_id: s.vpc_id, availability_zone: s.availability_zone }
+    }
+}
+
+impl mws_rds::Network for RdsNetwork {
+    fn subnets(&self, ctx: &RequestContext, ids: &[String]) -> Vec<mws_rds::Subnet> {
+        let account = &ctx.caller.account_id;
+        ids.iter().filter_map(|id| self.0.subnet_info(ctx, account, id)).map(Self::subnet).collect()
+    }
+
+    fn default_subnets(&self, ctx: &RequestContext) -> Vec<mws_rds::Subnet> {
+        self.0.subnets_of_vpc(ctx, &ctx.caller.account_id, None).into_iter().map(Self::subnet).collect()
+    }
+
+    fn security_group_vpc(&self, ctx: &RequestContext, group_id: &str) -> Option<String> {
+        self.0.security_group_info(ctx, &ctx.caller.account_id, group_id).map(|g| g.vpc_id)
+    }
+
+    fn default_security_group(&self, ctx: &RequestContext, vpc_id: &str) -> Option<String> {
+        self.0.vpc_info(ctx, &ctx.caller.account_id, Some(vpc_id)).and_then(|v| v.default_security_group)
+    }
+}
+
+/// RDS events on the default event bus, and event subscriptions'
+/// notifications published to SNS as `events.rds.amazonaws.com` (the topic
+/// policy must allow it, with the event's source as `aws:SourceArn`).
+pub(crate) struct RdsEvents {
+    pub events: mws_events::Events,
+    pub sns: mws_sns::Sns,
+}
+
+impl RdsEvents {
+    fn publish<'a>(
+        topic_arn: &'a str,
+        source_arn: &'a str,
+        account: &'a str,
+        subject: &str,
+        message: &str,
+    ) -> mws_sns::ServicePublish<'a> {
+        mws_sns::ServicePublish {
+            topic_arn,
+            service_principal: "events.rds.amazonaws.com",
+            source_arn,
+            source_account: account,
+            message: message.to_string(),
+            subject: Some(subject.to_string()),
+            attributes: Default::default(),
+            message_group_id: None,
+            message_deduplication_id: None,
+        }
+    }
+
+    fn source_arn(ctx: &RequestContext, account: &str) -> String {
+        format!("arn:{}:rds:{}:{account}:es:*", ctx.partition, ctx.region)
+    }
+}
+
+impl mws_rds::EventSink for RdsEvents {
+    fn check_topic(&self, ctx: &RequestContext, topic_arn: &str) -> Result<(), String> {
+        let account = ctx.caller.account_id.clone();
+        let source = Self::source_arn(ctx, &account);
+        // The policy is checked per event (its conditions usually name the
+        // event's source), so only the topic's existence is checked here.
+        match self.sns.check_service_publish(&Self::publish(topic_arn, &source, &account, "", "")) {
+            Ok(()) | Err(mws_sns::ServicePublishError::AccessDenied) => Ok(()),
+            Err(mws_sns::ServicePublishError::NoSuchTopic) => Err("SNSTopicArnNotFound".into()),
+            Err(_) => Err("SNSInvalidTopic".into()),
+        }
+    }
+
+    fn notify_topic(&self, ctx: &RequestContext, topic_arn: &str, source_arn: &str, subject: &str, message: &str) {
+        let account = source_arn.split(':').nth(4).unwrap_or_default().to_string();
+        if let Err(e) =
+            self.sns.publish_as_service(ctx, &Self::publish(topic_arn, source_arn, &account, subject, message))
+        {
+            tracing::debug!(topic = topic_arn, "RDS event notification not delivered: {e:?}");
+        }
+    }
+
+    fn put_event(&self, ctx: &RequestContext, e: &mws_rds::RdsEvent) {
+        let (detail_type, source_type) = match e.source_type.as_str() {
+            "db-cluster" => ("RDS DB Cluster Event", "CLUSTER"),
+            "db-snapshot" => ("RDS DB Snapshot Event", "SNAPSHOT"),
+            "db-cluster-snapshot" => ("RDS DB Cluster Snapshot Event", "CLUSTER_SNAPSHOT"),
+            "db-parameter-group" => ("RDS DB Parameter Group Event", "DB_PARAM"),
+            "db-security-group" => ("RDS DB Security Group Event", "SECURITY_GROUP"),
+            _ => ("RDS DB Instance Event", "DB_INSTANCE"),
+        };
+        let detail = serde_json::json!({
+            "EventCategories": e.categories,
+            "SourceType": source_type,
+            "SourceArn": e.source_arn,
+            "Date": e.time.to_rfc3339_opts(chrono::SecondsFormat::Millis, true),
+            "Message": e.message,
+            "SourceIdentifier": e.source_identifier,
+            "EventID": e.event_id,
+        });
+        self.events.put_service_event(
+            ctx,
+            mws_events::ServiceEvent {
+                partition: ctx.partition.clone(),
+                account: e.account.clone(),
+                region: e.region.clone(),
+                source: "aws.rds".into(),
+                detail_type: detail_type.into(),
+                resources: vec![e.source_arn.clone()],
+                detail,
+                time: e.time,
+            },
+        );
+    }
+}
+
 /// Security Hub V2 export jobs, written to S3 as
 /// `securityhub.amazonaws.com` (encrypted with the job's KMS key).
 pub struct SecurityHubExports(pub mws_s3::S3);
@@ -1028,5 +1146,59 @@ impl mws_globalaccelerator::EndpointDirectory for GlobalAcceleratorElb {
         } else {
             EndpointHealth::healthy()
         })
+    }
+}
+
+/// RDS snapshot exports, written to S3 as the export's role (assumed as
+/// `export.rds.amazonaws.com`) with SSE-KMS.
+pub(crate) struct RdsExports {
+    pub sts: mws_sts::Sts,
+    pub s3: mws_s3::S3,
+}
+
+#[async_trait::async_trait]
+impl mws_rds::ExportStore for RdsExports {
+    fn assume(&self, ctx: &RequestContext, role_arn: &str, source_arn: &str) -> Result<RequestContext, String> {
+        let creds = self
+            .sts
+            .assume_role_as_service(&mws_sts::ServiceAssume {
+                role_arn,
+                service_principal: "export.rds.amazonaws.com",
+                session_name: "rds-export",
+                duration_seconds: 3600,
+                source_account: Some(&ctx.caller.account_id),
+                source_arn: Some(source_arn),
+                now: ctx.received_at,
+            })
+            .map_err(|e| format!("{e:?}"))?;
+        let resolved = self
+            .sts
+            .credential_store()
+            .resolve(&creds.access_key_id, Some(&creds.session_token), ctx.received_at)
+            .map_err(|e| format!("{e:?}"))?
+            .ok_or_else(|| "the role session could not be resolved".to_string())?;
+        Ok(RequestContext { caller: resolved.caller, source_ip: None, ..ctx.clone() })
+    }
+
+    async fn put_object(
+        &self,
+        role: &RequestContext,
+        bucket: &str,
+        key: &str,
+        body: Vec<u8>,
+        kms_key: &str,
+    ) -> Result<(), String> {
+        use base64::Engine as _;
+        let request = serde_json::json!({
+            "Bucket": bucket,
+            "Key": key,
+            "Body": base64::engine::general_purpose::STANDARD.encode(&body),
+            "ServerSideEncryption": "aws:kms",
+            "SSEKMSKeyId": kms_key,
+        });
+        mws_core::Service::invoke(&self.s3, role.clone(), "PutObject", request)
+            .await
+            .map(|_| ())
+            .map_err(|e| format!("{}: {}", e.code, e.message))
     }
 }

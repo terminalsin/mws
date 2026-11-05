@@ -9,6 +9,7 @@
 //! listener). `GET /_aws/elb/listeners` lists where every listener is
 //! served.
 
+pub(crate) mod auth;
 pub(crate) mod l4;
 pub(crate) mod l7;
 mod lambda;
@@ -91,6 +92,8 @@ pub(crate) struct Runtime {
     /// Round-robin positions and outstanding requests per target group.
     pub(crate) counters: Mutex<HashMap<String, usize>>,
     pub(crate) outstanding: Mutex<HashMap<String, usize>>,
+    /// Login sessions, signing keys and JWKS for authentication actions.
+    pub(crate) auth: auth::AuthState,
 }
 
 impl Runtime {
@@ -247,6 +250,13 @@ pub(crate) fn host_route(elb: &Elb, request: &HttpRequest) -> Option<HostRoute> 
         return Some(HostRoute::Control(rest.to_string()));
     }
     let host = request.headers().get(http::header::HOST).and_then(|v| v.to_str().ok())?.to_ascii_lowercase();
+    // `public-keys.auth.elb.<region>.amazonaws.com/<kid>`: the keys that
+    // sign `x-amzn-oidc-data`.
+    if let Some(rest) = host.strip_prefix("public-keys.auth.elb.") {
+        let region = rest.split('.').next().unwrap_or_default();
+        let kid = request.uri().path().trim_start_matches('/');
+        return Some(HostRoute::Control(format!("public-keys/{region}/{kid}")));
+    }
     if !host.contains(".elb.") {
         return None;
     }
@@ -288,7 +298,7 @@ pub(crate) async fn serve_host_routed(
                 .map(|ip| SocketAddr::new(ip, 0))
                 .unwrap_or_else(|| SocketAddr::from(([127, 0, 0, 1], 0)));
             let request = request.map(|b| http_body_util::Full::new(b).map_err(|never| match never {}).boxed());
-            let response = l7::handle(elb.clone(), spec, request, peer, None).await;
+            let response = l7::handle(elb.clone(), spec, request, peer, None, &l7::conn_trace_id()).await;
             let (parts, body) = response.into_parts();
             let bytes = body.collect().await.map(|c| c.to_bytes()).unwrap_or_default();
             http::Response::from_parts(parts, bytes)
@@ -305,6 +315,13 @@ fn plain(status: u16, content_type: &str, body: Bytes) -> HttpResponse {
 }
 
 fn control(elb: &Elb, _ctx: &RequestContext, path: &str) -> HttpResponse {
+    if let Some(rest) = path.strip_prefix("public-keys/") {
+        let (region, kid) = rest.split_once('/').unwrap_or((rest, ""));
+        return match elb.inner.data.auth.public_key(region, kid) {
+            Some(pem) => plain(200, "application/x-pem-file", Bytes::from(pem)),
+            None => plain(404, "text/plain", Bytes::from_static(b"Not Found")),
+        };
+    }
     if path == "listeners" || path == "listeners/" {
         let list: Vec<serde_json::Value> = elb
             .listener_addresses()

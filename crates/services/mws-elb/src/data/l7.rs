@@ -16,6 +16,7 @@ use rand::Rng;
 use super::tls::{TlsInfo, TlsSettings};
 use super::FrontSpec;
 use crate::health;
+use crate::logs::{self, Stream};
 use crate::metrics::{dims, Batch};
 use crate::names;
 use crate::state::{RegionState, RegisteredTarget, TargetGroupRecord};
@@ -37,20 +38,105 @@ pub(crate) async fn serve(elb: Elb, spec: FrontSpec, listener: tokio::net::TcpLi
         let spec = spec.clone();
         tokio::spawn(async move {
             let _ = stream.set_nodelay(true);
+            let conn_id = conn_trace_id();
             if spec.protocol == "HTTPS" {
                 let settings = elb.tls_settings(&spec);
                 let Some(config) = super::tls::server_config(&elb, &settings) else { return };
-                let Ok(tls) = tokio_rustls::TlsAcceptor::from(config).accept(stream).await else { return };
-                let info = super::tls::info(tls.get_ref().1);
-                serve_conn(elb, spec, TokioIo::new(tls), peer, Some(info)).await;
+                let begun = Instant::now();
+                let accepted = tokio_rustls::TlsAcceptor::from(config).accept(stream).await;
+                let latency = begun.elapsed();
+                match accepted {
+                    Ok(tls) => {
+                        let mut info = super::tls::info(tls.get_ref().1);
+                        info.certificate = settings.certificates.first().cloned();
+                        connection_log(&elb, &spec, peer, latency, Ok(&info), &conn_id);
+                        serve_conn(elb, spec, TokioIo::new(tls), peer, Some(info), conn_id).await;
+                    }
+                    Err(e) => connection_log(&elb, &spec, peer, latency, Err(&e), &conn_id),
+                }
             } else {
-                serve_conn(elb, spec, TokioIo::new(stream), peer, None).await;
+                serve_conn(elb, spec, TokioIo::new(stream), peer, None, conn_id).await;
             }
         });
     }
 }
 
-async fn serve_conn<I>(elb: Elb, spec: FrontSpec, io: I, peer: SocketAddr, tls: Option<TlsInfo>)
+/// `TID_` and 32 hex digits: the id tying a connection log entry to its
+/// requests' access log entries.
+pub(crate) fn conn_trace_id() -> String {
+    format!("TID_{}", names::hex_id(32))
+}
+
+/// An Application Load Balancer connection log entry for one TLS
+/// handshake.
+fn connection_log(
+    elb: &Elb,
+    spec: &FrontSpec,
+    peer: SocketAddr,
+    latency: Duration,
+    outcome: Result<&TlsInfo, &std::io::Error>,
+    conn_id: &str,
+) {
+    if spec.classic.is_some() {
+        return;
+    }
+    let Some(dest) = elb.log_destination(spec, Stream::Connection) else { return };
+    let (proto, cipher, subject, validity, serial, status) = match outcome {
+        Ok(info) => {
+            let leaf = info.client_chain.first().and_then(|der| {
+                let (_, cert) = x509_parser::parse_x509_certificate(der).ok()?;
+                let v = cert.validity();
+                let stamp = |t: &x509_parser::time::ASN1Time| {
+                    chrono::DateTime::from_timestamp(t.timestamp(), 0)
+                        .map(|t| t.format("%Y-%m-%dT%H:%M:%SZ").to_string())
+                        .unwrap_or_default()
+                };
+                Some((
+                    logs::quoted(&cert.subject().to_string()),
+                    format!("NotAfter={};NotBefore={}", stamp(&v.not_after), stamp(&v.not_before)),
+                    hex::encode_upper(cert.raw_serial()),
+                ))
+            });
+            let (subject, validity, serial) = leaf.unwrap_or_else(|| ("-".into(), "-".into(), "-".into()));
+            (info.version.clone(), info.cipher.clone(), subject, validity, serial, "Success".to_string())
+        }
+        Err(e) => {
+            let reason = e
+                .get_ref()
+                .and_then(|i| i.downcast_ref::<rustls::Error>())
+                .map(|r| match r {
+                    rustls::Error::InvalidCertificate(c) => match c {
+                        rustls::CertificateError::Expired => "ClientCertExpired",
+                        rustls::CertificateError::NotValidYet => "ClientCertNotYetValid",
+                        rustls::CertificateError::Revoked => "ClientCertRevoked",
+                        rustls::CertificateError::UnknownIssuer => "ClientCertUntrusted",
+                        _ => "ClientCertInvalid",
+                    },
+                    _ => "UnmappedConnectionError",
+                })
+                .unwrap_or("UnmappedConnectionError");
+            ("-".into(), "-".into(), "-".into(), "-".into(), "-".into(), format!("Failed:{reason}"))
+        }
+    };
+    let line = format!(
+        "{} {} {} {} {} {} {:.3} {} {} {} {} {}",
+        logs::micros(elb.now()),
+        peer.ip(),
+        peer.port(),
+        spec.port,
+        logs::dash(&proto),
+        logs::dash(&cipher),
+        latency.as_secs_f64() * 1000.0,
+        subject,
+        validity,
+        serial,
+        status,
+        conn_id,
+    );
+    elb.record_log(spec, Stream::Connection, dest, line);
+}
+
+async fn serve_conn<I>(elb: Elb, spec: FrontSpec, io: I, peer: SocketAddr, tls: Option<TlsInfo>, conn_id: String)
 where
     I: hyper::rt::Read + hyper::rt::Write + Unpin + Send + 'static,
 {
@@ -58,9 +144,10 @@ where
         let elb = elb.clone();
         let spec = spec.clone();
         let tls = tls.clone();
+        let conn_id = conn_id.clone();
         async move {
             let req = req.map(|b| b.map_err(|e| Box::new(e) as BoxError).boxed());
-            Ok::<_, Infallible>(handle(elb, spec, req, peer, tls).await)
+            Ok::<_, Infallible>(handle(elb, spec, req, peer, tls, &conn_id).await)
         }
     });
     let _ = hyper_util::server::conn::auto::Builder::new(TokioExecutor::new()).serve_connection(io, svc).await;
@@ -90,12 +177,19 @@ pub(crate) enum Decision {
     Forward(Box<Forward>),
 }
 
+/// ELB's own error page for `status`.
+pub(crate) fn error_page(status: u16) -> Bytes {
+    let Decision::Respond { body, .. } = elb_error(status) else { return Bytes::new() };
+    body
+}
+
 pub(crate) fn elb_error(status: u16) -> Decision {
     // The phrases ELB's own error pages use.
     let reason = match status {
         503 => "Service Temporarily Unavailable",
         504 => "Gateway Time-out",
         413 => "Request Entity Too Large",
+        561 => "Unauthorized",
         _ => StatusCode::from_u16(status).ok().and_then(|s| s.canonical_reason()).unwrap_or("Error"),
     };
     let body = format!(
@@ -453,8 +547,14 @@ fn transform(transforms: &[t::RuleTransform], host: &mut String, path_and_query:
 
 struct V2Route {
     decision: Decision,
+    /// Authentication actions to run first, in order.
+    auth: Vec<t::Action>,
     host: String,
     path_and_query: String,
+    /// The matched rule's priority (0 for the default rule) and the action
+    /// types run, for access logs.
+    priority: Option<i64>,
+    executed: Vec<String>,
 }
 
 fn decide_v2(elb: &Elb, spec: &FrontSpec, parts: &http::request::Parts, client: SocketAddr, secure: bool) -> V2Route {
@@ -462,16 +562,17 @@ fn decide_v2(elb: &Elb, spec: &FrontSpec, parts: &http::request::Parts, client: 
     let mut path_and_query = parts.uri.path_and_query().map(|p| p.as_str().to_string()).unwrap_or_else(|| "/".into());
     let mut out_host = host.clone();
     let st = elb.lock();
-    let result = |decision: Decision, _tg: Option<String>, h: String, pq: String| V2Route {
-        decision,
-        host: h,
-        path_and_query: pq,
+    let mut auth: Vec<t::Action> = Vec::new();
+    let log: std::cell::RefCell<(Option<i64>, Vec<String>)> = Default::default();
+    let result = |decision: Decision, auth: Vec<t::Action>, h: String, pq: String| {
+        let (priority, executed) = log.borrow().clone();
+        V2Route { decision, auth, host: h, path_and_query: pq, priority, executed }
     };
     let Some(r) = st.regions.get(&spec.region_key) else {
-        return result(elb_error(503), None, out_host, path_and_query);
+        return result(elb_error(503), std::mem::take(&mut auth), out_host, path_and_query);
     };
     let Some(listener) = r.listeners.get(&spec.key) else {
-        return result(elb_error(503), None, out_host, path_and_query);
+        return result(elb_error(503), std::mem::take(&mut auth), out_host, path_and_query);
     };
     let lb_attrs = r.load_balancers.get(listener.lb_arn()).map(|l| l.attributes.clone()).unwrap_or_default();
     let seen = Seen {
@@ -487,26 +588,28 @@ fn decide_v2(elb: &Elb, spec: &FrontSpec, parts: &http::request::Parts, client: 
     let matched = rules
         .iter()
         .find(|rule| rule.is_default() || rule.rule.conditions.iter().flatten().all(|c| condition_matches(c, &seen)));
-    let Some(rule) = matched else { return result(elb_error(503), None, out_host, path_and_query) };
+    let Some(rule) = matched else {
+        return result(elb_error(503), std::mem::take(&mut auth), out_host, path_and_query);
+    };
+    log.borrow_mut().0 = Some(if rule.is_default() { 0 } else { rule.priority() });
     if let Some(trs) = &rule.rule.transforms {
         transform(trs, &mut out_host, &mut path_and_query);
     }
     let mut actions: Vec<t::Action> = rule.rule.actions.clone().unwrap_or_default();
     actions.sort_by_key(|a| a.order.unwrap_or(0));
     for a in &actions {
-        match a.r#type.as_str() {
-            "authenticate-oidc" | "authenticate-cognito" | "jwt-validation" => {
-                return result(
-                    Decision::Respond {
-                        status: 500,
-                        headers: vec![("content-type".into(), "text/plain".into())],
-                        body: Bytes::from(format!("MWS does not emulate the '{}' action yet", a.r#type)),
-                    },
-                    None,
-                    out_host,
-                    path_and_query,
-                );
+        {
+            let executed = &mut log.borrow_mut().1;
+            let name = match a.r#type.as_str() {
+                "authenticate-oidc" | "authenticate-cognito" => "authenticate",
+                other => other,
+            };
+            if executed.last().map(String::as_str) != Some(name) {
+                executed.push(name.to_string());
             }
+        }
+        match a.r#type.as_str() {
+            "authenticate-oidc" | "authenticate-cognito" | "jwt-validation" => auth.push(a.clone()),
             "fixed-response" => {
                 let c = a.fixed_response_config.clone().unwrap_or_default();
                 return result(
@@ -515,7 +618,7 @@ fn decide_v2(elb: &Elb, spec: &FrontSpec, parts: &http::request::Parts, client: 
                         headers: c.content_type.map(|ct| vec![("content-type".to_string(), ct)]).unwrap_or_default(),
                         body: Bytes::from(c.message_body.unwrap_or_default()),
                     },
-                    None,
+                    std::mem::take(&mut auth),
                     out_host,
                     path_and_query,
                 );
@@ -527,7 +630,12 @@ fn decide_v2(elb: &Elb, spec: &FrontSpec, parts: &http::request::Parts, client: 
                     None => (path_and_query.clone(), None),
                 };
                 let h = out_host.split(':').next().unwrap_or_default().to_string();
-                return result(redirect(&c, spec, &h, &path, query.as_deref()), None, out_host, path_and_query);
+                return result(
+                    redirect(&c, spec, &h, &path, query.as_deref()),
+                    std::mem::take(&mut auth),
+                    out_host,
+                    path_and_query,
+                );
             }
             "forward" => {
                 let groups: Vec<t::TargetGroupTuple> =
@@ -560,7 +668,9 @@ fn decide_v2(elb: &Elb, spec: &FrontSpec, parts: &http::request::Parts, client: 
                         }
                     }
                 }
-                let Some(tg_arn) = chosen else { return result(elb_error(503), None, out_host, path_and_query) };
+                let Some(tg_arn) = chosen else {
+                    return result(elb_error(503), std::mem::take(&mut auth), out_host, path_and_query);
+                };
                 if stick.enabled == Some(true) {
                     let d = stick.duration_seconds.unwrap_or(3600) as i64;
                     let v = sticky_value(&tg_arn, 0);
@@ -569,14 +679,14 @@ fn decide_v2(elb: &Elb, spec: &FrontSpec, parts: &http::request::Parts, client: 
                         .push(format!("AWSALBTGCORS={v}; Expires={}; Path=/; SameSite=None; Secure", expires(d)));
                 }
                 let Some(tg) = r.target_groups.get(&tg_arn) else {
-                    return result(elb_error(503), None, out_host, path_and_query);
+                    return result(elb_error(503), std::mem::take(&mut auth), out_host, path_and_query);
                 };
                 let candidates = routable(elb, r, spec.account(), spec.region(), tg);
                 let Some(target) = pick_target(elb, tg, &candidates, &parts.headers, &mut set_cookies, secure) else {
-                    return result(elb_error(503), Some(tg_arn), out_host, path_and_query);
+                    return result(elb_error(503), std::mem::take(&mut auth), out_host, path_and_query);
                 };
                 let Some(upstream) = upstream_for(elb, spec.account(), spec.region(), tg, &target) else {
-                    return result(elb_error(502), Some(tg_arn), out_host, path_and_query);
+                    return result(elb_error(502), std::mem::take(&mut auth), out_host, path_and_query);
                 };
                 let timeout = r
                     .load_balancers
@@ -597,12 +707,64 @@ fn decide_v2(elb: &Elb, spec: &FrontSpec, parts: &http::request::Parts, client: 
                     xff_mode: attr("routing.http.xff_header_processing.mode"),
                     xff_port: attr("routing.http.xff_client_port.enabled") == "true",
                 };
-                return result(Decision::Forward(Box::new(forward)), Some(tg_arn), out_host, path_and_query);
+                return result(
+                    Decision::Forward(Box::new(forward)),
+                    std::mem::take(&mut auth),
+                    out_host,
+                    path_and_query,
+                );
             }
             _ => {}
         }
     }
-    result(elb_error(503), None, out_host, path_and_query)
+    result(elb_error(503), std::mem::take(&mut auth), out_host, path_and_query)
+}
+
+/// Run the rule's authentication actions: each either adds request
+/// headers or answers the request itself (a login redirect, 401, 561).
+async fn authenticate(elb: &Elb, spec: &FrontSpec, parts: &mut http::request::Parts, route: &mut V2Route) {
+    let host = parts.headers.get(http::header::HOST).and_then(|v| v.to_str().ok()).unwrap_or_default().to_string();
+    let mut actions = std::mem::take(&mut route.auth);
+    // The IdP's redirect back is finished by the action that sent the user
+    // to it, whichever rule the callback path matches.
+    if parts.uri.path() == super::auth::CALLBACK
+        && !actions.iter().any(|a| a.r#type == "authenticate-oidc")
+        && elb.inner.data.auth.has_pending(parts.uri.query().unwrap_or(""))
+    {
+        actions.insert(
+            0,
+            t::Action {
+                r#type: "authenticate-oidc".into(),
+                authenticate_oidc_config: Some(Default::default()),
+                ..Default::default()
+            },
+        );
+    }
+    for a in &actions {
+        if a.r#type == "authenticate-oidc" {
+            for h in ["x-amzn-oidc-accesstoken", "x-amzn-oidc-identity", "x-amzn-oidc-data"] {
+                parts.headers.remove(h);
+            }
+        }
+        match super::auth::run(elb, spec, a, parts, &host, &route.path_and_query).await {
+            super::auth::Outcome::Continue(headers) => {
+                for (k, v) in headers {
+                    if let (Ok(k), Ok(v)) = (HeaderName::from_bytes(k.as_bytes()), HeaderValue::from_str(&v)) {
+                        parts.headers.insert(k, v);
+                    }
+                }
+            }
+            super::auth::Outcome::Respond { status, headers, body } => {
+                route.decision = Decision::Respond { status, headers, body };
+                // The actions after this one never ran.
+                let kind = if a.r#type == "jwt-validation" { "jwt-validation" } else { "authenticate" };
+                if let Some(i) = route.executed.iter().position(|e| e == kind) {
+                    route.executed.truncate(i + 1);
+                }
+                return;
+            }
+        }
+    }
 }
 
 /// Handle one request on a listener.
@@ -612,22 +774,39 @@ pub(crate) async fn handle(
     req: Request<Body>,
     client: SocketAddr,
     tls: Option<TlsInfo>,
+    conn_id: &str,
 ) -> Response<Body> {
     let started = Instant::now();
+    let created = elb.now();
     let secure = tls.is_some() || spec.protocol == "HTTPS";
     let (mut parts, body) = req.into_parts();
+    // The trace id is fixed here so the access log and the target see the
+    // same one.
+    if !parts.headers.get("x-amzn-trace-id").and_then(|v| v.to_str().ok()).is_some_and(|v| v.contains("Root=")) {
+        let trace = format!("Root=1-{:08x}-{}", created.timestamp(), names::hex_id(24));
+        if let Ok(v) = HeaderValue::from_str(&trace) {
+            parts.headers.insert("x-amzn-trace-id", v);
+        }
+    }
+    let log = elb.log_destination(&spec, Stream::Access).map(|d| (d, RequestLog::new(&parts, &spec, secure)));
     let route = if spec.classic.is_some() {
         let (decision, host, pq) = crate::classic::decide(&elb, &spec, &parts, secure);
-        V2Route { decision, host, path_and_query: pq }
+        V2Route { decision, auth: Vec::new(), host, path_and_query: pq, priority: None, executed: Vec::new() }
     } else {
         decide_v2(&elb, &spec, &parts, client, secure)
     };
+    let mut route = route;
+    if !route.auth.is_empty() || parts.uri.path() == super::auth::CALLBACK {
+        authenticate(&elb, &spec, &mut parts, &mut route).await;
+    }
     let lb_dim = names::lb_dimension(&spec.lb_arn);
     let ns = crate::metrics::namespace(&spec.lb_type);
     let classic_dims = vec![dims(&[("LoadBalancerName", spec.classic.as_deref().unwrap_or_default())])];
     let lb_dims = if spec.classic.is_some() { classic_dims.clone() } else { vec![dims(&[("LoadBalancer", &lb_dim)])] };
     let mut batch = Batch::new(spec.account(), spec.region(), ns);
     batch.add("RequestCount", "Count", 1.0, &lb_dims);
+    let mut dispatch = Dispatch::default();
+    let ran = (route.priority, std::mem::take(&mut route.executed));
     let response = match route.decision {
         Decision::Respond { status, headers, body } => {
             if spec.classic.is_none() {
@@ -644,6 +823,10 @@ pub(crate) async fn handle(
                 }
             } else if status >= 500 {
                 batch.add(leak(format!("HTTPCode_ELB_{}XX", status / 100)), "Count", 1.0, &lb_dims);
+            }
+            if ran.1.last().map(String::as_str) == Some("redirect") {
+                dispatch.redirect =
+                    headers.iter().find(|(k, _)| k == "location").map(|(_, v)| v.clone()).unwrap_or_default();
             }
             let mut b = Response::builder().status(status).header("server", "awselb/2.0");
             for (k, v) in &headers {
@@ -664,6 +847,11 @@ pub(crate) async fn handle(
             if f.tg_arn.is_some() {
                 batch.add("RequestCountPerTarget", "Count", 1.0, &tg_dims[1..]);
                 batch.add("RequestCount", "Count", 1.0, &tg_dims[..1]);
+            }
+            dispatch.tg_arn = f.tg_arn.clone().unwrap_or_default();
+            dispatch.request_time = Some(started.elapsed().as_secs_f64());
+            if let Upstream::Http { addr, .. } = &f.upstream {
+                dispatch.target = addr.to_string();
             }
             let outstanding_key = format!("{}|{}|{}", f.tg_arn.clone().unwrap_or_default(), f.target.0, f.target.1);
             *elb.inner.data.outstanding.lock().expect("lock").entry(outstanding_key.clone()).or_insert(0) += 1;
@@ -704,6 +892,8 @@ pub(crate) async fn handle(
             match result {
                 Ok(mut resp) => {
                     let code = resp.status().as_u16();
+                    dispatch.target_status = code.to_string();
+                    dispatch.target_time = Some(elapsed);
                     if spec.classic.is_some() {
                         batch.add(leak(format!("HTTPCode_Backend_{}XX", code / 100)), "Count", 1.0, &lb_dims);
                         batch.add("Latency", "Seconds", elapsed, &lb_dims);
@@ -743,7 +933,137 @@ pub(crate) async fn handle(
         }
     };
     batch.send(elb.metrics());
+    if let Some((dest, req)) = log {
+        let line = req.line(&elb, &spec, &ran, &dispatch, &response, client, tls.as_ref(), created, conn_id);
+        elb.record_log(&spec, Stream::Access, dest, line);
+    }
     response
+}
+
+/// What happened past the load balancer, for the access log.
+#[derive(Default)]
+struct Dispatch {
+    tg_arn: String,
+    target: String,
+    target_status: String,
+    request_time: Option<f64>,
+    target_time: Option<f64>,
+    redirect: String,
+}
+
+/// The request as the access log records it, taken before the request is
+/// forwarded.
+struct RequestLog {
+    kind: &'static str,
+    request: String,
+    user_agent: String,
+    trace: String,
+    received: u64,
+}
+
+impl RequestLog {
+    fn new(parts: &http::request::Parts, spec: &FrontSpec, secure: bool) -> Self {
+        let header = |n: &str| parts.headers.get(n).and_then(|v| v.to_str().ok()).unwrap_or_default();
+        let upgrade = header("upgrade").eq_ignore_ascii_case("websocket");
+        let kind = match (secure, parts.version == http::Version::HTTP_2, upgrade) {
+            (_, _, true) if secure => "wss",
+            (_, _, true) => "ws",
+            (true, true, _) if header("content-type").starts_with("application/grpc") => "grpcs",
+            (true, true, _) => "h2",
+            (true, false, _) => "https",
+            _ => "http",
+        };
+        let host = header("host");
+        let host = host.rsplit_once(':').filter(|(_, p)| p.parse::<u16>().is_ok()).map(|(h, _)| h).unwrap_or(host);
+        let version = match parts.version {
+            http::Version::HTTP_10 => "HTTP/1.0",
+            http::Version::HTTP_2 => "HTTP/2.0",
+            _ => "HTTP/1.1",
+        };
+        let scheme = if secure { "https" } else { "http" };
+        let pq = parts.uri.path_and_query().map(|p| p.as_str()).unwrap_or("/");
+        let request = format!("{} {scheme}://{host}:{}{pq} {version}", parts.method, spec.port);
+        let head: usize = parts.headers.iter().map(|(k, v)| k.as_str().len() + v.len() + 4).sum();
+        let body: u64 = header("content-length").parse().unwrap_or(0);
+        let received = (request.len() + head + 2) as u64 + body;
+        Self {
+            kind,
+            request,
+            user_agent: header("user-agent").to_string(),
+            trace: header("x-amzn-trace-id").to_string(),
+            received,
+        }
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn line(
+        &self,
+        elb: &Elb,
+        spec: &FrontSpec,
+        ran: &(Option<i64>, Vec<String>),
+        d: &Dispatch,
+        response: &Response<Body>,
+        client: SocketAddr,
+        tls: Option<&TlsInfo>,
+        created: chrono::DateTime<chrono::Utc>,
+        conn_id: &str,
+    ) -> String {
+        use hyper::body::Body as _;
+        let status = response.status().as_u16();
+        let head: usize = response.headers().iter().map(|(k, v)| k.as_str().len() + v.len() + 4).sum();
+        let sent = response.body().size_hint().exact().unwrap_or(0) + (head + 17) as u64;
+        let now = elb.now();
+        let target = logs::dash(&d.target);
+        let target_status = logs::dash(&d.target_status);
+        let (cipher, proto) = tls.map(|t| (t.cipher.as_str(), t.version.as_str())).unwrap_or(("-", "-"));
+        if let Some(name) = &spec.classic {
+            let t = |v: Option<f64>| v.map(|v| format!("{v:.6}")).unwrap_or_else(|| "-1".into());
+            return format!(
+                "{} {name} {client} {target} {} {} {} {status} {target_status} {} {sent} {} {} {} {}",
+                logs::micros(now),
+                t(d.request_time),
+                t(d.target_time),
+                t(d.target_time.map(|_| 0.000_02)),
+                self.received,
+                logs::quoted(&self.request),
+                logs::quoted(&self.user_agent),
+                logs::dash(cipher),
+                logs::dash(proto),
+            );
+        }
+        let t = |v: Option<f64>| v.map(|v| format!("{v:.3}")).unwrap_or_else(|| "-1".into());
+        let (target_list, status_list) = if d.target.is_empty() {
+            (String::new(), String::new())
+        } else {
+            (d.target.clone(), d.target_status.clone())
+        };
+        let executed = ran.1.join(",");
+        format!(
+            "{kind} {time} {elb} {client} {target} {req_t} {target_t} {resp_t} {status} {target_status} {received} {sent} {request} {ua} {cipher} {proto} {tg} {trace} {domain} {cert} {priority} {created} {actions} {redirect} {error} {targets} {codes} \"-\" \"-\" {conn_id}",
+            kind = self.kind,
+            time = logs::micros(now),
+            elb = names::lb_dimension(&spec.lb_arn),
+            req_t = t(d.request_time),
+            target_t = t(d.target_time),
+            resp_t = t(d.target_time.map(|_| 0.0)),
+            received = self.received,
+            request = logs::quoted(&self.request),
+            ua = logs::quoted(&self.user_agent),
+            cipher = logs::dash(cipher),
+            proto = logs::dash(proto),
+            tg = logs::dash(&d.tg_arn),
+            trace = logs::quoted(&self.trace),
+            domain = logs::quoted(tls.and_then(|t| t.sni.as_deref()).unwrap_or_default()),
+            cert = logs::quoted(tls.and_then(|t| t.certificate.as_deref()).unwrap_or_default()),
+            priority = ran.0.map(|p| p.to_string()).unwrap_or_else(|| "-".into()),
+            created = logs::micros(created),
+            actions = logs::quoted(&executed),
+            redirect = logs::quoted(&d.redirect),
+            error = logs::quoted(""),
+            targets = logs::quoted(&target_list),
+            codes = logs::quoted(&status_list),
+        )
+    }
 }
 
 fn dollar_group() -> &'static regex::Regex {

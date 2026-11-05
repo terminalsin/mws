@@ -229,6 +229,8 @@ impl Elb {
             }
             Ok(rule)
         })?;
+        let mut rule = rule;
+        super::actions::redact(&mut rule.actions);
         Ok(t::CreateRuleOutput { rules: Some(vec![rule]) })
     }
 
@@ -250,6 +252,8 @@ impl Elb {
             arns.iter().map(|a| find_rule(r, a).map(|x| x.rule.clone())).collect()
         })?;
         let (items, next) = names::page(&all, input.marker.as_deref(), input.page_size, 400)?;
+        let mut items = items;
+        items.iter_mut().for_each(|x| super::actions::redact(&mut x.actions));
         Ok(t::DescribeRulesOutput { rules: Some(items), next_marker: next })
     }
 
@@ -299,6 +303,8 @@ impl Elb {
             }
             Ok::<_, ServiceError>(out)
         })?;
+        let mut rule = rule;
+        super::actions::redact(&mut rule.actions);
         Ok(t::ModifyRuleOutput { rules: Some(vec![rule]) })
     }
 
@@ -373,6 +379,7 @@ impl Elb {
                     out.push(rec.rule.clone());
                 }
             }
+            out.iter_mut().for_each(|x| super::actions::redact(&mut x.actions));
             Ok(t::SetRulePrioritiesOutput { rules: Some(out) })
         })
     }
