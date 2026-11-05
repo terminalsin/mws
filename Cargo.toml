@@ -52,6 +52,7 @@ members = [
     "crates/services/mws-ses",
     "crates/services/mws-rds",
     "crates/services/mws-eks",
+    "crates/services/mws-efs",
     "crates/services/mws-codeartifact",
     "tests/e2e-rust",
 ]
@@ -115,6 +116,7 @@ mws-autoscaling = { path = "crates/services/mws-autoscaling" }
 mws-ses = { path = "crates/services/mws-ses" }
 mws-rds = { path = "crates/services/mws-rds" }
 mws-eks = { path = "crates/services/mws-eks" }
+mws-efs = { path = "crates/services/mws-efs" }
 mws-codeartifact = { path = "crates/services/mws-codeartifact" }
 
 # external
@@ -123,6 +125,7 @@ aws-lc-rs = "1"
 base64 = "0.22"
 bytes = "1"
 chrono = { version = "0.4", default-features = false, features = ["clock", "std", "serde"] }
+chrono-tz = "0.10"
 form_urlencoded = "1"
 hex = "0.4"
 hmac = "0.12"

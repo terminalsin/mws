@@ -420,6 +420,31 @@ dependencies = [
 ]
 
 [[package]]
+name = "aws-sdk-efs"
+version = "1.123.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "8ec7aa536d618a904b162341cfab06d260f57c92ebe1326ec16984e6d54f7d85"
+dependencies = [
+ "arc-swap",
+ "aws-credential-types",
+ "aws-runtime",
+ "aws-smithy-async",
+ "aws-smithy-http",
+ "aws-smithy-json",
+ "aws-smithy-observability",
+ "aws-smithy-runtime",
+ "aws-smithy-runtime-api",
+ "aws-smithy-schema",
+ "aws-smithy-types",
+ "aws-types",
+ "bytes",
+ "fastrand",
+ "http 1.5.0",
+ "regex-lite",
+ "tracing",
+]
+
+[[package]]
 name = "aws-sdk-eks"
 version = "1.160.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1664,6 +1689,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "chrono-tz"
+version = "0.10.4"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "a6139a8597ed92cf816dfb33f5dd6cf0bb93a6adc938f11039f371bc5bcd26c3"
+dependencies = [
+ "chrono",
+ "phf 0.12.1",
+]
+
+[[package]]
 name = "cipher"
 version = "0.4.4"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2867,6 +2902,7 @@ dependencies = [
  "mws-codeartifact",
  "mws-core",
  "mws-ec2",
+ "mws-efs",
  "mws-eks",
  "mws-elb",
  "mws-events",
@@ -3123,6 +3159,7 @@ dependencies = [
  "aws-sdk-cloudwatchlogs",
  "aws-sdk-codeartifact",
  "aws-sdk-ec2",
+ "aws-sdk-efs",
  "aws-sdk-eks",
  "aws-sdk-elasticloadbalancing",
  "aws-sdk-elasticloadbalancingv2",
@@ -3151,6 +3188,7 @@ dependencies = [
  "aws-sdk-sqs",
  "aws-sdk-ssm",
  "aws-sdk-sts",
+ "aws-sigv4",
  "aws-smithy-http-client",
  "aws-smithy-runtime-api",
  "aws-smithy-types",
@@ -3159,11 +3197,13 @@ dependencies = [
  "chrono",
  "cms",
  "flate2",
+ "form_urlencoded",
  "hex",
  "md-5 0.10.6",
  "mws",
  "mws-codeartifact",
  "mws-ec2",
+ "mws-eks",
  "mws-rds",
  "mws-route53",
  "mws-s3",
@@ -3213,11 +3253,35 @@ dependencies = [
 ]
 
 [[package]]
+name = "mws-efs"
+version = "0.1.0"
+dependencies = [
+ "async-trait",
+ "bytes",
+ "chrono",
+ "form_urlencoded",
+ "http 1.5.0",
+ "mws-codegen",
+ "mws-core",
+ "mws-ec2",
+ "mws-iam-policy",
+ "mws-kms",
+ "mws-proto-json",
+ "mws-proto-restjson",
+ "rand 0.8.8",
+ "serde",
+ "serde_json",
+ "tracing",
+ "uuid",
+]
+
+[[package]]
 name = "mws-eks"
 version = "0.1.0"
 dependencies = [
  "async-trait",
  "base64 0.22.1",
+ "bytes",
  "chrono",
  "hex",
  "http 1.5.0",
@@ -3225,13 +3289,16 @@ dependencies = [
  "mws-core",
  "mws-proto-json",
  "mws-proto-restjson",
+ "mws-sigv4",
  "mws-sts",
+ "percent-encoding",
  "rand 0.8.8",
  "rcgen",
  "serde",
  "serde_json",
  "sha2 0.10.9",
  "time",
+ "tokio",
  "tracing",
  "uuid",
 ]
@@ -3401,6 +3468,7 @@ dependencies = [
  "async-trait",
  "base64 0.22.1",
  "chrono",
+ "chrono-tz",
  "hex",
  "http 1.5.0",
  "mws-codegen",
@@ -4275,12 +4343,30 @@ checksum = "9b4f627cb1b25917193a259e49bdad08f671f8d9708acfd5fe0a8c1455d87220"
 
 [[package]]
 name = "phf"
+version = "0.12.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "913273894cec178f401a31ec4b656318d95473527be05c0752cc41cdc32be8b7"
+dependencies = [
+ "phf_shared 0.12.1",
+]
+
+[[package]]
+name = "phf"
 version = "0.13.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "c1562dc717473dbaa4c1f85a36410e03c047b2e7df7f45ee938fbef64ae7fadf"
 dependencies = [
- "phf_shared",
+ "phf_shared 0.13.1",
  "serde",
+]
+
+[[package]]
+name = "phf_shared"
+version = "0.12.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "06005508882fb681fd97892ecff4b7fd0fee13ef1aa569f8695dae7ab9099981"
+dependencies = [
+ "siphasher",
 ]
 
 [[package]]
@@ -5262,7 +5348,7 @@ dependencies = [
  "log",
  "parking_lot",
  "percent-encoding",
- "phf",
+ "phf 0.13.1",
  "pin-project-lite",
  "postgres-protocol",
  "postgres-types",

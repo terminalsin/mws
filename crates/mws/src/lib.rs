@@ -17,6 +17,7 @@ use mws_cloudwatch::CloudWatch;
 use mws_codeartifact::CodeArtifact;
 use mws_core::Environment;
 use mws_ec2::{BackendChoice, Ec2};
+use mws_efs::Efs;
 use mws_eks::Eks;
 use mws_elb::{Elb, ElbConfig};
 use mws_events::Events;
@@ -78,6 +79,19 @@ pub struct Config {
     /// The host address database ports are published on (`MWS_RDS_BIND`,
     /// default `127.0.0.1`).
     pub rds_bind: Option<String>,
+    /// What runs EKS clusters' Kubernetes API servers (`MWS_EKS_BACKEND`:
+    /// `auto`, `k3s` or `metadata`). The binary defaults to `auto` (k3s in
+    /// Docker when a daemon answers); the library default runs nothing.
+    pub eks_backend: mws_eks::kube::BackendChoice,
+    /// The Docker-compatible CLI for EKS (`MWS_EKS_DOCKER`; falls back to
+    /// `MWS_EC2_DOCKER`).
+    pub eks_docker_cli: Option<String>,
+    /// The host address API servers are published on (`MWS_EKS_BIND`,
+    /// default `127.0.0.1`).
+    pub eks_bind: Option<String>,
+    /// Where EFS keeps file system data, one directory per file system
+    /// (`MWS_EFS_DIR`). `mws-efs` in the temp directory when unset.
+    pub efs_dir: Option<PathBuf>,
 }
 
 impl Config {
@@ -111,6 +125,13 @@ impl Config {
             }),
             Err(_) => mws_rds::BackendChoice::Auto,
         };
+        let eks_backend = match std::env::var("MWS_EKS_BACKEND") {
+            Ok(v) => mws_eks::kube::BackendChoice::parse(&v).unwrap_or_else(|| {
+                tracing::warn!("unknown MWS_EKS_BACKEND {v:?}; using auto");
+                mws_eks::kube::BackendChoice::Auto
+            }),
+            Err(_) => mws_eks::kube::BackendChoice::Auto,
+        };
         let var = |name: &str| std::env::var(name).ok().filter(|v| !v.is_empty());
         Self {
             iam,
@@ -124,6 +145,10 @@ impl Config {
             rds_backend,
             rds_docker_cli: var("MWS_RDS_DOCKER").or_else(|| var("MWS_EC2_DOCKER")),
             rds_bind: var("MWS_RDS_BIND"),
+            eks_backend,
+            eks_docker_cli: var("MWS_EKS_DOCKER").or_else(|| var("MWS_EC2_DOCKER")),
+            eks_bind: var("MWS_EKS_BIND"),
+            efs_dir: path("MWS_EFS_DIR"),
         }
     }
 }
@@ -161,6 +186,7 @@ pub struct Mws {
     pub ses: Ses,
     pub rds: Rds,
     pub eks: Eks,
+    pub efs: Efs,
     pub codeartifact: CodeArtifact,
 }
 
@@ -346,6 +372,13 @@ fn build_with_store(config: Config, store: Option<Arc<Store>>) -> Mws {
         iam: iam.clone(),
         autoscaling: autoscaling.clone(),
     }));
+    eks.set_credentials(vec![iam.credential_store(), sts.credential_store()]);
+    if let Some(cp) = config.eks_backend.resolve(config.eks_docker_cli.as_deref(), config.eks_bind.as_deref()) {
+        tracing::info!(backend = cp.name(), "EKS Kubernetes control plane backend");
+        eks.set_control_plane(cp);
+    }
+    let efs = Efs::new(ec2.clone(), kms.clone(), config.efs_dir.clone().unwrap_or_else(Efs::default_root));
+    ec2.add_launch_extension(efs.instance_support());
     let mut gateway = Gateway::builder();
     if let Some(store) = store {
         gateway = gateway.store(store);
@@ -399,6 +432,7 @@ fn build_with_store(config: Config, store: Option<Arc<Store>>) -> Mws {
         .service(Arc::new(ses.v2()))
         .service(Arc::new(ses.clone()))
         .service(Arc::new(eks.clone()))
+        .service(Arc::new(efs.clone()))
         .service(Arc::new(codeartifact.clone()))
         .build();
     Mws {
@@ -432,6 +466,7 @@ fn build_with_store(config: Config, store: Option<Arc<Store>>) -> Mws {
         ses,
         rds,
         eks,
+        efs,
         codeartifact,
     }
 }
