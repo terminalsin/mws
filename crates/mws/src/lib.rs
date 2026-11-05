@@ -13,12 +13,15 @@ use mws_acm::Acm;
 use mws_acmpca::PrivateCa;
 use mws_amplify::Amplify;
 use mws_autoscaling::AutoScaling;
+use mws_bedrock::Bedrock;
+use mws_bedrock_runtime::BedrockRuntime;
 use mws_ce::CostExplorer;
+use mws_cloudformation::CloudFormation;
 use mws_cloudtrail::CloudTrail;
 use mws_cloudtrail_data::CloudTrailData;
 use mws_cloudwatch::CloudWatch;
 use mws_codeartifact::CodeArtifact;
-use mws_core::Environment;
+use mws_core::{Environment, Service};
 use mws_ec2::{BackendChoice, Ec2};
 use mws_ecr::Ecr;
 use mws_ecr_public::EcrPublic;
@@ -78,6 +81,10 @@ pub struct Config {
     pub ec2_backend: BackendChoice,
     /// The Docker-compatible CLI (`MWS_EC2_DOCKER`, e.g. `podman`).
     pub ec2_docker_cli: Option<String>,
+    /// What answers Bedrock model invocations (`MWS_BEDROCK_BACKEND`:
+    /// `echo`, `openai` or `anthropic`, with `MWS_BEDROCK_BACKEND_URL`,
+    /// `_API_KEY` and `_MODEL`). Defaults to the deterministic echo.
+    pub bedrock_backend: mws_bedrock_runtime::BackendConfig,
     /// Which quota values accounts start with (`MWS_QUOTA_PROFILE`:
     /// `established`, the default, or `new-account` for AWS's exact
     /// new-account defaults such as 5 standard EC2 vCPUs).
@@ -96,6 +103,13 @@ pub struct Config {
     /// The host address database ports are published on (`MWS_RDS_BIND`,
     /// default `127.0.0.1`).
     pub rds_bind: Option<String>,
+    /// What runs ECS tasks' containers (`MWS_ECS_BACKEND`: `auto`,
+    /// `docker` or `metadata`). The binary defaults to `auto`; the library
+    /// default runs nothing.
+    pub ecs_backend: mws_ecs::BackendChoice,
+    /// The Docker-compatible CLI for ECS (`MWS_ECS_DOCKER`; falls back to
+    /// `MWS_EC2_DOCKER`).
+    pub ecs_docker_cli: Option<String>,
     /// What runs EKS clusters' Kubernetes API servers (`MWS_EKS_BACKEND`:
     /// `auto`, `k3s` or `metadata`). The binary defaults to `auto` (k3s in
     /// Docker when a daemon answers); the library default runs nothing.
@@ -185,6 +199,13 @@ impl Config {
             Err(_) => mws_elasticache::BackendChoice::Auto,
         };
         let var = |name: &str| std::env::var(name).ok().filter(|v| !v.is_empty());
+        let ecs_backend = match std::env::var("MWS_ECS_BACKEND") {
+            Ok(v) => mws_ecs::BackendChoice::parse(&v).unwrap_or_else(|| {
+                tracing::warn!("unknown MWS_ECS_BACKEND {v:?}; using auto");
+                mws_ecs::BackendChoice::Auto
+            }),
+            Err(_) => mws_ecs::BackendChoice::Auto,
+        };
         Self {
             iam,
             db: path("MWS_DB"),
@@ -192,12 +213,15 @@ impl Config {
             skip_federation_signature_verification: skip,
             ec2_backend,
             ec2_docker_cli: std::env::var("MWS_EC2_DOCKER").ok().filter(|v| !v.is_empty()),
+            bedrock_backend: mws_bedrock_runtime::BackendConfig::from_env(),
             quota_profile,
             ses_auto_verify: std::env::var("MWS_SES_AUTO_VERIFY")
                 .is_ok_and(|v| matches!(v.as_str(), "1" | "true" | "yes")),
             rds_backend,
             rds_docker_cli: var("MWS_RDS_DOCKER").or_else(|| var("MWS_EC2_DOCKER")),
             rds_bind: var("MWS_RDS_BIND"),
+            ecs_backend,
+            ecs_docker_cli: var("MWS_ECS_DOCKER").or_else(|| var("MWS_EC2_DOCKER")),
             eks_backend,
             eks_docker_cli: var("MWS_EKS_DOCKER").or_else(|| var("MWS_EC2_DOCKER")),
             eks_bind: var("MWS_EKS_BIND"),
@@ -242,6 +266,9 @@ pub struct Mws {
     pub globalaccelerator: GlobalAccelerator,
     pub marketplace_entitlement: Entitlement,
     pub marketplace_metering: Metering,
+    pub bedrock: Bedrock,
+    pub bedrock_runtime: BedrockRuntime,
+    pub cloudformation: CloudFormation,
     pub servicequotas: ServiceQuotas,
     pub ce: CostExplorer,
     pub ram: Ram,
@@ -253,6 +280,7 @@ pub struct Mws {
     pub ses: Ses,
     pub rds: Rds,
     pub eks: Eks,
+    pub ecs: mws_ecs::Ecs,
     pub efs: Efs,
     pub codeartifact: CodeArtifact,
     pub cloudtrail: CloudTrail,
@@ -399,6 +427,11 @@ fn build_with_store(config: Config, store: Option<Arc<Store>>) -> Mws {
     route53.add_alias_resolver(Arc::new(links::Route53ToGlobalAccelerator(globalaccelerator.clone())));
     let marketplace_entitlement = Entitlement::new(config.iam.account_id.clone());
     let marketplace_metering = Metering::new(marketplace_entitlement.clone());
+    let bedrock = Bedrock::new();
+    let bedrock_runtime = BedrockRuntime::new(bedrock.clone(), s3.clone(), &config.bedrock_backend)
+        .with_logs(logs.clone())
+        .with_sts(sts.clone());
+    tracing::info!(backend = bedrock_runtime.backend_name(), "Bedrock model backend");
     let servicequotas = ServiceQuotas::new();
     servicequotas.set_profile(config.quota_profile);
     servicequotas.set_organizations(Arc::new(links::QuotaOrganizations(organizations.clone())));
@@ -512,78 +545,107 @@ fn build_with_store(config: Config, store: Option<Arc<Store>>) -> Mws {
     elasticache.set_metric_publisher(Arc::new(links::ElastiCacheToCloudWatch(cloudwatch.clone())));
     ecr.set_upstream_endpoints(config.ecr_upstream_endpoints.clone());
     ecr.set_upstream_credentials(Arc::new(links::EcrUpstreamCredentials(secretsmanager.clone())));
+    imagebuilder.set_ecr(Arc::new(ecr.clone()));
+    elasticache.set_log_delivery(Arc::new(links::ElastiCacheLogs { logs: logs.clone(), firehose: firehose.clone() }));
+    let ecs = mws_ecs::Ecs::new(config.ecs_backend.resolve(config.ecs_docker_cli.as_deref()));
+    tracing::info!(backend = ecs.backend_name(), "ECS container backend");
+    ecs.set_platform(Arc::new(links::EcsPlatform {
+        ec2: ec2.clone(),
+        sts: sts.clone(),
+        secretsmanager: secretsmanager.clone(),
+        ssm: ssm.clone(),
+        logs: logs.clone(),
+        elb: elb.clone(),
+        autoscaling: autoscaling.clone(),
+    }));
+    let cloudformation = CloudFormation::new();
+    cloudformation.set_role_assumer(Arc::new(links::CloudFormationRoles(sts.clone())));
+    let authorizer = iam.authorizer();
+    let credential_stores =
+        [iam.credential_store(), sts.credential_store(), s3.credential_store(), s3.object_lambda_credential_store()];
+    let services: Vec<Arc<dyn Service>> = vec![
+        Arc::new(iam),
+        Arc::new(sts),
+        Arc::new(route53.clone()),
+        Arc::new(pca),
+        Arc::new(acm.clone()),
+        Arc::new(kms.clone()),
+        Arc::new(organizations.clone()),
+        // S3 Control signs as `s3` too; it claims its `/v20180820/` paths.
+        Arc::new(s3control.clone()),
+        Arc::new(s3.clone()),
+        Arc::new(lambda.clone()),
+        Arc::new(logs.clone()),
+        Arc::new(sqs.clone()),
+        Arc::new(ssm.clone()),
+        Arc::new(events.clone()),
+        Arc::new(secretsmanager.clone()),
+        Arc::new(sns.clone()),
+        Arc::new(kinesis.clone()),
+        Arc::new(firehose.clone()),
+        Arc::new(cloudwatch.clone()),
+        Arc::new(ec2.clone()),
+        Arc::new(guardduty.clone()),
+        Arc::new(amplify.clone()),
+        Arc::new(globalaccelerator.clone()),
+        Arc::new(rds.clone()),
+        // Both Marketplace services sign as `aws-marketplace`; each claims
+        // its own `X-Amz-Target`.
+        Arc::new(marketplace_metering.clone()),
+        Arc::new(marketplace_entitlement.clone()),
+        Arc::new(servicequotas.clone()),
+        Arc::new(ce.clone()),
+        Arc::new(identitystore),
+        Arc::new(ssoadmin),
+        Arc::new(ssooidc),
+        Arc::new(ssoportal),
+        Arc::new(ram.clone()),
+        Arc::new(scep.clone()),
+        Arc::new(securityhub.clone()),
+        Arc::new(imagebuilder.clone()),
+        // Both ELB APIs sign as `elasticloadbalancing`; the Classic one
+        // claims requests with its `2012-06-01` Version.
+        Arc::new(elb.clone()),
+        Arc::new(elb.classic()),
+        Arc::new(autoscaling.clone()),
+        // SES v2 signs as `ses` too; it claims its `/v2/email/` paths.
+        Arc::new(ses.v2()),
+        Arc::new(ses.clone()),
+        Arc::new(eks.clone()),
+        Arc::new(efs.clone()),
+        Arc::new(codeartifact.clone()),
+        Arc::new(cloudtrail.clone()),
+        Arc::new(CloudTrailData::new(cloudtrail.clone())),
+        Arc::new(ecr.clone()),
+        Arc::new(ecr_public.clone()),
+        Arc::new(elasticache.clone()),
+        Arc::new(ecs.clone()),
+        // bedrock-runtime signs as `bedrock` too; each claims its paths.
+        Arc::new(bedrock_runtime.clone()),
+        Arc::new(bedrock.clone()),
+        Arc::new(cloudformation.clone()),
+    ];
+    // CloudFormation deploys resources through the other services' APIs.
+    cloudformation.set_services(services.iter().cloned());
     let mut gateway = Gateway::builder();
     if let Some(store) = store {
         gateway = gateway.store(store);
     }
-    let gateway = gateway
+    let mut gateway = gateway
         .scenario_principal(config.iam.root_access_key_id.clone())
         .environment(Environment { partition: config.iam.partition.clone(), ..Environment::default() })
-        .authorizer(iam.authorizer())
         .request_observer(Arc::new(servicequotas.clone()))
         .request_observer(Arc::new(ce.clone()))
-        .credentials(iam.credential_store())
-        .credentials(sts.credential_store())
-        .credentials(s3.credential_store())
-        .credentials(s3.object_lambda_credential_store())
-        .service(Arc::new(iam))
-        .service(Arc::new(sts))
-        .service(Arc::new(route53.clone()))
-        .service(Arc::new(pca))
-        .service(Arc::new(acm.clone()))
-        .service(Arc::new(kms.clone()))
-        .service(Arc::new(organizations))
-        // S3 Control signs as `s3` too; it claims its `/v20180820/` paths.
-        .service(Arc::new(s3control.clone()))
-        .service(Arc::new(s3.clone()))
-        .service(Arc::new(lambda.clone()))
-        .service(Arc::new(logs.clone()))
-        .service(Arc::new(sqs.clone()))
-        .service(Arc::new(ssm.clone()))
-        .service(Arc::new(events.clone()))
-        .service(Arc::new(secretsmanager.clone()))
-        .service(Arc::new(sns.clone()))
-        .service(Arc::new(kinesis.clone()))
-        .service(Arc::new(firehose.clone()))
-        .service(Arc::new(cloudwatch.clone()))
-        .service(Arc::new(ec2.clone()))
-        .service(Arc::new(guardduty.clone()))
-        .service(Arc::new(amplify.clone()))
-        .service(Arc::new(globalaccelerator.clone()))
-        .service(Arc::new(rds.clone()))
-        // Both Marketplace services sign as `aws-marketplace`; each claims
-        // its own `X-Amz-Target`.
-        .service(Arc::new(marketplace_metering.clone()))
-        .service(Arc::new(marketplace_entitlement.clone()))
-        .service(Arc::new(servicequotas.clone()))
-        .service(Arc::new(ce.clone()))
-        .service(Arc::new(identitystore))
-        .service(Arc::new(ssoadmin))
-        .service(Arc::new(ssooidc))
-        .service(Arc::new(ssoportal))
-        .service(Arc::new(ram.clone()))
-        .service(Arc::new(scep.clone()))
-        .service(Arc::new(securityhub.clone()))
-        .service(Arc::new(imagebuilder.clone()))
-        // Both ELB APIs sign as `elasticloadbalancing`; the Classic one
-        // claims requests with its `2012-06-01` Version.
-        .service(Arc::new(elb.clone()))
-        .service(Arc::new(elb.classic()))
-        .service(Arc::new(autoscaling.clone()))
-        // SES v2 signs as `ses` too; it claims its `/v2/email/` paths.
-        .service(Arc::new(ses.v2()))
-        .service(Arc::new(ses.clone()))
-        .service(Arc::new(eks.clone()))
-        .service(Arc::new(efs.clone()))
-        .service(Arc::new(codeartifact.clone()))
-        .service(Arc::new(cloudtrail.clone()))
         // CloudTrail records every API call the gateway dispatches.
-        .service(Arc::new(CloudTrailData::new(cloudtrail.clone())))
         .observer(Arc::new(cloudtrail.clone()))
-        .service(Arc::new(ecr.clone()))
-        .service(Arc::new(ecr_public.clone()))
-        .service(Arc::new(elasticache.clone()))
-        .build();
+        .authorizer(authorizer);
+    for c in credential_stores {
+        gateway = gateway.credentials(c);
+    }
+    for s in services {
+        gateway = gateway.service(s);
+    }
+    let gateway = gateway.build();
     Mws {
         gateway,
         route53,
@@ -607,6 +669,9 @@ fn build_with_store(config: Config, store: Option<Arc<Store>>) -> Mws {
         globalaccelerator,
         marketplace_entitlement,
         marketplace_metering,
+        bedrock,
+        bedrock_runtime,
+        cloudformation,
         servicequotas,
         ce,
         ram,
@@ -618,6 +683,7 @@ fn build_with_store(config: Config, store: Option<Arc<Store>>) -> Mws {
         ses,
         rds,
         eks,
+        ecs,
         efs,
         codeartifact,
         cloudtrail,

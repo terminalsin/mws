@@ -60,6 +60,9 @@ pub(crate) struct Meter {
     scheduler: AtomicBool,
     samples: Mutex<HashMap<String, Sample>>,
     nodes: Mutex<HashMap<String, NodeMeter>>,
+    /// The latest request, which background work (automatic snapshots)
+    /// borrows its partition and authorizer from.
+    pub(crate) template: Mutex<Option<mws_core::RequestContext>>,
 }
 
 /// A node to sample and report.
@@ -150,6 +153,13 @@ const SET_COMMANDS: &[&str] = &[
     "zincrby",
 ];
 
+impl Meter {
+    /// How far the emulated clock runs ahead of real time.
+    pub(crate) fn offset_ms(&self) -> i64 {
+        self.offset_ms.load(Ordering::Relaxed)
+    }
+}
+
 impl ElastiCache {
     /// Publish `AWS/ElastiCache` metrics through `publisher`.
     pub fn set_metric_publisher(&self, publisher: Arc<dyn MetricPublisher>) {
@@ -158,11 +168,10 @@ impl ElastiCache {
 
     /// Note the emulated time of a request, start the background sampler,
     /// and publish the minutes that ended before it.
-    pub(crate) fn observe_clock(&self, received_at: chrono::DateTime<chrono::Utc>) {
+    pub(crate) fn observe_clock(&self, ctx: &mws_core::RequestContext) {
+        let received_at = ctx.received_at;
         let meter = self.meter();
-        if meter.publisher.get().is_none() {
-            return;
-        }
+        *meter.template.lock().expect("ElastiCache meter lock poisoned") = Some(ctx.clone());
         let offset = (received_at - chrono::Utc::now()).num_milliseconds().max(0);
         meter.offset_ms.store(offset, Ordering::Relaxed);
         if tokio::runtime::Handle::try_current().is_ok() && !meter.scheduler.swap(true, Ordering::SeqCst) {
@@ -172,16 +181,21 @@ impl ElastiCache {
                 loop {
                     // Sample every 5 seconds.
                     if tick == 0 && me.runs_engines() {
-                        me.sample_nodes().await;
+                        if me.meter().publisher.get().is_some() {
+                            me.sample_nodes().await;
+                        }
+                        me.deliver_logs().await;
                     }
                     tick = (tick + 1) % 5;
                     let now = chrono::Utc::now().timestamp_millis() + me.meter().offset_ms.load(Ordering::Relaxed);
                     me.publish_metrics(now);
+                    me.run_schedules(now);
                     tokio::time::sleep(Duration::from_secs(1)).await;
                 }
             });
         }
         self.publish_metrics(received_at.timestamp_millis());
+        self.run_schedules(received_at.timestamp_millis());
     }
 
     fn metered_nodes(&self) -> Vec<Node> {

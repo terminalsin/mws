@@ -328,6 +328,30 @@ impl S3 {
         (!v.delete_marker).then(|| v.metadata.clone())
     }
 
+    /// `PutObject` with the caller's own permissions, for services that
+    /// write where the caller (or a role it passed) says, such as Bedrock
+    /// batch inference output: S3 authorizes, replicates and notifies as
+    /// for the caller's own request.
+    pub fn put_object_as_caller(
+        &self,
+        ctx: &mws_core::RequestContext,
+        input: crate::generated::types::PutObjectRequest,
+    ) -> Result<crate::generated::types::PutObjectOutput, mws_core::ServiceError> {
+        let call = self.call(ctx, None);
+        let out = call.put_object(ctx, input);
+        self.replicate(ctx, call.take_written());
+        out
+    }
+
+    /// `ListObjectsV2` with the caller's own permissions.
+    pub fn list_objects_as_caller(
+        &self,
+        ctx: &mws_core::RequestContext,
+        input: crate::generated::types::ListObjectsV2Request,
+    ) -> Result<crate::generated::types::ListObjectsV2Output, mws_core::ServiceError> {
+        self.call(ctx, None).list_objects_v2(ctx, input)
+    }
+
     /// The account that owns `bucket`, if it exists (S3 Control checks
     /// this when creating access points).
     pub fn bucket_owner(&self, bucket: &str) -> Option<String> {

@@ -117,4 +117,30 @@ cd tests/e2e-ts && npm ci && npm test
 
 [CI](../.github/workflows/ci.yml) runs formatting, Clippy with warnings
 denied, the Rust and Python suites, and the TypeScript suite against the
-built binary on every pull request.
+built binary.
+
+On a pull request, [`plan.py`](../.github/scripts/plan.py) reads the
+workspace graph and the changed files and runs only what the change can
+affect:
+
+- Clippy on the crates the change touches.
+- Unit tests of those crates and of every crate that depends on them.
+- The end-to-end modules of the affected services. Modules are matched to
+  service crates by name (`lambda_sqs` runs for `mws-lambda` and `mws-sqs`),
+  and modules named after no service, such as `parity` and `state`, run
+  whenever any service changes. A change to `crates/mws` or to the e2e
+  helpers runs every module.
+- Everything when a shared crate (`mws-core`, the gateway, codegen, the
+  protocol crates, ...), the CI setup, or an existing dependency's version
+  changes. Pushes to master, the nightly run and manual runs are always full.
+
+`python3 .github/scripts/plan.py --base origin/master` prints the plan for a
+branch, and `--explain-modules` prints the module-to-service mapping. The plan
+also appears in each run's summary.
+
+One job builds every test binary once (sccache keeps unchanged crates,
+workspace crates included, out of the compile) and archives them with
+[cargo-nextest](https://nexte.st); a matrix of jobs then runs the unit tests
+and the end-to-end modules in shards grouped by service, while the boto3 and
+TypeScript suites run against the same `mws` binary. To run tests the way CI
+does: `cargo nextest run --profile ci -E 'test(/^sqs::/)'`.

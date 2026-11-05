@@ -141,6 +141,30 @@ impl Logs {
         stream: &str,
         events: Vec<ServiceLogEvent>,
     ) -> Result<(), mws_core::ServiceError> {
+        self.put_log_events_for_caller(ctx, log_group, stream, events, true)
+    }
+
+    /// [`Logs::put_log_events_as_caller`] for writers that create only the
+    /// stream (the ECS `awslogs` driver without `awslogs-create-group`): a
+    /// missing group fails the write with `ResourceNotFoundException`.
+    pub fn put_log_events_as_caller_existing_group(
+        &self,
+        ctx: &mws_core::RequestContext,
+        log_group: &str,
+        stream: &str,
+        events: Vec<ServiceLogEvent>,
+    ) -> Result<(), mws_core::ServiceError> {
+        self.put_log_events_for_caller(ctx, log_group, stream, events, false)
+    }
+
+    fn put_log_events_for_caller(
+        &self,
+        ctx: &mws_core::RequestContext,
+        log_group: &str,
+        stream: &str,
+        events: Vec<ServiceLogEvent>,
+        create_group: bool,
+    ) -> Result<(), mws_core::ServiceError> {
         let exists = |e: &mws_core::ServiceError| e.code == "ResourceAlreadyExistsException";
         let g = GroupRef::own(ctx, log_group);
         let (has_group, has_stream) = {
@@ -150,7 +174,7 @@ impl Logs {
                 Err(_) => (false, false),
             }
         };
-        if !has_group {
+        if !has_group && create_group {
             let input = types::CreateLogGroupRequest { log_group_name: log_group.to_string(), ..Default::default() };
             self.create_log_group(ctx, input).or_else(|e| if exists(&e) { Ok(()) } else { Err(e) })?;
         }

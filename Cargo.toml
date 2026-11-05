@@ -49,6 +49,9 @@ members = [
     "crates/services/mws-ssooidc",
     "crates/services/mws-ssoportal",
     "crates/services/mws-guardduty",
+    "crates/services/mws-cloudformation",
+    "crates/services/mws-bedrock",
+    "crates/services/mws-bedrock-runtime",
     "crates/services/mws-amplify",
     "crates/services/mws-globalaccelerator",
     "crates/services/mws-ram",
@@ -68,6 +71,7 @@ members = [
     "crates/services/mws-ecr-public",
 
     "crates/services/mws-elasticache",
+    "crates/services/mws-ecs",
     "tests/e2e-rust",
 ]
 
@@ -106,6 +110,8 @@ mws-kms = { path = "crates/services/mws-kms" }
 mws-organizations = { path = "crates/services/mws-organizations" }
 mws-s3 = { path = "crates/services/mws-s3" }
 mws-lambda = { path = "crates/services/mws-lambda" }
+mws-bedrock = { path = "crates/services/mws-bedrock" }
+mws-bedrock-runtime = { path = "crates/services/mws-bedrock-runtime" }
 mws-s3control = { path = "crates/services/mws-s3control" }
 mws-logs = { path = "crates/services/mws-logs" }
 mws-sqs = { path = "crates/services/mws-sqs" }
@@ -129,6 +135,7 @@ mws-ssoadmin = { path = "crates/services/mws-ssoadmin" }
 mws-ssooidc = { path = "crates/services/mws-ssooidc" }
 mws-ssoportal = { path = "crates/services/mws-ssoportal" }
 mws-guardduty = { path = "crates/services/mws-guardduty" }
+mws-cloudformation = { path = "crates/services/mws-cloudformation" }
 mws-amplify = { path = "crates/services/mws-amplify" }
 mws-globalaccelerator = { path = "crates/services/mws-globalaccelerator" }
 mws-ram = { path = "crates/services/mws-ram" }
@@ -145,6 +152,7 @@ mws-codeartifact = { path = "crates/services/mws-codeartifact" }
 mws-ecr = { path = "crates/services/mws-ecr" }
 mws-ecr-public = { path = "crates/services/mws-ecr-public" }
 mws-elasticache = { path = "crates/services/mws-elasticache" }
+mws-ecs = { path = "crates/services/mws-ecs" }
 
 # external
 async-trait = "0.1"

@@ -60,12 +60,25 @@ pub(crate) fn connect_host(svc: &ElastiCache) -> String {
     }
 }
 
+/// The client name MWS's own connections carry, so that their commands
+/// stay out of delivered slow logs.
+pub(crate) const CLIENT_NAME: &str = "mws-internal";
+
 async fn connect(svc: &ElastiCache, port: u16, auth: &Auth) -> Result<Client, String> {
-    Client::connect_with(&connect_host(svc), port, svc.tls_client_for(port), auth).await.map_err(|e| e.0)
+    let c = Client::connect_with(&connect_host(svc), port, svc.tls_client_for(port), auth).await.map_err(|e| e.0)?;
+    let mut c = admin(svc, c);
+    let _ = c.cmd(&["CLIENT", "SETNAME", CLIENT_NAME]).await;
+    Ok(c)
+}
+
+/// A node's slow log.
+pub(crate) async fn slowlog(svc: &ElastiCache, port: u16, auth: &Auth) -> Option<resp::Resp> {
+    let mut c = connect(svc, port, auth).await.ok()?;
+    c.ok(&["SLOWLOG", "GET", "128"]).await.ok()
 }
 
 /// A raw connection to a node (Memcached), over TLS when the node uses it.
-async fn raw_connect(svc: &ElastiCache, port: u16) -> Result<Box<dyn resp::Stream>, String> {
+pub(crate) async fn raw_connect(svc: &ElastiCache, port: u16) -> Result<Box<dyn resp::Stream>, String> {
     let host = connect_host(svc);
     let tcp = tokio::time::timeout(Duration::from_secs(3), tokio::net::TcpStream::connect((host.as_str(), port)))
         .await
@@ -165,6 +178,7 @@ pub(crate) fn engine_args(
     internal: Option<&str>,
     advertise_host: &str,
     tls: bool,
+    command_suffix: &str,
 ) -> Vec<String> {
     let nt = catalog::node_type(node_type).unwrap_or(&catalog::NODE_TYPES[3]);
     let mut a: Vec<String> = Vec::new();
@@ -235,10 +249,25 @@ pub(crate) fn engine_args(
         push(&["--cluster-port", CLUSTER_BUS_PORT, "--cluster-node-timeout", "5000"]);
         push(&["--cluster-announce-hostname", advertise_host, "--cluster-preferred-endpoint-type", "hostname"]);
     }
+    // The commands ElastiCache restricts answer `unknown command`; MWS
+    // reaches them under other names.
+    for cmd in RESTRICTED_COMMANDS {
+        push(&["--rename-command", cmd, &format!("{cmd}-{command_suffix}")]);
+    }
     for (k, v) in params {
         push(&[&format!("--{k}"), v]);
     }
     a
+}
+
+/// The commands ElastiCache does not let clients run.
+pub(crate) const RESTRICTED_COMMANDS: &[&str] =
+    &["BGREWRITEAOF", "BGSAVE", "CONFIG", "DEBUG", "MIGRATE", "REPLICAOF", "SAVE", "SHUTDOWN", "SLAVEOF"];
+
+/// A management connection's client: restricted commands go by their
+/// renamed names.
+fn admin(svc: &ElastiCache, c: Client) -> Client {
+    c.renamed(RESTRICTED_COMMANDS, &svc.command_suffix())
 }
 
 /// One node to launch.
@@ -269,6 +298,13 @@ pub(crate) fn plan(svc: &ElastiCache, key: &str, r: &RegionState, cluster_ids: &
         };
         let nt = catalog::node_type(&node_type).unwrap_or(&catalog::NODE_TYPES[3]);
         let tls = c.info.transit_encryption_enabled == Some(true);
+        let vpc_network = c
+            .info
+            .cache_subnet_group_name
+            .as_ref()
+            .and_then(|g| r.subnet_groups.get(g))
+            .and_then(|g| g.vpc_id.clone())
+            .and_then(|vpc| svc.network().and_then(|n| n.docker_network(&vpc)));
         for (node_id, rt) in &c.nodes {
             if rt.handle.is_some() {
                 continue;
@@ -284,6 +320,7 @@ pub(crate) fn plan(svc: &ElastiCache, key: &str, r: &RegionState, cluster_ids: &
                 internal.as_deref(),
                 &svc.options().advertise_host,
                 tls,
+                &svc.command_suffix(),
             );
             jobs.push(NodeJob {
                 cluster_id: id.clone(),
@@ -301,6 +338,7 @@ pub(crate) fn plan(svc: &ElastiCache, key: &str, r: &RegionState, cluster_ids: &
                     memory_mib: (nt.memory_mib() * 5 / 4).max(256),
                     vcpus: nt.vcpus,
                     files: if tls || engine.is_redis_like() { tls_files(svc) } else { Vec::new() },
+                    vpc_network: vpc_network.clone().map(|n| (n, vec![format!("{id}-{node_id}")])),
                 },
             });
         }
@@ -810,7 +848,8 @@ pub(crate) fn switch_tls(svc: &ElastiCache, nodes: Vec<(u16, Auth)>, commands: V
         };
         for (port, auth) in nodes {
             let p = port.to_string();
-            let Ok(mut c) = Client::connect_with(&host, port, old.clone(), &auth).await else { continue };
+            let Ok(c) = Client::connect_with(&host, port, old.clone(), &auth).await else { continue };
+            let mut c = admin(&svc, c);
             for cmd in &commands {
                 let refs: Vec<&str> = cmd.iter().map(String::as_str).collect();
                 let _ = c.ok(&refs).await;
@@ -1207,6 +1246,7 @@ pub(crate) fn start_serverless(svc: &ElastiCache, ctx: &RequestContext, key: &st
                 &svc.options().advertise_host,
                 // Serverless caches always encrypt in transit.
                 true,
+                &svc.command_suffix(),
             );
             let (account, region) = key.split_once('/').unwrap_or((&key, ""));
             let seed = c.seed_snapshot.as_ref().and_then(|s| r.serverless_snapshots.get(s)).map(|s| s.data.clone());
@@ -1225,6 +1265,7 @@ pub(crate) fn start_serverless(svc: &ElastiCache, ctx: &RequestContext, key: &st
                     memory_mib: 1024,
                     vcpus: 2,
                     files: tls_files(&svc),
+                    vpc_network: None,
                 },
                 serverless_auth(&c),
                 engine,
@@ -1629,6 +1670,20 @@ pub(crate) fn reattach(svc: &ElastiCache) {
         for g in groups {
             crate::ops::replication::open_proxies(svc, &key, &g, true);
         }
+        let memcached: Vec<(String, u16, bool)> = svc
+            .with_existing(&key, |r| {
+                r.clusters
+                    .values()
+                    .filter_map(|c| {
+                        let port = c.info.configuration_endpoint.as_ref()?.port? as u16;
+                        Some((c.id().to_string(), port, c.info.transit_encryption_enabled == Some(true)))
+                    })
+                    .collect()
+            })
+            .unwrap_or_default();
+        for (id, port, tls) in memcached {
+            svc.open_discovery(&key, &id, port, tls);
+        }
     }
 }
 
@@ -1715,4 +1770,102 @@ pub(crate) fn link_global(
             tracing::warn!("ElastiCache global datastore link for {rg_id}: {e}");
         }
     });
+}
+
+// ---- engine upgrades -------------------------------------------------------------
+
+/// Move a replication group's or cluster's nodes to a new engine version:
+/// read the data, replace every node's container with one running the new
+/// image (on the same port), and load the data back. Memcached nodes come
+/// back empty, as they do on ElastiCache.
+pub(crate) fn upgrade(svc: &ElastiCache, ctx: &RequestContext, key: &str, rg: Option<&str>, cluster: Option<&str>) {
+    let (svc, ctx, key) = (svc.clone(), ctx.clone(), key.to_string());
+    let (rg, cluster) = (rg.map(str::to_string), cluster.map(str::to_string));
+    let target = rg.clone().or(cluster.clone()).unwrap_or_default();
+    if !svc.runs_engines() {
+        svc.with_key(&key, &ctx, |r| upgraded(&svc, &ctx, r, rg.as_deref(), cluster.as_deref()));
+        return;
+    }
+    spawn(async move {
+        let (sources, members, handles) = svc.with_key(&key, &ctx, |r| {
+            let members: Vec<String> = match (&rg, &cluster) {
+                (Some(g), _) => r
+                    .clusters
+                    .values()
+                    .filter(|c| c.info.replication_group_id.as_deref() == Some(g))
+                    .map(|c| c.id().to_string())
+                    .collect(),
+                (None, Some(c)) => vec![c.clone()],
+                _ => vec![],
+            };
+            let redis = members.first().and_then(|m| r.clusters.get(m)).is_some_and(|c| c.engine().is_redis_like());
+            let sources = if redis { snapshot_sources(r, rg.as_deref(), cluster.as_deref()) } else { vec![] };
+            let mut handles = Vec::new();
+            for m in &members {
+                if let Some(c) = r.clusters.get_mut(m) {
+                    handles.extend(c.nodes.values_mut().filter_map(|n| n.handle.take()));
+                }
+            }
+            (sources, members, handles)
+        });
+        // Read the data before the old containers go.
+        let mut data = SnapshotData::default();
+        for (port, auth, cluster_mode) in &sources {
+            match capture_node(&svc, *port, auth, *cluster_mode).await {
+                Ok(entries) => data.shards.push(entries),
+                Err(e) => tracing::warn!("ElastiCache upgrade of {target}: reading data: {e}"),
+            }
+        }
+        let _ = svc.backend().terminate_all(&handles).await;
+        let jobs = svc.with_key(&key, &ctx, |r| plan(&svc, &key, r, &members));
+        let launched = launch(&svc, jobs).await;
+        if let Some(e) = record(&svc, &key, &ctx, &launched) {
+            tracing::warn!("ElastiCache upgrade of {target}: {e}");
+        }
+        let seed = (!data.shards.is_empty()).then_some(&data);
+        let result = match (&rg, &cluster) {
+            (Some(g), _) => match svc.with_key(&key, &ctx, |r| topology(r, g)) {
+                Some(topo) => configure(&svc, &topo, seed).await,
+                None => Ok(()),
+            },
+            (None, Some(c)) => {
+                let (auth, engine) = svc.with_key(&key, &ctx, |r| {
+                    let c = r.clusters.get(c).cloned().unwrap_or_default();
+                    (cluster_auth(&c), c.engine())
+                });
+                let mut result = Ok(());
+                for (job, _) in &launched {
+                    if let Err(e) = wait_ready(&svc, engine, job.spec.port, &auth).await {
+                        result = Err(e);
+                    }
+                }
+                if let (Some(seed), Some((job, _)), true) = (seed, launched.first(), result.is_ok()) {
+                    result = restore_standalone(&svc, job.spec.port, &auth, seed).await;
+                }
+                result
+            }
+            _ => Ok(()),
+        };
+        if let Err(e) = result {
+            tracing::warn!("ElastiCache upgrade of {target}: {e}");
+        }
+        svc.with_key(&key, &ctx, |r| upgraded(&svc, &ctx, r, rg.as_deref(), cluster.as_deref()));
+    });
+}
+
+fn upgraded(svc: &ElastiCache, ctx: &RequestContext, r: &mut RegionState, rg: Option<&str>, cluster: Option<&str>) {
+    let at = Utc::now().max(ctx.received_at);
+    match (rg, cluster) {
+        (Some(g), _) => {
+            let version = r.replication_groups.get(g).map(|g| g.engine_version.clone()).unwrap_or_default();
+            r.event(g, "replication-group", format!("Engine version upgraded to {version}"), at);
+            crate::ops::replication::became_available(svc, ctx, r, g);
+        }
+        (None, Some(c)) => {
+            let version = r.clusters.get(c).and_then(|c| c.info.engine_version.clone()).unwrap_or_default();
+            r.event(c, "cache-cluster", format!("Cache cluster engine version upgraded to {version}"), at);
+            crate::ops::clusters::became_available(svc, ctx, r, c, false);
+        }
+        _ => {}
+    }
 }

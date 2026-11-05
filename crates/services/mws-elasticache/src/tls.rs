@@ -19,6 +19,9 @@ pub struct Pki {
     pub ca_key_pem: String,
     pub server_cert_pem: String,
     pub server_key_pem: String,
+    /// What MWS appends to the names of the commands ElastiCache restricts
+    /// (`CONFIG-<suffix>`), which nodes are started with.
+    pub command_suffix: String,
 }
 
 impl Pki {
@@ -49,11 +52,12 @@ impl Pki {
             ca_key_pem: ca_key.serialize_pem(),
             server_cert_pem: cert.pem(),
             server_key_pem: key.serialize_pem(),
+            command_suffix: String::new(),
         })
     }
 
     pub fn is_empty(&self) -> bool {
-        self.ca_cert_pem.is_empty()
+        self.ca_cert_pem.is_empty() && self.command_suffix.is_empty()
     }
 }
 
@@ -67,6 +71,25 @@ pub fn server_names(advertise_host: &str, connect_host: &str) -> Vec<String> {
         }
     }
     names
+}
+
+/// The TLS server configuration presenting the node certificate.
+pub(crate) fn server_config(pki: &Pki) -> Result<Arc<rustls::ServerConfig>, String> {
+    use rustls_pki_types::pem::PemObject;
+    let provider = Arc::new(rustls::crypto::aws_lc_rs::default_provider());
+    let certs = rustls_pki_types::CertificateDer::pem_slice_iter(pki.server_cert_pem.as_bytes())
+        .chain(rustls_pki_types::CertificateDer::pem_slice_iter(pki.ca_cert_pem.as_bytes()))
+        .collect::<Result<Vec<_>, _>>()
+        .map_err(|e| e.to_string())?;
+    let key =
+        rustls_pki_types::PrivateKeyDer::from_pem_slice(pki.server_key_pem.as_bytes()).map_err(|e| e.to_string())?;
+    let config = rustls::ServerConfig::builder_with_provider(provider)
+        .with_safe_default_protocol_versions()
+        .map_err(|e| e.to_string())?
+        .with_no_client_auth()
+        .with_single_cert(certs, key)
+        .map_err(|e| e.to_string())?;
+    Ok(Arc::new(config))
 }
 
 /// A TLS client configuration trusting `ca_pem`.
