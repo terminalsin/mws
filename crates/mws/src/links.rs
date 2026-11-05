@@ -2146,7 +2146,6 @@ impl mws_elasticache::LogDelivery for ElastiCacheLogs {
     }
 }
 
-
 /// ECR pull-through cache credentials: the rule's Secrets Manager secret
 /// (`{"username": ..., "accessToken": ...}`), read as the registry's
 /// account (AWS reads it with ECR's service-linked role).
