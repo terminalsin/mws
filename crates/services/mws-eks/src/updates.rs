@@ -56,6 +56,18 @@ pub(crate) fn settle(rec: &mut ClusterRec) {
     }
 }
 
+/// Mark the update `id` as `Failed` with one error.
+pub(crate) fn fail(rec: &mut ClusterRec, id: &str, code: &str, message: String, resources: Vec<String>) {
+    if let Some(u) = rec.updates.iter_mut().find(|u| u.update.id.as_deref() == Some(id)) {
+        u.update.status = Some("Failed".into());
+        u.update.errors = Some(vec![types::ErrorDetail {
+            error_code: Some(code.into()),
+            error_message: Some(message),
+            resource_ids: Some(resources),
+        }]);
+    }
+}
+
 fn matches(u: &UpdateRec, nodegroup: Option<&str>, addon: Option<&str>, capability: Option<&str>) -> bool {
     u.nodegroup.as_deref() == nodegroup && u.addon.as_deref() == addon && u.capability.as_deref() == capability
 }

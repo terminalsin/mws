@@ -107,6 +107,19 @@ impl Env {
         c.cluster().unwrap().clone()
     }
 
+    /// The node group's running instances, once there are `want` of them.
+    async fn nodes(&self, nodegroup: &str, want: usize) -> Vec<aws_sdk_ec2::types::Instance> {
+        let mut nodes = Vec::new();
+        for _ in 0..80 {
+            nodes = self.instances(nodegroup).await;
+            if nodes.len() == want {
+                return nodes;
+            }
+            tokio::time::sleep(Duration::from_millis(250)).await;
+        }
+        panic!("node group {nodegroup} has {} nodes, not {want}", nodes.len());
+    }
+
     async fn instances(&self, nodegroup: &str) -> Vec<aws_sdk_ec2::types::Instance> {
         let out = self
             .ec2
@@ -310,7 +323,7 @@ async fn managed_node_groups_run_ec2_instances() {
     // Two instances, spread over the subnets, from the EKS-optimized AMI,
     // in the cluster security group, with an instance profile for the node
     // role.
-    let nodes = e.instances("workers").await;
+    let nodes = e.nodes("workers", 2).await;
     assert_eq!(nodes.len(), 2);
     let mut subnets: Vec<_> = nodes.iter().map(|i| i.subnet_id().unwrap().to_string()).collect();
     subnets.sort();
@@ -362,7 +375,7 @@ async fn managed_node_groups_run_ec2_instances() {
     let up = up.update().unwrap();
     assert_eq!(up.r#type(), Some(&UpdateType::ConfigUpdate));
     assert_eq!(up.status(), Some(&UpdateStatus::InProgress));
-    assert_eq!(e.instances("workers").await.len(), 3);
+    assert_eq!(e.nodes("workers", 3).await.len(), 3);
     let d = e
         .eks
         .describe_update()
@@ -410,8 +423,14 @@ async fn managed_node_groups_run_ec2_instances() {
         nv.update().unwrap().params().iter().find(|p| p.r#type().unwrap().as_str() == "Version").unwrap().value(),
         Some("1.35")
     );
-    let after = e.instances("workers").await;
-    assert_eq!(after.len(), 3);
+    let mut after = e.nodes("workers", 3).await;
+    for _ in 0..80 {
+        if after.iter().all(|i| !before.contains(&i.instance_id().unwrap().to_string())) {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(250)).await;
+        after = e.nodes("workers", 3).await;
+    }
     assert!(after.iter().all(|i| !before.contains(&i.instance_id().unwrap().to_string())));
     let image = e.ec2.describe_images().image_ids(after[0].image_id().unwrap()).send().await.unwrap();
     assert_eq!(image.images()[0].name(), Some("amazon-eks-node-al2023-x86_64-standard-1.35-v20250101"));
@@ -481,7 +500,7 @@ async fn managed_node_groups_run_ec2_instances() {
     // Deleting the node group terminates its instances and its profile.
     let del = e.eks.delete_nodegroup().cluster_name("apps").nodegroup_name("workers").send().await.unwrap();
     assert_eq!(del.nodegroup().unwrap().status().unwrap().as_str(), "DELETING");
-    assert!(e.instances("workers").await.is_empty());
+    assert!(e.nodes("workers", 0).await.is_empty());
     e.eks
         .wait_until_nodegroup_deleted()
         .cluster_name("apps")
@@ -1182,4 +1201,180 @@ async fn eks_state_survives_export_and_import() {
     assert_eq!(status, 200);
     let c = e.eks.describe_cluster().name("saved").send().await.unwrap();
     assert_eq!(c.cluster().unwrap().status().unwrap().as_str(), "ACTIVE");
+}
+
+async fn group(asg: &aws_sdk_autoscaling::Client, name: &str) -> Option<aws_sdk_autoscaling::types::AutoScalingGroup> {
+    let out = asg.describe_auto_scaling_groups().auto_scaling_group_names(name).send().await.unwrap();
+    out.auto_scaling_groups().first().cloned()
+}
+
+async fn nodegroup(e: &Env, cluster: &str, name: &str) -> aws_sdk_eks::types::Nodegroup {
+    let out = e.eks.describe_nodegroup().cluster_name(cluster).nodegroup_name(name).send().await.unwrap();
+    out.nodegroup().unwrap().clone()
+}
+
+fn issue_codes(ng: &aws_sdk_eks::types::Nodegroup) -> Vec<String> {
+    ng.health()
+        .map(|h| h.issues().iter().filter_map(|i| i.code()).map(|c| c.as_str().to_string()).collect())
+        .unwrap_or_default()
+}
+
+#[tokio::test]
+async fn node_groups_are_auto_scaling_groups() {
+    use aws_sdk_ec2::types::{InstanceType, RequestLaunchTemplateData};
+    use aws_sdk_eks::types::{CapacityTypes, LaunchTemplateSpecification};
+
+    let mws = Mws::start().await;
+    let e = env(&mws).await;
+    let asg = aws_sdk_autoscaling::Client::new(&mws.root_sdk_config().await);
+    e.cluster("asg", AuthenticationMode::Api).await;
+
+    // The customer's launch template names the instance type and user data;
+    // EKS copies it into its own and adds the AMI and instance profile.
+    let user_data = base64::engine::general_purpose::STANDARD.encode("#!/bin/bash\necho from the template\n");
+    let lt = e
+        .ec2
+        .create_launch_template()
+        .launch_template_name("custom-nodes")
+        .launch_template_data(
+            RequestLaunchTemplateData::builder().instance_type(InstanceType::M5Large).user_data(&user_data).build(),
+        )
+        .send()
+        .await
+        .unwrap();
+    let source = lt.launch_template().unwrap().launch_template_id().unwrap().to_string();
+    let ng = e
+        .eks
+        .create_nodegroup()
+        .cluster_name("asg")
+        .nodegroup_name("custom")
+        .node_role(&e.node_role)
+        .set_subnets(Some(e.subnets.clone()))
+        .version("1.33")
+        .launch_template(LaunchTemplateSpecification::builder().id(&source).build())
+        .capacity_type(CapacityTypes::Spot)
+        .scaling_config(NodegroupScalingConfig::builder().min_size(1).max_size(4).desired_size(2).build())
+        .send()
+        .await
+        .unwrap();
+    let ng = ng.nodegroup().unwrap();
+    assert!(ng.instance_types().is_empty());
+    assert_eq!(ng.launch_template().unwrap().version(), Some("1"));
+    let name = ng.resources().unwrap().auto_scaling_groups()[0].name().unwrap().to_string();
+
+    // A real Auto Scaling group with EKS's mixed instances policy and tags.
+    let g = group(&asg, &name).await.expect("the node group's Auto Scaling group");
+    assert_eq!((g.min_size(), g.max_size(), g.desired_capacity()), (Some(1), Some(4), Some(2)));
+    let mixed = g.mixed_instances_policy().unwrap();
+    let spec = mixed.launch_template().unwrap().launch_template_specification().unwrap();
+    let eks_template = spec.launch_template_id().unwrap().to_string();
+    assert_ne!(eks_template, source);
+    assert_eq!(spec.version(), Some("1"));
+    assert_eq!(mixed.instances_distribution().unwrap().on_demand_percentage_above_base_capacity(), Some(0));
+    assert!(g.capacity_rebalance().unwrap_or_default());
+    let tag = |k: &str| g.tags().iter().find(|t| t.key() == Some(k)).cloned();
+    assert_eq!(tag("eks:nodegroup-name").unwrap().value(), Some("custom"));
+    assert_eq!(tag("eks:cluster-name").unwrap().propagate_at_launch(), Some(true));
+    let mut zones = g.availability_zones().to_vec();
+    zones.sort();
+    assert_eq!(zones, ["us-east-1a", "us-east-1b"]);
+
+    let data =
+        e.ec2.describe_launch_template_versions().launch_template_id(&eks_template).versions("1").send().await.unwrap();
+    let data = data.launch_template_versions()[0].launch_template_data().unwrap();
+    assert_eq!(data.user_data(), Some(user_data.as_str()));
+    assert_eq!(data.instance_type(), Some(&InstanceType::M5Large));
+    assert!(data.iam_instance_profile().unwrap().arn().unwrap().contains(":instance-profile/eks-"));
+    assert_eq!(data.metadata_options().unwrap().http_put_response_hop_limit(), Some(2));
+
+    // The group launches the nodes, from the template.
+    let nodes = e.nodes("custom", 2).await;
+    assert!(nodes.iter().all(|i| i.instance_type() == Some(&InstanceType::M5Large)));
+    let image = e.ec2.describe_images().image_ids(nodes[0].image_id().unwrap()).send().await.unwrap();
+    assert_eq!(image.images()[0].name(), Some("amazon-eks-node-al2023-x86_64-standard-1.33-v20250101"));
+    assert!(nodes[0]
+        .tags()
+        .iter()
+        .any(|t| t.key() == Some("aws:autoscaling:groupName") && t.value() == Some(name.as_str())));
+
+    // Scaling the group directly (as the Cluster Autoscaler does) shows in
+    // the node group.
+    asg.set_desired_capacity().auto_scaling_group_name(&name).desired_capacity(3).send().await.unwrap();
+    assert_eq!(nodegroup(&e, "asg", "custom").await.scaling_config().unwrap().desired_size(), Some(3));
+    e.nodes("custom", 3).await;
+    // And scaling the node group scales the group.
+    e.eks
+        .update_nodegroup_config()
+        .cluster_name("asg")
+        .nodegroup_name("custom")
+        .scaling_config(NodegroupScalingConfig::builder().min_size(1).max_size(4).desired_size(1).build())
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(group(&asg, &name).await.unwrap().desired_capacity(), Some(1));
+    e.nodes("custom", 1).await;
+
+    // Suspended processes leave EKS unable to manage the nodes: the node
+    // group degrades, and a version update fails.
+    asg.suspend_processes().auto_scaling_group_name(&name).scaling_processes("Launch").send().await.unwrap();
+    let ng = nodegroup(&e, "asg", "custom").await;
+    assert_eq!(ng.status().unwrap().as_str(), "DEGRADED");
+    assert_eq!(issue_codes(&ng), ["AutoScalingGroupInvalidConfiguration"]);
+    let issue = &ng.health().unwrap().issues()[0];
+    assert!(issue.message().unwrap().contains("suspended processes: Launch"), "{issue:?}");
+    assert_eq!(issue.resource_ids(), [name.as_str()]);
+    let up = e.eks.update_nodegroup_version().cluster_name("asg").nodegroup_name("custom").send().await.unwrap();
+    let id = up.update().unwrap().id().unwrap().to_string();
+    let d = e.eks.describe_update().name("asg").update_id(&id).nodegroup_name("custom").send().await.unwrap();
+    let d = d.update().unwrap();
+    assert_eq!(d.status(), Some(&UpdateStatus::Failed));
+    assert_eq!(d.errors()[0].error_code().unwrap().as_str(), "NodeCreationFailure");
+    assert_eq!(
+        d.errors()[0].error_message(),
+        Some("Couldn't proceed with upgrade process as new nodes are not joining node group custom")
+    );
+
+    // Resumed, the node group recovers and the update replaces the nodes
+    // from a new launch template version, without leaving AZRebalance
+    // suspended.
+    asg.resume_processes().auto_scaling_group_name(&name).send().await.unwrap();
+    let ng = nodegroup(&e, "asg", "custom").await;
+    assert_eq!(ng.status().unwrap().as_str(), "ACTIVE");
+    assert!(issue_codes(&ng).is_empty());
+    let old = e.nodes("custom", 1).await[0].instance_id().unwrap().to_string();
+    let ng = nodegroup(&e, "asg", "custom").await;
+    assert_eq!(ng.version(), Some("1.33"));
+    let up = e.eks.update_nodegroup_version().cluster_name("asg").nodegroup_name("custom").send().await.unwrap();
+    let id = up.update().unwrap().id().unwrap().to_string();
+    let d = e.eks.describe_update().name("asg").update_id(&id).nodegroup_name("custom").send().await.unwrap();
+    assert_eq!(d.update().unwrap().status(), Some(&UpdateStatus::Successful));
+    let g = group(&asg, &name).await.unwrap();
+    let spec = g.mixed_instances_policy().unwrap().launch_template().unwrap().launch_template_specification().unwrap();
+    assert_ne!(spec.version(), Some("1"));
+    assert!(g.suspended_processes().is_empty());
+    let mut replaced = false;
+    for _ in 0..80 {
+        let nodes = e.instances("custom").await;
+        if nodes.len() == 1 && nodes[0].instance_id() != Some(old.as_str()) {
+            let image = e.ec2.describe_images().image_ids(nodes[0].image_id().unwrap()).send().await.unwrap();
+            assert_eq!(image.images()[0].name(), Some("amazon-eks-node-al2023-x86_64-standard-1.34-v20250101"));
+            replaced = true;
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(250)).await;
+    }
+    assert!(replaced, "the node was not replaced");
+
+    // A group deleted out from under EKS degrades the node group.
+    asg.delete_auto_scaling_group().auto_scaling_group_name(&name).force_delete(true).send().await.unwrap();
+    let ng = nodegroup(&e, "asg", "custom").await;
+    assert_eq!(ng.status().unwrap().as_str(), "DEGRADED");
+    assert_eq!(issue_codes(&ng), ["AutoScalingGroupNotFound"]);
+
+    // Deleting the node group removes EKS's launch template.
+    e.eks.delete_nodegroup().cluster_name("asg").nodegroup_name("custom").send().await.unwrap();
+    let err = e.ec2.describe_launch_templates().launch_template_ids(&eks_template).send().await.unwrap_err();
+    assert!(code(err.as_service_error().unwrap()).starts_with("InvalidLaunchTemplateId"), "{err:?}");
+    // The customer's template stays.
+    e.ec2.describe_launch_templates().launch_template_ids(&source).send().await.unwrap();
 }

@@ -49,8 +49,9 @@ pub(crate) struct ClusterRec {
 #[serde(default)]
 pub(crate) struct NodegroupRec {
     pub nodegroup: types::Nodegroup,
-    /// The node instances, in launch order.
-    pub instances: Vec<String>,
+    /// The EKS-managed launch template the Auto Scaling group launches.
+    pub launch_template_id: Option<String>,
+    pub launch_template_version: Option<String>,
     pub instance_profile: Option<String>,
     pub image_id: Option<String>,
     /// Security groups the nodes run in.

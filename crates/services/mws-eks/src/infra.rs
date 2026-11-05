@@ -52,23 +52,62 @@ impl std::fmt::Display for InfrastructureError {
     }
 }
 
-/// Instances to start for a node group.
-#[derive(Debug, Clone)]
-pub struct NodeLaunch {
+/// What a managed node group runs: EKS's launch template and the Auto
+/// Scaling group built from it.
+#[derive(Debug, Clone, Default)]
+pub struct NodeGroupSpec {
     pub cluster_name: String,
     pub nodegroup_name: String,
-    /// The node group's Auto Scaling group name.
+    /// The node group's Auto Scaling group name (`eks-<nodegroup>-<uuid>`).
     pub group_name: String,
-    pub image_id: String,
-    pub instance_type: String,
-    /// Subnets to spread the instances over, in order.
+    /// The EKS-managed launch template's name (`eks-<uuid>`).
+    pub template_name: String,
+    /// The EKS-optimized AMI; `None` when the source launch template names
+    /// its own (custom AMIs).
+    pub image_id: Option<String>,
+    /// Instance types for the group's overrides; empty when the source
+    /// launch template names one.
+    pub instance_types: Vec<String>,
+    /// `ON_DEMAND`, `SPOT` or `CAPACITY_BLOCK`.
+    pub capacity_type: String,
     pub subnets: Vec<String>,
-    pub count: usize,
+    pub min_size: i32,
+    pub max_size: i32,
+    pub desired_size: i32,
+    /// Used unless the source launch template names security groups.
     pub security_group_ids: Vec<String>,
     pub instance_profile_arn: Option<String>,
     pub key_name: Option<String>,
     pub disk_size_gib: Option<i32>,
+    /// The customer's launch template, which EKS copies into its own.
+    pub source_template: Option<LaunchTemplateRef>,
+    /// Tags on the group, propagated to its instances.
     pub tags: BTreeMap<String, String>,
+}
+
+#[derive(Debug, Clone, Default)]
+pub struct LaunchTemplateRef {
+    pub id: Option<String>,
+    pub name: Option<String>,
+    pub version: Option<String>,
+}
+
+/// The launch template EKS made for a node group.
+#[derive(Debug, Clone, Default)]
+pub struct NodeGroupTemplate {
+    pub id: String,
+    pub version: String,
+}
+
+/// A node group's Auto Scaling group as it is now.
+#[derive(Debug, Clone, Default)]
+pub struct GroupState {
+    pub min_size: i32,
+    pub max_size: i32,
+    pub desired_capacity: i32,
+    /// Instances that are not leaving the group.
+    pub instance_ids: Vec<String>,
+    pub suspended_processes: Vec<String>,
 }
 
 #[async_trait::async_trait]
@@ -111,8 +150,35 @@ pub trait Infrastructure: Send + Sync {
 
     async fn delete_instance_profile(&self, scope: &Scope<'_>, name: &str, role_arn: &str);
 
-    /// Start instances; returns their ids.
-    async fn launch(&self, scope: &Scope<'_>, launch: &NodeLaunch) -> Result<Vec<String>, InfrastructureError>;
+    /// Create the node group's launch template and Auto Scaling group.
+    async fn create_node_group(
+        &self,
+        scope: &Scope<'_>,
+        spec: &NodeGroupSpec,
+    ) -> Result<NodeGroupTemplate, InfrastructureError>;
 
-    async fn terminate(&self, scope: &Scope<'_>, instance_ids: &[String]);
+    /// Change the group's size.
+    async fn scale_node_group(
+        &self,
+        scope: &Scope<'_>,
+        group: &str,
+        min: i32,
+        max: i32,
+        desired: i32,
+    ) -> Result<(), InfrastructureError>;
+
+    /// A new version of the node group's launch template from `spec`, and
+    /// every node replaced from it. Returns the new version.
+    async fn roll_node_group(
+        &self,
+        scope: &Scope<'_>,
+        spec: &NodeGroupSpec,
+        template_id: &str,
+    ) -> Result<String, InfrastructureError>;
+
+    /// The group, or `None` when it no longer exists.
+    async fn node_group_state(&self, scope: &Scope<'_>, group: &str) -> Option<GroupState>;
+
+    /// Delete the group (terminating its instances) and the launch template.
+    async fn delete_node_group(&self, scope: &Scope<'_>, group: &str, template_id: Option<&str>);
 }

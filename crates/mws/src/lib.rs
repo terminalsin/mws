@@ -338,7 +338,11 @@ fn build_with_store(config: Config, store: Option<Arc<Store>>) -> Mws {
     rds.set_event_sink(Arc::new(links::RdsEvents { events: events.clone(), sns: sns.clone() }));
     rds.set_export_store(Arc::new(links::RdsExports { sts: sts.clone(), s3: s3.clone() }));
     let eks = Eks::with_sts(sts.clone());
-    eks.set_infrastructure(Arc::new(eks::EksInfrastructure { ec2: ec2.clone(), iam: iam.clone() }));
+    eks.set_infrastructure(Arc::new(eks::EksInfrastructure {
+        ec2: ec2.clone(),
+        iam: iam.clone(),
+        autoscaling: autoscaling.clone(),
+    }));
     let mut gateway = Gateway::builder();
     if let Some(store) = store {
         gateway = gateway.store(store);

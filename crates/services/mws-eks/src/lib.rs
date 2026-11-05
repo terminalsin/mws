@@ -47,7 +47,10 @@ use std::sync::{Arc, OnceLock, RwLock, RwLockWriteGuard};
 
 use mws_core::{HttpRequest, HttpResponse, RequestContext, Service, ServiceError};
 
-pub use infra::{Infrastructure, InfrastructureError, NodeLaunch, Scope, SubnetFacts};
+pub use infra::{
+    GroupState, Infrastructure, InfrastructureError, LaunchTemplateRef, NodeGroupSpec, NodeGroupTemplate, Scope,
+    SubnetFacts,
+};
 use state::State;
 
 pub(crate) struct Inner {

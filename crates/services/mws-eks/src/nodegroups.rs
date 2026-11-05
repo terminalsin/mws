@@ -9,7 +9,7 @@ use mws_core::{ConditionContext, RequestContext, ServiceError};
 
 use crate::catalog;
 use crate::generated::{errors, types};
-use crate::infra::NodeLaunch;
+use crate::infra::{GroupState, LaunchTemplateRef, NodeGroupSpec};
 use crate::state::NodegroupRec;
 use crate::updates::Target;
 use crate::util::{self, param, text, Tags};
@@ -85,26 +85,46 @@ fn node_tags(cluster: &str, nodegroup: &str) -> Tags {
     .collect()
 }
 
-fn launch_spec(cluster: &str, rec: &NodegroupRec, count: usize) -> Option<NodeLaunch> {
+fn group_name(ng: &types::Nodegroup) -> Option<String> {
+    ng.resources.as_ref()?.auto_scaling_groups.as_ref()?.first()?.name.clone()
+}
+
+/// What the node group's Auto Scaling group and launch template should be.
+fn group_spec(cluster: &str, rec: &NodegroupRec, template_name: &str) -> Option<NodeGroupSpec> {
     let ng = &rec.nodegroup;
-    Some(NodeLaunch {
+    let scaling = ng.scaling_config.clone().unwrap_or_default();
+    Some(NodeGroupSpec {
         cluster_name: cluster.into(),
         nodegroup_name: ng.nodegroup_name.clone()?,
-        group_name: ng.resources.as_ref()?.auto_scaling_groups.as_ref()?.first()?.name.clone()?,
-        image_id: rec.image_id.clone()?,
-        instance_type: ng
-            .instance_types
-            .as_ref()
-            .and_then(|t| t.first().cloned())
-            .unwrap_or_else(|| "t3.medium".into()),
+        group_name: group_name(ng)?,
+        template_name: template_name.into(),
+        image_id: if ng.ami_type.as_deref() == Some("CUSTOM") { None } else { rec.image_id.clone() },
+        instance_types: ng.instance_types.clone().unwrap_or_default(),
+        capacity_type: ng.capacity_type.clone().unwrap_or_else(|| "ON_DEMAND".into()),
         subnets: ng.subnets.clone().unwrap_or_default(),
-        count,
+        min_size: scaling.min_size.unwrap_or(0),
+        max_size: scaling.max_size.unwrap_or(0),
+        desired_size: scaling.desired_size.unwrap_or(0),
         security_group_ids: rec.security_groups.clone(),
         instance_profile_arn: rec.instance_profile.clone(),
         key_name: ng.remote_access.as_ref().and_then(|r| r.ec2_ssh_key.clone()),
         disk_size_gib: ng.disk_size,
+        source_template: ng.launch_template.as_ref().map(|lt| LaunchTemplateRef {
+            id: lt.id.clone(),
+            name: lt.name.clone(),
+            version: lt.version.clone(),
+        }),
         tags: node_tags(cluster, ng.nodegroup_name.as_deref().unwrap_or_default()),
     })
+}
+
+/// Health issues EKS raises from the state of the Auto Scaling group.
+const GROUP_ISSUES: [&str; 2] = ["AutoScalingGroupNotFound", "AutoScalingGroupInvalidConfiguration"];
+
+/// Processes a managed node group needs. EKS itself suspends
+/// `AZRebalance` while it replaces nodes, so that one may be suspended.
+fn blocking_processes(state: &GroupState) -> Vec<String> {
+    state.suspended_processes.iter().filter(|p| p.as_str() != "AZRebalance").cloned().collect()
 }
 
 fn degrade(ng: &mut types::Nodegroup, code: &str, message: String, resources: Vec<String>) {
@@ -365,26 +385,29 @@ impl Eks {
                 Err(e) => degrade(&mut nodegroup, "IamInstanceProfileNotFound", e.message.clone(), Vec::new()),
             }
             rec.nodegroup = nodegroup;
-            match (rec.image_id.is_some(), desired) {
-                (_, 0) => {}
-                (false, _) => {
-                    degrade(
-                        &mut rec.nodegroup,
-                        "AmiIdNotFound",
-                        format!("No AMI found for amiType {ami_type} and Kubernetes version {}.", kube.version),
-                        Vec::new(),
-                    );
-                    rec.nodegroup.status = Some("CREATE_FAILED".into());
-                }
-                (true, n) => {
-                    let spec = launch_spec(&cluster, &rec, n as usize).expect("node group is complete");
-                    match infra.launch(&scope, &spec).await {
-                        Ok(ids) => rec.instances = ids,
-                        Err(e) => {
-                            let group = spec.group_name.clone();
-                            degrade(&mut rec.nodegroup, "NodeCreationFailure", e.to_string(), vec![group]);
-                            rec.nodegroup.status = Some("CREATE_FAILED".into());
-                        }
+            if rec.image_id.is_none() && ami_type != "CUSTOM" {
+                degrade(
+                    &mut rec.nodegroup,
+                    "AmiIdNotFound",
+                    format!("No AMI found for amiType {ami_type} and Kubernetes version {}.", kube.version),
+                    Vec::new(),
+                );
+                rec.nodegroup.status = Some("CREATE_FAILED".into());
+            } else {
+                let spec = group_spec(&cluster, &rec, &format!("eks-{uuid}")).expect("node group is complete");
+                match infra.create_node_group(&scope, &spec).await {
+                    Ok(t) => {
+                        rec.launch_template_id = Some(t.id);
+                        rec.launch_template_version = Some(t.version);
+                    }
+                    Err(e) => {
+                        let code = if e.code.contains("LaunchTemplate") {
+                            "SourceEc2LaunchTemplateNotFound"
+                        } else {
+                            "NodeCreationFailure"
+                        };
+                        degrade(&mut rec.nodegroup, code, e.to_string(), vec![spec.group_name.clone()]);
+                        rec.nodegroup.status = Some("CREATE_FAILED".into());
                     }
                 }
             }
@@ -406,6 +429,7 @@ impl Eks {
         ctx: &RequestContext,
         input: types::DescribeNodegroupRequest,
     ) -> Result<types::DescribeNodegroupResponse, ServiceError> {
+        self.observe_group(ctx, &input.cluster_name, &input.nodegroup_name).await;
         let mut st = self.write();
         let rec = util::cluster(&mut st, ctx, &input.cluster_name)?;
         let n = rec
@@ -437,34 +461,82 @@ impl Eks {
         Ok(types::ListNodegroupsResponse { nodegroups: Some(items), next_token: next })
     }
 
-    /// Bring the node group's instance count to its desired size.
-    async fn reconcile_instances(&self, ctx: &RequestContext, cluster: &str, name: &str) {
+    /// Size the Auto Scaling group to the node group's scaling config.
+    async fn scale_group(&self, ctx: &RequestContext, cluster: &str, name: &str) {
         let Some(infra) = self.infra().cloned() else { return };
-        let scope = util::scope(ctx);
-        let (spec, surplus) = {
+        let target = {
             let mut st = self.write();
             let Ok(rec) = util::cluster(&mut st, ctx, cluster) else { return };
-            let Some(n) = rec.nodegroups.get_mut(name) else { return };
-            let desired = n.nodegroup.scaling_config.as_ref().and_then(|s| s.desired_size).unwrap_or(0).max(0) as usize;
-            let have = n.instances.len();
-            if desired > have {
-                (launch_spec(cluster, n, desired - have), Vec::new())
-            } else {
-                (None, n.instances.split_off(desired))
-            }
+            let Some(n) = rec.nodegroups.get(name) else { return };
+            let s = n.nodegroup.scaling_config.clone().unwrap_or_default();
+            group_name(&n.nodegroup).map(|g| (g, s))
         };
-        if !surplus.is_empty() {
-            infra.terminate(&scope, &surplus).await;
-        }
-        if let Some(spec) = spec {
-            let launched = infra.launch(&scope, &spec).await;
+        let Some((group, s)) = target else { return };
+        let (min, max, desired) = (s.min_size.unwrap_or(0), s.max_size.unwrap_or(0), s.desired_size.unwrap_or(0));
+        if let Err(e) = infra.scale_node_group(&util::scope(ctx), &group, min, max, desired).await {
             let mut st = self.write();
             let Ok(rec) = util::cluster(&mut st, ctx, cluster) else { return };
-            let Some(n) = rec.nodegroups.get_mut(name) else { return };
-            match launched {
-                Ok(ids) => n.instances.extend(ids),
-                Err(e) => degrade(&mut n.nodegroup, "AsgInstanceLaunchFailures", e.to_string(), vec![spec.group_name]),
+            if let Some(n) = rec.nodegroups.get_mut(name) {
+                degrade(&mut n.nodegroup, "AutoScalingGroupInvalidConfiguration", e.to_string(), vec![group]);
             }
+        }
+    }
+
+    /// Read the node group's Auto Scaling group back, as EKS does: sizes
+    /// changed on the group (by the Cluster Autoscaler, say) show in the
+    /// node group, and a deleted group or suspended processes degrade it.
+    pub(crate) async fn observe_group(&self, ctx: &RequestContext, cluster: &str, name: &str) {
+        let Some(infra) = self.infra().cloned() else { return };
+        let group = {
+            let mut st = self.write();
+            let Ok(rec) = util::cluster(&mut st, ctx, cluster) else { return };
+            let Some(n) = rec.nodegroups.get(name) else { return };
+            if n.launch_template_id.is_none() || n.nodegroup.status.as_deref() == Some("DELETING") {
+                return;
+            }
+            group_name(&n.nodegroup)
+        };
+        let Some(group) = group else { return };
+        let state = infra.node_group_state(&util::scope(ctx), &group).await;
+        let mut st = self.write();
+        let Ok(rec) = util::cluster(&mut st, ctx, cluster) else { return };
+        let Some(n) = rec.nodegroups.get_mut(name) else { return };
+        let ng = &mut n.nodegroup;
+        if let Some(issues) = ng.health.as_mut().and_then(|h| h.issues.as_mut()) {
+            issues.retain(|i| !GROUP_ISSUES.contains(&i.code.as_deref().unwrap_or_default()));
+        }
+        match &state {
+            None => degrade(
+                ng,
+                "AutoScalingGroupNotFound",
+                format!("Auto Scaling group {group} not found."),
+                vec![group.clone()],
+            ),
+            Some(s) => {
+                ng.scaling_config = Some(types::NodegroupScalingConfig {
+                    min_size: Some(s.min_size),
+                    max_size: Some(s.max_size),
+                    desired_size: Some(s.desired_capacity),
+                });
+                let blocked = blocking_processes(s);
+                if !blocked.is_empty() {
+                    degrade(
+                        ng,
+                        "AutoScalingGroupInvalidConfiguration",
+                        format!(
+                            "The Auto Scaling group {group} has suspended processes: {}. EKS can't manage the node group's nodes until they are resumed.",
+                            blocked.join(", ")
+                        ),
+                        vec![group.clone()],
+                    );
+                }
+            }
+        }
+        let degraded = ng.health.as_ref().and_then(|h| h.issues.as_ref()).is_some_and(|i| !i.is_empty());
+        match (ng.status.as_deref(), degraded) {
+            (Some("ACTIVE"), true) => ng.status = Some("DEGRADED".into()),
+            (Some("DEGRADED"), false) => ng.status = Some("ACTIVE".into()),
+            _ => {}
         }
     }
 
@@ -473,6 +545,7 @@ impl Eks {
         ctx: &RequestContext,
         input: types::UpdateNodegroupConfigRequest,
     ) -> Result<types::UpdateNodegroupConfigResponse, ServiceError> {
+        self.observe_group(ctx, &input.cluster_name, &input.nodegroup_name).await;
         let cluster = input.cluster_name.clone();
         let name = input.nodegroup_name.clone();
         let (update, resize) = {
@@ -607,7 +680,7 @@ impl Eks {
             (update, resize)
         };
         if resize {
-            self.reconcile_instances(ctx, &cluster, &name).await;
+            self.scale_group(ctx, &cluster, &name).await;
         }
         Ok(types::UpdateNodegroupConfigResponse { update: Some(update) })
     }
@@ -617,6 +690,7 @@ impl Eks {
         ctx: &RequestContext,
         input: types::UpdateNodegroupVersionRequest,
     ) -> Result<types::UpdateNodegroupVersionResponse, ServiceError> {
+        self.observe_group(ctx, &input.cluster_name, &input.nodegroup_name).await;
         let cluster = input.cluster_name.clone();
         let name = input.nodegroup_name.clone();
         let cluster_version = {
@@ -685,10 +759,11 @@ impl Eks {
             Some(infra) => infra.node_image(&util::scope(ctx), kube.version, &ami_type).await,
             None => None,
         };
-        let (update, old) = {
+        let (update, spec, template, previous) = {
             let mut st = self.write();
             let rec = util::cluster(&mut st, ctx, &cluster)?;
             let n = rec.nodegroups.get_mut(&name).ok_or_else(|| not_found(&cluster, &name))?;
+            let previous = (n.nodegroup.clone(), n.image_id.clone());
             n.nodegroup.version = Some(kube.version.into());
             n.nodegroup.release_version = Some(release.clone());
             if let Some(lt) = &input.launch_template {
@@ -699,8 +774,8 @@ impl Eks {
             if image.is_some() {
                 n.image_id = image;
             }
-            // A version update replaces every node.
-            let old = std::mem::take(&mut n.instances);
+            let spec = group_spec(&cluster, n, "");
+            let template = n.launch_template_id.clone();
             let mut params = vec![param("Version", kube.version), param("ReleaseVersion", release)];
             if let Some(lt) = &input.launch_template {
                 if let Some(n) = &lt.name {
@@ -712,12 +787,43 @@ impl Eks {
             }
             let update =
                 crate::updates::push(rec, ctx.received_at, "VersionUpdate", params, Some(Target::Nodegroup(&name)));
-            (update, old)
+            (update, spec, template, previous)
         };
-        self.reconcile_instances(ctx, &cluster, &name).await;
-        if let Some(infra) = self.infra() {
-            if !old.is_empty() {
-                infra.terminate(&util::scope(ctx), &old).await;
+        // A version update replaces every node from a new version of the
+        // launch template, unless the group can't launch or terminate.
+        if let (Some(infra), Some(spec), Some(template)) = (self.infra().cloned(), spec, template) {
+            let scope = util::scope(ctx);
+            let id = update.id.clone().unwrap_or_default();
+            let blocked = match infra.node_group_state(&scope, &spec.group_name).await {
+                None => Some(format!("Auto Scaling group {} not found.", spec.group_name)),
+                Some(s) if !blocking_processes(&s).is_empty() => Some(format!(
+                    "Couldn't proceed with upgrade process as new nodes are not joining node group {name}"
+                )),
+                Some(_) => None,
+            };
+            let outcome = match blocked {
+                Some(message) => Err(message),
+                None => infra.roll_node_group(&scope, &spec, &template).await.map_err(|e| e.to_string()),
+            };
+            let mut st = self.write();
+            let rec = util::cluster(&mut st, ctx, &cluster)?;
+            match outcome {
+                Ok(version) => {
+                    if let Some(n) = rec.nodegroups.get_mut(&name) {
+                        n.launch_template_version = Some(version);
+                    }
+                }
+                Err(message) => {
+                    // The node group keeps its version and launch template.
+                    if let Some(n) = rec.nodegroups.get_mut(&name) {
+                        let (ng, image) = previous;
+                        n.nodegroup.version = ng.version;
+                        n.nodegroup.release_version = ng.release_version;
+                        n.nodegroup.launch_template = ng.launch_template;
+                        n.image_id = image;
+                    }
+                    crate::updates::fail(rec, &id, "NodeCreationFailure", message, vec![spec.group_name.clone()])
+                }
             }
         }
         Ok(types::UpdateNodegroupVersionResponse { update: Some(update) })
@@ -730,7 +836,7 @@ impl Eks {
     ) -> Result<types::DeleteNodegroupResponse, ServiceError> {
         let cluster = input.cluster_name.clone();
         let name = input.nodegroup_name.clone();
-        let (response, instances, profile, remote_sg, role) = {
+        let (response, group, template, profile, remote_sg, role) = {
             let mut st = self.write();
             let rec = util::cluster(&mut st, ctx, &cluster)?;
             let n = rec.nodegroups.get_mut(&name).ok_or_else(|| not_found(&cluster, &name))?;
@@ -754,7 +860,8 @@ impl Eks {
                 .flatten();
             (
                 n.nodegroup.clone(),
-                std::mem::take(&mut n.instances),
+                group_name(&n.nodegroup),
+                n.launch_template_id.take(),
                 n.instance_profile.take(),
                 remote,
                 n.nodegroup.node_role.clone().unwrap_or_default(),
@@ -762,8 +869,8 @@ impl Eks {
         };
         if let Some(infra) = self.infra() {
             let scope = util::scope(ctx);
-            if !instances.is_empty() {
-                infra.terminate(&scope, &instances).await;
+            if let Some(group) = group.filter(|_| template.is_some()) {
+                infra.delete_node_group(&scope, &group, template.as_deref()).await;
             }
             if let Some(p) = profile {
                 infra.delete_instance_profile(&scope, util::arn_name(&p), &role).await;
