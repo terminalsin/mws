@@ -107,19 +107,25 @@ pub async fn wait_running(ec2: &Ec2, ctx: &RequestContext, instance_id: &str) ->
             )
             .await
             .map_err(|e| e.message)?;
-        let state = out
+        let instance = out
             .reservations
             .into_iter()
             .flatten()
             .flat_map(|r| r.instances.unwrap_or_default())
-            .find(|i| i.instance_id.as_deref() == Some(instance_id))
-            .and_then(|i| i.state)
-            .and_then(|s| s.name)
-            .unwrap_or_default();
+            .find(|i| i.instance_id.as_deref() == Some(instance_id));
+        let state = instance.as_ref().and_then(|i| i.state.as_ref()).and_then(|s| s.name.clone()).unwrap_or_default();
         match state.as_str() {
             "running" => return Ok(()),
             "pending" => {}
-            other => return Err(format!("The instance {instance_id} entered state '{other}' while starting.")),
+            other => {
+                // Say why, when EC2 recorded a reason (a failed launch does).
+                let reason = instance
+                    .and_then(|i| i.state_reason)
+                    .and_then(|r| r.message)
+                    .map(|m| format!(" Reason: {m}"))
+                    .unwrap_or_default();
+                return Err(format!("The instance {instance_id} entered state '{other}' while starting.{reason}"));
+            }
         }
         if tokio::time::Instant::now() > deadline {
             return Err(format!("The instance {instance_id} did not start in time."));

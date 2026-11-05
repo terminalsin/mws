@@ -49,7 +49,17 @@ async fn wait_group(ec: &Client, id: &str) -> aws_sdk_elasticache::types::Replic
         let g = d.replication_groups()[0].clone();
         match g.status() {
             Some("available") => return g,
-            Some("create-failed") => panic!("replication group {id} failed: {g:?}"),
+            Some("create-failed") => {
+                let events = ec
+                    .describe_events()
+                    .source_identifier(id)
+                    .source_type(aws_sdk_elasticache::types::SourceType::ReplicationGroup)
+                    .send()
+                    .await
+                    .unwrap();
+                let why: Vec<&str> = events.events().iter().filter_map(|e| e.message()).collect();
+                panic!("replication group {id} failed: {why:?}")
+            }
             _ => tokio::time::sleep(Duration::from_millis(500)).await,
         }
     }
@@ -261,24 +271,66 @@ async fn memcached_and_parameter_groups() {
             .unwrap();
         let c = &d.cache_clusters()[0];
         if c.cache_cluster_status() == Some("available") {
-            node = Some(endpoint(c.cache_nodes()[0].endpoint()));
+            node = Some((endpoint(c.cache_nodes()[0].endpoint()), endpoint(c.configuration_endpoint())));
             break;
         }
         tokio::time::sleep(Duration::from_millis(500)).await;
     }
-    let (host, port) = node.expect("memcached cluster becomes available");
+    let ((host, port), (cfg_host, cfg_port)) = node.expect("memcached cluster becomes available");
+    async fn exchange(s: &mut tokio::net::TcpStream, send: &[u8], until: &str) -> String {
+        s.write_all(send).await.unwrap();
+        let mut buf = vec![0u8; 512];
+        let mut got = String::new();
+        for _ in 0..20 {
+            let n = s.read(&mut buf).await.unwrap();
+            got.push_str(&String::from_utf8_lossy(&buf[..n]));
+            if got.contains(until) {
+                break;
+            }
+        }
+        got
+    }
     let mut s = tokio::net::TcpStream::connect((host.as_str(), port)).await.unwrap();
-    s.write_all(b"set greeting 0 0 5\r\nhello\r\nget greeting\r\n").await.unwrap();
-    let mut buf = vec![0u8; 256];
-    let mut got = String::new();
-    for _ in 0..20 {
-        let n = s.read(&mut buf).await.unwrap();
-        got.push_str(&String::from_utf8_lossy(&buf[..n]));
-        if got.contains("END") {
+    let got = exchange(&mut s, b"set greeting 0 0 5\r\nhello\r\nget greeting\r\n", "END").await;
+    assert!(got.contains("STORED") && got.contains("hello"), "{got}");
+
+    // Auto discovery: the configuration endpoint lists the nodes, and
+    // passes other commands through to them.
+    assert_ne!(cfg_port, port);
+    let mut cfg = tokio::net::TcpStream::connect((cfg_host.as_str(), cfg_port)).await.unwrap();
+    let got = exchange(&mut cfg, b"config get cluster\r\n", "END").await;
+    let lines: Vec<&str> = got.split("\r\n").collect();
+    assert!(lines[0].starts_with("CONFIG cluster 0 "), "{got}");
+    let body = lines[1];
+    let (version, nodes) = body.split_once('\n').unwrap();
+    assert_eq!(version, "1", "{got}");
+    assert_eq!(nodes.trim_end(), format!("{host}|{host}|{port}"));
+    let got = exchange(&mut cfg, b"get greeting\r\n", "END").await;
+    assert!(got.contains("hello"), "{got}");
+    ec.modify_cache_cluster()
+        .cache_cluster_id("docker-memcached")
+        .num_cache_nodes(2)
+        .apply_immediately(true)
+        .send()
+        .await
+        .unwrap();
+    let mut listed = String::new();
+    for _ in 0..300 {
+        listed = exchange(&mut cfg, b"config get cluster\r\n", "END").await;
+        if listed.matches('|').count() == 4 {
             break;
         }
+        tokio::time::sleep(Duration::from_millis(200)).await;
     }
-    assert!(got.contains("STORED") && got.contains("hello"), "{got}");
+    assert!(listed.contains("\r\n2\n"), "{listed}");
+    assert_eq!(listed.matches('|').count(), 4, "{listed}");
+    for _ in 0..300 {
+        let d = ec.describe_cache_clusters().cache_cluster_id("docker-memcached").send().await.unwrap();
+        if d.cache_clusters()[0].cache_cluster_status() == Some("available") {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(200)).await;
+    }
     ec.delete_cache_cluster().cache_cluster_id("docker-memcached").send().await.unwrap();
 
     // Parameter group changes reach running Valkey nodes (CONFIG SET).
@@ -326,11 +378,21 @@ async fn memcached_and_parameter_groups() {
         .send()
         .await
         .unwrap();
+    // CONFIG is one of the commands ElastiCache restricts; INFO shows the
+    // policy.
+    let mut c = Redis::connect(&host, port).await.unwrap();
+    match c.cmd(&["CONFIG", "GET", "maxmemory-policy"]).await.unwrap() {
+        mws_elasticache::resp::Resp::Error(e) => assert!(e.starts_with("ERR unknown command 'CONFIG'"), "{e}"),
+        other => panic!("CONFIG ran: {other:?}"),
+    }
+    for cmd in [&["SHUTDOWN"][..], &["REPLICAOF", "NO", "ONE"], &["DEBUG", "SLEEP", "0"], &["BGSAVE"]] {
+        let r = c.cmd(cmd).await.unwrap();
+        assert!(matches!(&r, mws_elasticache::resp::Resp::Error(e) if e.starts_with("ERR unknown command")), "{r:?}");
+    }
     let mut policy = String::new();
     for _ in 0..50 {
-        let mut c = Redis::connect(&host, port).await.unwrap();
-        let r = c.cmd(&["CONFIG", "GET", "maxmemory-policy"]).await.unwrap();
-        policy = r.items().get(1).and_then(|v| v.as_text()).unwrap_or_default();
+        let info = text(&mut c, &["INFO", "memory"]).await.unwrap_or_default();
+        policy = info.lines().find_map(|l| l.strip_prefix("maxmemory_policy:")).unwrap_or_default().trim().to_string();
         if policy == "allkeys-lru" {
             break;
         }
@@ -484,5 +546,334 @@ async fn encryption_in_transit() {
     ec.delete_replication_group().replication_group_id("docker-upgrade").send().await.unwrap();
     wait_containers_gone("docker-tls").await;
     wait_containers_gone("docker-upgrade").await;
+    mws.stop().await;
+}
+
+#[tokio::test]
+async fn upgrades_restricted_commands_and_vpc_access() {
+    let Some((mws, ec)) = start().await else { return };
+    // A Valkey 8.0 group moves to 8.1 in place: the nodes are replaced and
+    // keep their data.
+    ec.create_replication_group()
+        .replication_group_id("docker-ver")
+        .replication_group_description("upgrade")
+        .engine("valkey")
+        .engine_version("8.0")
+        .cache_node_type("cache.t4g.micro")
+        .num_cache_clusters(2)
+        .send()
+        .await
+        .unwrap();
+    let g = wait_group(&ec, "docker-ver").await;
+    let (host, port) = endpoint(g.node_groups()[0].primary_endpoint());
+    let mut c = Redis::connect(&host, port).await.unwrap();
+    assert_eq!(text(&mut c, &["SET", "kept", "yes"]).await.as_deref(), Some("OK"));
+    let info = text(&mut c, &["INFO", "server"]).await.unwrap();
+    assert!(info.contains("valkey_version:8.0"), "{info}");
+    drop(c);
+    let out = ec
+        .modify_replication_group()
+        .replication_group_id("docker-ver")
+        .engine_version("8.1")
+        .apply_immediately(true)
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(out.replication_group().unwrap().status(), Some("modifying"));
+    let g = wait_group(&ec, "docker-ver").await;
+    let (host, port) = endpoint(g.node_groups()[0].primary_endpoint());
+    let mut c = Redis::connect(&host, port).await.unwrap();
+    let info = text(&mut c, &["INFO", "server"]).await.unwrap();
+    assert!(info.contains("valkey_version:8.1"), "{info}");
+    assert_eq!(text(&mut c, &["GET", "kept"]).await.as_deref(), Some("yes"));
+    let (rhost, rport) = endpoint(g.node_groups()[0].reader_endpoint());
+    eventually_get(&rhost, rport, &None, &Auth::None, "kept", "yes").await;
+    let events = ec
+        .describe_events()
+        .source_identifier("docker-ver")
+        .source_type(aws_sdk_elasticache::types::SourceType::ReplicationGroup)
+        .send()
+        .await
+        .unwrap();
+    assert!(
+        events.events().iter().any(|e| e.message() == Some("Engine version upgraded to 8.1.0")),
+        "{:?}",
+        events.events()
+    );
+    // MIGRATE and the other restricted commands answer like unknown ones.
+    let r = c.cmd(&["MIGRATE", "127.0.0.1", "1", "kept", "0", "1000"]).await.unwrap();
+    assert!(
+        matches!(&r, mws_elasticache::resp::Resp::Error(e) if e.starts_with("ERR unknown command 'MIGRATE'")),
+        "{r:?}"
+    );
+    ec.delete_replication_group().replication_group_id("docker-ver").send().await.unwrap();
+
+    // Nodes join their VPC's Docker network, where EC2 instances run, and
+    // answer there under `<cluster>-<node>`.
+    let vpc = ec
+        .describe_cache_subnet_groups()
+        .send()
+        .await
+        .unwrap()
+        .cache_subnet_groups()
+        .iter()
+        .find_map(|g| g.vpc_id().map(str::to_string));
+    let vpc = match vpc {
+        Some(v) => v,
+        None => {
+            // The default subnet group appears with the first cluster.
+            ec.create_cache_cluster()
+                .cache_cluster_id("docker-vpc-probe")
+                .engine("memcached")
+                .cache_node_type("cache.t4g.micro")
+                .num_cache_nodes(1)
+                .send()
+                .await
+                .unwrap();
+            let d = ec.describe_cache_subnet_groups().cache_subnet_group_name("default").send().await.unwrap();
+            ec.delete_cache_cluster().cache_cluster_id("docker-vpc-probe").send().await.ok();
+            d.cache_subnet_groups()[0].vpc_id().unwrap().to_string()
+        }
+    };
+    let network = format!("mws-{vpc}");
+    let created = Command::new("docker").args(["network", "create", &network]).output().unwrap().status.success();
+    ec.create_cache_cluster()
+        .cache_cluster_id("docker-vpc")
+        .engine("valkey")
+        .cache_node_type("cache.t4g.micro")
+        .num_cache_nodes(1)
+        .send()
+        .await
+        .unwrap();
+    let mut port = 0;
+    for _ in 0..600 {
+        let d = ec
+            .describe_cache_clusters()
+            .cache_cluster_id("docker-vpc")
+            .show_cache_node_info(true)
+            .send()
+            .await
+            .unwrap();
+        let cl = &d.cache_clusters()[0];
+        if cl.cache_cluster_status() == Some("available") {
+            port = cl.cache_nodes()[0].endpoint().unwrap().port().unwrap();
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(500)).await;
+    }
+    assert!(port > 0, "docker-vpc became available");
+    let out = Command::new("docker")
+        .args([
+            "run",
+            "--rm",
+            "--network",
+            &network,
+            "--entrypoint",
+            "valkey-cli",
+            "valkey/valkey:8.1-alpine",
+            "-h",
+            "docker-vpc-0001",
+            "-p",
+            &port.to_string(),
+            "PING",
+        ])
+        .output()
+        .unwrap();
+    assert_eq!(String::from_utf8_lossy(&out.stdout).trim(), "PONG", "{}", String::from_utf8_lossy(&out.stderr));
+    ec.delete_cache_cluster().cache_cluster_id("docker-vpc").send().await.unwrap();
+    wait_containers_gone("docker-vpc").await;
+    wait_containers_gone("docker-ver").await;
+    if created {
+        let _ = Command::new("docker").args(["network", "rm", &network]).output();
+    }
+    mws.stop().await;
+}
+
+#[tokio::test]
+async fn log_delivery() {
+    use aws_sdk_elasticache::types::{
+        CloudWatchLogsDestinationDetails, DestinationDetails, DestinationType, KinesisFirehoseDestinationDetails,
+        LogDeliveryConfigurationRequest, LogFormat, LogType,
+    };
+    let Some((mws, ec)) = start().await else { return };
+    let config = mws.root_sdk_config().await;
+    let logs = aws_sdk_cloudwatchlogs::Client::new(&config);
+    for g in ["/ec/slow", "/ec/engine"] {
+        logs.create_log_group().log_group_name(g).send().await.unwrap();
+    }
+    let firehose = aws_sdk_firehose::Client::new(&config);
+    let role = aws_sdk_iam::Client::new(&config)
+        .create_role()
+        .role_name("firehose-delivery")
+        .assume_role_policy_document(
+            r#"{"Version":"2012-10-17","Statement":[{"Effect":"Allow","Principal":{"Service":"firehose.amazonaws.com"},"Action":"sts:AssumeRole"}]}"#,
+        )
+        .send()
+        .await
+        .unwrap();
+    firehose
+        .create_delivery_stream()
+        .delivery_stream_name("untagged")
+        .extended_s3_destination_configuration(
+            aws_sdk_firehose::types::ExtendedS3DestinationConfiguration::builder()
+                .role_arn(role.role().unwrap().arn())
+                .bucket_arn("arn:aws:s3:::cache-logs")
+                .build()
+                .unwrap(),
+        )
+        .send()
+        .await
+        .unwrap();
+    ec.create_cache_parameter_group()
+        .cache_parameter_group_name("slow-all")
+        .cache_parameter_group_family("valkey8")
+        .description("log every command")
+        .send()
+        .await
+        .unwrap();
+    ec.modify_cache_parameter_group()
+        .cache_parameter_group_name("slow-all")
+        .parameter_name_values(
+            aws_sdk_elasticache::types::ParameterNameValue::builder()
+                .parameter_name("slowlog-log-slower-than")
+                .parameter_value("0")
+                .build(),
+        )
+        .send()
+        .await
+        .unwrap();
+    let to_logs = |kind: LogType, format: LogFormat, group: &str| {
+        LogDeliveryConfigurationRequest::builder()
+            .log_type(kind)
+            .log_format(format)
+            .destination_type(DestinationType::CloudWatchLogs)
+            .destination_details(
+                DestinationDetails::builder()
+                    .cloud_watch_logs_details(CloudWatchLogsDestinationDetails::builder().log_group(group).build())
+                    .build(),
+            )
+            .enabled(true)
+            .build()
+    };
+    ec.create_cache_cluster()
+        .cache_cluster_id("docker-logs")
+        .engine("valkey")
+        .cache_node_type("cache.t4g.micro")
+        .num_cache_nodes(1)
+        .cache_parameter_group_name("slow-all")
+        .log_delivery_configurations(to_logs(LogType::SlowLog, LogFormat::Json, "/ec/slow"))
+        .log_delivery_configurations(to_logs(LogType::EngineLog, LogFormat::Text, "/ec/engine"))
+        .send()
+        .await
+        .unwrap();
+    let mut node = None;
+    for _ in 0..600 {
+        let d = ec
+            .describe_cache_clusters()
+            .cache_cluster_id("docker-logs")
+            .show_cache_node_info(true)
+            .send()
+            .await
+            .unwrap();
+        let c = &d.cache_clusters()[0];
+        if c.cache_cluster_status() == Some("available") {
+            node = Some(endpoint(c.cache_nodes()[0].endpoint()));
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(500)).await;
+    }
+    let (host, port) = node.expect("docker-logs becomes available");
+    let mut c = Redis::connect(&host, port).await.unwrap();
+    assert_eq!(text(&mut c, &["SET", "logged", "1"]).await.as_deref(), Some("OK"));
+
+    // Slow log entries arrive as JSON, engine log lines as text, in streams
+    // named after the node.
+    let events = |group: &'static str| {
+        let logs = logs.clone();
+        async move {
+            let out = logs.filter_log_events().log_group_name(group).send().await.unwrap();
+            out.events()
+                .iter()
+                .map(|e| {
+                    (e.log_stream_name().unwrap_or_default().to_string(), e.message().unwrap_or_default().to_string())
+                })
+                .collect::<Vec<_>>()
+        }
+    };
+    let mut slow = Vec::new();
+    for _ in 0..100 {
+        slow = events("/ec/slow").await;
+        if slow.iter().any(|(_, m)| m.contains("SET ... (2 more arguments)")) {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(300)).await;
+    }
+    let (stream, message) =
+        slow.iter().find(|(_, m)| m.contains("SET ... (2 more arguments)")).expect("SET in the slow log").clone();
+    assert_eq!(stream, "docker-logs-0001-slow-log");
+    let entry: serde_json::Value = serde_json::from_str(&message).unwrap();
+    assert_eq!(entry["CacheClusterId"], "docker-logs");
+    assert_eq!(entry["CacheNodeId"], "0001");
+    assert!(entry["Duration (us)"].is_number(), "{entry}");
+    // MWS's own commands stay out of it.
+    assert!(slow.iter().all(|(_, m)| !m.contains("\"INFO") && !m.contains("SLOWLOG")), "{slow:?}");
+    let engine = events("/ec/engine").await;
+    assert!(
+        engine.iter().any(|(s, m)| s == "docker-logs-0001-engine-log" && m.starts_with("docker-logs-0001 ")),
+        "{engine:?}"
+    );
+    // ElastiCache let the log delivery service write to the groups.
+    let policies = logs.describe_resource_policies().send().await.unwrap();
+    assert!(policies.resource_policies().iter().any(|p| p.policy_name() == Some("AWSLogDeliveryWrite20150319")));
+    let d = ec.describe_cache_clusters().cache_cluster_id("docker-logs").send().await.unwrap();
+    for l in d.cache_clusters()[0].log_delivery_configurations() {
+        assert_eq!(l.status(), Some(&aws_sdk_elasticache::types::LogDeliveryConfigurationStatus::Active), "{l:?}");
+    }
+
+    // A Firehose stream must be tagged LogDeliveryEnabled=true: without
+    // the tag the configuration reports an error.
+    ec.modify_cache_cluster()
+        .cache_cluster_id("docker-logs")
+        .apply_immediately(true)
+        .log_delivery_configurations(
+            LogDeliveryConfigurationRequest::builder()
+                .log_type(LogType::SlowLog)
+                .log_format(LogFormat::Text)
+                .destination_type(DestinationType::KinesisFirehose)
+                .destination_details(
+                    DestinationDetails::builder()
+                        .kinesis_firehose_details(
+                            KinesisFirehoseDestinationDetails::builder().delivery_stream("untagged").build(),
+                        )
+                        .build(),
+                )
+                .enabled(true)
+                .build(),
+        )
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(text(&mut c, &["SET", "again", "1"]).await.as_deref(), Some("OK"));
+    let mut status = None;
+    for _ in 0..100 {
+        let d = ec.describe_cache_clusters().cache_cluster_id("docker-logs").send().await.unwrap();
+        let slow_cfg = d.cache_clusters()[0]
+            .log_delivery_configurations()
+            .iter()
+            .find(|l| l.log_type() == Some(&LogType::SlowLog))
+            .cloned();
+        status = slow_cfg.clone();
+        if slow_cfg.and_then(|l| l.status().cloned())
+            == Some(aws_sdk_elasticache::types::LogDeliveryConfigurationStatus::Error)
+        {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(300)).await;
+    }
+    let status = status.unwrap();
+    assert_eq!(status.status(), Some(&aws_sdk_elasticache::types::LogDeliveryConfigurationStatus::Error));
+    assert!(status.message().unwrap_or_default().contains("LogDeliveryEnabled"), "{status:?}");
+    ec.delete_cache_cluster().cache_cluster_id("docker-logs").send().await.unwrap();
+    wait_containers_gone("docker-logs").await;
     mws.stop().await;
 }

@@ -29,6 +29,7 @@ pub mod network;
 mod ops;
 mod public;
 mod quotas;
+mod service_eni;
 mod state;
 mod util;
 mod volumes;
@@ -46,6 +47,7 @@ pub use public::{
     availability_zones, InstanceInfo, InstanceNetwork, SecurityGroupInfo, ServiceInterface, ServiceInterfaceError,
     ServiceInterfaceRequest, SubnetInfo, VpcInfo,
 };
+pub use service_eni::TaskInterface;
 use state::{RegionState, State};
 
 /// Credentials for an instance profile's role, as instance metadata serves

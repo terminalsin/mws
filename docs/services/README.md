@@ -58,6 +58,7 @@ Every service shares the same foundations:
 | [EKS](eks.md) | 70 / 70 | Clusters in your VPC, managed node groups as Auto Scaling groups, add-ons, access entries, Pod Identity, OIDC providers |
 | [ECR](ecr.md) | 62 / 62 | A real Docker registry (`docker push`/`pull` with `GetAuthorizationToken`), lifecycle policies, replication, creation templates |
 | [ECR Public](ecr-public.md) | 23 / 23 | Public registries with aliases and catalog data, anonymous pulls, authenticated pushes |
+| [ECS](ecs.md) | 88 / 88 | Clusters, tasks as Docker containers with awsvpc interfaces, services with rolling deployments and circuit breakers, task metadata, secrets and awslogs |
 | [Route 53](route53.md) | 71 / 71 | Public and private hosted zones, all routing policies, health checks, DNSSEC key management, an optional real DNS responder |
 | [Amplify Hosting](amplify.md) | 37 / 37 | Apps and branches whose deployments are really served: manual and S3 deploys, Git builds, rewrites, basic auth, custom domains |
 
@@ -65,7 +66,7 @@ Every service shares the same foundations:
 
 | Service | Operations | What's emulated |
 | --- | --- | --- |
-| [ElastiCache](elasticache.md) | 77 / 77 | Valkey, Redis OSS and Memcached nodes as Docker containers, replication and cluster mode with failover and resharding, RBAC, TLS, CloudWatch metrics, snapshots to S3, serverless caches, global datastores |
+| [ElastiCache](elasticache.md) | 77 / 77 | Valkey, Redis OSS and Memcached nodes as Docker containers, replication and cluster mode with failover and resharding, RBAC, TLS, CloudWatch metrics, slow and engine log delivery, automatic snapshots and snapshots to S3, Memcached auto discovery, serverless caches, global datastores |
 
 ## Application integration
 
@@ -92,6 +93,12 @@ Every service shares the same foundations:
 | [CloudWatch Logs](logs.md) | 118 / 118 | Log events, filter patterns, Logs Insights, live tail, subscriptions, metric filters, exports |
 | [CloudTrail](cloudtrail.md) | 61 / 61 | Every API call recorded; trails delivering to S3, CloudWatch Logs and EventBridge; event history; Insights; Lake SQL queries, imports and channels |
 
+## Machine learning
+
+| Service | Operations | What's emulated |
+| --- | --- | --- |
+| [Bedrock and Bedrock Runtime](bedrock.md) | 118 / 119 | Model catalog, cross-Region and application inference profiles, InvokeModel and Converse (streaming too) in every provider's format, guardrails, batch and async jobs, invocation logging, API keys; a deterministic echo model or passthrough to OpenAI-compatible or Anthropic APIs |
+
 ## Marketplace
 
 | Service | Operations | What's emulated |
@@ -107,6 +114,9 @@ Every service shares the same foundations:
 
 | [Service Quotas](servicequotas.md) | 26 / 26 | AWS's quota codes and defaults, increase requests that services enforce, `AWS/Usage` metrics for quota alarms |
 | [Cost Explorer](ce.md) | 47 / 47 | Seeded and derived cost data, grouping and filters, forecasts, cost categories, allocation tags, anomaly alerts |
+## Management
+
+| [CloudFormation](cloudformation.md) | 35 / 90 | Stacks that create real resources in the other services, change sets, rollbacks, nested stacks, custom resources, drift detection |
 
 ## How services connect
 
@@ -133,6 +143,7 @@ with the permissions AWS would use:
 - GuardDuty sends findings to EventBridge and S3 (under KMS) and registers
   its delegated administrator with Organizations.
 - EC2 instances and Lambda functions receive role credentials from STS.
+- EC2 instances, ECS tasks and Lambda functions receive role credentials from STS.
 - Amplify deploys sites from S3 buckets (as `amplify.amazonaws.com`) and
   verifies custom domains through Route 53.
 - Global Accelerator endpoints and custom routing subnets are checked against
@@ -151,6 +162,13 @@ with the permissions AWS would use:
   `AWS/Usage` namespace.
 - Cost Explorer charges API calls at their request prices, follows
   Organizations for consolidated billing and sends anomaly alerts to SNS.
+- CloudFormation deploys stacks through every other service's API, as the
+  caller or the stack's service role.
+- Bedrock Runtime resolves models, inference profiles and guardrails through
+  the Bedrock control plane. Batch jobs read and write S3 as their role
+  (assumed through STS), asynchronous invocations write S3 as the caller,
+  and invocation logs go to CloudWatch Logs and S3. Bedrock API keys are IAM
+  service-specific credentials.
 - Security Hub registers its delegated administrator in Organizations, sends
   findings events to EventBridge and exports findings to S3 with KMS.
 - Auto Scaling groups launch and terminate EC2 instances, register them with
