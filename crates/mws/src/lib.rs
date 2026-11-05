@@ -11,6 +11,7 @@ use mws_acmpca::PrivateCa;
 use mws_cloudwatch::CloudWatch;
 use mws_core::Environment;
 use mws_ec2::{BackendChoice, Ec2};
+use mws_elb::{Elb, ElbConfig};
 use mws_events::Events;
 use mws_firehose::Firehose;
 use mws_globalaccelerator::GlobalAccelerator;
@@ -22,10 +23,13 @@ use mws_logs::Logs;
 use mws_marketplace_entitlement::Entitlement;
 use mws_marketplace_metering::Metering;
 use mws_organizations::Organizations;
+use mws_pca_connector_scep::ScepConnector;
+use mws_ram::Ram;
 use mws_route53::Route53;
 use mws_s3::S3;
 use mws_s3control::S3Control;
 use mws_secretsmanager::SecretsManager;
+use mws_securityhub::SecurityHub;
 use mws_server::{Gateway, Scenario, Store};
 use mws_sns::Sns;
 use mws_sqs::Sqs;
@@ -110,6 +114,10 @@ pub struct Mws {
     pub globalaccelerator: GlobalAccelerator,
     pub marketplace_entitlement: Entitlement,
     pub marketplace_metering: Metering,
+    pub ram: Ram,
+    pub scep: ScepConnector,
+    pub securityhub: SecurityHub,
+    pub elb: Elb,
 }
 
 /// Build the gateway with every service MWS emulates.
@@ -159,6 +167,7 @@ fn build_with_store(config: Config, store: Option<Arc<Store>>) -> Mws {
     let kms = Kms::new();
     let organizations = Organizations::new(iam.clone());
     iam.set_organizations(organizations.view());
+    let ram = Ram::new(iam.clone(), organizations.clone());
     let s3 = S3::new().with_kms(kms.clone());
     let logs = Logs::new().with_s3(s3.clone()).with_kms(kms.clone()).with_sts(sts.clone());
     let route53 = Route53::new().with_kms(kms.clone()).with_logs(logs.clone());
@@ -166,6 +175,9 @@ fn build_with_store(config: Config, store: Option<Arc<Store>>) -> Mws {
     let kinesis = Kinesis::new().with_kms(kms.clone());
     let s3control = S3Control::for_s3(s3.clone());
     let pca = PrivateCa::new().with_s3(s3.clone());
+    ram.register_resource_type(Arc::new(links::RamCertificateAuthorities(pca.clone())));
+    pca.set_policy_listener(Arc::new(links::CaPoliciesToRam(ram.clone())));
+    let scep = ScepConnector::new(pca.clone());
     let acm = Acm::new().with_private_ca(pca.clone()).with_route53(route53.clone()).with_sts(sts.clone());
     let lambda = Lambda::with_services(sts.clone(), s3.clone());
     let firehose = Firehose::new()
@@ -240,6 +252,17 @@ fn build_with_store(config: Config, store: Option<Arc<Store>>) -> Mws {
     route53.add_alias_resolver(Arc::new(links::Route53ToGlobalAccelerator(globalaccelerator.clone())));
     let marketplace_entitlement = Entitlement::new(config.iam.account_id.clone());
     let marketplace_metering = Metering::new(marketplace_entitlement.clone());
+    let securityhub = SecurityHub::new();
+    securityhub.set_organizations(Arc::new(links::SecurityHubOrganizations(organizations.clone())));
+    securityhub.set_event_sink(Arc::new(links::SecurityHubToEvents(events.clone())));
+    securityhub.set_export_sink(Arc::new(links::SecurityHubExports(s3.clone())));
+    let elb = Elb::new(ElbConfig::from_env())
+        .with_ec2(ec2.clone())
+        .with_acm(acm.clone())
+        .with_lambda(lambda.clone())
+        .with_s3(s3.clone());
+    elb.set_metric_sink(Arc::new(links::ElbToCloudWatch(cloudwatch.clone())));
+    globalaccelerator.add_endpoint_directory(Arc::new(links::GlobalAcceleratorElb(elb.clone())));
     let mut gateway = Gateway::builder();
     if let Some(store) = store {
         gateway = gateway.store(store);
@@ -278,6 +301,13 @@ fn build_with_store(config: Config, store: Option<Arc<Store>>) -> Mws {
         // its own `X-Amz-Target`.
         .service(Arc::new(marketplace_metering.clone()))
         .service(Arc::new(marketplace_entitlement.clone()))
+        .service(Arc::new(ram.clone()))
+        .service(Arc::new(scep.clone()))
+        .service(Arc::new(securityhub.clone()))
+        // Both ELB APIs sign as `elasticloadbalancing`; the Classic one
+        // claims requests with its `2012-06-01` Version.
+        .service(Arc::new(elb.clone()))
+        .service(Arc::new(elb.classic()))
         .build();
     Mws {
         gateway,
@@ -300,6 +330,10 @@ fn build_with_store(config: Config, store: Option<Arc<Store>>) -> Mws {
         globalaccelerator,
         marketplace_entitlement,
         marketplace_metering,
+        ram,
+        scep,
+        securityhub,
+        elb,
     }
 }
 

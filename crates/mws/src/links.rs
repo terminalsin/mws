@@ -800,6 +800,168 @@ impl mws_globalaccelerator::EndpointDirectory for GlobalAcceleratorEc2 {
     }
 }
 
+/// Private CA certificate authorities, shareable through AWS RAM: RAM's
+/// policy for a shared CA becomes part of the CA's resource policy.
+pub(crate) struct RamCertificateAuthorities(pub mws_acmpca::PrivateCa);
+
+impl mws_ram::ShareableResourceType for RamCertificateAuthorities {
+    fn resource_type(&self) -> &'static str {
+        "acm-pca:CertificateAuthority"
+    }
+
+    fn service_name(&self) -> &'static str {
+        "acm-pca"
+    }
+
+    fn matches(&self, arn: &str) -> bool {
+        arn.split(':').nth(2) == Some("acm-pca") && arn.contains(":certificate-authority/")
+    }
+
+    fn locate(&self, arn: &str) -> Option<mws_ram::ResourceLocation> {
+        let ca = self.0.ca_info(arn)?;
+        Some(mws_ram::ResourceLocation { owner_account: ca.owner, region: arn.split(':').nth(3)?.to_string() })
+    }
+
+    fn set_shared_policy(&self, arn: &str, policy: Option<String>) {
+        self.0.set_shared_policy(arn, policy);
+    }
+
+    fn shareable_actions(&self) -> &'static [&'static str] {
+        &[
+            "acm-pca:DescribeCertificateAuthority",
+            "acm-pca:GetCertificate",
+            "acm-pca:GetCertificateAuthorityCertificate",
+            "acm-pca:IssueCertificate",
+            "acm-pca:ListPermissions",
+            "acm-pca:ListTags",
+            "acm-pca:RevokeCertificate",
+        ]
+    }
+
+    fn share_action(&self) -> &'static str {
+        "acm-pca:PutPolicy"
+    }
+}
+
+/// `PutPolicy` / `DeletePolicy` on a CA, mirrored as a RAM share created
+/// from the policy.
+pub(crate) struct CaPoliciesToRam(pub mws_ram::Ram);
+
+impl mws_acmpca::CaPolicyListener for CaPoliciesToRam {
+    fn policy_changed(
+        &self,
+        ca_arn: &str,
+        owner_account: &str,
+        policy: Option<&str>,
+        now: chrono::DateTime<chrono::Utc>,
+    ) {
+        self.0.resource_policy_changed(ca_arn, owner_account, policy, now);
+    }
+}
+
+/// Security Hub's view of AWS Organizations: the caller's organization and
+/// the delegated administrator `EnableOrganizationAdminAccount` registers.
+pub struct SecurityHubOrganizations(pub mws_organizations::Organizations);
+
+const SECURITY_HUB_PRINCIPAL: &str = "securityhub.amazonaws.com";
+
+impl mws_securityhub::OrganizationLink for SecurityHubOrganizations {
+    fn organization(&self, account: &str) -> Option<mws_securityhub::OrgInfo> {
+        let org = self.0.organization_of(account)?;
+        Some(mws_securityhub::OrgInfo {
+            id: org.id,
+            management_account: org.management_account,
+            accounts: org
+                .accounts
+                .into_iter()
+                .map(|a| mws_securityhub::OrgAccount {
+                    active: a.status == "ACTIVE",
+                    id: a.id,
+                    email: a.email,
+                    path: a.path,
+                })
+                .collect(),
+        })
+    }
+
+    fn register_delegated_administrator(&self, management: &str, admin: &str) -> Result<(), String> {
+        use mws_organizations::DelegationError;
+        self.0
+            .register_delegated_administrator_for_service(management, admin, SECURITY_HUB_PRINCIPAL, chrono::Utc::now())
+            .map_err(|e| match e {
+                DelegationError::NotManagementAccount => {
+                    "The request must be made by the management account of an organization.".to_string()
+                }
+                DelegationError::AccountNotInOrganization => {
+                    format!("Account {admin} is not a member of the organization.")
+                }
+                DelegationError::ManagementAccount => {
+                    "The management account cannot be the delegated administrator for Security Hub.".to_string()
+                }
+                DelegationError::NotAllFeatures => "The organization must have all features enabled.".to_string(),
+            })
+    }
+
+    fn deregister_delegated_administrator(&self, management: &str, admin: &str) {
+        let _ = self.0.deregister_delegated_administrator_for_service(management, admin, SECURITY_HUB_PRINCIPAL);
+    }
+}
+
+/// Security Hub finding events, sent to the account's default event bus
+/// with source `aws.securityhub`.
+pub struct SecurityHubToEvents(pub mws_events::Events);
+
+impl mws_securityhub::FindingEventSink for SecurityHubToEvents {
+    fn finding_event(&self, ctx: &RequestContext, e: mws_securityhub::FindingEvent) {
+        self.0.put_service_event(
+            ctx,
+            mws_events::ServiceEvent {
+                partition: e.partition,
+                account: e.account,
+                region: e.region,
+                source: "aws.securityhub".into(),
+                detail_type: e.detail_type,
+                resources: e.resources,
+                detail: e.detail,
+                time: e.time,
+            },
+        );
+    }
+}
+
+/// Security Hub V2 export jobs, written to S3 as
+/// `securityhub.amazonaws.com` (encrypted with the job's KMS key).
+pub struct SecurityHubExports(pub mws_s3::S3);
+
+impl mws_securityhub::ExportSink for SecurityHubExports {
+    fn put_object(
+        &self,
+        ctx: &RequestContext,
+        bucket: &str,
+        key: &str,
+        body: Vec<u8>,
+        kms_key_arn: Option<&str>,
+    ) -> Result<(), String> {
+        let account = &ctx.caller.account_id;
+        let source_arn = format!("arn:{}:securityhub:{}:{account}:hubv2/default", ctx.partition, ctx.region);
+        let put = mws_s3::ServicePutObject {
+            bucket,
+            key,
+            body,
+            content_type: "application/json",
+            service_principal: SECURITY_HUB_PRINCIPAL,
+            source_account: account,
+            source_arn: &source_arn,
+            acl: Some("bucket-owner-full-control"),
+            partition: &ctx.partition,
+        };
+        match kms_key_arn.filter(|k| !k.is_empty()) {
+            Some(k) => self.0.put_object_as_service_kms(put, k).map(|_| ()),
+            None => self.0.put_object_as_service(put).map(|_| ()).map_err(|e| e.to_string()),
+        }
+    }
+}
+
 /// Route 53 alias records that target an accelerator's DNS name answer with
 /// its static IP addresses.
 pub(crate) struct Route53ToGlobalAccelerator(pub mws_globalaccelerator::GlobalAccelerator);
@@ -818,5 +980,53 @@ impl mws_route53::AliasTargetResolver for Route53ToGlobalAccelerator {
             "AAAA" => Some(a.ipv6),
             _ => Some(Vec::new()),
         }
+    }
+}
+
+/// ELB's `AWS/ApplicationELB`, `AWS/NetworkELB`, `AWS/GatewayELB` and
+/// `AWS/ELB` metrics.
+pub struct ElbToCloudWatch(pub mws_cloudwatch::CloudWatch);
+
+impl mws_elb::MetricSink for ElbToCloudWatch {
+    fn publish(&self, metrics: Vec<mws_elb::ElbMetric>) {
+        for m in metrics {
+            self.0.put_metric_as_service(mws_cloudwatch::ServiceMetric {
+                account: m.account,
+                region: m.region,
+                namespace: m.namespace.into(),
+                metric_name: m.metric_name.into(),
+                dimensions: m.dimensions,
+                unit: Some(m.unit.into()),
+                timestamp: m.timestamp,
+                values: vec![(m.value, 1.0)],
+            });
+        }
+    }
+}
+
+/// Global Accelerator endpoints that are Application or Network Load
+/// Balancers: they must exist, and they are healthy while active with at
+/// least one healthy target, as Global Accelerator judges them.
+pub(crate) struct GlobalAcceleratorElb(pub mws_elb::Elb);
+
+impl mws_globalaccelerator::EndpointDirectory for GlobalAcceleratorElb {
+    fn endpoint(
+        &self,
+        account: &str,
+        region: &str,
+        id: &str,
+    ) -> mws_globalaccelerator::Lookup<mws_globalaccelerator::EndpointHealth> {
+        use mws_globalaccelerator::{EndpointHealth, Lookup};
+        if !id.contains(":elasticloadbalancing:") {
+            return Lookup::NotMine;
+        }
+        let Some(lb) = self.0.load_balancer(account, region, id) else { return Lookup::Missing };
+        Lookup::Found(if !lb.state.starts_with("active") {
+            EndpointHealth::unhealthy(format!("Load balancer {} is {}.", lb.name, lb.state))
+        } else if lb.healthy_targets == 0 {
+            EndpointHealth::unhealthy(format!("Load balancer {} has no healthy targets.", lb.name))
+        } else {
+            EndpointHealth::healthy()
+        })
     }
 }

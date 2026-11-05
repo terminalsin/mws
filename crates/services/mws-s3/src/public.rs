@@ -98,6 +98,39 @@ impl S3 {
         self.put_object_as_service_with(put, Sse::default())
     }
 
+    /// [`S3::put_object_as_service`], encrypted with SSE-KMS under
+    /// `kms_key` (a key id, alias or ARN). The service principal must be
+    /// allowed `kms:GenerateDataKey` on the key, with the put's source
+    /// account and ARN as conditions.
+    pub fn put_object_as_service_kms(&self, put: ServicePutObject<'_>, kms_key: &str) -> Result<String, String> {
+        let sse = self.service_kms_sse(&put, kms_key)?;
+        self.put_object_as_service_with(put, sse).map_err(|e| e.to_string())
+    }
+
+    /// SSE-KMS for an object a service principal writes.
+    pub(crate) fn service_kms_sse(&self, put: &ServicePutObject<'_>, kms_key: &str) -> Result<Sse, String> {
+        let Some(kms) = &self.kms else {
+            return Ok(Sse { algorithm: Some("aws:kms".into()), kms_key_id: Some(kms_key.into()), ..Sse::default() });
+        };
+        let mut conditions = mws_core::ConditionContext::new();
+        conditions.insert("aws:SourceArn".into(), vec![put.source_arn.to_string()]);
+        conditions.insert("aws:SourceAccount".into(), vec![put.source_account.to_string()]);
+        let k = kms
+            .key_for_service(kms_key, put.service_principal, &["kms:GenerateDataKey"], &conditions)
+            .map_err(|e| e.message)?;
+        let context = std::collections::BTreeMap::from([(
+            "aws:s3:arn".to_string(),
+            format!("arn:{}:s3:::{}/{}", put.partition, put.bucket, put.key),
+        )]);
+        let dk = kms.generate_data_key_for_service(&k.arn, &context, 32).map_err(|e| e.message)?;
+        Ok(Sse {
+            algorithm: Some("aws:kms".into()),
+            kms_key_id: Some(dk.key_arn),
+            kms_data_key: Some(base64::Engine::encode(&base64::engine::general_purpose::STANDARD, &dk.ciphertext)),
+            ..Sse::default()
+        })
+    }
+
     /// [`S3::put_object_as_service`] with the object's encryption.
     pub(crate) fn put_object_as_service_with(
         &self,
@@ -153,6 +186,17 @@ impl S3 {
 }
 
 impl S3 {
+    /// `GetObject` with the caller's own permissions, for services that
+    /// read an object the caller names (ELB trust store bundles and
+    /// revocation lists): S3 authorizes it as the caller's request.
+    pub fn get_object_as_caller(
+        &self,
+        ctx: &mws_core::RequestContext,
+        input: crate::generated::types::GetObjectRequest,
+    ) -> Result<crate::generated::types::GetObjectOutput, mws_core::ServiceError> {
+        self.call(ctx, None).get_object(ctx, input)
+    }
+
     /// The account that owns `bucket`, if it exists (S3 Control checks
     /// this when creating access points).
     pub fn bucket_owner(&self, bucket: &str) -> Option<String> {

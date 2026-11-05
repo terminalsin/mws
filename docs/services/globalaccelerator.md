@@ -32,7 +32,7 @@ client works.
 | Endpoint groups | ✅ | One per Region per listener; traffic dial, health check port (defaults to the lowest listener port), protocol, path, interval (10 or 30), threshold, port overrides on listener ports |
 | Endpoint validation | ✅ | Ids must be ALB/NLB ARNs, instance ids or Elastic IP allocation ids; instances and Elastic IPs must exist in EC2 in the group's Region; load balancers must be in that Region, and Application Load Balancers can't sit behind UDP |
 | Endpoint health | ✅ | `INITIAL` for a second after an endpoint is added, then from EC2: a running instance (or an Elastic IP on one) is `HEALTHY`, a stopped or terminated one `UNHEALTHY` with a reason |
-| Load balancer endpoints | 🟡 | Accepted and reported `HEALTHY`; they will be checked against Elastic Load Balancing once MWS emulates it (the `EndpointDirectory` hook is in place) |
+| Load balancer endpoints | ✅ | Application and Network Load Balancers must exist in Elastic Load Balancing; they are `HEALTHY` while active with at least one healthy target, `UNHEALTHY` with a reason otherwise |
 | Client IP preservation | ✅ | Defaults per endpoint type (on for ALBs and instances); refused for Elastic IPs |
 
 ## Custom routing

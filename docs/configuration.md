@@ -36,6 +36,10 @@ See [State, scenarios and snapshots](state.md) for how the two interact.
 | `MWS_LAMBDA_NODE` | `node` from `PATH` | Interpreter that runs Node.js Lambda functions. |
 | `MWS_EC2_BACKEND` | `auto` | How EC2 instances run. `docker` runs each instance as a container, `metadata` runs nothing (instances only change state), and `auto` uses Docker when a daemon answers and `metadata` otherwise. |
 | `MWS_EC2_DOCKER` | `docker` | The Docker-compatible CLI the EC2 backend drives (for example `podman`). |
+| `MWS_EC2_FIREWALL` | `on` | With the Docker backend, whether security groups, network ACLs and route tables filter instances' traffic (`off` leaves it unfiltered). |
+| `MWS_EC2_NETFILTER_IMAGE` | `rancher/klipper-lb:v0.4.13` | The helper image (any image with `/bin/sh` and `iptables-restore`) that writes instances' firewall rules into their network namespaces. |
+| `MWS_ELB_BIND` | `127.0.0.1` | Address load balancer listeners bind. `GET /_aws/elb/listeners` lists where each listener is. |
+| `MWS_ELB_LISTENER_PORTS` | `ephemeral` | `listener` binds each listener on its own port (80, 443, ...) when free, falling back to an ephemeral port; `ephemeral` always picks a free port. |
 
 EC2 instances reach the instance metadata service and the AWS endpoint
 through the host, so when using the Docker backend MWS must listen on an

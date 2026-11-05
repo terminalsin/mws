@@ -876,3 +876,83 @@ async fn calls_are_authorized_through_iam() {
     let e = viewer.describe_accelerator().accelerator_arn(&arn).send().await.unwrap_err();
     assert_eq!(code(&e.into_service_error()), "AccessDeniedException");
 }
+
+#[tokio::test]
+async fn load_balancer_endpoints_follow_elb() {
+    use aws_sdk_elasticloadbalancingv2::types::{ProtocolEnum, TargetDescription, TargetHealthStateEnum};
+
+    use crate::elbv2::{default_network, forward, ip_target_group, wait_for_health, Backend};
+
+    let mws = Mws::start().await;
+    let cfg = mws.root_sdk_config().await;
+    let ga = Client::new(&cfg);
+    let elb = aws_sdk_elasticloadbalancingv2::Client::new(&cfg);
+    let (vpc, subnets) = default_network(&mws).await;
+    let lb = elb.create_load_balancer().name("edge").set_subnets(Some(subnets)).send().await.unwrap();
+    let lb_arn = lb.load_balancers()[0].load_balancer_arn().unwrap().to_string();
+
+    let a = ga.create_accelerator().name("front").send().await.unwrap();
+    let arn = a.accelerator().unwrap().accelerator_arn().unwrap().to_string();
+    let listener = ga
+        .create_listener()
+        .accelerator_arn(&arn)
+        .protocol(Protocol::Tcp)
+        .port_ranges(ports(80, 80))
+        .send()
+        .await
+        .unwrap();
+    let listener_arn = listener.listener().unwrap().listener_arn().unwrap().to_string();
+
+    // A load balancer that doesn't exist is refused.
+    let missing = format!("arn:aws:elasticloadbalancing:us-east-1:{ACCOUNT}:loadbalancer/app/gone/50dc6c495c0c9188");
+    let e = ga
+        .create_endpoint_group()
+        .listener_arn(&listener_arn)
+        .endpoint_group_region("us-east-1")
+        .endpoint_configurations(EndpointConfiguration::builder().endpoint_id(&missing).build())
+        .send()
+        .await
+        .unwrap_err();
+    assert_eq!(code(&e.into_service_error()), "InvalidArgumentException");
+
+    let group = ga
+        .create_endpoint_group()
+        .listener_arn(&listener_arn)
+        .endpoint_group_region("us-east-1")
+        .endpoint_configurations(EndpointConfiguration::builder().endpoint_id(&lb_arn).build())
+        .send()
+        .await
+        .unwrap();
+    let group_arn = group.endpoint_group().unwrap().endpoint_group_arn().unwrap().to_string();
+    let health = |ga: Client, group_arn: String| async move {
+        let d = ga.describe_endpoint_group().endpoint_group_arn(group_arn).send().await.unwrap();
+        d.endpoint_group().unwrap().endpoint_descriptions()[0].clone()
+    };
+    deploy(&mws).await;
+    // No healthy targets yet.
+    let e = health(ga.clone(), group_arn.clone()).await;
+    assert_eq!(e.health_state(), Some(&HealthState::Unhealthy));
+    assert!(e.health_reason().unwrap().contains("no healthy targets"), "{e:?}");
+
+    // A healthy target behind a listener makes the endpoint healthy.
+    let backend = Backend::start("ga").await;
+    let tg = ip_target_group(&elb, "ga-targets", &vpc, ProtocolEnum::Http).await;
+    elb.register_targets()
+        .target_group_arn(&tg)
+        .targets(TargetDescription::builder().id("127.0.0.1").port(backend.port()).build())
+        .send()
+        .await
+        .unwrap();
+    elb.create_listener()
+        .load_balancer_arn(&lb_arn)
+        .protocol(ProtocolEnum::Http)
+        .port(80)
+        .default_actions(forward(&tg))
+        .send()
+        .await
+        .unwrap();
+    wait_for_health(&elb, &tg, &[(backend.port(), TargetHealthStateEnum::Healthy)]).await;
+    let e = health(ga.clone(), group_arn.clone()).await;
+    assert_eq!(e.health_state(), Some(&HealthState::Healthy), "{e:?}");
+    assert_eq!(e.client_ip_preservation_enabled(), Some(true));
+}
