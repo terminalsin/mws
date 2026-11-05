@@ -45,6 +45,11 @@ pub struct SessionInfo {
     pub issued_at: DateTime<Utc>,
     pub expires_at: DateTime<Utc>,
     pub mfa_authenticated: bool,
+    /// Condition keys a trusted context provider added to the session
+    /// (`ProvidedContexts`), e.g. `identitystore:UserId` for an
+    /// identity-enhanced IAM Identity Center session.
+    #[serde(default)]
+    pub provided_context: BTreeMap<String, Vec<String>>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]

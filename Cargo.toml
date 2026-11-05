@@ -44,6 +44,10 @@ members = [
     "crates/services/mws-ec2",
     "crates/services/mws-ce",
     "crates/services/mws-servicequotas",
+    "crates/services/mws-identitystore",
+    "crates/services/mws-ssoadmin",
+    "crates/services/mws-ssooidc",
+    "crates/services/mws-ssoportal",
     "crates/services/mws-amplify",
     "crates/services/mws-globalaccelerator",
     "crates/services/mws-ram",
@@ -118,6 +122,10 @@ mws-ce = { path = "crates/services/mws-ce" }
 mws-servicequotas = { path = "crates/services/mws-servicequotas" }
 mws-cloudwatch = { path = "crates/services/mws-cloudwatch" }
 mws-ec2 = { path = "crates/services/mws-ec2" }
+mws-identitystore = { path = "crates/services/mws-identitystore" }
+mws-ssoadmin = { path = "crates/services/mws-ssoadmin" }
+mws-ssooidc = { path = "crates/services/mws-ssooidc" }
+mws-ssoportal = { path = "crates/services/mws-ssoportal" }
 mws-amplify = { path = "crates/services/mws-amplify" }
 mws-globalaccelerator = { path = "crates/services/mws-globalaccelerator" }
 mws-ram = { path = "crates/services/mws-ram" }

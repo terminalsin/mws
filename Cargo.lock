@@ -742,6 +742,31 @@ dependencies = [
 ]
 
 [[package]]
+name = "aws-sdk-identitystore"
+version = "1.122.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "5a1767a32cb5b7240f41d07c00d741fe8577b20f500a322bfe0e68e6d01732db"
+dependencies = [
+ "arc-swap",
+ "aws-credential-types",
+ "aws-runtime",
+ "aws-smithy-async",
+ "aws-smithy-http",
+ "aws-smithy-json",
+ "aws-smithy-observability",
+ "aws-smithy-runtime",
+ "aws-smithy-runtime-api",
+ "aws-smithy-schema",
+ "aws-smithy-types",
+ "aws-types",
+ "bytes",
+ "fastrand",
+ "http 1.5.0",
+ "regex-lite",
+ "tracing",
+]
+
+[[package]]
 name = "aws-sdk-imagebuilder"
 version = "1.137.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1282,6 +1307,31 @@ name = "aws-sdk-sso"
 version = "1.119.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "3c414f25ec4aa9dc18f5cc8f55e18848bb509fcda4ce7c77bee6072e95806bc9"
+dependencies = [
+ "arc-swap",
+ "aws-credential-types",
+ "aws-runtime",
+ "aws-smithy-async",
+ "aws-smithy-http",
+ "aws-smithy-json",
+ "aws-smithy-observability",
+ "aws-smithy-runtime",
+ "aws-smithy-runtime-api",
+ "aws-smithy-schema",
+ "aws-smithy-types",
+ "aws-types",
+ "bytes",
+ "fastrand",
+ "http 1.5.0",
+ "regex-lite",
+ "tracing",
+]
+
+[[package]]
+name = "aws-sdk-ssoadmin"
+version = "1.125.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "eaa767d48380d113a090efd4d568198455d87f38fbd29251e2d4b816d28c0390"
 dependencies = [
  "arc-swap",
  "aws-credential-types",
@@ -3063,6 +3113,7 @@ dependencies = [
  "mws-firehose",
  "mws-globalaccelerator",
  "mws-iam",
+ "mws-identitystore",
  "mws-imagebuilder",
  "mws-kinesis",
  "mws-kms",
@@ -3086,6 +3137,9 @@ dependencies = [
  "mws-sns",
  "mws-sqs",
  "mws-ssm",
+ "mws-ssoadmin",
+ "mws-ssooidc",
+ "mws-ssoportal",
  "mws-sts",
  "serde_json",
  "tokio",
@@ -3393,6 +3447,7 @@ dependencies = [
  "aws-sdk-firehose",
  "aws-sdk-globalaccelerator",
  "aws-sdk-iam",
+ "aws-sdk-identitystore",
  "aws-sdk-imagebuilder",
  "aws-sdk-kinesis",
  "aws-sdk-kms",
@@ -3414,6 +3469,9 @@ dependencies = [
  "aws-sdk-sns",
  "aws-sdk-sqs",
  "aws-sdk-ssm",
+ "aws-sdk-sso",
+ "aws-sdk-ssoadmin",
+ "aws-sdk-ssooidc",
  "aws-sdk-sts",
  "aws-sigv4",
  "aws-smithy-http-client",
@@ -3737,6 +3795,22 @@ dependencies = [
  "base64 0.22.1",
  "chrono",
  "serde_json",
+]
+
+[[package]]
+name = "mws-identitystore"
+version = "0.1.0"
+dependencies = [
+ "async-trait",
+ "chrono",
+ "mws-codegen",
+ "mws-core",
+ "mws-iam",
+ "mws-proto-json",
+ "regex",
+ "serde",
+ "serde_json",
+ "uuid",
 ]
 
 [[package]]
@@ -4413,6 +4487,63 @@ dependencies = [
  "serde",
  "serde_json",
  "uuid",
+]
+
+[[package]]
+name = "mws-ssoadmin"
+version = "0.1.0"
+dependencies = [
+ "async-trait",
+ "chrono",
+ "mws-codegen",
+ "mws-core",
+ "mws-iam",
+ "mws-identitystore",
+ "mws-kms",
+ "mws-organizations",
+ "mws-proto-json",
+ "serde",
+ "serde_json",
+ "uuid",
+]
+
+[[package]]
+name = "mws-ssooidc"
+version = "0.1.0"
+dependencies = [
+ "async-trait",
+ "aws-lc-rs",
+ "base64 0.22.1",
+ "bytes",
+ "chrono",
+ "form_urlencoded",
+ "http 1.5.0",
+ "mws-codegen",
+ "mws-core",
+ "mws-identitystore",
+ "mws-proto-json",
+ "mws-proto-restjson",
+ "mws-ssoadmin",
+ "mws-sts",
+ "serde",
+ "serde_json",
+]
+
+[[package]]
+name = "mws-ssoportal"
+version = "0.1.0"
+dependencies = [
+ "async-trait",
+ "mws-codegen",
+ "mws-core",
+ "mws-organizations",
+ "mws-proto-json",
+ "mws-proto-restjson",
+ "mws-ssoadmin",
+ "mws-ssooidc",
+ "mws-sts",
+ "serde",
+ "serde_json",
 ]
 
 [[package]]

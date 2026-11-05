@@ -1,6 +1,6 @@
 # Services
 
-MWS emulates 29 AWS services. Each is generated from AWS's official Smithy
+MWS emulates 33 AWS services. Each is generated from AWS's official Smithy
 model, so every operation in the model is routed and validated; operations
 outside the implemented set answer `NotImplemented`. Each service's page lists
 its features in a table: ✅ supported, 🟡 partial, ❌ not supported yet.
@@ -25,6 +25,7 @@ Every service shares the same foundations:
 | [IAM](iam.md) | 180 / 180 | Users, groups, roles, policies, boundaries, MFA, certificates, access advisor, credential report, policy simulator |
 | [STS](sts.md) | 11 / 11 | `AssumeRole` and its variants, web identity and SAML federation with signature checks, session tags, `AssumeRoot` |
 | [Organizations](organizations.md) | 63 / 63 | Organizations, OUs, real member accounts, SCPs and RCPs enforced on every call |
+| [IAM Identity Center](identity-center.md) | 109 / 109 | Users and groups, permission sets provisioned as real `AWSReservedSSO_*` roles, device and PKCE sign-in, portal credentials, `CreateTokenWithIAM` |
 | [KMS](kms.md) | 56 / 56 | Symmetric, asymmetric, HMAC and post-quantum keys with real cryptography, key policies, grants, rotation |
 | [Private CA](acm-pca.md) | 23 / 23 | Root and subordinate CAs issuing real X.509 certificates, CRLs in S3, OCSP, audit reports |
 | [Connector for SCEP](pca-connector-scep.md) | 12 / 12 | Real SCEP endpoints enrolling devices with certificates from a Private CA shared through RAM |

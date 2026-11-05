@@ -10,6 +10,7 @@ pub mod generated {
     include!(concat!(env!("OUT_DIR"), "/sts_generated.rs"));
 }
 
+mod contexts;
 mod credentials;
 mod extra;
 mod oidc_keys;
@@ -23,9 +24,10 @@ use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 
 use chrono::{DateTime, Utc};
+pub use contexts::{IdentityContext, IDENTITY_CENTER_CONTEXT_PROVIDER};
 use mws_core::{Caller, HttpRequest, HttpResponse, RequestContext, Service, ServiceError};
 use mws_iam::Iam;
-pub use service::{ServiceAssume, ServiceAssumeError, ServiceCredentials};
+pub use service::{SamlFederation, ServiceAssume, ServiceAssumeError, ServiceCredentials};
 
 /// An issued set of temporary credentials.
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
@@ -42,6 +44,9 @@ pub(crate) struct Inner {
     /// Whether AssumeRoleWithWebIdentity and AssumeRoleWithSAML check
     /// signatures.
     pub verify_federation_signatures: bool,
+    /// Trusted context assertions issued for context providers (IAM
+    /// Identity Center), by assertion.
+    pub contexts: Mutex<HashMap<String, IdentityContext>>,
 }
 
 /// The STS service. Cheap to clone; clones share state.
@@ -53,7 +58,12 @@ pub struct Sts {
 impl Sts {
     pub fn new(iam: Iam) -> Self {
         Self {
-            inner: Arc::new(Inner { iam, sessions: Mutex::new(HashMap::new()), verify_federation_signatures: true }),
+            inner: Arc::new(Inner {
+                iam,
+                sessions: Mutex::new(HashMap::new()),
+                verify_federation_signatures: true,
+                contexts: Default::default(),
+            }),
         }
     }
 
@@ -61,7 +71,12 @@ impl Sts {
     /// signatures (for tests that hand-craft them). AWS always checks them.
     pub fn without_federation_signature_verification(iam: Iam) -> Self {
         Self {
-            inner: Arc::new(Inner { iam, sessions: Mutex::new(HashMap::new()), verify_federation_signatures: false }),
+            inner: Arc::new(Inner {
+                iam,
+                sessions: Mutex::new(HashMap::new()),
+                verify_federation_signatures: false,
+                contexts: Default::default(),
+            }),
         }
     }
 

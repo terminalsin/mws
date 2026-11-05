@@ -72,6 +72,16 @@ impl Holder {
     }
 }
 
+/// Roles IAM Identity Center provisions are only modifiable by AWS.
+fn reserved_guard(h: Holder, state: &State, name: &str) -> Result<(), ServiceError> {
+    match (h, state.role(name)) {
+        (Holder::Role, Some(r)) if crate::ops::roles::is_reserved(r) => {
+            Err(crate::ops::service_roles::protected(&r.name))
+        }
+        _ => Ok(()),
+    }
+}
+
 impl Iam {
     fn holder_arn(&self, h: Holder, name: &str) -> String {
         match h {
@@ -461,6 +471,7 @@ impl Iam {
         if !state.policies.contains_key(policy_arn) {
             return Err(errors::no_such_entity(format!("Policy {policy_arn} does not exist or is not attachable.")));
         }
+        reserved_guard(h, &state, name)?;
         let (_, attached) = h.parts(&mut state, name).ok_or_else(|| h.not_found(name))?;
         if !attached.contains(policy_arn) && attached.len() >= limit {
             return Err(errors::limit_exceeded(format!("Cannot exceed quota for PoliciesPer{}: {limit}", h.title())));
@@ -477,6 +488,7 @@ impl Iam {
             single("iam:PolicyARN", policy_arn),
         )?;
         let mut state = self.write();
+        reserved_guard(h, &state, name)?;
         let (_, attached) = h.parts(&mut state, name).ok_or_else(|| h.not_found(name))?;
         if !attached.remove(policy_arn) {
             return Err(errors::no_such_entity(format!("Policy {policy_arn} was not found.")));
@@ -589,6 +601,7 @@ impl Iam {
         self.authorize(ctx, &format!("Put{}Policy", h.title()), &self.holder_arn(h, name))?;
         validate_policy(&doc, PolicyKind::Identity)?;
         let mut state = self.write();
+        reserved_guard(h, &state, name)?;
         let (inline, _) = h.parts(&mut state, name).ok_or_else(|| h.not_found(name))?;
         let mut total: usize =
             inline.iter().filter(|(k, _)| !k.eq_ignore_ascii_case(&policy_name)).map(|(_, d)| policy_size(d)).sum();
@@ -630,6 +643,7 @@ impl Iam {
     ) -> Result<(), ServiceError> {
         self.authorize(ctx, &format!("Delete{}Policy", h.title()), &self.holder_arn(h, name))?;
         let mut state = self.write();
+        reserved_guard(h, &state, name)?;
         let (inline, _) = h.parts(&mut state, name).ok_or_else(|| h.not_found(name))?;
         let before = inline.len();
         inline.retain(|k, _| !k.eq_ignore_ascii_case(policy_name));

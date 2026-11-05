@@ -29,6 +29,7 @@ use mws_events::Events;
 use mws_firehose::Firehose;
 use mws_globalaccelerator::GlobalAccelerator;
 use mws_iam::{Iam, IamConfig};
+use mws_identitystore::IdentityStore;
 use mws_imagebuilder::ImageBuilder;
 use mws_kinesis::Kinesis;
 use mws_kms::Kms;
@@ -52,6 +53,9 @@ use mws_ses::Ses;
 use mws_sns::Sns;
 use mws_sqs::Sqs;
 use mws_ssm::Ssm;
+use mws_ssoadmin::SsoAdmin;
+use mws_ssooidc::SsoOidc;
+use mws_ssoportal::SsoPortal;
 use mws_sts::Sts;
 
 #[derive(Debug, Clone, Default)]
@@ -372,6 +376,10 @@ fn build_with_store(config: Config, store: Option<Arc<Store>>) -> Mws {
     let ce = CostExplorer::new();
     ce.set_account_directory(Arc::new(links::CostAccounts(organizations.clone())));
     ce.set_anomaly_notifier(Arc::new(links::AnomalyAlerts(sns.clone())));
+    let identitystore = IdentityStore::new(iam.clone());
+    let ssoadmin = SsoAdmin::new(iam.clone(), identitystore.clone(), organizations.clone(), kms.clone());
+    let ssooidc = SsoOidc::new(identitystore.clone(), ssoadmin.clone(), sts.clone());
+    let ssoportal = SsoPortal::new(ssooidc.clone(), ssoadmin.clone(), sts.clone(), organizations.clone());
     let securityhub = SecurityHub::new();
     securityhub.set_organizations(Arc::new(links::SecurityHubOrganizations(organizations.clone())));
     securityhub.set_event_sink(Arc::new(links::SecurityHubToEvents(events.clone())));
@@ -495,6 +503,10 @@ fn build_with_store(config: Config, store: Option<Arc<Store>>) -> Mws {
         .service(Arc::new(marketplace_entitlement.clone()))
         .service(Arc::new(servicequotas.clone()))
         .service(Arc::new(ce.clone()))
+        .service(Arc::new(identitystore))
+        .service(Arc::new(ssoadmin))
+        .service(Arc::new(ssooidc))
+        .service(Arc::new(ssoportal))
         .service(Arc::new(ram.clone()))
         .service(Arc::new(scep.clone()))
         .service(Arc::new(securityhub.clone()))
