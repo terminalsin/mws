@@ -86,6 +86,12 @@ Every service shares the same foundations:
 | --- | --- | --- |
 | [Marketplace Metering and Entitlement](marketplace.md) | 5 / 5 | SaaS registration tokens, batch and hourly metering with AWS's dedup and time windows, signed `RegisterUsage`, entitlements, a seedable catalog |
 
+## Developer tools
+
+| Service | Operations | What's emulated |
+| --- | --- | --- |
+| [CodeArtifact](codeartifact.md) | 48 / 48 | Domains, repositories with upstreams and external connections, package groups, and npm, PyPI, Maven, Cargo, RubyGems, NuGet and Swift endpoints real clients use |
+
 ## How services connect
 
 Services are wired together where AWS wires them, and each integration runs
@@ -139,3 +145,5 @@ with the permissions AWS would use:
 - EFS mount targets are network interfaces in EC2 subnets, and Docker-backed
   instances mount EFS file systems, subject to security groups and the file
   system policy.
+- CodeArtifact authorization tokens act as the IAM principal that requested
+  them, and domains are encrypted with KMS keys.

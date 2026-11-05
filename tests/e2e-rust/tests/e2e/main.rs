@@ -10,6 +10,7 @@ mod amplify;
 mod autoscaling;
 mod cloudwatch;
 mod cloudwatch_parity;
+mod codeartifact;
 mod ec2;
 mod ec2_docker;
 mod ec2_ebs;

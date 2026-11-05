@@ -53,6 +53,7 @@ members = [
     "crates/services/mws-rds",
     "crates/services/mws-eks",
     "crates/services/mws-efs",
+    "crates/services/mws-codeartifact",
     "tests/e2e-rust",
 ]
 
@@ -116,6 +117,7 @@ mws-ses = { path = "crates/services/mws-ses" }
 mws-rds = { path = "crates/services/mws-rds" }
 mws-eks = { path = "crates/services/mws-eks" }
 mws-efs = { path = "crates/services/mws-efs" }
+mws-codeartifact = { path = "crates/services/mws-codeartifact" }
 
 # external
 async-trait = "0.1"

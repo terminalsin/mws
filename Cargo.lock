@@ -369,6 +369,31 @@ dependencies = [
 ]
 
 [[package]]
+name = "aws-sdk-codeartifact"
+version = "1.122.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "5fbb8a1a375178c3ecdf3942ae625898b5b1fcd6c0b1823a3a9c202cb805713d"
+dependencies = [
+ "arc-swap",
+ "aws-credential-types",
+ "aws-runtime",
+ "aws-smithy-async",
+ "aws-smithy-http",
+ "aws-smithy-json",
+ "aws-smithy-observability",
+ "aws-smithy-runtime",
+ "aws-smithy-runtime-api",
+ "aws-smithy-schema",
+ "aws-smithy-types",
+ "aws-types",
+ "bytes",
+ "fastrand",
+ "http 1.5.0",
+ "regex-lite",
+ "tracing",
+]
+
+[[package]]
 name = "aws-sdk-ec2"
 version = "1.275.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2874,6 +2899,7 @@ dependencies = [
  "mws-amplify",
  "mws-autoscaling",
  "mws-cloudwatch",
+ "mws-codeartifact",
  "mws-core",
  "mws-ec2",
  "mws-efs",
@@ -3057,6 +3083,41 @@ dependencies = [
 ]
 
 [[package]]
+name = "mws-codeartifact"
+version = "0.1.0"
+dependencies = [
+ "async-trait",
+ "base64 0.22.1",
+ "bytes",
+ "chrono",
+ "flate2",
+ "hex",
+ "http 1.5.0",
+ "md-5 0.10.6",
+ "mws-codegen",
+ "mws-core",
+ "mws-iam-policy",
+ "mws-kms",
+ "mws-proto-json",
+ "mws-proto-restjson",
+ "rand 0.8.8",
+ "roxmltree",
+ "rustls 0.23.46",
+ "rustls-native-certs",
+ "rustls-pki-types",
+ "serde",
+ "serde_json",
+ "sha1 0.10.7",
+ "sha2 0.10.9",
+ "tokio",
+ "tokio-rustls 0.26.6",
+ "tracing",
+ "uuid",
+ "yaml-rust2",
+ "zip",
+]
+
+[[package]]
 name = "mws-codegen"
 version = "0.1.0"
 dependencies = [
@@ -3096,6 +3157,7 @@ dependencies = [
  "aws-sdk-autoscaling",
  "aws-sdk-cloudwatch",
  "aws-sdk-cloudwatchlogs",
+ "aws-sdk-codeartifact",
  "aws-sdk-ec2",
  "aws-sdk-efs",
  "aws-sdk-eks",
@@ -3136,8 +3198,10 @@ dependencies = [
  "cms",
  "flate2",
  "form_urlencoded",
+ "hex",
  "md-5 0.10.6",
  "mws",
+ "mws-codeartifact",
  "mws-ec2",
  "mws-eks",
  "mws-rds",
@@ -3153,6 +3217,7 @@ dependencies = [
  "rustls 0.23.46",
  "rustls-pki-types",
  "serde_json",
+ "sha1 0.10.7",
  "sha2 0.10.9",
  "time",
  "tokio",
