@@ -327,6 +327,31 @@ dependencies = [
 ]
 
 [[package]]
+name = "aws-sdk-eks"
+version = "1.160.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "c46fe03172be97734ffb1b8baf085f1d63e0d4dcd8b5f9954b81a4d9ca3ec1bb"
+dependencies = [
+ "arc-swap",
+ "aws-credential-types",
+ "aws-runtime",
+ "aws-smithy-async",
+ "aws-smithy-http",
+ "aws-smithy-json",
+ "aws-smithy-observability",
+ "aws-smithy-runtime",
+ "aws-smithy-runtime-api",
+ "aws-smithy-schema",
+ "aws-smithy-types",
+ "aws-types",
+ "bytes",
+ "fastrand",
+ "http 1.5.0",
+ "regex-lite",
+ "tracing",
+]
+
+[[package]]
 name = "aws-sdk-eventbridge"
 version = "1.127.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2266,6 +2291,7 @@ dependencies = [
  "mws-cloudwatch",
  "mws-core",
  "mws-ec2",
+ "mws-eks",
  "mws-events",
  "mws-firehose",
  "mws-iam",
@@ -2415,6 +2441,7 @@ dependencies = [
  "aws-sdk-cloudwatch",
  "aws-sdk-cloudwatchlogs",
  "aws-sdk-ec2",
+ "aws-sdk-eks",
  "aws-sdk-eventbridge",
  "aws-sdk-firehose",
  "aws-sdk-iam",
@@ -2475,6 +2502,30 @@ dependencies = [
  "serde_json",
  "tokio",
  "tracing",
+]
+
+[[package]]
+name = "mws-eks"
+version = "0.1.0"
+dependencies = [
+ "async-trait",
+ "base64 0.22.1",
+ "chrono",
+ "hex",
+ "http 1.5.0",
+ "mws-codegen",
+ "mws-core",
+ "mws-proto-json",
+ "mws-proto-restjson",
+ "mws-sts",
+ "rand",
+ "rcgen",
+ "serde",
+ "serde_json",
+ "sha2 0.10.9",
+ "time",
+ "tracing",
+ "uuid",
 ]
 
 [[package]]

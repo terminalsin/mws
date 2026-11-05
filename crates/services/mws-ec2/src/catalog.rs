@@ -219,6 +219,8 @@ pub struct PublicImage {
 const AMAZON: &str = "137112412989";
 const CANONICAL: &str = "099720109477";
 const DEBIAN: &str = "136693071363";
+/// The account that publishes the EKS-optimized AMIs.
+const EKS: &str = "602401143452";
 
 const fn al(
     name: &'static str,
@@ -237,6 +239,17 @@ const fn al(
         container_image,
         platform_details: "Linux/UNIX",
     }
+}
+
+/// An EKS-optimized AMI, as managed node groups run them.
+const fn eks(
+    name: &'static str,
+    ssm: &'static str,
+    description: &'static str,
+    arch: &'static str,
+    container_image: &'static str,
+) -> PublicImage {
+    PublicImage { owner_id: EKS, ..al(name, ssm, description, arch, container_image) }
 }
 
 pub const PUBLIC_IMAGES: &[PublicImage] = &[
@@ -312,6 +325,160 @@ pub const PUBLIC_IMAGES: &[PublicImage] = &[
         container_image: "debian:12",
         platform_details: "Linux/UNIX",
     },
+    eks(
+        "amazon-eks-node-al2023-x86_64-standard-1.29-v20250101",
+        "eks/optimized-ami/1.29/amazon-linux-2023/x86_64/standard/recommended/image_id",
+        "EKS-optimized Kubernetes node based on Amazon Linux 2023, (k8s: 1.29, containerd: 1.7.*)",
+        "x86_64",
+        "amazonlinux:2023",
+    ),
+    eks(
+        "amazon-eks-node-al2023-arm64-standard-1.29-v20250101",
+        "eks/optimized-ami/1.29/amazon-linux-2023/arm64/standard/recommended/image_id",
+        "EKS-optimized Kubernetes node based on Amazon Linux 2023, (k8s: 1.29, containerd: 1.7.*)",
+        "arm64",
+        "amazonlinux:2023",
+    ),
+    eks(
+        "amazon-eks-node-al2023-x86_64-standard-1.30-v20250101",
+        "eks/optimized-ami/1.30/amazon-linux-2023/x86_64/standard/recommended/image_id",
+        "EKS-optimized Kubernetes node based on Amazon Linux 2023, (k8s: 1.30, containerd: 1.7.*)",
+        "x86_64",
+        "amazonlinux:2023",
+    ),
+    eks(
+        "amazon-eks-node-al2023-arm64-standard-1.30-v20250101",
+        "eks/optimized-ami/1.30/amazon-linux-2023/arm64/standard/recommended/image_id",
+        "EKS-optimized Kubernetes node based on Amazon Linux 2023, (k8s: 1.30, containerd: 1.7.*)",
+        "arm64",
+        "amazonlinux:2023",
+    ),
+    eks(
+        "amazon-eks-node-al2023-x86_64-standard-1.31-v20250101",
+        "eks/optimized-ami/1.31/amazon-linux-2023/x86_64/standard/recommended/image_id",
+        "EKS-optimized Kubernetes node based on Amazon Linux 2023, (k8s: 1.31, containerd: 1.7.*)",
+        "x86_64",
+        "amazonlinux:2023",
+    ),
+    eks(
+        "amazon-eks-node-al2023-arm64-standard-1.31-v20250101",
+        "eks/optimized-ami/1.31/amazon-linux-2023/arm64/standard/recommended/image_id",
+        "EKS-optimized Kubernetes node based on Amazon Linux 2023, (k8s: 1.31, containerd: 1.7.*)",
+        "arm64",
+        "amazonlinux:2023",
+    ),
+    eks(
+        "amazon-eks-node-al2023-x86_64-standard-1.32-v20250101",
+        "eks/optimized-ami/1.32/amazon-linux-2023/x86_64/standard/recommended/image_id",
+        "EKS-optimized Kubernetes node based on Amazon Linux 2023, (k8s: 1.32, containerd: 1.7.*)",
+        "x86_64",
+        "amazonlinux:2023",
+    ),
+    eks(
+        "amazon-eks-node-al2023-arm64-standard-1.32-v20250101",
+        "eks/optimized-ami/1.32/amazon-linux-2023/arm64/standard/recommended/image_id",
+        "EKS-optimized Kubernetes node based on Amazon Linux 2023, (k8s: 1.32, containerd: 1.7.*)",
+        "arm64",
+        "amazonlinux:2023",
+    ),
+    eks(
+        "amazon-eks-node-al2023-x86_64-standard-1.33-v20250101",
+        "eks/optimized-ami/1.33/amazon-linux-2023/x86_64/standard/recommended/image_id",
+        "EKS-optimized Kubernetes node based on Amazon Linux 2023, (k8s: 1.33, containerd: 1.7.*)",
+        "x86_64",
+        "amazonlinux:2023",
+    ),
+    eks(
+        "amazon-eks-node-al2023-arm64-standard-1.33-v20250101",
+        "eks/optimized-ami/1.33/amazon-linux-2023/arm64/standard/recommended/image_id",
+        "EKS-optimized Kubernetes node based on Amazon Linux 2023, (k8s: 1.33, containerd: 1.7.*)",
+        "arm64",
+        "amazonlinux:2023",
+    ),
+    eks(
+        "amazon-eks-node-al2023-x86_64-standard-1.34-v20250101",
+        "eks/optimized-ami/1.34/amazon-linux-2023/x86_64/standard/recommended/image_id",
+        "EKS-optimized Kubernetes node based on Amazon Linux 2023, (k8s: 1.34, containerd: 1.7.*)",
+        "x86_64",
+        "amazonlinux:2023",
+    ),
+    eks(
+        "amazon-eks-node-al2023-arm64-standard-1.34-v20250101",
+        "eks/optimized-ami/1.34/amazon-linux-2023/arm64/standard/recommended/image_id",
+        "EKS-optimized Kubernetes node based on Amazon Linux 2023, (k8s: 1.34, containerd: 1.7.*)",
+        "arm64",
+        "amazonlinux:2023",
+    ),
+    eks(
+        "amazon-eks-node-al2023-x86_64-standard-1.35-v20250101",
+        "eks/optimized-ami/1.35/amazon-linux-2023/x86_64/standard/recommended/image_id",
+        "EKS-optimized Kubernetes node based on Amazon Linux 2023, (k8s: 1.35, containerd: 1.7.*)",
+        "x86_64",
+        "amazonlinux:2023",
+    ),
+    eks(
+        "amazon-eks-node-al2023-arm64-standard-1.35-v20250101",
+        "eks/optimized-ami/1.35/amazon-linux-2023/arm64/standard/recommended/image_id",
+        "EKS-optimized Kubernetes node based on Amazon Linux 2023, (k8s: 1.35, containerd: 1.7.*)",
+        "arm64",
+        "amazonlinux:2023",
+    ),
+    eks(
+        "amazon-eks-node-1.29-v20250101",
+        "eks/optimized-ami/1.29/amazon-linux-2/recommended/image_id",
+        "EKS Kubernetes Worker AMI with AmazonLinux2 image, (k8s: 1.29, containerd: 1.7.*)",
+        "x86_64",
+        "amazonlinux:2",
+    ),
+    eks(
+        "amazon-eks-arm64-node-1.29-v20250101",
+        "eks/optimized-ami/1.29/amazon-linux-2-arm64/recommended/image_id",
+        "EKS Kubernetes Worker AMI with AmazonLinux2 image, (k8s: 1.29, containerd: 1.7.*)",
+        "arm64",
+        "amazonlinux:2",
+    ),
+    eks(
+        "amazon-eks-node-1.30-v20250101",
+        "eks/optimized-ami/1.30/amazon-linux-2/recommended/image_id",
+        "EKS Kubernetes Worker AMI with AmazonLinux2 image, (k8s: 1.30, containerd: 1.7.*)",
+        "x86_64",
+        "amazonlinux:2",
+    ),
+    eks(
+        "amazon-eks-arm64-node-1.30-v20250101",
+        "eks/optimized-ami/1.30/amazon-linux-2-arm64/recommended/image_id",
+        "EKS Kubernetes Worker AMI with AmazonLinux2 image, (k8s: 1.30, containerd: 1.7.*)",
+        "arm64",
+        "amazonlinux:2",
+    ),
+    eks(
+        "amazon-eks-node-1.31-v20250101",
+        "eks/optimized-ami/1.31/amazon-linux-2/recommended/image_id",
+        "EKS Kubernetes Worker AMI with AmazonLinux2 image, (k8s: 1.31, containerd: 1.7.*)",
+        "x86_64",
+        "amazonlinux:2",
+    ),
+    eks(
+        "amazon-eks-arm64-node-1.31-v20250101",
+        "eks/optimized-ami/1.31/amazon-linux-2-arm64/recommended/image_id",
+        "EKS Kubernetes Worker AMI with AmazonLinux2 image, (k8s: 1.31, containerd: 1.7.*)",
+        "arm64",
+        "amazonlinux:2",
+    ),
+    eks(
+        "amazon-eks-node-1.32-v20250101",
+        "eks/optimized-ami/1.32/amazon-linux-2/recommended/image_id",
+        "EKS Kubernetes Worker AMI with AmazonLinux2 image, (k8s: 1.32, containerd: 1.7.*)",
+        "x86_64",
+        "amazonlinux:2",
+    ),
+    eks(
+        "amazon-eks-arm64-node-1.32-v20250101",
+        "eks/optimized-ami/1.32/amazon-linux-2-arm64/recommended/image_id",
+        "EKS Kubernetes Worker AMI with AmazonLinux2 image, (k8s: 1.32, containerd: 1.7.*)",
+        "arm64",
+        "amazonlinux:2",
+    ),
     PublicImage {
         name: "mws-alpine-3.20-x86_64",
         ssm_path: None,

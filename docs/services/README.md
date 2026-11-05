@@ -43,6 +43,7 @@ Every service shares the same foundations:
 | --- | --- | --- |
 | [Lambda](lambda.md) | 68 / 88 | Python, Node.js and custom runtimes that really run, SQS and Kinesis event sources, destinations, function URLs |
 | [EC2 and VPC](ec2.md) | 107 / 811 | Default VPCs, subnets, security groups, AMIs, instances as Docker containers, instance metadata and profiles |
+| [EKS](eks.md) | 70 / 70 | Clusters in your VPC, managed node groups as EC2 instances, add-ons, access entries, Pod Identity, OIDC providers |
 | [Route 53](route53.md) | 71 / 71 | Public and private hosted zones, all routing policies, health checks, DNSSEC key management, an optional real DNS responder |
 
 ## Application integration
@@ -89,3 +90,5 @@ with the permissions AWS would use:
 - Secrets Manager rotation runs your Lambda function; SSM resolves Secrets
   Manager references.
 - EC2 instances and Lambda functions receive role credentials from STS.
+- EKS creates cluster security groups in EC2 and runs managed node groups as
+  EC2 instances with IAM instance profiles, from AMIs SSM publishes.

@@ -1,5 +1,6 @@
 //! Composition root. This is the only crate that knows which services exist.
 
+mod eks;
 mod links;
 mod sinks;
 
@@ -11,6 +12,7 @@ use mws_acmpca::PrivateCa;
 use mws_cloudwatch::CloudWatch;
 use mws_core::Environment;
 use mws_ec2::{BackendChoice, Ec2};
+use mws_eks::Eks;
 use mws_events::Events;
 use mws_firehose::Firehose;
 use mws_iam::{Iam, IamConfig};
@@ -104,6 +106,7 @@ pub struct Mws {
     pub firehose: Firehose,
     pub cloudwatch: CloudWatch,
     pub ec2: Ec2,
+    pub eks: Eks,
 }
 
 /// Build the gateway with every service MWS emulates.
@@ -229,6 +232,8 @@ fn build_with_store(config: Config, store: Option<Arc<Store>>) -> Mws {
     let ec2 = Ec2::new(config.ec2_backend.resolve(config.ec2_docker_cli.as_deref()));
     tracing::info!(backend = ec2.backend_name(), "EC2 compute backend");
     ec2.set_instance_roles(Arc::new(links::Ec2InstanceRoles { iam: iam.clone(), sts: sts.clone() }));
+    let eks = Eks::with_sts(sts.clone());
+    eks.set_infrastructure(Arc::new(eks::EksInfrastructure { ec2: ec2.clone(), iam: iam.clone() }));
     let mut gateway = Gateway::builder();
     if let Some(store) = store {
         gateway = gateway.store(store);
@@ -262,6 +267,7 @@ fn build_with_store(config: Config, store: Option<Arc<Store>>) -> Mws {
         .service(Arc::new(firehose.clone()))
         .service(Arc::new(cloudwatch.clone()))
         .service(Arc::new(ec2.clone()))
+        .service(Arc::new(eks.clone()))
         .build();
     Mws {
         gateway,
@@ -281,6 +287,7 @@ fn build_with_store(config: Config, store: Option<Arc<Store>>) -> Mws {
         firehose,
         cloudwatch,
         ec2,
+        eks,
     }
 }
 

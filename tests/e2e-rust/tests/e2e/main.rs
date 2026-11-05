@@ -10,6 +10,7 @@ mod cloudwatch;
 mod cloudwatch_parity;
 mod ec2;
 mod ec2_docker;
+mod eks;
 mod events;
 mod firehose;
 mod firehose_monitoring;
