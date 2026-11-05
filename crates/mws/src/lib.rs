@@ -28,6 +28,7 @@ use mws_marketplace_metering::Metering;
 use mws_organizations::Organizations;
 use mws_pca_connector_scep::ScepConnector;
 use mws_ram::Ram;
+use mws_rds::Rds;
 use mws_route53::Route53;
 use mws_s3::S3;
 use mws_s3control::S3Control;
@@ -62,6 +63,16 @@ pub struct Config {
     /// (`MWS_SES_AUTO_VERIFY=1`), instead of waiting for the verification
     /// link to be followed or the DNS records to appear. AWS never does.
     pub ses_auto_verify: bool,
+    /// What runs RDS databases (`MWS_RDS_BACKEND`: `auto`, `docker` or
+    /// `metadata`). The binary defaults to `auto`; the library default runs
+    /// nothing.
+    pub rds_backend: mws_rds::BackendChoice,
+    /// The Docker-compatible CLI for RDS (`MWS_RDS_DOCKER`; falls back to
+    /// `MWS_EC2_DOCKER`).
+    pub rds_docker_cli: Option<String>,
+    /// The host address database ports are published on (`MWS_RDS_BIND`,
+    /// default `127.0.0.1`).
+    pub rds_bind: Option<String>,
 }
 
 impl Config {
@@ -88,6 +99,14 @@ impl Config {
             }),
             Err(_) => BackendChoice::Auto,
         };
+        let rds_backend = match std::env::var("MWS_RDS_BACKEND") {
+            Ok(v) => mws_rds::BackendChoice::parse(&v).unwrap_or_else(|| {
+                tracing::warn!("unknown MWS_RDS_BACKEND {v:?}; using auto");
+                mws_rds::BackendChoice::Auto
+            }),
+            Err(_) => mws_rds::BackendChoice::Auto,
+        };
+        let var = |name: &str| std::env::var(name).ok().filter(|v| !v.is_empty());
         Self {
             iam,
             db: path("MWS_DB"),
@@ -97,6 +116,9 @@ impl Config {
             ec2_docker_cli: std::env::var("MWS_EC2_DOCKER").ok().filter(|v| !v.is_empty()),
             ses_auto_verify: std::env::var("MWS_SES_AUTO_VERIFY")
                 .is_ok_and(|v| matches!(v.as_str(), "1" | "true" | "yes")),
+            rds_backend,
+            rds_docker_cli: var("MWS_RDS_DOCKER").or_else(|| var("MWS_EC2_DOCKER")),
+            rds_bind: var("MWS_RDS_BIND"),
         }
     }
 }
@@ -131,6 +153,7 @@ pub struct Mws {
     pub imagebuilder: ImageBuilder,
     pub elb: Elb,
     pub ses: Ses,
+    pub rds: Rds,
 }
 
 /// Build the gateway with every service MWS emulates.
@@ -297,6 +320,14 @@ fn build_with_store(config: Config, store: Option<Arc<Store>>) -> Mws {
     }));
     ses.set_credentials(vec![iam.credential_store(), sts.credential_store()]);
     ses.set_authorizer(iam.authorizer());
+    let rds = Rds::new(
+        config.rds_backend.resolve(config.rds_docker_cli.as_deref(), config.rds_bind.as_deref()),
+        kms.clone(),
+        secretsmanager.clone(),
+    );
+    tracing::info!(backend = rds.backend_name(), "RDS database backend");
+    rds.set_network(Arc::new(links::RdsNetwork(ec2.clone())));
+    rds.set_event_sink(Arc::new(links::RdsEvents { events: events.clone(), sns: sns.clone() }));
     let mut gateway = Gateway::builder();
     if let Some(store) = store {
         gateway = gateway.store(store);
@@ -332,6 +363,7 @@ fn build_with_store(config: Config, store: Option<Arc<Store>>) -> Mws {
         .service(Arc::new(ec2.clone()))
         .service(Arc::new(amplify.clone()))
         .service(Arc::new(globalaccelerator.clone()))
+        .service(Arc::new(rds.clone()))
         // Both Marketplace services sign as `aws-marketplace`; each claims
         // its own `X-Amz-Target`.
         .service(Arc::new(marketplace_metering.clone()))
@@ -376,6 +408,7 @@ fn build_with_store(config: Config, store: Option<Arc<Store>>) -> Mws {
         imagebuilder,
         elb,
         ses,
+        rds,
     }
 }
 

@@ -89,6 +89,37 @@ impl SecretsManager {
         };
         let lambda_arn = input.rotation_lambda_arn.clone().or_else(|| s.rotation.lambda_arn.clone());
         let external = input.external_secret_rotation_role_arn.is_some() || s.rotation.external_role_arn.is_some();
+        // Secrets another service manages rotate through that service.
+        let managed = match (&s.owning_service, &lambda_arn) {
+            (Some(owner), None) => self.managed_rotation(owner),
+            _ => None,
+        };
+        if let Some(rotator) = managed {
+            let rules = rules.or_else(|| {
+                Some(types::RotationRulesType {
+                    automatically_after_days: Some(7),
+                    schedule_expression: Some("rate(7 days)".into()),
+                    ..Default::default()
+                })
+            });
+            self.update(&s.arn, |st| {
+                st.rotation.enabled = true;
+                st.rotation.rules = rules.clone();
+                Ok(())
+            })?;
+            let version_id = if immediately {
+                Some(rotator.rotate(ctx, &s.arn).map_err(errors::internal_service_error)?)
+            } else {
+                let window = next_window(rules.as_ref(), s.rotation.last_rotated.unwrap_or(now));
+                self.update(&s.arn, |st| {
+                    st.rotation.window_start = window.map(|w| w.start);
+                    st.rotation.next = window.map(|w| w.next_rotation_date());
+                    Ok(())
+                })?;
+                None
+            };
+            return Ok(types::RotateSecretResponse { arn: Some(s.arn), name: Some(s.name), version_id });
+        }
         if lambda_arn.is_none() && !external {
             return Err(errors::invalid_request("No Lambda rotation function ARN is associated with this secret."));
         }
@@ -276,6 +307,7 @@ impl SecretsManager {
                 .map(|s| s.arn.clone())
                 .collect()
         };
+        self.tick_managed(ctx);
         if due.is_empty() || self.lambda().is_none() {
             return;
         }

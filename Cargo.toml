@@ -48,6 +48,7 @@ members = [
     "crates/services/mws-imagebuilder",
     "crates/services/mws-elb",
     "crates/services/mws-ses",
+    "crates/services/mws-rds",
     "tests/e2e-rust",
 ]
 
@@ -106,6 +107,7 @@ mws-securityhub = { path = "crates/services/mws-securityhub" }
 mws-imagebuilder = { path = "crates/services/mws-imagebuilder" }
 mws-elb = { path = "crates/services/mws-elb" }
 mws-ses = { path = "crates/services/mws-ses" }
+mws-rds = { path = "crates/services/mws-rds" }
 
 # external
 async-trait = "0.1"
