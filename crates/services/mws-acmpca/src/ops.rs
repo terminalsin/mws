@@ -148,7 +148,7 @@ impl PrivateCa {
         extra: ConditionContext,
     ) -> Result<(), ServiceError> {
         let (policy, tags) = match self.lock().cas.get(arn) {
-            Some(c) => (c.policy.clone(), c.tags.clone()),
+            Some(c) => (c.effective_policy(), c.tags.clone()),
             None => (None, Default::default()),
         };
         // The CA's own tags, for ABAC policies (`aws:ResourceTag/<key>`).
@@ -235,6 +235,7 @@ impl PrivateCa {
             crl: None,
             crl_number: 0,
             audit_reports: BTreeMap::new(),
+            ram_policy: None,
         };
         let mut st = self.lock();
         if let Some(token) = token_key {
@@ -266,15 +267,15 @@ impl PrivateCa {
         let in_region: Vec<types::CertificateAuthority> =
             self.lock().cas.values().filter(|ca| revocation::region(&ca.arn) == ctx.region).map(Ca::wire).collect();
         let all: Vec<types::CertificateAuthority> = if input.resource_owner.as_deref() == Some("OTHER_ACCOUNTS") {
-            // CAs other accounts share with this one. MWS has no AWS RAM, so
-            // a CA counts as shared when its resource policy (PutPolicy, which
-            // is what a RAM share writes) lets the caller describe it.
+            // CAs other accounts share with this one: through AWS RAM or a
+            // policy set with PutPolicy, either of which lets the caller
+            // describe the CA.
             in_region
                 .into_iter()
                 .filter(|ca| ca.owner_account.as_deref() != Some(account))
                 .filter(|ca| {
                     let arn = ca.arn.as_deref().unwrap_or_default();
-                    let has_policy = self.lock().cas.get(arn).is_some_and(|c| c.policy.is_some());
+                    let has_policy = self.lock().cas.get(arn).is_some_and(|c| c.effective_policy().is_some());
                     has_policy && self.authorize(ctx, "DescribeCertificateAuthority", arn).is_ok()
                 })
                 .collect()
@@ -751,8 +752,13 @@ impl PrivateCa {
         check_arn(ctx, arn)?;
         self.authorize(ctx, "PutPolicy", arn)?;
         Policy::parse(&input.policy, PolicyKind::Resource).map_err(|e| errors::invalid_policy(e.to_string()))?;
-        let mut st = self.lock();
-        st.ca_mut(arn)?.policy = Some(input.policy);
+        let owner = {
+            let mut st = self.lock();
+            let ca = st.ca_mut(arn)?;
+            ca.policy = Some(input.policy.clone());
+            ca.owner.clone()
+        };
+        self.notify_policy(arn, &owner, Some(&input.policy), ctx.received_at);
         Ok(())
     }
 
@@ -765,7 +771,7 @@ impl PrivateCa {
         check_arn(ctx, arn)?;
         self.authorize(ctx, "GetPolicy", arn)?;
         let st = self.lock();
-        let policy = st.ca(arn)?.policy.clone();
+        let policy = st.ca(arn)?.effective_policy();
         if policy.is_none() {
             return Err(errors::resource_not_found(format!("Could not find a policy for {arn}.")));
         }
@@ -780,11 +786,15 @@ impl PrivateCa {
         let arn = &input.resource_arn;
         check_arn(ctx, arn)?;
         self.authorize(ctx, "DeletePolicy", arn)?;
-        let mut st = self.lock();
-        let ca = st.ca_mut(arn)?;
-        if ca.policy.take().is_none() {
-            return Err(errors::resource_not_found(format!("Could not find a policy for {arn}.")));
-        }
+        let owner = {
+            let mut st = self.lock();
+            let ca = st.ca_mut(arn)?;
+            if ca.policy.take().is_none() {
+                return Err(errors::resource_not_found(format!("Could not find a policy for {arn}.")));
+            }
+            ca.owner.clone()
+        };
+        self.notify_policy(arn, &owner, None, ctx.received_at);
         Ok(())
     }
 }

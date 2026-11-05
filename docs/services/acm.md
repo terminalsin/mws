@@ -20,7 +20,7 @@ All 40 operations are generated from the AWS model (awsJson1.1) and implemented.
 | Listing and search | ✅ | `ListCertificates` filters, `SearchCertificates` with nested `And`/`Or`/`Not` statements and every sort key, tags and account configuration. |
 | Validation migration | ✅ | `UpdateCertificateOptions` and `ListCertificateDomainValidations` for email-to-DNS migration. |
 | IAM condition keys | ✅ | `acm:ValidationMethod`, `acm:DomainNames`, `acm:KeyAlgorithm`, `acm:CertificateAuthority`, `acm:Export` and `aws:ResourceTag`. |
-| Integrated services | ❌ | `InUseBy` is always empty. |
+| Integrated services | 🟡 | Elastic Load Balancing listeners appear in `InUseBy`, and `DeleteCertificate` refuses certificates in use with `ResourceInUseException`; other services do not register their use. |
 
 ## ACME
 

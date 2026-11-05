@@ -85,6 +85,10 @@ pub struct Certificate {
     /// Times `ResendValidationEmail` was called, for nothing but realism.
     #[serde(default)]
     pub emails_sent: u32,
+    /// ARNs of the AWS resources using the certificate (load balancer
+    /// listeners), as `InUseBy` reports them.
+    #[serde(default)]
+    pub in_use_by: Vec<String>,
     /// When the last "ACM Certificate Approaching Expiration" event was
     /// sent (they are daily).
     #[serde(default)]

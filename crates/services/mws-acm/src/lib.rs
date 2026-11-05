@@ -38,11 +38,13 @@ mod events;
 mod handler;
 mod jws;
 mod pki;
+mod public;
 mod search;
 mod state;
 mod validation;
 
 pub use events::{AcmEvent, DaysToExpiry};
+pub use public::{ServerCertificate, ServerKey};
 
 use std::sync::{Arc, Mutex, MutexGuard};
 

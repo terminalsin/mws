@@ -40,8 +40,11 @@ members = [
     "crates/services/mws-firehose",
     "crates/services/mws-cloudwatch",
     "crates/services/mws-ec2",
+    "crates/services/mws-ram",
+    "crates/services/mws-pca-connector-scep",
     "crates/services/mws-securityhub",
     "crates/services/mws-imagebuilder",
+    "crates/services/mws-elb",
     "tests/e2e-rust",
 ]
 
@@ -92,8 +95,11 @@ mws-kinesis = { path = "crates/services/mws-kinesis" }
 mws-firehose = { path = "crates/services/mws-firehose" }
 mws-cloudwatch = { path = "crates/services/mws-cloudwatch" }
 mws-ec2 = { path = "crates/services/mws-ec2" }
+mws-ram = { path = "crates/services/mws-ram" }
+mws-pca-connector-scep = { path = "crates/services/mws-pca-connector-scep" }
 mws-securityhub = { path = "crates/services/mws-securityhub" }
 mws-imagebuilder = { path = "crates/services/mws-imagebuilder" }
+mws-elb = { path = "crates/services/mws-elb" }
 
 # external
 async-trait = "0.1"
