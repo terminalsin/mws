@@ -1,8 +1,9 @@
 # Services
 
-MWS emulates 24 AWS services. Each is generated from AWS's official Smithy
+MWS emulates 26 AWS services. Each is generated from AWS's official Smithy
 model, so every operation in the model is routed and validated; operations
-outside the implemented set answer `NotImplemented`.
+outside the implemented set answer `NotImplemented`. Each service's page lists
+its features in a table: ✅ supported, 🟡 partial, ❌ not supported yet.
 
 Every service shares the same foundations:
 
@@ -42,7 +43,7 @@ Every service shares the same foundations:
 | Service | Operations | What's emulated |
 | --- | --- | --- |
 | [Lambda](lambda.md) | 68 / 88 | Python, Node.js and custom runtimes that really run, SQS and Kinesis event sources, destinations, function URLs |
-| [EC2 and VPC](ec2.md) | 107 / 811 | Default VPCs, subnets, security groups, AMIs, instances as Docker containers, instance metadata and profiles |
+| [EC2 and VPC](ec2.md) | 120 / 811 | Default VPCs, subnets, security groups, NAT gateways and VPC endpoints that filter and route real Docker traffic, AMIs, instances as Docker containers, instance metadata and profiles |
 | [Route 53](route53.md) | 71 / 71 | Public and private hosted zones, all routing policies, health checks, DNSSEC key management, an optional real DNS responder |
 
 ## Application integration
@@ -68,6 +69,12 @@ Every service shares the same foundations:
 | [CloudWatch](cloudwatch.md) | 55 / 55 | Metrics, statistics and percentiles, metric math, alarms that act, dashboards, metric streams |
 | [CloudWatch Logs](logs.md) | 118 / 118 | Log events, filter patterns, Logs Insights, live tail, subscriptions, metric filters, exports |
 
+## Marketplace
+
+| Service | Operations | What's emulated |
+| --- | --- | --- |
+| [Marketplace Metering and Entitlement](marketplace.md) | 5 / 5 | SaaS registration tokens, batch and hourly metering with AWS's dedup and time windows, signed `RegisterUsage`, entitlements, a seedable catalog |
+
 ## How services connect
 
 Services are wired together where AWS wires them, and each integration runs
@@ -89,3 +96,5 @@ with the permissions AWS would use:
 - Secrets Manager rotation runs your Lambda function; SSM resolves Secrets
   Manager references.
 - EC2 instances and Lambda functions receive role credentials from STS.
+- Marketplace Metering and the Entitlement Service share one Marketplace
+  catalog of products, subscriptions and entitlements.

@@ -2,55 +2,50 @@
 
 > Crate: [`mws-ec2`](../../crates/services/mws-ec2) · Tests: [`tests/e2e-rust/tests/e2e/ec2.rs`](../../tests/e2e-rust/tests/e2e/ec2.rs)
 
-107 of the model's 811 operations are generated (ec2Query) and implemented; the
-rest answer `NotImplemented`.
+120 of the model's 811 operations are generated (ec2Query) and implemented; the rest answer `NotImplemented`. Responses use EC2's filters, pagination, `DryRun`, id formats and `InvalidXxx.Malformed`/`.NotFound` errors.
 
-## Behaviour
+✅ supported · 🟡 partial · ❌ not supported
 
-Every account and Region starts with EC2's default VPC (172.31.0.0/16, a default
-subnet per Availability Zone, an internet gateway, the main route table, the
-default network ACL, security group and DHCP options). VPCs (secondary CIDR
-blocks, DNS attributes), subnets (CIDR checks against the VPC and its other
-subnets, five reserved addresses, `MapPublicIpOnLaunch`), security groups and
-their rules (`sgr-` ids, the legacy flat form and `IpPermissions`, group
-references, `ModifySecurityGroupRules`, descriptions, duplicate and limit
-errors), route tables (routes to gateways, NAT gateways, interfaces and
-instances; main and subnet associations), internet gateways, NAT gateways on
-Elastic IPs, network ACLs and entries, DHCP options, network interfaces, Elastic
-IPs, key pairs (RSA and ED25519 with real key material and AWS's fingerprints;
-imports), AMIs (a public catalogue with Amazon Linux, Ubuntu, Debian and a small
-Alpine image, whose ids match SSM's `/aws/service/ami-*` parameters;
-`CreateImage`, `RegisterImage` with `ImageLocation: docker:<image>`,
-`CopyImage`, launch permissions), EBS volumes and snapshots (metadata), tags and
-`DescribeTags`, with EC2's filters, pagination, `DryRun`, id formats and
-`InvalidXxx.Malformed`/`.NotFound` errors.
+## Networking
 
-Instances go through EC2's states (`pending`, `running`, `stopping`, `stopped`,
-`shutting-down`, `terminated`, visible for an hour after termination on the
-emulated clock) with private IPs from their subnet, private DNS names, public
-IPs when the subnet or interface asks, root volumes, termination and stop
-protection, attributes and metadata options. What runs an instance is a
-pluggable compute backend (`MWS_EC2_BACKEND`): `docker` runs each instance as a
-container (the AMI's container image, on a Docker network per VPC with the
-instance's private IP and hostname, CPU and memory limits from the instance
-type, the key pair's public key in `authorized_keys`, user data run once at
-first boot, `docker logs` as the console output, `CreateImage` as `docker
-commit`; `MWS_EC2_DOCKER=podman` works too), `metadata` runs nothing.
+| Feature | Status | Details |
+| --- | :---: | --- |
+| Default VPC | ✅ | Every account and Region starts with one: 172.31.0.0/16, a default subnet per Availability Zone, an internet gateway, the main route table, and the default network ACL, security group and DHCP options. |
+| VPCs and subnets | ✅ | Secondary CIDR blocks, DNS attributes, CIDR checks against the VPC and its other subnets, five reserved addresses, `MapPublicIpOnLaunch`. |
+| Security groups | ✅ | Rules with `sgr-` ids, the legacy flat form and `IpPermissions`, group references, `ModifySecurityGroupRules`, descriptions, duplicate and limit errors. |
+| Route tables and gateways | ✅ | Routes to internet gateways, NAT gateways on Elastic IPs, interfaces and instances; main and subnet associations. |
+| Network ACLs, DHCP options, interfaces, Elastic IPs | ✅ | Managed with EC2's rules. |
+| NAT gateways | ✅ | On Elastic IPs; deleting one leaves blackhole routes, and deleted gateways stay listed for an hour. Internet gateways cannot be detached while the VPC has public addresses. |
+| Elastic IP reverse DNS | ✅ | `ModifyAddressAttribute`, `DescribeAddressesAttribute`, `ResetAddressAttribute`. |
+| Gateway endpoints | ✅ | S3 and DynamoDB: routes to the service's AWS-managed prefix list (`pl-63a5400a` for S3 in us-east-1, as in AWS) in the route tables named; one per service and VPC. |
+| Interface endpoints | ✅ | A requester-managed interface per subnet (one per Availability Zone) in the endpoint's security groups, regional and zonal `vpce.amazonaws.com` DNS entries, private DNS (on by default) that needs the VPC's DNS support and hostnames and conflicts with another private-DNS endpoint for the service. `DescribeVpcEndpointServices` lists about 45 AWS services. |
+| Endpoint policies | 🟡 | Stored, changed and reset; not enforced. Private DNS names are not resolved inside instances (they reach MWS through `AWS_ENDPOINT_URL`). |
+| Prefix lists | ✅ | AWS-managed lists, and customer-managed lists with versions (`ModifyManagedPrefixList` with `CurrentVersion`, entries at any version, associations), usable in security group rules and routes. |
+| Security groups filter traffic | ✅ | With the Docker backend: stateful ingress and egress rules by CIDR, prefix list or referenced group (every interface in it), protocol, ports, ICMP type and code, written as iptables rules into each instance's network namespace by a short-lived helper container (`MWS_EC2_NETFILTER_IMAGE`) and kept in step with VPC changes. `MWS_EC2_FIREWALL=off` turns filtering off. |
+| Network ACLs filter traffic | ✅ | Stateless, by rule number, for traffic crossing the subnet's boundary, replies included (return traffic needs ephemeral ports, as in AWS). |
+| Routes decide traffic leaving the VPC | ✅ | Longest prefix first: an internet gateway route works for instances with a public address, a NAT gateway route while the gateway is available and its subnet routes to an attached internet gateway, gateway endpoint routes work, blackhole and missing routes drop. |
+| Unfiltered traffic | 🟡 | MWS itself (APIs and instance metadata) and DNS are always reachable, as metadata and the Amazon DNS server are in AWS; so a private subnet reaches the AWS APIs without a NAT gateway or endpoint. IPv6 is not filtered (Docker networks are IPv4). |
+| Peering, transit gateways, private NAT gateways | ❌ | Not yet; routes to them carry no traffic. |
 
-Instances reach the instance metadata service at
-`/_aws/ec2/metadata/<instance-id>/` (IMDSv1 and IMDSv2 tokens, `meta-data/` with
-network, placement, public keys and tags, user data, the identity document)
-through `AWS_EC2_METADATA_SERVICE_ENDPOINT`, with their instance profile's role
-credentials assumed by `ec2.amazonaws.com` (`RunInstances` checks
-`iam:PassRole`), and MWS itself through `AWS_ENDPOINT_URL`. Authorization
-failures are `UnauthorizedOperation` with an encoded message that
-`sts:DecodeAuthorizationMessage` decodes.
+## Compute
 
-## Known gaps
+| Feature | Status | Details |
+| --- | :---: | --- |
+| Key pairs | ✅ | RSA and ED25519 with real key material and AWS's fingerprints; imports. |
+| AMIs | ✅ | A public catalogue (Amazon Linux, Ubuntu, Debian, a small Alpine image) whose ids match SSM's `/aws/service/ami-*` parameters; `CreateImage`, `RegisterImage` with `ImageLocation: docker:<image>`, `CopyImage`, launch permissions. |
+| Instances | ✅ | EC2's states (terminated instances stay visible for an hour on the emulated clock), private IPs from their subnet, private DNS names, public IPs, root volumes, stop and termination protection, attributes and metadata options. |
+| Docker backend | ✅ | `MWS_EC2_BACKEND=docker` runs each instance as a container: the AMI's image on a Docker network per VPC with the instance's IP and hostname, CPU and memory limits from the instance type, the key pair in `authorized_keys`, user data at first boot, `docker logs` as console output, `CreateImage` as `docker commit`. Podman works too. |
+| Metadata backend | ✅ | `MWS_EC2_BACKEND=metadata` runs nothing; instances only change state. |
+| Instance metadata service | ✅ | `/_aws/ec2/metadata/<instance-id>/` with IMDSv1 and IMDSv2 tokens, network, placement, public keys, tags, user data and the identity document. |
+| Instance profiles | ✅ | Role credentials assumed by `ec2.amazonaws.com`; `RunInstances` checks `iam:PassRole`. |
+| EBS volumes and snapshots | 🟡 | Metadata only; volumes are not mounted. |
+| Launch templates, Spot, Auto Scaling | ❌ | Not yet. |
 
-Security groups, network ACLs and routes do not filter real traffic (VPCs are
-isolated by their Docker networks), volumes are not mounted, launch templates,
-Spot, Auto Scaling, VPC endpoints, peering, transit gateways and the other 700
-operations.
+## Access control
+
+| Feature | Status | Details |
+| --- | :---: | --- |
+| Authorization errors | ✅ | `UnauthorizedOperation` with an encoded message that `sts:DecodeAuthorizationMessage` decodes. |
+| Tags | ✅ | Tags on create, `CreateTags`, `DeleteTags` and `DescribeTags`. |
 
 See also: [all services](README.md) · [authentication and authorization](../security.md).

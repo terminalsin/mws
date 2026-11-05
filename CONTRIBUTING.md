@@ -20,7 +20,8 @@ them.
 - **Fidelity beats breadth.** Implement an operation the way AWS behaves, or
   leave it answering `NotImplemented`. Don't ship approximate behaviour
   silently; if a simplification is unavoidable, document it on the service's
-  page under [docs/services](docs/services).
+  page under [docs/services](docs/services) as a 🟡 or ❌ row of its feature
+  table.
 - **Strict silos.** One crate per service under `crates/services/`. A service
   crate may depend on generic crates (`mws-core`, `mws-proto-*`, the code
   generator) and, only where AWS itself couples them, on another service's
@@ -80,7 +81,8 @@ them.
    older saved state still loads; maps with non-string keys need a custom
    (de)serializer.
 4. Register the service in [`crates/mws/src/lib.rs`](crates/mws/src/lib.rs).
-5. Add a page under [`docs/services`](docs/services) and a row to the tables in
+5. Add a page under [`docs/services`](docs/services) with a feature table
+   (✅ supported, 🟡 partial, ❌ not supported), and a row to the tables in
    the [README](README.md) and [docs/services/README.md](docs/services/README.md).
 
 ## Tests

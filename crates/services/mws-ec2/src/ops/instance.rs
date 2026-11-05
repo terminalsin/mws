@@ -263,6 +263,13 @@ impl Ec2 {
             if let Err(e) = &result {
                 tracing::warn!(instance = %id, backend = backend.name(), "instance backend operation failed: {e}");
             }
+            // A booted instance's network namespace is new: give it its
+            // security groups before it runs anything.
+            if matches!(transition, Transition::Launch(_) | Transition::Start | Transition::Reboot) {
+                if let Some(h) = result.as_ref().ok().and_then(|h| h.clone()).or_else(|| handle.clone()) {
+                    this.firewall_on_boot(&account, &region, &id, &h).await;
+                }
+            }
             let now = chrono::Utc::now().max(ctx.received_at);
             let region_name = region.clone();
             this.with_region_of(&account, &region, &ctx, |r| {
@@ -295,6 +302,7 @@ impl Ec2 {
                     (Transition::Reboot, _) => {}
                 }
             });
+            this.sync_firewalls();
         };
         if inline {
             task.await;
