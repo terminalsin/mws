@@ -346,3 +346,33 @@ impl mws_guardduty::EventSink for GuardDutyToEvents {
         );
     }
 }
+
+/// EC2 Image Builder image state changes, as the EventBridge event
+/// "EC2 Image Builder Image State Change".
+pub struct ImageBuilderEvents(pub Events);
+
+impl mws_imagebuilder::ImageEvents for ImageBuilderEvents {
+    fn image_state_changed(&self, ctx: &RequestContext, c: &mws_imagebuilder::ImageStateChange) {
+        let mut detail = serde_json::json!({ "state": { "status": c.status } });
+        if let Some(prev) = &c.previous_status {
+            detail["previous-state"] = serde_json::json!({ "status": prev });
+        }
+        if let Some(reason) = &c.reason {
+            detail["state"]["reason"] = serde_json::json!(reason);
+        }
+        let ctx = RequestContext { region: c.region.clone(), ..ctx.clone() };
+        self.0.put_service_event(
+            &ctx,
+            ServiceEvent {
+                partition: c.partition.clone(),
+                account: c.account.clone(),
+                region: c.region.clone(),
+                source: "aws.imagebuilder".into(),
+                detail_type: "EC2 Image Builder Image State Change".into(),
+                resources: vec![c.image_build_version_arn.clone()],
+                detail,
+                time: c.time,
+            },
+        );
+    }
+}

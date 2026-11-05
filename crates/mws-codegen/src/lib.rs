@@ -35,7 +35,7 @@ pub use rest_xml::RestXmlOptions;
 
 /// Generate awsQuery server code for the model at `model_path`.
 pub fn generate_aws_query(model: &Model) -> String {
-    query::generate(model, None, "ValidationError")
+    query::generate(model, None, "ValidationError", None)
 }
 
 /// Build-script helper: read `model_path` (relative to the crate), write the
@@ -46,6 +46,34 @@ pub fn build_aws_query(model_path: impl AsRef<Path>, out_name: &str) {
     let model =
         Model::load(model_path).unwrap_or_else(|e| panic!("loading Smithy model {}: {e}", model_path.display()));
     let code = generate_aws_query(&model);
+    let out = PathBuf::from(std::env::var("OUT_DIR").expect("OUT_DIR is set by cargo")).join(out_name);
+    std::fs::write(&out, code).unwrap_or_else(|e| panic!("writing {}: {e}", out.display()));
+}
+
+/// Options for [`build_aws_query_with`].
+#[derive(Debug, Clone)]
+pub struct QueryOptions {
+    /// The code request validation errors carry (`ValidationError` for IAM,
+    /// `InvalidParameterValue` for RDS, ...).
+    pub validation_error: String,
+    /// Generate only these operations (large models compile for minutes);
+    /// the others answer `NotImplemented`. `None` generates every one.
+    pub operations: Option<Vec<String>>,
+}
+
+impl Default for QueryOptions {
+    fn default() -> Self {
+        Self { validation_error: "ValidationError".into(), operations: None }
+    }
+}
+
+/// [`build_aws_query`] with options.
+pub fn build_aws_query_with(model_path: impl AsRef<Path>, out_name: &str, options: QueryOptions) {
+    let model_path = model_path.as_ref();
+    println!("cargo:rerun-if-changed={}", model_path.display());
+    let model =
+        Model::load(model_path).unwrap_or_else(|e| panic!("loading Smithy model {}: {e}", model_path.display()));
+    let code = query::generate(&model, None, &options.validation_error, options.operations.as_deref());
     let out = PathBuf::from(std::env::var("OUT_DIR").expect("OUT_DIR is set by cargo")).join(out_name);
     std::fs::write(&out, code).unwrap_or_else(|e| panic!("writing {}: {e}", out.display()));
 }
@@ -66,7 +94,7 @@ pub fn build_aws_query_compatible(
     println!("cargo:rerun-if-changed={}", model_path.display());
     let model =
         Model::load(model_path).unwrap_or_else(|e| panic!("loading Smithy model {}: {e}", model_path.display()));
-    let code = query::generate(&model, Some(xml_namespace), validation_error);
+    let code = query::generate(&model, Some(xml_namespace), validation_error, None);
     let out = PathBuf::from(std::env::var("OUT_DIR").expect("OUT_DIR is set by cargo")).join(out_name);
     std::fs::write(&out, code).unwrap_or_else(|e| panic!("writing {}: {e}", out.display()));
 }

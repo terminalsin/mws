@@ -103,6 +103,7 @@ crates/
   mws-xml            XML writer and reader shared by the XML protocols
   mws-store          SQLite persistence of opaque per-service state documents
   mws-schedule       schedule expressions (rate(...), six-field cron(...))
+  mws-parquet        a small Apache Parquet writer (S3 Inventory, RDS exports)
   mws-event-pattern  the AWS event pattern language (EventBridge, Lambda filters)
   services/
     mws-iam            IAM, multi-account, and the authorizer every service calls
@@ -114,6 +115,7 @@ crates/
     mws-s3control      access points, Object Lambda, Batch Operations, Access Grants
     mws-lambda         functions that run on local runtimes via the Runtime API
     mws-ec2            EC2 and VPC, instances run by a pluggable compute backend
+    mws-globalaccelerator static anycast IPs, listeners, endpoint groups, custom routing
     mws-route53        hosted zones, record sets, health checks, DNS responder
     mws-acmpca         Private CA: CAs and real X.509 issuance
     mws-acm            public, private and imported certificates, DNS validation

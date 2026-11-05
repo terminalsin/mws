@@ -9,6 +9,7 @@ pub struct Mws {
     pub endpoint: String,
     pub config: mws::Config,
     pub route53: mws_route53::Route53,
+    pub ses: mws_ses::Ses,
     shutdown: tokio::sync::oneshot::Sender<()>,
     server: tokio::task::JoinHandle<()>,
 }
@@ -41,6 +42,7 @@ impl Mws {
 
     async fn serve_on(config: mws::Config, built: mws::Mws, addr: &str) -> Self {
         let route53 = built.route53;
+        let ses = built.ses;
         let gateway = Arc::new(built.gateway);
         let listener = tokio::net::TcpListener::bind(addr).await.unwrap();
         let endpoint = format!("http://127.0.0.1:{}", listener.local_addr().unwrap().port());
@@ -48,7 +50,15 @@ impl Mws {
         let server = tokio::spawn(mws_server::serve(listener, gateway, async {
             let _ = rx.await;
         }));
-        Self { endpoint, config, route53, shutdown: tx, server }
+        Self { endpoint, config, route53, ses, shutdown: tx, server }
+    }
+
+    /// Start the SES SMTP listener on a free loopback port: its address.
+    pub async fn start_smtp(&self) -> std::net::SocketAddr {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        tokio::spawn(mws_ses::serve_smtp(self.ses.clone(), listener));
+        addr
     }
 
     /// Shut down gracefully (state is flushed to the database, if any).

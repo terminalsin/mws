@@ -358,6 +358,81 @@ impl Ec2 {
             );
             Ok((handle, source))
         })?;
+        // Snapshot every attached volume, as EC2 does for an EBS-backed AMI.
+        let mut jobs = Vec::new();
+        self.with_region(ctx, |r| {
+            let mut attached: Vec<(t::Volume, t::VolumeAttachment)> = r
+                .volumes
+                .values()
+                .filter_map(|v| {
+                    v.attachments
+                        .iter()
+                        .flatten()
+                        .find(|a| a.instance_id.as_deref() == Some(input.instance_id.as_str()))
+                        .map(|a| (v.clone(), a.clone()))
+                })
+                .collect();
+            attached.sort_by(|a, b| a.1.device.cmp(&b.1.device));
+            let excluded: Vec<String> = input
+                .block_device_mappings
+                .iter()
+                .flatten()
+                .filter(|m| m.no_device.is_some())
+                .filter_map(|m| m.device_name.clone())
+                .collect();
+            let mut bdms = Vec::new();
+            for (vol, att) in attached {
+                if att.device.as_ref().is_some_and(|d| excluded.contains(d)) {
+                    continue;
+                }
+                let snap_id = new_id("snap");
+                let snap = t::Snapshot {
+                    snapshot_id: Some(snap_id.clone()),
+                    volume_id: vol.volume_id.clone(),
+                    state: Some("completed".into()),
+                    start_time: Some(now),
+                    completion_time: Some(now),
+                    progress: Some("100%".into()),
+                    owner_id: Some(account.clone()),
+                    description: Some(format!("Created by CreateImage({}) for {id}", input.instance_id)),
+                    volume_size: vol.size,
+                    encrypted: vol.encrypted,
+                    kms_key_id: vol.kms_key_id.clone(),
+                    storage_tier: Some("standard".into()),
+                    tags: some_tags(
+                        tags_for(&input.tag_specifications, "snapshot", &["image", "snapshot"]).unwrap_or_default(),
+                    ),
+                    ..Default::default()
+                };
+                r.snapshots.insert(snap_id.clone(), snap);
+                jobs.push(crate::volumes::VolumeJob::Snapshot {
+                    volume_id: vol.volume_id.clone().unwrap_or_default(),
+                    snapshot_id: snap_id.clone(),
+                });
+                bdms.push(t::BlockDeviceMapping {
+                    device_name: att.device.clone(),
+                    ebs: Some(t::EbsBlockDevice {
+                        delete_on_termination: Some(true),
+                        snapshot_id: Some(snap_id),
+                        volume_size: vol.size,
+                        volume_type: vol.volume_type.clone(),
+                        iops: vol.iops.filter(|_| vol.volume_type.as_deref() != Some("gp2")),
+                        throughput: vol.throughput,
+                        encrypted: vol.encrypted,
+                        ..Default::default()
+                    }),
+                    ..Default::default()
+                });
+            }
+            if !bdms.is_empty() {
+                if let Some(img) = r.images.get_mut(&id) {
+                    img.image.block_device_mappings = Some(bdms);
+                }
+            }
+        });
+        for job in jobs {
+            self.volume_job(job);
+        }
         let this = self.clone();
         let account2 = account.clone();
         let region = ctx.region.clone();
