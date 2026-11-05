@@ -98,7 +98,12 @@ impl Provider for Topic {
                     .and_then(Value::as_array)
                     .map(|a| {
                         a.iter()
-                            .map(|x| (x.get("Protocol").map(text).unwrap_or_default(), x.get("Endpoint").map(text).unwrap_or_default()))
+                            .map(|x| {
+                                (
+                                    x.get("Protocol").map(text).unwrap_or_default(),
+                                    x.get("Endpoint").map(text).unwrap_or_default(),
+                                )
+                            })
                             .collect()
                     })
                     .unwrap_or_default()
@@ -113,7 +118,9 @@ impl Provider for Topic {
                 for sub in out["Subscriptions"].as_array().cloned().unwrap_or_default() {
                     let key = (text(&sub["Protocol"]), text(&sub["Endpoint"]));
                     if removed.contains(&&key) {
-                        gone_ok(cx.call("sns", "Unsubscribe", json!({"SubscriptionArn": sub["SubscriptionArn"]})).await)?;
+                        gone_ok(
+                            cx.call("sns", "Unsubscribe", json!({"SubscriptionArn": sub["SubscriptionArn"]})).await,
+                        )?;
                     }
                 }
             }
@@ -121,7 +128,8 @@ impl Provider for Topic {
         if changed(old, new, "Tags") {
             let new_tags = cx.tags(new);
             let keys: Vec<String> = new_tags.iter().map(|t| text(&t["Key"])).collect();
-            let removed: Vec<String> = cx.tags(old).iter().map(|t| text(&t["Key"])).filter(|k| !keys.contains(k)).collect();
+            let removed: Vec<String> =
+                cx.tags(old).iter().map(|t| text(&t["Key"])).filter(|k| !keys.contains(k)).collect();
             if !removed.is_empty() {
                 cx.call("sns", "UntagResource", json!({"ResourceArn": arn, "TagKeys": removed})).await?;
             }
@@ -160,8 +168,15 @@ impl Provider for Topic {
     }
 }
 
-const SUBSCRIPTION_ATTRIBUTES: &[&str] =
-    &["FilterPolicy", "FilterPolicyScope", "RawMessageDelivery", "RedrivePolicy", "DeliveryPolicy", "SubscriptionRoleArn", "ReplayPolicy"];
+const SUBSCRIPTION_ATTRIBUTES: &[&str] = &[
+    "FilterPolicy",
+    "FilterPolicyScope",
+    "RawMessageDelivery",
+    "RedrivePolicy",
+    "DeliveryPolicy",
+    "SubscriptionRoleArn",
+    "ReplayPolicy",
+];
 
 struct Subscription;
 
@@ -244,7 +259,12 @@ impl Provider for TopicPolicy {
     async fn create(&self, cx: &Cx<'_>, props: &Props) -> HResult<Created> {
         let policy = document(props, "PolicyDocument").unwrap_or_default();
         for t in list(props, "Topics") {
-            cx.call("sns", "SetTopicAttributes", json!({"TopicArn": t, "AttributeName": "Policy", "AttributeValue": policy})).await?;
+            cx.call(
+                "sns",
+                "SetTopicAttributes",
+                json!({"TopicArn": t, "AttributeName": "Policy", "AttributeValue": policy}),
+            )
+            .await?;
         }
         let id = cx.physical_name(128);
         Ok(Created::new(&id).attr("Id", id.clone()))
@@ -254,7 +274,14 @@ impl Provider for TopicPolicy {
         let n = list(new, "Topics");
         for t in list(old, "Topics").iter().filter(|t| !n.contains(t)) {
             let p = default_topic_policy(cx, t);
-            gone_ok(cx.call("sns", "SetTopicAttributes", json!({"TopicArn": t, "AttributeName": "Policy", "AttributeValue": p})).await)?;
+            gone_ok(
+                cx.call(
+                    "sns",
+                    "SetTopicAttributes",
+                    json!({"TopicArn": t, "AttributeName": "Policy", "AttributeValue": p}),
+                )
+                .await,
+            )?;
         }
         self.create(cx, new).await?;
         Ok(attrs.clone())
@@ -263,7 +290,14 @@ impl Provider for TopicPolicy {
     async fn delete(&self, cx: &Cx<'_>, _id: &str, props: &Props, _attrs: &Props) -> HResult<()> {
         for t in list(props, "Topics") {
             let p = default_topic_policy(cx, &t);
-            gone_ok(cx.call("sns", "SetTopicAttributes", json!({"TopicArn": t, "AttributeName": "Policy", "AttributeValue": p})).await)?;
+            gone_ok(
+                cx.call(
+                    "sns",
+                    "SetTopicAttributes",
+                    json!({"TopicArn": t, "AttributeName": "Policy", "AttributeValue": p}),
+                )
+                .await,
+            )?;
         }
         Ok(())
     }
@@ -298,6 +332,13 @@ impl Provider for TopicInlinePolicy {
 
     async fn delete(&self, cx: &Cx<'_>, t: &str, _props: &Props, _attrs: &Props) -> HResult<()> {
         let p = default_topic_policy(cx, t);
-        gone_ok(cx.call("sns", "SetTopicAttributes", json!({"TopicArn": t, "AttributeName": "Policy", "AttributeValue": p})).await)
+        gone_ok(
+            cx.call(
+                "sns",
+                "SetTopicAttributes",
+                json!({"TopicArn": t, "AttributeName": "Policy", "AttributeValue": p}),
+            )
+            .await,
+        )
     }
 }

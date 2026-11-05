@@ -53,11 +53,13 @@ impl Created {
 pub struct HandlerError {
     pub message: String,
     pub not_found: bool,
+    /// The service's error code, when a service call failed.
+    pub code: String,
 }
 
 impl HandlerError {
     pub fn invalid(message: impl Into<String>) -> Self {
-        Self { message: message.into(), not_found: false }
+        Self { message: message.into(), not_found: false, code: String::new() }
     }
 
     pub fn from_service(service: &str, e: &ServiceError) -> Self {
@@ -72,6 +74,7 @@ impl HandlerError {
                 uuid::Uuid::new_v4(),
             ),
             not_found: code == "NotFound",
+            code: e.code.to_string(),
         }
     }
 
@@ -83,6 +86,7 @@ impl HandlerError {
                 uuid::Uuid::new_v4()
             ),
             not_found: code == "NotFound",
+            code: String::new(),
         }
     }
 }
@@ -224,10 +228,6 @@ impl Cx<'_> {
     pub fn arn(&self, service: &str, resource: &str) -> String {
         format!("arn:{}:{service}:{}:{}:{resource}", self.partition(), self.region(), self.account())
     }
-
-    pub fn global_arn(&self, service: &str, resource: &str) -> String {
-        format!("arn:{}:{service}::{}:{resource}", self.partition(), self.account())
-    }
 }
 
 /// A value as text, as CloudFormation coerces scalars for string
@@ -245,20 +245,16 @@ pub fn s(props: &Props, key: &str) -> Option<String> {
 }
 
 pub fn req(props: &Props, key: &str) -> HResult<String> {
-    s(props, key).ok_or_else(|| HandlerError::invalid(format!("Properties validation failed for resource with message: #: required key [{key}] not found")))
+    s(props, key).ok_or_else(|| {
+        HandlerError::invalid(format!(
+            "Properties validation failed for resource with message: #: required key [{key}] not found"
+        ))
+    })
 }
 
 pub fn int(props: &Props, key: &str) -> Option<i64> {
     match props.get(key)? {
         Value::Number(n) => n.as_i64().or_else(|| n.as_f64().map(|f| f as i64)),
-        Value::String(s) => s.parse().ok(),
-        _ => None,
-    }
-}
-
-pub fn float(props: &Props, key: &str) -> Option<f64> {
-    match props.get(key)? {
-        Value::Number(n) => n.as_f64(),
         Value::String(s) => s.parse().ok(),
         _ => None,
     }
@@ -295,15 +291,6 @@ pub fn copy(props: &Props, out: &mut Map<String, Value>, keys: &[&str]) {
     for k in keys {
         if let Some(v) = props.get(*k).filter(|v| !v.is_null()) {
             out.insert((*k).to_string(), v.clone());
-        }
-    }
-}
-
-/// Copy `(from, to)` renamed members.
-pub fn rename(props: &Props, out: &mut Map<String, Value>, pairs: &[(&str, &str)]) {
-    for (from, to) in pairs {
-        if let Some(v) = props.get(*from).filter(|v| !v.is_null()) {
-            out.insert((*to).to_string(), v.clone());
         }
     }
 }
@@ -366,11 +353,6 @@ pub trait Provider: Send + Sync {
     /// stacks' `Outputs.*`).
     fn open_attributes(&self) -> bool {
         false
-    }
-
-    /// The property that names the resource, for `CAPABILITY_NAMED_IAM`.
-    fn name_property(&self) -> Option<&'static str> {
-        None
     }
 
     /// Whether changes other than to create-only properties are applied

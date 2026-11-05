@@ -43,7 +43,8 @@ impl CustomResource {
         let token = req(props, "ServiceToken")?;
         let request_id = uuid::Uuid::new_v4().to_string();
         let key = format!("cr-{}", uuid::Uuid::new_v4().simple());
-        let resource_type = cx.cfn.resource_type_of(cx.stack_id, cx.logical_id).unwrap_or_else(|| super::CUSTOM_RESOURCE.into());
+        let resource_type =
+            cx.cfn.resource_type_of(cx.stack_id, cx.logical_id).unwrap_or_else(|| super::CUSTOM_RESOURCE.into());
         let mut event = json!({
             "RequestType": request_type,
             "ServiceToken": token,
@@ -167,7 +168,8 @@ impl Provider for WaitCondition {
 
     async fn create(&self, cx: &Cx<'_>, props: &Props) -> HResult<Created> {
         let handle = req(props, "Handle")?;
-        let token = callback::token_of(&handle).ok_or_else(|| HandlerError::invalid("Invalid WaitConditionHandle URL"))?;
+        let token =
+            callback::token_of(&handle).ok_or_else(|| HandlerError::invalid("Invalid WaitConditionHandle URL"))?;
         let count = super::int(props, "Count").unwrap_or(1).max(1) as usize;
         let timeout = super::int(props, "Timeout").unwrap_or(43_200).max(1) as u64;
         let got = match cx.cfn.wait_for_signals(&token, count, timeout).await {
@@ -190,7 +192,10 @@ impl Provider for WaitCondition {
             }
             data.insert(id, json!(g.get("Data").map(text).unwrap_or_default()));
         }
-        let physical = cx.arn("cloudformation", &format!("{}/{}", cx.stack_id.rsplit(':').next().unwrap_or_default(), cx.logical_id));
+        let physical = cx.arn(
+            "cloudformation",
+            &format!("{}/{}", cx.stack_id.rsplit(':').next().unwrap_or_default(), cx.logical_id),
+        );
         Ok(Created::new(physical).attr("Data", Value::Object(data).to_string()))
     }
 
@@ -221,12 +226,19 @@ impl NestedStack {
                     .collect()
             })
             .unwrap_or_default();
-        let caps = vec!["CAPABILITY_IAM".to_string(), "CAPABILITY_NAMED_IAM".to_string(), "CAPABILITY_AUTO_EXPAND".to_string()];
+        let caps = vec![
+            "CAPABILITY_IAM".to_string(),
+            "CAPABILITY_NAMED_IAM".to_string(),
+            "CAPABILITY_AUTO_EXPAND".to_string(),
+        ];
         let notifications = super::list(props, "NotificationARNs");
         let (parent_root, parent_tags) = {
             let st = cx.cfn.state();
             let p = st.stacks.get(cx.stack_id);
-            (p.and_then(|p| p.root_id.clone()).unwrap_or_else(|| cx.stack_id.to_string()), p.map(|p| p.tags.clone()).unwrap_or_default())
+            (
+                p.and_then(|p| p.root_id.clone()).unwrap_or_else(|| cx.stack_id.to_string()),
+                p.map(|p| p.tags.clone()).unwrap_or_default(),
+            )
         };
         let mut tags = parent_tags;
         if let Some(Value::Array(t)) = props.get("Tags") {
@@ -240,7 +252,10 @@ impl NestedStack {
         let (id, name, previous) = match existing {
             Some(id) => {
                 let st = cx.cfn.state();
-                let s = st.stacks.get(id).ok_or_else(|| HandlerError::handler("NotFound", format!("Stack {id} not found")))?;
+                let s = st
+                    .stacks
+                    .get(id)
+                    .ok_or_else(|| HandlerError::handler("NotFound", format!("Stack {id} not found")))?;
                 (id.to_string(), s.name.clone(), s.parameters.clone())
             }
             None => {
@@ -341,7 +356,14 @@ impl Provider for NestedStack {
         self.deploy(cx, None, props).await
     }
 
-    async fn update(&self, cx: &Cx<'_>, physical_id: &str, _old: &Props, new: &Props, _attrs: &Props) -> HResult<Props> {
+    async fn update(
+        &self,
+        cx: &Cx<'_>,
+        physical_id: &str,
+        _old: &Props,
+        new: &Props,
+        _attrs: &Props,
+    ) -> HResult<Props> {
         self.deploy(cx, Some(physical_id), new).await.map(|c| c.attributes)
     }
 
@@ -368,9 +390,10 @@ impl Provider for NestedStack {
         let st = cx.cfn.state();
         match st.stacks.get(physical_id) {
             Some(s) if s.status == "DELETE_COMPLETE" => Ok(()),
-            Some(s) => Err(HandlerError::invalid(s.status_reason.clone().unwrap_or_else(|| "Embedded stack failed to delete".into()))),
+            Some(s) => Err(HandlerError::invalid(
+                s.status_reason.clone().unwrap_or_else(|| "Embedded stack failed to delete".into()),
+            )),
             None => Ok(()),
         }
     }
 }
-

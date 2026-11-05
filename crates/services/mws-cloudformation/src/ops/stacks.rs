@@ -36,7 +36,13 @@ fn tag_keys(tags: &[Tag]) -> Vec<(String, Vec<String>)> {
 }
 
 impl CloudFormation {
-    pub(crate) fn deployment(&self, ctx: &RequestContext, deploy: RequestContext, stack_id: &str, token: Option<String>) -> Deployment {
+    pub(crate) fn deployment(
+        &self,
+        ctx: &RequestContext,
+        deploy: RequestContext,
+        stack_id: &str,
+        token: Option<String>,
+    ) -> Deployment {
         Deployment {
             cfn: self.clone(),
             stack_id: stack_id.to_string(),
@@ -129,7 +135,8 @@ impl CloudFormation {
         if input.disable_rollback.is_some() && input.on_failure.is_some() {
             return Err(validation("You may specify only one of DisableRollback and OnFailure"));
         }
-        let policy = self.stack_policy_text(ctx, input.stack_policy_body.clone(), input.stack_policy_url.clone()).await?;
+        let policy =
+            self.stack_policy_text(ctx, input.stack_policy_body.clone(), input.stack_policy_url.clone()).await?;
         let deploy = self.deploy_context(ctx, input.role_arn.as_deref())?;
         let id = super::new_stack_id(ctx, &name);
         let caps = input.capabilities.clone().unwrap_or_default();
@@ -206,9 +213,14 @@ impl CloudFormation {
                 current.id, current.status
             )));
         }
-        let policy = self.stack_policy_text(ctx, input.stack_policy_body.clone(), input.stack_policy_url.clone()).await?;
+        let policy =
+            self.stack_policy_text(ctx, input.stack_policy_body.clone(), input.stack_policy_url.clone()).await?;
         let during = self
-            .stack_policy_text(ctx, input.stack_policy_during_update_body.clone(), input.stack_policy_during_update_url.clone())
+            .stack_policy_text(
+                ctx,
+                input.stack_policy_during_update_body.clone(),
+                input.stack_policy_during_update_url.clone(),
+            )
             .await?;
         let deploy = self.deploy_context(ctx, role.as_deref())?;
         let caps = input.capabilities.clone().unwrap_or_default();
@@ -282,7 +294,11 @@ impl CloudFormation {
         Ok(types::UpdateStackOutput { stack_id: Some(current.id), operation_id: Some(operation_id) })
     }
 
-    pub(crate) async fn delete_stack_op(&self, ctx: &RequestContext, input: types::DeleteStackInput) -> Result<(), ServiceError> {
+    pub(crate) async fn delete_stack_op(
+        &self,
+        ctx: &RequestContext,
+        input: types::DeleteStackInput,
+    ) -> Result<(), ServiceError> {
         let current = {
             let st = self.state();
             match find(&st, ctx, &input.stack_name) {
@@ -290,14 +306,27 @@ impl CloudFormation {
                 // Deleting a stack that does not exist succeeds.
                 Err(_) => {
                     drop(st);
-                    ctx.authorize("cloudformation:DeleteStack", &stack_resource(ctx, &input.stack_name), Default::default())?;
+                    ctx.authorize(
+                        "cloudformation:DeleteStack",
+                        &stack_resource(ctx, &input.stack_name),
+                        Default::default(),
+                    )?;
                     return Ok(());
                 }
             }
         };
         ctx.authorize("cloudformation:DeleteStack", &current.id, Default::default())?;
         if input.role_arn.is_some() {
-            self.authorize_stack(ctx, "cloudformation:DeleteStack", &current.id, None, input.role_arn.as_deref(), &[], &[], None)?;
+            self.authorize_stack(
+                ctx,
+                "cloudformation:DeleteStack",
+                &current.id,
+                None,
+                input.role_arn.as_deref(),
+                &[],
+                &[],
+                None,
+            )?;
         }
         if current.is_deleted() || current.status == "DELETE_IN_PROGRESS" {
             return Ok(());
@@ -357,7 +386,7 @@ impl CloudFormation {
                     .values()
                     .filter(|s| !s.is_deleted() && s.account == ctx.caller.account_id && s.region == ctx.region)
                     .collect();
-                v.sort_by(|a, b| b.created.cmp(&a.created));
+                v.sort_by_key(|b| std::cmp::Reverse(b.created));
                 v.into_iter().map(convert::stack).collect()
             }
         };
@@ -365,7 +394,11 @@ impl CloudFormation {
         Ok(types::DescribeStacksOutput { stacks: Some(stacks), next_token: next })
     }
 
-    pub(crate) fn list_stacks_op(&self, ctx: &RequestContext, input: types::ListStacksInput) -> Result<types::ListStacksOutput, ServiceError> {
+    pub(crate) fn list_stacks_op(
+        &self,
+        ctx: &RequestContext,
+        input: types::ListStacksInput,
+    ) -> Result<types::ListStacksOutput, ServiceError> {
         ctx.authorize("cloudformation:ListStacks", "*", Default::default())?;
         let st = self.state();
         let filter = input.stack_status_filter.unwrap_or_default();
@@ -375,7 +408,7 @@ impl CloudFormation {
             .filter(|s| s.account == ctx.caller.account_id && s.region == ctx.region)
             .filter(|s| filter.is_empty() || filter.contains(&s.status))
             .collect();
-        v.sort_by(|a, b| b.created.cmp(&a.created));
+        v.sort_by_key(|b| std::cmp::Reverse(b.created));
         let all: Vec<types::StackSummary> = v.into_iter().map(convert::summary).collect();
         let (items, next) = page(&all, input.next_token.as_deref(), 100)?;
         Ok(types::ListStacksOutput { stack_summaries: Some(items), next_token: next })
@@ -416,7 +449,10 @@ impl CloudFormation {
             .iter()
             .filter(|r| input.logical_resource_id.as_ref().is_none_or(|l| &r.logical_id == l))
             .filter(|r| {
-                input.physical_resource_id.as_ref().is_none_or(|p| input.stack_name.is_some() || r.physical_id.as_ref() == Some(p))
+                input
+                    .physical_resource_id
+                    .as_ref()
+                    .is_none_or(|p| input.stack_name.is_some() || r.physical_id.as_ref() == Some(p))
             })
             .map(|r| convert::resource(s, r))
             .collect();
@@ -450,13 +486,20 @@ impl CloudFormation {
         Ok(types::ListStackResourcesOutput { stack_resource_summaries: Some(items), next_token: next })
     }
 
-    pub(crate) fn get_template_op(&self, ctx: &RequestContext, input: types::GetTemplateInput) -> Result<types::GetTemplateOutput, ServiceError> {
+    pub(crate) fn get_template_op(
+        &self,
+        ctx: &RequestContext,
+        input: types::GetTemplateInput,
+    ) -> Result<types::GetTemplateOutput, ServiceError> {
         let st = self.state();
         let stages = Some(vec!["Original".to_string(), "Processed".to_string()]);
         if let Some(cs) = &input.change_set_name {
             let (stack, change_set) = super::change_sets::find_change_set(&st, ctx, cs, input.stack_name.as_deref())?;
             ctx.authorize("cloudformation:GetTemplate", &stack.id, Default::default())?;
-            return Ok(types::GetTemplateOutput { template_body: Some(change_set.template_body.clone()), stages_available: stages });
+            return Ok(types::GetTemplateOutput {
+                template_body: Some(change_set.template_body.clone()),
+                stages_available: stages,
+            });
         }
         let name = input.stack_name.as_deref().ok_or_else(|| validation("StackName must be specified"))?;
         let s = find(&st, ctx, name)?;
@@ -485,12 +528,17 @@ impl CloudFormation {
         Ok(types::UpdateTerminationProtectionOutput { stack_id: Some(id) })
     }
 
-    pub(crate) async fn set_stack_policy_op(&self, ctx: &RequestContext, input: types::SetStackPolicyInput) -> Result<(), ServiceError> {
+    pub(crate) async fn set_stack_policy_op(
+        &self,
+        ctx: &RequestContext,
+        input: types::SetStackPolicyInput,
+    ) -> Result<(), ServiceError> {
         let id = { find_id(&self.state(), ctx, &input.stack_name)? };
-        ctx.authorize("cloudformation:SetStackPolicy", &id, condition_keys(&[(
-            "cloudformation:StackPolicyUrl",
-            input.stack_policy_url.clone().into_iter().collect(),
-        )]))?;
+        ctx.authorize(
+            "cloudformation:SetStackPolicy",
+            &id,
+            condition_keys(&[("cloudformation:StackPolicyUrl", input.stack_policy_url.clone().into_iter().collect())]),
+        )?;
         let policy = self.stack_policy_text(ctx, input.stack_policy_body, input.stack_policy_url).await?;
         if let Some(s) = self.state().stacks.get_mut(&id) {
             s.policy = policy;
@@ -498,14 +546,22 @@ impl CloudFormation {
         Ok(())
     }
 
-    pub(crate) fn get_stack_policy_op(&self, ctx: &RequestContext, input: types::GetStackPolicyInput) -> Result<types::GetStackPolicyOutput, ServiceError> {
+    pub(crate) fn get_stack_policy_op(
+        &self,
+        ctx: &RequestContext,
+        input: types::GetStackPolicyInput,
+    ) -> Result<types::GetStackPolicyOutput, ServiceError> {
         let st = self.state();
         let s = find(&st, ctx, &input.stack_name)?;
         ctx.authorize("cloudformation:GetStackPolicy", &s.id, Default::default())?;
         Ok(types::GetStackPolicyOutput { stack_policy_body: s.policy.clone() })
     }
 
-    pub(crate) fn signal_resource_op(&self, ctx: &RequestContext, input: types::SignalResourceInput) -> Result<(), ServiceError> {
+    pub(crate) fn signal_resource_op(
+        &self,
+        ctx: &RequestContext,
+        input: types::SignalResourceInput,
+    ) -> Result<(), ServiceError> {
         let (id, exists) = {
             let st = self.state();
             let s = find(&st, ctx, &input.stack_name)?;
@@ -525,7 +581,11 @@ impl CloudFormation {
         Ok(())
     }
 
-    pub(crate) fn list_exports_op(&self, ctx: &RequestContext, input: types::ListExportsInput) -> Result<types::ListExportsOutput, ServiceError> {
+    pub(crate) fn list_exports_op(
+        &self,
+        ctx: &RequestContext,
+        input: types::ListExportsInput,
+    ) -> Result<types::ListExportsOutput, ServiceError> {
         ctx.authorize("cloudformation:ListExports", "*", Default::default())?;
         let st = self.state();
         let mut all = Vec::new();
@@ -548,7 +608,11 @@ impl CloudFormation {
         Ok(types::ListExportsOutput { exports: Some(items), next_token: next })
     }
 
-    pub(crate) fn list_imports_op(&self, ctx: &RequestContext, input: types::ListImportsInput) -> Result<types::ListImportsOutput, ServiceError> {
+    pub(crate) fn list_imports_op(
+        &self,
+        ctx: &RequestContext,
+        input: types::ListImportsInput,
+    ) -> Result<types::ListImportsOutput, ServiceError> {
         ctx.authorize("cloudformation:ListImports", "*", Default::default())?;
         let st = self.state();
         let mut names = crate::importers(&st, &ctx.caller.account_id, &ctx.region, &input.export_name);
@@ -560,7 +624,11 @@ impl CloudFormation {
         Ok(types::ListImportsOutput { imports: Some(items), next_token: next })
     }
 
-    pub(crate) fn cancel_update_stack_op(&self, ctx: &RequestContext, input: types::CancelUpdateStackInput) -> Result<(), ServiceError> {
+    pub(crate) fn cancel_update_stack_op(
+        &self,
+        ctx: &RequestContext,
+        input: types::CancelUpdateStackInput,
+    ) -> Result<(), ServiceError> {
         let st = self.state();
         let s = find(&st, ctx, &input.stack_name)?;
         ctx.authorize("cloudformation:CancelUpdateStack", &s.id, Default::default())?;
@@ -579,7 +647,16 @@ impl CloudFormation {
         input: types::ContinueUpdateRollbackInput,
     ) -> Result<types::ContinueUpdateRollbackOutput, ServiceError> {
         let current = { find(&self.state(), ctx, &input.stack_name)?.clone() };
-        self.authorize_stack(ctx, "cloudformation:ContinueUpdateRollback", &current.id, None, input.role_arn.as_deref(), &[], &[], None)?;
+        self.authorize_stack(
+            ctx,
+            "cloudformation:ContinueUpdateRollback",
+            &current.id,
+            None,
+            input.role_arn.as_deref(),
+            &[],
+            &[],
+            None,
+        )?;
         if current.status != "UPDATE_ROLLBACK_FAILED" {
             return Err(validation("ContinueUpdateRollback cannot be called from current stack status"));
         }
@@ -601,8 +678,20 @@ impl CloudFormation {
         input: types::RollbackStackInput,
     ) -> Result<types::RollbackStackOutput, ServiceError> {
         let current = { find(&self.state(), ctx, &input.stack_name)?.clone() };
-        self.authorize_stack(ctx, "cloudformation:RollbackStack", &current.id, None, input.role_arn.as_deref(), &[], &[], None)?;
-        if !matches!(current.status.as_str(), "CREATE_FAILED" | "UPDATE_FAILED" | "UPDATE_ROLLBACK_FAILED" | "IMPORT_ROLLBACK_FAILED") {
+        self.authorize_stack(
+            ctx,
+            "cloudformation:RollbackStack",
+            &current.id,
+            None,
+            input.role_arn.as_deref(),
+            &[],
+            &[],
+            None,
+        )?;
+        if !matches!(
+            current.status.as_str(),
+            "CREATE_FAILED" | "UPDATE_FAILED" | "UPDATE_ROLLBACK_FAILED" | "IMPORT_ROLLBACK_FAILED"
+        ) {
             return Err(validation(format!(
                 "Stack {} is in {} state and cannot be rolled back.",
                 current.id, current.status

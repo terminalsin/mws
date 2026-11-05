@@ -91,8 +91,11 @@ impl Provider for Rule {
         self.put(cx, name, new).await?;
         if changed(old, new, "Targets") {
             let keep: Vec<String> = targets(new).iter().map(|t| t.get("Id").map(text).unwrap_or_default()).collect();
-            let removed: Vec<String> =
-                targets(old).iter().map(|t| t.get("Id").map(text).unwrap_or_default()).filter(|i| !keep.contains(i)).collect();
+            let removed: Vec<String> = targets(old)
+                .iter()
+                .map(|t| t.get("Id").map(text).unwrap_or_default())
+                .filter(|i| !keep.contains(i))
+                .collect();
             if !removed.is_empty() {
                 let mut input = json!({"Rule": name, "Ids": removed});
                 if let Some(b) = s(new, "EventBusName") {
@@ -142,7 +145,11 @@ impl Provider for EventBus {
         let name = s(props, "Name").unwrap_or_default();
         let mut input = Map::new();
         input.insert("Name".into(), json!(name));
-        super::copy(props, &mut input, &["EventSourceName", "Description", "KmsKeyIdentifier", "DeadLetterConfig", "LogConfig"]);
+        super::copy(
+            props,
+            &mut input,
+            &["EventSourceName", "Description", "KmsKeyIdentifier", "DeadLetterConfig", "LogConfig"],
+        );
         let tags = cx.tags(props);
         if !tags.is_empty() {
             input.insert("Tags".into(), json!(tags));
@@ -165,7 +172,10 @@ impl Provider for EventBus {
                 attrs.insert("Policy".into(), json!(p));
             }
         }
-        if changed(old, new, "Description") || changed(old, new, "KmsKeyIdentifier") || changed(old, new, "DeadLetterConfig") {
+        if changed(old, new, "Description")
+            || changed(old, new, "KmsKeyIdentifier")
+            || changed(old, new, "DeadLetterConfig")
+        {
             let mut input = Map::new();
             input.insert("Name".into(), json!(name));
             super::copy(new, &mut input, &["Description", "KmsKeyIdentifier", "DeadLetterConfig", "LogConfig"]);

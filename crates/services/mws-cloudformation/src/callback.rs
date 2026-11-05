@@ -38,7 +38,12 @@ pub fn handle(cfn: &CloudFormation, request: &HttpRequest) -> HttpResponse {
     }
     let body: Value = match serde_json::from_slice(request.body()) {
         Ok(v) => v,
-        Err(_) => return respond(400, "<Error><Code>MalformedJSON</Code><Message>The response body is not valid JSON</Message></Error>"),
+        Err(_) => {
+            return respond(
+                400,
+                "<Error><Code>MalformedJSON</Code><Message>The response body is not valid JSON</Message></Error>",
+            )
+        }
     };
     cfn.signal(&token, body);
     respond(200, "")

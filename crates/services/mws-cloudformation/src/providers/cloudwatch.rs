@@ -118,7 +118,17 @@ impl Provider for CompositeAlarm {
         copy(
             new,
             &mut input,
-            &["AlarmRule", "AlarmDescription", "ActionsEnabled", "AlarmActions", "OKActions", "InsufficientDataActions", "ActionsSuppressor", "ActionsSuppressorWaitPeriod", "ActionsSuppressorExtensionPeriod"],
+            &[
+                "AlarmRule",
+                "AlarmDescription",
+                "ActionsEnabled",
+                "AlarmActions",
+                "OKActions",
+                "InsufficientDataActions",
+                "ActionsSuppressor",
+                "ActionsSuppressorWaitPeriod",
+                "ActionsSuppressorExtensionPeriod",
+            ],
         );
         numbers(&mut input, &["ActionsSuppressorWaitPeriod", "ActionsSuppressorExtensionPeriod"]);
         bools(&mut input, &["ActionsEnabled"]);
@@ -144,14 +154,22 @@ impl Provider for Dashboard {
 
     async fn create(&self, cx: &Cx<'_>, props: &Props) -> HResult<Created> {
         let name = s(props, "DashboardName").unwrap_or_else(|| cx.physical_name(255));
-        cx.call("monitoring", "PutDashboard", json!({"DashboardName": name, "DashboardBody": document(props, "DashboardBody").unwrap_or_default()}))
-            .await?;
+        cx.call(
+            "monitoring",
+            "PutDashboard",
+            json!({"DashboardName": name, "DashboardBody": document(props, "DashboardBody").unwrap_or_default()}),
+        )
+        .await?;
         Ok(Created::new(name))
     }
 
     async fn update(&self, cx: &Cx<'_>, name: &str, _old: &Props, new: &Props, attrs: &Props) -> HResult<Props> {
-        cx.call("monitoring", "PutDashboard", json!({"DashboardName": name, "DashboardBody": document(new, "DashboardBody").unwrap_or_default()}))
-            .await?;
+        cx.call(
+            "monitoring",
+            "PutDashboard",
+            json!({"DashboardName": name, "DashboardBody": document(new, "DashboardBody").unwrap_or_default()}),
+        )
+        .await?;
         Ok(attrs.clone())
     }
 

@@ -30,7 +30,7 @@ use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::sync::{Arc, Mutex, MutexGuard, RwLock};
 
 use mws_core::{
-    AuthzDecision, AuthzRequest, Authorizer, Caller, HttpRequest, HttpResponse, RequestContext, Service, ServiceError,
+    Authorizer, AuthzDecision, AuthzRequest, Caller, HttpRequest, HttpResponse, RequestContext, Service, ServiceError,
 };
 use serde_json::Value;
 
@@ -162,16 +162,24 @@ impl CloudFormation {
 
     /// The identity a stack deploys with: `ctx` marked as called via
     /// CloudFormation, or the service role's session.
-    pub(crate) fn deploy_context(&self, ctx: &RequestContext, role_arn: Option<&str>) -> Result<RequestContext, ServiceError> {
+    pub(crate) fn deploy_context(
+        &self,
+        ctx: &RequestContext,
+        role_arn: Option<&str>,
+    ) -> Result<RequestContext, ServiceError> {
         let mut c = ctx.clone();
         if let Some(role) = role_arn {
             let roles = self.inner.roles.read().expect("roles lock poisoned").clone();
             let Some(roles) = roles else {
-                return Err(ServiceError::client("ValidationError", 400, format!("Role {role} is invalid or cannot be assumed")));
+                return Err(ServiceError::client(
+                    "ValidationError",
+                    400,
+                    format!("Role {role} is invalid or cannot be assumed"),
+                ));
             };
-            let caller = roles
-                .assume(role, "AWSCloudFormation", ctx.received_at)
-                .map_err(|_| ServiceError::client("ValidationError", 400, format!("Role {role} is invalid or cannot be assumed")))?;
+            let caller = roles.assume(role, "AWSCloudFormation", ctx.received_at).map_err(|_| {
+                ServiceError::client("ValidationError", 400, format!("Role {role} is invalid or cannot be assumed"))
+            })?;
             c.caller = caller;
         }
         c.authorizer = Arc::new(ViaCloudFormation(ctx.authorizer.clone()));

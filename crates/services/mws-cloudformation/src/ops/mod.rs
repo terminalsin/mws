@@ -16,7 +16,7 @@ use crate::engine::EvalData;
 use crate::intrinsics::{evaluate_conditions, Pseudo};
 use crate::parameters::{self, Provided, StackParameter};
 use crate::providers::is_custom;
-use crate::state::{State, Stack};
+use crate::state::{Stack, State};
 use crate::template::{format_error, Template};
 use crate::CloudFormation;
 
@@ -53,7 +53,9 @@ pub(crate) fn find<'a>(st: &'a State, ctx: &RequestContext, name: &str) -> Resul
     let found = if name.starts_with("arn:") {
         st.stacks.get(name).filter(|s| &s.account == account && s.region == ctx.region)
     } else {
-        st.stacks.values().find(|s| s.name == name && !s.is_deleted() && &s.account == account && s.region == ctx.region)
+        st.stacks
+            .values()
+            .find(|s| s.name == name && !s.is_deleted() && &s.account == account && s.region == ctx.region)
     };
     found.ok_or_else(|| not_found(name))
 }
@@ -141,10 +143,13 @@ impl CloudFormation {
         let mut params = parameters::assign(&template, provided, previous).map_err(validation)?;
         for p in params.iter_mut() {
             if parameters::ssm_value_type(&p.ty).is_some() {
-                let out = self
-                    .call(deploy_ctx, "ssm", "GetParameter", json!({"Name": p.value}))
-                    .await
-                    .map_err(|_| validation(format!("Unable to fetch parameters [{}] from parameter store for this account.", p.value)))?;
+                let out =
+                    self.call(deploy_ctx, "ssm", "GetParameter", json!({"Name": p.value})).await.map_err(|_| {
+                        validation(format!(
+                            "Unable to fetch parameters [{}] from parameter store for this account.",
+                            p.value
+                        ))
+                    })?;
                 p.resolved = out["Parameter"]["Value"].as_str().map(str::to_string);
             }
         }
@@ -370,7 +375,11 @@ pub(crate) fn provided(params: Option<Vec<crate::generated::types::Parameter>>) 
 }
 
 /// Simple offset-based pagination.
-pub(crate) fn page<T: Clone>(items: &[T], token: Option<&str>, size: usize) -> Result<(Vec<T>, Option<String>), ServiceError> {
+pub(crate) fn page<T: Clone>(
+    items: &[T],
+    token: Option<&str>,
+    size: usize,
+) -> Result<(Vec<T>, Option<String>), ServiceError> {
     let start = match token {
         Some(t) => t.parse::<usize>().map_err(|_| validation("Invalid NextToken"))?,
         None => 0,

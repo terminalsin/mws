@@ -24,9 +24,9 @@ pub fn check(policy: &str, action: &str, logical_id: &str, resource_type: &str) 
         match st.get("Effect").and_then(Value::as_str) {
             Some("Deny") => {
                 return Err(format!(
-                    "Action denied by stack policy: Statement [#{}] does not allow [{action}] for resource [{resource}]",
-                    i + 1
-                ))
+                "Action denied by stack policy: Statement [#{}] does not allow [{action}] for resource [{resource}]",
+                i + 1
+            ))
             }
             Some("Allow") => allowed = true,
             _ => {}
@@ -41,7 +41,8 @@ pub fn check(policy: &str, action: &str, logical_id: &str, resource_type: &str) 
 
 /// Check a policy document's structure.
 pub fn validate(policy: &str) -> Result<(), String> {
-    let doc: Value = serde_json::from_str(policy).map_err(|_| "Error validating stack policy: Invalid stack policy".to_string())?;
+    let doc: Value =
+        serde_json::from_str(policy).map_err(|_| "Error validating stack policy: Invalid stack policy".to_string())?;
     let ok = match doc.get("Statement") {
         Some(Value::Array(a)) => a.iter().all(|s| {
             matches!(s.get("Effect").and_then(Value::as_str), Some("Allow" | "Deny"))

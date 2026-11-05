@@ -9,7 +9,6 @@ use mws_core::RequestContext;
 use serde_json::{Map, Value};
 
 use crate::intrinsics::{EvalError, Evaluator, Lookup, Pseudo, Resources};
-use crate::parameters::{ref_values, StackParameter};
 use crate::providers::{self, Cx, Props, Provider};
 use crate::state::{Event, Resource, Snapshot, Stack, StackOutput};
 use crate::template::Template;
@@ -241,13 +240,20 @@ impl Deployment {
     }
 
     fn cx<'a>(&'a self, stack: &'a Stack, logical_id: &'a str, tags: &'a [(String, String)]) -> Cx<'a> {
-        Cx { cfn: &self.cfn, ctx: &self.ctx, stack_name: &stack.name, stack_id: &stack.id, logical_id, stack_tags: tags }
+        Cx {
+            cfn: &self.cfn,
+            ctx: &self.ctx,
+            stack_name: &stack.name,
+            stack_id: &stack.id,
+            logical_id,
+            stack_tags: tags,
+        }
     }
 
     fn provider(&self, ty: &str) -> Result<Arc<dyn Provider>, String> {
-        self.cfn.provider(ty).ok_or_else(|| {
-            crate::template::format_error(format!("Unrecognized resource types: [{ty}]"))
-        })
+        self.cfn
+            .provider(ty)
+            .ok_or_else(|| crate::template::format_error(format!("Unrecognized resource types: [{ty}]")))
     }
 
     /// Evaluate a resource's properties against the stack as it is now.
@@ -255,9 +261,16 @@ impl Deployment {
         let stack = self.snapshot();
         let def = template.resource(logical_id).cloned().unwrap_or_default();
         let pending = BTreeSet::new();
-        let lookup =
-            StackResources { resources: &stack.resources, template, data, pending: &pending, preview: false, cfn: &self.cfn };
-        let props = data.evaluator(template, &lookup).eval_properties(def.get("Properties")).map_err(EvalError::message)?;
+        let lookup = StackResources {
+            resources: &stack.resources,
+            template,
+            data,
+            pending: &pending,
+            preview: false,
+            cfn: &self.cfn,
+        };
+        let props =
+            data.evaluator(template, &lookup).eval_properties(def.get("Properties")).map_err(EvalError::message)?;
         let props = crate::dynamic::resolve(&self.cfn, &self.ctx, Value::Object(props)).await?;
         let Value::Object(props) = props else { unreachable!("objects stay objects") };
         let ty = def.get("Type").and_then(Value::as_str).unwrap_or_default();
@@ -292,8 +305,15 @@ impl Deployment {
         let props = match self.properties(template, data, logical_id).await {
             Ok(p) => p,
             Err(reason) => {
-                self.event(logical_id, &ty, None, if replacing { "UPDATE_FAILED" } else { "CREATE_FAILED" }, Some(&reason), None)
-                    .await;
+                self.event(
+                    logical_id,
+                    &ty,
+                    None,
+                    if replacing { "UPDATE_FAILED" } else { "CREATE_FAILED" },
+                    Some(&reason),
+                    None,
+                )
+                .await;
                 if !replacing {
                     self.set_resource(Resource {
                         logical_id: logical_id.into(),
@@ -441,8 +461,15 @@ impl Deployment {
             }
             Err(e) => {
                 if events {
-                    self.event(&r.logical_id, &r.resource_type, Some(&physical), "DELETE_FAILED", Some(&e.message), None)
-                        .await;
+                    self.event(
+                        &r.logical_id,
+                        &r.resource_type,
+                        Some(&physical),
+                        "DELETE_FAILED",
+                        Some(&e.message),
+                        None,
+                    )
+                    .await;
                 }
                 Err(e.message)
             }
@@ -524,8 +551,14 @@ impl Deployment {
     fn outputs(&self, template: &Template, data: &EvalData) -> Result<Vec<StackOutput>, String> {
         let stack = self.snapshot();
         let pending = BTreeSet::new();
-        let lookup =
-            StackResources { resources: &stack.resources, template, data, pending: &pending, preview: false, cfn: &self.cfn };
+        let lookup = StackResources {
+            resources: &stack.resources,
+            template,
+            data,
+            pending: &pending,
+            preview: false,
+            cfn: &self.cfn,
+        };
         let ev = data.evaluator(template, &lookup);
         let mut out = Vec::new();
         let Some(outputs) = template.section("Outputs") else { return Ok(out) };
@@ -573,7 +606,9 @@ impl Deployment {
             if still.is_some_and(|n| n.value == o.value) {
                 continue;
             }
-            if let Some(importer) = crate::importers(&st, &me.account, &me.region, name).into_iter().find(|i| i != &me.name) {
+            if let Some(importer) =
+                crate::importers(&st, &me.account, &me.region, name).into_iter().find(|i| i != &me.name)
+            {
                 return Err(match still {
                     Some(_) => format!("Cannot update export {name} as it is in use by {importer}"),
                     None => format!("Export {name} cannot be deleted as it is in use by {importer}"),
@@ -662,20 +697,20 @@ impl Deployment {
     pub async fn delete(self, retain: BTreeSet<String>) {
         let stack = self.snapshot();
         // Exports other stacks import cannot go.
-        {
+        let blocked = {
             let st = self.cfn.state();
-            for o in &stack.outputs {
-                let Some(name) = &o.export_name else { continue };
-                if let Some(importer) =
-                    crate::importers(&st, &stack.account, &stack.region, name).into_iter().find(|i| i != &stack.name)
-                {
-                    drop(st);
-                    let reason = format!("Export {name} cannot be deleted as it is in use by {importer}");
-                    self.stack_status("DELETE_FAILED", Some(&reason)).await;
-                    self.cfn.finished(&self.stack_id);
-                    return;
-                }
-            }
+            stack.outputs.iter().find_map(|o| {
+                let name = o.export_name.as_ref()?;
+                let importer = crate::importers(&st, &stack.account, &stack.region, name)
+                    .into_iter()
+                    .find(|i| i != &stack.name)?;
+                Some(format!("Export {name} cannot be deleted as it is in use by {importer}"))
+            })
+        };
+        if let Some(reason) = blocked {
+            self.stack_status("DELETE_FAILED", Some(&reason)).await;
+            self.cfn.finished(&self.stack_id);
+            return;
         }
         let template = Template::parse(&stack.template_body).ok();
         let failed = self.delete_resources(template.as_ref(), None, &retain, true).await;
@@ -695,13 +730,16 @@ impl Deployment {
         let result = self.update_resources(&template, &data, policy_override.as_deref()).await;
         let previous = self.with(|s| s.previous.clone()).expect("updates keep the previous deployment");
         let result = match result {
-            Ok(()) => match self.outputs(&template, &data).and_then(|o| self.check_exports(&previous.outputs, &o).map(|_| o)) {
-                Ok(outputs) => {
-                    self.with(|s| s.outputs = outputs);
-                    Ok(())
+            Ok(()) => {
+                match self.outputs(&template, &data).and_then(|o| self.check_exports(&previous.outputs, &o).map(|_| o))
+                {
+                    Ok(outputs) => {
+                        self.with(|s| s.outputs = outputs);
+                        Ok(())
+                    }
+                    Err(reason) => Err(Failure { logical_id: None, reason }),
                 }
-                Err(reason) => Err(Failure { logical_id: None, reason }),
-            },
+            }
             Err(f) => Err(f),
         };
         match result {
@@ -729,7 +767,12 @@ impl Deployment {
         self.cfn.finished(&self.stack_id);
     }
 
-    async fn update_resources(&self, template: &Template, data: &EvalData, policy_override: Option<&str>) -> Result<(), Failure> {
+    async fn update_resources(
+        &self,
+        template: &Template,
+        data: &EvalData,
+        policy_override: Option<&str>,
+    ) -> Result<(), Failure> {
         let order = template
             .creation_order(&|l| data.included(template, l))
             .map_err(|reason| Failure { logical_id: None, reason })?;
@@ -880,7 +923,8 @@ impl Deployment {
                 if current.exists() {
                     created_now.push(current.clone());
                 }
-                self.event(logical, &old.resource_type, old.physical_id.as_deref(), "UPDATE_COMPLETE", None, None).await;
+                self.event(logical, &old.resource_type, old.physical_id.as_deref(), "UPDATE_COMPLETE", None, None)
+                    .await;
                 self.set_resource(Resource { status: "UPDATE_COMPLETE".into(), ..old });
                 continue;
             }
@@ -888,7 +932,8 @@ impl Deployment {
                 continue;
             }
             let physical = old.physical_id.clone().unwrap_or_default();
-            self.event(logical, &old.resource_type, Some(&physical), "UPDATE_IN_PROGRESS", None, Some(&old.properties)).await;
+            self.event(logical, &old.resource_type, Some(&physical), "UPDATE_IN_PROGRESS", None, Some(&old.properties))
+                .await;
             let Some(provider) = self.cfn.provider(&old.resource_type) else { continue };
             let stack = self.snapshot();
             let tags: Vec<(String, String)> = previous.tags.iter().map(|t| (t.key.clone(), t.value.clone())).collect();
@@ -899,7 +944,8 @@ impl Deployment {
                     self.set_resource(Resource { status: "UPDATE_COMPLETE".into(), attributes: attrs, ..old });
                 }
                 Err(e) => {
-                    self.event(logical, &old.resource_type, Some(&physical), "UPDATE_FAILED", Some(&e.message), None).await;
+                    self.event(logical, &old.resource_type, Some(&physical), "UPDATE_FAILED", Some(&e.message), None)
+                        .await;
                     self.update_resource(logical, |r| {
                         r.status = "UPDATE_FAILED".into();
                         r.status_reason = Some(e.message.clone());
@@ -983,9 +1029,4 @@ pub fn parse_iso_duration(s: &str) -> u64 {
         }
     }
     total
-}
-
-/// The stack's parameters as `Ref` values.
-pub fn param_values(params: &[StackParameter]) -> BTreeMap<String, Value> {
-    ref_values(params)
 }

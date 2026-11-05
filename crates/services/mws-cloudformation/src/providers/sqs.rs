@@ -113,7 +113,8 @@ impl Provider for Queue {
     async fn read(&self, cx: &Cx<'_>, url: &str, props: &Props) -> Option<HResult<Props>> {
         Some(
             async {
-                let out = cx.call("sqs", "GetQueueAttributes", json!({"QueueUrl": url, "AttributeNames": ["All"]})).await?;
+                let out =
+                    cx.call("sqs", "GetQueueAttributes", json!({"QueueUrl": url, "AttributeNames": ["All"]})).await?;
                 let a = &out["Attributes"];
                 let mut p = Props::new();
                 for k in props.keys() {
@@ -129,11 +130,18 @@ impl Provider for Queue {
                         other => {
                             if let Some(v) = a.get(other) {
                                 let original = &props[other];
-                                p.insert(k.clone(), match original {
-                                    Value::Number(_) => v.as_str().and_then(|s| s.parse::<i64>().ok()).map(Value::from).unwrap_or(v.clone()),
-                                    Value::Bool(_) => json!(v.as_str() == Some("true")),
-                                    _ => v.clone(),
-                                });
+                                p.insert(
+                                    k.clone(),
+                                    match original {
+                                        Value::Number(_) => v
+                                            .as_str()
+                                            .and_then(|s| s.parse::<i64>().ok())
+                                            .map(Value::from)
+                                            .unwrap_or(v.clone()),
+                                        Value::Bool(_) => json!(v.as_str() == Some("true")),
+                                        _ => v.clone(),
+                                    },
+                                );
                             }
                         }
                     }
@@ -195,8 +203,12 @@ impl Provider for QueueInlinePolicy {
 
     async fn create(&self, cx: &Cx<'_>, props: &Props) -> HResult<Created> {
         let q = req(props, "Queue")?;
-        cx.call("sqs", "SetQueueAttributes", json!({"QueueUrl": q, "Attributes": {"Policy": document(props, "PolicyDocument").unwrap_or_default()}}))
-            .await?;
+        cx.call(
+            "sqs",
+            "SetQueueAttributes",
+            json!({"QueueUrl": q, "Attributes": {"Policy": document(props, "PolicyDocument").unwrap_or_default()}}),
+        )
+        .await?;
         Ok(Created::new(q))
     }
 

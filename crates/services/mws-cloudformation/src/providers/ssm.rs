@@ -71,18 +71,31 @@ impl Provider for Parameter {
     }
 
     async fn update(&self, cx: &Cx<'_>, name: &str, old: &Props, new: &Props, _attrs: &Props) -> HResult<Props> {
-        if ["Type", "Value", "Description", "AllowedPattern", "Tier", "DataType", "Policies"].iter().any(|k| changed(old, new, k)) {
+        if ["Type", "Value", "Description", "AllowedPattern", "Tier", "DataType", "Policies"]
+            .iter()
+            .any(|k| changed(old, new, k))
+        {
             cx.call("ssm", "PutParameter", put_input(name, new, true)?).await?;
         }
         if changed(old, new, "Tags") {
             let new_tags = cx.tag_map(new);
             let removed: Vec<String> = cx.tag_map(old).keys().filter(|k| !new_tags.contains_key(*k)).cloned().collect();
             if !removed.is_empty() {
-                cx.call("ssm", "RemoveTagsFromResource", json!({"ResourceType": "Parameter", "ResourceId": name, "TagKeys": removed})).await?;
+                cx.call(
+                    "ssm",
+                    "RemoveTagsFromResource",
+                    json!({"ResourceType": "Parameter", "ResourceId": name, "TagKeys": removed}),
+                )
+                .await?;
             }
             let tags: Vec<Value> = new_tags.into_iter().map(|(k, v)| json!({"Key": k, "Value": v})).collect();
             if !tags.is_empty() {
-                cx.call("ssm", "AddTagsToResource", json!({"ResourceType": "Parameter", "ResourceId": name, "Tags": tags})).await?;
+                cx.call(
+                    "ssm",
+                    "AddTagsToResource",
+                    json!({"ResourceType": "Parameter", "ResourceId": name, "Tags": tags}),
+                )
+                .await?;
             }
         }
         Ok(Created::new(name).attr("Type", req(new, "Type")?).attr("Value", value(new)?).attributes)

@@ -5,7 +5,9 @@ use std::sync::Arc;
 
 use serde_json::{json, Map, Value};
 
-use super::{boolean, changed, copy, document, gone_ok, numbers, bools, req, s, text, Created, Cx, HResult, Props, Provider};
+use super::{
+    boolean, bools, changed, copy, document, gone_ok, numbers, req, s, text, Created, Cx, HResult, Props, Provider,
+};
 
 pub fn register(m: &mut BTreeMap<&'static str, Arc<dyn Provider>>) {
     m.insert("AWS::SecretsManager::Secret", Arc::new(Secret));
@@ -22,15 +24,35 @@ async fn secret_string(cx: &Cx<'_>, props: &Props) -> HResult<Option<String>> {
     copy(
         g,
         &mut input,
-        &["PasswordLength", "ExcludeCharacters", "ExcludeNumbers", "ExcludePunctuation", "ExcludeUppercase", "ExcludeLowercase", "IncludeSpace", "RequireEachIncludedType"],
+        &[
+            "PasswordLength",
+            "ExcludeCharacters",
+            "ExcludeNumbers",
+            "ExcludePunctuation",
+            "ExcludeUppercase",
+            "ExcludeLowercase",
+            "IncludeSpace",
+            "RequireEachIncludedType",
+        ],
     );
     numbers(&mut input, &["PasswordLength"]);
-    bools(&mut input, &["ExcludeNumbers", "ExcludePunctuation", "ExcludeUppercase", "ExcludeLowercase", "IncludeSpace", "RequireEachIncludedType"]);
+    bools(
+        &mut input,
+        &[
+            "ExcludeNumbers",
+            "ExcludePunctuation",
+            "ExcludeUppercase",
+            "ExcludeLowercase",
+            "IncludeSpace",
+            "RequireEachIncludedType",
+        ],
+    );
     let out = cx.call("secretsmanager", "GetRandomPassword", Value::Object(input)).await?;
     let password = text(&out["RandomPassword"]);
     match (g.get("SecretStringTemplate").map(text), g.get("GenerateStringKey").map(text)) {
         (Some(t), Some(k)) => {
-            let mut v: Value = serde_json::from_str(&t).map_err(|_| super::HandlerError::invalid("SecretStringTemplate must be a valid JSON object"))?;
+            let mut v: Value = serde_json::from_str(&t)
+                .map_err(|_| super::HandlerError::invalid("SecretStringTemplate must be a valid JSON object"))?;
             v[k] = json!(password);
             Ok(Some(v.to_string()))
         }
@@ -98,7 +120,8 @@ impl Provider for Secret {
         if changed(old, new, "Tags") {
             let new_tags = cx.tags(new);
             let keys: Vec<String> = new_tags.iter().map(|t| text(&t["Key"])).collect();
-            let removed: Vec<String> = cx.tags(old).iter().map(|t| text(&t["Key"])).filter(|k| !keys.contains(k)).collect();
+            let removed: Vec<String> =
+                cx.tags(old).iter().map(|t| text(&t["Key"])).filter(|k| !keys.contains(k)).collect();
             if !removed.is_empty() {
                 cx.call("secretsmanager", "UntagResource", json!({"SecretId": arn, "TagKeys": removed})).await?;
             }
@@ -110,7 +133,10 @@ impl Provider for Secret {
     }
 
     async fn delete(&self, cx: &Cx<'_>, arn: &str, _props: &Props, _attrs: &Props) -> HResult<()> {
-        gone_ok(cx.call("secretsmanager", "DeleteSecret", json!({"SecretId": arn, "ForceDeleteWithoutRecovery": true})).await)
+        gone_ok(
+            cx.call("secretsmanager", "DeleteSecret", json!({"SecretId": arn, "ForceDeleteWithoutRecovery": true}))
+                .await,
+        )
     }
 
     async fn read(&self, cx: &Cx<'_>, arn: &str, props: &Props) -> Option<HResult<Props>> {
@@ -118,7 +144,10 @@ impl Provider for Secret {
             async {
                 let out = cx.call("secretsmanager", "DescribeSecret", json!({"SecretId": arn})).await?;
                 if out.get("DeletedDate").is_some_and(|d| !d.is_null()) {
-                    return Err(super::HandlerError::handler("NotFound", format!("Secret {arn} is scheduled for deletion")));
+                    return Err(super::HandlerError::handler(
+                        "NotFound",
+                        format!("Secret {arn} is scheduled for deletion"),
+                    ));
                 }
                 let mut p = Props::new();
                 for k in ["Name", "Description", "KmsKeyId"] {
@@ -153,7 +182,8 @@ impl Provider for ResourcePolicy {
 
     async fn create(&self, cx: &Cx<'_>, props: &Props) -> HResult<Created> {
         let id = req(props, "SecretId")?;
-        let mut input = json!({"SecretId": id, "ResourcePolicy": document(props, "ResourcePolicy").unwrap_or_default()});
+        let mut input =
+            json!({"SecretId": id, "ResourcePolicy": document(props, "ResourcePolicy").unwrap_or_default()});
         if let Some(b) = boolean(props, "BlockPublicPolicy") {
             input["BlockPublicPolicy"] = json!(b);
         }

@@ -78,10 +78,16 @@ impl Provider for Key {
 
     async fn update(&self, cx: &Cx<'_>, id: &str, old: &Props, new: &Props, attrs: &Props) -> HResult<Props> {
         if changed(old, new, "Description") {
-            cx.call("kms", "UpdateKeyDescription", json!({"KeyId": id, "Description": s(new, "Description").unwrap_or_default()})).await?;
+            cx.call(
+                "kms",
+                "UpdateKeyDescription",
+                json!({"KeyId": id, "Description": s(new, "Description").unwrap_or_default()}),
+            )
+            .await?;
         }
         if changed(old, new, "KeyPolicy") {
-            cx.call("kms", "PutKeyPolicy", json!({"KeyId": id, "PolicyName": "default", "Policy": policy(cx, new)})).await?;
+            cx.call("kms", "PutKeyPolicy", json!({"KeyId": id, "PolicyName": "default", "Policy": policy(cx, new)}))
+                .await?;
         }
         if changed(old, new, "Enabled") {
             let op = if boolean(new, "Enabled") == Some(false) { "DisableKey" } else { "EnableKey" };
@@ -101,7 +107,8 @@ impl Provider for Key {
         if changed(old, new, "Tags") {
             let new_tags = kms_tags(cx, new);
             let keys: Vec<Value> = new_tags.iter().map(|t| t["TagKey"].clone()).collect();
-            let removed: Vec<Value> = kms_tags(cx, old).iter().map(|t| t["TagKey"].clone()).filter(|k| !keys.contains(k)).collect();
+            let removed: Vec<Value> =
+                kms_tags(cx, old).iter().map(|t| t["TagKey"].clone()).filter(|k| !keys.contains(k)).collect();
             if !removed.is_empty() {
                 cx.call("kms", "UntagResource", json!({"KeyId": id, "TagKeys": removed})).await?;
             }
@@ -138,7 +145,10 @@ impl Provider for Key {
                 }
                 if props.contains_key("KeyPolicy") {
                     let pol = cx.call("kms", "GetKeyPolicy", json!({"KeyId": id, "PolicyName": "default"})).await?;
-                    p.insert("KeyPolicy".into(), pol["Policy"].as_str().and_then(|s| serde_json::from_str(s).ok()).unwrap_or_default());
+                    p.insert(
+                        "KeyPolicy".into(),
+                        pol["Policy"].as_str().and_then(|s| serde_json::from_str(s).ok()).unwrap_or_default(),
+                    );
                 }
                 Ok(p)
             }

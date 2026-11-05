@@ -64,7 +64,14 @@ fn scalar(v: &Value) -> String {
 }
 
 impl CloudFormation {
-    async fn drift_of(&self, ctx: &RequestContext, stack_name: &str, stack_id: &str, tags: &[(String, String)], r: &Resource) -> ResourceDrift {
+    async fn drift_of(
+        &self,
+        ctx: &RequestContext,
+        stack_name: &str,
+        stack_id: &str,
+        tags: &[(String, String)],
+        r: &Resource,
+    ) -> ResourceDrift {
         let now = ctx.received_at;
         let mut d = ResourceDrift {
             logical_id: r.logical_id.clone(),
@@ -172,7 +179,9 @@ impl CloudFormation {
             .drift_detections
             .get(&input.stack_drift_detection_id)
             .filter(|d| st.stacks.get(&d.stack_id).is_some_and(|s| s.account == ctx.caller.account_id))
-            .ok_or_else(|| validation(format!("Drift detection with id {} does not exist", input.stack_drift_detection_id)))?;
+            .ok_or_else(|| {
+                validation(format!("Drift detection with id {} does not exist", input.stack_drift_detection_id))
+            })?;
         ctx.authorize("cloudformation:DescribeStackDriftDetectionStatus", &d.stack_id, Default::default())?;
         Ok(types::DescribeStackDriftDetectionStatusOutput {
             stack_id: d.stack_id.clone(),
@@ -196,7 +205,13 @@ impl CloudFormation {
         let latest = st.drift_detections.values().filter(|d| d.stack_id == s.id).max_by_key(|d| d.timestamp);
         let filters = input.stack_resource_drift_status_filters.unwrap_or_default();
         let all: Vec<types::StackResourceDrift> = latest
-            .map(|d| d.results.iter().filter(|r| filters.is_empty() || filters.contains(&r.status)).map(|r| wire(&s.id, r)).collect())
+            .map(|d| {
+                d.results
+                    .iter()
+                    .filter(|r| filters.is_empty() || filters.contains(&r.status))
+                    .map(|r| wire(&s.id, r))
+                    .collect()
+            })
             .unwrap_or_default();
         let size = input.max_results.map(|m| m.max(1) as usize).unwrap_or(100);
         let (items, next) = page(&all, input.next_token.as_deref(), size)?;

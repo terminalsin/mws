@@ -47,7 +47,6 @@ pub fn format_error(message: impl std::fmt::Display) -> String {
 /// A parsed template.
 #[derive(Debug, Clone)]
 pub struct Template {
-    pub body: String,
     pub root: Map<String, Value>,
 }
 
@@ -58,7 +57,7 @@ impl Template {
         let Value::Object(root) = root else {
             return Err(format_error("JSON not well-formed. (line 1, column 1)"));
         };
-        let t = Self { body: body.to_string(), root };
+        let t = Self { root };
         t.check_structure()?;
         Ok(t)
     }
@@ -86,9 +85,7 @@ impl Template {
 
     pub fn parameters(&self) -> Vec<(String, Map<String, Value>)> {
         self.section("Parameters")
-            .map(|p| {
-                p.iter().map(|(k, v)| (k.clone(), v.as_object().cloned().unwrap_or_default())).collect::<Vec<_>>()
-            })
+            .map(|p| p.iter().map(|(k, v)| (k.clone(), v.as_object().cloned().unwrap_or_default())).collect::<Vec<_>>())
             .unwrap_or_default()
     }
 
@@ -142,7 +139,9 @@ impl Template {
         for (name, r) in resources {
             check_logical_id(name)?;
             let Some(r) = r.as_object() else {
-                return Err(format_error(format!("[/Resources/{name}] Every Resources object must contain a Type member.")));
+                return Err(format_error(format!(
+                    "[/Resources/{name}] Every Resources object must contain a Type member."
+                )));
             };
             match r.get("Type") {
                 Some(Value::String(_)) => {}
@@ -211,9 +210,7 @@ impl Template {
             for (name, v) in m {
                 let ok = v.as_object().is_some_and(|o| o.values().all(Value::is_object));
                 if !ok {
-                    return Err(format_error(format!(
-                        "Every Mappings member {name} must contain a map as its value"
-                    )));
+                    return Err(format_error(format!("Every Mappings member {name} must contain a map as its value")));
                 }
             }
         }
@@ -256,7 +253,9 @@ impl Template {
                 }
                 for (res, _) in refs.get_atts {
                     if !resources.contains(&res) {
-                        return Err(format!("Template error: instance of Fn::GetAtt references undefined resource {res}"));
+                        return Err(format!(
+                            "Template error: instance of Fn::GetAtt references undefined resource {res}"
+                        ));
                     }
                 }
                 for c in refs.conditions {
@@ -285,7 +284,9 @@ impl Template {
                 }
                 for (res, _) in refs.get_atts {
                     if !resources.contains(&res) {
-                        return Err(format!("Template error: instance of Fn::GetAtt references undefined resource {res}"));
+                        return Err(format!(
+                            "Template error: instance of Fn::GetAtt references undefined resource {res}"
+                        ));
                     }
                 }
                 if let Some(c) = o.get("Condition").and_then(Value::as_str) {
@@ -433,10 +434,8 @@ fn collect_references(v: &Value, out: &mut References) {
                         Value::Array(a) => (a.first().and_then(Value::as_str).unwrap_or_default(), a.get(1)),
                         _ => ("", None),
                     };
-                    let local: BTreeSet<String> = vars
-                        .and_then(Value::as_object)
-                        .map(|m| m.keys().cloned().collect())
-                        .unwrap_or_default();
+                    let local: BTreeSet<String> =
+                        vars.and_then(Value::as_object).map(|m| m.keys().cloned().collect()).unwrap_or_default();
                     for var in sub_variables(text) {
                         if local.contains(&var) {
                             continue;
@@ -515,9 +514,8 @@ pub fn sub_variables(text: &str) -> Vec<String> {
 pub fn parse_document(body: &str) -> Result<Value, String> {
     let trimmed = body.trim_start();
     if trimmed.starts_with('{') {
-        return serde_json::from_str(body).map_err(|e| {
-            format_error(format!("JSON not well-formed. (line {}, column {})", e.line(), e.column()))
-        });
+        return serde_json::from_str(body)
+            .map_err(|e| format_error(format!("JSON not well-formed. (line {}, column {})", e.line(), e.column())));
     }
     let yaml: serde_yaml::Value = serde_yaml::from_str(body).map_err(|e| {
         let (line, col) = e.location().map(|l| (l.line(), l.column())).unwrap_or((1, 1));
@@ -613,8 +611,10 @@ mod tests {
 
     #[test]
     fn unresolved_refs() {
-        let t = Template::parse(r#"{"Resources":{"A":{"Type":"AWS::SQS::Queue","Properties":{"QueueName":{"Ref":"Nope"}}}}}"#)
-            .unwrap();
+        let t = Template::parse(
+            r#"{"Resources":{"A":{"Type":"AWS::SQS::Queue","Properties":{"QueueName":{"Ref":"Nope"}}}}}"#,
+        )
+        .unwrap();
         assert_eq!(
             t.check_references().unwrap_err(),
             "Template format error: Unresolved resource dependencies [Nope] in the Resources block of the template"

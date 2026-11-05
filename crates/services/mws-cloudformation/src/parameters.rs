@@ -95,11 +95,8 @@ pub fn assign(
     previous: &[StackParameter],
 ) -> Result<Vec<StackParameter>, String> {
     let declared = template.parameters();
-    let unknown: Vec<&str> = provided
-        .iter()
-        .filter(|p| !declared.iter().any(|(k, _)| k == &p.key))
-        .map(|p| p.key.as_str())
-        .collect();
+    let unknown: Vec<&str> =
+        provided.iter().filter(|p| !declared.iter().any(|(k, _)| k == &p.key)).map(|p| p.key.as_str()).collect();
     if !unknown.is_empty() {
         return Err(format!("Parameters: [{}] do not exist in the template", unknown.join(", ")));
     }

@@ -80,9 +80,7 @@ impl CloudFormation {
             }
             (None, None, None, Some(_)) => return Err(validation("MWS does not support stack sets yet.")),
             _ => {
-                return Err(validation(
-                    "Specify exactly one of TemplateBody, TemplateUrl, StackName or StackSetName.",
-                ))
+                return Err(validation("Specify exactly one of TemplateBody, TemplateUrl, StackName or StackSetName."))
             }
         };
         let t = Template::parse(&body).map_err(validation)?;
@@ -98,7 +96,10 @@ impl CloudFormation {
                 no_echo: Some(no_echo(&d)),
                 description: d.get("Description").and_then(Value::as_str).map(str::to_string),
                 parameter_constraints: Some(types::ParameterConstraints {
-                    allowed_values: d.get("AllowedValues").and_then(Value::as_array).map(|a| a.iter().map(scalar).collect()),
+                    allowed_values: d
+                        .get("AllowedValues")
+                        .and_then(Value::as_array)
+                        .map(|a| a.iter().map(scalar).collect()),
                 }),
             })
             .collect();
@@ -164,7 +165,11 @@ impl CloudFormation {
         Ok(types::DescribeAccountLimitsOutput { account_limits: Some(items), next_token: next })
     }
 
-    pub(crate) fn list_types_op(&self, ctx: &RequestContext, input: types::ListTypesInput) -> Result<types::ListTypesOutput, ServiceError> {
+    pub(crate) fn list_types_op(
+        &self,
+        ctx: &RequestContext,
+        input: types::ListTypesInput,
+    ) -> Result<types::ListTypesOutput, ServiceError> {
         ctx.authorize("cloudformation:ListTypes", "*", Default::default())?;
         let visibility = input.visibility.clone().unwrap_or_else(|| "PRIVATE".into());
         let kind = input.r#type.clone().unwrap_or_else(|| "RESOURCE".into());
@@ -193,7 +198,11 @@ impl CloudFormation {
         Ok(types::ListTypesOutput { type_summaries: Some(items), next_token: next })
     }
 
-    pub(crate) fn describe_type_op(&self, ctx: &RequestContext, input: types::DescribeTypeInput) -> Result<types::DescribeTypeOutput, ServiceError> {
+    pub(crate) fn describe_type_op(
+        &self,
+        ctx: &RequestContext,
+        input: types::DescribeTypeInput,
+    ) -> Result<types::DescribeTypeOutput, ServiceError> {
         ctx.authorize("cloudformation:DescribeType", "*", Default::default())?;
         let name = match (&input.type_name, &input.arn) {
             (Some(n), _) => n.clone(),

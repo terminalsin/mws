@@ -7,7 +7,9 @@ use std::sync::Arc;
 use base64::Engine;
 use serde_json::{json, Map, Value};
 
-use super::{changed, copy, gone_ok, int, numbers, bools, req, s, text, Created, Cx, HResult, HandlerError, Props, Provider};
+use super::{
+    bools, changed, copy, gone_ok, int, numbers, req, s, text, Created, Cx, HResult, HandlerError, Props, Provider,
+};
 
 pub fn register(m: &mut BTreeMap<&'static str, Arc<dyn Provider>>) {
     m.insert("AWS::Lambda::Function", Arc::new(Function));
@@ -92,7 +94,9 @@ fn inline_zip(runtime: &str, source: &str) -> HResult<String> {
         } else if runtime.starts_with("nodejs") {
             ("index.js", Some(("cfn-response.js", CFN_RESPONSE_JS)))
         } else {
-            return Err(HandlerError::invalid(format!("ZipFile can only be used with Node.js and Python runtimes, not {runtime}")));
+            return Err(HandlerError::invalid(format!(
+                "ZipFile can only be used with Node.js and Python runtimes, not {runtime}"
+            )));
         };
         let io = |e: std::io::Error| HandlerError::invalid(e.to_string());
         let zerr = |e: zip::result::ZipError| HandlerError::invalid(e.to_string());
@@ -159,7 +163,10 @@ async fn wait_active(cx: &Cx<'_>, name: &str) -> HResult<()> {
         let state = out["State"].as_str().unwrap_or("Active");
         let update = out["LastUpdateStatus"].as_str().unwrap_or("Successful");
         if state == "Failed" {
-            return Err(HandlerError::handler("NotStabilized", format!("Lambda function {name} failed: {}", text(&out["StateReason"]))));
+            return Err(HandlerError::handler(
+                "NotStabilized",
+                format!("Lambda function {name} failed: {}", text(&out["StateReason"])),
+            ));
         }
         if state != "Pending" && update != "InProgress" {
             return Ok(());
@@ -201,14 +208,21 @@ impl Provider for Function {
         let out = cx.call("lambda", "CreateFunction", Value::Object(input)).await?;
         let arn = text(&out["FunctionArn"]);
         if let Some(c) = int(props, "ReservedConcurrentExecutions") {
-            cx.call("lambda", "PutFunctionConcurrency", json!({"FunctionName": name, "ReservedConcurrentExecutions": c})).await?;
+            cx.call(
+                "lambda",
+                "PutFunctionConcurrency",
+                json!({"FunctionName": name, "ReservedConcurrentExecutions": c}),
+            )
+            .await?;
         }
         wait_active(cx, &name).await?;
         Ok(Created::new(&name).attr("Arn", arn))
     }
 
     async fn update(&self, cx: &Cx<'_>, name: &str, old: &Props, new: &Props, attrs: &Props) -> HResult<Props> {
-        if changed(old, new, "Code") || (changed(old, new, "Runtime") && new.get("Code").and_then(|c| c.get("ZipFile")).is_some()) {
+        if changed(old, new, "Code")
+            || (changed(old, new, "Runtime") && new.get("Code").and_then(|c| c.get("ZipFile")).is_some())
+        {
             let mut input = code(new)?.as_object().cloned().unwrap_or_default();
             input.insert("FunctionName".into(), json!(name));
             if let Some(a) = new.get("Architectures") {
@@ -237,7 +251,14 @@ impl Provider for Function {
         }
         if changed(old, new, "ReservedConcurrentExecutions") {
             match int(new, "ReservedConcurrentExecutions") {
-                Some(c) => cx.call("lambda", "PutFunctionConcurrency", json!({"FunctionName": name, "ReservedConcurrentExecutions": c})).await?,
+                Some(c) => {
+                    cx.call(
+                        "lambda",
+                        "PutFunctionConcurrency",
+                        json!({"FunctionName": name, "ReservedConcurrentExecutions": c}),
+                    )
+                    .await?
+                }
                 None => cx.call("lambda", "DeleteFunctionConcurrency", json!({"FunctionName": name})).await?,
             };
         }
@@ -301,7 +322,17 @@ impl Provider for Permission {
         copy(
             props,
             &mut input,
-            &["FunctionName", "Action", "Principal", "SourceArn", "SourceAccount", "EventSourceToken", "FunctionUrlAuthType", "PrincipalOrgID", "InvokedViaFunctionUrl"],
+            &[
+                "FunctionName",
+                "Action",
+                "Principal",
+                "SourceArn",
+                "SourceAccount",
+                "EventSourceToken",
+                "FunctionUrlAuthType",
+                "PrincipalOrgID",
+                "InvokedViaFunctionUrl",
+            ],
         );
         input.insert("StatementId".into(), json!(id));
         cx.call("lambda", "AddPermission", Value::Object(input)).await?;
@@ -309,7 +340,14 @@ impl Provider for Permission {
     }
 
     async fn delete(&self, cx: &Cx<'_>, id: &str, props: &Props, _attrs: &Props) -> HResult<()> {
-        gone_ok(cx.call("lambda", "RemovePermission", json!({"FunctionName": req(props, "FunctionName")?, "StatementId": id})).await)
+        gone_ok(
+            cx.call(
+                "lambda",
+                "RemovePermission",
+                json!({"FunctionName": req(props, "FunctionName")?, "StatementId": id}),
+            )
+            .await,
+        )
     }
 }
 
@@ -332,7 +370,17 @@ const ESM_FIELDS: &[&str] = &[
 fn esm_input(props: &Props) -> Map<String, Value> {
     let mut input = Map::new();
     copy(props, &mut input, ESM_FIELDS);
-    numbers(&mut input, &["BatchSize", "MaximumBatchingWindowInSeconds", "MaximumRetryAttempts", "ParallelizationFactor", "MaximumRecordAgeInSeconds", "TumblingWindowInSeconds"]);
+    numbers(
+        &mut input,
+        &[
+            "BatchSize",
+            "MaximumBatchingWindowInSeconds",
+            "MaximumRetryAttempts",
+            "ParallelizationFactor",
+            "MaximumRecordAgeInSeconds",
+            "TumblingWindowInSeconds",
+        ],
+    );
     bools(&mut input, &["Enabled", "BisectBatchOnFunctionError"]);
     if let Some(Value::Object(f)) = input.get_mut("FilterCriteria") {
         if let Some(Value::Array(filters)) = f.get_mut("Filters") {
@@ -439,7 +487,14 @@ impl Provider for Alias {
     }
 
     async fn delete(&self, cx: &Cx<'_>, _arn: &str, props: &Props, _attrs: &Props) -> HResult<()> {
-        gone_ok(cx.call("lambda", "DeleteAlias", json!({"FunctionName": req(props, "FunctionName")?, "Name": req(props, "Name")?})).await)
+        gone_ok(
+            cx.call(
+                "lambda",
+                "DeleteAlias",
+                json!({"FunctionName": req(props, "FunctionName")?, "Name": req(props, "Name")?}),
+            )
+            .await,
+        )
     }
 }
 
@@ -500,7 +555,11 @@ impl Provider for LayerVersion {
         let name = s(props, "LayerName").unwrap_or_else(|| cx.physical_name(64));
         let mut input = Map::new();
         input.insert("LayerName".into(), json!(name));
-        copy(props, &mut input, &["Description", "Content", "CompatibleRuntimes", "LicenseInfo", "CompatibleArchitectures"]);
+        copy(
+            props,
+            &mut input,
+            &["Description", "Content", "CompatibleRuntimes", "LicenseInfo", "CompatibleArchitectures"],
+        );
         let out = cx.call("lambda", "PublishLayerVersion", Value::Object(input)).await?;
         let arn = text(&out["LayerVersionArn"]);
         Ok(Created::new(&arn).attr("LayerVersionArn", arn.clone()))
@@ -512,6 +571,13 @@ impl Provider for LayerVersion {
             return Ok(());
         }
         let version: i64 = parts[7].parse().unwrap_or(0);
-        gone_ok(cx.call("lambda", "DeleteLayerVersion", json!({"LayerName": parts[..7].join(":"), "VersionNumber": version})).await)
+        gone_ok(
+            cx.call(
+                "lambda",
+                "DeleteLayerVersion",
+                json!({"LayerName": parts[..7].join(":"), "VersionNumber": version}),
+            )
+            .await,
+        )
     }
 }

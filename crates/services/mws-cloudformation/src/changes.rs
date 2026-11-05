@@ -47,7 +47,12 @@ fn show(v: Option<&Value>) -> Option<String> {
 }
 
 /// The changes deploying `template` with `data` onto `stack` makes.
-pub fn compute(cfn: &CloudFormation, stack: &Stack, template: &Template, data: &EvalData) -> Result<Vec<ResourceChange>, String> {
+pub fn compute(
+    cfn: &CloudFormation,
+    stack: &Stack,
+    template: &Template,
+    data: &EvalData,
+) -> Result<Vec<ResourceChange>, String> {
     let order = template.creation_order(&|l| data.included(template, l))?;
     let mut pending: BTreeSet<String> = BTreeSet::new();
     let mut out = Vec::new();
@@ -133,7 +138,11 @@ pub fn compute(cfn: &CloudFormation, stack: &Stack, template: &Template, data: &
                 requires_recreation: recreate.into(),
                 evaluation: if dynamic { "Dynamic".into() } else { "Static".into() },
                 change_source: if dynamic {
-                    if causing.as_ref().is_some_and(|c| new_props.get(&key).is_some_and(|e| crate::template::references(e).get_atts.iter().any(|(r, _)| r == c))) {
+                    if causing.as_ref().is_some_and(|c| {
+                        new_props
+                            .get(&key)
+                            .is_some_and(|e| crate::template::references(e).get_atts.iter().any(|(r, _)| r == c))
+                    }) {
                         "ResourceAttribute".into()
                     } else {
                         "ResourceReference".into()
@@ -194,7 +203,11 @@ pub fn compute(cfn: &CloudFormation, stack: &Stack, template: &Template, data: &
             logical_id: r.logical_id.clone(),
             physical_id: r.physical_id.clone(),
             resource_type: r.resource_type.clone(),
-            policy_action: Some(if matches!(policy, "Retain" | "RetainExceptOnCreate") { "Retain".into() } else { "Delete".into() }),
+            policy_action: Some(if matches!(policy, "Retain" | "RetainExceptOnCreate") {
+                "Retain".into()
+            } else {
+                "Delete".into()
+            }),
             before: Some(serde_json::json!({"Properties": r.properties}).to_string()),
             ..Default::default()
         });

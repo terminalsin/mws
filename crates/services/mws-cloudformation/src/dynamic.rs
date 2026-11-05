@@ -69,7 +69,9 @@ async fn reference(cfn: &CloudFormation, ctx: &RequestContext, r: &str) -> Resul
             };
             let field = tail.first().copied().filter(|f| !f.is_empty()).unwrap_or("SecretString");
             if field != "SecretString" {
-                return Err(format!("Could not parse SecretString JSON for {rest}: only SecretString can be referenced"));
+                return Err(format!(
+                    "Could not parse SecretString JSON for {rest}: only SecretString can be referenced"
+                ));
             }
             let key = tail.get(1).copied().filter(|k| !k.is_empty());
             let stage = tail.get(2).copied().filter(|k| !k.is_empty());

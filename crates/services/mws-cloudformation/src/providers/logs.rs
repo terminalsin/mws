@@ -52,7 +52,9 @@ impl Provider for LogGroup {
     async fn update(&self, cx: &Cx<'_>, name: &str, old: &Props, new: &Props, attrs: &Props) -> HResult<Props> {
         if changed(old, new, "RetentionInDays") {
             match int(new, "RetentionInDays") {
-                Some(d) => cx.call("logs", "PutRetentionPolicy", json!({"logGroupName": name, "retentionInDays": d})).await?,
+                Some(d) => {
+                    cx.call("logs", "PutRetentionPolicy", json!({"logGroupName": name, "retentionInDays": d})).await?
+                }
                 None => cx.call("logs", "DeleteRetentionPolicy", json!({"logGroupName": name})).await?,
             };
         }
@@ -87,7 +89,9 @@ impl Provider for LogGroup {
                 let g = out["logGroups"]
                     .as_array()
                     .and_then(|a| a.iter().find(|g| g["logGroupName"] == json!(name)).cloned())
-                    .ok_or_else(|| super::HandlerError::handler("NotFound", format!("Log group {name} does not exist")))?;
+                    .ok_or_else(|| {
+                        super::HandlerError::handler("NotFound", format!("Log group {name} does not exist"))
+                    })?;
                 let mut p = Props::new();
                 if props.contains_key("LogGroupName") {
                     p.insert("LogGroupName".into(), json!(name));
@@ -115,12 +119,20 @@ impl Provider for LogStream {
 
     async fn create(&self, cx: &Cx<'_>, props: &Props) -> HResult<Created> {
         let name = s(props, "LogStreamName").unwrap_or_else(|| cx.physical_name(512));
-        cx.call("logs", "CreateLogStream", json!({"logGroupName": req(props, "LogGroupName")?, "logStreamName": name})).await?;
+        cx.call("logs", "CreateLogStream", json!({"logGroupName": req(props, "LogGroupName")?, "logStreamName": name}))
+            .await?;
         Ok(Created::new(name))
     }
 
     async fn delete(&self, cx: &Cx<'_>, name: &str, props: &Props, _attrs: &Props) -> HResult<()> {
-        gone_ok(cx.call("logs", "DeleteLogStream", json!({"logGroupName": req(props, "LogGroupName")?, "logStreamName": name})).await)
+        gone_ok(
+            cx.call(
+                "logs",
+                "DeleteLogStream",
+                json!({"logGroupName": req(props, "LogGroupName")?, "logStreamName": name}),
+            )
+            .await,
+        )
     }
 }
 
@@ -150,7 +162,10 @@ fn transformations(props: &Props) -> Vec<Value> {
                     "Dimensions" => {
                         let mut d = Map::new();
                         for x in v.as_array().cloned().unwrap_or_default() {
-                            d.insert(x.get("Key").map(text).unwrap_or_default(), json!(x.get("Value").map(text).unwrap_or_default()));
+                            d.insert(
+                                x.get("Key").map(text).unwrap_or_default(),
+                                json!(x.get("Value").map(text).unwrap_or_default()),
+                            );
                         }
                         Value::Object(d)
                     }
@@ -197,7 +212,14 @@ impl Provider for MetricFilter {
     }
 
     async fn delete(&self, cx: &Cx<'_>, name: &str, props: &Props, _attrs: &Props) -> HResult<()> {
-        gone_ok(cx.call("logs", "DeleteMetricFilter", json!({"logGroupName": req(props, "LogGroupName")?, "filterName": name})).await)
+        gone_ok(
+            cx.call(
+                "logs",
+                "DeleteMetricFilter",
+                json!({"logGroupName": req(props, "LogGroupName")?, "filterName": name}),
+            )
+            .await,
+        )
     }
 }
 
@@ -238,6 +260,13 @@ impl Provider for SubscriptionFilter {
     }
 
     async fn delete(&self, cx: &Cx<'_>, name: &str, props: &Props, _attrs: &Props) -> HResult<()> {
-        gone_ok(cx.call("logs", "DeleteSubscriptionFilter", json!({"logGroupName": req(props, "LogGroupName")?, "filterName": name})).await)
+        gone_ok(
+            cx.call(
+                "logs",
+                "DeleteSubscriptionFilter",
+                json!({"logGroupName": req(props, "LogGroupName")?, "filterName": name}),
+            )
+            .await,
+        )
     }
 }

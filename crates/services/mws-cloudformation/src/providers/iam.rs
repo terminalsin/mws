@@ -157,9 +157,6 @@ impl Provider for Role {
     fn attributes(&self) -> &'static [&'static str] {
         &["Arn", "RoleId"]
     }
-    fn name_property(&self) -> Option<&'static str> {
-        Some("RoleName")
-    }
 
     async fn create(&self, cx: &Cx<'_>, props: &Props) -> HResult<Created> {
         let name = s(props, "RoleName").unwrap_or_else(|| cx.physical_name(64));
@@ -181,9 +178,7 @@ impl Provider for Role {
         }
         let out = cx.call("iam", "CreateRole", input).await?;
         sync_policies(cx, Entity::Role, &name, &Props::new(), props).await?;
-        Ok(Created::new(&name)
-            .attr("Arn", out["Role"]["Arn"].clone())
-            .attr("RoleId", out["Role"]["RoleId"].clone()))
+        Ok(Created::new(&name).attr("Arn", out["Role"]["Arn"].clone()).attr("RoleId", out["Role"]["RoleId"].clone()))
     }
 
     async fn update(&self, cx: &Cx<'_>, name: &str, old: &Props, new: &Props, attrs: &Props) -> HResult<Props> {
@@ -204,7 +199,10 @@ impl Provider for Role {
         }
         if changed(old, new, "PermissionsBoundary") {
             match s(new, "PermissionsBoundary") {
-                Some(b) => cx.call("iam", "PutRolePermissionsBoundary", json!({"RoleName": name, "PermissionsBoundary": b})).await?,
+                Some(b) => {
+                    cx.call("iam", "PutRolePermissionsBoundary", json!({"RoleName": name, "PermissionsBoundary": b}))
+                        .await?
+                }
                 None => cx.call("iam", "DeleteRolePermissionsBoundary", json!({"RoleName": name})).await?,
             };
         }
@@ -231,39 +229,49 @@ impl Provider for Role {
     }
 
     async fn read(&self, cx: &Cx<'_>, name: &str, props: &Props) -> Option<HResult<Props>> {
-        Some(async {
-            let out = cx.call("iam", "GetRole", json!({"RoleName": name})).await?;
-            let r = &out["Role"];
-            let mut p = Props::new();
-            if let Some(doc) = r["AssumeRolePolicyDocument"].as_str() {
-                let doc = percent_decode(doc);
-                let v = serde_json::from_str::<Value>(&doc).unwrap_or(json!(doc));
-                p.insert("AssumeRolePolicyDocument".into(), match props.get("AssumeRolePolicyDocument") {
-                    Some(Value::String(_)) => json!(v.to_string()),
-                    _ => v,
-                });
+        Some(
+            async {
+                let out = cx.call("iam", "GetRole", json!({"RoleName": name})).await?;
+                let r = &out["Role"];
+                let mut p = Props::new();
+                if let Some(doc) = r["AssumeRolePolicyDocument"].as_str() {
+                    let doc = percent_decode(doc);
+                    let v = serde_json::from_str::<Value>(&doc).unwrap_or(json!(doc));
+                    p.insert(
+                        "AssumeRolePolicyDocument".into(),
+                        match props.get("AssumeRolePolicyDocument") {
+                            Some(Value::String(_)) => json!(v.to_string()),
+                            _ => v,
+                        },
+                    );
+                }
+                if props.contains_key("Description") {
+                    p.insert("Description".into(), r["Description"].clone());
+                }
+                if props.contains_key("MaxSessionDuration") {
+                    p.insert("MaxSessionDuration".into(), r["MaxSessionDuration"].clone());
+                }
+                if props.contains_key("RoleName") {
+                    p.insert("RoleName".into(), json!(name));
+                }
+                if props.contains_key("Path") {
+                    p.insert("Path".into(), r["Path"].clone());
+                }
+                if props.contains_key("ManagedPolicyArns") {
+                    let out = cx.call("iam", "ListAttachedRolePolicies", json!({"RoleName": name})).await?;
+                    let arns: Vec<Value> = out["AttachedPolicies"]
+                        .as_array()
+                        .cloned()
+                        .unwrap_or_default()
+                        .iter()
+                        .map(|a| a["PolicyArn"].clone())
+                        .collect();
+                    p.insert("ManagedPolicyArns".into(), Value::Array(arns));
+                }
+                Ok(p)
             }
-            if props.contains_key("Description") {
-                p.insert("Description".into(), r["Description"].clone());
-            }
-            if props.contains_key("MaxSessionDuration") {
-                p.insert("MaxSessionDuration".into(), r["MaxSessionDuration"].clone());
-            }
-            if props.contains_key("RoleName") {
-                p.insert("RoleName".into(), json!(name));
-            }
-            if props.contains_key("Path") {
-                p.insert("Path".into(), r["Path"].clone());
-            }
-            if props.contains_key("ManagedPolicyArns") {
-                let out = cx.call("iam", "ListAttachedRolePolicies", json!({"RoleName": name})).await?;
-                let arns: Vec<Value> =
-                    out["AttachedPolicies"].as_array().cloned().unwrap_or_default().iter().map(|a| a["PolicyArn"].clone()).collect();
-                p.insert("ManagedPolicyArns".into(), Value::Array(arns));
-            }
-            Ok(p)
-        }
-        .await)
+            .await,
+        )
     }
 }
 
@@ -295,9 +303,6 @@ impl Provider for User {
     }
     fn attributes(&self) -> &'static [&'static str] {
         &["Arn"]
-    }
-    fn name_property(&self) -> Option<&'static str> {
-        Some("UserName")
     }
 
     async fn create(&self, cx: &Cx<'_>, props: &Props) -> HResult<Created> {
@@ -337,7 +342,12 @@ impl Provider for User {
             gone_ok(cx.call("iam", "RemoveUserFromGroup", json!({"UserName": name, "GroupName": g})).await)?;
         }
         if changed(old, new, "Path") {
-            cx.call("iam", "UpdateUser", json!({"UserName": name, "NewPath": s(new, "Path").unwrap_or_else(|| "/".into())})).await?;
+            cx.call(
+                "iam",
+                "UpdateUser",
+                json!({"UserName": name, "NewPath": s(new, "Path").unwrap_or_else(|| "/".into())}),
+            )
+            .await?;
         }
         sync_policies(cx, Entity::User, name, old, new).await?;
         sync_tags(cx, "User", "UserName", name, old, new).await?;
@@ -348,7 +358,8 @@ impl Provider for User {
         strip(cx, Entity::User, name).await?;
         if let Ok(out) = cx.call("iam", "ListGroupsForUser", json!({"UserName": name})).await {
             for g in out["Groups"].as_array().cloned().unwrap_or_default() {
-                let _ = cx.call("iam", "RemoveUserFromGroup", json!({"UserName": name, "GroupName": g["GroupName"]})).await;
+                let _ =
+                    cx.call("iam", "RemoveUserFromGroup", json!({"UserName": name, "GroupName": g["GroupName"]})).await;
             }
         }
         let _ = cx.call("iam", "DeleteLoginProfile", json!({"UserName": name})).await;
@@ -366,9 +377,6 @@ impl Provider for Group {
     fn attributes(&self) -> &'static [&'static str] {
         &["Arn"]
     }
-    fn name_property(&self) -> Option<&'static str> {
-        Some("GroupName")
-    }
 
     async fn create(&self, cx: &Cx<'_>, props: &Props) -> HResult<Created> {
         let name = s(props, "GroupName").unwrap_or_else(|| cx.physical_name(128));
@@ -383,7 +391,12 @@ impl Provider for Group {
 
     async fn update(&self, cx: &Cx<'_>, name: &str, old: &Props, new: &Props, attrs: &Props) -> HResult<Props> {
         if changed(old, new, "Path") {
-            cx.call("iam", "UpdateGroup", json!({"GroupName": name, "NewPath": s(new, "Path").unwrap_or_else(|| "/".into())})).await?;
+            cx.call(
+                "iam",
+                "UpdateGroup",
+                json!({"GroupName": name, "NewPath": s(new, "Path").unwrap_or_else(|| "/".into())}),
+            )
+            .await?;
         }
         sync_policies(cx, Entity::Group, name, old, new).await?;
         Ok(attrs.clone())
@@ -393,7 +406,8 @@ impl Provider for Group {
         strip(cx, Entity::Group, name).await?;
         if let Ok(out) = cx.call("iam", "GetGroup", json!({"GroupName": name})).await {
             for u in out["Users"].as_array().cloned().unwrap_or_default() {
-                let _ = cx.call("iam", "RemoveUserFromGroup", json!({"UserName": u["UserName"], "GroupName": name})).await;
+                let _ =
+                    cx.call("iam", "RemoveUserFromGroup", json!({"UserName": u["UserName"], "GroupName": name})).await;
             }
         }
         gone_ok(cx.call("iam", "DeleteGroup", json!({"GroupName": name})).await)
@@ -435,9 +449,7 @@ impl Provider for InlinePolicy {
     async fn create(&self, cx: &Cx<'_>, props: &Props) -> HResult<Created> {
         let targets = Self::targets(props);
         if targets.is_empty() {
-            return Err(super::HandlerError::invalid(
-                "At least one of [Groups,Roles,Users] must be non-empty.",
-            ));
+            return Err(super::HandlerError::invalid("At least one of [Groups,Roles,Users] must be non-empty."));
         }
         let p = Self::policy(props);
         for (e, n) in &targets {
@@ -516,13 +528,11 @@ impl Provider for ManagedPolicy {
     fn attributes(&self) -> &'static [&'static str] {
         &["PolicyArn", "PolicyId", "AttachmentCount", "CreateDate", "DefaultVersionId", "IsAttachable", "UpdateDate"]
     }
-    fn name_property(&self) -> Option<&'static str> {
-        Some("ManagedPolicyName")
-    }
 
     async fn create(&self, cx: &Cx<'_>, props: &Props) -> HResult<Created> {
         let name = s(props, "ManagedPolicyName").unwrap_or_else(|| cx.physical_name(128));
-        let mut input = json!({"PolicyName": name, "PolicyDocument": document(props, "PolicyDocument").unwrap_or_default()});
+        let mut input =
+            json!({"PolicyName": name, "PolicyDocument": document(props, "PolicyDocument").unwrap_or_default()});
         for k in ["Path", "Description"] {
             if let Some(v) = s(props, k) {
                 input[k] = json!(v);
@@ -552,8 +562,9 @@ impl Provider for ManagedPolicy {
             let versions = cx.call("iam", "ListPolicyVersions", json!({"PolicyArn": arn})).await?;
             let versions = versions["Versions"].as_array().cloned().unwrap_or_default();
             if versions.len() >= 5 {
-                if let Some(oldest) = versions.iter().filter(|v| v["IsDefaultVersion"] != json!(true)).last() {
-                    cx.call("iam", "DeletePolicyVersion", json!({"PolicyArn": arn, "VersionId": oldest["VersionId"]})).await?;
+                if let Some(oldest) = versions.iter().rfind(|v| v["IsDefaultVersion"] != json!(true)) {
+                    cx.call("iam", "DeletePolicyVersion", json!({"PolicyArn": arn, "VersionId": oldest["VersionId"]}))
+                        .await?;
                 }
             }
             let out = cx
@@ -587,7 +598,9 @@ impl Provider for ManagedPolicy {
         if let Ok(out) = cx.call("iam", "ListPolicyVersions", json!({"PolicyArn": arn})).await {
             for v in out["Versions"].as_array().cloned().unwrap_or_default() {
                 if v["IsDefaultVersion"] != json!(true) {
-                    let _ = cx.call("iam", "DeletePolicyVersion", json!({"PolicyArn": arn, "VersionId": v["VersionId"]})).await;
+                    let _ = cx
+                        .call("iam", "DeletePolicyVersion", json!({"PolicyArn": arn, "VersionId": v["VersionId"]}))
+                        .await;
                 }
             }
         }
@@ -608,9 +621,6 @@ impl Provider for InstanceProfile {
     fn attributes(&self) -> &'static [&'static str] {
         &["Arn"]
     }
-    fn name_property(&self) -> Option<&'static str> {
-        Some("InstanceProfileName")
-    }
 
     async fn create(&self, cx: &Cx<'_>, props: &Props) -> HResult<Created> {
         let name = s(props, "InstanceProfileName").unwrap_or_else(|| cx.physical_name(128));
@@ -629,7 +639,10 @@ impl Provider for InstanceProfile {
         let o = list(old, "Roles");
         let n = list(new, "Roles");
         for r in o.iter().filter(|r| !n.contains(r)) {
-            gone_ok(cx.call("iam", "RemoveRoleFromInstanceProfile", json!({"InstanceProfileName": name, "RoleName": r})).await)?;
+            gone_ok(
+                cx.call("iam", "RemoveRoleFromInstanceProfile", json!({"InstanceProfileName": name, "RoleName": r}))
+                    .await,
+            )?;
         }
         for r in n.iter().filter(|r| !o.contains(r)) {
             cx.call("iam", "AddRoleToInstanceProfile", json!({"InstanceProfileName": name, "RoleName": r})).await?;
@@ -639,7 +652,9 @@ impl Provider for InstanceProfile {
 
     async fn delete(&self, cx: &Cx<'_>, name: &str, props: &Props, _attrs: &Props) -> HResult<()> {
         for r in list(props, "Roles") {
-            let _ = cx.call("iam", "RemoveRoleFromInstanceProfile", json!({"InstanceProfileName": name, "RoleName": r})).await;
+            let _ = cx
+                .call("iam", "RemoveRoleFromInstanceProfile", json!({"InstanceProfileName": name, "RoleName": r}))
+                .await;
         }
         gone_ok(cx.call("iam", "DeleteInstanceProfile", json!({"InstanceProfileName": name})).await)
     }
@@ -664,19 +679,27 @@ impl Provider for AccessKey {
         let out = cx.call("iam", "CreateAccessKey", json!({"UserName": user})).await?;
         let id = text(&out["AccessKey"]["AccessKeyId"]);
         if s(props, "Status").as_deref() == Some("Inactive") {
-            cx.call("iam", "UpdateAccessKey", json!({"UserName": user, "AccessKeyId": id, "Status": "Inactive"})).await?;
+            cx.call("iam", "UpdateAccessKey", json!({"UserName": user, "AccessKeyId": id, "Status": "Inactive"}))
+                .await?;
         }
         Ok(Created::new(&id).attr("SecretAccessKey", out["AccessKey"]["SecretAccessKey"].clone()))
     }
 
     async fn update(&self, cx: &Cx<'_>, id: &str, _old: &Props, new: &Props, attrs: &Props) -> HResult<Props> {
         let status = s(new, "Status").unwrap_or_else(|| "Active".into());
-        cx.call("iam", "UpdateAccessKey", json!({"UserName": req(new, "UserName")?, "AccessKeyId": id, "Status": status})).await?;
+        cx.call(
+            "iam",
+            "UpdateAccessKey",
+            json!({"UserName": req(new, "UserName")?, "AccessKeyId": id, "Status": status}),
+        )
+        .await?;
         Ok(attrs.clone())
     }
 
     async fn delete(&self, cx: &Cx<'_>, id: &str, props: &Props, _attrs: &Props) -> HResult<()> {
-        gone_ok(cx.call("iam", "DeleteAccessKey", json!({"UserName": req(props, "UserName")?, "AccessKeyId": id})).await)
+        gone_ok(
+            cx.call("iam", "DeleteAccessKey", json!({"UserName": req(props, "UserName")?, "AccessKeyId": id})).await,
+        )
     }
 }
 
@@ -759,10 +782,20 @@ impl Provider for OidcProvider {
         let o = list(old, "ClientIdList");
         let n = list(new, "ClientIdList");
         for c in n.iter().filter(|c| !o.contains(c)) {
-            cx.call("iam", "AddClientIDToOpenIDConnectProvider", json!({"OpenIDConnectProviderArn": arn, "ClientID": c})).await?;
+            cx.call(
+                "iam",
+                "AddClientIDToOpenIDConnectProvider",
+                json!({"OpenIDConnectProviderArn": arn, "ClientID": c}),
+            )
+            .await?;
         }
         for c in o.iter().filter(|c| !n.contains(c)) {
-            cx.call("iam", "RemoveClientIDFromOpenIDConnectProvider", json!({"OpenIDConnectProviderArn": arn, "ClientID": c})).await?;
+            cx.call(
+                "iam",
+                "RemoveClientIDFromOpenIDConnectProvider",
+                json!({"OpenIDConnectProviderArn": arn, "ClientID": c}),
+            )
+            .await?;
         }
         Ok(attrs.clone())
     }

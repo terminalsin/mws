@@ -207,21 +207,27 @@ impl Evaluator<'_> {
     fn function(&self, f: &str, arg: &Value) -> R<Value> {
         match f {
             "Ref" => {
-                let Some(name) = arg.as_str() else { return err("Template error: every Ref object must have a single String value.") };
+                let Some(name) = arg.as_str() else {
+                    return err("Template error: every Ref object must have a single String value.");
+                };
                 self.reference(name)
             }
             "Fn::GetAtt" => {
                 let (res, attr) = match arg {
                     Value::String(s) => match s.split_once('.') {
                         Some((r, a)) => (r.to_string(), a.to_string()),
-                        None => return err("Template error: every Fn::GetAtt object requires two non-empty parameters"),
+                        None => {
+                            return err("Template error: every Fn::GetAtt object requires two non-empty parameters")
+                        }
                     },
                     Value::Array(a) if a.len() == 2 => {
                         let r = a[0].as_str().map(str::to_string);
                         let attr = self.string_arg(f, &a[1])?;
                         match r {
                             Some(r) => (r, attr),
-                            None => return err("Template error: every Fn::GetAtt object requires two non-empty parameters"),
+                            None => {
+                                return err("Template error: every Fn::GetAtt object requires two non-empty parameters")
+                            }
                         }
                     }
                     _ => return err("Template error: every Fn::GetAtt object requires two non-empty parameters"),
@@ -234,7 +240,9 @@ impl Evaluator<'_> {
             }
             "Fn::Join" => {
                 let a = arg.as_array().filter(|a| a.len() == 2);
-                let Some(a) = a else { return err("Template error: every Fn::Join object requires two parameters, (1) a string delimiter and (2) a list of strings to be joined or a function that returns a list of strings (such as Fn::GetAZs) to be joined.") };
+                let Some(a) = a else {
+                    return err("Template error: every Fn::Join object requires two parameters, (1) a string delimiter and (2) a list of strings to be joined or a function that returns a list of strings (such as Fn::GetAZs) to be joined.");
+                };
                 let delim = a[0].as_str().unwrap_or_default().to_string();
                 let items = self.list_arg(f, &a[1])?;
                 let mut parts = Vec::new();
@@ -251,19 +259,25 @@ impl Evaluator<'_> {
             "Fn::Sub" => self.sub(arg),
             "Fn::Select" => {
                 let a = arg.as_array().filter(|a| a.len() == 2);
-                let Some(a) = a else { return err("Template error: Fn::Select requires a list argument with two elements: an integer index and a list") };
+                let Some(a) = a else {
+                    return err("Template error: Fn::Select requires a list argument with two elements: an integer index and a list");
+                };
                 let idx = self.string_arg(f, &a[0])?;
                 let idx: usize = idx.parse().map_err(|_| {
                     EvalError::Error("Template error: Fn::Select requires a list argument with two elements: an integer index and a list".into())
                 })?;
                 let list = self.list_arg(f, &a[1])?;
                 list.get(idx).cloned().ok_or_else(|| {
-                    EvalError::Error(format!("Template error: Fn::Select cannot select nonexistent value at index {idx}"))
+                    EvalError::Error(format!(
+                        "Template error: Fn::Select cannot select nonexistent value at index {idx}"
+                    ))
                 })
             }
             "Fn::Split" => {
                 let a = arg.as_array().filter(|a| a.len() == 2);
-                let Some(a) = a else { return err("Template error: every Fn::Split object requires two parameters, (1) a string delimiter and (2) a string to be split or a function that returns a string to be split.") };
+                let Some(a) = a else {
+                    return err("Template error: every Fn::Split object requires two parameters, (1) a string delimiter and (2) a string to be split or a function that returns a string to be split.");
+                };
                 let delim = a[0].as_str().unwrap_or_default();
                 let s = self.string_arg(f, &a[1])?;
                 if delim.is_empty() {
@@ -273,7 +287,9 @@ impl Evaluator<'_> {
             }
             "Fn::If" => {
                 let a = arg.as_array().filter(|a| a.len() == 3);
-                let Some(a) = a else { return err("Template error: Fn::If requires a list argument with three elements") };
+                let Some(a) = a else {
+                    return err("Template error: Fn::If requires a list argument with three elements");
+                };
                 let c = a[0].as_str().unwrap_or_default();
                 let Some(holds) = self.conditions.get(c) else {
                     return err(format!("Template error: unresolved condition dependency {c} in Fn::If"));
@@ -282,7 +298,9 @@ impl Evaluator<'_> {
             }
             "Fn::FindInMap" => {
                 let a = arg.as_array().filter(|a| a.len() == 3 || (a.len() == 4 && self.language_extensions));
-                let Some(a) = a else { return err("Template error: every Fn::FindInMap object requires three parameters, the map name, map key and the attribute for return value") };
+                let Some(a) = a else {
+                    return err("Template error: every Fn::FindInMap object requires three parameters, the map name, map key and the attribute for return value");
+                };
                 let map = self.string_arg(f, &a[0])?;
                 let top = self.string_arg(f, &a[1])?;
                 let second = self.string_arg(f, &a[2])?;
@@ -296,13 +314,7 @@ impl Evaluator<'_> {
                     Some(v) => Ok(v),
                     None => match a.get(3).and_then(|d| d.get("DefaultValue")) {
                         Some(d) => self.eval_inner(d),
-                        None => {
-                            if self.mappings.and_then(|m| m.get(&map)).is_none() {
-                                err(format!("Template error: Unable to get mapping for {map}::{top}::{second}"))
-                            } else {
-                                err(format!("Template error: Unable to get mapping for {map}::{top}::{second}"))
-                            }
-                        }
+                        None => err(format!("Template error: Unable to get mapping for {map}::{top}::{second}")),
                     },
                 }
             }
@@ -330,9 +342,17 @@ impl Evaluator<'_> {
                 let a = arg.as_array().filter(|a| a.len() == 3);
                 let Some(a) = a else { return err("Template error: Fn::Cidr requires three parameters") };
                 let block = self.string_arg(f, &a[0])?;
-                let count: u32 = self.string_arg(f, &a[1])?.parse().map_err(|_| EvalError::Error("Template error: Fn::Cidr count must be a number".into()))?;
-                let bits: u32 = self.string_arg(f, &a[2])?.parse().map_err(|_| EvalError::Error("Template error: Fn::Cidr cidrBits must be a number".into()))?;
-                cidr(&block, count, bits).map(|v| Value::Array(v.into_iter().map(Value::String).collect())).map_err(EvalError::Error)
+                let count: u32 = self
+                    .string_arg(f, &a[1])?
+                    .parse()
+                    .map_err(|_| EvalError::Error("Template error: Fn::Cidr count must be a number".into()))?;
+                let bits: u32 = self
+                    .string_arg(f, &a[2])?
+                    .parse()
+                    .map_err(|_| EvalError::Error("Template error: Fn::Cidr cidrBits must be a number".into()))?;
+                cidr(&block, count, bits)
+                    .map(|v| Value::Array(v.into_iter().map(Value::String).collect()))
+                    .map_err(EvalError::Error)
             }
             "Fn::Length" if self.language_extensions => Ok(Value::from(self.list_arg(f, arg)?.len())),
             "Fn::ToJsonString" if self.language_extensions => {
@@ -341,7 +361,7 @@ impl Evaluator<'_> {
             }
             "Fn::Transform" => err("Template error: Fn::Transform is not supported by MWS"),
             "Fn::Equals" | "Fn::And" | "Fn::Or" | "Fn::Not" => {
-                Ok(Value::Bool(self.condition_value(&single(f, arg.clone()), &mut BTreeSet::new())?))
+                Ok(Value::Bool(self.condition_value(&single(f, arg.clone()))?))
             }
             other => err(format!("Template format error: Unrecognized function {other}")),
         }
@@ -407,9 +427,16 @@ impl Evaluator<'_> {
                     Value::Number(n) => out.push_str(&n.to_string()),
                     Value::Bool(b) => out.push_str(&b.to_string()),
                     Value::Array(a) => out.push_str(
-                        &a.iter().map(|x| x.as_str().map(str::to_string).unwrap_or_else(|| x.to_string())).collect::<Vec<_>>().join(","),
+                        &a.iter()
+                            .map(|x| x.as_str().map(str::to_string).unwrap_or_else(|| x.to_string()))
+                            .collect::<Vec<_>>()
+                            .join(","),
                     ),
-                    _ => return err(format!("Template error: variable {var} in Fn::Sub expression does not resolve to a string")),
+                    _ => {
+                        return err(format!(
+                            "Template error: variable {var} in Fn::Sub expression does not resolve to a string"
+                        ))
+                    }
                 }
             }
             rest = &after[end + 1..];
@@ -419,7 +446,7 @@ impl Evaluator<'_> {
     }
 
     /// Evaluate a condition expression.
-    pub fn condition_value(&self, v: &Value, seen: &mut BTreeSet<String>) -> R<bool> {
+    pub fn condition_value(&self, v: &Value) -> R<bool> {
         let Some((f, arg)) = v.as_object().filter(|o| o.len() == 1).and_then(|o| o.iter().next()) else {
             return match v {
                 Value::Bool(b) => Ok(*b),
@@ -430,24 +457,30 @@ impl Evaluator<'_> {
         match f.as_str() {
             "Fn::Equals" => {
                 let a = arg.as_array().filter(|a| a.len() == 2);
-                let Some(a) = a else { return err("Template error: Fn::Equals requires a list argument with two elements") };
+                let Some(a) = a else {
+                    return err("Template error: Fn::Equals requires a list argument with two elements");
+                };
                 let l = self.eval(&a[0])?;
                 let r = self.eval(&a[1])?;
                 Ok(text(&l) == text(&r))
             }
             "Fn::And" | "Fn::Or" => {
                 let a = arg.as_array().filter(|a| (2..=10).contains(&a.len()));
-                let Some(a) = a else { return err(format!("Template error: every {f} object requires a list of at least 2 and at most 10 boolean parameters.")) };
+                let Some(a) = a else {
+                    return err(format!("Template error: every {f} object requires a list of at least 2 and at most 10 boolean parameters."));
+                };
                 let mut vals = Vec::new();
                 for x in a {
-                    vals.push(self.condition_value(x, seen)?);
+                    vals.push(self.condition_value(x)?);
                 }
                 Ok(if f == "Fn::And" { vals.iter().all(|b| *b) } else { vals.iter().any(|b| *b) })
             }
             "Fn::Not" => {
                 let a = arg.as_array().filter(|a| a.len() == 1);
-                let Some(a) = a else { return err("Template error: Fn::Not requires a list argument with one element") };
-                Ok(!self.condition_value(&a[0], seen)?)
+                let Some(a) = a else {
+                    return err("Template error: Fn::Not requires a list argument with one element");
+                };
+                Ok(!self.condition_value(&a[0])?)
             }
             "Condition" => {
                 let name = arg.as_str().unwrap_or_default();
@@ -531,7 +564,7 @@ pub fn evaluate_conditions(
             azs: &[],
             language_extensions: ctx.3,
         };
-        let v = ev.condition_value(expr, &mut BTreeSet::new()).map_err(EvalError::message)?;
+        let v = ev.condition_value(expr).map_err(EvalError::message)?;
         done.insert(name.to_string(), v);
         Ok(v)
     }
@@ -575,9 +608,7 @@ fn cidr(block: &str, count: u32, bits: u32) -> Result<Vec<String>, String> {
     if new_prefix - prefix < 64 && count as u128 > (1u128 << (new_prefix - prefix)) {
         return Err(format!("Template error: Fn::Cidr cannot split {block} into {count} blocks of {bits} bits"));
     }
-    Ok((0..count)
-        .map(|i| format!("{}/{new_prefix}", std::net::Ipv6Addr::from(base + ((i as u128) << bits))))
-        .collect())
+    Ok((0..count).map(|i| format!("{}/{new_prefix}", std::net::Ipv6Addr::from(base + ((i as u128) << bits)))).collect())
 }
 
 #[cfg(test)]

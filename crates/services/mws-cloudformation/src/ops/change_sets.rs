@@ -69,7 +69,8 @@ impl CloudFormation {
             self.template_text(ctx, input.template_body.as_deref(), input.template_url.as_deref()).await?
         };
         let tags = tags_of(input.tags.clone());
-        let resource = existing.as_ref().map(|s| s.id.clone()).unwrap_or_else(|| stack_resource(ctx, &input.stack_name));
+        let resource =
+            existing.as_ref().map(|s| s.id.clone()).unwrap_or_else(|| stack_resource(ctx, &input.stack_name));
         self.authorize_stack(
             ctx,
             "cloudformation:CreateChangeSet",
@@ -158,7 +159,8 @@ impl CloudFormation {
         };
         match changes::compute(self, &stack, &template, &data) {
             Ok(list) => {
-                let same_template = Template::parse(&stack.template_body).map(|t| t.root == template.root).unwrap_or(false);
+                let same_template =
+                    Template::parse(&stack.template_body).map(|t| t.root == template.root).unwrap_or(false);
                 let same_params = params.iter().map(|p| (&p.key, &p.value)).collect::<Vec<_>>()
                     == stack.parameters.iter().map(|p| (&p.key, &p.value)).collect::<Vec<_>>();
                 let same_tags = cs.tags.as_ref().is_none_or(|t| {
@@ -241,7 +243,7 @@ impl CloudFormation {
         let s = find(&st, ctx, &input.stack_name)?;
         ctx.authorize("cloudformation:ListChangeSets", &s.id, Default::default())?;
         let mut v: Vec<&ChangeSet> = s.change_sets.values().collect();
-        v.sort_by(|a, b| a.created.cmp(&b.created));
+        v.sort_by_key(|a| a.created);
         let all: Vec<types::ChangeSetSummary> = v
             .into_iter()
             .map(|cs| types::ChangeSetSummary {
@@ -275,9 +277,7 @@ impl CloudFormation {
         };
         ctx.authorize("cloudformation:DeleteChangeSet", &stack_id, Default::default())?;
         if status == "EXECUTE_IN_PROGRESS" {
-            return Err(errors::invalid_change_set_status(format!(
-                "Cannot delete ChangeSet in status {status}"
-            )));
+            return Err(errors::invalid_change_set_status(format!("Cannot delete ChangeSet in status {status}")));
         }
         if let Some(s) = st.stacks.get_mut(&stack_id) {
             s.change_sets.remove(&cs_id);
@@ -321,7 +321,17 @@ impl CloudFormation {
             .map(|p| Provided { key: p.key.clone(), value: Some(p.value.clone()), use_previous: false })
             .collect();
         let (template, params, data) = self
-            .prepare(ctx, &deploy, &stack.name, &stack.id, &cs.template_body, &provided, &[], &cs.capabilities, &notifications)
+            .prepare(
+                ctx,
+                &deploy,
+                &stack.name,
+                &stack.id,
+                &cs.template_body,
+                &provided,
+                &[],
+                &cs.capabilities,
+                &notifications,
+            )
             .await?;
         let operation_id = uuid::Uuid::new_v4().to_string();
         let creating = cs.change_set_type == "CREATE";
@@ -361,10 +371,8 @@ impl CloudFormation {
             let status = if creating { "CREATE_IN_PROGRESS" } else { "UPDATE_IN_PROGRESS" };
             s.status = status.into();
             s.status_reason = Some("User Initiated".into());
-            s.last_operation = Some((
-                if creating { "CREATE_STACK".into() } else { "UPDATE_STACK".into() },
-                operation_id,
-            ));
+            s.last_operation =
+                Some((if creating { "CREATE_STACK".into() } else { "UPDATE_STACK".into() }, operation_id));
             // Executing a change set removes the stack's other change sets.
             s.change_sets.retain(|id, _| id == &cs.id);
             if let Some(c) = s.change_sets.get_mut(&cs.id) {

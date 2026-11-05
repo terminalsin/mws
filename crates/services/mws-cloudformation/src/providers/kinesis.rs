@@ -51,7 +51,8 @@ impl Provider for Stream {
         cx.call("kinesis", "CreateStream", input).await?;
         let d = wait_stream(cx, &name).await?;
         if let Some(h) = int(props, "RetentionPeriodHours").filter(|h| *h != 24) {
-            cx.call("kinesis", "IncreaseStreamRetentionPeriod", json!({"StreamName": name, "RetentionPeriodHours": h})).await?;
+            cx.call("kinesis", "IncreaseStreamRetentionPeriod", json!({"StreamName": name, "RetentionPeriodHours": h}))
+                .await?;
             wait_stream(cx, &name).await?;
         }
         if let Some(e) = props.get("StreamEncryption") {
@@ -69,12 +70,18 @@ impl Provider for Stream {
     async fn update(&self, cx: &Cx<'_>, name: &str, old: &Props, new: &Props, attrs: &Props) -> HResult<Props> {
         if changed(old, new, "ShardCount") {
             if let Some(n) = int(new, "ShardCount") {
-                cx.call("kinesis", "UpdateShardCount", json!({"StreamName": name, "TargetShardCount": n, "ScalingType": "UNIFORM_SCALING"})).await?;
+                cx.call(
+                    "kinesis",
+                    "UpdateShardCount",
+                    json!({"StreamName": name, "TargetShardCount": n, "ScalingType": "UNIFORM_SCALING"}),
+                )
+                .await?;
                 wait_stream(cx, name).await?;
             }
         }
         if changed(old, new, "RetentionPeriodHours") {
-            let (o, n) = (int(old, "RetentionPeriodHours").unwrap_or(24), int(new, "RetentionPeriodHours").unwrap_or(24));
+            let (o, n) =
+                (int(old, "RetentionPeriodHours").unwrap_or(24), int(new, "RetentionPeriodHours").unwrap_or(24));
             let op = if n > o { "IncreaseStreamRetentionPeriod" } else { "DecreaseStreamRetentionPeriod" };
             cx.call("kinesis", op, json!({"StreamName": name, "RetentionPeriodHours": n})).await?;
             wait_stream(cx, name).await?;
@@ -178,7 +185,10 @@ impl Provider for DeliveryStream {
             match d["DeliveryStreamDescription"]["DeliveryStreamStatus"].as_str() {
                 Some("ACTIVE") => break,
                 Some("CREATING_FAILED") => {
-                    return Err(HandlerError::handler("NotStabilized", format!("Delivery stream {name} failed to create")))
+                    return Err(HandlerError::handler(
+                        "NotStabilized",
+                        format!("Delivery stream {name} failed to create"),
+                    ))
                 }
                 _ => tokio::time::sleep(std::time::Duration::from_millis(100)).await,
             }

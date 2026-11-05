@@ -178,11 +178,19 @@ struct Bucket;
 impl Bucket {
     /// Apply a sub-configuration, or remove it when the property is gone.
     async fn apply(&self, cx: &Cx<'_>, bucket: &str, props: &Props, old: Option<&Props>) -> HResult<()> {
-        let want = |k: &str| old.is_none_or(|o| changed(o, props, k)) && (props.contains_key(k) || old.is_some_and(|o| o.contains_key(k)));
+        let want = |k: &str| {
+            old.is_none_or(|o| changed(o, props, k))
+                && (props.contains_key(k) || old.is_some_and(|o| o.contains_key(k)))
+        };
         if want("VersioningConfiguration") {
             let status = props.get("VersioningConfiguration").and_then(|v| v.get("Status")).map(text);
             let status = status.unwrap_or_else(|| "Suspended".into());
-            cx.call("s3", "PutBucketVersioning", json!({"Bucket": bucket, "VersioningConfiguration": {"Status": status}})).await?;
+            cx.call(
+                "s3",
+                "PutBucketVersioning",
+                json!({"Bucket": bucket, "VersioningConfiguration": {"Status": status}}),
+            )
+            .await?;
         }
         if want("BucketEncryption") {
             match props.get("BucketEncryption") {
@@ -200,8 +208,12 @@ impl Bucket {
                             Value::Object(m)
                         })
                         .collect();
-                    cx.call("s3", "PutBucketEncryption", json!({"Bucket": bucket, "ServerSideEncryptionConfiguration": {"Rules": rules}}))
-                        .await?;
+                    cx.call(
+                        "s3",
+                        "PutBucketEncryption",
+                        json!({"Bucket": bucket, "ServerSideEncryptionConfiguration": {"Rules": rules}}),
+                    )
+                    .await?;
                 }
                 None => {
                     gone_ok(cx.call("s3", "DeleteBucketEncryption", json!({"Bucket": bucket})).await)?;
@@ -215,7 +227,12 @@ impl Bucket {
                     for k in ["BlockPublicAcls", "IgnorePublicAcls", "BlockPublicPolicy", "RestrictPublicBuckets"] {
                         m.insert(k.into(), p.get(k).map(flag).unwrap_or(json!(false)));
                     }
-                    cx.call("s3", "PutPublicAccessBlock", json!({"Bucket": bucket, "PublicAccessBlockConfiguration": m})).await?;
+                    cx.call(
+                        "s3",
+                        "PutPublicAccessBlock",
+                        json!({"Bucket": bucket, "PublicAccessBlockConfiguration": m}),
+                    )
+                    .await?;
                 }
                 None => gone_ok(cx.call("s3", "DeletePublicAccessBlock", json!({"Bucket": bucket})).await)?,
             }
@@ -244,7 +261,12 @@ impl Bucket {
                             Value::Object(m)
                         })
                         .collect();
-                    cx.call("s3", "PutBucketCors", json!({"Bucket": bucket, "CORSConfiguration": {"CORSRules": rules}})).await?;
+                    cx.call(
+                        "s3",
+                        "PutBucketCors",
+                        json!({"Bucket": bucket, "CORSConfiguration": {"CORSRules": rules}}),
+                    )
+                    .await?;
                 }
                 None => gone_ok(cx.call("s3", "DeleteBucketCors", json!({"Bucket": bucket})).await)?,
             }
@@ -253,8 +275,12 @@ impl Bucket {
             match props.get("LifecycleConfiguration") {
                 Some(l) => {
                     let rules: Vec<Value> = arr(l.get("Rules")).iter().map(lifecycle_rule).collect();
-                    cx.call("s3", "PutBucketLifecycleConfiguration", json!({"Bucket": bucket, "LifecycleConfiguration": {"Rules": rules}}))
-                        .await?;
+                    cx.call(
+                        "s3",
+                        "PutBucketLifecycleConfiguration",
+                        json!({"Bucket": bucket, "LifecycleConfiguration": {"Rules": rules}}),
+                    )
+                    .await?;
                 }
                 None => gone_ok(cx.call("s3", "DeleteBucketLifecycle", json!({"Bucket": bucket})).await)?,
             }
@@ -262,8 +288,12 @@ impl Bucket {
         if want("OwnershipControls") {
             match props.get("OwnershipControls") {
                 Some(o) => {
-                    cx.call("s3", "PutBucketOwnershipControls", json!({"Bucket": bucket, "OwnershipControls": {"Rules": arr(o.get("Rules"))}}))
-                        .await?;
+                    cx.call(
+                        "s3",
+                        "PutBucketOwnershipControls",
+                        json!({"Bucket": bucket, "OwnershipControls": {"Rules": arr(o.get("Rules"))}}),
+                    )
+                    .await?;
                 }
                 None => gone_ok(cx.call("s3", "DeleteBucketOwnershipControls", json!({"Bucket": bucket})).await)?,
             }
@@ -304,7 +334,12 @@ impl Bucket {
         }
         if want("NotificationConfiguration") {
             let n = props.get("NotificationConfiguration").map(notification).unwrap_or(json!({}));
-            cx.call("s3", "PutBucketNotificationConfiguration", json!({"Bucket": bucket, "NotificationConfiguration": n})).await?;
+            cx.call(
+                "s3",
+                "PutBucketNotificationConfiguration",
+                json!({"Bucket": bucket, "NotificationConfiguration": n}),
+            )
+            .await?;
         }
         if want("ObjectLockConfiguration") {
             if let Some(o) = props.get("ObjectLockConfiguration") {
@@ -316,7 +351,8 @@ impl Bucket {
                         }
                     }
                 }
-                cx.call("s3", "PutObjectLockConfiguration", json!({"Bucket": bucket, "ObjectLockConfiguration": o})).await?;
+                cx.call("s3", "PutObjectLockConfiguration", json!({"Bucket": bucket, "ObjectLockConfiguration": o}))
+                    .await?;
             }
         }
         let tags_changed = old.is_none_or(|o| changed(o, props, "Tags"));
@@ -352,7 +388,15 @@ impl Provider for Bucket {
         &["BucketName", "ObjectLockEnabled"]
     }
     fn attributes(&self) -> &'static [&'static str] {
-        &["Arn", "DomainName", "DualStackDomainName", "RegionalDomainName", "WebsiteURL", "MetadataTableConfiguration.S3TablesDestination.TableArn", "MetadataTableConfiguration.S3TablesDestination.TableNamespace"]
+        &[
+            "Arn",
+            "DomainName",
+            "DualStackDomainName",
+            "RegionalDomainName",
+            "WebsiteURL",
+            "MetadataTableConfiguration.S3TablesDestination.TableArn",
+            "MetadataTableConfiguration.S3TablesDestination.TableNamespace",
+        ]
     }
 
     async fn create(&self, cx: &Cx<'_>, props: &Props) -> HResult<Created> {
@@ -400,7 +444,10 @@ impl Provider for Bucket {
                 }
                 if props.contains_key("VersioningConfiguration") {
                     let v = cx.call("s3", "GetBucketVersioning", json!({"Bucket": bucket})).await?;
-                    p.insert("VersioningConfiguration".into(), json!({"Status": v.get("Status").cloned().unwrap_or(json!("Suspended"))}));
+                    p.insert(
+                        "VersioningConfiguration".into(),
+                        json!({"Status": v.get("Status").cloned().unwrap_or(json!("Suspended"))}),
+                    );
                 }
                 if props.contains_key("Tags") {
                     let tags = match cx.call("s3", "GetBucketTagging", json!({"Bucket": bucket})).await {
@@ -429,14 +476,22 @@ impl Provider for BucketPolicy {
 
     async fn create(&self, cx: &Cx<'_>, props: &Props) -> HResult<Created> {
         let bucket = req(props, "Bucket")?;
-        cx.call("s3", "PutBucketPolicy", json!({"Bucket": bucket, "Policy": document(props, "PolicyDocument").unwrap_or_default()}))
-            .await?;
+        cx.call(
+            "s3",
+            "PutBucketPolicy",
+            json!({"Bucket": bucket, "Policy": document(props, "PolicyDocument").unwrap_or_default()}),
+        )
+        .await?;
         Ok(Created::new(bucket))
     }
 
     async fn update(&self, cx: &Cx<'_>, bucket: &str, _old: &Props, new: &Props, attrs: &Props) -> HResult<Props> {
-        cx.call("s3", "PutBucketPolicy", json!({"Bucket": bucket, "Policy": document(new, "PolicyDocument").unwrap_or_default()}))
-            .await?;
+        cx.call(
+            "s3",
+            "PutBucketPolicy",
+            json!({"Bucket": bucket, "Policy": document(new, "PolicyDocument").unwrap_or_default()}),
+        )
+        .await?;
         Ok(attrs.clone())
     }
 
@@ -448,7 +503,8 @@ impl Provider for BucketPolicy {
         Some(
             async {
                 let out = cx.call("s3", "GetBucketPolicy", json!({"Bucket": bucket})).await?;
-                let doc = out["Policy"].as_str().and_then(|p| serde_json::from_str::<Value>(p).ok()).unwrap_or_default();
+                let doc =
+                    out["Policy"].as_str().and_then(|p| serde_json::from_str::<Value>(p).ok()).unwrap_or_default();
                 let mut p = Props::new();
                 p.insert("Bucket".into(), json!(bucket));
                 p.insert("PolicyDocument".into(), doc);

@@ -198,6 +198,5 @@ pub fn change(c: &ResourceChange, with_values: bool) -> types::Change {
             after_context: if with_values { c.after.clone() } else { None },
             ..Default::default()
         }),
-        ..Default::default()
     }
 }
