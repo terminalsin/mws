@@ -378,7 +378,12 @@ fn build_with_store(config: Config, store: Option<Arc<Store>>) -> Mws {
     sns.set_queues(Arc::new(links::SnsToSqs(sqs.clone())));
     s3.add_notification_destination(Arc::new(links::S3ToSqs(sqs.clone())));
     events.register_target_sink("sns", Arc::new(sinks::SnsTarget(sns.clone())));
-    s3.set_eventbridge_sink(Arc::new(sinks::S3ToEvents(events.clone())));
+    let guardduty = GuardDuty::new();
+    s3.set_eventbridge_sink(Arc::new(links::S3ObjectEvents {
+        events: sinks::S3ToEvents(events.clone()),
+        guardduty: guardduty.clone(),
+    }));
+    guardduty.set_malware_object_store(Arc::new(links::GuardDutyMalwareObjects { sts: sts.clone(), s3: s3.clone() }));
     ssm.set_change_sink(Arc::new(sinks::SsmChangeEvents(events.clone())));
     events.register_clock_source(Arc::new(sinks::SsmPolicyEvents {
         ssm: ssm.clone(),
@@ -417,7 +422,6 @@ fn build_with_store(config: Config, store: Option<Arc<Store>>) -> Mws {
     let ec2 = Ec2::new(config.ec2_backend.resolve(config.ec2_docker_cli.as_deref()));
     tracing::info!(backend = ec2.backend_name(), "EC2 compute backend");
     ec2.set_instance_roles(Arc::new(links::Ec2InstanceRoles { iam: iam.clone(), sts: sts.clone() }));
-    let guardduty = GuardDuty::new();
     guardduty.set_event_sink(Arc::new(sinks::GuardDutyToEvents(events.clone())));
     guardduty.set_finding_exporter(Arc::new(links::GuardDutyToS3(s3.clone())));
     guardduty.set_organizations(Arc::new(links::GuardDutyOrganizations(organizations.clone())));

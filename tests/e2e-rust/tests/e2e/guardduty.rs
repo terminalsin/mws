@@ -946,8 +946,10 @@ async fn malware_protection_rules_and_investigations() {
         .await
         .unwrap_err();
     assert_eq!(code(&dup), "ConflictException");
+    // The role does not exist, so GuardDuty cannot work in the bucket.
     let p = gd.get_malware_protection_plan().malware_protection_plan_id(&plan).send().await.unwrap();
-    assert_eq!(p.status().unwrap().as_str(), "ACTIVE");
+    assert_eq!(p.status().unwrap().as_str(), "ERROR");
+    assert_eq!(p.status_reasons()[0].code(), Some("AccessDenied"));
     assert_eq!(p.arn().unwrap(), format!("arn:aws:guardduty:us-east-1:123456789012:malware-protection-plan/{plan}"));
     gd.update_malware_protection_plan()
         .malware_protection_plan_id(&plan)
@@ -974,7 +976,7 @@ async fn malware_protection_rules_and_investigations() {
     let events = inbox.drain(Duration::from_secs(2)).await;
     assert_eq!(events.len(), 1);
     assert_eq!(events[0]["detail-type"], "GuardDuty Malware Protection Object Scan Result");
-    assert_eq!(events[0]["detail"]["scanResultDetails"]["scanResultStatus"], "NO_THREATS_FOUND");
+    assert_eq!(events[0]["detail"]["scanResultDetails"]["scanResultStatus"], "ACCESS_DENIED");
     gd.delete_malware_protection_plan().malware_protection_plan_id(&plan).send().await.unwrap();
     let gone = gd.get_malware_protection_plan().malware_protection_plan_id(&plan).send().await.unwrap_err();
     assert_eq!(code(&gone), "ResourceNotFoundException");
@@ -1118,4 +1120,126 @@ async fn findings_are_imported_into_security_hub() {
     assert_eq!(backdoor.product_fields().unwrap()["aws/guardduty/service/count"], "1");
     let key = found.findings().iter().find(|f| f.resources()[0].r#type() == Some("AwsIamAccessKey"));
     assert!(key.is_some());
+}
+
+#[tokio::test]
+async fn malware_protection_scans_uploads_and_tags_them() {
+    use aws_sdk_guardduty::types::{
+        MalwareProtectionPlanActions, MalwareProtectionPlanTaggingAction, MalwareProtectionPlanTaggingActionStatus,
+    };
+    let mws = Mws::start().await;
+    let cfg = mws.root_sdk_config().await;
+    let gd = Client::new(&cfg);
+    let s3 = Mws::s3(&cfg);
+    let iam = aws_sdk_iam::Client::new(&cfg);
+    let id = detector(&gd).await;
+    let inbox = Inbox::new(&cfg, "scans").await;
+    s3.create_bucket().bucket("scan-uploads").send().await.unwrap();
+
+    let trust = json!({"Version":"2012-10-17","Statement":[{"Effect":"Allow",
+        "Principal":{"Service":"malware-protection-plan.guardduty.amazonaws.com"},"Action":"sts:AssumeRole"}]});
+    let role = iam
+        .create_role()
+        .role_name("gd-malware-protection")
+        .assume_role_policy_document(trust.to_string())
+        .send()
+        .await
+        .unwrap()
+        .role
+        .unwrap()
+        .arn;
+    let permissions = json!({"Version":"2012-10-17","Statement":[{"Effect":"Allow","Action":[
+        "s3:GetObject","s3:GetObjectVersion","s3:GetObjectTagging","s3:GetObjectVersionTagging",
+        "s3:PutObjectTagging","s3:PutObjectVersionTagging","s3:GetBucketNotification","s3:PutBucketNotification"],
+        "Resource":["arn:aws:s3:::scan-uploads","arn:aws:s3:::scan-uploads/*"]}]});
+    iam.put_role_policy()
+        .role_name("gd-malware-protection")
+        .policy_name("scan")
+        .policy_document(permissions.to_string())
+        .send()
+        .await
+        .unwrap();
+
+    let plan = gd
+        .create_malware_protection_plan()
+        .role(&role)
+        .protected_resource(
+            CreateProtectedResource::builder()
+                .s3_bucket(CreateS3BucketResource::builder().bucket_name("scan-uploads").object_prefixes("in/").build())
+                .build(),
+        )
+        .actions(
+            MalwareProtectionPlanActions::builder()
+                .tagging(
+                    MalwareProtectionPlanTaggingAction::builder()
+                        .status(MalwareProtectionPlanTaggingActionStatus::Enabled)
+                        .build(),
+                )
+                .build(),
+        )
+        .send()
+        .await
+        .unwrap()
+        .malware_protection_plan_id()
+        .unwrap()
+        .to_string();
+    let p = gd.get_malware_protection_plan().malware_protection_plan_id(&plan).send().await.unwrap();
+    assert_eq!(p.status().unwrap().as_str(), "ACTIVE", "{:?}", p.status_reasons());
+    // The plan's role turned on EventBridge notifications for the bucket.
+    let n = s3.get_bucket_notification_configuration().bucket("scan-uploads").send().await.unwrap();
+    assert!(n.event_bridge_configuration().is_some());
+
+    let eicar = r"X5O!P%@AP[4\PZX54(P^)7CC)7}$EICAR-STANDARD-ANTIVIRUS-TEST-FILE!$H+H*";
+    for (key, body) in [("in/clean.txt", "hello"), ("in/eicar.com", eicar), ("out/skipped.txt", eicar)] {
+        s3.put_object().bucket("scan-uploads").key(key).body(body.as_bytes().to_vec().into()).send().await.unwrap();
+    }
+    let scan_tag = |key: &'static str| {
+        let s3 = s3.clone();
+        async move {
+            let tags = s3.get_object_tagging().bucket("scan-uploads").key(key).send().await.unwrap();
+            tags.tag_set().iter().find(|t| t.key() == "GuardDutyMalwareScanStatus").map(|t| t.value().to_string())
+        }
+    };
+    let deadline = Instant::now() + Duration::from_secs(10);
+    while scan_tag("in/eicar.com").await.is_none() || scan_tag("in/clean.txt").await.is_none() {
+        assert!(Instant::now() < deadline, "objects were not scanned");
+        tokio::time::sleep(Duration::from_millis(100)).await;
+    }
+    assert_eq!(scan_tag("in/clean.txt").await.as_deref(), Some("NO_THREATS_FOUND"));
+    assert_eq!(scan_tag("in/eicar.com").await.as_deref(), Some("THREATS_FOUND"));
+    assert_eq!(scan_tag("out/skipped.txt").await, None);
+
+    let events = inbox.drain(Duration::from_secs(2)).await;
+    let scans: Vec<&Value> =
+        events.iter().filter(|e| e["detail-type"] == "GuardDuty Malware Protection Object Scan Result").collect();
+    assert_eq!(scans.len(), 2, "{events:?}");
+    let infected = scans.iter().find(|e| e["detail"]["s3ObjectDetails"]["objectKey"] == "in/eicar.com").unwrap();
+    assert_eq!(infected["detail"]["scanResultDetails"]["scanResultStatus"], "THREATS_FOUND");
+    assert_eq!(infected["detail"]["scanResultDetails"]["threats"][0]["name"], "EICAR-Test-File (not a virus)");
+    let finding = events.iter().find(|e| e["detail-type"] == "GuardDuty Finding").unwrap();
+    assert_eq!(finding["detail"]["type"], "Object:S3/MaliciousFile");
+
+    let found = gd
+        .list_findings()
+        .detector_id(&id)
+        .finding_criteria(eq("resource.s3BucketDetails.name", &["scan-uploads"]))
+        .send()
+        .await
+        .unwrap();
+    let f = gd.get_findings().detector_id(&id).finding_ids(&found.finding_ids()[0]).send().await.unwrap();
+    let f = &f.findings()[0];
+    assert_eq!(f.r#type(), Some("Object:S3/MaliciousFile"));
+    let object = &f.resource().unwrap().s3_bucket_details()[0].s3_object_details()[0];
+    assert_eq!(object.key(), Some("in/eicar.com"));
+    let threats = f.service().unwrap().malware_scan_details().unwrap().threats();
+    assert_eq!(threats[0].name(), Some("EICAR-Test-File (not a virus)"));
+
+    // On-demand scans of existing objects work too.
+    gd.send_object_malware_scan()
+        .s3_object(S3ObjectForSendObjectMalwareScan::builder().bucket("scan-uploads").key("in/clean.txt").build())
+        .send()
+        .await
+        .unwrap();
+    let events = inbox.drain(Duration::from_secs(2)).await;
+    assert_eq!(events[0]["detail"]["scanResultDetails"]["scanResultStatus"], "NO_THREATS_FOUND");
 }
