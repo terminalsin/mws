@@ -746,6 +746,119 @@ impl mws_ec2::InstanceRoleCredentials for Ec2InstanceRoles {
     }
 }
 
+/// Global Accelerator endpoints that live in EC2: instances, Elastic IP
+/// addresses and (for custom routing) VPC subnets.
+pub(crate) struct GlobalAcceleratorEc2(pub mws_ec2::Ec2);
+
+impl GlobalAcceleratorEc2 {
+    fn instance_health(&self, account: &str, region: &str, id: &str) -> mws_globalaccelerator::EndpointHealth {
+        use mws_globalaccelerator::EndpointHealth;
+        match self.0.instance_summary(account, region, id) {
+            Some(i) if i.state == "running" => EndpointHealth::healthy(),
+            Some(i) => EndpointHealth::unhealthy(format!("Instance {id} is {}.", i.state)),
+            None => EndpointHealth::unhealthy(format!("Instance {id} no longer exists.")),
+        }
+    }
+}
+
+impl mws_globalaccelerator::EndpointDirectory for GlobalAcceleratorEc2 {
+    fn endpoint(
+        &self,
+        account: &str,
+        region: &str,
+        id: &str,
+    ) -> mws_globalaccelerator::Lookup<mws_globalaccelerator::EndpointHealth> {
+        use mws_globalaccelerator::{EndpointHealth, Lookup};
+        if id.starts_with("i-") {
+            return match self.0.instance_summary(account, region, id) {
+                None => Lookup::Missing,
+                Some(i) if i.state == "terminated" => Lookup::Missing,
+                Some(_) => Lookup::Found(self.instance_health(account, region, id)),
+            };
+        }
+        if id.starts_with("eipalloc-") {
+            return match self.0.address_summary(account, region, id) {
+                None => Lookup::Missing,
+                Some(a) => Lookup::Found(match (&a.instance_id, &a.network_interface_id) {
+                    (Some(instance), _) => self.instance_health(account, region, instance),
+                    (None, Some(_)) => EndpointHealth::healthy(),
+                    (None, None) => EndpointHealth::unhealthy(format!(
+                        "Elastic IP address {id} isn't associated with an instance or network interface."
+                    )),
+                }),
+            };
+        }
+        Lookup::NotMine
+    }
+
+    fn subnet(&self, account: &str, region: &str, id: &str) -> mws_globalaccelerator::Lookup<String> {
+        use mws_globalaccelerator::Lookup;
+        match self.0.subnet_summary(account, region, id) {
+            Some(s) => s.cidr_block.map(Lookup::Found).unwrap_or(Lookup::Missing),
+            None => Lookup::Missing,
+        }
+    }
+}
+
+/// Private CA certificate authorities, shareable through AWS RAM: RAM's
+/// policy for a shared CA becomes part of the CA's resource policy.
+pub(crate) struct RamCertificateAuthorities(pub mws_acmpca::PrivateCa);
+
+impl mws_ram::ShareableResourceType for RamCertificateAuthorities {
+    fn resource_type(&self) -> &'static str {
+        "acm-pca:CertificateAuthority"
+    }
+
+    fn service_name(&self) -> &'static str {
+        "acm-pca"
+    }
+
+    fn matches(&self, arn: &str) -> bool {
+        arn.split(':').nth(2) == Some("acm-pca") && arn.contains(":certificate-authority/")
+    }
+
+    fn locate(&self, arn: &str) -> Option<mws_ram::ResourceLocation> {
+        let ca = self.0.ca_info(arn)?;
+        Some(mws_ram::ResourceLocation { owner_account: ca.owner, region: arn.split(':').nth(3)?.to_string() })
+    }
+
+    fn set_shared_policy(&self, arn: &str, policy: Option<String>) {
+        self.0.set_shared_policy(arn, policy);
+    }
+
+    fn shareable_actions(&self) -> &'static [&'static str] {
+        &[
+            "acm-pca:DescribeCertificateAuthority",
+            "acm-pca:GetCertificate",
+            "acm-pca:GetCertificateAuthorityCertificate",
+            "acm-pca:IssueCertificate",
+            "acm-pca:ListPermissions",
+            "acm-pca:ListTags",
+            "acm-pca:RevokeCertificate",
+        ]
+    }
+
+    fn share_action(&self) -> &'static str {
+        "acm-pca:PutPolicy"
+    }
+}
+
+/// `PutPolicy` / `DeletePolicy` on a CA, mirrored as a RAM share created
+/// from the policy.
+pub(crate) struct CaPoliciesToRam(pub mws_ram::Ram);
+
+impl mws_acmpca::CaPolicyListener for CaPoliciesToRam {
+    fn policy_changed(
+        &self,
+        ca_arn: &str,
+        owner_account: &str,
+        policy: Option<&str>,
+        now: chrono::DateTime<chrono::Utc>,
+    ) {
+        self.0.resource_policy_changed(ca_arn, owner_account, policy, now);
+    }
+}
+
 /// Security Hub's view of AWS Organizations: the caller's organization and
 /// the delegated administrator `EnableOrganizationAdminAccount` registers.
 pub struct SecurityHubOrganizations(pub mws_organizations::Organizations);
@@ -846,5 +959,74 @@ impl mws_securityhub::ExportSink for SecurityHubExports {
             Some(k) => self.0.put_object_as_service_kms(put, k).map(|_| ()),
             None => self.0.put_object_as_service(put).map(|_| ()).map_err(|e| e.to_string()),
         }
+    }
+}
+
+/// Route 53 alias records that target an accelerator's DNS name answer with
+/// its static IP addresses.
+pub(crate) struct Route53ToGlobalAccelerator(pub mws_globalaccelerator::GlobalAccelerator);
+
+/// The hosted zone of every accelerator's DNS names.
+const GLOBAL_ACCELERATOR_ZONE: &str = "Z2BJ6XQ5FK7U4H";
+
+impl mws_route53::AliasTargetResolver for Route53ToGlobalAccelerator {
+    fn resolve(&self, hosted_zone_id: &str, dns_name: &str, record_type: &str) -> Option<Vec<String>> {
+        if hosted_zone_id != GLOBAL_ACCELERATOR_ZONE {
+            return None;
+        }
+        let a = self.0.addresses_for_dns_name(dns_name)?;
+        match record_type {
+            "A" => Some(a.ipv4),
+            "AAAA" => Some(a.ipv6),
+            _ => Some(Vec::new()),
+        }
+    }
+}
+
+/// ELB's `AWS/ApplicationELB`, `AWS/NetworkELB`, `AWS/GatewayELB` and
+/// `AWS/ELB` metrics.
+pub struct ElbToCloudWatch(pub mws_cloudwatch::CloudWatch);
+
+impl mws_elb::MetricSink for ElbToCloudWatch {
+    fn publish(&self, metrics: Vec<mws_elb::ElbMetric>) {
+        for m in metrics {
+            self.0.put_metric_as_service(mws_cloudwatch::ServiceMetric {
+                account: m.account,
+                region: m.region,
+                namespace: m.namespace.into(),
+                metric_name: m.metric_name.into(),
+                dimensions: m.dimensions,
+                unit: Some(m.unit.into()),
+                timestamp: m.timestamp,
+                values: vec![(m.value, 1.0)],
+            });
+        }
+    }
+}
+
+/// Global Accelerator endpoints that are Application or Network Load
+/// Balancers: they must exist, and they are healthy while active with at
+/// least one healthy target, as Global Accelerator judges them.
+pub(crate) struct GlobalAcceleratorElb(pub mws_elb::Elb);
+
+impl mws_globalaccelerator::EndpointDirectory for GlobalAcceleratorElb {
+    fn endpoint(
+        &self,
+        account: &str,
+        region: &str,
+        id: &str,
+    ) -> mws_globalaccelerator::Lookup<mws_globalaccelerator::EndpointHealth> {
+        use mws_globalaccelerator::{EndpointHealth, Lookup};
+        if !id.contains(":elasticloadbalancing:") {
+            return Lookup::NotMine;
+        }
+        let Some(lb) = self.0.load_balancer(account, region, id) else { return Lookup::Missing };
+        Lookup::Found(if !lb.state.starts_with("active") {
+            EndpointHealth::unhealthy(format!("Load balancer {} is {}.", lb.name, lb.state))
+        } else if lb.healthy_targets == 0 {
+            EndpointHealth::unhealthy(format!("Load balancer {} has no healthy targets.", lb.name))
+        } else {
+            EndpointHealth::healthy()
+        })
     }
 }
