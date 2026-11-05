@@ -2183,7 +2183,6 @@ impl mws_ecr::UpstreamCredentials for EcrUpstreamCredentials {
     }
 }
 
-
 /// S3 object events of buckets with EventBridge enabled: to EventBridge,
 /// and new objects to GuardDuty Malware Protection, which scans those its
 /// plans protect.
