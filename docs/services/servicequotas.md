@@ -8,6 +8,7 @@ All 26 operations are generated from the AWS model (awsJson1.1) and implemented.
 
 | Feature | Status | Details |
 | --- | :---: | --- |
+| Starting values | ✅ | `MWS_QUOTA_PROFILE=established` (the default) starts accounts at AWS's defaults except EC2 vCPU quotas of 1152 per instance class, so suites that launch many instances need no increases; `new-account` uses AWS's exact new-account defaults (5 standard vCPUs). `GetAWSDefaultServiceQuota` always reports AWS's default. |
 | Catalogue | 🟡 | About 150 quotas across 28 services with AWS's quota codes, names, units, defaults (some differ by Region, as in AWS), adjustability and global scope, plus each quota's `UsageMetric`. Not all of AWS's thousands of quotas. |
 | Increase requests | ✅ | Checked like AWS (adjustable quota, a value above the current one, one open request per quota) and approved a second later on the emulated clock; the new value applies everywhere. `CreateSupportCase` opens a case on a pending request. Requests are never denied. |
 | Quota request template | ✅ | Management account with all features, `us-east-1` only, at most 10 entries; raises quotas in member accounts created after it was associated. |

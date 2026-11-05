@@ -29,7 +29,7 @@
 | Metadata backend | ✅ | `MWS_EC2_BACKEND=metadata` runs nothing; instances only change state. |
 | Instance metadata service | ✅ | `/_aws/ec2/metadata/<instance-id>/` with IMDSv1 and IMDSv2 tokens, network, placement, public keys, tags, user data and the identity document. |
 | Instance profiles | ✅ | Role credentials assumed by `ec2.amazonaws.com`; `RunInstances` checks `iam:PassRole`. |
-| Quotas | ✅ | Pending and running instances count against the On-Demand vCPU quota of their instance class (5 vCPUs for standard instances by default, as in a new AWS account: `VcpuLimitExceeded`), and Elastic IPs, VPCs and security group rules against theirs; raise them with [Service Quotas](servicequotas.md). |
+| Quotas | ✅ | Pending and running instances count against the On-Demand vCPU quota of their instance class (1152 vCPUs per class by default, or AWS's new-account 5 standard vCPUs with `MWS_QUOTA_PROFILE=new-account`: `VcpuLimitExceeded`), and Elastic IPs, VPCs and security group rules against theirs; raise them with [Service Quotas](servicequotas.md). |
 | EBS volumes and snapshots | 🟡 | Metadata only; volumes are not mounted. |
 | Launch templates, Spot, Auto Scaling | ❌ | Not yet. |
 

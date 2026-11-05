@@ -27,6 +27,7 @@ use mws_s3::S3;
 use mws_s3control::S3Control;
 use mws_secretsmanager::SecretsManager;
 use mws_server::{Gateway, Scenario, Store};
+pub use mws_servicequotas::catalog::Profile as QuotaProfile;
 use mws_servicequotas::ServiceQuotas;
 use mws_sns::Sns;
 use mws_sqs::Sqs;
@@ -51,6 +52,10 @@ pub struct Config {
     pub ec2_backend: BackendChoice,
     /// The Docker-compatible CLI (`MWS_EC2_DOCKER`, e.g. `podman`).
     pub ec2_docker_cli: Option<String>,
+    /// Which quota values accounts start with (`MWS_QUOTA_PROFILE`:
+    /// `established`, the default, or `new-account` for AWS's exact
+    /// new-account defaults such as 5 standard EC2 vCPUs).
+    pub quota_profile: QuotaProfile,
 }
 
 impl Config {
@@ -77,6 +82,13 @@ impl Config {
             }),
             Err(_) => BackendChoice::Auto,
         };
+        let quota_profile = match std::env::var("MWS_QUOTA_PROFILE") {
+            Ok(v) if !v.is_empty() => QuotaProfile::parse(&v).unwrap_or_else(|| {
+                tracing::warn!("unknown MWS_QUOTA_PROFILE {v:?}; using established");
+                Default::default()
+            }),
+            _ => Default::default(),
+        };
         Self {
             iam,
             db: path("MWS_DB"),
@@ -84,6 +96,7 @@ impl Config {
             skip_federation_signature_verification: skip,
             ec2_backend,
             ec2_docker_cli: std::env::var("MWS_EC2_DOCKER").ok().filter(|v| !v.is_empty()),
+            quota_profile,
         }
     }
 }
@@ -240,6 +253,7 @@ fn build_with_store(config: Config, store: Option<Arc<Store>>) -> Mws {
     let marketplace_entitlement = Entitlement::new(config.iam.account_id.clone());
     let marketplace_metering = Metering::new(marketplace_entitlement.clone());
     let servicequotas = ServiceQuotas::new();
+    servicequotas.set_profile(config.quota_profile);
     servicequotas.set_organizations(Arc::new(links::QuotaOrganizations(organizations.clone())));
     servicequotas.set_usage_source(Arc::new(links::QuotaUsage { ec2: ec2.clone(), s3: s3.clone(), iam: iam.clone() }));
     servicequotas.set_metric_publisher(Arc::new(links::UsageToCloudWatch(cloudwatch.clone())));

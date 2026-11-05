@@ -31,12 +31,49 @@ pub struct QuotaDef {
 
 impl QuotaDef {
     /// The default value in `region` (a few quotas differ by Region).
+    /// The value an account starts with under `profile`: AWS's default,
+    /// except that established accounts have room for real fleets of EC2
+    /// instances.
+    pub fn starting_value(&self, region: &str, profile: Profile) -> f64 {
+        let vcpus = self.service == "ec2" && self.usage.is_some_and(|u| u.dimensions.contains(&("Resource", "vCPU")));
+        match profile {
+            Profile::Established if vcpus => ESTABLISHED_VCPUS,
+            _ => self.default_in(region),
+        }
+    }
+
+    /// AWS's default value in `region`.
     pub fn default_in(&self, region: &str) -> f64 {
         let big = matches!(region, "us-east-1" | "us-west-2" | "eu-west-1");
         match (self.service, self.code) {
             ("kinesis", "L-0918CF54") if !big => 200.0,
             ("firehose", "L-14BB0BE7") if !big => 2000.0,
             _ => self.value,
+        }
+    }
+}
+
+/// EC2 vCPU quotas of an established account (a common value for accounts
+/// with some history).
+pub const ESTABLISHED_VCPUS: f64 = 1152.0;
+
+/// Which values accounts start with (`MWS_QUOTA_PROFILE`).
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub enum Profile {
+    /// AWS's defaults, except EC2 vCPU quotas of 1152 per instance class,
+    /// so suites that launch many instances work without increases.
+    #[default]
+    Established,
+    /// Exactly AWS's defaults for a brand-new account (5 standard vCPUs).
+    NewAccount,
+}
+
+impl Profile {
+    pub fn parse(s: &str) -> Option<Self> {
+        match s {
+            "established" | "default" => Some(Self::Established),
+            "new-account" => Some(Self::NewAccount),
+            _ => None,
         }
     }
 }

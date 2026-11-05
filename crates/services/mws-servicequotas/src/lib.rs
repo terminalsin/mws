@@ -57,6 +57,7 @@ pub(crate) struct Inner {
     usage: OnceLock<Arc<dyn UsageSource>>,
     metrics: OnceLock<Arc<dyn MetricPublisher>>,
     organizations: OnceLock<Arc<dyn OrganizationDirectory>>,
+    profile: OnceLock<catalog::Profile>,
     monitor: usage::Monitor,
 }
 
@@ -97,12 +98,19 @@ impl ServiceQuotas {
         let Some(def) = catalog::quota(service, code) else { return f64::INFINITY };
         self.apply_template(account, now);
         let mut st = self.lock();
-        let Some(acct) = st.accounts.get_mut(account) else { return def.default_in(region) };
+        let start = def.starting_value(region, self.profile());
+        let Some(acct) = st.accounts.get_mut(account) else { return start };
         acct.settle(now.timestamp_millis());
-        acct.applied
-            .get(&state::key(region, def.global, service, code))
-            .copied()
-            .unwrap_or_else(|| def.default_in(region))
+        acct.applied.get(&state::key(region, def.global, service, code)).copied().unwrap_or(start)
+    }
+
+    /// Which values accounts start with; set once, before serving.
+    pub fn set_profile(&self, profile: catalog::Profile) {
+        let _ = self.inner.profile.set(profile);
+    }
+
+    pub(crate) fn profile(&self) -> catalog::Profile {
+        self.inner.profile.get().copied().unwrap_or_default()
     }
 
     /// The applied value of the quota whose usage metric is the given

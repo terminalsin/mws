@@ -38,6 +38,11 @@ async fn run(ec2: &aws_sdk_ec2::Client, ami: &str, count: i32) -> Result<(), Str
         .map_err(|e| format!("{}: {}", e.code().unwrap_or_default(), e.message().unwrap_or_default()))
 }
 
+/// MWS with AWS's exact new-account quotas (5 standard vCPUs).
+async fn new_account() -> Mws {
+    Mws::start_with(mws::Config { quota_profile: mws::QuotaProfile::NewAccount, ..Default::default() }).await
+}
+
 /// Wait for a request to be approved.
 async fn approved(sq: &Client, id: &str) {
     for _ in 0..50 {
@@ -72,6 +77,9 @@ async fn catalog_and_defaults() {
     assert_eq!(q.value(), Some(5.0));
     assert_eq!(q.quota_name(), Some("Running On-Demand Standard (A, C, D, H, I, M, R, T, Z) instances"));
     assert!(q.adjustable());
+    // By default accounts start established, with room for real fleets.
+    let applied = sq.get_service_quota().service_code("ec2").quota_code(VCPUS).send().await.unwrap();
+    assert_eq!(applied.quota().unwrap().value(), Some(1152.0));
     assert_eq!(q.quota_arn(), Some(format!("arn:aws:servicequotas:us-east-1:{ACCOUNT}:ec2/{VCPUS}").as_str()));
     let metric = q.usage_metric().unwrap();
     assert_eq!(metric.metric_namespace(), Some("AWS/Usage"));
@@ -91,7 +99,7 @@ async fn catalog_and_defaults() {
 
 #[tokio::test]
 async fn increases_are_approved_and_enforced() {
-    let mws = Mws::start().await;
+    let mws = new_account().await;
     let cfg = mws.root_sdk_config().await;
     let sq = Client::new(&cfg);
     let ec2 = aws_sdk_ec2::Client::new(&cfg);
@@ -351,7 +359,7 @@ async fn tags_support_cases_and_auto_management() {
 
 #[tokio::test]
 async fn organization_template_applies_to_new_accounts() {
-    let mws = Mws::start().await;
+    let mws = new_account().await;
     let cfg = mws.root_sdk_config().await;
     let sq = Client::new(&cfg);
     let e = sq.associate_service_quota_template().send().await.unwrap_err();

@@ -36,6 +36,7 @@ See [State, scenarios and snapshots](state.md) for how the two interact.
 | `MWS_LAMBDA_NODE` | `node` from `PATH` | Interpreter that runs Node.js Lambda functions. |
 | `MWS_EC2_BACKEND` | `auto` | How EC2 instances run. `docker` runs each instance as a container, `metadata` runs nothing (instances only change state), and `auto` uses Docker when a daemon answers and `metadata` otherwise. |
 | `MWS_EC2_DOCKER` | `docker` | The Docker-compatible CLI the EC2 backend drives (for example `podman`). |
+| `MWS_QUOTA_PROFILE` | `established` | Which [Service Quotas](services/servicequotas.md) values accounts start with. `established` uses AWS's defaults except EC2 vCPU quotas of 1152 per instance class, so many instances can run without increases; `new-account` uses AWS's exact new-account defaults (5 standard vCPUs). |
 
 EC2 instances reach the instance metadata service and the AWS endpoint
 through the host, so when using the Docker backend MWS must listen on an
