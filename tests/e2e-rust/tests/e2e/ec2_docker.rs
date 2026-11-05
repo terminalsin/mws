@@ -367,6 +367,9 @@ async fn security_groups_acls_and_routes_filter_traffic() {
     eventually(&client, &closed_port, false, "8081 is not in the ACL").await;
 
     if !host_reachable {
+        // CI runners let containers reach the host, so there the routing
+        // checks must run rather than skip.
+        assert!(std::env::var_os("CI").is_none(), "containers cannot reach the Docker host at {outside}");
         eprintln!("skipping the routing checks: containers cannot reach this host");
         for id in [&server, &client] {
             ec2.terminate_instances().instance_ids(id.as_str()).send().await.unwrap();
