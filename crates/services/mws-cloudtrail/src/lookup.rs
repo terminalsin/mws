@@ -68,16 +68,18 @@ impl CloudTrail {
             return Err(errors::invalid_time_range("Start time must be before end time."));
         }
         let st = self.lock();
-        // Insights events are not generated, so their history is empty.
-        let history: &[HistoryEvent] = if input.event_category.is_some() {
-            &[]
-        } else {
-            st.accounts
-                .get(&ctx.caller.account_id)
-                .and_then(|a| a.history.get(&ctx.region))
-                .map(Vec::as_slice)
-                .unwrap_or(&[])
-        };
+        let history: &[HistoryEvent] = st
+            .accounts
+            .get(&ctx.caller.account_id)
+            .and_then(|a| {
+                if input.event_category.is_some() {
+                    a.insights.get(&ctx.region)
+                } else {
+                    a.history.get(&ctx.region)
+                }
+            })
+            .map(Vec::as_slice)
+            .unwrap_or(&[]);
         // Newest first; the token is the id of the next event to return.
         let mut found = history
             .iter()
@@ -182,8 +184,33 @@ impl CloudTrail {
         ctx: &RequestContext,
         input: types::ListInsightsDataRequest,
     ) -> Result<types::ListInsightsDataResponse, ServiceError> {
-        ctx.authorize("cloudtrail:ListInsightsData", &input.insight_source, ConditionContext::new())?;
-        // Insights events are not generated.
-        Ok(types::ListInsightsDataResponse { events: Some(Vec::new()), next_token: None })
+        let st = self.lock();
+        let (owner, arn) = self.find_trail(&st, ctx, &input.insight_source)?;
+        ctx.authorize("cloudtrail:ListInsightsData", &arn, ConditionContext::new())?;
+        if input.data_type != "InsightsEvents" {
+            return Err(errors::invalid_parameter(format!("DataType {} is not valid.", input.data_type)));
+        }
+        let dimensions = input.dimensions.unwrap_or_default();
+        if dimensions.len() > 1 {
+            return Err(errors::invalid_parameter("Dimensions can contain only one item."));
+        }
+        let max = input.max_results.unwrap_or(50);
+        if !(1..=50).contains(&max) {
+            return Err(errors::invalid_max_results("MaxResults must be between 1 and 50."));
+        }
+        let now = ctx.received_at;
+        let end = input.end_time.unwrap_or(now);
+        let start = input.start_time.unwrap_or(end - Duration::days(90));
+        let trail = &st.accounts[&owner].trails[&arn];
+        let all: Vec<types::Event> = trail
+            .insight_events
+            .iter()
+            .rev()
+            .filter(|h| h.event_time >= start && h.event_time <= end)
+            .filter(|h| dimensions.iter().all(|(k, v)| matches(h, k, v)))
+            .map(event)
+            .collect();
+        let (page, next) = crate::names::page(&all, input.next_token.as_deref(), max as usize)?;
+        Ok(types::ListInsightsDataResponse { events: Some(page), next_token: next })
     }
 }

@@ -5,7 +5,7 @@ use std::collections::BTreeMap;
 use std::io::Write;
 
 /// A trail's owner, the trail, and the events waiting for it.
-type Delivery = (String, Trail, Vec<(String, Value)>);
+type Delivery = (String, Trail, Vec<(String, Value)>, Vec<Value>);
 
 use aws_lc_rs::encoding::AsDer;
 use aws_lc_rs::signature::KeyPair as _;
@@ -120,6 +120,7 @@ impl CloudTrail {
             let excess = history.len().saturating_sub(HISTORY_LIMIT);
             history.drain(..expired.max(excess));
         }
+        crate::insights::count(&mut st, &e);
         let mut logged_by_trail = false;
         // EventBridge sees API calls only while a trail is logging.
         let mut covered = false;
@@ -183,16 +184,22 @@ impl CloudTrail {
             let mut work = Vec::new();
             for (owner, account) in st.accounts.iter_mut() {
                 for t in account.trails.values_mut() {
-                    if !t.pending.is_empty() {
+                    if !t.pending.is_empty() || !t.insight_pending.is_empty() {
                         let pending = std::mem::take(&mut t.pending);
-                        work.push((owner.clone(), t.clone(), pending));
+                        let insights = std::mem::take(&mut t.insight_pending);
+                        work.push((owner.clone(), t.clone(), pending, insights));
                     }
                 }
             }
             work
         };
-        for (owner, trail, pending) in work {
-            let outcome = self.deliver_trail(ctx, &trail, pending);
+        for (owner, trail, pending, insights) in work {
+            let mut outcome = self.deliver_trail(ctx, &trail, pending);
+            if !insights.is_empty() {
+                if let Err(e) = self.deliver_insights(ctx, &trail, insights) {
+                    outcome.s3_error = Some(e);
+                }
+            }
             let mut st = self.lock();
             let Some(t) = st.accounts.get_mut(&owner).and_then(|a| a.trails.get_mut(&trail.arn)) else { continue };
             let s = &mut t.status;
@@ -280,6 +287,29 @@ impl CloudTrail {
             out.cloudwatch = Some(self.to_cloudwatch(ctx, t, group, role, &groups));
         }
         out
+    }
+
+    /// Insights events go to their own log files, one per Region.
+    fn deliver_insights(&self, ctx: &RequestContext, t: &Trail, records: Vec<Value>) -> Result<(), String> {
+        let mut groups: BTreeMap<String, Vec<Value>> = BTreeMap::new();
+        for r in records {
+            let region = r.get("awsRegion").and_then(Value::as_str).unwrap_or(&t.home_region).to_string();
+            groups.entry(region).or_default().push(r);
+        }
+        let now = ctx.received_at;
+        for (region, records) in groups {
+            let account = &t.account;
+            let key = format!(
+                "{}{account}/CloudTrail-Insight/{region}/{}/{account}_CloudTrail-Insight_{region}_{}_{}.json.gz",
+                self.log_prefix(t),
+                now.format("%Y/%m/%d"),
+                now.format("%Y%m%dT%H%MZ"),
+                random_suffix()
+            );
+            let body = json!({ "Records": records }).to_string();
+            self.put(ctx, t, &key, gzip(body.as_bytes()), BTreeMap::new())?;
+        }
+        Ok(())
     }
 
     /// `<prefix>/AWSLogs/[<org id>/]`.

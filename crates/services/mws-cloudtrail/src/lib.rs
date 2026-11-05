@@ -26,8 +26,10 @@ pub mod generated {
     include!(concat!(env!("OUT_DIR"), "/cloudtrail_generated.rs"));
 }
 
+mod audit;
 mod deliver;
 mod handler;
+mod insights;
 mod lake;
 mod lookup;
 mod names;
@@ -43,6 +45,7 @@ use std::sync::{Arc, Mutex, MutexGuard, OnceLock, RwLock};
 use mws_core::trail::{ApiCall, HttpFacts};
 use mws_core::{ApiCallObserver, HttpRequest, HttpResponse, RequestContext, Service, ServiceError};
 
+pub use audit::{AuditError, AuditEvent, AuditResult};
 use state::State;
 
 /// The CloudTrail service. Cheap to clone; clones share state.
@@ -151,6 +154,7 @@ impl CloudTrail {
         };
         let now = chrono::Utc::now() + chrono::Duration::milliseconds(offset);
         let ctx = RequestContext { received_at: now, ..template };
+        self.evaluate_insights(&ctx);
         let bus: Vec<_> = std::mem::take(&mut *self.inner.bus.lock().expect("bus lock poisoned"));
         if let Some(events) = self.inner.events.get() {
             for (ctx, e) in bus {

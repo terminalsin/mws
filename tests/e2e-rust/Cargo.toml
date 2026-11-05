@@ -18,6 +18,7 @@ aws-sdk-s3 = { version = "1", features = ["behavior-version-latest"] }
 aws-sdk-s3control = "1"
 aws-sdk-lambda = "1"
 aws-sdk-cloudtrail = "1"
+aws-sdk-cloudtraildata = "1"
 aws-sdk-cloudwatchlogs = "1"
 aws-sdk-sqs = "1"
 aws-sdk-ssm = "1"
@@ -69,6 +70,7 @@ aws-lc-rs.workspace = true
 base64.workspace = true
 chrono.workspace = true
 flate2.workspace = true
+hex.workspace = true
 regex.workspace = true
 md-5.workspace = true
 serde_json.workspace = true

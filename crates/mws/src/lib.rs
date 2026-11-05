@@ -14,6 +14,7 @@ use mws_acmpca::PrivateCa;
 use mws_amplify::Amplify;
 use mws_autoscaling::AutoScaling;
 use mws_cloudtrail::CloudTrail;
+use mws_cloudtrail_data::CloudTrailData;
 use mws_cloudwatch::CloudWatch;
 use mws_core::Environment;
 use mws_ec2::{BackendChoice, Ec2};
@@ -408,6 +409,7 @@ fn build_with_store(config: Config, store: Option<Arc<Store>>) -> Mws {
         .service(Arc::new(eks.clone()))
         .service(Arc::new(cloudtrail.clone()))
         // CloudTrail records every API call the gateway dispatches.
+        .service(Arc::new(CloudTrailData::new(cloudtrail.clone())))
         .observer(Arc::new(cloudtrail.clone()))
         .build();
     Mws {

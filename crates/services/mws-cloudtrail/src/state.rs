@@ -48,6 +48,33 @@ pub struct Account {
     pub resource_policies: BTreeMap<String, String>,
     /// Delegated administrator accounts (in a management account).
     pub delegated_admins: BTreeSet<String>,
+    /// Insights events by Region, oldest first.
+    pub insights: BTreeMap<String, Vec<HistoryEvent>>,
+    /// Per-minute call and error counts that Insights watch, by
+    /// `region|source|name|insight type|error code`.
+    pub rates: BTreeMap<String, Rate>,
+}
+
+/// Calls per minute of one API (or one API error), and the Insight open on
+/// it, if any.
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[serde(default)]
+pub struct Rate {
+    /// Counts by minute (Unix seconds / 60).
+    pub counts: BTreeMap<i64, u32>,
+    /// The last minute evaluated.
+    pub evaluated: i64,
+    pub open: Option<OpenInsight>,
+}
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[serde(default)]
+pub struct OpenInsight {
+    pub shared_event_id: String,
+    pub start_minute: i64,
+    pub baseline: f64,
+    pub baseline_minutes: i64,
+    pub total: u64,
 }
 
 /// One event in the event history.
@@ -102,6 +129,10 @@ pub struct Trail {
     /// Records waiting for the next log file, with the account each came
     /// from.
     pub pending: Vec<(String, Value)>,
+    /// Insights events waiting for delivery.
+    pub insight_pending: Vec<Value>,
+    /// The Insights events this trail logged (`ListInsightsData`).
+    pub insight_events: Vec<HistoryEvent>,
     pub digest: DigestChain,
 }
 

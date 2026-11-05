@@ -78,7 +78,7 @@ Every service shares the same foundations:
 | --- | --- | --- |
 | [CloudWatch](cloudwatch.md) | 55 / 55 | Metrics, statistics and percentiles, metric math, alarms that act, dashboards, metric streams |
 | [CloudWatch Logs](logs.md) | 118 / 118 | Log events, filter patterns, Logs Insights, live tail, subscriptions, metric filters, exports |
-| [CloudTrail](cloudtrail.md) | 60 / 60 | Every API call recorded; trails delivering to S3, CloudWatch Logs and EventBridge; event history; Lake SQL queries |
+| [CloudTrail](cloudtrail.md) | 61 / 61 | Every API call recorded; trails delivering to S3, CloudWatch Logs and EventBridge; event history; Insights; Lake SQL queries, imports and channels |
 
 ## Marketplace
 

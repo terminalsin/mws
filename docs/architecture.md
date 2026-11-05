@@ -132,7 +132,8 @@ crates/
     mws-firehose       buffered delivery to S3, HTTP endpoints, Splunk, OpenSearch
     mws-cloudwatch     metrics, metric math, alarms that act, dashboards
     mws-logs           CloudWatch Logs: events, filter patterns, Insights, live tail
-    mws-cloudtrail     records every API call; trails, event history, Lake queries
+    mws-cloudtrail     records every API call; trails, event history, Insights, Lake
+    mws-cloudtrail-data PutAuditEvents into CloudTrail Lake channels
 tests/
   e2e-rust           official Rust SDK against an in-process MWS
   e2e-python         boto3 against the mws binary

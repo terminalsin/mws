@@ -875,14 +875,14 @@ impl CloudTrail {
         if prompt.contains("write") || prompt.contains("change") {
             filters.push("readOnly = false".to_string());
         }
-        for word in input.prompt.split(|c: char| !c.is_ascii_alphanumeric()) {
-            if word.len() > 3
-                && word.chars().next().is_some_and(|c| c.is_ascii_uppercase())
-                && word.chars().any(|c| c.is_ascii_lowercase())
-            {
-                filters.push(format!("eventName = '{word}'"));
-                break;
-            }
+        // An API name is a CamelCase word with at least two capitals
+        // (`CreateUser`), not a capitalized English word.
+        if let Some(word) = input.prompt.split(|c: char| !c.is_ascii_alphanumeric()).find(|w| {
+            w.chars().next().is_some_and(|c| c.is_ascii_uppercase())
+                && w.chars().filter(char::is_ascii_uppercase).count() >= 2
+                && w.chars().any(|c| c.is_ascii_lowercase())
+        }) {
+            filters.push(format!("eventName = '{word}'"));
         }
         let filter = if filters.is_empty() { String::new() } else { format!(" WHERE {}", filters.join(" AND ")) };
         let statement = format!(
