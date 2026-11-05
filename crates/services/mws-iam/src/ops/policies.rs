@@ -463,17 +463,18 @@ impl Iam {
             &self.holder_arn(h, name),
             single("iam:PolicyARN", policy_arn),
         )?;
+        let limit = match h {
+            Holder::Role => self.quota(ctx, "L-0DA4ABF3"),
+            _ => MAX_MANAGED_POLICIES_PER_ENTITY,
+        };
         let mut state = self.write();
         if !state.policies.contains_key(policy_arn) {
             return Err(errors::no_such_entity(format!("Policy {policy_arn} does not exist or is not attachable.")));
         }
         reserved_guard(h, &state, name)?;
         let (_, attached) = h.parts(&mut state, name).ok_or_else(|| h.not_found(name))?;
-        if !attached.contains(policy_arn) && attached.len() >= MAX_MANAGED_POLICIES_PER_ENTITY {
-            return Err(errors::limit_exceeded(format!(
-                "Cannot exceed quota for PoliciesPer{}: {MAX_MANAGED_POLICIES_PER_ENTITY}",
-                h.title()
-            )));
+        if !attached.contains(policy_arn) && attached.len() >= limit {
+            return Err(errors::limit_exceeded(format!("Cannot exceed quota for PoliciesPer{}: {limit}", h.title())));
         }
         attached.insert(policy_arn.to_string());
         Ok(())

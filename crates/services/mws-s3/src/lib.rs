@@ -67,7 +67,7 @@ pub use access_points::{
 pub use auth::policy_is_public;
 pub use checksum::compute as compute_checksum;
 pub use notifications::{event_message, EventBridgeSink, NotificationDestination, NotificationSource, ObjectEvent};
-pub use public::{ServicePutError, ServicePutObject, ServiceRead};
+pub use public::{ServicePutError, ServicePutObject, ServicePutOptions, ServiceRead};
 use state::State;
 
 /// A Signature Version 2 presigned URL or `Authorization: AWS ...` header.
@@ -169,6 +169,16 @@ impl S3 {
     pub fn with_kms(mut self, kms: mws_kms::Kms) -> Self {
         self.kms = Some(kms);
         self
+    }
+
+    /// Read the general purpose bucket quota from Service Quotas.
+    pub fn set_service_quotas(&self, quotas: mws_servicequotas::ServiceQuotas) {
+        let _ = self.links.quotas.set(quotas);
+    }
+
+    /// The number of general purpose buckets `account` owns.
+    pub fn bucket_count(&self, account: &str) -> usize {
+        self.read().buckets.values().filter(|b| b.owner == account).count()
     }
 
     /// Act on lifecycle rules that have come due by `now`.

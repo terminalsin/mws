@@ -105,6 +105,7 @@ pub fn io_types(model: &Model, op: &Shape) -> (String, String) {
 /// The async `Handler` trait: one method per operation, each answering
 /// `NotImplemented` until the service overrides it.
 pub fn emit_handler(model: &Model, ops: &[&Shape], w: &mut String) {
+    emit_trail(model, w);
     let _ = writeln!(w, "\n/// Implement the operations you support; the rest answer `NotImplemented`.");
     let _ = writeln!(w, "#[async_trait::async_trait]\npub trait Handler: Send + Sync {{");
     for op in ops {
@@ -117,6 +118,66 @@ pub fn emit_handler(model: &Model, ops: &[&Shape], w: &mut String) {
         );
     }
     let _ = writeln!(w, "}}");
+}
+
+/// `TRAIL`: what audit logs (CloudTrail) need from the model: the
+/// service's event source and the fields holding sensitive values.
+fn emit_trail(model: &Model, w: &mut String) {
+    let service = model.service().expect("model has a service");
+    let info = service.get_trait("aws.api#service");
+    let event_source = info
+        .and_then(|i| i.get("cloudTrailEventSource"))
+        .and_then(Value::as_str)
+        .map(str::to_string)
+        .unwrap_or_else(|| {
+            let prefix = info.and_then(|i| i.get("endpointPrefix")).and_then(Value::as_str).unwrap_or(service.name());
+            format!("{}.amazonaws.com", prefix.to_ascii_lowercase())
+        });
+    let sensitive_shape = |id: &str| {
+        let Some(t) = model.shape(id) else { return false };
+        t.has_trait("sensitive")
+            || [&t.member, &t.value]
+                .into_iter()
+                .flatten()
+                .any(|m| m.has_trait("sensitive") || model.shape(&m.target).is_some_and(|e| e.has_trait("sensitive")))
+    };
+    let mut sensitive = BTreeSet::new();
+    for s in model.shapes() {
+        if !matches!(s.ty, ShapeType::Structure | ShapeType::Union) {
+            continue;
+        }
+        for m in &s.members {
+            if m.has_trait("sensitive") || sensitive_shape(&m.target) {
+                sensitive.insert(crate::rust_types::field_name(m).trim_start_matches("r#").to_string());
+            }
+        }
+    }
+    let mut error_names = BTreeSet::new();
+    for s in model.shapes() {
+        let code = s.get_trait("aws.protocols#awsQueryError").and_then(|q| q.get("code")).and_then(Value::as_str);
+        if let Some(code) = code.filter(|c| *c != s.name()) {
+            error_names.insert(format!("({}, {})", rust_str(code), rust_str(s.name())));
+        }
+    }
+    let _ = writeln!(
+        w,
+        "\n/// What audit logs need from the model.\npub const TRAIL: ::mws_core::trail::ServiceTrail = ::mws_core::trail::ServiceTrail {{ event_source: {}, sensitive: &[{}], error_names: &[{}] }};",
+        rust_str(&event_source),
+        sensitive.iter().map(|s| rust_str(s)).collect::<Vec<_>>().join(", "),
+        error_names.into_iter().collect::<Vec<_>>().join(", ")
+    );
+}
+
+/// The call to `handler`'s method for `op`, as an expression of type
+/// `Result<Output, ServiceError>`, noted for audit logs. `input` is the
+/// decoded input (`()` for none).
+pub fn handler_call(op: &Shape, input: &str) -> String {
+    let method = ident(&snake_case(op.name()));
+    format!(
+        "::mws_core::trail::call(&TRAIL, {}, {}, {input}, |input| handler.{method}(ctx, input)).await",
+        rust_str(op.name()),
+        op.has_trait("readonly")
+    )
 }
 
 /// Constraint-check emission. Patterns are compiled once into `RE_n`

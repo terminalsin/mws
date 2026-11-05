@@ -200,6 +200,7 @@ impl Elb {
         let lb_path = names::lb_path_of_listener(&input.listener_arn).unwrap_or_default();
         let arn = names::arn(ctx, &account, &format!("listener-rule/{lb_path}/{listener_id}/{}", names::hex_id(16)));
         self.authorize_create(ctx, "CreateRule", &arn, &tags)?;
+        let max_rules = self.limit(ctx, "rules-per-application-load-balancer");
         let rule = self.with_region(ctx, |r| {
             let actions = super::actions::normalize(r, &lb_arn, &lb_type, &protocol, &input.actions)?;
             let existing = rules_of(r, &input.listener_arn);
@@ -210,7 +211,7 @@ impl Elb {
                 .rules
                 .values()
                 .filter(|x| !x.is_default() && r.listeners.get(&x.listener_arn).is_some_and(|l| l.lb_arn() == lb_arn));
-            if lb_rules.count() >= crate::catalog::limit("rules-per-application-load-balancer") {
+            if lb_rules.count() >= max_rules {
                 return Err(errors::too_many_rules(
                     "You have reached the maximum number of rules for this load balancer",
                 ));

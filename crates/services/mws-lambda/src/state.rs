@@ -63,8 +63,21 @@ pub struct Version {
     /// SHA-256 (hex) of the zip in [`State::code`], for zip packages.
     pub code_hex: Option<String>,
     pub image_uri: Option<String>,
+    /// The image `image_uri` resolved to (`<registry>/<repository>@<digest>`).
+    pub resolved_image_uri: Option<String>,
+    /// The resolved image's own entry point, command and working directory.
+    pub image_run_config: Option<ImageRunConfig>,
     /// Where the zip came from, if S3.
     pub s3_source: Option<(String, String, Option<String>)>,
+}
+
+/// How an image starts, from its config.
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct ImageRunConfig {
+    pub entrypoint: Vec<String>,
+    pub command: Vec<String>,
+    pub working_dir: Option<String>,
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
