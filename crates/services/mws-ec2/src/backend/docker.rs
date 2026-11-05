@@ -287,7 +287,20 @@ impl DockerBackend {
         } else {
             args.push(spec.image.clone());
         }
-        let id = self.run(&args).await?;
+        // A private IP is free again as soon as its instance terminates, but
+        // the terminated container may still hold it for a moment while
+        // Docker removes it: wait for that rather than fail the launch.
+        let mut attempts = 0;
+        let id = loop {
+            match self.run(&args).await {
+                Err(e) if own_cidr && e.0.contains("Address already in use") && attempts < 40 => {
+                    attempts += 1;
+                    let _ = self.run(&["rm".into(), "-f".into(), format!("mws-ec2-{}", spec.instance_id)]).await;
+                    tokio::time::sleep(std::time::Duration::from_millis(250)).await;
+                }
+                result => break result?,
+            }
+        };
         let handle = id.lines().last().unwrap_or_default().to_string();
         self.specs.lock().expect("specs lock poisoned").insert(handle.clone(), spec.clone());
         Ok(handle)

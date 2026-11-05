@@ -1561,7 +1561,18 @@ async fn components_run_on_docker_instances() {
     let bad = build("failing", "exit 3").await;
     assert_eq!(bad.state().unwrap().status(), Some(&ImageStatus::Failed));
     let reason = bad.state().unwrap().reason().unwrap_or_default().to_string();
-    assert!(reason.contains("Run"), "{reason}");
+    if !reason.contains("Run") {
+        // Say why the build instance did not start.
+        let id = reason.split_whitespace().find(|w| w.starts_with("i-")).unwrap_or_default();
+        let out = ec2.describe_instances().instance_ids(id).send().await;
+        let why = out.ok().and_then(|o| {
+            o.reservations()
+                .iter()
+                .flat_map(|r| r.instances())
+                .find_map(|i| i.state_reason().and_then(|r| r.message()).map(str::to_string))
+        });
+        panic!("{reason} (instance: {why:?})");
+    }
 
     // Loops, chained step outputs and a nested document read from the
     // instance really run.

@@ -48,7 +48,9 @@ aws-sdk-ram = "1"
 aws-sdk-pcaconnectorscep = "1"
 aws-sdk-securityhub = "1"
 aws-smithy-types = "1"
-aws-sigv4 = "1"
+# sigv4a matches mws-sigv4's dev-dependency, so building tests for any
+# subset of the workspace resolves the same features (and reuses CI caches).
+aws-sigv4 = { version = "1", features = ["sigv4a"] }
 aws-sdk-imagebuilder = "1"
 aws-sdk-elasticloadbalancingv2 = "1"
 aws-sdk-elasticloadbalancing = "1"
