@@ -70,6 +70,8 @@ pub fn compute(
                     pending: &pending,
                     preview: true,
                     cfn,
+                    account: &stack.account,
+                    region: &stack.region,
                 };
                 data.evaluator(template, &lookup).eval_properties(def.get("Properties")).ok()
             };
@@ -87,12 +89,20 @@ pub fn compute(
                 "Update of resource type is not permitted. The new template modifies resource type of the following resources: [{logical}]"
             ));
         }
-        let lookup =
-            StackResources { resources: &stack.resources, template, data, pending: &pending, preview: true, cfn };
+        let lookup = StackResources {
+            resources: &stack.resources,
+            template,
+            data,
+            pending: &pending,
+            preview: true,
+            cfn,
+            account: &stack.account,
+            region: &stack.region,
+        };
         let ev = data.evaluator(template, &lookup);
         let new_props = def.get("Properties").and_then(Value::as_object).cloned().unwrap_or_default();
         let keys: BTreeSet<String> = old.properties.keys().chain(new_props.keys()).cloned().collect();
-        let provider = cfn.provider(&ty);
+        let provider = cfn.provider_in(&stack.account, &stack.region, &ty);
         let create_only: &[&str] = provider.as_ref().map(|p| p.create_only()).unwrap_or(&[]);
         let updatable = provider.as_ref().is_none_or(|p| p.updatable());
         let mut details = Vec::new();

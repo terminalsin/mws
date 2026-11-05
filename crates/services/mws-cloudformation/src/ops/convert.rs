@@ -103,6 +103,12 @@ pub fn event(s: &Stack, e: &Event) -> types::StackEvent {
         resource_status_reason: e.reason.clone(),
         resource_properties: e.properties.clone(),
         client_request_token: e.client_request_token.clone(),
+        hook_type: e.hook_type.clone(),
+        hook_status: e.hook_status.clone(),
+        hook_status_reason: e.hook_status_reason.clone(),
+        hook_invocation_point: e.hook_invocation_point.clone(),
+        hook_invocation_id: e.hook_invocation_id.clone(),
+        hook_failure_mode: e.hook_failure_mode.clone(),
         ..Default::default()
     }
 }

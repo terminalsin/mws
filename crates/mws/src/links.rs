@@ -786,6 +786,42 @@ impl mws_cloudformation::RoleAssumer for CloudFormationRoles {
         self.0.credential_store().resolve(access_key_id, session_token, now).ok().flatten().map(|r| r.caller)
     }
 
+    fn credentials(
+        &self,
+        role_arn: &str,
+        service_principal: &str,
+        session_name: &str,
+        now: chrono::DateTime<chrono::Utc>,
+    ) -> Result<(String, String, String), String> {
+        let creds = self
+            .0
+            .assume_role_as_service(&mws_sts::ServiceAssume {
+                role_arn,
+                service_principal,
+                session_name,
+                duration_seconds: 3600,
+                source_account: role_arn.split(':').nth(4),
+                source_arn: None,
+                now,
+            })
+            .map_err(|_| format!("Role {role_arn} is invalid or cannot be assumed"))?;
+        Ok((creds.access_key_id, creds.secret_access_key, creds.session_token))
+    }
+
+    fn registry_identity(
+        &self,
+        account: &str,
+        now: chrono::DateTime<chrono::Utc>,
+    ) -> Result<(mws_core::Caller, String), String> {
+        let role_arn = self.1.ensure_cloudformation_registry_role(account);
+        let (key, _, token) =
+            self.credentials(&role_arn, "resources.cloudformation.amazonaws.com", "CloudFormationRegistry", now)?;
+        let caller = self
+            .resolve(&key, Some(&token), now)
+            .ok_or_else(|| format!("Registry handlers cannot run in account {account}"))?;
+        Ok((caller, role_arn))
+    }
+
     fn org_member(
         &self,
         member_account: &str,

@@ -60,6 +60,8 @@ pub struct StackResources<'a> {
     /// Whether missing resources are unknown (previews) or errors.
     pub preview: bool,
     pub cfn: &'a CloudFormation,
+    pub account: &'a str,
+    pub region: &'a str,
 }
 
 impl Resources for StackResources<'_> {
@@ -90,7 +92,7 @@ impl Resources for StackResources<'_> {
                 "Template error: instance of Fn::GetAtt references undefined resource {logical_id}"
             ));
         }
-        if let Some(p) = self.cfn.provider(ty) {
+        if let Some(p) = self.cfn.provider_in(self.account, self.region, ty) {
             if !p.open_attributes() && !p.attributes().contains(&attribute) {
                 return Lookup::Error(format!(
                     "Template error: resource {logical_id} does not support attribute type {attribute} in Fn::GetAtt"
@@ -182,6 +184,7 @@ impl Deployment {
                 properties: properties.map(|p| serde_json::to_string(p).unwrap_or_default()),
                 client_request_token: self.token.clone(),
                 operation_id: s.last_operation.as_ref().map(|o| o.1.clone()),
+                ..Default::default()
             };
             s.events.push(e.clone());
             (e, s.name.clone(), s.notification_arns.clone())
@@ -253,7 +256,7 @@ impl Deployment {
 
     fn provider(&self, ty: &str) -> Result<Arc<dyn Provider>, String> {
         self.cfn
-            .provider(ty)
+            .provider_in(&self.ctx.caller.account_id, &self.ctx.region, ty)
             .ok_or_else(|| crate::template::format_error(format!("Unrecognized resource types: [{ty}]")))
     }
 
@@ -269,13 +272,15 @@ impl Deployment {
             pending: &pending,
             preview: false,
             cfn: &self.cfn,
+            account: &self.ctx.caller.account_id,
+            region: &self.ctx.region,
         };
         let props =
             data.evaluator(template, &lookup).eval_properties(def.get("Properties")).map_err(EvalError::message)?;
         let props = crate::dynamic::resolve(&self.cfn, &self.ctx, Value::Object(props)).await?;
         let Value::Object(props) = props else { unreachable!("objects stay objects") };
         let ty = def.get("Type").and_then(Value::as_str).unwrap_or_default();
-        if let Some(p) = self.cfn.provider(ty) {
+        if let Some(p) = self.cfn.provider_in(&self.ctx.caller.account_id, &self.ctx.region, ty) {
             let missing: Vec<&str> = p.required().iter().copied().filter(|k| !props.contains_key(*k)).collect();
             if !missing.is_empty() {
                 return Err(format!(
@@ -289,6 +294,54 @@ impl Deployment {
 
     fn stack_tags(stack: &Stack) -> Vec<(String, String)> {
         stack.tags.iter().map(|t| (t.key.clone(), t.value.clone())).collect()
+    }
+
+    /// Run the account's hooks for a resource about to be provisioned,
+    /// recording their progress as stack events.
+    async fn hooks(
+        &self,
+        logical_id: &str,
+        ty: &str,
+        action: &str,
+        props: &Props,
+        previous: Option<&Props>,
+    ) -> Result<(), String> {
+        let events = std::sync::Mutex::new(Vec::new());
+        let result = self
+            .cfn
+            .run_hooks(&self.ctx, &self.stack_id, logical_id, ty, action, props, previous, |e| {
+                events.lock().expect("lock").push(e)
+            })
+            .await;
+        let now = self.now();
+        let token = self.token.clone();
+        self.with(|s| {
+            for e in events.into_inner().expect("lock") {
+                s.events.push(crate::state::Event {
+                    id: uuid::Uuid::new_v4().to_string(),
+                    logical_id: logical_id.to_string(),
+                    physical_id: None,
+                    resource_type: ty.to_string(),
+                    timestamp: now,
+                    status: match action {
+                        "CREATE" => "CREATE_IN_PROGRESS",
+                        "UPDATE" => "UPDATE_IN_PROGRESS",
+                        _ => "DELETE_IN_PROGRESS",
+                    }
+                    .into(),
+                    client_request_token: token.clone(),
+                    operation_id: s.last_operation.as_ref().map(|o| o.1.clone()),
+                    hook_type: Some(e.hook_type),
+                    hook_status: Some(e.status),
+                    hook_status_reason: e.reason,
+                    hook_invocation_point: Some(e.point),
+                    hook_invocation_id: Some(e.invocation_id),
+                    hook_failure_mode: Some(e.failure_mode),
+                    ..Default::default()
+                });
+            }
+        });
+        result
     }
 
     /// Create one resource. `replacing` names the record it replaces.
@@ -359,7 +412,10 @@ impl Deployment {
         let stack = self.snapshot();
         let tags = Self::stack_tags(&stack);
         let cx = self.cx(&stack, logical_id, &tags);
-        let created = provider.create(&cx, &props).await;
+        let created = match self.hooks(logical_id, &ty, "CREATE", &props, None).await {
+            Ok(()) => provider.create(&cx, &props).await,
+            Err(reason) => Err(providers::HandlerError::invalid(reason)),
+        };
         let created = match created {
             Ok(c) => c,
             Err(e) => {
@@ -437,7 +493,7 @@ impl Deployment {
     /// Delete one resource record's physical resource.
     async fn delete_physical(&self, r: &Resource, events: bool) -> Result<(), String> {
         let Some(physical) = r.physical_id.clone() else { return Ok(()) };
-        let provider = match self.cfn.provider(&r.resource_type) {
+        let provider = match self.cfn.provider_in(&self.ctx.caller.account_id, &self.ctx.region, &r.resource_type) {
             Some(p) => p,
             None => return Ok(()),
         };
@@ -447,7 +503,11 @@ impl Deployment {
         let stack = self.snapshot();
         let tags = Self::stack_tags(&stack);
         let cx = self.cx(&stack, &r.logical_id, &tags);
-        match provider.delete(&cx, &physical, &r.properties, &r.attributes).await {
+        let deleted = match self.hooks(&r.logical_id, &r.resource_type, "DELETE", &r.properties, None).await {
+            Ok(()) => provider.delete(&cx, &physical, &r.properties, &r.attributes).await,
+            Err(reason) => Err(providers::HandlerError::invalid(reason)),
+        };
+        match deleted {
             Ok(()) => {
                 if events {
                     self.event(&r.logical_id, &r.resource_type, Some(&physical), "DELETE_COMPLETE", None, None).await;
@@ -559,6 +619,8 @@ impl Deployment {
             pending: &pending,
             preview: false,
             cfn: &self.cfn,
+            account: &self.ctx.caller.account_id,
+            region: &self.ctx.region,
         };
         let ev = data.evaluator(template, &lookup);
         let mut out = Vec::new();
@@ -832,7 +894,11 @@ impl Deployment {
             let stack = self.snapshot();
             let tags = Self::stack_tags(&stack);
             let cx = self.cx(&stack, &logical, &tags);
-            match provider.update(&cx, &physical, &old.properties, &props, &old.attributes).await {
+            let updated = match self.hooks(&logical, &ty, "UPDATE", &props, Some(&old.properties)).await {
+                Ok(()) => provider.update(&cx, &physical, &old.properties, &props, &old.attributes).await,
+                Err(reason) => Err(providers::HandlerError::invalid(reason)),
+            };
+            match updated {
                 Ok(mut attrs) => {
                     let now = self.now();
                     // A custom resource may answer an update with a new
@@ -935,7 +1001,11 @@ impl Deployment {
             let physical = old.physical_id.clone().unwrap_or_default();
             self.event(logical, &old.resource_type, Some(&physical), "UPDATE_IN_PROGRESS", None, Some(&old.properties))
                 .await;
-            let Some(provider) = self.cfn.provider(&old.resource_type) else { continue };
+            let Some(provider) =
+                self.cfn.provider_in(&self.ctx.caller.account_id, &self.ctx.region, &old.resource_type)
+            else {
+                continue;
+            };
             let stack = self.snapshot();
             let tags: Vec<(String, String)> = previous.tags.iter().map(|t| (t.key.clone(), t.value.clone())).collect();
             let cx = self.cx(&stack, logical, &tags);

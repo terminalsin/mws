@@ -456,4 +456,144 @@ impl Handler for CloudFormation {
     ) -> Result<types::ImportStacksToStackSetOutput, ServiceError> {
         self.import_stacks_to_stack_set_op(ctx, input).await
     }
+
+    async fn register_type(
+        &self,
+        ctx: &RequestContext,
+        input: types::RegisterTypeInput,
+    ) -> Result<types::RegisterTypeOutput, ServiceError> {
+        self.register_type_op(ctx, input).await
+    }
+
+    async fn describe_type_registration(
+        &self,
+        ctx: &RequestContext,
+        input: types::DescribeTypeRegistrationInput,
+    ) -> Result<types::DescribeTypeRegistrationOutput, ServiceError> {
+        self.describe_type_registration_op(ctx, input)
+    }
+
+    async fn list_type_registrations(
+        &self,
+        ctx: &RequestContext,
+        input: types::ListTypeRegistrationsInput,
+    ) -> Result<types::ListTypeRegistrationsOutput, ServiceError> {
+        self.list_type_registrations_op(ctx, input)
+    }
+
+    async fn deregister_type(
+        &self,
+        ctx: &RequestContext,
+        input: types::DeregisterTypeInput,
+    ) -> Result<types::DeregisterTypeOutput, ServiceError> {
+        self.deregister_type_op(ctx, input)?;
+        Ok(Default::default())
+    }
+
+    async fn list_type_versions(
+        &self,
+        ctx: &RequestContext,
+        input: types::ListTypeVersionsInput,
+    ) -> Result<types::ListTypeVersionsOutput, ServiceError> {
+        self.list_type_versions_op(ctx, input)
+    }
+
+    async fn set_type_default_version(
+        &self,
+        ctx: &RequestContext,
+        input: types::SetTypeDefaultVersionInput,
+    ) -> Result<types::SetTypeDefaultVersionOutput, ServiceError> {
+        self.set_type_default_version_op(ctx, input)?;
+        Ok(Default::default())
+    }
+
+    async fn set_type_configuration(
+        &self,
+        ctx: &RequestContext,
+        input: types::SetTypeConfigurationInput,
+    ) -> Result<types::SetTypeConfigurationOutput, ServiceError> {
+        self.set_type_configuration_op(ctx, input)
+    }
+
+    async fn batch_describe_type_configurations(
+        &self,
+        ctx: &RequestContext,
+        input: types::BatchDescribeTypeConfigurationsInput,
+    ) -> Result<types::BatchDescribeTypeConfigurationsOutput, ServiceError> {
+        self.batch_describe_type_configurations_op(ctx, input)
+    }
+
+    async fn register_publisher(
+        &self,
+        ctx: &RequestContext,
+        input: types::RegisterPublisherInput,
+    ) -> Result<types::RegisterPublisherOutput, ServiceError> {
+        self.register_publisher_op(ctx, input)
+    }
+
+    async fn describe_publisher(
+        &self,
+        ctx: &RequestContext,
+        input: types::DescribePublisherInput,
+    ) -> Result<types::DescribePublisherOutput, ServiceError> {
+        self.describe_publisher_op(ctx, input)
+    }
+
+    async fn test_type(
+        &self,
+        ctx: &RequestContext,
+        input: types::TestTypeInput,
+    ) -> Result<types::TestTypeOutput, ServiceError> {
+        self.test_type_op(ctx, input).await
+    }
+
+    async fn publish_type(
+        &self,
+        ctx: &RequestContext,
+        input: types::PublishTypeInput,
+    ) -> Result<types::PublishTypeOutput, ServiceError> {
+        self.publish_type_op(ctx, input)
+    }
+
+    async fn activate_type(
+        &self,
+        ctx: &RequestContext,
+        input: types::ActivateTypeInput,
+    ) -> Result<types::ActivateTypeOutput, ServiceError> {
+        self.activate_type_op(ctx, input)
+    }
+
+    async fn deactivate_type(
+        &self,
+        ctx: &RequestContext,
+        input: types::DeactivateTypeInput,
+    ) -> Result<types::DeactivateTypeOutput, ServiceError> {
+        self.deactivate_type_op(ctx, input)?;
+        Ok(Default::default())
+    }
+
+    async fn record_handler_progress(
+        &self,
+        ctx: &RequestContext,
+        input: types::RecordHandlerProgressInput,
+    ) -> Result<types::RecordHandlerProgressOutput, ServiceError> {
+        self.record_handler_progress_op(ctx, input)?;
+        Ok(Default::default())
+    }
+
+    async fn get_hook_result(
+        &self,
+        ctx: &RequestContext,
+        input: types::GetHookResultInput,
+    ) -> Result<types::GetHookResultOutput, ServiceError> {
+        self.get_hook_result_op(ctx, input)
+    }
+
+    async fn list_hook_results(
+        &self,
+        ctx: &RequestContext,
+        input: types::ListHookResultsInput,
+    ) -> Result<types::ListHookResultsOutput, ServiceError> {
+        self.list_hook_results_op(ctx, input)
+    }
 }

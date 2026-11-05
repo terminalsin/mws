@@ -16,6 +16,7 @@ pub struct State {
     pub stacks: BTreeMap<String, Stack>,
     pub drift_detections: BTreeMap<String, DriftDetection>,
     pub stack_sets: BTreeMap<String, crate::stacksets::StackSet>,
+    pub registry: crate::registry::Registry,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
@@ -213,6 +214,12 @@ pub struct Event {
     pub properties: Option<String>,
     pub client_request_token: Option<String>,
     pub operation_id: Option<String>,
+    pub hook_type: Option<String>,
+    pub hook_status: Option<String>,
+    pub hook_status_reason: Option<String>,
+    pub hook_invocation_point: Option<String>,
+    pub hook_invocation_id: Option<String>,
+    pub hook_failure_mode: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

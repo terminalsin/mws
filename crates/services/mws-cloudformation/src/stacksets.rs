@@ -232,7 +232,7 @@ impl CloudFormation {
             _ => return Err(validation("Exactly one of TemplateBody, TemplateURL or StackId must be specified")),
         };
         let template = crate::template::Template::parse(&body).map_err(validation)?;
-        self.check_template(&template)?;
+        self.check_template(ctx, &template)?;
         let caps = input.capabilities.clone().unwrap_or_default();
         crate::ops::check_capabilities(&template, &caps)?;
         match model.as_str() {
@@ -437,7 +437,7 @@ impl CloudFormation {
             set.template_body.clone()
         };
         let template = crate::template::Template::parse(&body).map_err(validation)?;
-        self.check_template(&template)?;
+        self.check_template(ctx, &template)?;
         let caps = input.capabilities.clone().unwrap_or_else(|| set.capabilities.clone());
         crate::ops::check_capabilities(&template, &caps)?;
         let parameters = match &input.parameters {
