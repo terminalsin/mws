@@ -1465,3 +1465,113 @@ async fn load_balancers_get_the_group_instances() {
     let sources = asg.describe_traffic_sources().auto_scaling_group_name("served").send().await.unwrap();
     assert!(sources.traffic_sources().is_empty());
 }
+
+#[tokio::test]
+async fn mixed_instances_policies_launch_spot_instances() {
+    use aws_sdk_autoscaling::types::{
+        InstancesDistribution, LaunchTemplate, LaunchTemplateOverrides, MixedInstancesPolicy,
+    };
+    let Env { mws: _mws, asg, ec2, template_id } = env().await;
+
+    // One on-demand instance as base capacity, then half of the rest
+    // on-demand (rounded up) and the remainder Spot.
+    asg.create_auto_scaling_group()
+        .auto_scaling_group_name("mixed")
+        .min_size(0)
+        .max_size(6)
+        .desired_capacity(4)
+        .availability_zones("us-east-1a")
+        .mixed_instances_policy(
+            MixedInstancesPolicy::builder()
+                .launch_template(
+                    LaunchTemplate::builder()
+                        .launch_template_specification(template(&template_id, "$Latest"))
+                        .overrides(LaunchTemplateOverrides::builder().instance_type("t3.micro").build())
+                        .overrides(LaunchTemplateOverrides::builder().instance_type("t3.small").build())
+                        .build(),
+                )
+                .instances_distribution(
+                    InstancesDistribution::builder()
+                        .on_demand_base_capacity(1)
+                        .on_demand_percentage_above_base_capacity(50)
+                        .spot_allocation_strategy("price-capacity-optimized")
+                        .build(),
+                )
+                .build(),
+        )
+        .send()
+        .await
+        .unwrap();
+    let g = wait_group(&asg, "mixed", "4 in service", |g| in_service(g) == 4).await;
+    let out = ec2.describe_instances().set_instance_ids(Some(ids(&g))).send().await.unwrap();
+    let instances: Vec<_> = out.reservations().iter().flat_map(|r| r.instances().to_vec()).collect();
+    let spot: Vec<_> = instances
+        .iter()
+        .filter(|i| i.instance_lifecycle() == Some(&aws_sdk_ec2::types::InstanceLifecycleType::Spot))
+        .collect();
+    assert_eq!((instances.len(), spot.len()), (4, 1));
+    assert!(spot[0].spot_instance_request_id().unwrap().starts_with("sir-"));
+
+    // EC2 filters by lifecycle.
+    let filtered = ec2
+        .describe_instances()
+        .filters(Filter::builder().name("instance-lifecycle").values("spot").build())
+        .filters(Filter::builder().name("instance-state-name").values("pending").values("running").build())
+        .send()
+        .await
+        .unwrap();
+    let filtered: Vec<_> = filtered.reservations().iter().flat_map(|r| r.instances().to_vec()).collect();
+    assert_eq!(filtered.len(), 1);
+    assert_eq!(filtered[0].instance_id(), spot[0].instance_id());
+
+    // An all-Spot distribution launches only Spot.
+    asg.update_auto_scaling_group()
+        .auto_scaling_group_name("mixed")
+        .mixed_instances_policy(
+            MixedInstancesPolicy::builder()
+                .launch_template(
+                    LaunchTemplate::builder()
+                        .launch_template_specification(template(&template_id, "$Latest"))
+                        .overrides(LaunchTemplateOverrides::builder().instance_type("t3.micro").build())
+                        .build(),
+                )
+                .instances_distribution(
+                    InstancesDistribution::builder()
+                        .on_demand_base_capacity(0)
+                        .on_demand_percentage_above_base_capacity(0)
+                        .build(),
+                )
+                .build(),
+        )
+        .send()
+        .await
+        .unwrap();
+    asg.set_desired_capacity().auto_scaling_group_name("mixed").desired_capacity(6).send().await.unwrap();
+    let g = wait_group(&asg, "mixed", "6 in service", |g| in_service(g) == 6).await;
+    let out = ec2.describe_instances().set_instance_ids(Some(ids(&g))).send().await.unwrap();
+    let spot = out
+        .reservations()
+        .iter()
+        .flat_map(|r| r.instances().to_vec())
+        .filter(|i| i.instance_lifecycle() == Some(&aws_sdk_ec2::types::InstanceLifecycleType::Spot))
+        .count();
+    assert_eq!(spot, 3);
+
+    // A RunInstances request on the Spot market.
+    let ami = alpine_ami(&ec2).await;
+    let run = ec2
+        .run_instances()
+        .image_id(&ami)
+        .instance_type(InstanceType::T3Micro)
+        .min_count(1)
+        .max_count(1)
+        .instance_market_options(
+            aws_sdk_ec2::types::InstanceMarketOptionsRequest::builder()
+                .market_type(aws_sdk_ec2::types::MarketType::Spot)
+                .build(),
+        )
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(run.instances()[0].instance_lifecycle(), Some(&aws_sdk_ec2::types::InstanceLifecycleType::Spot));
+}

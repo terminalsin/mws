@@ -14,10 +14,22 @@ use serde_json::json;
 use tokio::io::AsyncWriteExt;
 use tokio::process::Command;
 
-use super::{k3s_image, ControlPlane, ControlPlaneError, ControlPlaneSpec, NodeObject, Running};
+use chrono::{DateTime, Utc};
+use tokio::io::{AsyncBufReadExt, AsyncRead, BufReader};
+use tokio::sync::mpsc;
+
+use super::{k3s_image, ControlPlane, ControlPlaneError, ControlPlaneSpec, LogLine, LogSource, NodeObject, Running};
 
 const LABEL: &str = "mws.eks.cluster";
 const DATA: &str = "/var/lib/rancher/k3s";
+const AUDIT_LOG: &str = "/var/lib/rancher/k3s/server/logs/audit.log";
+
+/// Metadata for every request but health checks, without the
+/// `RequestReceived` stage, like EKS's audit policy.
+const AUDIT_POLICY: &str = "apiVersion: audit.k8s.io/v1\nkind: Policy\nomitStages: [RequestReceived]\nrules:\n\
+- level: None\n  nonResourceURLs: ['/healthz*', '/readyz*', '/livez*', '/version']\n\
+- level: None\n  users: ['system:apiserver']\n\
+- level: Metadata\n";
 
 pub struct K3s {
     cli: String,
@@ -93,7 +105,8 @@ impl K3s {
     async fn start(&self, spec: &ControlPlaneSpec) -> Result<(), ControlPlaneError> {
         let _ = self.args(&["rm", "-f", &spec.id]).await;
         let script = "mkdir -p /etc/mws && printf '%s' \"$MWS_AUTHN\" > /etc/mws/authn.yaml \
-            && printf '%s' \"$MWS_AUTHZ\" > /etc/mws/authz.yaml && exec /bin/k3s server \"$@\"";
+            && printf '%s' \"$MWS_AUTHZ\" > /etc/mws/authz.yaml \
+            && printf '%s' \"$MWS_AUDIT\" > /etc/mws/audit.yaml && exec /bin/k3s server \"$@\"";
         let args: Vec<String> = vec![
             "run".into(),
             "-d".into(),
@@ -111,6 +124,8 @@ impl K3s {
             format!("MWS_AUTHN={}", webhook_config(&spec.authenticate_url)),
             "-e".into(),
             format!("MWS_AUTHZ={}", webhook_config(&spec.authorize_url)),
+            "-e".into(),
+            format!("MWS_AUDIT={AUDIT_POLICY}"),
             "--entrypoint".into(),
             "/bin/sh".into(),
             k3s_image(&spec.version),
@@ -132,6 +147,11 @@ impl K3s {
             "--kube-apiserver-arg=authorization-webhook-version=v1".into(),
             "--kube-apiserver-arg=authorization-webhook-cache-authorized-ttl=10s".into(),
             "--kube-apiserver-arg=authorization-webhook-cache-unauthorized-ttl=1s".into(),
+            // The audit log EKS ships to CloudWatch Logs.
+            "--kube-apiserver-arg=audit-policy-file=/etc/mws/audit.yaml".into(),
+            format!("--kube-apiserver-arg=audit-log-path={AUDIT_LOG}"),
+            "--kube-apiserver-arg=audit-log-maxsize=100".into(),
+            "--kube-apiserver-arg=audit-log-maxbackup=1".into(),
             // The nodes EKS lists have no kubelet to renew their leases.
             "--kube-controller-manager-arg=controllers=*,-nodelifecycle".into(),
         ];
@@ -244,5 +264,67 @@ impl ControlPlane for K3s {
             .await?;
         }
         Ok(())
+    }
+
+    async fn follow_logs(&self, id: &str, since: DateTime<Utc>) -> Option<mpsc::Receiver<LogLine>> {
+        let (tx, rx) = mpsc::channel(4096);
+        let since_arg = since.to_rfc3339_opts(chrono::SecondsFormat::Nanos, true);
+        let mut logs = Command::new(&self.cli)
+            .args(["logs", "-f", "--timestamps", "--since", &since_arg, id])
+            .stdin(Stdio::null())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .kill_on_drop(true)
+            .spawn()
+            .ok()?;
+        let mut audit = Command::new(&self.cli)
+            .args(["exec", id, "tail", "-n", "+1", "-F", AUDIT_LOG])
+            .stdin(Stdio::null())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::null())
+            .kill_on_drop(true)
+            .spawn()
+            .ok()?;
+        let since_ms = since.timestamp_millis();
+        if let Some(err) = logs.stderr.take() {
+            tokio::spawn(server_lines(err, tx.clone(), None));
+        }
+        if let Some(out) = logs.stdout.take() {
+            tokio::spawn(server_lines(out, tx.clone(), Some(logs)));
+        }
+        if let Some(out) = audit.stdout.take() {
+            tokio::spawn(async move {
+                let _child = audit;
+                let mut lines = BufReader::new(out).lines();
+                while let Ok(Some(line)) = lines.next_line().await {
+                    let ts = serde_json::from_str::<serde_json::Value>(&line)
+                        .ok()
+                        .and_then(|v| v.get("stageTimestamp").and_then(|t| t.as_str()).map(str::to_string))
+                        .and_then(|t| DateTime::parse_from_rfc3339(&t).ok())
+                        .map(|t| t.timestamp_millis());
+                    let Some(ts) = ts.filter(|t| *t >= since_ms) else { continue };
+                    if tx.send(LogLine { source: LogSource::Audit, timestamp_ms: ts, message: line }).await.is_err() {
+                        break;
+                    }
+                }
+            });
+        }
+        Some(rx)
+    }
+}
+
+/// Lines of `docker logs --timestamps` output. The task owns `child` (when
+/// given) so following stops when the receiver goes away.
+async fn server_lines(out: impl AsyncRead + Unpin, tx: mpsc::Sender<LogLine>, child: Option<tokio::process::Child>) {
+    let _child = child;
+    let mut lines = BufReader::new(out).lines();
+    while let Ok(Some(line)) = lines.next_line().await {
+        let (ts, message) = line.split_once(' ').unwrap_or(("", line.as_str()));
+        let Ok(ts) = DateTime::parse_from_rfc3339(ts) else { continue };
+        let line =
+            LogLine { source: LogSource::Server, timestamp_ms: ts.timestamp_millis(), message: message.to_string() };
+        if tx.send(line).await.is_err() {
+            break;
+        }
     }
 }

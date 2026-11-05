@@ -1289,6 +1289,8 @@ async fn node_groups_are_auto_scaling_groups() {
 
     // The group launches the nodes, from the template.
     let nodes = e.nodes("custom", 2).await;
+    // SPOT capacity: every node is a Spot instance.
+    assert!(nodes.iter().all(|i| i.instance_lifecycle() == Some(&aws_sdk_ec2::types::InstanceLifecycleType::Spot)));
     assert!(nodes.iter().all(|i| i.instance_type() == Some(&InstanceType::M5Large)));
     let image = e.ec2.describe_images().image_ids(nodes[0].image_id().unwrap()).send().await.unwrap();
     assert_eq!(image.images()[0].name(), Some("amazon-eks-node-al2023-x86_64-standard-1.33-v20250101"));
