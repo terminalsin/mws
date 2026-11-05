@@ -46,6 +46,7 @@ See [State, scenarios and snapshots](state.md) for how the two interact.
 | `MWS_RDS_BACKEND` | `auto` | How RDS databases run. `docker` runs each DB instance (or Aurora cluster) as a PostgreSQL, MySQL or MariaDB container, `metadata` runs nothing (resources only change state), and `auto` uses Docker when a daemon answers and `metadata` otherwise. |
 | `MWS_RDS_DOCKER` | `MWS_EC2_DOCKER`, then `docker` | The Docker-compatible CLI the RDS backend drives. |
 | `MWS_RDS_BIND` | `127.0.0.1` | The host address database ports are published on. Endpoints report this address and the published port. |
+| `MWS_EFS_DIR` | `mws-efs` in the temp directory | Where EFS keeps file system data, one directory per file system. EC2 instances in Docker mount it at `/var/lib/mws-efs`. |
 
 EC2 instances reach the instance metadata service and the AWS endpoint
 through the host, so when using the Docker backend MWS must listen on an

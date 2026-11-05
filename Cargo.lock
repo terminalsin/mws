@@ -395,6 +395,31 @@ dependencies = [
 ]
 
 [[package]]
+name = "aws-sdk-efs"
+version = "1.123.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "8ec7aa536d618a904b162341cfab06d260f57c92ebe1326ec16984e6d54f7d85"
+dependencies = [
+ "arc-swap",
+ "aws-credential-types",
+ "aws-runtime",
+ "aws-smithy-async",
+ "aws-smithy-http",
+ "aws-smithy-json",
+ "aws-smithy-observability",
+ "aws-smithy-runtime",
+ "aws-smithy-runtime-api",
+ "aws-smithy-schema",
+ "aws-smithy-types",
+ "aws-types",
+ "bytes",
+ "fastrand",
+ "http 1.5.0",
+ "regex-lite",
+ "tracing",
+]
+
+[[package]]
 name = "aws-sdk-eks"
 version = "1.160.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2841,6 +2866,7 @@ dependencies = [
  "mws-cloudwatch",
  "mws-core",
  "mws-ec2",
+ "mws-efs",
  "mws-eks",
  "mws-elb",
  "mws-events",
@@ -3061,6 +3087,7 @@ dependencies = [
  "aws-sdk-cloudwatch",
  "aws-sdk-cloudwatchlogs",
  "aws-sdk-ec2",
+ "aws-sdk-efs",
  "aws-sdk-eks",
  "aws-sdk-elasticloadbalancing",
  "aws-sdk-elasticloadbalancingv2",
@@ -3097,6 +3124,7 @@ dependencies = [
  "chrono",
  "cms",
  "flate2",
+ "form_urlencoded",
  "md-5 0.10.6",
  "mws",
  "mws-ec2",
@@ -3145,6 +3173,29 @@ dependencies = [
  "serde_json",
  "tokio",
  "tracing",
+]
+
+[[package]]
+name = "mws-efs"
+version = "0.1.0"
+dependencies = [
+ "async-trait",
+ "bytes",
+ "chrono",
+ "form_urlencoded",
+ "http 1.5.0",
+ "mws-codegen",
+ "mws-core",
+ "mws-ec2",
+ "mws-iam-policy",
+ "mws-kms",
+ "mws-proto-json",
+ "mws-proto-restjson",
+ "rand 0.8.8",
+ "serde",
+ "serde_json",
+ "tracing",
+ "uuid",
 ]
 
 [[package]]

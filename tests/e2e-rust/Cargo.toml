@@ -44,6 +44,7 @@ aws-sdk-ses = "1"
 aws-sdk-sesv2 = "1"
 aws-sdk-rds = "1"
 aws-sdk-eks = "1"
+aws-sdk-efs = "1"
 aws-smithy-http-client = { version = "1", features = ["rustls-aws-lc"] }
 aws-smithy-runtime-api = { version = "1", features = ["client"] }
 zip.workspace = true
@@ -66,6 +67,7 @@ rand_core-06 = { package = "rand_core", version = "0.6", features = ["getrandom"
 time.workspace = true
 aws-lc-rs.workspace = true
 base64.workspace = true
+form_urlencoded.workspace = true
 chrono.workspace = true
 flate2.workspace = true
 regex.workspace = true
