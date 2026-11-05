@@ -45,6 +45,18 @@ pub struct LaunchSpec {
     pub ssh_public_key: Option<String>,
     /// Environment for the instance (SDK endpoint, Region, IMDS endpoint).
     pub env: Vec<(String, String)>,
+    /// EBS data volumes attached at launch (the root volume is the
+    /// instance's own disk).
+    pub volumes: Vec<VolumeMount>,
+}
+
+/// An EBS volume attached to an instance, at its device name.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct VolumeMount {
+    pub volume_id: String,
+    pub device: String,
+    /// The snapshot to fill the volume from, if it is new.
+    pub snapshot_id: Option<String>,
 }
 
 /// An IP protocol (and ports) a filter rule matches.
@@ -189,6 +201,37 @@ pub trait ComputeBackend: Send + Sync {
     /// backend runs nothing, so there is nowhere to run it.
     async fn exec(&self, handle: &str, script: &str) -> Result<Option<CommandOutput>, BackendError> {
         let _ = (handle, script);
+        Ok(None)
+    }
+
+    /// Make storage for an EBS volume, filled from `snapshot_id` when
+    /// given (and the backend holds that snapshot's data).
+    async fn create_volume(&self, _volume_id: &str, _snapshot_id: Option<&str>) -> Result<(), BackendError> {
+        Ok(())
+    }
+
+    /// Destroy an EBS volume's storage.
+    async fn delete_volume(&self, _volume_id: &str) -> Result<(), BackendError> {
+        Ok(())
+    }
+
+    /// Copy a volume's data into a new snapshot.
+    async fn create_snapshot(&self, _volume_id: &str, _snapshot_id: &str) -> Result<(), BackendError> {
+        Ok(())
+    }
+
+    /// Copy a snapshot's data into a new snapshot.
+    async fn copy_snapshot(&self, _source_id: &str, _snapshot_id: &str) -> Result<(), BackendError> {
+        Ok(())
+    }
+
+    async fn delete_snapshot(&self, _snapshot_id: &str) -> Result<(), BackendError> {
+        Ok(())
+    }
+
+    /// Change the data volumes an instance has attached. Returns the
+    /// instance's new handle when the backend had to recreate it.
+    async fn set_volumes(&self, _handle: &str, _volumes: &[VolumeMount]) -> Result<Option<String>, BackendError> {
         Ok(None)
     }
 }

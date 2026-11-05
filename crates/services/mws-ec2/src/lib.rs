@@ -29,13 +29,15 @@ mod ops;
 mod public;
 mod state;
 mod util;
+mod volumes;
 
 use std::sync::{Arc, Mutex, MutexGuard, OnceLock};
 
 use mws_core::{HttpRequest, HttpResponse, RequestContext, Service, ServiceError};
 
-pub use backend::{BackendChoice, CommandOutput, ComputeBackend, DockerBackend, MetadataBackend};
+pub use backend::{BackendChoice, CommandOutput, ComputeBackend, DockerBackend, MetadataBackend, VolumeMount};
 pub use public::{InstanceInfo, SecurityGroupInfo, SubnetInfo, VpcInfo};
+pub use ops::launch_template::ResolvedLaunchTemplate;
 use state::{RegionState, State};
 
 /// Credentials for an instance profile's role, as instance metadata serves
@@ -77,6 +79,7 @@ pub(crate) struct Inner {
     roles: OnceLock<Arc<dyn InstanceRoleCredentials>>,
     imds: imds::ImdsState,
     firewalls: firewall::Applied,
+    volume_jobs: volumes::VolumeQueue,
 }
 
 /// The EC2 service. Cheap to clone; clones share state.
@@ -100,6 +103,7 @@ impl Ec2 {
                 roles: OnceLock::new(),
                 imds: Default::default(),
                 firewalls: Default::default(),
+                volume_jobs: Default::default(),
             }),
         }
     }

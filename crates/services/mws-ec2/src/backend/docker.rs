@@ -18,13 +18,23 @@
 //! that does what cloud-init would: install the key pair's public key, run
 //! the user data once (its output goes to the console), then idle until
 //! stopped.
+//!
+//! EBS data volumes are Docker volumes (`mws-ebs-<volume-id>`), mounted in
+//! the instance's container at the volume's device name (`/dev/sdf` is a
+//! directory holding the volume's files). Snapshots are Docker volumes
+//! too, copied with a small helper container (`MWS_EC2_HELPER_IMAGE`,
+//! default `alpine:3.20`). Containers cannot gain mounts while they run,
+//! so attaching or detaching a volume commits the container's disk and
+//! recreates it with the new mounts: processes restart, files stay.
 
+use std::collections::HashMap;
 use std::process::Stdio;
 
 use tokio::process::Command;
 
 use super::{
     AclRule, AllowRule, BackendError, CommandOutput, ComputeBackend, Firewall, LaunchSpec, Launched, Protocol,
+    VolumeMount,
 };
 
 /// The default helper image: a small Alpine image with iptables.
@@ -68,6 +78,11 @@ pub struct DockerBackend {
     /// Serializes network creation, so concurrent launches into one VPC do
     /// not race to create its network.
     networks: tokio::sync::Mutex<()>,
+    /// The image that copies EBS volume data.
+    helper_image: String,
+    /// How each container was launched, by handle, so it can be recreated
+    /// with other volumes.
+    specs: std::sync::Mutex<HashMap<String, LaunchSpec>>,
 }
 
 impl DockerBackend {
@@ -83,7 +98,59 @@ impl DockerBackend {
             netfilter_image: (!off).then_some(image),
             host_gateway: std::sync::Mutex::new(None),
             networks: tokio::sync::Mutex::new(()),
+            helper_image: std::env::var("MWS_EC2_HELPER_IMAGE")
+                .ok()
+                .filter(|v| !v.is_empty())
+                .unwrap_or_else(|| "alpine:3.20".into()),
+            specs: Default::default(),
         }
+    }
+
+    fn volume_name(id: &str) -> String {
+        format!("mws-ebs-{id}")
+    }
+
+    async fn volume_exists(&self, id: &str) -> bool {
+        self.run(&["volume".into(), "inspect".into(), Self::volume_name(id)]).await.is_ok()
+    }
+
+    async fn ensure_volume(&self, id: &str) -> Result<(), BackendError> {
+        self.run(&[
+            "volume".into(),
+            "create".into(),
+            "--label".into(),
+            format!("mws.ec2.ebs={id}"),
+            Self::volume_name(id),
+        ])
+        .await
+        .map(drop)
+    }
+
+    /// Copy one Docker volume's files into another.
+    async fn copy_volume(&self, from: &str, to: &str) -> Result<(), BackendError> {
+        self.run(&[
+            "run".into(),
+            "--rm".into(),
+            "--network".into(),
+            "none".into(),
+            "-v".into(),
+            format!("{}:/from:ro", Self::volume_name(from)),
+            "-v".into(),
+            format!("{}:/to", Self::volume_name(to)),
+            "--entrypoint".into(),
+            "/bin/sh".into(),
+            self.helper_image.clone(),
+            "-c".into(),
+            "cp -a /from/. /to/".into(),
+        ])
+        .await
+        .map(drop)
+    }
+
+    /// The image an instance's disk is committed to when its volumes
+    /// change.
+    fn volumes_image(instance_id: &str) -> String {
+        format!("mws-ec2-{instance_id}:volumes")
     }
 
     /// Run the CLI with `input` on its standard input.
@@ -165,6 +232,82 @@ impl DockerBackend {
         }
     }
 
+    /// Create (and with `start`, run) the container for `spec`.
+    async fn create_container(&self, spec: &LaunchSpec, start: bool) -> Result<String, BackendError> {
+        let own_cidr = self.ensure_network(&spec.network.vpc_id, &spec.network.cidr_block).await?;
+        let name = format!("mws-ec2-{}", spec.instance_id);
+        // Leftovers of an earlier run with the same id (restored state).
+        let _ = self.run(&["rm".into(), "-f".into(), name.clone()]).await;
+        for v in &spec.volumes {
+            if !self.volume_exists(&v.volume_id).await {
+                self.ensure_volume(&v.volume_id).await?;
+                if let Some(snap) = &v.snapshot_id {
+                    if self.volume_exists(snap).await {
+                        self.copy_volume(snap, &v.volume_id).await?;
+                    }
+                }
+            }
+        }
+        let cpus = std::thread::available_parallelism().map(|n| n.get() as u32).unwrap_or(1);
+        let mut args: Vec<String> = if start { vec!["run".into(), "-d".into()] } else { vec!["create".into()] };
+        args.extend([
+            "--name".into(),
+            name,
+            "--hostname".into(),
+            spec.hostname.clone(),
+            "--network".into(),
+            Self::network_name(&spec.network.vpc_id),
+            "--add-host".into(),
+            "host.docker.internal:host-gateway".into(),
+            "--cpus".into(),
+            spec.vcpus.clamp(1, cpus).to_string(),
+            "--memory".into(),
+            format!("{}m", spec.memory_mib.max(64)),
+            "--label".into(),
+            format!("mws.ec2.instance={}", spec.instance_id),
+            "--label".into(),
+            format!("mws.ec2.account={}", spec.account_id),
+            "--label".into(),
+            format!("mws.ec2.region={}", spec.region),
+            "--label".into(),
+            format!("mws.ec2.instance-type={}", spec.instance_type),
+        ]);
+        if own_cidr {
+            args.push("--ip".into());
+            args.push(spec.private_ip.clone());
+        }
+        for v in &spec.volumes {
+            args.push("-v".into());
+            args.push(format!("{}:{}", Self::volume_name(&v.volume_id), v.device));
+        }
+        for (k, v) in &spec.env {
+            args.push("-e".into());
+            args.push(format!("{k}={v}"));
+        }
+        if self.netfilter_image.is_some() {
+            args.push("-e".into());
+            args.push("MWS_WAIT_NETWORK=1".into());
+        }
+        if spec.boot {
+            use base64::Engine;
+            if let Some(data) = &spec.user_data {
+                args.push("-e".into());
+                args.push(format!("MWS_USER_DATA={}", base64::engine::general_purpose::STANDARD.encode(data)));
+            }
+            if let Some(key) = &spec.ssh_public_key {
+                args.push("-e".into());
+                args.push(format!("MWS_SSH_PUBLIC_KEY={key}"));
+            }
+            args.extend(["--entrypoint".into(), "/bin/sh".into(), spec.image.clone(), "-c".into(), BOOT_SCRIPT.into()]);
+        } else {
+            args.push(spec.image.clone());
+        }
+        let id = self.run(&args).await?;
+        let handle = id.lines().last().unwrap_or_default().to_string();
+        self.specs.lock().expect("specs lock poisoned").insert(handle.clone(), spec.clone());
+        Ok(handle)
+    }
+
     fn network_name(vpc_id: &str) -> String {
         format!("mws-{vpc_id}")
     }
@@ -217,63 +360,7 @@ impl ComputeBackend for DockerBackend {
     }
 
     async fn launch(&self, spec: &LaunchSpec) -> Result<Launched, BackendError> {
-        let own_cidr = self.ensure_network(&spec.network.vpc_id, &spec.network.cidr_block).await?;
-        let name = format!("mws-ec2-{}", spec.instance_id);
-        // Leftovers of an earlier run with the same id (restored state).
-        let _ = self.run(&["rm".into(), "-f".into(), name.clone()]).await;
-        let cpus = std::thread::available_parallelism().map(|n| n.get() as u32).unwrap_or(1);
-        let mut args: Vec<String> = vec![
-            "run".into(),
-            "-d".into(),
-            "--name".into(),
-            name,
-            "--hostname".into(),
-            spec.hostname.clone(),
-            "--network".into(),
-            Self::network_name(&spec.network.vpc_id),
-            "--add-host".into(),
-            "host.docker.internal:host-gateway".into(),
-            "--cpus".into(),
-            spec.vcpus.clamp(1, cpus).to_string(),
-            "--memory".into(),
-            format!("{}m", spec.memory_mib.max(64)),
-            "--label".into(),
-            format!("mws.ec2.instance={}", spec.instance_id),
-            "--label".into(),
-            format!("mws.ec2.account={}", spec.account_id),
-            "--label".into(),
-            format!("mws.ec2.region={}", spec.region),
-            "--label".into(),
-            format!("mws.ec2.instance-type={}", spec.instance_type),
-        ];
-        if own_cidr {
-            args.push("--ip".into());
-            args.push(spec.private_ip.clone());
-        }
-        for (k, v) in &spec.env {
-            args.push("-e".into());
-            args.push(format!("{k}={v}"));
-        }
-        if self.netfilter_image.is_some() {
-            args.push("-e".into());
-            args.push("MWS_WAIT_NETWORK=1".into());
-        }
-        if spec.boot {
-            use base64::Engine;
-            if let Some(data) = &spec.user_data {
-                args.push("-e".into());
-                args.push(format!("MWS_USER_DATA={}", base64::engine::general_purpose::STANDARD.encode(data)));
-            }
-            if let Some(key) = &spec.ssh_public_key {
-                args.push("-e".into());
-                args.push(format!("MWS_SSH_PUBLIC_KEY={key}"));
-            }
-            args.extend(["--entrypoint".into(), "/bin/sh".into(), spec.image.clone(), "-c".into(), BOOT_SCRIPT.into()]);
-        } else {
-            args.push(spec.image.clone());
-        }
-        let id = self.run(&args).await?;
-        Ok(Launched { handle: id.lines().last().unwrap_or_default().to_string() })
+        Ok(Launched { handle: self.create_container(spec, true).await? })
     }
 
     async fn start(&self, handle: &str) -> Result<(), BackendError> {
@@ -293,7 +380,12 @@ impl ComputeBackend for DockerBackend {
     }
 
     async fn terminate(&self, handle: &str) -> Result<(), BackendError> {
-        self.run(&["rm".into(), "-f".into(), "-v".into(), handle.into()]).await.map(drop)
+        let spec = self.specs.lock().expect("specs lock poisoned").remove(handle);
+        self.run(&["rm".into(), "-f".into(), "-v".into(), handle.into()]).await?;
+        if let Some(spec) = spec {
+            let _ = self.run(&["rmi".into(), Self::volumes_image(&spec.instance_id)]).await;
+        }
+        Ok(())
     }
 
     async fn console_output(&self, handle: &str) -> Result<String, BackendError> {
@@ -399,6 +491,64 @@ impl ComputeBackend for DockerBackend {
         ])
         .await
         .map(drop)
+    }
+
+    async fn create_volume(&self, volume_id: &str, snapshot_id: Option<&str>) -> Result<(), BackendError> {
+        self.ensure_volume(volume_id).await?;
+        if let Some(snap) = snapshot_id {
+            if self.volume_exists(snap).await {
+                self.copy_volume(snap, volume_id).await?;
+            }
+        }
+        Ok(())
+    }
+
+    async fn delete_volume(&self, volume_id: &str) -> Result<(), BackendError> {
+        if !self.volume_exists(volume_id).await {
+            return Ok(());
+        }
+        self.run(&["volume".into(), "rm".into(), "-f".into(), Self::volume_name(volume_id)]).await.map(drop)
+    }
+
+    async fn create_snapshot(&self, volume_id: &str, snapshot_id: &str) -> Result<(), BackendError> {
+        self.ensure_volume(snapshot_id).await?;
+        if self.volume_exists(volume_id).await {
+            self.copy_volume(volume_id, snapshot_id).await?;
+        }
+        Ok(())
+    }
+
+    async fn copy_snapshot(&self, source_id: &str, snapshot_id: &str) -> Result<(), BackendError> {
+        if self.volume_exists(source_id).await {
+            self.ensure_volume(snapshot_id).await?;
+            self.copy_volume(source_id, snapshot_id).await?;
+        }
+        Ok(())
+    }
+
+    async fn delete_snapshot(&self, snapshot_id: &str) -> Result<(), BackendError> {
+        self.delete_volume(snapshot_id).await
+    }
+
+    async fn set_volumes(&self, handle: &str, volumes: &[VolumeMount]) -> Result<Option<String>, BackendError> {
+        let Some(mut spec) = self.specs.lock().expect("specs lock poisoned").get(handle).cloned() else {
+            return Err(BackendError(format!(
+                "container {handle} was not started by this MWS process; its volumes change when it is launched again"
+            )));
+        };
+        if spec.volumes == volumes {
+            return Ok(None);
+        }
+        let running =
+            self.run(&["inspect".into(), "--format".into(), "{{.State.Running}}".into(), handle.into()]).await?
+                == "true";
+        let image = Self::volumes_image(&spec.instance_id);
+        self.run(&["commit".into(), handle.into(), image.clone()]).await?;
+        self.run(&["rm".into(), "-f".into(), handle.into()]).await?;
+        self.specs.lock().expect("specs lock poisoned").remove(handle);
+        spec.image = image;
+        spec.volumes = volumes.to_vec();
+        Ok(Some(self.create_container(&spec, running).await?))
     }
 
     async fn delete_network(&self, vpc_id: &str) -> Result<(), BackendError> {

@@ -272,10 +272,11 @@ impl Ec2 {
             }
             let now = chrono::Utc::now().max(ctx.received_at);
             let region_name = region.clone();
-            this.with_region_of(&account, &region, &ctx, |r| {
-                let Some(rec) = r.instances.get_mut(&id) else { return };
+            let deleted = this.with_region_of(&account, &region, &ctx, |r| {
+                let mut deleted = Vec::new();
+                let Some(rec) = r.instances.get_mut(&id) else { return deleted };
                 if rec.generation != generation {
-                    return;
+                    return deleted;
                 }
                 match (transition, result) {
                     (Transition::Launch(_), Ok(h)) | (Transition::Start, Ok(h)) => {
@@ -290,7 +291,7 @@ impl Ec2 {
                             message: Some(format!("Server.InternalError: Internal error on launch ({e})")),
                         });
                         rec.terminated_at = Some(now);
-                        release_resources(r, &id, &region_name);
+                        deleted = release_resources(r, &id, &region_name);
                     }
                     (Transition::Stop { .. }, _) => {
                         rec.instance.state = Some(state("stopped"));
@@ -301,8 +302,12 @@ impl Ec2 {
                     }
                     (Transition::Reboot, _) => {}
                 }
+                deleted
             });
             this.sync_firewalls();
+            for v in deleted {
+                this.volume_job(crate::volumes::VolumeJob::Delete(v));
+            }
         };
         if inline {
             task.await;
@@ -316,10 +321,45 @@ impl Ec2 {
         ctx: &RequestContext,
         input: t::RunInstancesRequest,
     ) -> Result<t::Reservation, ServiceError> {
+        self.run_instances_with(ctx, input, Vec::new()).await
+    }
+
+    /// `RunInstances` for another AWS service (EC2 Auto Scaling), which may
+    /// add `aws:` system tags (`aws:autoscaling:groupName`) to the
+    /// instances. Authorization is the caller's: pass a context whose
+    /// caller is the service's role.
+    pub async fn run_instances_as_service(
+        &self,
+        ctx: &RequestContext,
+        input: t::RunInstancesRequest,
+        system_tags: Vec<t::Tag>,
+    ) -> Result<t::Reservation, ServiceError> {
+        self.run_instances_with(ctx, input, system_tags).await
+    }
+
+    async fn run_instances_with(
+        &self,
+        ctx: &RequestContext,
+        input: t::RunInstancesRequest,
+        mut system_tags: Vec<t::Tag>,
+    ) -> Result<t::Reservation, ServiceError> {
         let account = account_of(ctx);
-        if input.launch_template.is_some() {
-            return Err(ServiceError::not_implemented("RunInstances with a launch template"));
-        }
+        let mut template_resource = None;
+        let input = match input.launch_template.clone() {
+            Some(spec) => {
+                let lt = self.resolve_launch_template(ctx, &spec)?;
+                let mut merged = super::launch_template::merge_run_instances(&lt.data, &input);
+                merged.launch_template = None;
+                system_tags.push(t::Tag { key: Some("aws:ec2launchtemplate:id".into()), value: Some(lt.id.clone()) });
+                system_tags.push(t::Tag {
+                    key: Some("aws:ec2launchtemplate:version".into()),
+                    value: Some(lt.version.to_string()),
+                });
+                template_resource = Some(super::launch_template::template_arn(ctx, &account, &lt.id));
+                merged
+            }
+            None => input,
+        };
         if input.min_count < 1 {
             return Err(invalid_parameter(format!(
                 "Value ({}) for parameter minCount is invalid. Expected a positive integer.",
@@ -480,6 +520,9 @@ impl Ec2 {
         instance_cond.insert("ec2:Subnet".into(), vec![arn(ctx, &account, &format!("subnet/{subnet_id}"))]);
         instance_cond.insert("ec2:AvailabilityZone".into(), vec![subnet.availability_zone.clone().unwrap_or_default()]);
         instance_cond.insert("ec2:ImageID".into(), vec![image_id.clone()]);
+        if let Some(lt) = &template_resource {
+            instance_cond.insert("ec2:LaunchTemplate".into(), vec![lt.clone()]);
+        }
         let mut resources = vec![
             (arn(ctx, &account, "instance/*"), instance_cond),
             (super::image::image_arn(ctx, &region, &image_id), resource_tag_context(image.record.image.tags.as_ref())),
@@ -498,6 +541,9 @@ impl Ec2 {
                 arn(ctx, &account, &format!("key-pair/{}", k.info.key_name.clone().unwrap_or_default())),
                 resource_tag_context(k.info.tags.as_ref()),
             ));
+        }
+        if let Some(lt) = &template_resource {
+            resources.push((lt.clone(), ConditionContext::new()));
         }
         authorize(ctx, "RunInstances", &resources, input.dry_run)?;
         if let Some(role) = profile.as_ref().and_then(|p| p.role_arn.clone()) {
@@ -545,6 +591,13 @@ impl Ec2 {
                 return Err(err("InsufficientFreeAddressesInSubnet", "There are not enough free addresses in subnet '{subnet_id}' to satisfy the requested number of instances."));
             }
             let count = count.min(free);
+            let plans = super::ebs::plan_block_devices(
+                ctx,
+                &account,
+                r,
+                &image.record.image,
+                input.block_device_mappings.as_deref().unwrap_or_default(),
+            )?;
             let mut out = Vec::new();
             for index in 0..count {
                 let instance_id = new_id("i");
@@ -572,44 +625,28 @@ impl Ec2 {
                 if wants_public {
                     super::eni::assign_public_ip(r, &region, &eni_id);
                 }
-                // The root volume.
-                let vol_id = new_id("vol");
+                // The EBS volumes: the root volume and any data volumes.
                 let root_device = image.record.image.root_device_name.clone().unwrap_or_else(|| "/dev/xvda".into());
-                let root_size = input
-                    .block_device_mappings
-                    .iter()
-                    .flatten()
-                    .find(|b| b.device_name.as_deref() == Some(root_device.as_str()))
-                    .and_then(|b| b.ebs.as_ref().and_then(|e| e.volume_size))
-                    .unwrap_or(8);
-                r.volumes.insert(
-                    vol_id.clone(),
-                    t::Volume {
-                        volume_id: Some(vol_id.clone()),
-                        size: Some(root_size),
-                        snapshot_id: image.record.image.block_device_mappings.iter().flatten().find_map(|b| b.ebs.as_ref().and_then(|e| e.snapshot_id.clone())),
-                        availability_zone: subnet.availability_zone.clone(),
-                        availability_zone_id: subnet.availability_zone_id.clone(),
-                        state: Some("in-use".into()),
-                        create_time: Some(now),
-                        volume_type: Some("gp3".into()),
-                        iops: Some(3000),
-                        throughput: Some(125),
-                        encrypted: Some(false),
-                        multi_attach_enabled: Some(false),
-                        attachments: Some(vec![t::VolumeAttachment {
-                            volume_id: Some(vol_id.clone()),
-                            instance_id: Some(instance_id.clone()),
-                            device: Some(root_device.clone()),
-                            state: Some("attached".into()),
-                            attach_time: Some(now),
-                            delete_on_termination: Some(true),
-                            ..Default::default()
-                        }]),
-                        tags: some_tags(volume_tags.clone()),
-                        ..Default::default()
-                    },
-                );
+                let mut data_volumes = Vec::new();
+                for plan in &plans {
+                    let vol_id = super::ebs::create_attached_volume(
+                        r,
+                        &account,
+                        plan,
+                        &instance_id,
+                        subnet.availability_zone.clone(),
+                        subnet.availability_zone_id.clone(),
+                        volume_tags.clone(),
+                        now,
+                    );
+                    if plan.device != root_device {
+                        data_volumes.push(crate::backend::VolumeMount {
+                            volume_id: vol_id,
+                            device: plan.device.clone(),
+                            snapshot_id: plan.snapshot_id.clone(),
+                        });
+                    }
+                }
                 let dns = private_dns(&region, &ip);
                 let instance = t::Instance {
                     instance_id: Some(instance_id.clone()),
@@ -644,7 +681,7 @@ impl Ec2 {
                     hypervisor: Some("xen".into()),
                     client_token: input.client_token.clone(),
                     virtualization_type: Some("hvm".into()),
-                    tags: some_tags(tags.clone()),
+                    tags: some_tags(tags.iter().chain(&system_tags).cloned().collect()),
                     cpu_options: Some(t::CpuOptions {
                         core_count: Some((itype.vcpus / if itype.arch == "arm64" || itype.vcpus == 1 { 1 } else { 2 }) as i32),
                         threads_per_core: Some(if itype.arch == "arm64" || itype.vcpus == 1 { 1 } else { 2 }),
@@ -742,6 +779,7 @@ impl Ec2 {
                     user_data: user_data_raw.clone(),
                     ssh_public_key: key.as_ref().map(|k| k.public_key.clone()),
                     env,
+                    volumes: data_volumes,
                 };
                 launched.push((instance_id.clone(), 1, spec));
                 r.instances.insert(instance_id.clone(), rec);
@@ -980,6 +1018,7 @@ impl Ec2 {
         let account = account_of(ctx);
         let now = ctx.received_at;
         let region = ctx.region.clone();
+        let mut deleted = Vec::new();
         let (changes, todo) = self.with_region(ctx, |r| {
             for id in &input.instance_ids {
                 if r.instances[id].disable_api_termination {
@@ -1002,7 +1041,7 @@ impl Ec2 {
                     rec.terminated_at = Some(now);
                     rec.generation += 1;
                     todo.push((id.clone(), rec.generation));
-                    release_resources(r, id, &region);
+                    deleted.extend(release_resources(r, id, &region));
                 }
                 changes.push(t::InstanceStateChange { instance_id: Some(id.clone()), current_state: r.instances[id].instance.state.clone(), previous_state: prev });
             }
@@ -1010,6 +1049,9 @@ impl Ec2 {
         })?;
         for (id, gen) in todo {
             self.transition(ctx, &account, &id, gen, Transition::Terminate).await;
+        }
+        for v in deleted {
+            self.volume_job(crate::volumes::VolumeJob::Delete(v));
         }
         Ok(t::TerminateInstancesResult { terminating_instances: Some(changes) })
     }
@@ -1232,6 +1274,17 @@ impl Ec2 {
                     if let Some(n) = r.network_interfaces.get_mut(&eni) {
                         n.groups = Some(resolved);
                     }
+                }
+            }
+            for m in input.block_device_mappings.iter().flatten() {
+                let device = m.device_name.clone().unwrap_or_default();
+                let Some(dot) = m.ebs.as_ref().and_then(|e| e.delete_on_termination) else { continue };
+                let att = r.volumes.values_mut().flat_map(|v| v.attachments.iter_mut().flatten()).find(|a| {
+                    a.instance_id.as_deref() == Some(id.as_str()) && a.device.as_deref() == Some(device.as_str())
+                });
+                match att {
+                    Some(a) => a.delete_on_termination = Some(dot),
+                    None => return Err(invalid_parameter(format!("No device is currently mapped at {device}"))),
                 }
             }
             Ok(())
@@ -1497,7 +1550,8 @@ impl Ec2 {
 /// What terminating an instance frees: interfaces that go with it,
 /// Elastic IP associations, volumes that go with it, the instance profile
 /// association.
-fn release_resources(r: &mut RegionState, instance_id: &str, _region: &str) {
+/// Returns the volumes it deleted.
+fn release_resources(r: &mut RegionState, instance_id: &str, _region: &str) -> Vec<String> {
     let enis: Vec<(String, bool)> = r
         .network_interfaces
         .values()
@@ -1537,13 +1591,15 @@ fn release_resources(r: &mut RegionState, instance_id: &str, _region: &str) {
             }
         }
     }
-    for v in delete_volumes {
-        r.volumes.remove(&v);
+    for v in &delete_volumes {
+        r.volumes.remove(v);
+        r.volume_modifications.remove(v);
     }
     r.iam_associations.retain(|_, a| a.instance_id.as_deref() != Some(instance_id));
     if let Some(rec) = r.instances.get_mut(instance_id) {
         rec.role_arn = None;
     }
+    delete_volumes
 }
 
 trait WithContext {
