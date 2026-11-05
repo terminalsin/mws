@@ -46,6 +46,7 @@ See [State, scenarios and snapshots](state.md) for how the two interact.
 | `MWS_RDS_BACKEND` | `auto` | How RDS databases run. `docker` runs each DB instance (or Aurora cluster) as a PostgreSQL, MySQL or MariaDB container, `metadata` runs nothing (resources only change state), and `auto` uses Docker when a daemon answers and `metadata` otherwise. |
 | `MWS_RDS_DOCKER` | `MWS_EC2_DOCKER`, then `docker` | The Docker-compatible CLI the RDS backend drives. |
 | `MWS_RDS_BIND` | `127.0.0.1` | The host address database ports are published on. Endpoints report this address and the published port. |
+| `MWS_CODEARTIFACT_<CONNECTION>_URL` | the public registry | Where a CodeArtifact external connection fetches packages, such as `MWS_CODEARTIFACT_NPMJS_URL=http://localhost:4873` for `public:npmjs` (or `_PYPI_URL`, `_MAVEN_CENTRAL_URL`, ...). An empty value turns the connection off. |
 
 EC2 instances reach the instance metadata service and the AWS endpoint
 through the host, so when using the Docker backend MWS must listen on an

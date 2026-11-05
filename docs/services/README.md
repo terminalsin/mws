@@ -85,6 +85,12 @@ Every service shares the same foundations:
 | --- | --- | --- |
 | [Marketplace Metering and Entitlement](marketplace.md) | 5 / 5 | SaaS registration tokens, batch and hourly metering with AWS's dedup and time windows, signed `RegisterUsage`, entitlements, a seedable catalog |
 
+## Developer tools
+
+| Service | Operations | What's emulated |
+| --- | --- | --- |
+| [CodeArtifact](codeartifact.md) | 48 / 48 | Domains, repositories with upstreams and external connections, package groups, and npm, PyPI and Maven endpoints real clients use |
+
 ## How services connect
 
 Services are wired together where AWS wires them, and each integration runs
@@ -135,3 +141,5 @@ with the permissions AWS would use:
 - EKS creates cluster security groups in EC2 and runs managed node groups as
   Auto Scaling groups with EKS launch templates and IAM instance profiles,
   from AMIs SSM publishes.
+- CodeArtifact authorization tokens act as the IAM principal that requested
+  them, and domains are encrypted with KMS keys.

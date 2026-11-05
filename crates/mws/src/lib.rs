@@ -14,6 +14,7 @@ use mws_acmpca::PrivateCa;
 use mws_amplify::Amplify;
 use mws_autoscaling::AutoScaling;
 use mws_cloudwatch::CloudWatch;
+use mws_codeartifact::CodeArtifact;
 use mws_core::Environment;
 use mws_ec2::{BackendChoice, Ec2};
 use mws_eks::Eks;
@@ -160,6 +161,7 @@ pub struct Mws {
     pub ses: Ses,
     pub rds: Rds,
     pub eks: Eks,
+    pub codeartifact: CodeArtifact,
 }
 
 /// Build the gateway with every service MWS emulates.
@@ -234,6 +236,7 @@ fn build_with_store(config: Config, store: Option<Arc<Store>>) -> Mws {
     s3control.set_lambda(lambda.clone());
     s3.set_object_lambda_invoker(Arc::new(lambda.clone()));
     let ssm = Ssm::new(kms.clone());
+    let codeartifact = CodeArtifact::new(Some(kms.clone()));
     let events = Events::new().with_lambda(lambda.clone()).with_logs(logs.clone()).with_sts(sts.clone());
     events.register_target_sink("sqs", Arc::new(sinks::SqsTarget(sqs.clone())));
     events.set_health_checks(Arc::new(sinks::Route53HealthChecks(route53.clone())));
@@ -396,6 +399,7 @@ fn build_with_store(config: Config, store: Option<Arc<Store>>) -> Mws {
         .service(Arc::new(ses.v2()))
         .service(Arc::new(ses.clone()))
         .service(Arc::new(eks.clone()))
+        .service(Arc::new(codeartifact.clone()))
         .build();
     Mws {
         gateway,
@@ -428,6 +432,7 @@ fn build_with_store(config: Config, store: Option<Arc<Store>>) -> Mws {
         ses,
         rds,
         eks,
+        codeartifact,
     }
 }
 

@@ -44,6 +44,7 @@ aws-sdk-ses = "1"
 aws-sdk-sesv2 = "1"
 aws-sdk-rds = "1"
 aws-sdk-eks = "1"
+aws-sdk-codeartifact = "1"
 aws-smithy-http-client = { version = "1", features = ["rustls-aws-lc"] }
 aws-smithy-runtime-api = { version = "1", features = ["client"] }
 zip.workspace = true
@@ -70,10 +71,13 @@ chrono.workspace = true
 flate2.workspace = true
 regex.workspace = true
 md-5.workspace = true
+hex.workspace = true
+sha1.workspace = true
 serde_json.workspace = true
 mws.workspace = true
 mws-ec2.workspace = true
 mws-rds.workspace = true
+mws-codeartifact.workspace = true
 mws-route53.workspace = true
 mws-server.workspace = true
 mws-ses.workspace = true
