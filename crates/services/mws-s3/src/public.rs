@@ -56,10 +56,25 @@ impl fmt::Display for ServicePutError {
 
 impl std::error::Error for ServicePutError {}
 
-fn service_allowed(b: &Bucket, put: &ServicePutObject<'_>, action: &str, resource: &str) -> bool {
+fn service_allowed(
+    b: &Bucket,
+    put: &ServicePutObject<'_>,
+    action: &str,
+    resource: &str,
+    account: Option<&str>,
+) -> bool {
     let Some(doc) = &b.policy else { return false };
     let Ok(policy) = Policy::parse(doc, PolicyKind::Resource) else { return false };
-    let principal = PrincipalInfo { service: Some(put.service_principal.to_string()), ..Default::default() };
+    let principal = match account {
+        // An AWS-owned account delivering for the service: policies name
+        // it as `{"AWS": "arn:aws:iam::<account>:root"}`.
+        Some(a) => PrincipalInfo {
+            account_id: a.to_string(),
+            arns: vec![format!("arn:{}:iam::{a}:root", put.partition)],
+            ..Default::default()
+        },
+        None => PrincipalInfo { service: Some(put.service_principal.to_string()), ..Default::default() },
+    };
     let mut context = ConditionContext::new();
     context.insert("aws:SourceAccount", vec![put.source_account.to_string()]);
     context.insert("aws:SourceArn", vec![put.source_arn.to_string()]);
@@ -78,6 +93,27 @@ impl S3 {
     /// `s3:GetBucketAcl`, `s3:GetBucketLocation` and `s3:PutObjectAcl` when
     /// listed in `actions`).
     pub fn check_service_access(&self, put: &ServicePutObject<'_>, actions: &[&str]) -> Result<(), ServicePutError> {
+        self.check_access_as(put, actions, None)
+    }
+
+    /// [`S3::check_service_access`] for an AWS-owned account that delivers
+    /// on the service's behalf, as the bucket policy names it (Elastic Load
+    /// Balancing's log delivery accounts in older Regions).
+    pub fn check_service_account_access(
+        &self,
+        put: &ServicePutObject<'_>,
+        actions: &[&str],
+        account: &str,
+    ) -> Result<(), ServicePutError> {
+        self.check_access_as(put, actions, Some(account))
+    }
+
+    fn check_access_as(
+        &self,
+        put: &ServicePutObject<'_>,
+        actions: &[&str],
+        account: Option<&str>,
+    ) -> Result<(), ServicePutError> {
         let st = self.read();
         let b = st.buckets.get(put.bucket).ok_or(ServicePutError::NoSuchBucket)?;
         for action in actions {
@@ -86,7 +122,7 @@ impl S3 {
             } else {
                 format!("arn:{}:s3:::{}", put.partition, b.name)
             };
-            if !service_allowed(b, put, action, &resource) {
+            if !service_allowed(b, put, action, &resource, account) {
                 return Err(ServicePutError::AccessDenied { action: action.to_string() });
             }
         }
@@ -96,6 +132,18 @@ impl S3 {
     /// Write an object as an AWS service principal. Returns the ETag.
     pub fn put_object_as_service(&self, put: ServicePutObject<'_>) -> Result<String, ServicePutError> {
         self.put_object_as_service_with(put, Sse::default())
+    }
+
+    /// [`S3::put_object_as_service`] authorized for an AWS-owned delivery
+    /// account instead of the service principal (see
+    /// [`S3::check_service_account_access`]).
+    pub fn put_object_as_service_account(
+        &self,
+        put: ServicePutObject<'_>,
+        account: &str,
+    ) -> Result<String, ServicePutError> {
+        self.check_service_account_access(&put, &["s3:PutObject"], account)?;
+        self.store_service_object(put, Sse::default())
     }
 
     /// [`S3::put_object_as_service`], encrypted with SSE-KMS under
@@ -140,6 +188,11 @@ impl S3 {
         // As for any PutObject, an `x-amz-acl` needs only `s3:PutObject`
         // (policies can test it with the `s3:x-amz-acl` condition key).
         self.check_service_access(&put, &["s3:PutObject"])?;
+        self.store_service_object(put, sse)
+    }
+
+    /// Write an object a service is allowed to put.
+    fn store_service_object(&self, put: ServicePutObject<'_>, sse: Sse) -> Result<String, ServicePutError> {
         let mut st = self.write();
         let b = st.buckets.get_mut(put.bucket).ok_or(ServicePutError::NoSuchBucket)?;
         let grants = match put.acl {
