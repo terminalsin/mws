@@ -1,0 +1,29 @@
+[package]
+name = "mws-pca-connector-scep"
+description = "AWS Private CA Connector for SCEP for MWS: a real SCEP (RFC 8894) endpoint that enrolls devices with certificates from MWS's Private CA."
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+async-trait.workspace = true
+aws-lc-rs.workspace = true
+base64.workspace = true
+bytes.workspace = true
+chrono.workspace = true
+http.workspace = true
+mws-acmpca.workspace = true
+mws-core.workspace = true
+mws-proto-json.workspace = true
+mws-proto-restjson.workspace = true
+percent-encoding.workspace = true
+rand.workspace = true
+rcgen.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+tracing.workspace = true
+uuid.workspace = true
+x509-parser.workspace = true
+
+[build-dependencies]
+mws-codegen.workspace = true
