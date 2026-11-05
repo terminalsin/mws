@@ -1,5 +1,5 @@
 //! External connections: public registries a repository ingests packages
-//! from on demand. npm, PyPI and Maven connections really fetch from their
+//! from on demand. Every connection fetches from its
 //! registry (or the URL set with [`crate::CodeArtifact::set_registry_url`]).
 
 use crate::http;
@@ -32,6 +32,9 @@ pub fn default_registry(connection: &str) -> Option<&'static str> {
         "public:maven-gradleplugins" => "https://plugins.gradle.org/m2",
         "public:maven-commonsware" => "https://repo.commonsware.com",
         "public:maven-clojars" => "https://repo.clojars.org",
+        "public:crates-io" => "https://index.crates.io",
+        "public:nuget-org" => "https://api.nuget.org/v3/index.json",
+        "public:ruby-gems-org" => "https://rubygems.org",
         _ => return None,
     })
 }
@@ -140,4 +143,116 @@ pub async fn maven_file(base: &str, path: &str) -> Option<Vec<u8>> {
 /// Ingest one Maven file into a (possibly new) version.
 pub fn maven_version(version: &str, connection: &str, now: chrono::DateTime<chrono::Utc>) -> Version {
     ingested(version, connection, now)
+}
+
+/// A crate's lines in a sparse Cargo index.
+pub async fn cargo_index(base: &str, name: &str) -> Vec<String> {
+    let path = crate::endpoints::cargo::index_path(name);
+    let Some(body) = fetch(&format!("{}/{path}", base.trim_end_matches('/')), "text/plain").await else {
+        return Vec::new();
+    };
+    String::from_utf8_lossy(&body).lines().filter(|l| !l.trim().is_empty()).map(str::to_string).collect()
+}
+
+/// Ingest one crate version: its index entry and `.crate` file.
+pub async fn cargo_version(
+    base: &str,
+    connection: &str,
+    name: &str,
+    version: &str,
+    now: chrono::DateTime<chrono::Utc>,
+) -> Option<Version> {
+    let base = base.trim_end_matches('/');
+    let line = cargo_index(base, name)
+        .await
+        .into_iter()
+        .filter_map(|l| serde_json::from_str::<serde_json::Value>(&l).ok())
+        .find(|e| e.get("vers").and_then(|v| v.as_str()) == Some(version))?;
+    let real = line.get("name").and_then(|n| n.as_str()).unwrap_or(name).to_string();
+    let config: serde_json::Value =
+        serde_json::from_slice(&fetch(&format!("{base}/config.json"), "application/json").await?).ok()?;
+    let dl = config.get("dl")?.as_str()?;
+    let url = if dl.contains('{') {
+        dl.replace("{crate}", &real).replace("{version}", version).replace(
+            "{lowerprefix}",
+            &crate::endpoints::cargo::index_path(&real).rsplit_once('/').map(|x| x.0.to_string()).unwrap_or_default(),
+        )
+    } else {
+        format!("{dl}/{real}/{version}/download")
+    };
+    let content = fetch(&url, "application/octet-stream").await?;
+    let mut v = ingested(version, connection, now);
+    v.meta = crate::endpoints::cargo::meta_from_index(&line);
+    v.put_asset(crate::endpoints::cargo::crate_asset(&real, version, content));
+    Some(v)
+}
+
+/// The NuGet package base address (flat container) of a V3 service index.
+async fn nuget_base_address(index: &str) -> Option<String> {
+    let body: serde_json::Value = serde_json::from_slice(&fetch(index, "application/json").await?).ok()?;
+    let base = body.get("resources")?.as_array()?.iter().find_map(|r| {
+        (r.get("@type")?.as_str()? == "PackageBaseAddress/3.0.0").then(|| r.get("@id")?.as_str().map(str::to_string))?
+    })?;
+    Some(if base.ends_with('/') { base } else { format!("{base}/") })
+}
+
+/// A NuGet package's versions.
+pub async fn nuget_versions(index: &str, id: &str) -> Vec<String> {
+    let Some(base) = nuget_base_address(index).await else { return Vec::new() };
+    let Some(body) = fetch(&format!("{base}{}/index.json", id.to_ascii_lowercase()), "application/json").await else {
+        return Vec::new();
+    };
+    serde_json::from_slice::<serde_json::Value>(&body)
+        .ok()
+        .and_then(|j| j.get("versions").and_then(|v| v.as_array()).cloned())
+        .into_iter()
+        .flatten()
+        .filter_map(|v| v.as_str().map(|s| s.to_ascii_lowercase()))
+        .collect()
+}
+
+/// Ingest one NuGet version: its `.nupkg`.
+pub async fn nuget_version(
+    index: &str,
+    connection: &str,
+    id: &str,
+    version: &str,
+    now: chrono::DateTime<chrono::Utc>,
+) -> Option<Version> {
+    let base = nuget_base_address(index).await?;
+    let id = id.to_ascii_lowercase();
+    let content = fetch(&format!("{base}{id}/{version}/{id}.{version}.nupkg"), "application/octet-stream").await?;
+    let (_, _, meta) =
+        crate::endpoints::nuget::nuspec(&content).as_deref().and_then(crate::endpoints::nuget::parse_nuspec)?;
+    let mut v = ingested(version, connection, now);
+    v.meta = meta;
+    v.put_asset(Asset::new(format!("{id}.{version}.nupkg"), content));
+    Some(v)
+}
+
+/// A gem's compact index lines (without the `---` header).
+pub async fn ruby_info(base: &str, name: &str) -> Vec<String> {
+    let Some(body) = fetch(&format!("{}/info/{name}", base.trim_end_matches('/')), "text/plain").await else {
+        return Vec::new();
+    };
+    String::from_utf8_lossy(&body).lines().filter(|l| !l.is_empty() && *l != "---").map(str::to_string).collect()
+}
+
+/// Ingest one gem version: its `.gem`.
+pub async fn ruby_version(
+    base: &str,
+    connection: &str,
+    name: &str,
+    version: &str,
+    now: chrono::DateTime<chrono::Utc>,
+) -> Option<Version> {
+    let content =
+        fetch(&format!("{}/gems/{name}-{version}.gem", base.trim_end_matches('/')), "application/octet-stream").await?;
+    let mut v = ingested(version, connection, now);
+    v.meta = match crate::endpoints::ruby::parse_gem(&content) {
+        Some((_, _, meta)) => meta,
+        None => crate::endpoints::ruby::meta_from_info(&format!("{version} |")),
+    };
+    v.put_asset(Asset::new(format!("{name}-{version}.gem"), content));
+    Some(v)
 }

@@ -196,6 +196,10 @@ pub struct VersionMeta {
     pub npm_manifest: Option<serde_json::Value>,
     /// PyPI `Requires-Python`.
     pub requires_python: Option<String>,
+    /// What the format's registry serves about the version: the Cargo
+    /// index entry, the NuGet `.nuspec`, the RubyGems compact index
+    /// line, the Swift release metadata.
+    pub registry_metadata: Option<serde_json::Value>,
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]

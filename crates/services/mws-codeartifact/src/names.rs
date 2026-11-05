@@ -113,10 +113,14 @@ pub fn check_coordinates(format: &str, namespace: Option<&str>, package: &str) -
     }
     let name = match format {
         "pypi" => normalize_pypi(package),
-        "nuget" => package.to_ascii_lowercase(),
+        "nuget" | "swift" | "cargo" => package.to_ascii_lowercase(),
         _ => package.to_string(),
     };
-    Ok(Coordinates { format: format.to_string(), namespace: namespace.map(str::to_string), name })
+    let namespace = match format {
+        "swift" => namespace.map(str::to_ascii_lowercase),
+        _ => namespace.map(str::to_string),
+    };
+    Ok(Coordinates { format: format.to_string(), namespace, name })
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]

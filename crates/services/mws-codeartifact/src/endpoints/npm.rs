@@ -94,6 +94,7 @@ pub fn meta_from_manifest(manifest: &Value, readme: Option<&str>) -> VersionMeta
         dependencies,
         npm_manifest: Some(manifest.clone()),
         requires_python: None,
+        registry_metadata: None,
     }
 }
 

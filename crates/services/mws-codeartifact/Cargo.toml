@@ -1,6 +1,6 @@
 [package]
 name = "mws-codeartifact"
-description = "AWS CodeArtifact for MWS: domains, repositories and packages, with npm, PyPI and Maven endpoints package managers can use."
+description = "AWS CodeArtifact for MWS: domains, repositories and packages, with npm, PyPI, Maven, Cargo, RubyGems, NuGet and Swift endpoints package managers can use."
 version.workspace = true
 edition.workspace = true
 license.workspace = true
@@ -10,6 +10,7 @@ async-trait.workspace = true
 base64.workspace = true
 bytes.workspace = true
 chrono.workspace = true
+flate2.workspace = true
 hex.workspace = true
 http.workspace = true
 md-5.workspace = true
@@ -31,6 +32,8 @@ tokio = { workspace = true, features = ["io-util"] }
 tokio-rustls.workspace = true
 tracing.workspace = true
 uuid.workspace = true
+yaml-rust2.workspace = true
+zip.workspace = true
 
 [build-dependencies]
 mws-codegen.workspace = true

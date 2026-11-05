@@ -89,7 +89,7 @@ Every service shares the same foundations:
 
 | Service | Operations | What's emulated |
 | --- | --- | --- |
-| [CodeArtifact](codeartifact.md) | 48 / 48 | Domains, repositories with upstreams and external connections, package groups, and npm, PyPI and Maven endpoints real clients use |
+| [CodeArtifact](codeartifact.md) | 48 / 48 | Domains, repositories with upstreams and external connections, package groups, and npm, PyPI, Maven, Cargo, RubyGems, NuGet and Swift endpoints real clients use |
 
 ## How services connect
 

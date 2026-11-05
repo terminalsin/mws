@@ -1,5 +1,5 @@
 //! Repository endpoints: the URLs `GetRepositoryEndpoint` returns, serving
-//! the npm registry, PyPI (simple index and uploads) and Maven repository
+//! the npm, PyPI, Maven, Cargo, RubyGems, NuGet and Swift registry
 //! protocols.
 //!
 //! AWS serves them at `https://<domain>-<owner>.d.codeartifact.<region>.amazonaws.com/<format>/<repo>/`.
@@ -15,10 +15,14 @@
 //! `codeartifact:PublishPackageVersion` on the package, both evaluated
 //! with the repository's policy.
 
+pub(crate) mod cargo;
 pub(crate) mod maven;
 mod multipart;
 pub(crate) mod npm;
+pub(crate) mod nuget;
 pub(crate) mod pypi;
+pub(crate) mod ruby;
+mod swift;
 
 use base64::Engine;
 use bytes::Bytes;
@@ -105,10 +109,16 @@ pub(crate) fn text(status: u16, message: &str) -> HttpResponse {
 
 /// An error in the shape the format's clients show.
 pub(crate) fn error(format: &str, status: u16, message: &str) -> HttpResponse {
-    if format == "npm" {
-        json(status, &serde_json::json!({ "error": message }))
-    } else {
-        text(status, message)
+    match format {
+        "npm" => json(status, &serde_json::json!({ "error": message })),
+        "cargo" => json(status, &serde_json::json!({ "errors": [{ "detail": message }] })),
+        "swift" => {
+            let mut r =
+                respond(status, "application/problem+json", serde_json::json!({ "detail": message }).to_string());
+            r.headers_mut().insert("content-version", http::HeaderValue::from_static("1"));
+            r
+        }
+        _ => text(status, message),
     }
 }
 
@@ -133,7 +143,8 @@ pub(crate) fn percent_decode(s: &str) -> String {
 
 fn bearer_or_basic(request: &HttpRequest) -> Option<String> {
     let value = request.headers().get(http::header::AUTHORIZATION)?.to_str().ok()?.trim();
-    let (scheme, rest) = value.split_once(' ')?;
+    // `gem push` sends its API key as the whole header.
+    let Some((scheme, rest)) = value.split_once(' ') else { return Some(value.to_string()) };
     if scheme.eq_ignore_ascii_case("bearer") {
         return Some(rest.trim().to_string());
     }
@@ -212,7 +223,11 @@ impl CodeArtifact {
             "npm" => self.serve_npm(&session, &request).await,
             "pypi" => self.serve_pypi(&session, &request).await,
             "maven" => self.serve_maven(&session, &request).await,
-            f => error(f, 404, &format!("Repository endpoints for {f} packages are not supported by MWS.")),
+            "cargo" => self.serve_cargo(&session, &request).await,
+            "nuget" => self.serve_nuget(&session, &request).await,
+            "ruby" => self.serve_ruby(&session, &request).await,
+            "swift" => self.serve_swift(&session, &request).await,
+            f => error(f, 404, &format!("Repository endpoints for {f} packages are not supported.")),
         }
     }
 
@@ -255,6 +270,66 @@ impl CodeArtifact {
         st.domains.get_mut(&s.domain_key()).map(f)
     }
 
+    /// Publish an asset through a repository endpoint (origin controls and
+    /// `codeartifact:PublishPackageVersion` apply).
+    #[allow(clippy::result_large_err, clippy::too_many_arguments)]
+    pub(crate) fn publish_asset(
+        &self,
+        s: &Session,
+        c: &Coordinates,
+        version: &str,
+        asset: crate::state::Asset,
+        meta: Option<crate::state::VersionMeta>,
+        finished: bool,
+        overwrite: bool,
+    ) -> Result<Version, HttpResponse> {
+        self.authorize_publish(s, c)?;
+        let now = s.ctx.received_at;
+        let result = self.with_domain_mut(s, |d| {
+            crate::packages::publish(d, &s.target.repo, c, version, asset, meta, finished, now, overwrite)
+        });
+        match result {
+            Some(Ok(v)) => Ok(v),
+            Some(Err(e)) => Err(error(&s.target.format, e.status, &e.message)),
+            None => Err(error(&s.target.format, 404, "Not found")),
+        }
+    }
+
+    /// Change a version's status in the session's repository (yank,
+    /// unlist). `false` when there is no such version.
+    #[allow(clippy::result_large_err)]
+    pub(crate) fn set_status(
+        &self,
+        s: &Session,
+        c: &Coordinates,
+        version: &str,
+        status: &str,
+    ) -> Result<bool, HttpResponse> {
+        self.authorize_publish(s, c)?;
+        Ok(self
+            .with_domain_mut(s, |d| {
+                let v = d
+                    .repositories
+                    .get_mut(&s.target.repo)
+                    .and_then(|r| r.packages.get_mut(&c.key()))
+                    .and_then(|p| p.versions.get_mut(version));
+                match v {
+                    Some(v) if v.status != "Disposed" => {
+                        v.status = status.to_string();
+                        true
+                    }
+                    _ => false,
+                }
+            })
+            .unwrap_or(false))
+    }
+
+    /// Every version visible through the session's repository, and the
+    /// external connections to ask too.
+    pub(crate) fn listing(&self, s: &Session, c: &Coordinates) -> (Vec<Version>, Vec<Source>) {
+        self.with_domain(s, |d| upstream::visible_versions(d, &s.target.repo, c)).unwrap_or_default()
+    }
+
     /// A version a package manager asked for, found in the repository or
     /// through its upstreams and external connections (and then kept in
     /// the repositories it passed through, as AWS does).
@@ -276,6 +351,9 @@ impl CodeArtifact {
             let ingested = match c.format.as_str() {
                 "npm" => external::npm_version(&base, &connection, c.namespace.as_deref(), &c.name, version, now).await,
                 "pypi" => external::pypi_version(&base, &connection, &c.name, version, now).await,
+                "cargo" => external::cargo_version(&base, &connection, &c.name, version, now).await,
+                "nuget" => external::nuget_version(&base, &connection, &c.name, version, now).await,
+                "ruby" => external::ruby_version(&base, &connection, &c.name, version, now).await,
                 _ => None,
             };
             if let Some(v) = ingested {

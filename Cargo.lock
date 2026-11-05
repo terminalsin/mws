@@ -3054,6 +3054,7 @@ dependencies = [
  "base64 0.22.1",
  "bytes",
  "chrono",
+ "flate2",
  "hex",
  "http 1.5.0",
  "md-5 0.10.6",
@@ -3076,6 +3077,8 @@ dependencies = [
  "tokio-rustls 0.26.6",
  "tracing",
  "uuid",
+ "yaml-rust2",
+ "zip",
 ]
 
 [[package]]

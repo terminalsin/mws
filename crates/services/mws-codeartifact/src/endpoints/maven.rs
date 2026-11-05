@@ -124,6 +124,7 @@ fn meta_from_pom(pom: &[u8]) -> Option<VersionMeta> {
         dependencies,
         npm_manifest: None,
         requires_python: None,
+        registry_metadata: None,
     })
 }
 

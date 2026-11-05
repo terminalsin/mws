@@ -207,6 +207,7 @@ impl CodeArtifact {
             dependencies: dependencies(&fields("requires_dist")),
             npm_manifest: None,
             requires_python: field("requires_python").filter(|v| !v.is_empty()),
+            registry_metadata: None,
         };
         let content = file.data.clone();
         let now = s.ctx.received_at;

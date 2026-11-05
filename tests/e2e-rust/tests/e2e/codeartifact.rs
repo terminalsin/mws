@@ -93,6 +93,12 @@ async fn domains_repositories_policies_and_tags() {
     let updated = ca.update_repository().domain("acme").repository("app").description("the app").send().await.unwrap();
     assert_eq!(updated.repository().unwrap().description(), Some("the app"));
     assert_eq!(updated.repository().unwrap().upstreams().len(), 1);
+    let described = ca.describe_repository().domain("acme").repository("app").send().await.unwrap();
+    let described = described.repository().unwrap();
+    assert_eq!(described.description(), Some("the app"));
+    assert_eq!(described.arn(), Some(format!("arn:aws:codeartifact:us-east-1:{ACCOUNT}:repository/acme/app").as_str()));
+    let missing = ca.describe_repository().domain("acme").repository("ghost").send().await.unwrap_err();
+    assert_eq!(code(missing.into_service_error()), "ResourceNotFoundException");
 
     let ext = ca
         .associate_external_connection()
@@ -1249,4 +1255,518 @@ async fn real_gradle_publishes_and_resolves() {
     assert!(out.status.success(), "gradle resolve: {stdout}{}", String::from_utf8_lossy(&out.stderr));
     assert!(stdout.contains("RESOLVED lib-0.9.0.jar"), "{stdout}");
     let _ = std::fs::remove_dir_all(dir);
+}
+
+fn zip_of(files: &[(&str, &str)]) -> Vec<u8> {
+    use std::io::Write;
+    let mut out = std::io::Cursor::new(Vec::new());
+    let mut zip = zip::ZipWriter::new(&mut out);
+    for (name, content) in files {
+        zip.start_file(*name, zip::write::SimpleFileOptions::default()).unwrap();
+        zip.write_all(content.as_bytes()).unwrap();
+    }
+    zip.finish().unwrap();
+    out.into_inner()
+}
+
+fn multipart(parts: &[(&str, Option<&str>, &[u8])]) -> Vec<u8> {
+    let mut body = Vec::new();
+    for (name, filename, data) in parts {
+        let filename = filename.map(|f| format!("; filename=\"{f}\"")).unwrap_or_default();
+        body.extend_from_slice(
+            format!("--BOUNDARY\r\nContent-Disposition: form-data; name=\"{name}\"{filename}\r\n\r\n").as_bytes(),
+        );
+        body.extend_from_slice(data);
+        body.extend_from_slice(b"\r\n");
+    }
+    body.extend_from_slice(b"--BOUNDARY--\r\n");
+    body
+}
+
+#[tokio::test]
+async fn nuget_push_registration_and_download() {
+    let mws = Mws::start().await;
+    let ca = client(&mws).await;
+    ca.create_domain().domain("nu").send().await.unwrap();
+    ca.create_repository().domain("nu").repository("repo").send().await.unwrap();
+    let url = endpoint(&ca, "nu", "repo", PackageFormat::Nuget).await;
+    let auth = basic(&token(&ca, "nu").await);
+    let h = [("Authorization", auth.as_str())];
+
+    let (status, _, index) = mws.raw("GET", &format!("{url}v3/index.json"), &h, b"").await;
+    assert_eq!(status, 200);
+    let index: serde_json::Value = serde_json::from_slice(&index).unwrap();
+    let resource = |t: &str| {
+        index["resources"].as_array().unwrap().iter().find(|r| r["@type"] == t).unwrap()["@id"]
+            .as_str()
+            .unwrap()
+            .to_string()
+    };
+    let base = resource("PackageBaseAddress/3.0.0");
+    let publish = resource("PackagePublish/2.0.0");
+
+    let nuspec = r#"<?xml version="1.0" encoding="utf-8"?>
+<package xmlns="http://schemas.microsoft.com/packaging/2013/05/nuspec.xsd">
+  <metadata>
+    <id>Acme.Greeter</id>
+    <version>1.2.0</version>
+    <authors>Acme</authors>
+    <description>Says hello</description>
+    <license type="expression">MIT</license>
+    <projectUrl>https://example.com/greeter</projectUrl>
+    <dependencies>
+      <group targetFramework="net8.0">
+        <dependency id="Newtonsoft.Json" version="13.0.1" />
+      </group>
+    </dependencies>
+  </metadata>
+</package>"#;
+    let nupkg = zip_of(&[("Acme.Greeter.nuspec", nuspec), ("lib/net8.0/Acme.Greeter.dll", "MZ")]);
+    let body = multipart(&[("package", Some("package.nupkg"), &nupkg)]);
+    let push_headers = [("Authorization", auth.as_str()), ("Content-Type", "multipart/form-data; boundary=BOUNDARY")];
+    let (status, _, out) = mws.raw("PUT", &publish, &push_headers, &body).await;
+    assert_eq!(status, 201, "{}", String::from_utf8_lossy(&out));
+    let (status, _, _) = mws.raw("PUT", &publish, &push_headers, &body).await;
+    assert_eq!(status, 409, "versions are immutable");
+
+    let (status, _, versions) = mws.raw("GET", &format!("{base}acme.greeter/index.json"), &h, b"").await;
+    assert_eq!(status, 200);
+    assert_eq!(
+        serde_json::from_slice::<serde_json::Value>(&versions).unwrap()["versions"],
+        serde_json::json!(["1.2.0"])
+    );
+    let (status, _, got) = mws.raw("GET", &format!("{base}acme.greeter/1.2.0/acme.greeter.1.2.0.nupkg"), &h, b"").await;
+    assert_eq!(status, 200);
+    assert_eq!(got, nupkg);
+    let (status, _, got) = mws.raw("GET", &format!("{base}acme.greeter/1.2.0/acme.greeter.nuspec"), &h, b"").await;
+    assert_eq!(status, 200);
+    assert!(String::from_utf8(got).unwrap().contains("<id>Acme.Greeter</id>"));
+
+    let registration = resource("RegistrationsBaseUrl/3.6.0");
+    let (status, _, reg) = mws.raw("GET", &format!("{registration}acme.greeter/index.json"), &h, b"").await;
+    assert_eq!(status, 200);
+    let reg: serde_json::Value = serde_json::from_slice(&reg).unwrap();
+    let entry = &reg["items"][0]["items"][0]["catalogEntry"];
+    assert_eq!(entry["id"], "Acme.Greeter");
+    assert_eq!(entry["dependencyGroups"][0]["dependencies"][0]["id"], "Newtonsoft.Json");
+    let (status, _, search) =
+        mws.raw("GET", &format!("{}?q=greeter", resource("SearchQueryService/3.5.0")), &h, b"").await;
+    assert_eq!(status, 200);
+    assert_eq!(serde_json::from_slice::<serde_json::Value>(&search).unwrap()["data"][0]["id"], "Acme.Greeter");
+
+    let v = ca
+        .describe_package_version()
+        .domain("nu")
+        .repository("repo")
+        .format(PackageFormat::Nuget)
+        .package("Acme.Greeter")
+        .package_version("1.2.0")
+        .send()
+        .await
+        .unwrap();
+    let v = v.package_version().unwrap();
+    assert_eq!(v.package_name(), Some("acme.greeter"), "NuGet names are lower-cased");
+    assert_eq!(v.summary(), Some("Says hello"));
+    assert_eq!(v.home_page(), Some("https://example.com/greeter"));
+
+    // `dotnet nuget delete` unlists.
+    let (status, _, _) = mws.raw("DELETE", &format!("{publish}Acme.Greeter/1.2.0"), &h, b"").await;
+    assert_eq!(status, 204);
+    let v = ca
+        .describe_package_version()
+        .domain("nu")
+        .repository("repo")
+        .format(PackageFormat::Nuget)
+        .package("acme.greeter")
+        .package_version("1.2.0")
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(v.package_version().unwrap().status().map(|s| s.as_str()), Some("Unlisted"));
+}
+
+#[tokio::test]
+async fn swift_registry_publish_and_resolve() {
+    let mws = Mws::start().await;
+    let ca = client(&mws).await;
+    ca.create_domain().domain("sw").send().await.unwrap();
+    ca.create_repository().domain("sw").repository("repo").send().await.unwrap();
+    let url = endpoint(&ca, "sw", "repo", PackageFormat::Swift).await;
+    let auth = basic(&token(&ca, "sw").await);
+    let h = [("Authorization", auth.as_str()), ("Accept", "application/vnd.swift.registry.v1+json")];
+
+    let manifest = "// swift-tools-version:5.9\nimport PackageDescription\nlet package = Package(name: \"Greeter\")\n";
+    let archive = zip_of(&[
+        ("Greeter/Package.swift", manifest),
+        ("Greeter/Package@swift-5.8.swift", "// swift-tools-version:5.8\n"),
+        ("Greeter/Sources/Greeter/Greeter.swift", "public func hi() -> String { \"hi\" }\n"),
+    ]);
+    let metadata = br#"{"description":"Says hi","repositoryURLs":["https://github.com/acme/Greeter.git"]}"#;
+    let body = multipart(&[("source-archive", Some("Greeter.zip"), &archive), ("metadata", None, metadata)]);
+    let put = [
+        ("Authorization", auth.as_str()),
+        ("Content-Type", "multipart/form-data; boundary=BOUNDARY"),
+        ("Accept", "application/vnd.swift.registry.v1+json"),
+    ];
+    let (status, headers, out) = mws.raw("PUT", &format!("{url}acme/Greeter/1.0.0"), &put, &body).await;
+    assert_eq!(status, 201, "{}", String::from_utf8_lossy(&out));
+    assert!(headers.iter().any(|(k, v)| k == "content-version" && v == "1"));
+    let (status, headers, out) = mws.raw("PUT", &format!("{url}acme/Greeter/1.0.0"), &put, &body).await;
+    assert_eq!(status, 409);
+    assert!(headers.iter().any(|(k, v)| k == "content-type" && v == "application/problem+json"));
+    assert!(serde_json::from_slice::<serde_json::Value>(&out).unwrap()["detail"].is_string());
+
+    let (status, _, releases) = mws.raw("GET", &format!("{url}acme/greeter"), &h, b"").await;
+    assert_eq!(status, 200);
+    let releases: serde_json::Value = serde_json::from_slice(&releases).unwrap();
+    assert!(releases["releases"]["1.0.0"]["url"].as_str().unwrap().ends_with("acme/greeter/1.0.0"));
+
+    let (status, _, release) = mws.raw("GET", &format!("{url}acme/greeter/1.0.0"), &h, b"").await;
+    assert_eq!(status, 200);
+    let release: serde_json::Value = serde_json::from_slice(&release).unwrap();
+    assert_eq!(release["id"], "acme.greeter");
+    assert_eq!(release["resources"][0]["checksum"], hex::encode(sha2_010::Sha256::digest(&archive)));
+    assert_eq!(release["metadata"]["description"], "Says hi");
+
+    let (status, headers, got) = mws.raw("GET", &format!("{url}acme/greeter/1.0.0/Package.swift"), &h, b"").await;
+    assert_eq!(status, 200);
+    assert_eq!(String::from_utf8(got).unwrap(), manifest);
+    assert!(headers.iter().any(|(k, v)| k == "link" && v.contains("swift-version=5.8")));
+    let (status, headers, got) = mws.raw("GET", &format!("{url}acme/greeter/1.0.0.zip"), &h, b"").await;
+    assert_eq!(status, 200);
+    assert_eq!(got, archive);
+    let digest = base64::engine::general_purpose::STANDARD.encode(sha2_010::Sha256::digest(&archive));
+    assert!(headers.iter().any(|(k, v)| k == "digest" && *v == format!("sha-256={digest}")));
+
+    let (status, _, ids) =
+        mws.raw("GET", &format!("{url}identifiers?url=https://github.com/acme/greeter"), &h, b"").await;
+    assert_eq!(status, 200);
+    assert_eq!(
+        serde_json::from_slice::<serde_json::Value>(&ids).unwrap()["identifiers"],
+        serde_json::json!(["acme.greeter"])
+    );
+    let (status, _, _) = mws.raw("GET", &format!("{url}acme/missing"), &h, b"").await;
+    assert_eq!(status, 404);
+
+    let v = ca
+        .describe_package_version()
+        .domain("sw")
+        .repository("repo")
+        .format(PackageFormat::Swift)
+        .namespace("acme")
+        .package("greeter")
+        .package_version("1.0.0")
+        .send()
+        .await
+        .unwrap();
+    let v = v.package_version().unwrap();
+    assert_eq!(v.summary(), Some("Says hi"));
+    assert_eq!(v.source_code_repository(), Some("https://github.com/acme/Greeter.git"));
+}
+
+/// Run a command off the async runtime, with `env` and a private `HOME`.
+async fn run_blocking(
+    program: &str,
+    args: &[&str],
+    dir: &std::path::Path,
+    env: &[(&str, &str)],
+) -> std::process::Output {
+    let program = program.to_string();
+    let args: Vec<String> = args.iter().map(|a| a.to_string()).collect();
+    let dir = dir.to_path_buf();
+    let env: Vec<(String, String)> = env.iter().map(|(a, b)| (a.to_string(), b.to_string())).collect();
+    tokio::task::spawn_blocking(move || {
+        let args: Vec<&str> = args.iter().map(String::as_str).collect();
+        let env: Vec<(&str, &str)> = env.iter().map(|(a, b)| (a.as_str(), b.as_str())).collect();
+        run(&program, &args, &dir, &env).unwrap()
+    })
+    .await
+    .unwrap()
+}
+
+#[tokio::test]
+async fn real_cargo_publishes_and_fetches() {
+    if run("cargo", &["--version"], &std::env::temp_dir(), &[]).is_none() {
+        eprintln!("cargo is not installed; skipping");
+        return;
+    }
+    let mws = Mws::start().await;
+    let ca = client(&mws).await;
+    ca.create_domain().domain("crates").send().await.unwrap();
+    ca.create_repository().domain("crates").repository("repo").send().await.unwrap();
+    let url = endpoint(&ca, "crates", "repo", PackageFormat::Cargo).await;
+    let token = token(&ca, "crates").await;
+
+    let (status, _, _) = mws.raw("GET", &format!("{url}config.json"), &[], b"").await;
+    assert_eq!(status, 401, "the index needs a token");
+    let (status, _, config) =
+        mws.raw("GET", &format!("{url}config.json"), &[("Authorization", &bearer(&token))], b"").await;
+    assert_eq!(status, 200);
+    assert_eq!(serde_json::from_slice::<serde_json::Value>(&config).unwrap()["auth-required"], true);
+
+    let home = temp_dir("cargo-home");
+    let index = format!("sparse+{url}");
+    let auth = bearer(&token);
+    let target = home.join("target").to_str().unwrap().to_string();
+    let env = [
+        ("CARGO_HOME", home.to_str().unwrap()),
+        ("CARGO_REGISTRIES_CA_INDEX", index.as_str()),
+        ("CARGO_REGISTRIES_CA_TOKEN", auth.as_str()),
+        ("CARGO_REGISTRIES_CA_CREDENTIAL_PROVIDER", "cargo:token"),
+        ("CARGO_TARGET_DIR", target.as_str()),
+    ];
+    let lib = temp_dir("cargo-lib");
+    std::fs::create_dir_all(lib.join("src")).unwrap();
+    std::fs::write(
+        lib.join("Cargo.toml"),
+        "[package]\nname = \"mws-greet\"\nversion = \"0.1.0\"\nedition = \"2021\"\ndescription = \"Says hi\"\nlicense = \"MIT\"\n\n[workspace]\n",
+    )
+    .unwrap();
+    std::fs::write(lib.join("src/lib.rs"), "pub fn hi() -> &'static str { \"hi from codeartifact\" }\n").unwrap();
+    let out = run_blocking("cargo", &["publish", "--registry", "ca", "--allow-dirty", "--no-verify"], &lib, &env).await;
+    assert!(out.status.success(), "cargo publish: {}", String::from_utf8_lossy(&out.stderr));
+
+    let app = temp_dir("cargo-app");
+    std::fs::create_dir_all(app.join("src")).unwrap();
+    std::fs::write(
+        app.join("Cargo.toml"),
+        "[package]\nname = \"app\"\nversion = \"0.0.0\"\nedition = \"2021\"\n\n[dependencies]\nmws-greet = { version = \"0.1\", registry = \"ca\" }\n\n[workspace]\n",
+    )
+    .unwrap();
+    std::fs::write(app.join("src/main.rs"), "fn main() { println!(\"{}\", mws_greet::hi()); }\n").unwrap();
+    let out = run_blocking("cargo", &["fetch"], &app, &env).await;
+    assert!(out.status.success(), "cargo fetch: {}", String::from_utf8_lossy(&out.stderr));
+    let lock = std::fs::read_to_string(app.join("Cargo.lock")).unwrap();
+    assert!(lock.contains("name = \"mws-greet\""));
+
+    let out = run_blocking("cargo", &["yank", "--registry", "ca", "mws-greet@0.1.0"], &lib, &env).await;
+    assert!(out.status.success(), "cargo yank: {}", String::from_utf8_lossy(&out.stderr));
+    let v = ca
+        .describe_package_version()
+        .domain("crates")
+        .repository("repo")
+        .format(PackageFormat::Cargo)
+        .package("mws-greet")
+        .package_version("0.1.0")
+        .send()
+        .await
+        .unwrap();
+    let v = v.package_version().unwrap();
+    assert_eq!(v.summary(), Some("Says hi"));
+    assert_eq!(v.status().map(|s| s.as_str()), Some("Unlisted"));
+    for d in [home, lib, app] {
+        let _ = std::fs::remove_dir_all(d);
+    }
+}
+
+#[tokio::test]
+async fn real_gem_pushes_and_bundler_installs() {
+    if run("gem", &["--version"], &std::env::temp_dir(), &[]).is_none()
+        || run("bundle", &["--version"], &std::env::temp_dir(), &[]).is_none()
+    {
+        eprintln!("gem or bundler is not installed; skipping");
+        return;
+    }
+    let mws = Mws::start().await;
+    let ca = client(&mws).await;
+    ca.create_domain().domain("gems").send().await.unwrap();
+    ca.create_repository().domain("gems").repository("repo").send().await.unwrap();
+    let url = endpoint(&ca, "gems", "repo", PackageFormat::Ruby).await;
+    let token = token(&ca, "gems").await;
+
+    let home = temp_dir("gem-home");
+    let lib = temp_dir("gem-lib");
+    std::fs::create_dir_all(lib.join("lib")).unwrap();
+    std::fs::write(lib.join("lib/mws_greet.rb"), "module MwsGreet\n  def self.hi = 'hi from codeartifact'\nend\n")
+        .unwrap();
+    std::fs::write(
+        lib.join("mws_greet.gemspec"),
+        "Gem::Specification.new do |s|\n  s.name = 'mws_greet'\n  s.version = '0.2.0'\n  s.summary = 'Says hi'\n  s.authors = ['MWS']\n  s.license = 'MIT'\n  s.homepage = 'https://example.com/greet'\n  s.files = ['lib/mws_greet.rb']\n  s.required_ruby_version = '>= 2.7'\nend\n",
+    )
+    .unwrap();
+    let gem_home = home.join("gems").to_str().unwrap().to_string();
+    let env = [("HOME", home.to_str().unwrap()), ("GEM_HOME", gem_home.as_str())];
+    let out = run_blocking("gem", &["build", "mws_greet.gemspec"], &lib, &env).await;
+    assert!(out.status.success(), "gem build: {}", String::from_utf8_lossy(&out.stderr));
+    let key = basic(&token);
+    let push_env = [env[0], env[1], ("GEM_HOST_API_KEY", key.as_str())];
+    let host = url.trim_end_matches('/');
+    let out = run_blocking("gem", &["push", "--host", host, "mws_greet-0.2.0.gem"], &lib, &push_env).await;
+    assert!(
+        out.status.success(),
+        "gem push: {}{}",
+        String::from_utf8_lossy(&out.stdout),
+        String::from_utf8_lossy(&out.stderr)
+    );
+    assert!(String::from_utf8_lossy(&out.stdout).contains("Successfully registered gem: mws_greet (0.2.0)"));
+
+    let app = temp_dir("gem-app");
+    let source = url.replacen("http://", &format!("http://aws:{token}@"), 1);
+    std::fs::write(app.join("Gemfile"), format!("source \"{source}\"\ngem \"mws_greet\", \"~> 0.2\"\n")).unwrap();
+    let (vendor, config) = (app.join("vendor"), app.join(".bundle"));
+    let bundle_env =
+        [env[0], env[1], ("BUNDLE_PATH", vendor.to_str().unwrap()), ("BUNDLE_APP_CONFIG", config.to_str().unwrap())];
+    let out = run_blocking("bundle", &["install"], &app, &bundle_env).await;
+    assert!(
+        out.status.success(),
+        "bundle install: {}{}",
+        String::from_utf8_lossy(&out.stdout),
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let out =
+        run_blocking("bundle", &["exec", "ruby", "-e", "require 'mws_greet'; print MwsGreet.hi"], &app, &bundle_env)
+            .await;
+    assert_eq!(
+        String::from_utf8_lossy(&out.stdout),
+        "hi from codeartifact",
+        "{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+
+    let v = ca
+        .describe_package_version()
+        .domain("gems")
+        .repository("repo")
+        .format(PackageFormat::Ruby)
+        .package("mws_greet")
+        .package_version("0.2.0")
+        .send()
+        .await
+        .unwrap();
+    let v = v.package_version().unwrap();
+    assert_eq!(v.summary(), Some("Says hi"));
+    assert_eq!(v.home_page(), Some("https://example.com/greet"));
+    for d in [home, lib, app] {
+        let _ = std::fs::remove_dir_all(d);
+    }
+}
+
+/// A registry serving fixed files; `{base}` in a body becomes its URL.
+async fn fake_registry(files: Vec<(&'static str, Vec<u8>)>) -> String {
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let base = format!("http://127.0.0.1:{}", listener.local_addr().unwrap().port());
+    let files: std::sync::Arc<Vec<(String, Vec<u8>)>> = std::sync::Arc::new(
+        files
+            .into_iter()
+            .map(|(p, b)| {
+                let b = match String::from_utf8(b.clone()) {
+                    Ok(s) => s.replace("{base}", &base).into_bytes(),
+                    Err(_) => b,
+                };
+                (p.to_string(), b)
+            })
+            .collect(),
+    );
+    tokio::spawn(async move {
+        loop {
+            let Ok((mut s, _)) = listener.accept().await else { return };
+            let files = files.clone();
+            tokio::spawn(async move {
+                let mut buf = vec![0u8; 4096];
+                let n = s.read(&mut buf).await.unwrap_or(0);
+                let req = String::from_utf8_lossy(&buf[..n]).to_string();
+                let path = req.split(' ').nth(1).unwrap_or("").to_string();
+                let (status, body) = match files.iter().find(|(p, _)| *p == path) {
+                    Some((_, b)) => ("200 OK", b.clone()),
+                    None => ("404 Not Found", b"{}".to_vec()),
+                };
+                let head = format!("HTTP/1.1 {status}\r\nContent-Length: {}\r\nConnection: close\r\n\r\n", body.len());
+                let _ = s.write_all(head.as_bytes()).await;
+                let _ = s.write_all(&body).await;
+            });
+        }
+    });
+    base
+}
+
+#[tokio::test]
+async fn cargo_nuget_and_rubygems_external_connections() {
+    let mws = Mws::start().await;
+    let crates = fake_registry(vec![
+        ("/config.json", br#"{"dl":"{base}/dl"}"#.to_vec()),
+        (
+            "/de/mo/demo",
+            br#"{"name":"demo","vers":"1.0.0","deps":[],"cksum":"x","features":{},"yanked":false}"#.to_vec(),
+        ),
+        ("/dl/demo/1.0.0/download", b"demo crate".to_vec()),
+    ])
+    .await;
+    let nupkg = zip_of(&[(
+        "Acme.Lib.nuspec",
+        "<package><metadata><id>Acme.Lib</id><version>2.0.0</version><description>lib</description></metadata></package>",
+    )]);
+    let nuget = fake_registry(vec![
+        (
+            "/v3/index.json",
+            br#"{"version":"3.0.0","resources":[{"@id":"{base}/flat/","@type":"PackageBaseAddress/3.0.0"}]}"#.to_vec(),
+        ),
+        ("/flat/acme.lib/index.json", br#"{"versions":["2.0.0"]}"#.to_vec()),
+        ("/flat/acme.lib/2.0.0/acme.lib.2.0.0.nupkg", nupkg.clone()),
+    ])
+    .await;
+    let gems = fake_registry(vec![
+        ("/info/rack", b"---\n3.0.0 |checksum:abc,ruby:>= 2.4\n".to_vec()),
+        ("/gems/rack-3.0.0.gem", b"rack gem".to_vec()),
+    ])
+    .await;
+    mws.codeartifact.set_registry_url("public:crates-io", &crates);
+    mws.codeartifact.set_registry_url("public:nuget-org", &format!("{nuget}/v3/index.json"));
+    mws.codeartifact.set_registry_url("public:ruby-gems-org", &gems);
+    let ca = client(&mws).await;
+    ca.create_domain().domain("ext2").send().await.unwrap();
+    let auth = basic(&token(&ca, "ext2").await);
+    let h = [("Authorization", auth.as_str())];
+    for (repo, conn) in
+        [("crates", "public:crates-io"), ("nuget", "public:nuget-org"), ("gems", "public:ruby-gems-org")]
+    {
+        ca.create_repository().domain("ext2").repository(repo).send().await.unwrap();
+        ca.associate_external_connection()
+            .domain("ext2")
+            .repository(repo)
+            .external_connection(conn)
+            .send()
+            .await
+            .unwrap();
+    }
+
+    let url = endpoint(&ca, "ext2", "crates", PackageFormat::Cargo).await;
+    let (status, _, index) = mws.raw("GET", &format!("{url}de/mo/demo"), &h, b"").await;
+    assert_eq!(status, 200);
+    assert!(String::from_utf8(index).unwrap().contains(r#""vers":"1.0.0""#));
+    let (status, _, got) = mws.raw("GET", &format!("{url}api/v1/crates/demo/1.0.0/download"), &h, b"").await;
+    assert_eq!((status, got.as_slice()), (200, b"demo crate".as_slice()));
+
+    let url = endpoint(&ca, "ext2", "nuget", PackageFormat::Nuget).await;
+    let (status, _, versions) = mws.raw("GET", &format!("{url}v3/package/acme.lib/index.json"), &h, b"").await;
+    assert_eq!(status, 200);
+    assert!(String::from_utf8(versions).unwrap().contains("2.0.0"));
+    let (status, _, got) =
+        mws.raw("GET", &format!("{url}v3/package/acme.lib/2.0.0/acme.lib.2.0.0.nupkg"), &h, b"").await;
+    assert_eq!((status, got), (200, nupkg));
+
+    let url = endpoint(&ca, "ext2", "gems", PackageFormat::Ruby).await;
+    let (status, _, info) = mws.raw("GET", &format!("{url}info/rack"), &h, b"").await;
+    assert_eq!(status, 200);
+    assert!(String::from_utf8(info).unwrap().contains("3.0.0 |checksum:abc"));
+    let (status, _, got) = mws.raw("GET", &format!("{url}gems/rack-3.0.0.gem"), &h, b"").await;
+    assert_eq!((status, got.as_slice()), (200, b"rack gem".as_slice()));
+
+    for (repo, format, package, version) in [
+        ("crates", PackageFormat::Cargo, "demo", "1.0.0"),
+        ("nuget", PackageFormat::Nuget, "acme.lib", "2.0.0"),
+        ("gems", PackageFormat::Ruby, "rack", "3.0.0"),
+    ] {
+        let v = ca
+            .describe_package_version()
+            .domain("ext2")
+            .repository(repo)
+            .format(format)
+            .package(package)
+            .package_version(version)
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(v.package_version().unwrap().origin().unwrap().origin_type().map(|o| o.as_str()), Some("EXTERNAL"));
+    }
 }
