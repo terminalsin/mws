@@ -8,6 +8,7 @@
 [![License: MIT OR Apache-2.0](https://img.shields.io/badge/license-MIT%20OR%20Apache--2.0-blue.svg)](#license)
 [![Rust 1.85+](https://img.shields.io/badge/rust-1.85%2B-orange.svg)](https://www.rust-lang.org)
 [![Services](https://img.shields.io/badge/AWS%20services-33-success.svg)](docs/services/README.md)
+[![Services](https://img.shields.io/badge/AWS%20services-30-success.svg)](docs/services/README.md)
 
 [Getting started](docs/getting-started.md) ·
 [Services](docs/services/README.md) ·
@@ -47,6 +48,9 @@ real Rust, Python and JavaScript SDKs.
   EC2 instances can run as Docker containers and mount EFS file systems, and
   events flow between services: S3 notifications reach SNS, SQS and Lambda;
   alarms page through SNS; Firehose delivers to S3.
+  EC2 instances and ElastiCache nodes can run as Docker containers, and events flow between
+  services: S3 notifications reach SNS, SQS and Lambda; alarms page through
+  SNS; Firehose delivers to S3.
 - **Built for test suites.** In memory by default, with optional SQLite
   persistence, declarative seed scenarios, instant resets, named snapshots and
   an emulated clock you can move forward.
@@ -113,6 +117,7 @@ SDKs, S3 addressing, host-prefixed endpoints and calling as other identities.
 | [EFS](docs/services/efs.md) | 31 / 31 | restJson1 |
 | [ECR](docs/services/ecr.md) | 62 / 62 | awsJson 1.1, Docker registry v2 |
 | [ECR Public](docs/services/ecr-public.md) | 23 / 23 | awsJson 1.1, Docker registry v2 |
+| [ElastiCache](docs/services/elasticache.md) | 77 / 77 | awsQuery |
 | [Route 53](docs/services/route53.md) | 71 / 71 | restXml |
 | [Amplify Hosting](docs/services/amplify.md) | 37 / 37 | restJson1 |
 | [Global Accelerator](docs/services/globalaccelerator.md) | 56 / 56 | awsJson 1.1 |

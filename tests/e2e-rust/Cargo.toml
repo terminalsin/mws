@@ -57,6 +57,7 @@ aws-sdk-efs = "1"
 aws-sdk-codeartifact = "1"
 aws-sdk-ecr = "1"
 aws-sdk-ecrpublic = "1"
+aws-sdk-elasticache = "1"
 aws-smithy-http-client = { version = "1", features = ["rustls-aws-lc"] }
 aws-smithy-runtime-api = { version = "1", features = ["client"] }
 zip.workspace = true
@@ -92,6 +93,7 @@ mws-ec2.workspace = true
 mws-rds.workspace = true
 mws-eks.workspace = true
 mws-codeartifact.workspace = true
+mws-elasticache.workspace = true
 mws-route53.workspace = true
 mws-server.workspace = true
 mws-ses.workspace = true

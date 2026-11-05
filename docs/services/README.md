@@ -1,6 +1,7 @@
 # Services
 
 MWS emulates 33 AWS services. Each is generated from AWS's official Smithy
+MWS emulates 30 AWS services. Each is generated from AWS's official Smithy
 model, so every operation in the model is routed and validated; operations
 outside the implemented set answer `NotImplemented`. Each service's page lists
 its features in a table: ✅ supported, 🟡 partial, ❌ not supported yet.
@@ -58,6 +59,12 @@ Every service shares the same foundations:
 | [ECR Public](ecr-public.md) | 23 / 23 | Public registries with aliases and catalog data, anonymous pulls, authenticated pushes |
 | [Route 53](route53.md) | 71 / 71 | Public and private hosted zones, all routing policies, health checks, DNSSEC key management, an optional real DNS responder |
 | [Amplify Hosting](amplify.md) | 37 / 37 | Apps and branches whose deployments are really served: manual and S3 deploys, Git builds, rewrites, basic auth, custom domains |
+
+## Databases
+
+| Service | Operations | What's emulated |
+| --- | --- | --- |
+| [ElastiCache](elasticache.md) | 77 / 77 | Valkey, Redis OSS and Memcached nodes as Docker containers, replication and cluster mode with failover and resharding, RBAC, TLS, CloudWatch metrics, snapshots to S3, serverless caches, global datastores |
 
 ## Application integration
 

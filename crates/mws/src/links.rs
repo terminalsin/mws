@@ -1346,3 +1346,124 @@ impl mws_ce::AnomalyNotifier for AnomalyAlerts {
             .map_err(|e| e.to_string())
     }
 }
+
+/// ElastiCache subnet groups and security groups, read from EC2.
+pub(crate) struct ElastiCacheNetwork {
+    pub ec2: mws_ec2::Ec2,
+    pub partition: String,
+}
+
+fn subnet_info(s: mws_ec2::network::SubnetView) -> mws_elasticache::SubnetInfo {
+    mws_elasticache::SubnetInfo {
+        subnet_id: s.subnet_id,
+        vpc_id: s.vpc_id,
+        availability_zone: s.availability_zone,
+        ipv6: s.ipv6,
+    }
+}
+
+impl mws_elasticache::NetworkView for ElastiCacheNetwork {
+    fn subnet(&self, account: &str, region: &str, subnet_id: &str) -> Option<mws_elasticache::SubnetInfo> {
+        self.ec2.subnet_view(account, region, &self.partition, subnet_id).map(subnet_info)
+    }
+    fn default_subnets(&self, account: &str, region: &str) -> Vec<mws_elasticache::SubnetInfo> {
+        self.ec2.default_subnet_views(account, region, &self.partition).into_iter().map(subnet_info).collect()
+    }
+    fn security_group_vpc(&self, account: &str, region: &str, group_id: &str) -> Option<String> {
+        self.ec2.security_group_vpc(account, region, &self.partition, group_id)
+    }
+    fn default_security_group(&self, account: &str, region: &str, vpc_id: &str) -> Option<String> {
+        self.ec2.default_security_group(account, region, &self.partition, vpc_id)
+    }
+}
+
+/// ElastiCache snapshot exports to, and seeds from, S3, as
+/// `elasticache.amazonaws.com`.
+pub(crate) struct ElastiCacheSnapshots(pub mws_s3::S3);
+
+impl mws_elasticache::SnapshotBucket for ElastiCacheSnapshots {
+    fn export(
+        &self,
+        ctx: &RequestContext,
+        bucket: &str,
+        key: &str,
+        body: Vec<u8>,
+        source_arn: &str,
+    ) -> Result<(), mws_core::ServiceError> {
+        let account = source_arn.split(':').nth(4).unwrap_or_default();
+        let put = mws_s3::ServicePutObject {
+            bucket,
+            key,
+            body,
+            content_type: "application/octet-stream",
+            service_principal: "elasticache.amazonaws.com",
+            source_account: account,
+            source_arn,
+            acl: None,
+            partition: &ctx.partition,
+        };
+        let invalid =
+            |m: String| mws_core::ServiceError::new("InvalidParameterValue", 400, mws_core::ErrorFault::Client, m);
+        match self.0.put_object_as_service(put) {
+            Ok(_) => Ok(()),
+            Err(mws_s3::ServicePutError::NoSuchBucket) => Err(invalid(format!("The S3 bucket {bucket} does not exist."))),
+            Err(mws_s3::ServicePutError::AccessDenied { .. }) => Err(invalid(format!(
+                "No permission to access S3 bucket {bucket}: grant elasticache.amazonaws.com s3:PutObject in the bucket policy."
+            ))),
+            Err(e) => Err(invalid(format!("Could not write to S3 bucket {bucket}: {e}"))),
+        }
+    }
+
+    fn read(&self, s3_arn: &str) -> Option<Vec<u8>> {
+        let path = s3_arn.split(":::").nth(1)?;
+        let (bucket, key) = path.split_once('/')?;
+        self.0.object_bytes(bucket, key)
+    }
+}
+
+/// ElastiCache event notifications, published to SNS as
+/// `elasticache.amazonaws.com`.
+pub(crate) struct ElastiCacheNotifications(pub mws_sns::Sns);
+
+impl mws_elasticache::EventNotifier for ElastiCacheNotifications {
+    fn notify(&self, ctx: &RequestContext, topic_arn: &str, source_arn: &str, message: &str) {
+        let id = source_arn.rsplit(':').next().unwrap_or_default();
+        let account = source_arn.split(':').nth(4).unwrap_or_default();
+        let body = serde_json::json!({ message: id }).to_string();
+        let p = mws_sns::ServicePublish {
+            topic_arn,
+            service_principal: "elasticache.amazonaws.com",
+            source_arn,
+            source_account: account,
+            message: body,
+            subject: Some(message.to_string()),
+            attributes: Default::default(),
+            message_group_id: None,
+            message_deduplication_id: None,
+        };
+        if let Err(e) = self.0.publish_as_service(ctx, &p) {
+            tracing::debug!("ElastiCache notification to {topic_arn}: {e}");
+        }
+    }
+}
+
+/// ElastiCache publishes its `AWS/ElastiCache` metrics into CloudWatch.
+pub struct ElastiCacheToCloudWatch(pub mws_cloudwatch::CloudWatch);
+
+impl mws_elasticache::MetricPublisher for ElastiCacheToCloudWatch {
+    fn publish(&self, metrics: Vec<mws_elasticache::CacheMetric>) {
+        for m in metrics {
+            let Some(timestamp) = chrono::DateTime::from_timestamp_millis(m.timestamp) else { continue };
+            self.0.put_metric_as_service(mws_cloudwatch::ServiceMetric {
+                account: m.account,
+                region: m.region,
+                namespace: "AWS/ElastiCache".into(),
+                metric_name: m.metric_name.into(),
+                dimensions: m.dimensions,
+                unit: Some(m.unit.into()),
+                timestamp,
+                values: vec![(m.value, 1.0)],
+            });
+        }
+    }
+}

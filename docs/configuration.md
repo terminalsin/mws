@@ -56,6 +56,10 @@ See [State, scenarios and snapshots](state.md) for how the two interact.
 | `MWS_CODEARTIFACT_<CONNECTION>_URL` | the public registry | Where a CodeArtifact external connection fetches packages, such as `MWS_CODEARTIFACT_NPMJS_URL=http://localhost:4873` for `public:npmjs` (or `_PYPI_URL`, `_MAVEN_CENTRAL_URL`, `_CRATES_IO_URL`, `_RUBY_GEMS_ORG_URL`; `_NUGET_ORG_URL` names a V3 service index). An empty value turns the connection off. |
 | `MWS_ECR_REGISTRY_HOST` | unset (AWS's `<account>.dkr.ecr.<region>.amazonaws.com`) | The registry host ECR repository URIs and `proxyEndpoint` name, such as `localhost:4566`, so `docker push $(repositoryUri)` reaches MWS. `{account}` and `{region}` are replaced. |
 | `MWS_ECR_PUBLIC_REGISTRY_HOST` | unset (`public.ecr.aws`) | The registry host and path ECR Public repository URIs name, such as `localhost:4566/public.ecr.aws`. |
+| `MWS_ELASTICACHE_BACKEND` | `auto` | How ElastiCache nodes run. `docker` runs each node as a Valkey, Redis OSS or Memcached container, `metadata` runs nothing, and `auto` uses Docker when a daemon answers. |
+| `MWS_ELASTICACHE_DOCKER` | `docker` | The Docker-compatible CLI the ElastiCache backend drives. |
+| `MWS_ELASTICACHE_HOST` | `127.0.0.1` | The address ElastiCache endpoints name; node ports are published on the host. |
+| `MWS_ELASTICACHE_REDIS_IMAGE`, `MWS_ELASTICACHE_VALKEY_IMAGE`, `MWS_ELASTICACHE_MEMCACHED_IMAGE` | by engine version | Images to run instead of `redis:<version>-alpine`, `valkey/valkey:<version>-alpine` and `memcached:1.6-alpine`. |
 
 EC2 instances reach the instance metadata service and the AWS endpoint
 through the host, and EKS API servers call MWS's token and authorization

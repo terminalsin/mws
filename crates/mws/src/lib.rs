@@ -24,6 +24,7 @@ use mws_ecr::Ecr;
 use mws_ecr_public::EcrPublic;
 use mws_efs::Efs;
 use mws_eks::Eks;
+use mws_elasticache::ElastiCache;
 use mws_elb::{Elb, ElbConfig};
 use mws_events::Events;
 use mws_firehose::Firehose;
@@ -116,6 +117,14 @@ pub struct Config {
     /// (`MWS_ECR_PUBLIC_REGISTRY_HOST`, e.g. `localhost:4566/public.ecr.aws`);
     /// `public.ecr.aws` when unset.
     pub ecr_public_registry_host: Option<String>,
+    /// What runs ElastiCache nodes (`MWS_ELASTICACHE_BACKEND`: `auto`,
+    /// `docker` or `metadata`). The binary defaults to `auto`; the library
+    /// default runs nothing.
+    pub elasticache_backend: mws_elasticache::BackendChoice,
+    /// The Docker-compatible CLI for ElastiCache (`MWS_ELASTICACHE_DOCKER`).
+    pub elasticache_docker_cli: Option<String>,
+    /// The host ElastiCache endpoints name (`MWS_ELASTICACHE_HOST`,
+    pub elasticache_host: Option<String>,
 }
 
 impl Config {
@@ -163,6 +172,13 @@ impl Config {
             }),
             Err(_) => mws_eks::kube::BackendChoice::Auto,
         };
+        let elasticache_backend = match std::env::var("MWS_ELASTICACHE_BACKEND") {
+            Ok(v) => mws_elasticache::BackendChoice::parse(&v).unwrap_or_else(|| {
+                tracing::warn!("unknown MWS_ELASTICACHE_BACKEND {v:?}; using auto");
+                mws_elasticache::BackendChoice::Auto
+            }),
+            Err(_) => mws_elasticache::BackendChoice::Auto,
+        };
         let var = |name: &str| std::env::var(name).ok().filter(|v| !v.is_empty());
         Self {
             iam,
@@ -183,6 +199,9 @@ impl Config {
             efs_dir: path("MWS_EFS_DIR"),
             ecr_registry_host: std::env::var("MWS_ECR_REGISTRY_HOST").ok().filter(|v| !v.is_empty()),
             ecr_public_registry_host: std::env::var("MWS_ECR_PUBLIC_REGISTRY_HOST").ok().filter(|v| !v.is_empty()),
+            elasticache_backend,
+            elasticache_docker_cli: var("MWS_ELASTICACHE_DOCKER"),
+            elasticache_host: var("MWS_ELASTICACHE_HOST"),
         }
     }
 }
@@ -227,6 +246,7 @@ pub struct Mws {
     pub cloudtrail: CloudTrail,
     pub ecr: Ecr,
     pub ecr_public: EcrPublic,
+    pub elasticache: ElastiCache,
 }
 
 /// Build the gateway with every service MWS emulates.
@@ -459,6 +479,20 @@ fn build_with_store(config: Config, store: Option<Arc<Store>>) -> Mws {
     elb.set_service_quotas(servicequotas.clone());
     rds.set_service_quotas(servicequotas.clone());
     eks.set_service_quotas(servicequotas.clone());
+    let mut elasticache_options = mws_elasticache::Options::default();
+    if let Some(h) = &config.elasticache_host {
+        elasticache_options.advertise_host = h.clone();
+    }
+    let elasticache = ElastiCache::with_options(
+        config.elasticache_backend.resolve(config.elasticache_docker_cli.as_deref()),
+        elasticache_options,
+    );
+    tracing::info!(backend = elasticache.backend_name(), "ElastiCache engine backend");
+    elasticache
+        .set_network(Arc::new(links::ElastiCacheNetwork { ec2: ec2.clone(), partition: config.iam.partition.clone() }));
+    elasticache.set_snapshot_bucket(Arc::new(links::ElastiCacheSnapshots(s3.clone())));
+    elasticache.set_event_notifier(Arc::new(links::ElastiCacheNotifications(sns.clone())));
+    elasticache.set_metric_publisher(Arc::new(links::ElastiCacheToCloudWatch(cloudwatch.clone())));
     let mut gateway = Gateway::builder();
     if let Some(store) = store {
         gateway = gateway.store(store);
@@ -528,6 +562,7 @@ fn build_with_store(config: Config, store: Option<Arc<Store>>) -> Mws {
         .observer(Arc::new(cloudtrail.clone()))
         .service(Arc::new(ecr.clone()))
         .service(Arc::new(ecr_public.clone()))
+        .service(Arc::new(elasticache.clone()))
         .build();
     Mws {
         gateway,
@@ -567,6 +602,7 @@ fn build_with_store(config: Config, store: Option<Arc<Store>>) -> Mws {
         cloudtrail,
         ecr,
         ecr_public,
+        elasticache,
     }
 }
 

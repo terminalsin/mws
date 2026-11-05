@@ -38,6 +38,7 @@ mws-ecr.workspace = true
 mws-ecr-public.workspace = true
 mws-oci.workspace = true
 bytes.workspace = true
+mws-elasticache.workspace = true
 mws-iam.workspace = true
 mws-identitystore.workspace = true
 mws-kms.workspace = true

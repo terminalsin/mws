@@ -23,6 +23,8 @@ mod ecr_public;
 mod efs;
 mod eks;
 mod eks_kubernetes;
+mod elasticache;
+mod elasticache_docker;
 mod elb_classic;
 mod elb_logs;
 mod elbv2;
