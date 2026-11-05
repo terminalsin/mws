@@ -44,6 +44,24 @@ use std::sync::{Arc, Mutex, MutexGuard, OnceLock};
 use mws_core::{HttpRequest, HttpResponse, RequestContext, Service, ServiceError};
 
 pub use data::ListenerAddress;
+
+/// A load balancer as other services see it ([`Elb::load_balancer`]).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct LoadBalancerInfo {
+    pub arn: String,
+    pub name: String,
+    /// `application`, `network`, `gateway` or `classic`.
+    pub lb_type: String,
+    pub scheme: String,
+    /// `provisioning`, `active`, `active_impaired` or `failed`.
+    pub state: String,
+    pub dns_name: String,
+    pub canonical_hosted_zone_id: Option<String>,
+    /// Targets passing (`healthy`, or `InService` for Classic) and failing
+    /// their health checks.
+    pub healthy_targets: usize,
+    pub unhealthy_targets: usize,
+}
 pub use metrics::{ElbMetric, MetricSink};
 use state::State;
 
@@ -169,6 +187,63 @@ impl Elb {
     /// Balancer listener (`<name>:<port>`).
     pub fn listener_address(&self, listener: &str) -> Option<std::net::SocketAddr> {
         self.inner.data.addresses().into_iter().find(|a| a.listener == listener).map(|a| a.address)
+    }
+
+    /// A load balancer by ARN (ELBv2, or `...:loadbalancer/<name>` for a
+    /// Classic one), for services AWS couples to ELB such as Global
+    /// Accelerator endpoints: its state and how many of its targets pass
+    /// their health checks.
+    pub fn load_balancer(&self, account: &str, region: &str, arn: &str) -> Option<LoadBalancerInfo> {
+        let st = self.lock();
+        let region_key = State::key(account, region);
+        let r = st.regions.get(&region_key)?;
+        if let Some(lb) = r.load_balancers.get(arn) {
+            let (mut healthy, mut unhealthy) = (0, 0);
+            for tg in r.target_groups.values() {
+                if !crate::ops::tg_load_balancers(r, tg.arn()).iter().any(|l| l == arn) {
+                    continue;
+                }
+                for target in &tg.targets {
+                    match health::classify(self, r, account, region, tg, target).state {
+                        "healthy" => healthy += 1,
+                        "unhealthy" => unhealthy += 1,
+                        _ => {}
+                    }
+                }
+            }
+            return Some(LoadBalancerInfo {
+                arn: arn.to_string(),
+                name: lb.name().to_string(),
+                lb_type: lb.ty().to_string(),
+                scheme: lb.lb.scheme.clone().unwrap_or_default(),
+                state: lb.lb.state.as_ref().and_then(|s| s.code.clone()).unwrap_or_else(|| "active".into()),
+                dns_name: lb.lb.dns_name.clone().unwrap_or_default(),
+                canonical_hosted_zone_id: lb.lb.canonical_hosted_zone_id.clone(),
+                healthy_targets: healthy,
+                unhealthy_targets: unhealthy,
+            });
+        }
+        let name = arn.rsplit_once(":loadbalancer/")?.1;
+        let c = r.classic.get(name).filter(|_| classic::lb_arn(&region_key, name) == arn)?;
+        let (mut healthy, mut unhealthy) = (0, 0);
+        for id in &c.instances {
+            if classic::instance_health(self, account, region, &region_key, name, id).0 == "InService" {
+                healthy += 1;
+            } else {
+                unhealthy += 1;
+            }
+        }
+        Some(LoadBalancerInfo {
+            arn: arn.to_string(),
+            name: name.to_string(),
+            lb_type: "classic".into(),
+            scheme: c.description.scheme.clone().unwrap_or_default(),
+            state: "active".into(),
+            dns_name: c.description.dns_name.clone().unwrap_or_default(),
+            canonical_hosted_zone_id: c.description.canonical_hosted_zone_name_id.clone(),
+            healthy_targets: healthy,
+            unhealthy_targets: unhealthy,
+        })
     }
 
     pub(crate) fn lock(&self) -> MutexGuard<'_, State> {
