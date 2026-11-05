@@ -2,30 +2,25 @@
 
 > Crate: [`mws-acmpca`](../../crates/services/mws-acmpca) · Tests: [`tests/e2e-rust/tests/e2e/acmpca.rs`](../../tests/e2e-rust/tests/e2e/acmpca.rs)
 
-All 23 operations are generated from the AWS model (awsJson1.1).
+All 23 operations are generated from the AWS model (awsJson1.1) and implemented. Certificates are real X.509 and verify with standard tooling.
 
-## Behaviour
+✅ supported · 🟡 partial · ❌ not supported
 
-Implemented: root and subordinate CAs with real keys (RSA 2048/3072/4096, EC
-P-256/P-384/P-521), CSRs, self-issued root certificates, import with chain
-checks, `IssueCertificate` with ACM PCA templates (end-entity, server/client
-auth, code signing, OCSP, root, subordinate path lengths), validity rules,
-`GetCertificate` with chains, revocation, disable/delete/restore, tags,
-permissions, and CA resource policies evaluated by the IAM engine.
-
-Certificates verify with standard X.509 tooling. CRLs and audit reports (JSON or
-CSV) are written into S3 buckets as `acm-pca.amazonaws.com`, so the bucket
-policy must allow it as in AWS (checked when the CRL bucket is configured and
-when a report is requested); OCSP is answered unsigned. API passthrough and CSR
-passthrough templates take their extensions from the request and the CSR, with
-AWS's precedence (template, then API, then CSR), and CAs expire, refresh their
-CRLs and are permanently deleted on the emulated clock.
-
-## Known gaps
-
-ML-DSA, SM2 and RSA-PSS keys, EC keys with a hash other than the natural one for
-their curve, partitioned CRLs, path-length limits enforced on subordinate
-issuance, and resource policies limited to the allowed actions; audit reports
-complete synchronously.
+| Feature | Status | Details |
+| --- | :---: | --- |
+| Root and subordinate CAs | ✅ | Real keys (RSA 2048/3072/4096, EC P-256/P-384/P-521), CSRs, self-issued root certificates, and imports with chain checks. |
+| `IssueCertificate` | ✅ | ACM Private CA templates (end-entity, server and client auth, code signing, OCSP, root, subordinate path lengths) and validity rules. |
+| Passthrough templates | ✅ | API and CSR passthrough take their extensions from the request and the CSR, with AWS's precedence (template, then API, then CSR). |
+| `GetCertificate` | ✅ | Certificates with their chains. |
+| Revocation and CRLs | ✅ | CRLs are written into S3 buckets as `acm-pca.amazonaws.com`, so the bucket policy must allow it, as on AWS; refreshed at half their validity. |
+| OCSP | 🟡 | Answered, but unsigned. |
+| Audit reports | 🟡 | JSON or CSV reports written to S3 as `acm-pca.amazonaws.com`; they complete synchronously. |
+| Lifecycle | ✅ | Disable, delete and restore; CAs expire and are permanently deleted on the emulated clock. |
+| Permissions and resource policies | ✅ | Evaluated by the IAM engine, scoped by account and Region. |
+| Resource policy actions | 🟡 | Not limited to the actions AWS allows in them. |
+| ML-DSA, SM2 and RSA-PSS keys | ❌ | Not supported. |
+| EC keys with other hashes | ❌ | Only the natural hash for each curve. |
+| Partitioned CRLs | ❌ | `CrlType` is not implemented. |
+| Path-length limits | ❌ | Not enforced on subordinate issuance. |
 
 See also: [all services](README.md) · [authentication and authorization](../security.md).
