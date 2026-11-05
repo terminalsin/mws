@@ -123,6 +123,23 @@ const OPERATIONS: &[&str] = &[
     "CreateSnapshot",
     "DeleteSnapshot",
     "DescribeSnapshots",
+    // VPC endpoints and prefix lists
+    "CreateVpcEndpoint",
+    "DeleteVpcEndpoints",
+    "DescribeVpcEndpoints",
+    "ModifyVpcEndpoint",
+    "DescribeVpcEndpointServices",
+    "DescribePrefixLists",
+    "DescribeManagedPrefixLists",
+    "GetManagedPrefixListEntries",
+    "CreateManagedPrefixList",
+    "ModifyManagedPrefixList",
+    "DeleteManagedPrefixList",
+    "GetManagedPrefixListAssociations",
+    // Elastic IP attributes
+    "DescribeAddressesAttribute",
+    "ModifyAddressAttribute",
+    "ResetAddressAttribute",
 ];
 
 fn main() {

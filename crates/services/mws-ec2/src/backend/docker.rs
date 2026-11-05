@@ -7,6 +7,13 @@
 //! the CIDR overlaps a network the host already has, the network falls back
 //! to an address range Docker picks.
 //!
+//! Security groups, network ACLs and route tables filter real traffic: MWS
+//! writes them as iptables rules into each instance's network namespace,
+//! from a short-lived helper container that joins it
+//! (`MWS_EC2_NETFILTER_IMAGE`, any image with `iptables-restore`; the
+//! instance itself gets no extra capabilities and cannot change them).
+//! `MWS_EC2_FIREWALL=off` leaves traffic unfiltered.
+//!
 //! OS images (Amazon Linux, Ubuntu, ...) boot through a small init script
 //! that does what cloud-init would: install the key pair's public key, run
 //! the user data once (its output goes to the console), then idle until
@@ -16,11 +23,21 @@ use std::process::Stdio;
 
 use tokio::process::Command;
 
-use super::{BackendError, CommandOutput, ComputeBackend, LaunchSpec, Launched};
+use super::{
+    AclRule, AllowRule, BackendError, CommandOutput, ComputeBackend, Firewall, LaunchSpec, Launched, Protocol,
+};
+
+/// The default helper image: a small Alpine image with iptables.
+pub const DEFAULT_NETFILTER_IMAGE: &str = "rancher/klipper-lb:v0.4.13";
 
 /// What the container runs for OS images. The user data and key arrive as
 /// environment variables.
 const BOOT_SCRIPT: &str = r#"
+rm -f /run/mws/network-ready 2>/dev/null
+if [ -n "$MWS_WAIT_NETWORK" ]; then
+  i=0
+  while [ ! -f /run/mws/network-ready ] && [ $i -lt 300 ]; do sleep 0.1; i=$((i+1)); done
+fi
 mkdir -p /var/lib/cloud/instance /var/log 2>/dev/null
 if [ -n "$MWS_SSH_PUBLIC_KEY" ]; then
   mkdir -p /root/.ssh && chmod 700 /root/.ssh
@@ -42,6 +59,12 @@ while :; do sleep 3600 & wait $!; done
 #[derive(Debug)]
 pub struct DockerBackend {
     cli: String,
+    /// The helper image that writes instances' firewall rules; `None` when
+    /// traffic is not filtered.
+    netfilter_image: Option<String>,
+    /// The address `host-gateway` stands for (where MWS listens), once
+    /// looked up.
+    host_gateway: std::sync::Mutex<Option<String>>,
     /// Serializes network creation, so concurrent launches into one VPC do
     /// not race to create its network.
     networks: tokio::sync::Mutex<()>,
@@ -49,7 +72,67 @@ pub struct DockerBackend {
 
 impl DockerBackend {
     pub fn new(cli: impl Into<String>) -> Self {
-        Self { cli: cli.into(), networks: tokio::sync::Mutex::new(()) }
+        let off = std::env::var("MWS_EC2_FIREWALL")
+            .is_ok_and(|v| matches!(v.to_ascii_lowercase().as_str(), "off" | "false" | "0" | "no"));
+        let image = std::env::var("MWS_EC2_NETFILTER_IMAGE")
+            .ok()
+            .filter(|v| !v.is_empty())
+            .unwrap_or_else(|| DEFAULT_NETFILTER_IMAGE.to_string());
+        Self {
+            cli: cli.into(),
+            netfilter_image: (!off).then_some(image),
+            host_gateway: std::sync::Mutex::new(None),
+            networks: tokio::sync::Mutex::new(()),
+        }
+    }
+
+    /// Run the CLI with `input` on its standard input.
+    async fn run_with_input(&self, args: &[String], input: &str) -> Result<String, BackendError> {
+        use tokio::io::AsyncWriteExt;
+        let mut child = Command::new(&self.cli)
+            .args(args)
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .spawn()
+            .map_err(|e| BackendError(format!("running {}: {e}", self.cli)))?;
+        if let Some(mut stdin) = child.stdin.take() {
+            stdin
+                .write_all(input.as_bytes())
+                .await
+                .map_err(|e| BackendError(format!("writing to {}: {e}", self.cli)))?;
+        }
+        let out = child.wait_with_output().await.map_err(|e| BackendError(format!("running {}: {e}", self.cli)))?;
+        if out.status.success() {
+            Ok(String::from_utf8_lossy(&out.stdout).trim().to_string())
+        } else {
+            Err(BackendError(format!(
+                "{} {} failed: {}",
+                self.cli,
+                args.first().map(String::as_str).unwrap_or_default(),
+                String::from_utf8_lossy(&out.stderr).trim()
+            )))
+        }
+    }
+
+    /// The host's address as containers see it (`host-gateway`).
+    async fn host_gateway(&self, image: &str) -> Option<String> {
+        if let Some(ip) = self.host_gateway.lock().expect("lock").clone() {
+            return Some(ip);
+        }
+        let args: Vec<String> =
+            ["run", "--rm", "--add-host", "mws-host-gateway:host-gateway", "--entrypoint", "cat", image, "/etc/hosts"]
+                .map(String::from)
+                .to_vec();
+        let hosts = self.run(&args).await.ok()?;
+        let ip = hosts
+            .lines()
+            .find(|l| l.split_whitespace().nth(1) == Some("mws-host-gateway"))
+            .and_then(|l| l.split_whitespace().next())
+            .filter(|ip| ip.parse::<std::net::Ipv4Addr>().is_ok())?
+            .to_string();
+        *self.host_gateway.lock().expect("lock") = Some(ip.clone());
+        Some(ip)
     }
 
     /// Whether a daemon answers (blocking; used once at startup).
@@ -171,6 +254,10 @@ impl ComputeBackend for DockerBackend {
             args.push("-e".into());
             args.push(format!("{k}={v}"));
         }
+        if self.netfilter_image.is_some() {
+            args.push("-e".into());
+            args.push("MWS_WAIT_NETWORK=1".into());
+        }
         if spec.boot {
             use base64::Engine;
             if let Some(data) = &spec.user_data {
@@ -258,6 +345,62 @@ impl ComputeBackend for DockerBackend {
         self.run(&["rmi".into(), image_ref.into()]).await.map(drop)
     }
 
+    fn filters_traffic(&self) -> bool {
+        self.netfilter_image.is_some()
+    }
+
+    async fn apply_firewall(&self, handle: &str, firewall: &Firewall) -> Result<(), BackendError> {
+        let Some(image) = &self.netfilter_image else { return Ok(()) };
+        let mut gateways: Vec<String> = self
+            .run(&[
+                "inspect".into(),
+                "--format".into(),
+                "{{range .NetworkSettings.Networks}}{{.Gateway}} {{end}}".into(),
+                handle.into(),
+            ])
+            .await?
+            .split_whitespace()
+            .map(str::to_string)
+            .collect();
+        if let Some(ip) = self.host_gateway(image).await {
+            gateways.push(ip);
+        }
+        gateways.sort();
+        gateways.dedup();
+        let rules = render_iptables(firewall, &gateways);
+        let args: Vec<String> = vec![
+            "run".into(),
+            "--rm".into(),
+            "-i".into(),
+            "--network".into(),
+            format!("container:{handle}"),
+            "--cap-add".into(),
+            "NET_ADMIN".into(),
+            "--cap-add".into(),
+            "NET_RAW".into(),
+            "--label".into(),
+            "mws.ec2.netfilter=1".into(),
+            "--entrypoint".into(),
+            "/bin/sh".into(),
+            image.clone(),
+            "-c".into(),
+            "cat > /tmp/rules && (iptables-restore < /tmp/rules || iptables-legacy-restore < /tmp/rules)".into(),
+        ];
+        self.run_with_input(&args, &rules).await.map(drop)
+    }
+
+    async fn network_ready(&self, handle: &str) -> Result<(), BackendError> {
+        self.run(&[
+            "exec".into(),
+            handle.into(),
+            "/bin/sh".into(),
+            "-c".into(),
+            "mkdir -p /run/mws && touch /run/mws/network-ready".into(),
+        ])
+        .await
+        .map(drop)
+    }
+
     async fn delete_network(&self, vpc_id: &str) -> Result<(), BackendError> {
         let _guard = self.networks.lock().await;
         let name = Self::network_name(vpc_id);
@@ -265,5 +408,120 @@ impl ComputeBackend for DockerBackend {
             return Ok(());
         }
         self.run(&["network".into(), "rm".into(), name]).await.map(drop)
+    }
+}
+
+/// iptables match arguments for a protocol (destination ports).
+fn protocol_args(p: &Protocol) -> String {
+    match p {
+        Protocol::All => String::new(),
+        Protocol::Tcp(a, b) | Protocol::Udp(a, b) => {
+            let name = if matches!(p, Protocol::Tcp(..)) { "tcp" } else { "udp" };
+            if *a == 0 && *b == 65535 {
+                format!(" -p {name}")
+            } else if a == b {
+                format!(" -p {name} --dport {a}")
+            } else {
+                format!(" -p {name} --dport {a}:{b}")
+            }
+        }
+        Protocol::Icmp(None, _) => " -p icmp".into(),
+        Protocol::Icmp(Some(t), None) => format!(" -p icmp --icmp-type {t}"),
+        Protocol::Icmp(Some(t), Some(c)) => format!(" -p icmp --icmp-type {t}/{c}"),
+        Protocol::Number(n) => format!(" -p {n}"),
+    }
+}
+
+fn allow_lines(out: &mut String, chain: &str, dir: &str, rules: &[AllowRule]) {
+    for r in rules {
+        out.push_str(&format!("-A {chain} {dir} {}{} -j ACCEPT\n", r.cidr, protocol_args(&r.protocol)));
+    }
+}
+
+fn acl_lines(out: &mut String, chain: &str, dir: &str, rules: &[AclRule]) {
+    for r in rules {
+        let target = if r.allow { "RETURN" } else { "DROP" };
+        out.push_str(&format!("-A {chain} {dir} {}{} -j {target}\n", r.cidr, protocol_args(&r.protocol)));
+    }
+    out.push_str(&format!("-A {chain} -j DROP\n"));
+}
+
+/// The `iptables-restore` input for an instance's firewall. `gateways` are
+/// where MWS is reached (the network gateway and the host gateway).
+pub fn render_iptables(fw: &Firewall, gateways: &[String]) -> String {
+    let mut out = String::from(
+        "*filter\n:INPUT DROP [0:0]\n:FORWARD DROP [0:0]\n:OUTPUT DROP [0:0]\n\
+         :MWS-ACL-IN - [0:0]\n:MWS-ACL-OUT - [0:0]\n:MWS-SG-IN - [0:0]\n:MWS-SG-OUT - [0:0]\n:MWS-ROUTE - [0:0]\n",
+    );
+    // Loopback, MWS (API and instance metadata) and DNS are never filtered.
+    out.push_str("-A INPUT -i lo -j ACCEPT\n-A OUTPUT -o lo -j ACCEPT\n");
+    for gw in gateways {
+        match fw.service_port {
+            Some(port) => {
+                out.push_str(&format!("-A INPUT -s {gw}/32 -p tcp --sport {port} -j ACCEPT\n"));
+                out.push_str(&format!("-A OUTPUT -d {gw}/32 -p tcp --dport {port} -j ACCEPT\n"));
+            }
+            None => {
+                out.push_str(&format!("-A INPUT -s {gw}/32 -j ACCEPT\n-A OUTPUT -d {gw}/32 -j ACCEPT\n"));
+            }
+        }
+    }
+    for p in ["udp", "tcp"] {
+        out.push_str(&format!("-A INPUT -p {p} --sport 53 -j ACCEPT\n-A OUTPUT -p {p} --dport 53 -j ACCEPT\n"));
+    }
+    // The network ACL judges every packet crossing the subnet boundary,
+    // replies included.
+    out.push_str(&format!("-A INPUT ! -s {} -j MWS-ACL-IN\n", fw.subnet_cidr));
+    out.push_str(&format!("-A OUTPUT ! -d {} -j MWS-ACL-OUT\n", fw.subnet_cidr));
+    // Security groups are stateful.
+    out.push_str("-A INPUT -m conntrack --ctstate ESTABLISHED,RELATED -j ACCEPT\n-A INPUT -j MWS-SG-IN\n");
+    out.push_str(
+        "-A OUTPUT -m conntrack --ctstate ESTABLISHED,RELATED -j ACCEPT\n-A OUTPUT -j MWS-ROUTE\n-A OUTPUT -j MWS-SG-OUT\n",
+    );
+    acl_lines(&mut out, "MWS-ACL-IN", "-s", &fw.acl_ingress);
+    acl_lines(&mut out, "MWS-ACL-OUT", "-d", &fw.acl_egress);
+    allow_lines(&mut out, "MWS-SG-IN", "-s", &fw.ingress);
+    allow_lines(&mut out, "MWS-SG-OUT", "-d", &fw.egress);
+    // Inside the VPC the local route always applies.
+    for cidr in &fw.vpc_cidrs {
+        out.push_str(&format!("-A MWS-ROUTE -d {cidr} -j RETURN\n"));
+    }
+    for r in &fw.routes {
+        let target = if r.reachable { "RETURN" } else { "DROP" };
+        out.push_str(&format!("-A MWS-ROUTE -d {} -j {target}\n", r.cidr));
+    }
+    out.push_str("-A MWS-ROUTE -j DROP\nCOMMIT\n");
+    out
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::backend::RouteRule;
+
+    #[test]
+    fn renders_security_groups_acls_and_routes() {
+        let fw = Firewall {
+            subnet_cidr: "10.0.1.0/24".into(),
+            vpc_cidrs: vec!["10.0.0.0/16".into()],
+            ingress: vec![AllowRule { protocol: Protocol::Tcp(80, 80), cidr: "10.0.2.5/32".into() }],
+            egress: vec![AllowRule { protocol: Protocol::All, cidr: "0.0.0.0/0".into() }],
+            acl_ingress: vec![AclRule {
+                protocol: Protocol::Icmp(Some(8), None),
+                cidr: "0.0.0.0/0".into(),
+                allow: false,
+            }],
+            acl_egress: vec![AclRule { protocol: Protocol::Udp(1024, 65535), cidr: "0.0.0.0/0".into(), allow: true }],
+            routes: vec![RouteRule { cidr: "0.0.0.0/0".into(), reachable: true }],
+            service_port: Some(4566),
+        };
+        let rules = render_iptables(&fw, &["172.17.0.1".into()]);
+        assert!(rules.contains("-A OUTPUT -d 172.17.0.1/32 -p tcp --dport 4566 -j ACCEPT"));
+        assert!(rules.contains("-A MWS-SG-IN -s 10.0.2.5/32 -p tcp --dport 80 -j ACCEPT"));
+        assert!(rules.contains("-A MWS-SG-OUT -d 0.0.0.0/0 -j ACCEPT"));
+        assert!(rules.contains("-A MWS-ACL-IN -s 0.0.0.0/0 -p icmp --icmp-type 8 -j DROP"));
+        assert!(rules.contains("-A MWS-ACL-OUT -d 0.0.0.0/0 -p udp --dport 1024:65535 -j RETURN"));
+        assert!(rules.contains("-A MWS-ROUTE -d 10.0.0.0/16 -j RETURN\n-A MWS-ROUTE -d 0.0.0.0/0 -j RETURN"));
+        assert!(rules.ends_with("-A MWS-ROUTE -j DROP\nCOMMIT\n"));
     }
 }

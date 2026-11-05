@@ -21,6 +21,7 @@ pub mod generated {
 
 pub mod backend;
 mod catalog;
+mod firewall;
 mod handler;
 pub mod imds;
 mod keys;
@@ -73,6 +74,7 @@ pub(crate) struct Inner {
     backend: Arc<dyn ComputeBackend>,
     roles: OnceLock<Arc<dyn InstanceRoleCredentials>>,
     imds: imds::ImdsState,
+    firewalls: firewall::Applied,
 }
 
 /// The EC2 service. Cheap to clone; clones share state.
@@ -95,6 +97,7 @@ impl Ec2 {
                 backend,
                 roles: OnceLock::new(),
                 imds: Default::default(),
+                firewalls: Default::default(),
             }),
         }
     }
@@ -181,7 +184,20 @@ impl Ec2 {
             r.initialized = true;
         }
         ops::instance::expire_terminated(r, ctx.received_at);
+        ops::vpc::expire_deleted(r, ctx.received_at);
         f(r)
+    }
+}
+
+impl Ec2 {
+    /// After a call that may have changed VPC state, keep instances'
+    /// traffic filtering in line with it.
+    fn after_action(&self, ctx: &RequestContext, action: &str) {
+        if action.starts_with("Describe") || action.starts_with("Get") {
+            return;
+        }
+        self.note_endpoint(ctx.endpoint.as_deref());
+        self.sync_firewalls();
     }
 }
 
@@ -204,7 +220,10 @@ impl Service for Ec2 {
             return imds::serve(self, &ctx, &request).await;
         }
         let params = mws_proto_ec2::read_params(&request);
-        generated::dispatch(self, &ctx, &params).await
+        let action = params.get("Action").unwrap_or_default().to_string();
+        let response = generated::dispatch(self, &ctx, &params).await;
+        self.after_action(&ctx, &action);
+        response
     }
 
     fn render_error(&self, request_id: &str, error: &ServiceError) -> HttpResponse {
@@ -227,7 +246,9 @@ impl Service for Ec2 {
         operation: &str,
         input: serde_json::Value,
     ) -> Result<serde_json::Value, ServiceError> {
-        generated::invoke(self, &ctx, operation, input).await
+        let out = generated::invoke(self, &ctx, operation, input).await;
+        self.after_action(&ctx, operation);
+        out
     }
 
     fn export_state(&self) -> Option<serde_json::Value> {
