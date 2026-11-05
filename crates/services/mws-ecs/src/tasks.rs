@@ -16,7 +16,7 @@ use crate::state::{Protection, Region, TaskRecord};
 use crate::{capacity, clusters, instances, taskdefs, Ecs};
 
 /// How long a stopped task stays visible.
-const STOPPED_RETENTION_MINUTES: i64 = 60;
+pub(crate) const STOPPED_RETENTION_MINUTES: i64 = 60;
 
 /// Drop stopped tasks past their retention.
 pub fn expire(r: &mut Region, now: DateTime<Utc>) {
@@ -33,12 +33,6 @@ pub fn expire(r: &mut Region, now: DateTime<Utc>) {
 
 pub fn task_arn(scope: &Scope, cluster: &str, id: &str) -> String {
     scope.arn(&format!("task/{cluster}/{id}"))
-}
-
-/// Find a task by id or ARN in a cluster.
-pub fn find<'a>(r: &'a Region, scope: &Scope, cluster: &str, reference: &str) -> Option<&'a TaskRecord> {
-    let id = last_segment(reference);
-    r.tasks.get(&task_arn(scope, cluster, id))
 }
 
 /// Where a task runs, once resolved.
@@ -74,9 +68,11 @@ pub fn task_resources(def: &t::TaskDefinition) -> (i64, i64) {
         .as_deref()
         .and_then(|c| c.parse::<i64>().ok())
         .unwrap_or_else(|| containers.iter().map(|c| c.cpu as i64).sum());
-    let memory = def.memory.as_deref().and_then(|m| m.parse::<i64>().ok()).unwrap_or_else(|| {
-        containers.iter().map(|c| c.memory.or(c.memory_reservation).unwrap_or(0) as i64).sum()
-    });
+    let memory = def
+        .memory
+        .as_deref()
+        .and_then(|m| m.parse::<i64>().ok())
+        .unwrap_or_else(|| containers.iter().map(|c| c.memory.or(c.memory_reservation).unwrap_or(0) as i64).sum());
     (cpu, memory)
 }
 
@@ -146,7 +142,9 @@ pub fn check_launch(
             return Err(invalid("Network Configuration must be provided when networkMode 'awsvpc' is specified."));
         }
         Some(_) if !awsvpc => {
-            return Err(invalid("Network Configuration is not valid for the given networkMode of this task definition."));
+            return Err(invalid(
+                "Network Configuration is not valid for the given networkMode of this task definition.",
+            ));
         }
         Some(c) => {
             if c.subnets.is_empty() {
@@ -300,11 +298,7 @@ fn overridden(def: &t::TaskDefinition, overrides: Option<&t::TaskOverride>) -> t
         d.ephemeral_storage = Some(e.clone());
     }
     for co in o.container_overrides.iter().flatten() {
-        let Some(c) = d
-            .container_definitions
-            .iter_mut()
-            .flatten()
-            .find(|c| c.name.is_some() && c.name == co.name)
+        let Some(c) = d.container_definitions.iter_mut().flatten().find(|c| c.name.is_some() && c.name == co.name)
         else {
             continue;
         };
@@ -342,7 +336,9 @@ fn check_overrides(def: &t::TaskDefinition, overrides: Option<&t::TaskOverride>)
     for co in o.container_overrides.iter().flatten() {
         let name = co.name.as_deref().unwrap_or_default();
         if !def.container_definitions.iter().flatten().any(|c| c.name.as_deref() == Some(name)) {
-            return Err(invalid(format!("Override for container named {name} is not a container in the TaskDefinition.")));
+            return Err(invalid(format!(
+                "Override for container named {name} is not a container in the TaskDefinition."
+            )));
         }
     }
     Ok(())
@@ -472,7 +468,9 @@ impl Ecs {
             launch_type: Some(launch.placement.launch_type.clone()),
             memory: Some(memory.to_string()),
             overrides: Some(t::TaskOverride {
-                container_overrides: Some(launch.overrides.as_ref().and_then(|o| o.container_overrides.clone()).unwrap_or_default()),
+                container_overrides: Some(
+                    launch.overrides.as_ref().and_then(|o| o.container_overrides.clone()).unwrap_or_default(),
+                ),
                 inference_accelerator_overrides: Some(Vec::new()),
                 ..launch.overrides.clone().unwrap_or_default()
             }),
@@ -544,7 +542,9 @@ impl Ecs {
                 // Nothing runs it (restored state): it stops at once.
                 crate::runner::finish_stopped(rec, now, None);
                 if let Some(eni) = rec.eni_id.clone() {
-                    if let (Some(p), Some(ctx)) = (self.platform(), self.background_context(&account_of_arn(arn), &region_of_arn(arn))) {
+                    if let (Some(p), Some(ctx)) =
+                        (self.platform(), self.background_context(&account_of_arn(arn), &region_of_arn(arn)))
+                    {
                         p.delete_interface(&ctx, &account_of_arn(arn), &eni);
                     }
                 }
@@ -553,7 +553,12 @@ impl Ecs {
         true
     }
 
-    fn authorize_pass_roles(&self, ctx: &RequestContext, def: &t::TaskDefinition, overrides: Option<&t::TaskOverride>) -> Result<(), ServiceError> {
+    fn authorize_pass_roles(
+        &self,
+        ctx: &RequestContext,
+        def: &t::TaskDefinition,
+        overrides: Option<&t::TaskOverride>,
+    ) -> Result<(), ServiceError> {
         let mut roles: Vec<String> = Vec::new();
         for r in [
             overrides.and_then(|o| o.task_role_arn.clone()).or_else(|| def.task_role_arn.clone()),
@@ -627,8 +632,12 @@ impl Ecs {
             Ok::<_, ServiceError>((d, c))
         })?;
         let def_arn = def.task_definition_arn.clone().unwrap_or_default();
-        let providers: Vec<String> =
-            input.capacity_provider_strategy.iter().flatten().map(|i| capacity::provider_name(&i.capacity_provider)).collect();
+        let providers: Vec<String> = input
+            .capacity_provider_strategy
+            .iter()
+            .flatten()
+            .map(|i| capacity::provider_name(&i.capacity_provider))
+            .collect();
         authorize(
             ctx,
             "RunTask",
@@ -677,7 +686,8 @@ impl Ecs {
                     }
                 };
                 check_launch(&def, &lt, input.network_configuration.as_ref())?;
-                let mut placement = Placement { launch_type: lt.clone(), capacity_provider: cp.clone(), container_instance_arn: None };
+                let mut placement =
+                    Placement { launch_type: lt.clone(), capacity_provider: cp.clone(), container_instance_arn: None };
                 if lt == "EC2" || lt == "EXTERNAL" || lt == "MANAGED_INSTANCES" {
                     let any = r.container_instances.values().any(|i| {
                         i.cluster == cluster && matches!(i.instance.status.as_deref(), Some("ACTIVE" | "DRAINING"))
@@ -869,7 +879,12 @@ impl Ecs {
         for reference in &input.tasks {
             let arn = task_arn(&scope, &cluster, last_segment(reference));
             let tags = self.with_region(ctx, |r, _| r.tags.get(&arn).cloned());
-            authorize(ctx, "DescribeTasks", &arn, Cond::new().cluster(&scope, &cluster).extend(resource_tags(tags.as_ref())))?;
+            authorize(
+                ctx,
+                "DescribeTasks",
+                &arn,
+                Cond::new().cluster(&scope, &cluster).extend(resource_tags(tags.as_ref())),
+            )?;
             self.with_region(ctx, |r, _| match r.tasks.get(&arn) {
                 Some(rec) => tasks.push(render(r, rec, with_tags)),
                 None => failures.push(failure(arn.clone(), "MISSING")),
@@ -897,15 +912,14 @@ impl Ecs {
         self.with_region(ctx, |r, scope| {
             clusters::active(r, input.cluster.as_deref())?;
             let desired = input.desired_status.clone().unwrap_or_else(|| "RUNNING".into());
-            let service_arn = input
-                .service_name
-                .as_deref()
-                .map(|s| scope.arn(&format!("service/{cluster}/{}", last_segment(s))));
+            let service_arn =
+                input.service_name.as_deref().map(|s| scope.arn(&format!("service/{cluster}/{}", last_segment(s))));
             let instance = input
                 .container_instance
                 .as_deref()
                 .map(|c| scope.arn(&format!("container-instance/{cluster}/{}", last_segment(c))));
-            let daemon = input.daemon_name.as_deref().map(|d| scope.arn(&format!("daemon/{cluster}/{}", last_segment(d))));
+            let daemon =
+                input.daemon_name.as_deref().map(|d| scope.arn(&format!("daemon/{cluster}/{}", last_segment(d))));
             let mut recs: Vec<&TaskRecord> = r
                 .tasks
                 .values()
@@ -951,7 +965,12 @@ impl Ecs {
         for reference in &input.tasks {
             let arn = task_arn(&scope, &cluster, last_segment(reference));
             let tags = self.with_region(ctx, |r, _| r.tags.get(&arn).cloned());
-            authorize(ctx, "UpdateTaskProtection", &arn, Cond::new().cluster(&scope, &cluster).extend(resource_tags(tags.as_ref())))?;
+            authorize(
+                ctx,
+                "UpdateTaskProtection",
+                &arn,
+                Cond::new().cluster(&scope, &cluster).extend(resource_tags(tags.as_ref())),
+            )?;
             self.with_region(ctx, |r, _| {
                 let Some(rec) = r.tasks.get_mut(&arn) else {
                     failures.push(failure(arn.clone(), "TASK_NOT_FOUND"));
@@ -961,7 +980,9 @@ impl Ecs {
                     failures.push(failure(arn.clone(), "TASK_NOT_VALID"));
                     return;
                 }
-                if rec.task.last_status.as_deref() == Some("STOPPED") || rec.task.desired_status.as_deref() == Some("STOPPED") {
+                if rec.task.last_status.as_deref() == Some("STOPPED")
+                    || rec.task.desired_status.as_deref() == Some("STOPPED")
+                {
                     failures.push(failure(arn.clone(), "TASK_NOT_VALID"));
                     return;
                 }
@@ -1004,7 +1025,12 @@ impl Ecs {
         for reference in refs {
             let arn = task_arn(&scope, &cluster, last_segment(&reference));
             let tags = self.with_region(ctx, |r, _| r.tags.get(&arn).cloned());
-            authorize(ctx, "GetTaskProtection", &arn, Cond::new().cluster(&scope, &cluster).extend(resource_tags(tags.as_ref())))?;
+            authorize(
+                ctx,
+                "GetTaskProtection",
+                &arn,
+                Cond::new().cluster(&scope, &cluster).extend(resource_tags(tags.as_ref())),
+            )?;
             self.with_region(ctx, |r, _| match r.tasks.get(&arn) {
                 None => failures.push(failure(arn.clone(), "TASK_NOT_FOUND")),
                 Some(rec) if rec.service_arn.is_none() => failures.push(failure(arn.clone(), "TASK_NOT_VALID")),
@@ -1113,9 +1139,7 @@ impl Ecs {
             let arn = task_arn(&scope, &cluster, last_segment(reference));
             let rec = r.tasks.get_mut(&arn).ok_or_else(|| invalid("The referenced task was not found."))?;
             for c in input.containers.iter().flatten() {
-                if let Some(cont) =
-                    rec.task.containers.iter_mut().flatten().find(|x| x.name == c.container_name)
-                {
+                if let Some(cont) = rec.task.containers.iter_mut().flatten().find(|x| x.name == c.container_name) {
                     if c.status.is_some() {
                         cont.last_status = c.status.clone();
                     }
@@ -1234,7 +1258,8 @@ impl Ecs {
 /// A task as DescribeTasks shows it.
 pub fn render(r: &Region, rec: &TaskRecord, with_tags: bool) -> t::Task {
     let mut task = rec.task.clone();
-    task.tags = with_tags.then(|| r.tags.get(task.task_arn.as_deref().unwrap_or_default()).cloned().unwrap_or_default());
+    task.tags =
+        with_tags.then(|| r.tags.get(task.task_arn.as_deref().unwrap_or_default()).cloned().unwrap_or_default());
     task
 }
 

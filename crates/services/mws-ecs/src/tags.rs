@@ -20,21 +20,18 @@ fn exists(r: &Region, arn: &str) -> bool {
         "service" => r.services.contains_key(arn),
         "task" => r.tasks.contains_key(arn),
         "container-instance" => r.container_instances.contains_key(arn),
-        "task-definition" => r
-            .task_definitions
-            .values()
-            .flatten()
-            .any(|d| d.task_definition_arn.as_deref() == Some(arn) && d.status.as_deref() != Some("DELETE_IN_PROGRESS")),
-        "capacity-provider" => r.capacity_providers.values().any(|c| c.capacity_provider_arn.as_deref() == Some(arn)),
-        "task-set" => r.services.values().any(|s| {
-            s.service.task_sets.iter().flatten().any(|ts| ts.task_set_arn.as_deref() == Some(arn))
+        "task-definition" => r.task_definitions.values().flatten().any(|d| {
+            d.task_definition_arn.as_deref() == Some(arn) && d.status.as_deref() != Some("DELETE_IN_PROGRESS")
         }),
-        "daemon" => r.daemons.contains_key(arn),
-        "daemon-task-definition" => r
-            .daemon_task_definitions
+        "capacity-provider" => r.capacity_providers.values().any(|c| c.capacity_provider_arn.as_deref() == Some(arn)),
+        "task-set" => r
+            .services
             .values()
-            .flatten()
-            .any(|d| d.daemon_task_definition_arn.as_deref() == Some(arn)),
+            .any(|s| s.service.task_sets.iter().flatten().any(|ts| ts.task_set_arn.as_deref() == Some(arn))),
+        "daemon" => r.daemons.contains_key(arn),
+        "daemon-task-definition" => {
+            r.daemon_task_definitions.values().flatten().any(|d| d.daemon_task_definition_arn.as_deref() == Some(arn))
+        }
         "gateway" => r.gateways.contains_key(arn),
         _ => r.express_services.contains_key(arn),
     }
@@ -113,12 +110,19 @@ impl Ecs {
     ) -> Result<t::ListTagsForResourceResponse, ServiceError> {
         self.check_tag_target(ctx, &input.resource_arn)?;
         let current = self.with_region(ctx, |r, _| r.tags.get(&input.resource_arn).cloned());
-        authorize(ctx, "ListTagsForResource", &input.resource_arn, Cond::new().extend(resource_tags(current.as_ref())))?;
+        authorize(
+            ctx,
+            "ListTagsForResource",
+            &input.resource_arn,
+            Cond::new().extend(resource_tags(current.as_ref())),
+        )?;
         self.with_region(ctx, |r, _| {
             if !exists(r, &input.resource_arn) {
                 return Err(errors::resource_not_found("The specified resource could not be found."));
             }
-            Ok(t::ListTagsForResourceResponse { tags: Some(r.tags.get(&input.resource_arn).cloned().unwrap_or_default()) })
+            Ok(t::ListTagsForResourceResponse {
+                tags: Some(r.tags.get(&input.resource_arn).cloned().unwrap_or_default()),
+            })
         })
     }
 }

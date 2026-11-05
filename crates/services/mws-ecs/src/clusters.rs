@@ -157,7 +157,8 @@ impl Ecs {
                 // CreateCluster on an existing cluster returns it.
                 return Ok(t::CreateClusterResponse { cluster: Some(render_full(r, existing)) });
             }
-            let (insights, _) = settings::effective(r, scope, &settings::caller_principal(ctx, scope), "containerInsights");
+            let (insights, _) =
+                settings::effective(r, scope, &settings::caller_principal(ctx, scope), "containerInsights");
             let mut cluster_settings =
                 vec![t::ClusterSetting { name: Some("containerInsights".into()), value: Some(insights) }];
             merge_settings(&mut cluster_settings, input.settings.as_deref().unwrap_or_default());
@@ -342,7 +343,8 @@ impl Ecs {
             )?;
             // Providers services still use cannot be removed.
             let names: Vec<String> = input.capacity_providers.iter().map(|p| capacity::provider_name(p)).collect();
-            for s in r.services.values().filter(|s| s.cluster == name && s.service.status.as_deref() == Some("ACTIVE")) {
+            for s in r.services.values().filter(|s| s.cluster == name && s.service.status.as_deref() == Some("ACTIVE"))
+            {
                 for item in s.service.capacity_provider_strategy.iter().flatten() {
                     if !names.contains(&item.capacity_provider) {
                         return Err(errors::resource_in_use(format!(

@@ -42,7 +42,11 @@ fn default_deployment_configuration(c: Option<t::DeploymentConfiguration>, daemo
     let mut c = c.unwrap_or_default();
     c.maximum_percent.get_or_insert(if daemon { 100 } else { 200 });
     c.minimum_healthy_percent.get_or_insert(if daemon { 0 } else { 100 });
-    c.deployment_circuit_breaker.get_or_insert(t::DeploymentCircuitBreaker { enable: false, rollback: false, ..Default::default() });
+    c.deployment_circuit_breaker.get_or_insert(t::DeploymentCircuitBreaker {
+        enable: false,
+        rollback: false,
+        ..Default::default()
+    });
     c.strategy.get_or_insert_with(|| "ROLLING".into());
     c
 }
@@ -101,7 +105,10 @@ impl Ecs {
         let cluster = rec.cluster.clone();
         let name = rec.service.service_name.clone().unwrap_or_default();
         let fargate = config.launch_type.as_deref() == Some("FARGATE")
-            || config.capacity_provider_strategy.iter().any(|i| capacity::BUILT_IN.contains(&i.capacity_provider.as_str()));
+            || config
+                .capacity_provider_strategy
+                .iter()
+                .any(|i| capacity::BUILT_IN.contains(&i.capacity_provider.as_str()));
         let platform_version = fargate.then(|| config.platform_version.clone().unwrap_or_else(|| "LATEST".into()));
         let revision_arn = scope.arn(&format!("service-revision/{cluster}/{name}/{}", numeric_id()));
         let revision = t::ServiceRevision {
@@ -120,7 +127,11 @@ impl Ecs {
             container_images: Some(
                 def.iter()
                     .flat_map(|d| d.container_definitions.iter().flatten())
-                    .map(|c| t::ContainerImage { container_name: c.name.clone(), image: c.image.clone(), image_digest: None })
+                    .map(|c| t::ContainerImage {
+                        container_name: c.name.clone(),
+                        image: c.image.clone(),
+                        image_digest: None,
+                    })
                     .collect(),
             ),
             guard_duty_enabled: false,
@@ -245,7 +256,9 @@ impl Ecs {
                 threshold: breaker_threshold(desired),
             }),
             alarms: Some(t::ServiceDeploymentAlarms {
-                status: Some(if conf.alarms.as_ref().is_some_and(|a| a.enable) { "MONITORING" } else { "DISABLED" }.into()),
+                status: Some(
+                    if conf.alarms.as_ref().is_some_and(|a| a.enable) { "MONITORING" } else { "DISABLED" }.into(),
+                ),
                 alarm_names: conf.alarms.as_ref().map(|a| a.alarm_names.clone()),
                 triggered_alarm_names: Some(Vec::new()),
             }),
@@ -276,7 +289,8 @@ impl Ecs {
                 Some(lt) => tasks::check_launch(def, lt, network)?,
                 None => {
                     for item in &strategy {
-                        let lt = tasks::launch_type_of_provider(r, scope, &capacity::provider_name(&item.capacity_provider));
+                        let lt =
+                            tasks::launch_type_of_provider(r, scope, &capacity::provider_name(&item.capacity_provider));
                         tasks::check_launch(def, &lt, network)?;
                     }
                 }
@@ -320,8 +334,12 @@ impl Ecs {
             };
             Ok::<_, ServiceError>((d, c))
         })?;
-        let providers: Vec<String> =
-            input.capacity_provider_strategy.iter().flatten().map(|i| capacity::provider_name(&i.capacity_provider)).collect();
+        let providers: Vec<String> = input
+            .capacity_provider_strategy
+            .iter()
+            .flatten()
+            .map(|i| capacity::provider_name(&i.capacity_provider))
+            .collect();
         let awsvpc = input.network_configuration.as_ref().and_then(|n| n.awsvpc_configuration.as_ref());
         authorize(
             ctx,
@@ -352,13 +370,17 @@ impl Ecs {
             return Err(invalid("TaskDefinition must be specified."));
         }
         if !daemon && controller == "ECS" && input.desired_count.is_none() {
-            return Err(invalid("The desiredCount parameter is required for services using the REPLICA scheduling strategy."));
+            return Err(invalid(
+                "The desiredCount parameter is required for services using the REPLICA scheduling strategy.",
+            ));
         }
         if daemon && input.desired_count.is_some_and(|d| d != 0) && input.desired_count.is_some() {
             return Err(invalid("Desired count is not supported with scheduling strategy DAEMON."));
         }
         if daemon && controller != "ECS" {
-            return Err(invalid("The daemon scheduling strategy is only supported with the ECS deployment controller."));
+            return Err(invalid(
+                "The daemon scheduling strategy is only supported with the ECS deployment controller.",
+            ));
         }
         if input.desired_count.is_some_and(|d| d < 0) {
             return Err(invalid("desiredCount must be greater than or equal to 0."));
@@ -388,20 +410,22 @@ impl Ecs {
                     _ => {}
                 }
             }
-            let (lt, strategy) = if def.is_some() || input.launch_type.is_some() || input.capacity_provider_strategy.is_some() {
-                me.check_service_capacity(
-                    r,
-                    scope,
-                    &cluster_obj,
-                    def.as_ref(),
-                    input.launch_type.as_deref(),
-                    input.capacity_provider_strategy.as_deref(),
-                    input.network_configuration.as_ref(),
-                )?
-            } else {
-                (None, Vec::new())
-            };
-            let deployment_configuration = default_deployment_configuration(input.deployment_configuration.clone(), daemon);
+            let (lt, strategy) =
+                if def.is_some() || input.launch_type.is_some() || input.capacity_provider_strategy.is_some() {
+                    me.check_service_capacity(
+                        r,
+                        scope,
+                        &cluster_obj,
+                        def.as_ref(),
+                        input.launch_type.as_deref(),
+                        input.capacity_provider_strategy.as_deref(),
+                        input.network_configuration.as_ref(),
+                    )?
+                } else {
+                    (None, Vec::new())
+                };
+            let deployment_configuration =
+                default_deployment_configuration(input.deployment_configuration.clone(), daemon);
             let service = t::Service {
                 service_arn: Some(arn.clone()),
                 service_name: Some(name.clone()),
@@ -474,7 +498,10 @@ impl Ecs {
                         &arn,
                         TaskSetInput {
                             external_id: None,
-                            task_definition: def.as_ref().and_then(|d| d.task_definition_arn.clone()).unwrap_or_default(),
+                            task_definition: def
+                                .as_ref()
+                                .and_then(|d| d.task_definition_arn.clone())
+                                .unwrap_or_default(),
                             network_configuration: input.network_configuration.clone(),
                             load_balancers: input.load_balancers.clone(),
                             service_registries: input.service_registries.clone(),
@@ -518,7 +545,12 @@ impl Ecs {
         for reference in &input.services {
             let arn = service_arn(&scope, &cluster, last_segment(reference));
             let tags = self.with_region(ctx, |r, _| r.tags.get(&arn).cloned());
-            authorize(ctx, "DescribeServices", &arn, Cond::new().cluster(&scope, &cluster).extend(resource_tags(tags.as_ref())))?;
+            authorize(
+                ctx,
+                "DescribeServices",
+                &arn,
+                Cond::new().cluster(&scope, &cluster).extend(resource_tags(tags.as_ref())),
+            )?;
             self.with_region(ctx, |r, _| match r.services.get(&arn) {
                 Some(s) => out.push(render(r, s, with_tags)),
                 None => failures.push(failure(arn.clone(), "MISSING")),
@@ -543,7 +575,10 @@ impl Ecs {
                 .filter(|s| s.cluster == cluster && s.service.status.as_deref() != Some("INACTIVE"))
                 .filter(|s| input.launch_type.as_deref().is_none_or(|l| s.service.launch_type.as_deref() == Some(l)))
                 .filter(|s| {
-                    input.scheduling_strategy.as_deref().is_none_or(|st| s.service.scheduling_strategy.as_deref() == Some(st))
+                    input
+                        .scheduling_strategy
+                        .as_deref()
+                        .is_none_or(|st| s.service.scheduling_strategy.as_deref() == Some(st))
                 })
                 .filter(|s| {
                     input
@@ -578,7 +613,9 @@ impl Ecs {
                     }) || r.clusters.get(&s.cluster).is_some_and(|c| {
                         c.service_connect_defaults.as_ref().and_then(|d| d.namespace.as_deref()).is_some_and(wanted)
                             && s.service.deployments.iter().flatten().any(|d| {
-                                d.service_connect_configuration.as_ref().is_some_and(|c| c.enabled && c.namespace.is_none())
+                                d.service_connect_configuration
+                                    .as_ref()
+                                    .is_some_and(|c| c.enabled && c.namespace.is_none())
                             })
                     })
                 })
@@ -620,7 +657,12 @@ impl Ecs {
                 .with_opt("ecs:task-definition", new_def.as_ref().and_then(|d| d.task_definition_arn.as_deref()))
                 .with_list(
                     "ecs:capacity-provider",
-                    input.capacity_provider_strategy.iter().flatten().map(|i| capacity::provider_name(&i.capacity_provider)).collect(),
+                    input
+                        .capacity_provider_strategy
+                        .iter()
+                        .flatten()
+                        .map(|i| capacity::provider_name(&i.capacity_provider))
+                        .collect(),
                 )
                 .with_opt("ecs:enable-execute-command", input.enable_execute_command.map(|b| b.to_string()).as_deref())
                 .with_list("ecs:subnet", awsvpc.map(|a| a.subnets.clone()).unwrap_or_default())
@@ -786,7 +828,12 @@ impl Ecs {
             clusters::active(r, input.cluster.as_deref())?;
             Ok::<_, ServiceError>(r.tags.get(&arn).cloned())
         })?;
-        authorize(ctx, "DeleteService", &arn, Cond::new().cluster(&scope, &cluster).extend(resource_tags(tags.as_ref())))?;
+        authorize(
+            ctx,
+            "DeleteService",
+            &arn,
+            Cond::new().cluster(&scope, &cluster).extend(resource_tags(tags.as_ref())),
+        )?;
         let now = ctx.received_at;
         let out = self.with_region(ctx, |r, _| {
             let rec = r.services.get_mut(&arn).ok_or_else(service_not_found)?;
@@ -818,7 +865,12 @@ impl Ecs {
         let cluster = cluster_name(input.cluster.as_deref());
         let arn = service_arn(&scope, &cluster, last_segment(&input.service));
         let tags = self.with_region(ctx, |r, _| r.tags.get(&arn).cloned());
-        authorize(ctx, "ListServiceDeployments", &arn, Cond::new().cluster(&scope, &cluster).extend(resource_tags(tags.as_ref())))?;
+        authorize(
+            ctx,
+            "ListServiceDeployments",
+            &arn,
+            Cond::new().cluster(&scope, &cluster).extend(resource_tags(tags.as_ref())),
+        )?;
         self.with_region(ctx, |r, _| {
             clusters::active(r, input.cluster.as_deref())?;
             if !r.services.contains_key(&arn) {
@@ -829,7 +881,10 @@ impl Ecs {
                 .values()
                 .filter(|d| d.service_arn.as_deref() == Some(arn.as_str()))
                 .filter(|d| {
-                    input.status.as_ref().is_none_or(|s| s.is_empty() || s.contains(&d.status.clone().unwrap_or_default()))
+                    input
+                        .status
+                        .as_ref()
+                        .is_none_or(|s| s.is_empty() || s.contains(&d.status.clone().unwrap_or_default()))
                 })
                 .filter(|d| {
                     input.created_at.as_ref().is_none_or(|c| {
@@ -838,7 +893,7 @@ impl Ecs {
                     })
                 })
                 .collect();
-            deps.sort_by(|a, b| b.created_at.cmp(&a.created_at));
+            deps.sort_by_key(|d| std::cmp::Reverse(d.created_at));
             let briefs: Vec<t::ServiceDeploymentBrief> = deps
                 .into_iter()
                 .map(|d| t::ServiceDeploymentBrief {
@@ -916,9 +971,7 @@ impl Ecs {
                 .cloned()
                 .ok_or_else(|| errors::service_deployment_not_found("The service deployment does not exist."))?;
             if !matches!(sd.status.as_deref(), Some("PENDING" | "IN_PROGRESS")) {
-                return Err(errors::conflict(
-                    "The service deployment is not in progress and cannot be stopped.",
-                ));
+                return Err(errors::conflict("The service deployment is not in progress and cannot be stopped."));
             }
             let service = sd.service_arn.clone().unwrap_or_default();
             let stop_type = input.stop_type.clone().unwrap_or_else(|| "ROLLBACK".into());
@@ -930,7 +983,14 @@ impl Ecs {
                         d.updated_at = Some(now);
                     }
                     let config = revision_config(&rev);
-                    me.new_deployment(r, scope, &service, config, now, Some("Service deployment rolled back because a stop was requested.".into()));
+                    me.new_deployment(
+                        r,
+                        scope,
+                        &service,
+                        config,
+                        now,
+                        Some("Service deployment rolled back because a stop was requested.".into()),
+                    );
                 }
                 _ => {
                     if let Some(d) = r.service_deployments.get_mut(&input.service_deployment_arn) {
@@ -963,15 +1023,24 @@ impl Ecs {
                 .iter_mut()
                 .flatten()
                 .find(|h| h.hook_id.as_deref() == Some(input.hook_id.as_str()))
-                .ok_or_else(|| invalid(format!("The lifecycle hook {} is not waiting for a response.", input.hook_id)))?;
+                .ok_or_else(|| {
+                    invalid(format!("The lifecycle hook {} is not waiting for a response.", input.hook_id))
+                })?;
             hook.status = Some(input.action.clone().unwrap_or_else(|| "CONTINUE".into()));
-            Ok(t::ContinueServiceDeploymentResponse { service_deployment_arn: Some(input.service_deployment_arn.clone()) })
+            Ok(t::ContinueServiceDeploymentResponse {
+                service_deployment_arn: Some(input.service_deployment_arn.clone()),
+            })
         })
     }
 
     // Task sets.
 
-    fn task_set_service(&self, ctx: &RequestContext, cluster_ref: &str, service_ref: &str) -> Result<(String, String), ServiceError> {
+    fn task_set_service(
+        &self,
+        ctx: &RequestContext,
+        cluster_ref: &str,
+        service_ref: &str,
+    ) -> Result<(String, String), ServiceError> {
         let scope = Scope::of(ctx);
         let cluster = cluster_name(Some(cluster_ref));
         let arn = service_arn(&scope, &cluster, last_segment(service_ref));
@@ -1005,7 +1074,10 @@ impl Ecs {
             ctx,
             "CreateTaskSet",
             &probe,
-            Cond::new().cluster(&scope, &cluster).with("ecs:service", service.clone()).extend(request_tags(input.tags.as_ref())),
+            Cond::new()
+                .cluster(&scope, &cluster)
+                .with("ecs:service", service.clone())
+                .extend(request_tags(input.tags.as_ref())),
         )?;
         self.authorize_create_tags(ctx, &probe, "CreateTaskSet", input.tags.as_ref())?;
         let now = ctx.received_at;
@@ -1013,7 +1085,13 @@ impl Ecs {
         let out = self.with_region(ctx, |r, scope| {
             if let Some(token) = &input.client_token {
                 if let Some((_, existing)) = r.client_tokens.get(&format!("taskset:{token}")) {
-                    let found = r.services[&service].service.task_sets.iter().flatten().find(|t| t.task_set_arn.as_ref() == Some(existing)).cloned();
+                    let found = r.services[&service]
+                        .service
+                        .task_sets
+                        .iter()
+                        .flatten()
+                        .find(|t| t.task_set_arn.as_ref() == Some(existing))
+                        .cloned();
                     if let Some(ts) = found {
                         return Ok(ts);
                     }
@@ -1081,14 +1159,16 @@ impl Ecs {
             let mut failures = Vec::new();
             let pick = |ts: &t::TaskSet| {
                 let mut ts = ts.clone();
-                ts.tags = with_tags.then(|| r.tags.get(ts.task_set_arn.as_deref().unwrap_or_default()).cloned().unwrap_or_default());
+                ts.tags = with_tags
+                    .then(|| r.tags.get(ts.task_set_arn.as_deref().unwrap_or_default()).cloned().unwrap_or_default());
                 ts
             };
             match &input.task_sets {
                 Some(refs) => {
                     for reference in refs {
                         match sets.iter().find(|ts| {
-                            ts.task_set_arn.as_deref() == Some(reference.as_str()) || ts.id.as_deref() == Some(reference.as_str())
+                            ts.task_set_arn.as_deref() == Some(reference.as_str())
+                                || ts.id.as_deref() == Some(reference.as_str())
                         }) {
                             Some(ts) => out.push(pick(ts)),
                             None => failures.push(failure(reference.clone(), "MISSING")),
@@ -1108,7 +1188,12 @@ impl Ecs {
     ) -> Result<t::UpdateTaskSetResponse, ServiceError> {
         let (cluster, service) = self.task_set_service(ctx, &input.cluster, &input.service)?;
         let scope = Scope::of(ctx);
-        authorize(ctx, "UpdateTaskSet", &task_set_arn_of(&scope, &cluster, &service, &input.task_set), Cond::new().cluster(&scope, &cluster))?;
+        authorize(
+            ctx,
+            "UpdateTaskSet",
+            &task_set_arn_of(&scope, &cluster, &service, &input.task_set),
+            Cond::new().cluster(&scope, &cluster),
+        )?;
         check_scale(&input.scale)?;
         let now = ctx.received_at;
         let out = self.with_region(ctx, |r, _| {
@@ -1139,7 +1224,12 @@ impl Ecs {
     ) -> Result<t::DeleteTaskSetResponse, ServiceError> {
         let (cluster, service) = self.task_set_service(ctx, &input.cluster, &input.service)?;
         let scope = Scope::of(ctx);
-        authorize(ctx, "DeleteTaskSet", &task_set_arn_of(&scope, &cluster, &service, &input.task_set), Cond::new().cluster(&scope, &cluster))?;
+        authorize(
+            ctx,
+            "DeleteTaskSet",
+            &task_set_arn_of(&scope, &cluster, &service, &input.task_set),
+            Cond::new().cluster(&scope, &cluster),
+        )?;
         let now = ctx.received_at;
         let out = self.with_region(ctx, |r, _| {
             let rec = r.services.get_mut(&service).expect("checked");
@@ -1154,7 +1244,9 @@ impl Ecs {
                 return Err(invalid("Cannot delete the primary task set of a service. Use the force parameter."));
             }
             if ts.scale.as_ref().is_some_and(|s| s.value > 0.0) && input.force != Some(true) {
-                return Err(invalid("The task set cannot be deleted while it is scaled above 0. Use the force parameter."));
+                return Err(invalid(
+                    "The task set cannot be deleted while it is scaled above 0. Use the force parameter.",
+                ));
             }
             ts.status = Some("DRAINING".into());
             ts.computed_desired_count = 0;
@@ -1308,7 +1400,13 @@ fn task_set_arn_of(scope: &Scope, cluster: &str, service_arn: &str, reference: &
     }
 }
 
-fn new_task_set(r: &mut Region, scope: &Scope, service_arn: &str, input: TaskSetInput, now: DateTime<Utc>) -> t::TaskSet {
+fn new_task_set(
+    r: &mut Region,
+    scope: &Scope,
+    service_arn: &str,
+    input: TaskSetInput,
+    now: DateTime<Utc>,
+) -> t::TaskSet {
     let rec = r.services.get_mut(service_arn).expect("service exists");
     let id = format!("ecs-svc/{}", numeric_id());
     let cluster = rec.cluster.clone();

@@ -49,6 +49,13 @@ pub struct Config {
     pub ec2_backend: BackendChoice,
     /// The Docker-compatible CLI (`MWS_EC2_DOCKER`, e.g. `podman`).
     pub ec2_docker_cli: Option<String>,
+    /// What runs ECS tasks' containers (`MWS_ECS_BACKEND`: `auto`,
+    /// `docker` or `metadata`). The binary defaults to `auto`; the library
+    /// default runs nothing.
+    pub ecs_backend: mws_ecs::BackendChoice,
+    /// The Docker-compatible CLI for ECS (`MWS_ECS_DOCKER`; falls back to
+    /// `MWS_EC2_DOCKER`).
+    pub ecs_docker_cli: Option<String>,
 }
 
 impl Config {
@@ -75,13 +82,23 @@ impl Config {
             }),
             Err(_) => BackendChoice::Auto,
         };
+        let ecs_backend = match std::env::var("MWS_ECS_BACKEND") {
+            Ok(v) => mws_ecs::BackendChoice::parse(&v).unwrap_or_else(|| {
+                tracing::warn!("unknown MWS_ECS_BACKEND {v:?}; using auto");
+                mws_ecs::BackendChoice::Auto
+            }),
+            Err(_) => mws_ecs::BackendChoice::Auto,
+        };
+        let docker = |var: &str| std::env::var(var).ok().filter(|v| !v.is_empty());
         Self {
             iam,
             db: path("MWS_DB"),
             scenario: path("MWS_SCENARIO"),
             skip_federation_signature_verification: skip,
             ec2_backend,
-            ec2_docker_cli: std::env::var("MWS_EC2_DOCKER").ok().filter(|v| !v.is_empty()),
+            ec2_docker_cli: docker("MWS_EC2_DOCKER"),
+            ecs_backend,
+            ecs_docker_cli: docker("MWS_ECS_DOCKER").or_else(|| docker("MWS_EC2_DOCKER")),
         }
     }
 }
@@ -108,6 +125,7 @@ pub struct Mws {
     pub ec2: Ec2,
     pub marketplace_entitlement: Entitlement,
     pub marketplace_metering: Metering,
+    pub ecs: mws_ecs::Ecs,
 }
 
 /// Build the gateway with every service MWS emulates.
@@ -235,6 +253,15 @@ fn build_with_store(config: Config, store: Option<Arc<Store>>) -> Mws {
     ec2.set_instance_roles(Arc::new(links::Ec2InstanceRoles { iam: iam.clone(), sts: sts.clone() }));
     let marketplace_entitlement = Entitlement::new(config.iam.account_id.clone());
     let marketplace_metering = Metering::new(marketplace_entitlement.clone());
+    let ecs = mws_ecs::Ecs::new(config.ecs_backend.resolve(config.ecs_docker_cli.as_deref()));
+    tracing::info!(backend = ecs.backend_name(), "ECS container backend");
+    ecs.set_platform(Arc::new(links::EcsPlatform {
+        ec2: ec2.clone(),
+        sts: sts.clone(),
+        secretsmanager: secretsmanager.clone(),
+        ssm: ssm.clone(),
+        logs: logs.clone(),
+    }));
     let mut gateway = Gateway::builder();
     if let Some(store) = store {
         gateway = gateway.store(store);
@@ -272,6 +299,7 @@ fn build_with_store(config: Config, store: Option<Arc<Store>>) -> Mws {
         // its own `X-Amz-Target`.
         .service(Arc::new(marketplace_metering.clone()))
         .service(Arc::new(marketplace_entitlement.clone()))
+        .service(Arc::new(ecs.clone()))
         .build();
     Mws {
         gateway,
@@ -293,6 +321,7 @@ fn build_with_store(config: Config, store: Option<Arc<Store>>) -> Mws {
         ec2,
         marketplace_entitlement,
         marketplace_metering,
+        ecs,
     }
 }
 

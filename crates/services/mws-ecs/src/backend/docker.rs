@@ -225,12 +225,7 @@ impl ContainerBackend for DockerBackend {
         }
     }
 
-    async fn start(
-        &self,
-        task: &TaskSpec,
-        handle: &str,
-        c: &ContainerSpec,
-    ) -> Result<StartedContainer, BackendError> {
+    async fn start(&self, task: &TaskSpec, handle: &str, c: &ContainerSpec) -> Result<StartedContainer, BackendError> {
         let name = format!("mws-ecs-{}-{}", task.task_id, c.name);
         let _ = self.run_str(&["rm", "-f", &name]).await;
         let mut args: Vec<String> = vec!["run".into(), "-d".into(), "--name".into(), name.clone()];

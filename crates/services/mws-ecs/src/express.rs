@@ -10,7 +10,7 @@ use std::sync::Arc;
 use mws_core::{AllowAll, RequestContext, ServiceError};
 
 use crate::generated::types as t;
-use crate::names::{authorize, check_tags, cluster_name, client, invalid, request_tags, resource_tags, Cond, Scope};
+use crate::names::{authorize, check_tags, client, cluster_name, invalid, request_tags, resource_tags, Cond, Scope};
 use crate::{services, Ecs};
 
 const DEFAULT_PORT: i32 = 80;
@@ -65,7 +65,10 @@ impl Ecs {
         if let Some(td) = &c.task_definition_arn {
             return Ok(td.clone());
         }
-        let p = c.primary_container.as_ref().ok_or_else(|| invalid("primaryContainer must be provided when taskDefinitionArn is not."))?;
+        let p = c
+            .primary_container
+            .as_ref()
+            .ok_or_else(|| invalid("primaryContainer must be provided when taskDefinitionArn is not."))?;
         let port = p.container_port.unwrap_or(DEFAULT_PORT);
         let logs = p.aws_logs_configuration.clone().unwrap_or(t::ExpressGatewayServiceAwsLogsConfiguration {
             log_group: format!("/aws/ecs/{cluster}/{family}"),
@@ -158,7 +161,10 @@ impl Ecs {
             health_check_path: Some(c.health_check_path.clone()),
             primary_container: c.primary_container.clone(),
             scaling_target: Some(c.scaling.clone()),
-            ingress_paths: Some(vec![t::IngressPathSummary { access_type: "PUBLIC".into(), endpoint: endpoint.to_string() }]),
+            ingress_paths: Some(vec![t::IngressPathSummary {
+                access_type: "PUBLIC".into(),
+                endpoint: endpoint.to_string(),
+            }]),
             created_at: Some(now),
         }
     }
@@ -249,9 +255,14 @@ impl Ecs {
         let behalf = on_behalf(ctx);
         let cluster_exists = self.with_region(ctx, |r, _| crate::clusters::active(r, Some(&cluster)).is_ok());
         if !cluster_exists {
-            self.create_cluster_op(&behalf, t::CreateClusterRequest { cluster_name: Some(cluster.clone()), ..Default::default() })?;
+            self.create_cluster_op(
+                &behalf,
+                t::CreateClusterRequest { cluster_name: Some(cluster.clone()), ..Default::default() },
+            )?;
         }
-        if self.with_region(ctx, |r, _| r.services.get(&arn).is_some_and(|s| s.service.status.as_deref() != Some("INACTIVE"))) {
+        if self.with_region(ctx, |r, _| {
+            r.services.get(&arn).is_some_and(|s| s.service.status.as_deref() != Some("INACTIVE"))
+        }) {
             return Err(invalid("Creation of service was not idempotent."));
         }
         let td = self.express_task_definition(ctx, &name, &cluster, &config)?;
@@ -280,7 +291,8 @@ impl Ecs {
         let endpoint = format!("https://{name}.ecs.{}.on.aws", scope.region);
         let revision = self.latest_revision(ctx, &arn);
         let now = ctx.received_at;
-        let deployment = self.with_region(ctx, |r, _| r.services.get(&arn).and_then(|s| s.current_deployment_arn.clone()));
+        let deployment =
+            self.with_region(ctx, |r, _| r.services.get(&arn).and_then(|s| s.current_deployment_arn.clone()));
         let svc = t::ECSExpressGatewayService {
             cluster: Some(scope.cluster_arn(&cluster)),
             service_name: Some(name.clone()),
@@ -302,7 +314,12 @@ impl Ecs {
 
     /// The Express service at `arn`, with its status and deployment read
     /// from the service it runs as.
-    fn express(&self, ctx: &RequestContext, action: &str, arn: &str) -> Result<t::ECSExpressGatewayService, ServiceError> {
+    fn express(
+        &self,
+        ctx: &RequestContext,
+        action: &str,
+        arn: &str,
+    ) -> Result<t::ECSExpressGatewayService, ServiceError> {
         let (svc, tags) = self.with_region(ctx, |r, _| {
             let mut svc = r.express_services.get(arn).cloned();
             if let (Some(s), Some(rec)) = (svc.as_mut(), r.services.get(arn)) {
@@ -357,7 +374,8 @@ impl Ecs {
             let scope = Scope::of(ctx);
             authorize(ctx, "RegisterTaskDefinition", &scope.arn(&format!("task-definition/{name}:*")), Cond::new())?;
         }
-        let mut network = input.network_configuration.clone().or(prev.network_configuration.clone()).unwrap_or_default();
+        let mut network =
+            input.network_configuration.clone().or(prev.network_configuration.clone()).unwrap_or_default();
         network.subnets = Some(self.subnets_for(ctx, &network));
         let config = Config {
             execution_role_arn: input.execution_role_arn.clone().or(prev.execution_role_arn.clone()),
@@ -373,7 +391,11 @@ impl Ecs {
             primary_container: input.primary_container.clone().or(prev.primary_container.clone()),
             network,
             scaling: input.scaling_target.clone().or(prev.scaling_target.clone()).unwrap_or_default(),
-            task_definition_arn: input.task_definition_arn.clone().or(if changes_task { None } else { prev.task_definition_arn.clone() }),
+            task_definition_arn: input.task_definition_arn.clone().or(if changes_task {
+                None
+            } else {
+                prev.task_definition_arn.clone()
+            }),
         };
         let td = self.express_task_definition(ctx, &name, &cluster, &config)?;
         let desired = config.scaling.min_task_count.unwrap_or(1);
@@ -439,13 +461,18 @@ impl Ecs {
         if svc.status.as_ref().and_then(|s| s.status_code.as_deref()) == Some("ACTIVE") {
             self.delete_service_op(
                 &on_behalf(ctx),
-                t::DeleteServiceRequest { cluster: Some(cluster), service: input.service_arn.clone(), force: Some(true) },
+                t::DeleteServiceRequest {
+                    cluster: Some(cluster),
+                    service: input.service_arn.clone(),
+                    force: Some(true),
+                },
             )?;
         }
         let now = ctx.received_at;
         let svc = self.with_region(ctx, |r, _| {
             let rec = r.express_services.get_mut(&input.service_arn)?;
-            rec.status = Some(t::ExpressGatewayServiceStatus { status_code: Some("DRAINING".into()), status_reason: None });
+            rec.status =
+                Some(t::ExpressGatewayServiceStatus { status_code: Some("DRAINING".into()), status_reason: None });
             rec.updated_at = Some(now);
             Some(rec.clone())
         });

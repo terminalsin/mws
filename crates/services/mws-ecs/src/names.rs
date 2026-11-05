@@ -1,8 +1,5 @@
 //! ARNs, ids, how requests name resources, pagination and authorization.
 
-use std::collections::BTreeMap;
-
-use chrono::{DateTime, Utc};
 use mws_core::{ConditionContext, RequestContext, ServiceError};
 use rand::Rng;
 
@@ -76,10 +73,6 @@ pub fn last_segment(reference: &str) -> &str {
         Some((_, _, res)) => res.rsplit('/').next().unwrap_or(res),
         None => reference,
     }
-}
-
-pub fn now(ctx: &RequestContext) -> DateTime<Utc> {
-    ctx.received_at
 }
 
 pub fn hex_id() -> String {
@@ -158,15 +151,16 @@ fn decode_token(token: &str) -> Option<usize> {
 
 pub type Tags = Vec<t::Tag>;
 
-pub fn tag_map(tags: &[t::Tag]) -> BTreeMap<String, String> {
-    tags.iter().map(|t| (t.key.clone().unwrap_or_default(), t.value.clone().unwrap_or_default())).collect()
-}
-
 /// `aws:ResourceTag/*` for a resource's tags.
 pub fn resource_tags(tags: Option<&Tags>) -> ConditionContext {
     tags.into_iter()
         .flatten()
-        .map(|t| (format!("aws:ResourceTag/{}", t.key.clone().unwrap_or_default()), vec![t.value.clone().unwrap_or_default()]))
+        .map(|t| {
+            (
+                format!("aws:ResourceTag/{}", t.key.clone().unwrap_or_default()),
+                vec![t.value.clone().unwrap_or_default()],
+            )
+        })
         .collect()
 }
 
@@ -175,7 +169,10 @@ pub fn request_tags(tags: Option<&Tags>) -> ConditionContext {
     let mut c = ConditionContext::new();
     let Some(tags) = tags.filter(|t| !t.is_empty()) else { return c };
     for t in tags {
-        c.insert(format!("aws:RequestTag/{}", t.key.clone().unwrap_or_default()), vec![t.value.clone().unwrap_or_default()]);
+        c.insert(
+            format!("aws:RequestTag/{}", t.key.clone().unwrap_or_default()),
+            vec![t.value.clone().unwrap_or_default()],
+        );
     }
     c.insert("aws:TagKeys".into(), tags.iter().map(|t| t.key.clone().unwrap_or_default()).collect());
     c

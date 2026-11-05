@@ -102,13 +102,8 @@ fn container_json(rec: &TaskRecord, name: &str) -> Option<Value> {
 }
 
 fn task_json(rec: &TaskRecord) -> Value {
-    let containers: Vec<Value> = rec
-        .task
-        .containers
-        .iter()
-        .flatten()
-        .filter_map(|c| container_json(rec, c.name.as_deref()?))
-        .collect();
+    let containers: Vec<Value> =
+        rec.task.containers.iter().flatten().filter_map(|c| container_json(rec, c.name.as_deref()?)).collect();
     let cpu = rec.task.cpu.as_deref().and_then(|c| c.parse::<f64>().ok()).map(|c| c / 1024.0);
     let mem = rec.task.memory.as_deref().and_then(|m| m.parse::<i64>().ok());
     json!({

@@ -7,8 +7,8 @@ use mws_core::{RequestContext, ServiceError};
 
 use crate::generated::{errors, types as t};
 use crate::names::{
-    authorize, check_tags, cluster_name, failure, hex_id, invalid, last_segment, paginate, request_tags,
-    resource_tags, Cond, Scope,
+    authorize, check_tags, cluster_name, failure, hex_id, invalid, last_segment, paginate, request_tags, resource_tags,
+    Cond, Scope,
 };
 use crate::state::{InstanceRecord, Region};
 use crate::{clusters, tags, tasks, Ecs};
@@ -22,7 +22,12 @@ fn resource_int(name: &str, v: i32) -> t::Resource {
 }
 
 fn resource_set(name: &str, v: Vec<String>) -> t::Resource {
-    t::Resource { name: Some(name.into()), r#type: Some("STRINGSET".into()), string_set_value: Some(v), ..Default::default() }
+    t::Resource {
+        name: Some(name.into()),
+        r#type: Some("STRINGSET".into()),
+        string_set_value: Some(v),
+        ..Default::default()
+    }
 }
 
 fn registered(inst: &t::ContainerInstance, name: &str) -> Option<t::Resource> {
@@ -169,10 +174,18 @@ impl Ecs {
                 t::Attribute { name: "ecs.os-type".into(), value: Some("linux".into()), ..Default::default() },
                 t::Attribute { name: "ecs.os-family".into(), value: Some("LINUX".into()), ..Default::default() },
                 t::Attribute { name: "ecs.availability-zone".into(), value: Some(az), ..Default::default() },
-                t::Attribute { name: "ecs.cpu-architecture".into(), value: Some("x86_64".into()), ..Default::default() },
+                t::Attribute {
+                    name: "ecs.cpu-architecture".into(),
+                    value: Some("x86_64".into()),
+                    ..Default::default()
+                },
             ];
             if let Some(it) = doc.get("instanceType") {
-                attrs.push(t::Attribute { name: "ecs.instance-type".into(), value: Some(it.clone()), ..Default::default() });
+                attrs.push(t::Attribute {
+                    name: "ecs.instance-type".into(),
+                    value: Some(it.clone()),
+                    ..Default::default()
+                });
             }
             if let Some(ami) = doc.get("imageId") {
                 attrs.push(t::Attribute { name: "ecs.ami-id".into(), value: Some(ami.clone()), ..Default::default() });
@@ -251,7 +264,13 @@ impl Ecs {
             for task in &on {
                 let service = r.tasks.get(task).and_then(|t| t.service_arn.clone());
                 if service.is_some() {
-                    self.request_stop(r, task, "ServiceSchedulerInitiated", "Container instance deregistration forced by user", now);
+                    self.request_stop(
+                        r,
+                        task,
+                        "ServiceSchedulerInitiated",
+                        "Container instance deregistration forced by user",
+                        now,
+                    );
                 }
             }
             let rec = r.container_instances.get_mut(&arn).expect("checked above");
@@ -283,7 +302,12 @@ impl Ecs {
         for reference in &input.container_instances {
             let arn = instance_arn(&scope, &cluster, last_segment(reference));
             let tags = self.with_region(ctx, |r, _| r.tags.get(&arn).cloned());
-            authorize(ctx, "DescribeContainerInstances", &arn, Cond::new().cluster(&scope, &cluster).extend(resource_tags(tags.as_ref())))?;
+            authorize(
+                ctx,
+                "DescribeContainerInstances",
+                &arn,
+                Cond::new().cluster(&scope, &cluster).extend(resource_tags(tags.as_ref())),
+            )?;
             self.with_region(ctx, |r, _| match r.container_instances.get(&arn).filter(|i| i.cluster == cluster) {
                 Some(i) => {
                     let mut ci = render(r, &arn, i, with_tags);
@@ -317,9 +341,10 @@ impl Ecs {
                     None => i.instance.status.as_deref() != Some("INACTIVE"),
                 })
                 .filter(|(_, i)| {
-                    input.filter.as_deref().is_none_or(|f| {
-                        f.split("&&").all(|clause| tasks::constraint_ok(r, i, clause.trim()))
-                    })
+                    input
+                        .filter
+                        .as_deref()
+                        .is_none_or(|f| f.split("&&").all(|clause| tasks::constraint_ok(r, i, clause.trim())))
                 })
                 .map(|(a, _)| a.clone())
                 .collect();
@@ -345,7 +370,12 @@ impl Ecs {
         for reference in &input.container_instances {
             let arn = instance_arn(&scope, &cluster, last_segment(reference));
             let tags = self.with_region(ctx, |r, _| r.tags.get(&arn).cloned());
-            authorize(ctx, "UpdateContainerInstancesState", &arn, Cond::new().cluster(&scope, &cluster).extend(resource_tags(tags.as_ref())))?;
+            authorize(
+                ctx,
+                "UpdateContainerInstancesState",
+                &arn,
+                Cond::new().cluster(&scope, &cluster).extend(resource_tags(tags.as_ref())),
+            )?;
             self.with_region(ctx, |r, _| {
                 let Some(inst) = r.container_instances.get_mut(&arn).filter(|i| i.cluster == cluster) else {
                     failures.push(failure(arn.clone(), "MISSING"));
@@ -421,7 +451,12 @@ impl Ecs {
         let cluster = cluster_name(input.cluster.as_deref());
         for a in &input.attributes {
             let target = a.target_id.as_deref().unwrap_or_default();
-            authorize(ctx, "PutAttributes", &instance_arn(&scope, &cluster, last_segment(target)), Cond::new().cluster(&scope, &cluster))?;
+            authorize(
+                ctx,
+                "PutAttributes",
+                &instance_arn(&scope, &cluster, last_segment(target)),
+                Cond::new().cluster(&scope, &cluster),
+            )?;
             if a.name.is_empty() || a.name.len() > 128 {
                 return Err(invalid("Attribute names must be between 1 and 128 characters."));
             }
@@ -439,7 +474,9 @@ impl Ecs {
                 }
                 let entry = r.attributes.entry(format!("{cluster}|{arn}")).or_default();
                 if !entry.contains_key(&a.name) && entry.len() >= 10 {
-                    return Err(errors::attribute_limit_exceeded("You can have a maximum of 10 custom attributes per resource."));
+                    return Err(errors::attribute_limit_exceeded(
+                        "You can have a maximum of 10 custom attributes per resource.",
+                    ));
                 }
                 let stored = t::Attribute {
                     name: a.name.clone(),
@@ -463,7 +500,12 @@ impl Ecs {
         let cluster = cluster_name(input.cluster.as_deref());
         for a in &input.attributes {
             let target = a.target_id.as_deref().unwrap_or_default();
-            authorize(ctx, "DeleteAttributes", &instance_arn(&scope, &cluster, last_segment(target)), Cond::new().cluster(&scope, &cluster))?;
+            authorize(
+                ctx,
+                "DeleteAttributes",
+                &instance_arn(&scope, &cluster, last_segment(target)),
+                Cond::new().cluster(&scope, &cluster),
+            )?;
         }
         self.with_region(ctx, |r, scope| {
             clusters::active(r, input.cluster.as_deref())?;
@@ -476,7 +518,8 @@ impl Ecs {
                 if !r.container_instances.contains_key(&arn) {
                     return Err(errors::target_not_found(format!("Could not find {target}.")));
                 }
-                if let Some(removed) = r.attributes.get_mut(&format!("{cluster}|{arn}")).and_then(|m| m.remove(&a.name)) {
+                if let Some(removed) = r.attributes.get_mut(&format!("{cluster}|{arn}")).and_then(|m| m.remove(&a.name))
+                {
                     out.push(removed);
                 }
             }

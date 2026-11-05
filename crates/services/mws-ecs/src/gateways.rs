@@ -117,7 +117,7 @@ impl Ecs {
                 continue;
             }
             let Some(gw) = r.gateways.get(&gateway_arn) else { continue };
-            let gw_res = gateway_arn.splitn(2, ":gateway/").nth(1).unwrap_or_default().to_string();
+            let gw_res = gateway_arn.split_once(":gateway/").map(|x| x.1).unwrap_or_default().to_string();
             let route_arn = scope.arn(&format!("gateway-route/{gw_res}/{}", hex_id()));
             let lb = alb_arn(scope, gw);
             let service_name = last_segment(&service_arn).to_string();
@@ -290,8 +290,10 @@ impl Ecs {
             if let Some(v) = &input.propagate_tags {
                 g.propagate_tags = Some(v.clone());
             }
-            if let (Some(t::UpdateGatewayConfiguration::HostSharedAlb(u)), Some(t::DescribeGatewayConfiguration::HostSharedAlb(c))) =
-                (&input.configuration, g.configuration.as_mut())
+            if let (
+                Some(t::UpdateGatewayConfiguration::HostSharedAlb(u)),
+                Some(t::DescribeGatewayConfiguration::HostSharedAlb(c)),
+            ) = (&input.configuration, g.configuration.as_mut())
             {
                 if let Some(sg) = u.network_configuration.as_ref().and_then(|n| n.inbound_security_group.clone()) {
                     c.network_configuration.get_or_insert_with(Default::default).inbound_security_group = Some(sg);
@@ -313,7 +315,11 @@ impl Ecs {
                 }
             }
             g.updated_at = Some(now);
-            Ok(t::UpdateGatewayResponse { gateway_arn: g.gateway_arn.clone(), name: g.name.clone(), status: g.status.clone() })
+            Ok(t::UpdateGatewayResponse {
+                gateway_arn: g.gateway_arn.clone(),
+                name: g.name.clone(),
+                status: g.status.clone(),
+            })
         })
     }
 
@@ -372,7 +378,11 @@ impl Ecs {
             }
             r.gateway_associations.insert(
                 key,
-                GatewayAssociation { gateway_arn: gateway_arn.clone(), cluster_arn: cluster_arn.clone(), status: "ASSOCIATED".into() },
+                GatewayAssociation {
+                    gateway_arn: gateway_arn.clone(),
+                    cluster_arn: cluster_arn.clone(),
+                    status: "ASSOCIATED".into(),
+                },
             );
             Self::sync_routes(r, scope);
             Ok(t::AssociateGatewayWithClusterResponse {
@@ -503,7 +513,10 @@ impl Ecs {
                     })
                 })
                 .filter(|x| {
-                    input.service_container_port_name.as_ref().is_none_or(|p| x.route.service_container_port_name.as_ref() == Some(p))
+                    input
+                        .service_container_port_name
+                        .as_ref()
+                        .is_none_or(|p| x.route.service_container_port_name.as_ref() == Some(p))
                 })
                 .filter(|x| match &input.status {
                     Some(s) => s.contains(&x.route.status.clone().unwrap_or_default()),

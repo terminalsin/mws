@@ -26,6 +26,7 @@ mod handler;
 pub mod imds;
 mod keys;
 mod ops;
+mod service_eni;
 mod state;
 mod util;
 
@@ -34,6 +35,7 @@ use std::sync::{Arc, Mutex, MutexGuard, OnceLock};
 use mws_core::{HttpRequest, HttpResponse, RequestContext, Service, ServiceError};
 
 pub use backend::{BackendChoice, ComputeBackend, DockerBackend, MetadataBackend};
+pub use service_eni::ServiceInterface;
 use state::{RegionState, State};
 
 /// Credentials for an instance profile's role, as instance metadata serves

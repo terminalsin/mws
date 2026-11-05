@@ -745,3 +745,171 @@ impl mws_ec2::InstanceRoleCredentials for Ec2InstanceRoles {
         })
     }
 }
+
+/// What ECS tasks get from other services: EC2 network interfaces for
+/// `awsvpc` tasks, task and execution role sessions from STS, container
+/// secrets from Secrets Manager and Parameter Store, and `awslogs` output in
+/// CloudWatch Logs.
+pub(crate) struct EcsPlatform {
+    pub ec2: mws_ec2::Ec2,
+    pub sts: mws_sts::Sts,
+    pub secretsmanager: mws_secretsmanager::SecretsManager,
+    pub ssm: mws_ssm::Ssm,
+    pub logs: mws_logs::Logs,
+}
+
+#[async_trait::async_trait]
+impl mws_ecs::TaskPlatform for EcsPlatform {
+    fn create_interface(
+        &self,
+        ctx: &RequestContext,
+        account: &str,
+        subnets: &[String],
+        security_groups: &[String],
+        assign_public_ip: bool,
+        description: &str,
+    ) -> Result<mws_ecs::platform::TaskInterface, mws_core::ServiceError> {
+        let subnet = subnets.first().cloned().unwrap_or_default();
+        let i = self.ec2.create_service_interface(
+            ctx,
+            account,
+            &subnet,
+            security_groups,
+            assign_public_ip,
+            description,
+            "ecs.amazonaws.com",
+        )?;
+        Ok(mws_ecs::platform::TaskInterface {
+            eni_id: i.eni_id,
+            private_ip: i.private_ip,
+            mac_address: i.mac_address,
+            private_dns_name: i.private_dns_name,
+            subnet_id: i.subnet_id,
+            vpc_id: i.vpc_id,
+            vpc_cidr: i.vpc_cidr,
+            availability_zone: i.availability_zone,
+        })
+    }
+
+    fn delete_interface(&self, ctx: &RequestContext, account: &str, eni_id: &str) {
+        self.ec2.delete_service_interface(ctx, account, eni_id);
+    }
+
+    fn assume_task_role(
+        &self,
+        role_arn: &str,
+        task_arn: &str,
+        account: &str,
+        now: chrono::DateTime<chrono::Utc>,
+    ) -> Result<mws_ecs::platform::RoleCredentials, String> {
+        let task_id = task_arn.rsplit('/').next().unwrap_or(task_arn);
+        let c = self
+            .sts
+            .assume_role_as_service(&mws_sts::ServiceAssume {
+                role_arn,
+                service_principal: "ecs-tasks.amazonaws.com",
+                session_name: task_id,
+                duration_seconds: 6 * 3600,
+                source_account: Some(account),
+                source_arn: Some(task_arn),
+                now,
+            })
+            .map_err(|e| match e {
+                mws_sts::ServiceAssumeError::NoSuchRole => format!("role {role_arn} does not exist"),
+                mws_sts::ServiceAssumeError::NotTrusted => {
+                    format!("ECS was unable to assume the role '{role_arn}' that was provided for this task.")
+                }
+            })?;
+        Ok(mws_ecs::platform::RoleCredentials {
+            access_key_id: c.access_key_id,
+            secret_access_key: c.secret_access_key,
+            session_token: c.session_token,
+            expiration: c.expiration,
+        })
+    }
+
+    fn role_context(
+        &self,
+        base: &RequestContext,
+        credentials: &mws_ecs::platform::RoleCredentials,
+    ) -> Option<RequestContext> {
+        let resolved = self
+            .sts
+            .credential_store()
+            .resolve(&credentials.access_key_id, Some(&credentials.session_token), base.received_at)
+            .ok()
+            .flatten()?;
+        Some(RequestContext { caller: resolved.caller, source_ip: None, ..base.clone() })
+    }
+
+    async fn read_secret(&self, ctx: &RequestContext, value_from: &str) -> Result<String, mws_core::ServiceError> {
+        if value_from.contains(":secretsmanager:") {
+            // arn:aws:secretsmanager:region:account:secret:name[:json-key[:version-stage[:version-id]]]
+            let parts: Vec<&str> = value_from.split(':').collect();
+            let arn = parts.iter().take(7).copied().collect::<Vec<_>>().join(":");
+            let key = parts.get(7).filter(|k| !k.is_empty());
+            let stage = parts.get(8).filter(|k| !k.is_empty());
+            let version = parts.get(9).filter(|k| !k.is_empty());
+            let s = self.secretsmanager.read_for_reference(ctx, &arn, version.or(stage).copied())?;
+            return match key {
+                None => Ok(s.secret_string),
+                Some(k) => {
+                    let v: serde_json::Value = serde_json::from_str(&s.secret_string).map_err(|_| {
+                        mws_core::ServiceError::new(
+                            "InvalidParameterException",
+                            400,
+                            mws_core::ErrorFault::Client,
+                            "The secret value is not valid JSON.",
+                        )
+                    })?;
+                    match v.get(*k) {
+                        Some(serde_json::Value::String(s)) => Ok(s.clone()),
+                        Some(other) => Ok(other.to_string()),
+                        None => Err(mws_core::ServiceError::new(
+                            "ResourceNotFoundException",
+                            400,
+                            mws_core::ErrorFault::Client,
+                            format!("The JSON key {k} was not found in the secret."),
+                        )),
+                    }
+                }
+            };
+        }
+        // A parameter name, or arn:aws:ssm:region:account:parameter/name.
+        let name = match value_from.split_once(":parameter") {
+            Some((_, rest)) if value_from.starts_with("arn:") => rest.to_string(),
+            _ => value_from.to_string(),
+        };
+        let out = mws_core::Service::invoke(
+            &self.ssm,
+            ctx.clone(),
+            "GetParameter",
+            serde_json::json!({ "Name": name, "WithDecryption": true }),
+        )
+        .await?;
+        Ok(out["Parameter"]["Value"].as_str().unwrap_or_default().to_string())
+    }
+
+    fn write_logs(
+        &self,
+        ctx: &RequestContext,
+        log_group: &str,
+        log_stream: &str,
+        create_group: bool,
+        events: Vec<mws_ecs::platform::LogEvent>,
+    ) -> Result<(), mws_core::ServiceError> {
+        let events = events
+            .into_iter()
+            .map(|e| mws_logs::ServiceLogEvent { timestamp: e.timestamp_ms, message: e.message })
+            .collect();
+        if create_group {
+            return self.logs.put_log_events_as_caller(ctx, log_group, log_stream, events);
+        }
+        // Without awslogs-create-group, a missing group fails the write.
+        self.logs.put_log_events_as_caller_existing_group(ctx, log_group, log_stream, events)
+    }
+
+    fn default_subnets(&self, ctx: &RequestContext, account: &str) -> Vec<String> {
+        self.ec2.default_subnets(ctx, account)
+    }
+}

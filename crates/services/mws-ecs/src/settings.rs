@@ -149,7 +149,10 @@ impl Ecs {
                 let found = if input.effective_settings {
                     Some(effective(r, scope, &principal, name))
                 } else {
-                    r.account_settings.get(&principal).and_then(|s| s.get(*name)).map(|v| (v.clone(), principal.clone()))
+                    r.account_settings
+                        .get(&principal)
+                        .and_then(|s| s.get(*name))
+                        .map(|v| (v.clone(), principal.clone()))
                 };
                 let Some((value, owner)) = found else { continue };
                 if input.value.as_deref().is_some_and(|v| v != value) {

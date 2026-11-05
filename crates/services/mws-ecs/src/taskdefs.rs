@@ -44,7 +44,7 @@ pub fn valid_family(f: &str) -> bool {
 
 /// Fargate's task size combinations.
 pub fn fargate_size_ok(cpu: u64, memory: u64) -> bool {
-    let range = |lo: u64, hi: u64, step: u64| memory >= lo && memory <= hi && (memory - lo) % step == 0;
+    let range = |lo: u64, hi: u64, step: u64| memory >= lo && memory <= hi && (memory - lo).is_multiple_of(step);
     match cpu {
         256 => [512, 1024, 2048].contains(&memory),
         512 => range(1024, 4096, 1024),
@@ -282,9 +282,7 @@ fn validate(input: &t::RegisterTaskDefinitionRequest) -> Result<(Vec<t::Attribut
     }
     for rc in input.requires_compatibilities.iter().flatten() {
         if !compat.contains(rc) {
-            return Err(client(format!(
-                "Task definition does not support launch_type {rc}."
-            )));
+            return Err(client(format!("Task definition does not support launch_type {rc}.")));
         }
     }
     Ok((required.into_iter().map(|a| attr(&a)).collect(), compat))
@@ -371,7 +369,9 @@ impl Ecs {
         authorize(ctx, "DescribeTaskDefinition", "*", Cond::new())?;
         self.with_region(ctx, |r, _| {
             let d = resolve(r, &input.task_definition)
-                .filter(|d| d.status.as_deref() != Some("DELETE_IN_PROGRESS") || parse_ref(&input.task_definition).1.is_some())
+                .filter(|d| {
+                    d.status.as_deref() != Some("DELETE_IN_PROGRESS") || parse_ref(&input.task_definition).1.is_some()
+                })
                 .ok_or_else(|| client("Unable to describe task definition."))?;
             let with_tags = input.include.iter().flatten().any(|i| i == "TAGS");
             let tags = with_tags
@@ -473,7 +473,10 @@ impl Ecs {
         for reference in &input.task_definitions {
             let (family, rev) = parse_ref(reference);
             let Some(rev) = rev else {
-                failures.push(failure(reference.clone(), "The specified task definition identifier is invalid. Specify a valid name or ARN and try again."));
+                failures.push(failure(
+                    reference.clone(),
+                    "The specified task definition identifier is invalid. Specify a valid name or ARN and try again.",
+                ));
                 continue;
             };
             let arn = scope.arn(&format!("task-definition/{family}:{rev}"));

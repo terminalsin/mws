@@ -65,7 +65,8 @@ impl Ecs {
         for key in keys {
             let Some((account, region)) = key.split_once('/') else { continue };
             let Some(ctx) = self.background_context(account, region) else { continue };
-            let scope = Scope { partition: partition.clone(), region: region.to_string(), account: account.to_string() };
+            let scope =
+                Scope { partition: partition.clone(), region: region.to_string(), account: account.to_string() };
             let now = ctx.received_at;
             let mut st = self.lock();
             let Some(r) = st.regions.get_mut(&key) else { continue };
@@ -119,6 +120,7 @@ impl Ecs {
     }
 
     /// Start up to `n` tasks of a deployment; returns how many started.
+    #[allow(clippy::too_many_arguments)]
     fn start_service_tasks(
         &self,
         ctx: &RequestContext,
@@ -138,7 +140,11 @@ impl Ecs {
         let name = s.service_name.clone().unwrap_or_default();
         let Some(def) = taskdefs::resolve(r, &config.task_definition).cloned() else {
             if let Some(rec) = r.services.get_mut(service) {
-                push_event(&mut rec.service, format!("(service {name}) failed to launch a task: TaskDefinition not found."), now);
+                push_event(
+                    &mut rec.service,
+                    format!("(service {name}) failed to launch a task: TaskDefinition not found."),
+                    now,
+                );
             }
             return 0;
         };
@@ -169,12 +175,16 @@ impl Ecs {
                 }
                 None => ("EC2".to_string(), None),
             };
-            let mut placement = Placement { launch_type: lt.clone(), capacity_provider: cp.clone(), container_instance_arn: None };
+            let mut placement =
+                Placement { launch_type: lt.clone(), capacity_provider: cp.clone(), container_instance_arn: None };
             if lt != "FARGATE" {
                 if let Some(ci) = instances.next() {
                     placement.container_instance_arn = Some(ci);
                 } else {
-                    let any = r.container_instances.values().any(|i| i.cluster == rec.cluster && i.instance.status.as_deref() == Some("ACTIVE"));
+                    let any = r
+                        .container_instances
+                        .values()
+                        .any(|i| i.cluster == rec.cluster && i.instance.status.as_deref() == Some("ACTIVE"));
                     if !any {
                         problem = Some(format!(
                             "(service {name}) was unable to place a task because no container instance met all of its requirements. Reason: No Container Instances were found in your cluster. For more information, see the Troubleshooting section of the Amazon ECS Developer Guide."
@@ -240,7 +250,8 @@ impl Ecs {
             match self.launch(ctx, r, scope, launch) {
                 Ok(task) => started.push(task.task_arn.unwrap_or_default()),
                 Err(e) => {
-                    problem = Some(format!("(service {name}) failed to launch a task with ({}: {}).", e.code, e.message));
+                    problem =
+                        Some(format!("(service {name}) failed to launch a task with ({}: {}).", e.code, e.message));
                     if let Some(rec) = r.services.get_mut(service) {
                         rec.failed_launches += 1;
                     }
@@ -279,7 +290,8 @@ impl Ecs {
             self.reconcile_task_sets(ctx, r, scope, arn, now);
             return;
         }
-        let Some(primary) = s.deployments.iter().flatten().find(|d| d.status.as_deref() == Some("PRIMARY")).cloned() else {
+        let Some(primary) = s.deployments.iter().flatten().find(|d| d.status.as_deref() == Some("PRIMARY")).cloned()
+        else {
             return;
         };
         let primary_id = primary.id.clone().unwrap_or_default();
@@ -337,7 +349,11 @@ impl Ecs {
                         d.updated_at = Some(now);
                     }
                 }
-                push_event(&mut rec.service, format!("(service {name}) (deployment {primary_id}) deployment failed: tasks failed to start."), now);
+                push_event(
+                    &mut rec.service,
+                    format!("(service {name}) (deployment {primary_id}) deployment failed: tasks failed to start."),
+                    now,
+                );
             }
             if let Some(sd) = sd_arn.as_ref().and_then(|a| r.service_deployments.get_mut(a)) {
                 if let Some(cb) = sd.deployment_circuit_breaker.as_mut() {
@@ -347,7 +363,14 @@ impl Ecs {
             match previous.filter(|_| breaker.rollback) {
                 Some(rev) => {
                     if let Some(rec) = r.services.get_mut(arn) {
-                        push_event(&mut rec.service, format!("(service {name}) rolling back to {}.", rev.task_definition.clone().unwrap_or_default()), now);
+                        push_event(
+                            &mut rec.service,
+                            format!(
+                                "(service {name}) rolling back to {}.",
+                                rev.task_definition.clone().unwrap_or_default()
+                            ),
+                            now,
+                        );
                     }
                     self.new_deployment(r, scope, arn, revision_config(&rev), now, Some(reason));
                 }
@@ -374,10 +397,12 @@ impl Ecs {
         let launching = rollout != "FAILED";
 
         // Replace unhealthy tasks.
-        let unhealthy: Vec<String> = live.iter().filter(|l| l.unhealthy && !l.protected).map(|l| l.arn.clone()).collect();
+        let unhealthy: Vec<String> =
+            live.iter().filter(|l| l.unhealthy && !l.protected).map(|l| l.arn.clone()).collect();
         self.stop_service_tasks(r, arn, &unhealthy, "Task failed container health checks", now);
         let live: Vec<Live> = live.into_iter().filter(|l| !unhealthy.contains(&l.arn)).collect();
-        let (prim, old): (Vec<&Live>, Vec<&Live>) = live.iter().partition(|l| l.deployment.as_deref() == Some(primary_id.as_str()));
+        let (prim, old): (Vec<&Live>, Vec<&Live>) =
+            live.iter().partition(|l| l.deployment.as_deref() == Some(primary_id.as_str()));
 
         if daemon {
             let instances: Vec<String> = r
@@ -407,13 +432,23 @@ impl Ecs {
             // instances that left go too.
             let stale: Vec<String> = old
                 .iter()
-                .filter(|l| prim.iter().any(|p| p.running && p.instance == l.instance) || !l.instance.as_ref().is_some_and(|i| instances.contains(i)))
+                .filter(|l| {
+                    prim.iter().any(|p| p.running && p.instance == l.instance)
+                        || !l.instance.as_ref().is_some_and(|i| instances.contains(i))
+                })
                 .map(|l| l.arn.clone())
                 .collect();
-            self.stop_service_tasks(r, arn, &stale, &format!("Scaling activity initiated by (deployment {primary_id})"), now);
+            self.stop_service_tasks(
+                r,
+                arn,
+                &stale,
+                &format!("Scaling activity initiated by (deployment {primary_id})"),
+                now,
+            );
         } else {
             let desired = rec.service.desired_count.max(0) as usize;
-            let max_total = (desired as i64 * conf.maximum_percent.unwrap_or(200) as i64 / 100).max(desired as i64) as usize;
+            let max_total =
+                (desired as i64 * conf.maximum_percent.unwrap_or(200) as i64 / 100).max(desired as i64) as usize;
             let min_running = (desired as i64 * conf.minimum_healthy_percent.unwrap_or(100) as i64 + 99) / 100;
             let min_running = min_running as usize;
             // Scale in: pending tasks first, protected tasks never.
@@ -421,7 +456,13 @@ impl Ecs {
                 let mut candidates: Vec<&&Live> = prim.iter().filter(|l| !l.protected).collect();
                 candidates.sort_by_key(|l| l.running);
                 let excess: Vec<String> = candidates.iter().take(prim.len() - desired).map(|l| l.arn.clone()).collect();
-                self.stop_service_tasks(r, arn, &excess, &format!("Scaling activity initiated by (deployment {primary_id})"), now);
+                self.stop_service_tasks(
+                    r,
+                    arn,
+                    &excess,
+                    &format!("Scaling activity initiated by (deployment {primary_id})"),
+                    now,
+                );
             }
             let total_live = prim.len().min(desired) + old.len();
             let need = desired.saturating_sub(prim.len());
@@ -441,7 +482,13 @@ impl Ecs {
                 retire.push(l.arn.clone());
                 stoppable -= 1;
             }
-            self.stop_service_tasks(r, arn, &retire, &format!("Scaling activity initiated by (deployment {primary_id})"), now);
+            self.stop_service_tasks(
+                r,
+                arn,
+                &retire,
+                &format!("Scaling activity initiated by (deployment {primary_id})"),
+                now,
+            );
         }
 
         // Old deployments without tasks are done.
@@ -449,10 +496,12 @@ impl Ecs {
         let Some(rec) = r.services.get_mut(arn) else { return };
         if let Some(deps) = rec.service.deployments.as_mut() {
             deps.retain(|d| {
-                d.status.as_deref() == Some("PRIMARY") || live_after.iter().any(|l| l.deployment.as_deref() == d.id.as_deref())
+                d.status.as_deref() == Some("PRIMARY")
+                    || live_after.iter().any(|l| l.deployment.as_deref() == d.id.as_deref())
             });
         }
-        let prim_running = live_after.iter().filter(|l| l.deployment.as_deref() == Some(primary_id.as_str()) && l.running).count();
+        let prim_running =
+            live_after.iter().filter(|l| l.deployment.as_deref() == Some(primary_id.as_str()) && l.running).count();
         let prim_live = live_after.iter().filter(|l| l.deployment.as_deref() == Some(primary_id.as_str())).count();
         let only_primary = rec.service.deployments.iter().flatten().count() == 1;
         let desired = rec.service.desired_count.max(0) as usize;
@@ -463,14 +512,20 @@ impl Ecs {
                 d.rollout_state_reason = Some(format!("ECS deployment {primary_id} completed."));
                 d.updated_at = Some(now);
             }
-            push_event(&mut rec.service, format!("(service {name}) (deployment {primary_id}) deployment completed."), now);
+            push_event(
+                &mut rec.service,
+                format!("(service {name}) (deployment {primary_id}) deployment completed."),
+                now,
+            );
             push_event(&mut rec.service, format!("(service {name}) has reached a steady state."), now);
             if let Some(sd) = sd_arn.as_ref().and_then(|a| r.service_deployments.get_mut(a)) {
-                sd.status = Some(match sd.status.as_deref() {
-                    Some("ROLLBACK_IN_PROGRESS") => "ROLLBACK_SUCCESSFUL",
-                    _ => "SUCCESSFUL",
-                }
-                .into());
+                sd.status = Some(
+                    match sd.status.as_deref() {
+                        Some("ROLLBACK_IN_PROGRESS") => "ROLLBACK_SUCCESSFUL",
+                        _ => "SUCCESSFUL",
+                    }
+                    .into(),
+                );
                 sd.finished_at = Some(now);
                 sd.updated_at = Some(now);
                 sd.lifecycle_stage = Some("CLEAN_UP".into());
@@ -524,14 +579,21 @@ impl Ecs {
                 let mut c: Vec<&&Live> = mine.iter().filter(|l| !l.protected).collect();
                 c.sort_by_key(|l| l.running);
                 let excess: Vec<String> = c.iter().take(mine.len() - target).map(|l| l.arn.clone()).collect();
-                self.stop_service_tasks(r, arn, &excess, &format!("Scaling activity initiated by (deployment {id})"), now);
+                self.stop_service_tasks(
+                    r,
+                    arn,
+                    &excess,
+                    &format!("Scaling activity initiated by (deployment {id})"),
+                    now,
+                );
             }
         }
         let live = Self::live_tasks(r, arn);
         let Some(rec) = r.services.get_mut(arn) else { return };
         if let Some(sets) = rec.service.task_sets.as_mut() {
             sets.retain(|ts| {
-                ts.status.as_deref() != Some("DRAINING") || live.iter().any(|l| l.deployment.as_deref() == ts.id.as_deref())
+                ts.status.as_deref() != Some("DRAINING")
+                    || live.iter().any(|l| l.deployment.as_deref() == ts.id.as_deref())
             });
             for ts in sets.iter_mut() {
                 let id = ts.id.clone().unwrap_or_default();
@@ -540,7 +602,8 @@ impl Ecs {
                 } else {
                     (desired as f64 * ts.scale.as_ref().map(|s| s.value).unwrap_or(100.0) / 100.0).ceil() as i32
                 };
-                let running = live.iter().filter(|l| l.deployment.as_deref() == Some(id.as_str()) && l.running).count() as i32;
+                let running =
+                    live.iter().filter(|l| l.deployment.as_deref() == Some(id.as_str()) && l.running).count() as i32;
                 let total = live.iter().filter(|l| l.deployment.as_deref() == Some(id.as_str())).count() as i32;
                 let stable = running == ts.computed_desired_count && total == running;
                 let status = if stable { "STEADY_STATE" } else { "STABILIZING" };

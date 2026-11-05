@@ -6,11 +6,11 @@ use mws_core::{RequestContext, ServiceError};
 
 use crate::generated::{errors, types as t};
 use crate::names::{
-    authorize, check_tags, cluster_name, client, failure, invalid, numeric_id, paginate, request_tags, resource_tags,
+    authorize, check_tags, client, cluster_name, failure, invalid, numeric_id, paginate, request_tags, resource_tags,
     split_arn, Cond, Scope,
 };
 use crate::state::{DaemonRecord, Region};
-use crate::{clusters, taskdefs, tags, Ecs};
+use crate::{clusters, tags, taskdefs, Ecs};
 
 fn parse_dtd(reference: &str) -> (String, Option<i32>) {
     let body = match split_arn(reference) {
@@ -134,10 +134,8 @@ impl Ecs {
                 {
                     continue;
                 }
-                let mut chosen: Vec<&t::DaemonTaskDefinition> = revs
-                    .iter()
-                    .filter(|d| status == "ALL" || d.status.as_deref() == Some(status.as_str()))
-                    .collect();
+                let mut chosen: Vec<&t::DaemonTaskDefinition> =
+                    revs.iter().filter(|d| status == "ALL" || d.status.as_deref() == Some(status.as_str())).collect();
                 if input.revision.as_deref() == Some("LAST_REGISTERED") {
                     chosen = chosen.into_iter().last().into_iter().collect();
                 }
@@ -171,7 +169,11 @@ impl Ecs {
         let t_ = self.with_region(ctx, |r, _| r.tags.get(&arn).cloned());
         authorize(ctx, "DeleteDaemonTaskDefinition", &arn, Cond::new().extend(resource_tags(t_.as_ref())))?;
         self.with_region(ctx, |r, _| {
-            if r.daemons.values().any(|d| d.status == "ACTIVE" && r.daemon_revisions.get(&d.revision_arn).and_then(|x| x.daemon_task_definition_arn.as_deref()) == Some(arn.as_str())) {
+            if r.daemons.values().any(|d| {
+                d.status == "ACTIVE"
+                    && r.daemon_revisions.get(&d.revision_arn).and_then(|x| x.daemon_task_definition_arn.as_deref())
+                        == Some(arn.as_str())
+            }) {
                 return Err(client("The daemon task definition is in use by a daemon."));
             }
             let d = r
@@ -185,6 +187,7 @@ impl Ecs {
         })
     }
 
+    #[allow(clippy::too_many_arguments)]
     fn daemon_revision(
         r: &mut Region,
         scope: &Scope,
@@ -201,7 +204,11 @@ impl Ecs {
                 d.container_definitions
                     .iter()
                     .flatten()
-                    .map(|c| t::DaemonContainerImage { container_name: c.name.clone(), image: Some(c.image.clone()), image_digest: None })
+                    .map(|c| t::DaemonContainerImage {
+                        container_name: c.name.clone(),
+                        image: Some(c.image.clone()),
+                        image_digest: None,
+                    })
                     .collect()
             })
             .unwrap_or_default();
@@ -262,7 +269,11 @@ impl Ecs {
                 status_reason: None,
                 target_daemon_revision: Some(detail(target)),
                 source_daemon_revisions: Some(source.map(detail).into_iter().collect()),
-                circuit_breaker: Some(t::DaemonCircuitBreaker { failure_count: 0, status: Some("MONITORING_COMPLETE".into()), threshold: 3 }),
+                circuit_breaker: Some(t::DaemonCircuitBreaker {
+                    failure_count: 0,
+                    status: Some("MONITORING_COMPLETE".into()),
+                    threshold: 3,
+                }),
                 alarms: Some(t::DaemonDeploymentAlarms { status: Some("DISABLED".into()), ..Default::default() }),
                 rollback: None,
                 deployment_configuration: config,
@@ -313,9 +324,24 @@ impl Ecs {
                     return Err(invalid(format!("The specified capacity provider '{p}' does not exist.")));
                 }
             }
-            let flags = (input.propagate_tags.clone(), input.enable_ecs_managed_tags, input.enable_execute_command, input.critical);
+            let flags = (
+                input.propagate_tags.clone(),
+                input.enable_ecs_managed_tags,
+                input.enable_execute_command,
+                input.critical,
+            );
             let rev = Self::daemon_revision(r, scope, &cluster, &input.daemon_name, &arn, &dtd, flags, now);
-            let dep = Self::daemon_deployment(r, scope, &cluster, &input.daemon_name, &rev, None, input.deployment_configuration.clone(), &input.capacity_provider_arns, now);
+            let dep = Self::daemon_deployment(
+                r,
+                scope,
+                &cluster,
+                &input.daemon_name,
+                &rev,
+                None,
+                input.deployment_configuration.clone(),
+                &input.capacity_provider_arns,
+                now,
+            );
             r.daemons.insert(
                 arn.clone(),
                 DaemonRecord {
@@ -362,7 +388,11 @@ impl Ecs {
                     capacity_providers: Some(
                         d.capacity_provider_arns
                             .iter()
-                            .map(|p| t::DaemonCapacityProvider { arn: Some(p.clone()), running_count: 0, without_daemon_count: 0 })
+                            .map(|p| t::DaemonCapacityProvider {
+                                arn: Some(p.clone()),
+                                running_count: 0,
+                                without_daemon_count: 0,
+                            })
                             .collect(),
                     ),
                     total_running_count: 0,
@@ -389,7 +419,10 @@ impl Ecs {
                 .values()
                 .filter(|d| cluster.as_ref().is_none_or(|c| &d.cluster_arn == c))
                 .filter(|d| {
-                    input.capacity_provider_arns.as_ref().is_none_or(|ps| ps.iter().any(|p| d.capacity_provider_arns.contains(p)))
+                    input
+                        .capacity_provider_arns
+                        .as_ref()
+                        .is_none_or(|ps| ps.iter().any(|p| d.capacity_provider_arns.contains(p)))
                 })
                 .map(|d| t::DaemonSummary {
                     daemon_arn: Some(d.arn.clone()),
@@ -418,9 +451,24 @@ impl Ecs {
             let dtd = resolve_dtd(r, &input.daemon_task_definition_arn)
                 .and_then(|d| d.daemon_task_definition_arn.clone())
                 .ok_or_else(|| client("The specified daemon task definition does not exist."))?;
-            let flags = (input.propagate_tags.clone(), input.enable_ecs_managed_tags, input.enable_execute_command, input.critical);
+            let flags = (
+                input.propagate_tags.clone(),
+                input.enable_ecs_managed_tags,
+                input.enable_execute_command,
+                input.critical,
+            );
             let rev = Self::daemon_revision(r, scope, &cluster, &d.name, &d.arn, &dtd, flags, now);
-            let dep = Self::daemon_deployment(r, scope, &cluster, &d.name, &rev, Some(&d.revision_arn), input.deployment_configuration.clone(), &input.capacity_provider_arns, now);
+            let dep = Self::daemon_deployment(
+                r,
+                scope,
+                &cluster,
+                &d.name,
+                &rev,
+                Some(&d.revision_arn),
+                input.deployment_configuration.clone(),
+                &input.capacity_provider_arns,
+                now,
+            );
             let rec = r.daemons.get_mut(&d.arn).ok_or_else(daemon_not_found)?;
             rec.revision_arn = rev;
             rec.deployment_arn = dep.clone();
@@ -489,7 +537,7 @@ impl Ecs {
                 .map(|(_, d)| d)
                 .filter(|x| input.status.as_ref().is_none_or(|s| s.contains(&x.status.clone().unwrap_or_default())))
                 .collect();
-            deps.sort_by(|a, b| b.created_at.cmp(&a.created_at));
+            deps.sort_by_key(|d| std::cmp::Reverse(d.created_at));
             let out: Vec<t::DaemonDeploymentSummary> = deps
                 .into_iter()
                 .map(|x| t::DaemonDeploymentSummary {

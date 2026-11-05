@@ -157,11 +157,7 @@ impl Ecs {
 
     /// Run `f` on the caller's account and Region, with due transitions
     /// applied first.
-    pub(crate) fn with_region<R>(
-        &self,
-        ctx: &RequestContext,
-        f: impl FnOnce(&mut Region, &names::Scope) -> R,
-    ) -> R {
+    pub(crate) fn with_region<R>(&self, ctx: &RequestContext, f: impl FnOnce(&mut Region, &names::Scope) -> R) -> R {
         let scope = names::Scope::of(ctx);
         let mut st = self.lock();
         let r = st.region(&scope.key());

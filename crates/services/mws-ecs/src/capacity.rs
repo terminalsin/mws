@@ -104,7 +104,9 @@ pub fn check_strategy(strategy: &[t::CapacityProviderStrategyItem]) -> Result<()
     }
     for i in strategy {
         if !(0..=1000).contains(&i.weight) || !(0..=100_000).contains(&i.base) {
-            return Err(invalid("The capacity provider strategy weight must be between 0 and 1000, and base between 0 and 100000."));
+            return Err(invalid(
+                "The capacity provider strategy weight must be between 0 and 1000, and base between 0 and 100000.",
+            ));
         }
     }
     Ok(())

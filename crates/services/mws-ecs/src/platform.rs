@@ -38,6 +38,7 @@ pub struct LogEvent {
     pub message: String,
 }
 
+#[async_trait::async_trait]
 pub trait TaskPlatform: Send + Sync {
     /// Create a requester-managed network interface for a task in one of
     /// `subnets` with `security_groups` (the VPC's default group when
@@ -73,7 +74,7 @@ pub trait TaskPlatform: Send + Sync {
     /// Read a container secret (`valueFrom`: a Secrets Manager secret ARN,
     /// optionally with `:json-key:version-stage:version-id`, or a Parameter
     /// Store parameter name or ARN) as `ctx`'s caller.
-    fn read_secret(&self, ctx: &RequestContext, value_from: &str) -> Result<String, ServiceError>;
+    async fn read_secret(&self, ctx: &RequestContext, value_from: &str) -> Result<String, ServiceError>;
 
     /// Write `awslogs` events as `ctx`'s caller, creating the stream (and
     /// the group, when `create_group`) first.

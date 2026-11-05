@@ -43,7 +43,7 @@ pub fn finish_stopped(rec: &mut TaskRecord, now: DateTime<Utc>, reason: Option<S
         a.status = Some("DELETED".into());
     }
     t.version += 1;
-    rec.expires_at = Some(now + Duration::minutes(60));
+    rec.expires_at = Some(now + Duration::minutes(crate::tasks::STOPPED_RETENTION_MINUTES));
 }
 
 /// What the backend needs to know about a task record.
@@ -51,7 +51,9 @@ pub fn spec_of(rec: &TaskRecord) -> TaskSpec {
     let arn = rec.task.task_arn.clone().unwrap_or_default();
     let network = match rec.definition.network_mode.as_deref() {
         Some("awsvpc") => match &rec.vpc {
-            Some((vpc, cidr, ip)) => TaskNetwork::Awsvpc { vpc_id: vpc.clone(), vpc_cidr: cidr.clone(), ip: ip.clone() },
+            Some((vpc, cidr, ip)) => {
+                TaskNetwork::Awsvpc { vpc_id: vpc.clone(), vpc_cidr: cidr.clone(), ip: ip.clone() }
+            }
             None => TaskNetwork::Awsvpc { vpc_id: String::new(), vpc_cidr: String::new(), ip: String::new() },
         },
         Some("host") => TaskNetwork::Host,
@@ -368,13 +370,19 @@ impl Ecs {
             .flatten()
             .any(|c| c.secrets.as_ref().is_some_and(|s| !s.is_empty()) || is_awslogs(c));
         let mut exec_ctx: Option<RequestContext> = None;
-        if let (true, Some(role), Some(p), Some(base)) = (needs_exec, def.execution_role_arn.as_deref(), platform.as_ref(), ctx) {
+        if let (true, Some(role), Some(p), Some(base)) =
+            (needs_exec, def.execution_role_arn.as_deref(), platform.as_ref(), ctx)
+        {
             match p.assume_task_role(role, arn, &spec.account_id, now) {
                 Ok(c) => exec_ctx = p.role_context(base, &c),
                 Err(e) => {
                     let has_secrets = def.container_definitions.iter().flatten().any(|c| c.secrets.is_some());
                     if has_secrets {
-                        return Err((Some(StartFailure::Secrets(format!("unable to assume the execution role: {e}"))), None, Vec::new()));
+                        return Err((
+                            Some(StartFailure::Secrets(format!("unable to assume the execution role: {e}"))),
+                            None,
+                            Vec::new(),
+                        ));
                     }
                     tracing::warn!(task = arn, "ECS cannot assume the execution role: {e}");
                 }
@@ -424,7 +432,7 @@ impl Ecs {
                     }
                     continue;
                 };
-                match p.read_secret(ectx, &s.value_from) {
+                match p.read_secret(ectx, &s.value_from).await {
                     Ok(v) => env.push((s.name.clone(), v)),
                     Err(e) => {
                         let source = if s.value_from.contains(":secretsmanager:") { "asm" } else { "ssm" };
@@ -443,8 +451,14 @@ impl Ecs {
             let task_id = &spec.task_id;
             if let Some(ep) = &endpoint {
                 let ep = container_endpoint(ep, &spec.network);
-                env.push(("ECS_CONTAINER_METADATA_URI_V4".into(), format!("{ep}{}{task_id}/{name}", crate::metadata::PREFIX)));
-                env.push(("ECS_CONTAINER_METADATA_URI".into(), format!("{ep}{}{task_id}/{name}/v3", crate::metadata::PREFIX)));
+                env.push((
+                    "ECS_CONTAINER_METADATA_URI_V4".into(),
+                    format!("{ep}{}{task_id}/{name}", crate::metadata::PREFIX),
+                ));
+                env.push((
+                    "ECS_CONTAINER_METADATA_URI".into(),
+                    format!("{ep}{}{task_id}/{name}/v3", crate::metadata::PREFIX),
+                ));
                 env.push(("AWS_ENDPOINT_URL".into(), ep.clone()));
             }
             env.push(("AWS_REGION".into(), spec.region.clone()));
@@ -479,7 +493,8 @@ impl Ecs {
             if self.stop_wanted(key, arn) {
                 return Err((None, Some(handle), runtime_ids.values().cloned().collect()));
             }
-            let Some(cdef) = def.container_definitions.iter().flatten().find(|c| c.name.as_deref() == Some(&name)) else {
+            let Some(cdef) = def.container_definitions.iter().flatten().find(|c| c.name.as_deref() == Some(&name))
+            else {
                 continue;
             };
             // Dependencies first.
@@ -527,7 +542,9 @@ impl Ecs {
                     let at = self.now();
                     self.update_task(key, arn, |r| {
                         r.runtime_ids.insert(name.clone(), started.runtime_id.clone());
-                        if let Some(c) = r.task.containers.iter_mut().flatten().find(|c| c.name.as_deref() == Some(&name)) {
+                        if let Some(c) =
+                            r.task.containers.iter_mut().flatten().find(|c| c.name.as_deref() == Some(&name))
+                        {
                             c.runtime_id = Some(started.runtime_id.clone());
                             c.last_status = Some("RUNNING".into());
                             c.network_bindings = Some(
@@ -576,7 +593,14 @@ impl Ecs {
     }
 
     /// Poll container health checks while the task runs.
-    fn watch_health(&self, key: &str, arn: &str, rec: &TaskRecord, ids: &BTreeMap<String, String>, done: Arc<AtomicBool>) {
+    fn watch_health(
+        &self,
+        key: &str,
+        arn: &str,
+        rec: &TaskRecord,
+        ids: &BTreeMap<String, String>,
+        done: Arc<AtomicBool>,
+    ) {
         let checked: Vec<(String, String, bool)> = rec
             .definition
             .container_definitions
@@ -601,7 +625,9 @@ impl Ecs {
                 }
                 let found = me.update_task(&key, &arn, |r| {
                     for (name, h, _) in &states {
-                        if let Some(c) = r.task.containers.iter_mut().flatten().find(|c| c.name.as_deref() == Some(name)) {
+                        if let Some(c) =
+                            r.task.containers.iter_mut().flatten().find(|c| c.name.as_deref() == Some(name))
+                        {
                             c.health_status = Some(h.clone());
                         }
                     }
@@ -627,7 +653,13 @@ impl Ecs {
 
     /// Ship a container's output to CloudWatch Logs, as the awslogs driver
     /// does with the execution role.
-    fn ship_logs(&self, c: &t::ContainerDefinition, runtime_id: &str, spec: &TaskSpec, exec_ctx: Option<RequestContext>) {
+    fn ship_logs(
+        &self,
+        c: &t::ContainerDefinition,
+        runtime_id: &str,
+        spec: &TaskSpec,
+        exec_ctx: Option<RequestContext>,
+    ) {
         let (Some(platform), Some(mut ctx)) = (self.platform(), exec_ctx) else { return };
         let options = c.log_configuration.as_ref().and_then(|l| l.options.clone()).unwrap_or_default();
         let Some(group) = options.get("awslogs-group").cloned() else { return };
@@ -684,12 +716,7 @@ fn start_order(def: &t::TaskDefinition) -> Vec<String> {
     let containers: Vec<&t::ContainerDefinition> = def.container_definitions.iter().flatten().collect();
     let mut order: Vec<String> = Vec::new();
     let mut visiting: Vec<String> = Vec::new();
-    fn visit(
-        name: &str,
-        containers: &[&t::ContainerDefinition],
-        order: &mut Vec<String>,
-        visiting: &mut Vec<String>,
-    ) {
+    fn visit(name: &str, containers: &[&t::ContainerDefinition], order: &mut Vec<String>, visiting: &mut Vec<String>) {
         if order.iter().any(|n| n == name) || visiting.iter().any(|n| n == name) {
             return;
         }
