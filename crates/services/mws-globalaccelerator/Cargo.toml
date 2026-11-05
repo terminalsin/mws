@@ -1,0 +1,20 @@
+[package]
+name = "mws-globalaccelerator"
+description = "AWS Global Accelerator for MWS: standard and custom routing accelerators with static anycast IPs, listeners, endpoint groups with health derived from the real endpoints, custom routing port mappings, BYOIP and cross-account attachments, with IAM enforced."
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+async-trait.workspace = true
+chrono.workspace = true
+mws-core.workspace = true
+mws-proto-json.workspace = true
+rand.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+tracing.workspace = true
+uuid.workspace = true
+
+[build-dependencies]
+mws-codegen.workspace = true

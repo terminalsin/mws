@@ -145,6 +145,86 @@ impl Ec2 {
     }
 }
 
+/// What other services may read about an instance (Global Accelerator
+/// endpoints, for one).
+#[derive(Debug, Clone)]
+pub struct InstanceSummary {
+    pub instance_id: String,
+    /// `pending`, `running`, `stopping`, `stopped`, `shutting-down`,
+    /// `terminated`.
+    pub state: String,
+    pub private_ip: Option<String>,
+    pub public_ip: Option<String>,
+    pub subnet_id: Option<String>,
+    pub vpc_id: Option<String>,
+}
+
+/// An Elastic IP address allocation.
+#[derive(Debug, Clone)]
+pub struct AddressSummary {
+    pub allocation_id: String,
+    pub public_ip: Option<String>,
+    pub instance_id: Option<String>,
+    pub network_interface_id: Option<String>,
+}
+
+/// A VPC subnet.
+#[derive(Debug, Clone)]
+pub struct SubnetSummary {
+    pub subnet_id: String,
+    pub vpc_id: Option<String>,
+    pub cidr_block: Option<String>,
+    pub availability_zone: Option<String>,
+}
+
+impl Ec2 {
+    fn read_region<R>(&self, account: &str, region: &str, f: impl FnOnce(&RegionState) -> Option<R>) -> Option<R> {
+        let state = self.lock();
+        state.regions.get(&State::key(account, region)).and_then(f)
+    }
+
+    /// Instance `id` in `account` and `region`.
+    pub fn instance_summary(&self, account: &str, region: &str, id: &str) -> Option<InstanceSummary> {
+        self.read_region(account, region, |r| {
+            let i = &r.instances.get(id)?.instance;
+            Some(InstanceSummary {
+                instance_id: id.to_string(),
+                state: i.state.as_ref().and_then(|s| s.name.clone()).unwrap_or_default(),
+                private_ip: i.private_ip_address.clone(),
+                public_ip: i.public_ip_address.clone(),
+                subnet_id: i.subnet_id.clone(),
+                vpc_id: i.vpc_id.clone(),
+            })
+        })
+    }
+
+    /// Elastic IP allocation `allocation_id` in `account` and `region`.
+    pub fn address_summary(&self, account: &str, region: &str, allocation_id: &str) -> Option<AddressSummary> {
+        self.read_region(account, region, |r| {
+            let a = r.addresses.get(allocation_id)?;
+            Some(AddressSummary {
+                allocation_id: allocation_id.to_string(),
+                public_ip: a.public_ip.clone(),
+                instance_id: a.instance_id.clone(),
+                network_interface_id: a.network_interface_id.clone(),
+            })
+        })
+    }
+
+    /// Subnet `id` in `account` and `region`.
+    pub fn subnet_summary(&self, account: &str, region: &str, id: &str) -> Option<SubnetSummary> {
+        self.read_region(account, region, |r| {
+            let s = r.subnets.get(id)?;
+            Some(SubnetSummary {
+                subnet_id: id.to_string(),
+                vpc_id: s.vpc_id.clone(),
+                cidr_block: s.cidr_block.clone(),
+                availability_zone: s.availability_zone.clone(),
+            })
+        })
+    }
+}
+
 /// The account a request works in.
 pub(crate) fn account_of(ctx: &RequestContext) -> String {
     match ctx.caller.account_id.as_str() {

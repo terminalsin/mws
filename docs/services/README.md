@@ -43,6 +43,7 @@ Every service shares the same foundations:
 | --- | --- | --- |
 | [Lambda](lambda.md) | 68 / 88 | Python, Node.js and custom runtimes that really run, SQS and Kinesis event sources, destinations, function URLs |
 | [EC2 and VPC](ec2.md) | 107 / 811 | Default VPCs, subnets, security groups, AMIs, instances as Docker containers, instance metadata and profiles |
+| [Global Accelerator](globalaccelerator.md) | 56 / 56 | Static anycast IPs, listeners, endpoint groups with health from EC2, custom routing port mappings, BYOIP, cross-account attachments |
 | [Route 53](route53.md) | 71 / 71 | Public and private hosted zones, all routing policies, health checks, DNSSEC key management, an optional real DNS responder |
 
 ## Application integration
@@ -89,3 +90,5 @@ with the permissions AWS would use:
 - Secrets Manager rotation runs your Lambda function; SSM resolves Secrets
   Manager references.
 - EC2 instances and Lambda functions receive role credentials from STS.
+- Global Accelerator endpoints and custom routing subnets are checked against
+  EC2, and endpoint health follows the instances' state.
