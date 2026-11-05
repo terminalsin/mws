@@ -15,6 +15,7 @@ mod ec2_docker;
 mod ec2_ebs;
 mod ec2_networking;
 mod eks;
+mod eks_kubernetes;
 mod elb_classic;
 mod elb_logs;
 mod elbv2;
