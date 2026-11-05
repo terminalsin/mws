@@ -777,3 +777,106 @@ impl mws_cloudformation::RoleAssumer for CloudFormationRoles {
             .ok_or_else(|| format!("Role {role_arn} is invalid or cannot be assumed"))
     }
 }
+
+/// Security Hub's view of AWS Organizations: the caller's organization and
+/// the delegated administrator `EnableOrganizationAdminAccount` registers.
+pub struct SecurityHubOrganizations(pub mws_organizations::Organizations);
+
+const SECURITY_HUB_PRINCIPAL: &str = "securityhub.amazonaws.com";
+
+impl mws_securityhub::OrganizationLink for SecurityHubOrganizations {
+    fn organization(&self, account: &str) -> Option<mws_securityhub::OrgInfo> {
+        let org = self.0.organization_of(account)?;
+        Some(mws_securityhub::OrgInfo {
+            id: org.id,
+            management_account: org.management_account,
+            accounts: org
+                .accounts
+                .into_iter()
+                .map(|a| mws_securityhub::OrgAccount {
+                    active: a.status == "ACTIVE",
+                    id: a.id,
+                    email: a.email,
+                    path: a.path,
+                })
+                .collect(),
+        })
+    }
+
+    fn register_delegated_administrator(&self, management: &str, admin: &str) -> Result<(), String> {
+        use mws_organizations::DelegationError;
+        self.0
+            .register_delegated_administrator_for_service(management, admin, SECURITY_HUB_PRINCIPAL, chrono::Utc::now())
+            .map_err(|e| match e {
+                DelegationError::NotManagementAccount => {
+                    "The request must be made by the management account of an organization.".to_string()
+                }
+                DelegationError::AccountNotInOrganization => {
+                    format!("Account {admin} is not a member of the organization.")
+                }
+                DelegationError::ManagementAccount => {
+                    "The management account cannot be the delegated administrator for Security Hub.".to_string()
+                }
+                DelegationError::NotAllFeatures => "The organization must have all features enabled.".to_string(),
+            })
+    }
+
+    fn deregister_delegated_administrator(&self, management: &str, admin: &str) {
+        let _ = self.0.deregister_delegated_administrator_for_service(management, admin, SECURITY_HUB_PRINCIPAL);
+    }
+}
+
+/// Security Hub finding events, sent to the account's default event bus
+/// with source `aws.securityhub`.
+pub struct SecurityHubToEvents(pub mws_events::Events);
+
+impl mws_securityhub::FindingEventSink for SecurityHubToEvents {
+    fn finding_event(&self, ctx: &RequestContext, e: mws_securityhub::FindingEvent) {
+        self.0.put_service_event(
+            ctx,
+            mws_events::ServiceEvent {
+                partition: e.partition,
+                account: e.account,
+                region: e.region,
+                source: "aws.securityhub".into(),
+                detail_type: e.detail_type,
+                resources: e.resources,
+                detail: e.detail,
+                time: e.time,
+            },
+        );
+    }
+}
+
+/// Security Hub V2 export jobs, written to S3 as
+/// `securityhub.amazonaws.com` (encrypted with the job's KMS key).
+pub struct SecurityHubExports(pub mws_s3::S3);
+
+impl mws_securityhub::ExportSink for SecurityHubExports {
+    fn put_object(
+        &self,
+        ctx: &RequestContext,
+        bucket: &str,
+        key: &str,
+        body: Vec<u8>,
+        kms_key_arn: Option<&str>,
+    ) -> Result<(), String> {
+        let account = &ctx.caller.account_id;
+        let source_arn = format!("arn:{}:securityhub:{}:{account}:hubv2/default", ctx.partition, ctx.region);
+        let put = mws_s3::ServicePutObject {
+            bucket,
+            key,
+            body,
+            content_type: "application/json",
+            service_principal: SECURITY_HUB_PRINCIPAL,
+            source_account: account,
+            source_arn: &source_arn,
+            acl: Some("bucket-owner-full-control"),
+            partition: &ctx.partition,
+        };
+        match kms_key_arn.filter(|k| !k.is_empty()) {
+            Some(k) => self.0.put_object_as_service_kms(put, k).map(|_| ()),
+            None => self.0.put_object_as_service(put).map(|_| ()).map_err(|e| e.to_string()),
+        }
+    }
+}
