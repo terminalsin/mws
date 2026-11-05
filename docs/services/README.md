@@ -1,6 +1,6 @@
 # Services
 
-MWS emulates 22 AWS services. Each is generated from AWS's official Smithy
+MWS emulates 23 AWS services. Each is generated from AWS's official Smithy
 model, so every operation in the model is routed and validated; operations
 outside the implemented set answer `NotImplemented`. Each service's page lists
 its features in a table: ✅ supported, 🟡 partial, ❌ not supported yet.
@@ -28,6 +28,7 @@ Every service shares the same foundations:
 | [KMS](kms.md) | 56 / 56 | Symmetric, asymmetric, HMAC and post-quantum keys with real cryptography, key policies, grants, rotation |
 | [Private CA](acm-pca.md) | 23 / 23 | Root and subordinate CAs issuing real X.509 certificates, CRLs in S3, OCSP, audit reports |
 | [Certificate Manager](acm.md) | 40 / 40 | Public certificates with real DNS validation through Route 53, private certificates, imports, expiry events |
+| [Security Hub](securityhub.md) | 126 / 126 | ASFF findings with every filter, workflow and history, insights, automation rules, standards and controls, members and Organizations delegated administration, central configuration, the V2 OCSF API with exports to S3 |
 | [Secrets Manager](secretsmanager.md) | 23 / 23 | KMS-sealed secret versions, staging labels, rotation that runs your Lambda function, replicas |
 
 ## Storage
@@ -97,3 +98,5 @@ with the permissions AWS would use:
 - EC2 instances and Lambda functions receive role credentials from STS.
 - Marketplace Metering and the Entitlement Service share one Marketplace
   catalog of products, subscriptions and entitlements.
+- Security Hub registers its delegated administrator in Organizations, sends
+  findings events to EventBridge and exports findings to S3 with KMS.

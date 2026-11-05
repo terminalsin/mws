@@ -43,6 +43,7 @@ mod s3_control_parity;
 mod s3_inventory;
 mod s3_parity;
 mod secretsmanager;
+mod securityhub;
 mod sns;
 mod sns_archive;
 mod sns_encryption;
