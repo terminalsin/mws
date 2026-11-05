@@ -1601,3 +1601,130 @@ impl mws_elasticache::MetricPublisher for ElastiCacheToCloudWatch {
         }
     }
 }
+
+/// S3 object events of buckets with EventBridge enabled: to EventBridge,
+/// and new objects to GuardDuty Malware Protection, which scans those its
+/// plans protect.
+pub(crate) struct S3ObjectEvents {
+    pub events: crate::sinks::S3ToEvents,
+    pub guardduty: mws_guardduty::GuardDuty,
+}
+
+impl mws_s3::EventBridgeSink for S3ObjectEvents {
+    fn object_event(&self, ctx: &RequestContext, e: &mws_s3::ObjectEvent) {
+        self.events.object_event(ctx, e);
+        if !e.event_name.starts_with("ObjectCreated:") {
+            return;
+        }
+        let Ok(runtime) = tokio::runtime::Handle::try_current() else { return };
+        let (gd, ctx, e) = (self.guardduty.clone(), ctx.clone(), e.clone());
+        runtime.spawn(async move {
+            gd.object_created(&ctx, &e.bucket_owner, &e.bucket, &e.key, e.version_id.as_deref()).await;
+        });
+    }
+}
+
+/// Malware Protection for S3 working in S3 as a protection plan's role.
+pub(crate) struct GuardDutyMalwareObjects {
+    pub sts: mws_sts::Sts,
+    pub s3: mws_s3::S3,
+}
+
+impl GuardDutyMalwareObjects {
+    async fn call(
+        &self,
+        role: &RequestContext,
+        op: &str,
+        input: serde_json::Value,
+    ) -> Result<serde_json::Value, String> {
+        mws_core::Service::invoke(&self.s3, role.clone(), op, input).await.map_err(|e| e.code.to_string())
+    }
+}
+
+fn object_target(bucket: &str, key: &str, version_id: Option<&str>) -> serde_json::Value {
+    let mut v = serde_json::json!({ "Bucket": bucket, "Key": key });
+    if let Some(id) = version_id.filter(|v| !v.is_empty() && *v != "null") {
+        v["VersionId"] = serde_json::Value::String(id.to_string());
+    }
+    v
+}
+
+#[async_trait::async_trait]
+impl mws_guardduty::MalwareObjectStore for GuardDutyMalwareObjects {
+    fn assume(&self, ctx: &RequestContext, role_arn: &str, plan_arn: &str) -> Result<RequestContext, String> {
+        let account = plan_arn.split(':').nth(4).unwrap_or(&ctx.caller.account_id);
+        let creds = self
+            .sts
+            .assume_role_as_service(&mws_sts::ServiceAssume {
+                role_arn,
+                service_principal: "malware-protection-plan.guardduty.amazonaws.com",
+                session_name: "GuardDutyMalwareProtection",
+                duration_seconds: 3600,
+                source_account: Some(account),
+                source_arn: Some(plan_arn),
+                now: ctx.received_at,
+            })
+            .map_err(|e| format!("{e:?}"))?;
+        let resolved = self
+            .sts
+            .credential_store()
+            .resolve(&creds.access_key_id, Some(&creds.session_token), ctx.received_at)
+            .map_err(|e| format!("{e:?}"))?
+            .ok_or_else(|| "the role session could not be resolved".to_string())?;
+        Ok(RequestContext { caller: resolved.caller, source_ip: None, ..ctx.clone() })
+    }
+
+    async fn enable_eventbridge(&self, role: &RequestContext, bucket: &str) -> Result<(), String> {
+        let mut config =
+            self.call(role, "GetBucketNotificationConfiguration", serde_json::json!({ "Bucket": bucket })).await?;
+        if config.get("EventBridgeConfiguration").is_some_and(|v| !v.is_null()) {
+            return Ok(());
+        }
+        config["EventBridgeConfiguration"] = serde_json::json!({});
+        let input = serde_json::json!({ "Bucket": bucket, "NotificationConfiguration": config });
+        self.call(role, "PutBucketNotificationConfiguration", input).await.map(|_| ())
+    }
+
+    async fn get_object(
+        &self,
+        role: &RequestContext,
+        bucket: &str,
+        key: &str,
+        version_id: Option<&str>,
+    ) -> Result<mws_guardduty::ScannedObject, String> {
+        use base64::Engine as _;
+        let out = self.call(role, "GetObject", object_target(bucket, key, version_id)).await?;
+        let body = out.get("Body").and_then(serde_json::Value::as_str).unwrap_or("");
+        let text = |k: &str| out.get(k).and_then(serde_json::Value::as_str).map(str::to_string);
+        Ok(mws_guardduty::ScannedObject {
+            body: base64::engine::general_purpose::STANDARD.decode(body).unwrap_or_default(),
+            etag: text("ETag"),
+            version_id: text("VersionId"),
+        })
+    }
+
+    async fn tag_object(
+        &self,
+        role: &RequestContext,
+        bucket: &str,
+        key: &str,
+        version_id: Option<&str>,
+        tag_key: &str,
+        value: &str,
+    ) -> Result<(), String> {
+        let target = object_target(bucket, key, version_id);
+        let current = self.call(role, "GetObjectTagging", target.clone()).await?;
+        let mut tags: Vec<serde_json::Value> = current
+            .get("TagSet")
+            .and_then(serde_json::Value::as_array)
+            .cloned()
+            .unwrap_or_default()
+            .into_iter()
+            .filter(|t| t.get("Key").and_then(serde_json::Value::as_str) != Some(tag_key))
+            .collect();
+        tags.push(serde_json::json!({ "Key": tag_key, "Value": value }));
+        let mut input = target;
+        input["Tagging"] = serde_json::json!({ "TagSet": tags });
+        self.call(role, "PutObjectTagging", input).await.map(|_| ())
+    }
+}

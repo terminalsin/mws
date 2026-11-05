@@ -101,6 +101,44 @@ pub trait SecurityHubSink: Send + Sync {
     fn import_findings(&self, ctx: &RequestContext, account: &str, region: &str, findings: Vec<Value>);
 }
 
+/// An S3 object Malware Protection read for a scan.
+#[derive(Debug, Clone)]
+pub struct ScannedObject {
+    pub body: Vec<u8>,
+    pub etag: Option<String>,
+    pub version_id: Option<String>,
+}
+
+/// What Malware Protection for S3 does in S3, as a protection plan's role.
+#[async_trait::async_trait]
+pub trait MalwareObjectStore: Send + Sync {
+    /// Assume `role_arn` as `malware-protection-plan.guardduty.amazonaws.com`
+    /// for the plan `plan_arn`.
+    fn assume(&self, ctx: &RequestContext, role_arn: &str, plan_arn: &str) -> Result<RequestContext, String>;
+    /// Turn on EventBridge notifications for `bucket`, which deliver the
+    /// object-created events scans start from.
+    async fn enable_eventbridge(&self, role: &RequestContext, bucket: &str) -> Result<(), String>;
+    /// Read an object; `Err` carries S3's error code (`AccessDenied`,
+    /// `NoSuchKey`, ...).
+    async fn get_object(
+        &self,
+        role: &RequestContext,
+        bucket: &str,
+        key: &str,
+        version_id: Option<&str>,
+    ) -> Result<ScannedObject, String>;
+    /// Set the object tag `tag_key` to `value`, keeping its other tags.
+    async fn tag_object(
+        &self,
+        role: &RequestContext,
+        bucket: &str,
+        key: &str,
+        version_id: Option<&str>,
+        tag_key: &str,
+        value: &str,
+    ) -> Result<(), String>;
+}
+
 /// An account of an organization, as GuardDuty sees it.
 #[derive(Debug, Clone)]
 pub struct OrgAccount {
@@ -143,6 +181,7 @@ struct Links {
     exporter: Option<Arc<dyn FindingExporter>>,
     organizations: Option<Arc<dyn OrganizationLink>>,
     security_hub: Option<Arc<dyn SecurityHubSink>>,
+    objects: Option<Arc<dyn MalwareObjectStore>>,
 }
 
 impl GuardDuty {
@@ -168,6 +207,16 @@ impl GuardDuty {
     /// Send findings to Security Hub through `sink`.
     pub fn set_security_hub(&self, sink: Arc<dyn SecurityHubSink>) {
         self.links.write().expect("GuardDuty links lock poisoned").security_hub = Some(sink);
+    }
+
+    /// Read, scan and tag S3 objects for Malware Protection through
+    /// `store`.
+    pub fn set_malware_object_store(&self, store: Arc<dyn MalwareObjectStore>) {
+        self.links.write().expect("GuardDuty links lock poisoned").objects = Some(store);
+    }
+
+    fn objects(&self) -> Option<Arc<dyn MalwareObjectStore>> {
+        self.links.read().expect("GuardDuty links lock poisoned").objects.clone()
     }
 
     fn security_hub(&self) -> Option<Arc<dyn SecurityHubSink>> {

@@ -2,7 +2,7 @@
 
 > Crate: [`mws-guardduty`](../../crates/services/mws-guardduty) · Tests: [`tests/e2e-rust/tests/e2e/guardduty.rs`](../../tests/e2e-rust/tests/e2e/guardduty.rs)
 
-All 102 operations are generated from the AWS model (restJson1) and implemented. MWS does not analyse CloudTrail, VPC flow logs or DNS queries, so findings come from `CreateSampleFindings` and malware scans.
+All 102 operations are generated from the AWS model (restJson1) and implemented. MWS does not analyse CloudTrail, VPC flow logs or DNS queries, so findings come from `CreateSampleFindings` and S3 malware scans.
 
 ✅ supported · 🟡 partial · ❌ not supported
 
@@ -20,7 +20,8 @@ All 102 operations are generated from the AWS model (restJson1) and implemented.
 | Threat lists | 🟡 | IP sets, threat intel sets, threat entity sets and trusted entity sets with AWS's limits; locations are validated but list contents are not fetched or matched. |
 | Members by invitation | ✅ | Create, invite, accept (also the deprecated master operations), decline, delete, disassociate, stop and start monitoring, member detector features; the administrator sees members' findings. |
 | Organizations | ✅ | `EnableOrganizationAdminAccount` (management account) enables trusted access and registers the delegated administrator in Organizations; the administrator adds organization accounts as members without invitations, `AutoEnableOrganizationMembers` `ALL`/`NEW` enables detectors and features as accounts appear, organization statistics. |
-| Malware protection | 🟡 | Protection plans for S3 buckets with prefixes; `SendObjectMalwareScan`, `StartMalwareScan` and EBS scans complete immediately as `NO_THREATS_FOUND`. Objects are not scanned or tagged. |
+| Malware Protection for S3 | ✅ | Plans work in S3 as their role (`malware-protection-plan.guardduty.amazonaws.com` must be trusted): creating one turns on EventBridge notifications for the bucket, or leaves the plan in `ERROR` with the reason. New objects under the plan's prefixes are scanned as they are created (and by `SendObjectMalwareScan`), tagged `GuardDutyMalwareScanStatus` when tagging is enabled, and reported as `GuardDuty Malware Protection Object Scan Result` events; infected objects also raise `Object:S3/MaliciousFile` findings. The scanner detects the EICAR test file, which is how AWS documents testing it; MWS has no signature database for real malware. |
+| EBS malware scans | 🟡 | `StartMalwareScan` and scan history are kept, and every scan completes immediately as `NO_THREATS_FOUND`. |
 | Custom detection rules | 🟡 | A small built-in catalog with associations (`DRY_RUN` expires, `LIVE`) and organization configurations; rules do not run. |
 | Investigations | 🟡 | Stored and complete immediately with no results. |
 | Coverage and usage | 🟡 | Coverage is empty, usage costs are zero, free trial days are 30. |
