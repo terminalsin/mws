@@ -16,6 +16,7 @@ use mws_events::Events;
 use mws_firehose::Firehose;
 use mws_globalaccelerator::GlobalAccelerator;
 use mws_iam::{Iam, IamConfig};
+use mws_imagebuilder::ImageBuilder;
 use mws_kinesis::Kinesis;
 use mws_kms::Kms;
 use mws_lambda::Lambda;
@@ -117,6 +118,7 @@ pub struct Mws {
     pub ram: Ram,
     pub scep: ScepConnector,
     pub securityhub: SecurityHub,
+    pub imagebuilder: ImageBuilder,
     pub elb: Elb,
 }
 
@@ -256,6 +258,12 @@ fn build_with_store(config: Config, store: Option<Arc<Store>>) -> Mws {
     securityhub.set_organizations(Arc::new(links::SecurityHubOrganizations(organizations.clone())));
     securityhub.set_event_sink(Arc::new(links::SecurityHubToEvents(events.clone())));
     securityhub.set_export_sink(Arc::new(links::SecurityHubExports(s3.clone())));
+    let imagebuilder = ImageBuilder::with_ec2(ec2.clone());
+    imagebuilder.set_s3(Arc::new(s3.clone()));
+    imagebuilder.set_ssm(Arc::new(ssm.clone()));
+    imagebuilder.set_sns(Arc::new(sns.clone()));
+    imagebuilder.set_logs(Arc::new(logs.clone()));
+    imagebuilder.set_events(Arc::new(sinks::ImageBuilderEvents(events.clone())));
     let elb = Elb::new(ElbConfig::from_env())
         .with_ec2(ec2.clone())
         .with_acm(acm.clone())
@@ -304,6 +312,7 @@ fn build_with_store(config: Config, store: Option<Arc<Store>>) -> Mws {
         .service(Arc::new(ram.clone()))
         .service(Arc::new(scep.clone()))
         .service(Arc::new(securityhub.clone()))
+        .service(Arc::new(imagebuilder.clone()))
         // Both ELB APIs sign as `elasticloadbalancing`; the Classic one
         // claims requests with its `2012-06-01` Version.
         .service(Arc::new(elb.clone()))
@@ -333,6 +342,7 @@ fn build_with_store(config: Config, store: Option<Arc<Store>>) -> Mws {
         ram,
         scep,
         securityhub,
+        imagebuilder,
         elb,
     }
 }

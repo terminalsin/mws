@@ -44,6 +44,7 @@ members = [
     "crates/services/mws-ram",
     "crates/services/mws-pca-connector-scep",
     "crates/services/mws-securityhub",
+    "crates/services/mws-imagebuilder",
     "crates/services/mws-elb",
     "tests/e2e-rust",
 ]
@@ -99,6 +100,7 @@ mws-globalaccelerator = { path = "crates/services/mws-globalaccelerator" }
 mws-ram = { path = "crates/services/mws-ram" }
 mws-pca-connector-scep = { path = "crates/services/mws-pca-connector-scep" }
 mws-securityhub = { path = "crates/services/mws-securityhub" }
+mws-imagebuilder = { path = "crates/services/mws-imagebuilder" }
 mws-elb = { path = "crates/services/mws-elb" }
 
 # external
@@ -144,3 +146,4 @@ zip = { version = "2", default-features = false, features = ["deflate"] }
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 uuid = { version = "1", features = ["v4"] }
 x509-parser = { version = "0.16", features = ["verify"] }
+yaml-rust2 = "0.10"

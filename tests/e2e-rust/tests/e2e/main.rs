@@ -21,6 +21,7 @@ mod globalaccelerator;
 mod iam;
 mod iam_advanced;
 mod iam_parity;
+mod imagebuilder;
 mod kinesis;
 mod kinesis_parity;
 mod kinesis_targets;

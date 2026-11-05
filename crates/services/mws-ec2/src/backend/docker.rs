@@ -23,7 +23,9 @@ use std::process::Stdio;
 
 use tokio::process::Command;
 
-use super::{AclRule, AllowRule, BackendError, ComputeBackend, Firewall, LaunchSpec, Launched, Protocol};
+use super::{
+    AclRule, AllowRule, BackendError, CommandOutput, ComputeBackend, Firewall, LaunchSpec, Launched, Protocol,
+};
 
 /// The default helper image: a small Alpine image with iptables.
 pub const DEFAULT_NETFILTER_IMAGE: &str = "rancher/klipper-lb:v0.4.13";
@@ -313,6 +315,30 @@ impl ComputeBackend for DockerBackend {
     async fn create_image(&self, handle: &str, image_ref: &str) -> Result<String, BackendError> {
         self.run(&["commit".into(), handle.into(), image_ref.into()]).await?;
         Ok(image_ref.to_string())
+    }
+
+    async fn exec(&self, handle: &str, script: &str) -> Result<Option<CommandOutput>, BackendError> {
+        // Prefer bash, as the SSM agent does; small images only have sh.
+        let out = Command::new(&self.cli)
+            .args([
+                "exec",
+                "-u",
+                "0",
+                handle,
+                "/bin/sh",
+                "-c",
+                "if command -v bash >/dev/null 2>&1; then exec bash -c \"$0\"; else exec sh -c \"$0\"; fi",
+                script,
+            ])
+            .stdin(Stdio::null())
+            .output()
+            .await
+            .map_err(|e| BackendError(format!("running {}: {e}", self.cli)))?;
+        Ok(Some(CommandOutput {
+            exit_code: out.status.code().unwrap_or(-1),
+            stdout: String::from_utf8_lossy(&out.stdout).into_owned(),
+            stderr: String::from_utf8_lossy(&out.stderr).into_owned(),
+        }))
     }
 
     async fn delete_image(&self, image_ref: &str) -> Result<(), BackendError> {

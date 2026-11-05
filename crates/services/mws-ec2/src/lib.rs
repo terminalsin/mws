@@ -34,7 +34,7 @@ use std::sync::{Arc, Mutex, MutexGuard, OnceLock};
 
 use mws_core::{HttpRequest, HttpResponse, RequestContext, Service, ServiceError};
 
-pub use backend::{BackendChoice, ComputeBackend, DockerBackend, MetadataBackend};
+pub use backend::{BackendChoice, CommandOutput, ComputeBackend, DockerBackend, MetadataBackend};
 pub use public::{InstanceInfo, SecurityGroupInfo, SubnetInfo, VpcInfo};
 use state::{RegionState, State};
 
@@ -113,8 +113,48 @@ impl Ec2 {
         self.inner.backend.name()
     }
 
+    /// Run a shell script as root inside a running instance, the way the
+    /// SSM agent runs commands for other services (EC2 Image Builder runs
+    /// its build components this way). `Ok(None)` when the compute backend
+    /// runs nothing (metadata only); an error when the instance does not
+    /// exist or is not running.
+    pub async fn run_command_on_instance(
+        &self,
+        account: &str,
+        region: &str,
+        instance_id: &str,
+        script: &str,
+    ) -> Result<Option<CommandOutput>, String> {
+        let handle = {
+            let state = self.lock();
+            let inst = state
+                .regions
+                .get(&State::key(account, region))
+                .and_then(|r| r.instances.get(instance_id))
+                .ok_or_else(|| format!("instance {instance_id} does not exist"))?;
+            let running = inst.instance.state.as_ref().and_then(|s| s.name.as_deref()) == Some("running");
+            if !running {
+                return Err(format!("instance {instance_id} is not running"));
+            }
+            inst.handle.clone().ok_or_else(|| format!("instance {instance_id} has not started"))?
+        };
+        self.backend().exec(&handle, script).await.map_err(|e| e.to_string())
+    }
+
     pub(crate) fn backend(&self) -> Arc<dyn ComputeBackend> {
         self.inner.backend.clone()
+    }
+
+    /// An instance profile in `account` (by name or ARN), as instances
+    /// launched with it would get it. `None` when it does not exist or no
+    /// IAM is wired in.
+    pub fn instance_profile(&self, account: &str, name_or_arn: &str) -> Option<InstanceProfile> {
+        self.roles()?.instance_profile(account, name_or_arn)
+    }
+
+    /// Whether instance profiles can be looked up (IAM is wired in).
+    pub fn knows_instance_profiles(&self) -> bool {
+        self.roles().is_some()
     }
 
     pub(crate) fn roles(&self) -> Option<&Arc<dyn InstanceRoleCredentials>> {
