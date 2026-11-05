@@ -50,6 +50,7 @@ Every service shares the same foundations:
 | [EC2 Auto Scaling](autoscaling.md) | 68 / 68 | Groups that launch, replace and terminate real EC2 instances, lifecycle hooks, suspended processes, simple, step and target tracking policies driven by CloudWatch alarms, schedules, instance refreshes, warm pools, load balancer registration |
 | [EC2 Image Builder](imagebuilder.md) | 77 / 77 | Components, recipes and pipelines whose builds launch EC2 instances, run AWSTOE components and produce real AMIs, distribution, lifecycle policies |
 | [Elastic Load Balancing](elb.md) | 80 / 80 | Application, Network and Classic Load Balancers whose listeners really proxy: rules, stickiness, HTTPS with ACM certificates, mutual TLS, Lambda targets, health checks, metrics |
+| [RDS and Aurora](rds.md) | 103 / 168 | PostgreSQL, MySQL and MariaDB instances and Aurora clusters that really run in Docker, snapshots and restores, read replicas, global databases, managed master passwords |
 | [Route 53](route53.md) | 71 / 71 | Public and private hosted zones, all routing policies, health checks, DNSSEC key management, an optional real DNS responder |
 | [Amplify Hosting](amplify.md) | 37 / 37 | Apps and branches whose deployments are really served: manual and S3 deploys, Git builds, rewrites, basic auth, custom domains |
 
@@ -114,6 +115,9 @@ with the permissions AWS would use:
 - Load balancers place themselves in EC2 subnets, serve ACM certificates,
   forward to EC2 instances, IP addresses and Lambda functions, read trust
   stores from S3 and publish CloudWatch metrics.
+- RDS places databases in EC2 subnets and security groups, keeps managed
+  master passwords in Secrets Manager (and rotates them), encrypts with KMS,
+  and sends events to EventBridge and SNS.
 - Marketplace Metering and the Entitlement Service share one Marketplace
   catalog of products, subscriptions and entitlements.
 - Security Hub registers its delegated administrator in Organizations, sends

@@ -16,14 +16,24 @@ use crate::xml_ser::XmlSer;
 /// awsQuery service whose model moved to awsJson (`awsQueryCompatible`, as
 /// SQS) keep answering awsQuery requests from older SDKs.
 /// `validation_error` is the code request validation errors carry.
-pub fn generate(model: &Model, xml_namespace: Option<&str>, validation_error: &str) -> String {
-    Gen::new(model, xml_namespace, validation_error).run()
+/// `operations` limits generation to those operations (the others still
+/// dispatch, answering `NotImplemented`); `None` generates every one.
+pub fn generate(
+    model: &Model,
+    xml_namespace: Option<&str>,
+    validation_error: &str,
+    operations: Option<&[String]>,
+) -> String {
+    let mut g = Gen::new(model, xml_namespace, validation_error);
+    g.operations = operations;
+    g.run()
 }
 
 struct Gen<'m> {
     model: &'m Model,
     xml_namespace: Option<&'m str>,
     validation_error: &'m str,
+    operations: Option<&'m [String]>,
     types: TypeGen<'m>,
     out: String,
     constraints: Constraints,
@@ -35,6 +45,7 @@ impl<'m> Gen<'m> {
             model,
             xml_namespace,
             validation_error,
+            operations: None,
             types: TypeGen::new(model),
             out: String::new(),
             constraints: Constraints::default(),
@@ -50,7 +61,17 @@ impl<'m> Gen<'m> {
             "{} does not use the awsQuery protocol",
             service.id
         );
-        let ops = model.operations(service);
+        let all_ops = model.operations(service);
+        if let Some(wanted) = self.operations {
+            for w in wanted {
+                assert!(all_ops.iter().any(|o| o.name() == w), "{} has no operation {w}", service.id);
+            }
+        }
+        let ops: Vec<&Shape> = all_ops
+            .iter()
+            .copied()
+            .filter(|o| self.operations.is_none_or(|w| w.iter().any(|n| n == o.name())))
+            .collect();
         let namespace = self
             .xml_namespace
             .or_else(|| service.get_trait("xmlNamespace").and_then(|v| v.get("uri")).and_then(Value::as_str))
@@ -80,7 +101,7 @@ impl<'m> Gen<'m> {
         let _ = writeln!(
             w,
             "/// Every operation in the model, by wire name.\npub const OPERATIONS: &[&str] = &[{}];",
-            ops.iter().map(|o| rust_str(o.name())).collect::<Vec<_>>().join(", ")
+            all_ops.iter().map(|o| rust_str(o.name())).collect::<Vec<_>>().join(", ")
         );
 
         // ---- types ----
@@ -184,6 +205,10 @@ impl<'m> Gen<'m> {
             }
             let _ = writeln!(w, "        }}");
         }
+        let _ = writeln!(
+            w,
+            "        Some(other) if OPERATIONS.contains(&other) => Err(ServiceError::not_implemented(other)),"
+        );
         let _ = writeln!(w, "        Some(other) => Err(ServiceError::invalid_action(other)),");
         let _ = writeln!(w, "    }};");
         let _ = writeln!(w, "    match result {{");

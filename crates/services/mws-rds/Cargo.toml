@@ -1,0 +1,26 @@
+[package]
+name = "mws-rds"
+description = "Amazon RDS and Aurora for MWS: DB instances and clusters run by a pluggable database backend (real PostgreSQL/MySQL containers, or metadata only)."
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+async-trait.workspace = true
+chrono.workspace = true
+hex.workspace = true
+mws-core.workspace = true
+mws-kms.workspace = true
+mws-proto-json.workspace = true
+mws-proto-query.workspace = true
+mws-secretsmanager.workspace = true
+rand.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+sha2.workspace = true
+tokio = { workspace = true, features = ["process", "io-util"] }
+tracing.workspace = true
+uuid.workspace = true
+
+[build-dependencies]
+mws-codegen.workspace = true
