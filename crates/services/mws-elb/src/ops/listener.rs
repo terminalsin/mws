@@ -48,8 +48,9 @@ impl Elb {
 
     fn claim_certificates(&self, listener_arn: &str, arns: impl IntoIterator<Item = String>) {
         if let Some(acm) = self.acm() {
-            let lb = names::lb_path_of_listener(listener_arn)
-                .and_then(|p| listener_arn.split_once(":listener/").map(|(head, _)| format!("{head}:loadbalancer/{p}")));
+            let lb = names::lb_path_of_listener(listener_arn).and_then(|p| {
+                listener_arn.split_once(":listener/").map(|(head, _)| format!("{head}:loadbalancer/{p}"))
+            });
             for arn in arns {
                 acm.set_in_use(&arn, lb.as_deref().unwrap_or(listener_arn), true);
             }
@@ -101,12 +102,15 @@ impl Elb {
         let (protocol, port) = match lb_type.as_str() {
             "gateway" => {
                 if input.protocol.is_some() || input.port.is_some() {
-                    return Err(validation("Protocol and port cannot be specified for Gateway Load Balancer listeners"));
+                    return Err(validation(
+                        "Protocol and port cannot be specified for Gateway Load Balancer listeners",
+                    ));
                 }
                 (String::new(), None)
             }
             _ => {
-                let protocol = input.protocol.clone().ok_or_else(|| validation("A listener protocol must be specified"))?;
+                let protocol =
+                    input.protocol.clone().ok_or_else(|| validation("A listener protocol must be specified"))?;
                 if !protocols_for(&lb_type).contains(&protocol.as_str()) {
                     return Err(errors::unsupported_protocol(format!(
                         "Protocol '{protocol}' is not supported for load balancers of type '{lb_type}'"
@@ -119,7 +123,9 @@ impl Elb {
         let tls = matches!(protocol.as_str(), "HTTPS" | "TLS");
         let certs: Vec<t::Certificate> = input.certificates.clone().unwrap_or_default();
         if tls && certs.is_empty() {
-            return Err(errors::certificate_not_found(format!("A certificate must be specified for {protocol} listeners")));
+            return Err(errors::certificate_not_found(format!(
+                "A certificate must be specified for {protocol} listeners"
+            )));
         }
         if !tls && !certs.is_empty() {
             return Err(validation(format!("Certificates cannot be specified for {protocol} listeners")));
@@ -144,8 +150,13 @@ impl Elb {
             if protocol != "TLS" {
                 return Err(errors::alpn_policy_not_supported("ALPN policies are only supported for TLS listeners"));
             }
-            if alpn.len() != 1 || !matches!(alpn[0].as_str(), "HTTP1Only" | "HTTP2Only" | "HTTP2Optional" | "HTTP2Preferred" | "None") {
-                return Err(errors::alpn_policy_not_supported(format!("ALPN policy '{}' is not supported", alpn.join(","))));
+            if alpn.len() != 1
+                || !matches!(alpn[0].as_str(), "HTTP1Only" | "HTTP2Only" | "HTTP2Optional" | "HTTP2Preferred" | "None")
+            {
+                return Err(errors::alpn_policy_not_supported(format!(
+                    "ALPN policy '{}' is not supported",
+                    alpn.join(",")
+                )));
             }
         }
         let mutual = self.check_mutual_authentication(ctx, &protocol, input.mutual_authentication.clone())?;
@@ -156,7 +167,9 @@ impl Elb {
         let out = self.with_region(ctx, |r| {
             let actions =
                 super::actions::normalize(r, &input.load_balancer_arn, &lb_type, &protocol, &input.default_actions)?;
-            if let Some(existing) = r.listeners.values().find(|l| l.lb_arn() == input.load_balancer_arn && l.listener.port == port) {
+            if let Some(existing) =
+                r.listeners.values().find(|l| l.lb_arn() == input.load_balancer_arn && l.listener.port == port)
+            {
                 let same = existing.protocol() == protocol
                     && existing.listener.default_actions.as_ref() == Some(&actions)
                     && existing.listener.certificates.clone().unwrap_or_default() == certs;
@@ -173,7 +186,9 @@ impl Elb {
             }
             let count = r.listeners.values().filter(|l| l.lb_arn() == input.load_balancer_arn).count();
             if count >= 50 {
-                return Err(errors::too_many_listeners("You have reached the maximum number of listeners for this load balancer"));
+                return Err(errors::too_many_listeners(
+                    "You have reached the maximum number of listeners for this load balancer",
+                ));
             }
             let listener = t::Listener {
                 listener_arn: Some(arn.clone()),
@@ -183,7 +198,11 @@ impl Elb {
                 certificates: tls.then(|| certs.clone()),
                 ssl_policy: ssl_policy.clone(),
                 default_actions: Some(actions.clone()),
-                alpn_policy: if protocol == "TLS" { Some(input.alpn_policy.clone().unwrap_or_else(|| vec!["None".into()])) } else { None },
+                alpn_policy: if protocol == "TLS" {
+                    Some(input.alpn_policy.clone().unwrap_or_else(|| vec!["None".into()]))
+                } else {
+                    None
+                },
                 mutual_authentication: mutual.clone(),
             };
             let rule_arn = names::arn(ctx, &account, &format!("listener-rule/{lb_path}/{id}/{}", names::hex_id(16)));
@@ -237,11 +256,15 @@ impl Elb {
         match mode.as_str() {
             "off" | "passthrough" => {
                 if m.trust_store_arn.is_some() {
-                    return Err(validation(format!("A trust store cannot be specified with mutual authentication mode '{mode}'")));
+                    return Err(validation(format!(
+                        "A trust store cannot be specified with mutual authentication mode '{mode}'"
+                    )));
                 }
             }
             "verify" => {
-                let ts = m.trust_store_arn.clone().ok_or_else(|| validation("A trust store must be specified for mutual authentication mode 'verify'"))?;
+                let ts = m.trust_store_arn.clone().ok_or_else(|| {
+                    validation("A trust store must be specified for mutual authentication mode 'verify'")
+                })?;
                 let status = self.with_region(ctx, |r| r.trust_stores.get(&ts).map(|s| s.store.status.clone()));
                 match status {
                     None => return Err(errors::trust_store_not_found(format!("Trust store '{ts}' not found"))),
@@ -273,7 +296,8 @@ impl Elb {
         let all = self.with_region(ctx, |r| -> Result<Vec<t::Listener>, ServiceError> {
             if let Some(lb) = &input.load_balancer_arn {
                 super::lb::find_lb(r, lb)?;
-                let mut v: Vec<_> = r.listeners.values().filter(|l| l.lb_arn() == lb).map(|l| l.listener.clone()).collect();
+                let mut v: Vec<_> =
+                    r.listeners.values().filter(|l| l.lb_arn() == lb).map(|l| l.listener.clone()).collect();
                 v.sort_by_key(|l| l.port);
                 return Ok(v);
             }
@@ -305,7 +329,9 @@ impl Elb {
         let mut new_certs = Vec::new();
         if let Some(c) = &input.certificates {
             if c.len() > 1 {
-                return Err(errors::too_many_certificates("You can specify only one default certificate for a listener"));
+                return Err(errors::too_many_certificates(
+                    "You can specify only one default certificate for a listener",
+                ));
             }
             new_certs = c.iter().filter_map(|c| c.certificate_arn.clone()).collect();
             self.check_certificates(ctx, &new_certs)?;
@@ -313,9 +339,15 @@ impl Elb {
         }
         if tls {
             if listener.certificates.as_ref().is_none_or(Vec::is_empty) {
-                return Err(errors::certificate_not_found(format!("A certificate must be specified for {protocol} listeners")));
+                return Err(errors::certificate_not_found(format!(
+                    "A certificate must be specified for {protocol} listeners"
+                )));
             }
-            let p = input.ssl_policy.clone().or(listener.ssl_policy.clone()).unwrap_or_else(|| catalog::DEFAULT_SSL_POLICY.into());
+            let p = input
+                .ssl_policy
+                .clone()
+                .or(listener.ssl_policy.clone())
+                .unwrap_or_else(|| catalog::DEFAULT_SSL_POLICY.into());
             if catalog::ssl_policy(&p).is_none() {
                 return Err(errors::ssl_policy_not_found(format!("SSL policy '{p}' not found")));
             }
@@ -350,7 +382,9 @@ impl Elb {
                     super::actions::normalize(r, current.lb_arn(), &lb_type, &protocol, &existing)?
                 }
             };
-            if r.listeners.values().any(|l| l.arn() != input.listener_arn && l.lb_arn() == current.lb_arn() && l.listener.port == listener.port) {
+            if r.listeners.values().any(|l| {
+                l.arn() != input.listener_arn && l.lb_arn() == current.lb_arn() && l.listener.port == listener.port
+            }) {
                 return Err(errors::duplicate_listener(format!(
                     "A listener already exists on this port for this load balancer '{}'",
                     current.lb_arn()
@@ -371,7 +405,8 @@ impl Elb {
             }
             Ok(listener.clone())
         })?;
-        let old: Vec<String> = current.listener.certificates.iter().flatten().filter_map(|c| c.certificate_arn.clone()).collect();
+        let old: Vec<String> =
+            current.listener.certificates.iter().flatten().filter_map(|c| c.certificate_arn.clone()).collect();
         self.claim_certificates(&input.listener_arn, new_certs.clone());
         let dropped: Vec<String> = if tls {
             old.into_iter().filter(|c| !new_certs.contains(c) && input.certificates.is_some()).collect()
@@ -413,7 +448,12 @@ impl Elb {
         let removed = self.with_region(ctx, |r| {
             let l = r.listeners.remove(&input.listener_arn).ok_or_else(listener_not_found)?;
             r.tags.remove(&input.listener_arn);
-            let rules: Vec<String> = r.rules.values().filter(|x| x.listener_arn == input.listener_arn).map(|x| x.arn().to_string()).collect();
+            let rules: Vec<String> = r
+                .rules
+                .values()
+                .filter(|x| x.listener_arn == input.listener_arn)
+                .map(|x| x.arn().to_string())
+                .collect();
             for rule in rules {
                 r.rules.remove(&rule);
                 r.tags.remove(&rule);
@@ -453,7 +493,9 @@ impl Elb {
             for a in &arns {
                 if !l.extra_certificates.contains(a) && l.default_certificate() != Some(a.as_str()) {
                     if l.extra_certificates.len() >= 25 {
-                        return Err(errors::too_many_certificates("You have reached the maximum number of certificates for this listener"));
+                        return Err(errors::too_many_certificates(
+                            "You have reached the maximum number of certificates for this listener",
+                        ));
                     }
                     l.extra_certificates.push(a.clone());
                 }
@@ -462,7 +504,9 @@ impl Elb {
         })?;
         self.claim_certificates(&input.listener_arn, arns.clone());
         Ok(t::AddListenerCertificatesOutput {
-            certificates: Some(arns.into_iter().map(|a| t::Certificate { certificate_arn: Some(a), is_default: None }).collect()),
+            certificates: Some(
+                arns.into_iter().map(|a| t::Certificate { certificate_arn: Some(a), is_default: None }).collect(),
+            ),
         })
     }
 
@@ -477,7 +521,9 @@ impl Elb {
             let l = r.listeners.get_mut(&input.listener_arn).ok_or_else(listener_not_found)?;
             for a in &arns {
                 if l.default_certificate() == Some(a.as_str()) {
-                    return Err(errors::operation_not_permitted("You cannot remove the default certificate of a listener"));
+                    return Err(errors::operation_not_permitted(
+                        "You cannot remove the default certificate of a listener",
+                    ));
                 }
             }
             l.extra_certificates.retain(|c| !arns.contains(c));
@@ -500,7 +546,11 @@ impl Elb {
                 .map(|d| t::Certificate { certificate_arn: Some(d.to_string()), is_default: Some(true) })
                 .into_iter()
                 .collect();
-            v.extend(l.extra_certificates.iter().map(|c| t::Certificate { certificate_arn: Some(c.clone()), is_default: Some(false) }));
+            v.extend(
+                l.extra_certificates
+                    .iter()
+                    .map(|c| t::Certificate { certificate_arn: Some(c.clone()), is_default: Some(false) }),
+            );
             Ok::<_, ServiceError>(v)
         })?;
         let (items, next) = names::page(&all, input.marker.as_deref(), input.page_size, 400)?;
@@ -534,7 +584,8 @@ impl Elb {
                 if !l.attributes.contains_key(&key) {
                     return Err(validation(format!("Listener attribute key '{key}' is not recognized")));
                 }
-                if key == "tcp.idle_timeout.seconds" && value.parse::<u32>().map_or(true, |v| !(60..=6000).contains(&v)) {
+                if key == "tcp.idle_timeout.seconds" && value.parse::<u32>().map_or(true, |v| !(60..=6000).contains(&v))
+                {
                     return Err(validation("The TCP idle timeout must be between 60 and 6000 seconds"));
                 }
                 if key == "routing.http.response.server.enabled" && !matches!(value.as_str(), "true" | "false") {

@@ -31,7 +31,11 @@ fn check_exists(r: &RegionState, arn: &str) -> Result<(), ServiceError> {
 }
 
 impl Elb {
-    pub(crate) fn add_tags_op(&self, ctx: &RequestContext, input: t::AddTagsInput) -> Result<t::AddTagsOutput, ServiceError> {
+    pub(crate) fn add_tags_op(
+        &self,
+        ctx: &RequestContext,
+        input: t::AddTagsInput,
+    ) -> Result<t::AddTagsOutput, ServiceError> {
         names::check_tags(&input.tags)?;
         for arn in &input.resource_arns {
             let ctx_tags = names::merge(
@@ -54,7 +58,9 @@ impl Elb {
                     }
                 }
                 if next.len() > 50 {
-                    return Err(errors::too_many_tags("The resource has too many tags; a resource can have at most 50 tags"));
+                    return Err(errors::too_many_tags(
+                        "The resource has too many tags; a resource can have at most 50 tags",
+                    ));
                 }
                 *tags = next;
             }
@@ -62,7 +68,11 @@ impl Elb {
         })
     }
 
-    pub(crate) fn remove_tags_op(&self, ctx: &RequestContext, input: t::RemoveTagsInput) -> Result<t::RemoveTagsOutput, ServiceError> {
+    pub(crate) fn remove_tags_op(
+        &self,
+        ctx: &RequestContext,
+        input: t::RemoveTagsInput,
+    ) -> Result<t::RemoveTagsOutput, ServiceError> {
         for arn in &input.resource_arns {
             let mut c = names::resource_tag_context(&self.tags_of(ctx, arn));
             c.insert("aws:TagKeys".into(), input.tag_keys.clone());
@@ -84,7 +94,11 @@ impl Elb {
         })
     }
 
-    pub(crate) fn describe_tags_op(&self, ctx: &RequestContext, input: t::DescribeTagsInput) -> Result<t::DescribeTagsOutput, ServiceError> {
+    pub(crate) fn describe_tags_op(
+        &self,
+        ctx: &RequestContext,
+        input: t::DescribeTagsInput,
+    ) -> Result<t::DescribeTagsOutput, ServiceError> {
         names::authorize(ctx, "DescribeTags", "*", Default::default())?;
         if input.resource_arns.len() > 20 {
             return Err(validation("You can describe the tags of at most 20 resources at a time"));
@@ -93,7 +107,10 @@ impl Elb {
             let mut out = Vec::new();
             for arn in &input.resource_arns {
                 check_exists(r, arn)?;
-                out.push(t::TagDescription { resource_arn: Some(arn.clone()), tags: Some(r.tags.get(arn).cloned().unwrap_or_default()) });
+                out.push(t::TagDescription {
+                    resource_arn: Some(arn.clone()),
+                    tags: Some(r.tags.get(arn).cloned().unwrap_or_default()),
+                });
             }
             Ok(t::DescribeTagsOutput { tag_descriptions: Some(out) })
         })
@@ -164,9 +181,15 @@ impl Elb {
         // resource has one.
         self.with_region(ctx, |r| {
             if !r.trust_stores.contains_key(&input.resource_arn) {
-                return Err(errors::resource_not_found(format!("The specified resource '{}' does not exist", input.resource_arn)));
+                return Err(errors::resource_not_found(format!(
+                    "The specified resource '{}' does not exist",
+                    input.resource_arn
+                )));
             }
-            Err(errors::resource_not_found(format!("The specified resource '{}' has no resource policy", input.resource_arn)))
+            Err(errors::resource_not_found(format!(
+                "The specified resource '{}' has no resource policy",
+                input.resource_arn
+            )))
         })
     }
 }

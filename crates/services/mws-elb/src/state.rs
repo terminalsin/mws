@@ -168,6 +168,9 @@ pub struct Revocation {
     pub source: (String, String, Option<String>),
     /// Revoked serial numbers (hex, lower case).
     pub serials: Vec<String>,
+    /// The CRL itself (DER), which listeners check client certificates
+    /// against.
+    pub crl: Vec<u8>,
 }
 
 // ---- Classic Load Balancers ---------------------------------------------------

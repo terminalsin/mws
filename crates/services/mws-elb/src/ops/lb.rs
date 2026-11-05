@@ -40,7 +40,8 @@ impl Elb {
                 return Err(validation("You can specify subnets or subnet mappings, not both"));
             }
             (Some(s), None) => {
-                wanted = s.iter().map(|id| t::SubnetMapping { subnet_id: Some(id.clone()), ..Default::default() }).collect()
+                wanted =
+                    s.iter().map(|id| t::SubnetMapping { subnet_id: Some(id.clone()), ..Default::default() }).collect()
             }
             (None, Some(m)) => wanted.clone_from(m),
             (None, None) => {}
@@ -92,19 +93,19 @@ impl Elb {
                     )));
                 }
             }
-            let addresses = if m.allocation_id.is_some() || m.private_i_pv4_address.is_some() || m.i_pv6_address.is_some()
-            {
-                Some(vec![t::LoadBalancerAddress {
-                    ip_address: None,
-                    allocation_id: m.allocation_id.clone(),
-                    private_i_pv4_address: m.private_i_pv4_address.clone(),
-                    i_pv6_address: m.i_pv6_address.clone(),
-                }])
-            } else if ty == "network" {
-                Some(Vec::new())
-            } else {
-                None
-            };
+            let addresses =
+                if m.allocation_id.is_some() || m.private_i_pv4_address.is_some() || m.i_pv6_address.is_some() {
+                    Some(vec![t::LoadBalancerAddress {
+                        ip_address: None,
+                        allocation_id: m.allocation_id.clone(),
+                        private_i_pv4_address: m.private_i_pv4_address.clone(),
+                        i_pv6_address: m.i_pv6_address.clone(),
+                    }])
+                } else if ty == "network" {
+                    Some(Vec::new())
+                } else {
+                    None
+                };
             zones.push(t::AvailabilityZone {
                 zone_name: Some(info.availability_zone.clone()),
                 subnet_id: Some(id),
@@ -209,12 +210,15 @@ impl Elb {
                 _ => "application-load-balancers",
             });
             if count >= limit {
-                return Err(errors::too_many_load_balancers("You have reached the maximum number of load balancers for your account"));
+                return Err(errors::too_many_load_balancers(
+                    "You have reached the maximum number of load balancers for your account",
+                ));
             }
             let lb = t::LoadBalancer {
                 load_balancer_arn: Some(arn.clone()),
                 dns_name: (ty != "gateway").then(|| names::dns_name(ctx, &ty, &input.name, &scheme)),
-                canonical_hosted_zone_id: (ty != "gateway").then(|| names::canonical_hosted_zone(&ctx.region, &ty).into()),
+                canonical_hosted_zone_id: (ty != "gateway")
+                    .then(|| names::canonical_hosted_zone(&ctx.region, &ty).into()),
                 created_time: Some(ctx.received_at),
                 load_balancer_name: Some(input.name.clone()),
                 scheme: (ty != "gateway").then(|| scheme.clone()),
@@ -229,9 +233,8 @@ impl Elb {
                 enforce_security_group_inbound_rules_on_private_link_traffic: (ty == "network"
                     && !security_groups.is_empty())
                 .then(|| "on".into()),
-                enable_prefix_for_ipv6_source_nat: (ty == "network").then(|| {
-                    input.enable_prefix_for_ipv6_source_nat.clone().unwrap_or_else(|| "off".into())
-                }),
+                enable_prefix_for_ipv6_source_nat: (ty == "network")
+                    .then(|| input.enable_prefix_for_ipv6_source_nat.clone().unwrap_or_else(|| "off".into())),
                 ipam_pools: input.ipam_pools.clone(),
             };
             r.load_balancers.insert(
@@ -309,8 +312,7 @@ impl Elb {
             }
             r.load_balancers.remove(&arn);
             r.tags.remove(&arn);
-            let listeners: Vec<_> =
-                r.listeners.values().filter(|l| l.lb_arn() == arn).map(|l| l.clone()).collect();
+            let listeners: Vec<_> = r.listeners.values().filter(|l| l.lb_arn() == arn).cloned().collect();
             for l in &listeners {
                 r.listeners.remove(l.arn());
                 r.tags.remove(l.arn());
@@ -324,7 +326,15 @@ impl Elb {
             Ok(listeners)
         })?;
         for l in removed_listeners {
-            self.release_certificates(l.arn(), l.listener.certificates.iter().flatten().filter_map(|c| c.certificate_arn.clone()).chain(l.extra_certificates.iter().cloned()));
+            self.release_certificates(
+                l.arn(),
+                l.listener
+                    .certificates
+                    .iter()
+                    .flatten()
+                    .filter_map(|c| c.certificate_arn.clone())
+                    .chain(l.extra_certificates.iter().cloned()),
+            );
         }
         self.reconcile();
         Ok(t::DeleteLoadBalancerOutput {})
@@ -339,8 +349,7 @@ impl Elb {
         let (ty, vpc, current) = self.with_region(ctx, |r| {
             find_lb(r, &input.load_balancer_arn).map(|l| (l.ty().to_string(), l.lb.vpc_id.clone(), l.zones()))
         })?;
-        let placement =
-            self.place(ctx, &ty, input.subnets.as_ref(), input.subnet_mappings.as_ref(), vpc.as_deref())?;
+        let placement = self.place(ctx, &ty, input.subnets.as_ref(), input.subnet_mappings.as_ref(), vpc.as_deref())?;
         if ty == "network" {
             // Network Load Balancers can add subnets but not remove them.
             let new: BTreeSet<_> = placement.zones.iter().filter_map(|z| z.zone_name.clone()).collect();
@@ -372,12 +381,13 @@ impl Elb {
     ) -> Result<t::SetSecurityGroupsOutput, ServiceError> {
         self.authorize_on(ctx, "SetSecurityGroups", &input.load_balancer_arn)?;
         let (ty, vpc, had) = self.with_region(ctx, |r| {
-            find_lb(r, &input.load_balancer_arn).map(|l| {
-                (l.ty().to_string(), l.lb.vpc_id.clone().unwrap_or_default(), l.lb.security_groups.clone())
-            })
+            find_lb(r, &input.load_balancer_arn)
+                .map(|l| (l.ty().to_string(), l.lb.vpc_id.clone().unwrap_or_default(), l.lb.security_groups.clone()))
         })?;
         match ty.as_str() {
-            "gateway" => return Err(validation("Security groups are not supported for load balancers of type 'gateway'")),
+            "gateway" => {
+                return Err(validation("Security groups are not supported for load balancers of type 'gateway'"))
+            }
             "network" if had.as_ref().is_none_or(Vec::is_empty) && !input.security_groups.is_empty() => {
                 return Err(validation(
                     "You cannot set security groups for a Network Load Balancer that was created without any",
@@ -565,7 +575,9 @@ impl Elb {
         self.with_region(ctx, |r| {
             let lb = r.load_balancers.get_mut(&input.load_balancer_arn).ok_or_else(lb_not_found)?;
             if lb.ty() != "application" {
-                return Err(errors::operation_not_permitted("IPAM pools are only supported for Application Load Balancers"));
+                return Err(errors::operation_not_permitted(
+                    "IPAM pools are only supported for Application Load Balancers",
+                ));
             }
             let mut pools = lb.lb.ipam_pools.clone().unwrap_or_default();
             if let Some(p) = input.ipam_pools.as_ref().and_then(|p| p.ipv4_ipam_pool_id.clone()) {
@@ -589,8 +601,7 @@ impl Elb {
 fn optional_lb_attribute(ty: &str, key: &str) -> bool {
     matches!(
         (ty, key),
-        ("application" | "network", "ipv6.deny_all_igw_traffic")
-            | ("application", "routing.http.x_amzn_mtls.enabled")
+        ("application" | "network", "ipv6.deny_all_igw_traffic") | ("application", "routing.http.x_amzn_mtls.enabled")
     )
 }
 

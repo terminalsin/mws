@@ -15,7 +15,8 @@ fn find_rule<'a>(r: &'a RegionState, arn: &str) -> Result<&'a RuleRecord, Servic
     r.rules.get(arn).ok_or_else(rule_not_found)
 }
 
-const FIELDS: &[&str] = &["host-header", "path-pattern", "http-header", "http-request-method", "query-string", "source-ip"];
+const FIELDS: &[&str] =
+    &["host-header", "path-pattern", "http-header", "http-request-method", "query-string", "source-ip"];
 
 /// Check conditions and return them as ELB describes them: values given
 /// the legacy way are also shown in the field's config.
@@ -40,7 +41,9 @@ fn normalize_conditions(conditions: &[t::RuleCondition]) -> Result<Vec<t::RuleCo
         let mut c = c.clone();
         let legacy = c.values.clone().filter(|v| !v.is_empty());
         if legacy.is_some() && !matches!(field.as_str(), "host-header" | "path-pattern") {
-            return Err(validation(format!("Values cannot be specified for '{field}' conditions; use the condition's config")));
+            return Err(validation(format!(
+                "Values cannot be specified for '{field}' conditions; use the condition's config"
+            )));
         }
         let count = match field.as_str() {
             "host-header" => {
@@ -76,7 +79,9 @@ fn normalize_conditions(conditions: &[t::RuleCondition]) -> Result<Vec<t::RuleCo
                 n
             }
             "http-header" => {
-                let cfg = c.http_header_config.clone().ok_or_else(|| validation("An HTTP header config must be specified for 'http-header' conditions"))?;
+                let cfg = c.http_header_config.clone().ok_or_else(|| {
+                    validation("An HTTP header config must be specified for 'http-header' conditions")
+                })?;
                 let name = cfg.http_header_name.clone().unwrap_or_default();
                 if name.is_empty() || name.len() > 40 {
                     return Err(validation("The HTTP header name must be 1-40 characters"));
@@ -95,7 +100,9 @@ fn normalize_conditions(conditions: &[t::RuleCondition]) -> Result<Vec<t::RuleCo
                 cfg.values.iter().flatten().count()
             }
             "query-string" => {
-                let cfg = c.query_string_config.clone().ok_or_else(|| validation("A query string config must be specified for 'query-string' conditions"))?;
+                let cfg = c.query_string_config.clone().ok_or_else(|| {
+                    validation("A query string config must be specified for 'query-string' conditions")
+                })?;
                 for kv in cfg.values.iter().flatten() {
                     if kv.value.is_none() {
                         return Err(validation("Query string conditions must specify a value"));
@@ -104,10 +111,14 @@ fn normalize_conditions(conditions: &[t::RuleCondition]) -> Result<Vec<t::RuleCo
                 cfg.values.iter().flatten().count()
             }
             "source-ip" => {
-                let cfg = c.source_ip_config.clone().ok_or_else(|| validation("A source IP config must be specified for 'source-ip' conditions"))?;
+                let cfg = c
+                    .source_ip_config
+                    .clone()
+                    .ok_or_else(|| validation("A source IP config must be specified for 'source-ip' conditions"))?;
                 for v in cfg.values.iter().flatten() {
                     let ok = v.split_once('/').is_some_and(|(ip, bits)| {
-                        bits.parse::<u8>().is_ok() && (ip.parse::<std::net::Ipv4Addr>().is_ok() || ip.parse::<std::net::Ipv6Addr>().is_ok())
+                        bits.parse::<u8>().is_ok()
+                            && (ip.parse::<std::net::Ipv4Addr>().is_ok() || ip.parse::<std::net::Ipv6Addr>().is_ok())
                     });
                     if !ok {
                         return Err(validation(format!("Source IP '{v}' is not a valid CIDR")));
@@ -162,7 +173,11 @@ pub(crate) fn rules_of(r: &RegionState, listener_arn: &str) -> Vec<RuleRecord> {
 }
 
 impl Elb {
-    pub(crate) fn create_rule_op(&self, ctx: &RequestContext, input: t::CreateRuleInput) -> Result<t::CreateRuleOutput, ServiceError> {
+    pub(crate) fn create_rule_op(
+        &self,
+        ctx: &RequestContext,
+        input: t::CreateRuleInput,
+    ) -> Result<t::CreateRuleOutput, ServiceError> {
         let tags = input.tags.clone().unwrap_or_default();
         names::check_tags(&tags)?;
         if !(1..=50_000).contains(&input.priority) {
@@ -176,7 +191,9 @@ impl Elb {
             Ok::<_, ServiceError>((l.lb_arn().to_string(), ty, l.protocol().to_string()))
         })?;
         if lb_type != "application" {
-            return Err(errors::operation_not_permitted("Rules are only supported for Application Load Balancer listeners"));
+            return Err(errors::operation_not_permitted(
+                "Rules are only supported for Application Load Balancer listeners",
+            ));
         }
         let account = account_of(ctx);
         let listener_id = input.listener_arn.rsplit('/').next().unwrap_or_default().to_string();
@@ -189,11 +206,14 @@ impl Elb {
             if existing.iter().any(|x| x.priority() == input.priority as i64) {
                 return Err(errors::priority_in_use(format!("Priority '{}' is currently in use", input.priority)));
             }
-            let lb_rules = r.rules.values().filter(|x| {
-                !x.is_default() && r.listeners.get(&x.listener_arn).is_some_and(|l| l.lb_arn() == lb_arn)
-            });
+            let lb_rules = r
+                .rules
+                .values()
+                .filter(|x| !x.is_default() && r.listeners.get(&x.listener_arn).is_some_and(|l| l.lb_arn() == lb_arn));
             if lb_rules.count() >= crate::catalog::limit("rules-per-application-load-balancer") {
-                return Err(errors::too_many_rules("You have reached the maximum number of rules for this load balancer"));
+                return Err(errors::too_many_rules(
+                    "You have reached the maximum number of rules for this load balancer",
+                ));
             }
             let rule = t::Rule {
                 rule_arn: Some(arn.clone()),
@@ -212,7 +232,11 @@ impl Elb {
         Ok(t::CreateRuleOutput { rules: Some(vec![rule]) })
     }
 
-    pub(crate) fn describe_rules_op(&self, ctx: &RequestContext, input: t::DescribeRulesInput) -> Result<t::DescribeRulesOutput, ServiceError> {
+    pub(crate) fn describe_rules_op(
+        &self,
+        ctx: &RequestContext,
+        input: t::DescribeRulesInput,
+    ) -> Result<t::DescribeRulesOutput, ServiceError> {
         names::authorize(ctx, "DescribeRules", "*", Default::default())?;
         let arns = input.rule_arns.unwrap_or_default();
         if input.listener_arn.is_some() == !arns.is_empty() {
@@ -229,7 +253,11 @@ impl Elb {
         Ok(t::DescribeRulesOutput { rules: Some(items), next_marker: next })
     }
 
-    pub(crate) fn modify_rule_op(&self, ctx: &RequestContext, input: t::ModifyRuleInput) -> Result<t::ModifyRuleOutput, ServiceError> {
+    pub(crate) fn modify_rule_op(
+        &self,
+        ctx: &RequestContext,
+        input: t::ModifyRuleInput,
+    ) -> Result<t::ModifyRuleOutput, ServiceError> {
         self.authorize_on(ctx, "ModifyRule", &input.rule_arn)?;
         let conditions = match &input.conditions {
             Some(c) => Some(normalize_conditions(c)?),
@@ -243,7 +271,9 @@ impl Elb {
             let l = super::listener::find_listener(r, &rec.listener_arn)?.clone();
             let lb_type = r.load_balancers.get(l.lb_arn()).map(|x| x.ty().to_string()).unwrap_or_default();
             if rec.is_default() && (conditions.is_some() || input.transforms.is_some()) {
-                return Err(errors::operation_not_permitted("The conditions and transforms of a default rule cannot be modified"));
+                return Err(errors::operation_not_permitted(
+                    "The conditions and transforms of a default rule cannot be modified",
+                ));
             }
             let actions = match &input.actions {
                 Some(a) => Some(super::actions::normalize(r, l.lb_arn(), &lb_type, l.protocol(), a)?),
@@ -272,12 +302,19 @@ impl Elb {
         Ok(t::ModifyRuleOutput { rules: Some(vec![rule]) })
     }
 
-    pub(crate) fn delete_rule_op(&self, ctx: &RequestContext, input: t::DeleteRuleInput) -> Result<t::DeleteRuleOutput, ServiceError> {
+    pub(crate) fn delete_rule_op(
+        &self,
+        ctx: &RequestContext,
+        input: t::DeleteRuleInput,
+    ) -> Result<t::DeleteRuleOutput, ServiceError> {
         self.authorize_on(ctx, "DeleteRule", &input.rule_arn)?;
         self.with_region(ctx, |r| {
             let rec = find_rule(r, &input.rule_arn)?;
             if rec.is_default() {
-                return Err(errors::operation_not_permitted(format!("Default rule '{}' cannot be deleted", input.rule_arn)));
+                return Err(errors::operation_not_permitted(format!(
+                    "Default rule '{}' cannot be deleted",
+                    input.rule_arn
+                )));
             }
             r.rules.remove(&input.rule_arn);
             r.tags.remove(&input.rule_arn);
@@ -300,7 +337,9 @@ impl Elb {
                 let arn = p.rule_arn.clone().unwrap_or_default();
                 let rec = find_rule(r, &arn)?;
                 if rec.is_default() {
-                    return Err(errors::operation_not_permitted(format!("The priority of default rule '{arn}' cannot be changed")));
+                    return Err(errors::operation_not_permitted(format!(
+                        "The priority of default rule '{arn}' cannot be changed"
+                    )));
                 }
                 match &listener {
                     Some(l) if *l != rec.listener_arn => {

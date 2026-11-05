@@ -71,7 +71,10 @@ pub fn check_lb_attribute(key: &str, value: &str) -> Result<(), String> {
         "routing.http.desync_mitigation_mode" => matches!(value, "monitor" | "defensive" | "strictest"),
         "routing.http.xff_header_processing.mode" => matches!(value, "append" | "preserve" | "remove"),
         "dns_record.client_routing_policy" => {
-            matches!(value, "availability_zone_affinity" | "partial_availability_zone_affinity" | "any_availability_zone")
+            matches!(
+                value,
+                "availability_zone_affinity" | "partial_availability_zone_affinity" | "any_availability_zone"
+            )
         }
         "secondary_ips.auto_assigned.per_subnet" => int_range(value, 0, 7),
         _ => true,
@@ -184,7 +187,10 @@ pub fn listener_attributes(protocol: &str) -> BTreeMap<String, String> {
         "HTTP" | "HTTPS" => {
             let mut m = map(&[
                 ("routing.http.response.server.enabled", "true"),
-                ("routing.http.request.x_amzn_mtls_clientcert_serial_number.header_name", "X-Amzn-Mtls-Clientcert-Serial-Number"),
+                (
+                    "routing.http.request.x_amzn_mtls_clientcert_serial_number.header_name",
+                    "X-Amzn-Mtls-Clientcert-Serial-Number",
+                ),
                 ("routing.http.request.x_amzn_mtls_clientcert_issuer.header_name", "X-Amzn-Mtls-Clientcert-Issuer"),
                 ("routing.http.request.x_amzn_mtls_clientcert_subject.header_name", "X-Amzn-Mtls-Clientcert-Subject"),
                 ("routing.http.request.x_amzn_mtls_clientcert_validity.header_name", "X-Amzn-Mtls-Clientcert-Validity"),
@@ -286,22 +292,16 @@ pub fn health_defaults(protocol: &str, protocol_version: &str, target_type: &str
     }
 }
 
-/// `(name, protocols, ciphers, load balancer types)`.
-pub type PolicySpec = (&'static str, &'static [&'static str], &'static [&'static str], &'static [&'static str]);
-
 const TLS13: &[&str] = &["TLS_AES_128_GCM_SHA256", "TLS_AES_256_GCM_SHA384", "TLS_CHACHA20_POLY1305_SHA256"];
+const TLS13_FIPS: &[&str] = &["TLS_AES_128_GCM_SHA256", "TLS_AES_256_GCM_SHA384"];
 const ECDHE_GCM: &[&str] = &[
     "ECDHE-ECDSA-AES128-GCM-SHA256",
     "ECDHE-RSA-AES128-GCM-SHA256",
     "ECDHE-ECDSA-AES256-GCM-SHA384",
     "ECDHE-RSA-AES256-GCM-SHA384",
 ];
-const ECDHE_CBC_SHA2: &[&str] = &[
-    "ECDHE-ECDSA-AES128-SHA256",
-    "ECDHE-RSA-AES128-SHA256",
-    "ECDHE-ECDSA-AES256-SHA384",
-    "ECDHE-RSA-AES256-SHA384",
-];
+const ECDHE_CBC_SHA2: &[&str] =
+    &["ECDHE-ECDSA-AES128-SHA256", "ECDHE-RSA-AES128-SHA256", "ECDHE-ECDSA-AES256-SHA384", "ECDHE-RSA-AES256-SHA384"];
 const ECDHE_CBC_SHA1: &[&str] =
     &["ECDHE-ECDSA-AES128-SHA", "ECDHE-RSA-AES128-SHA", "ECDHE-RSA-AES256-SHA", "ECDHE-ECDSA-AES256-SHA"];
 const RSA_KX: &[&str] =
@@ -310,8 +310,15 @@ const RSA_KX: &[&str] =
 const BOTH: &[&str] = &["application", "network"];
 
 /// Every predefined ELBv2 security policy MWS knows, with its protocols.
-pub const SSL_POLICIES: &[(&str, &[&str], &[&[&str]])] = &[
-    ("ELBSecurityPolicy-2016-08", &["TLSv1", "TLSv1.1", "TLSv1.2"], &[ECDHE_GCM, ECDHE_CBC_SHA2, ECDHE_CBC_SHA1, RSA_KX]),
+/// `(name, protocols, cipher groups)`.
+pub type SslPolicy = (&'static str, &'static [&'static str], &'static [&'static [&'static str]]);
+
+pub const SSL_POLICIES: &[SslPolicy] = &[
+    (
+        "ELBSecurityPolicy-2016-08",
+        &["TLSv1", "TLSv1.1", "TLSv1.2"],
+        &[ECDHE_GCM, ECDHE_CBC_SHA2, ECDHE_CBC_SHA1, RSA_KX],
+    ),
     ("ELBSecurityPolicy-TLS13-1-2-2021-06", &["TLSv1.2", "TLSv1.3"], &[TLS13, ECDHE_GCM, ECDHE_CBC_SHA2]),
     ("ELBSecurityPolicy-TLS13-1-2-Res-2021-06", &["TLSv1.2", "TLSv1.3"], &[TLS13, ECDHE_GCM]),
     ("ELBSecurityPolicy-TLS13-1-2-Ext1-2021-06", &["TLSv1.2", "TLSv1.3"], &[TLS13, ECDHE_GCM, ECDHE_CBC_SHA2, RSA_KX]),
@@ -320,19 +327,31 @@ pub const SSL_POLICIES: &[(&str, &[&str], &[&[&str]])] = &[
         &["TLSv1.2", "TLSv1.3"],
         &[TLS13, ECDHE_GCM, ECDHE_CBC_SHA2, ECDHE_CBC_SHA1, RSA_KX],
     ),
-    ("ELBSecurityPolicy-TLS13-1-1-2021-06", &["TLSv1.1", "TLSv1.2", "TLSv1.3"], &[TLS13, ECDHE_GCM, ECDHE_CBC_SHA2, ECDHE_CBC_SHA1, RSA_KX]),
+    (
+        "ELBSecurityPolicy-TLS13-1-1-2021-06",
+        &["TLSv1.1", "TLSv1.2", "TLSv1.3"],
+        &[TLS13, ECDHE_GCM, ECDHE_CBC_SHA2, ECDHE_CBC_SHA1, RSA_KX],
+    ),
     (
         "ELBSecurityPolicy-TLS13-1-0-2021-06",
         &["TLSv1", "TLSv1.1", "TLSv1.2", "TLSv1.3"],
         &[TLS13, ECDHE_GCM, ECDHE_CBC_SHA2, ECDHE_CBC_SHA1, RSA_KX],
     ),
     ("ELBSecurityPolicy-TLS13-1-3-2021-06", &["TLSv1.3"], &[TLS13]),
-    ("ELBSecurityPolicy-TLS13-1-2-FIPS-2023-04", &["TLSv1.2", "TLSv1.3"], &[&TLS13[..2], ECDHE_GCM, ECDHE_CBC_SHA2]),
-    ("ELBSecurityPolicy-TLS13-1-3-FIPS-2023-04", &["TLSv1.3"], &[&TLS13[..2]]),
+    ("ELBSecurityPolicy-TLS13-1-2-FIPS-2023-04", &["TLSv1.2", "TLSv1.3"], &[TLS13_FIPS, ECDHE_GCM, ECDHE_CBC_SHA2]),
+    ("ELBSecurityPolicy-TLS13-1-3-FIPS-2023-04", &["TLSv1.3"], &[TLS13_FIPS]),
     ("ELBSecurityPolicy-TLS13-1-2-PQ-2025-09", &["TLSv1.2", "TLSv1.3"], &[TLS13, ECDHE_GCM, ECDHE_CBC_SHA2]),
     ("ELBSecurityPolicy-TLS13-1-3-PQ-2025-09", &["TLSv1.3"], &[TLS13]),
-    ("ELBSecurityPolicy-TLS-1-0-2015-04", &["TLSv1", "TLSv1.1", "TLSv1.2"], &[ECDHE_GCM, ECDHE_CBC_SHA2, ECDHE_CBC_SHA1, RSA_KX]),
-    ("ELBSecurityPolicy-TLS-1-1-2017-01", &["TLSv1.1", "TLSv1.2"], &[ECDHE_GCM, ECDHE_CBC_SHA2, ECDHE_CBC_SHA1, RSA_KX]),
+    (
+        "ELBSecurityPolicy-TLS-1-0-2015-04",
+        &["TLSv1", "TLSv1.1", "TLSv1.2"],
+        &[ECDHE_GCM, ECDHE_CBC_SHA2, ECDHE_CBC_SHA1, RSA_KX],
+    ),
+    (
+        "ELBSecurityPolicy-TLS-1-1-2017-01",
+        &["TLSv1.1", "TLSv1.2"],
+        &[ECDHE_GCM, ECDHE_CBC_SHA2, ECDHE_CBC_SHA1, RSA_KX],
+    ),
     ("ELBSecurityPolicy-TLS-1-2-2017-01", &["TLSv1.2"], &[ECDHE_GCM, ECDHE_CBC_SHA2, RSA_KX]),
     ("ELBSecurityPolicy-TLS-1-2-Ext-2018-06", &["TLSv1.2"], &[ECDHE_GCM, ECDHE_CBC_SHA2, ECDHE_CBC_SHA1, RSA_KX]),
     ("ELBSecurityPolicy-FS-2018-06", &["TLSv1", "TLSv1.1", "TLSv1.2"], &[ECDHE_GCM, ECDHE_CBC_SHA2, ECDHE_CBC_SHA1]),
@@ -340,7 +359,11 @@ pub const SSL_POLICIES: &[(&str, &[&str], &[&[&str]])] = &[
     ("ELBSecurityPolicy-FS-1-2-2019-08", &["TLSv1.2"], &[ECDHE_GCM, ECDHE_CBC_SHA2, ECDHE_CBC_SHA1]),
     ("ELBSecurityPolicy-FS-1-2-Res-2019-08", &["TLSv1.2"], &[ECDHE_GCM, ECDHE_CBC_SHA2]),
     ("ELBSecurityPolicy-FS-1-2-Res-2020-10", &["TLSv1.2"], &[ECDHE_GCM]),
-    ("ELBSecurityPolicy-2015-05", &["TLSv1", "TLSv1.1", "TLSv1.2"], &[ECDHE_GCM, ECDHE_CBC_SHA2, ECDHE_CBC_SHA1, RSA_KX]),
+    (
+        "ELBSecurityPolicy-2015-05",
+        &["TLSv1", "TLSv1.1", "TLSv1.2"],
+        &[ECDHE_GCM, ECDHE_CBC_SHA2, ECDHE_CBC_SHA1, RSA_KX],
+    ),
 ];
 
 pub const DEFAULT_SSL_POLICY: &str = "ELBSecurityPolicy-2016-08";

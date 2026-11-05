@@ -67,7 +67,9 @@ fn check_health_settings(
         if let Some(code) = &m.http_code {
             let valid = code.split(',').all(|part| {
                 let mut it = part.split('-');
-                let ok = |s: Option<&str>| s.and_then(|s| s.trim().parse::<u16>().ok()).is_some_and(|n| (200..600).contains(&n));
+                let ok = |s: Option<&str>| {
+                    s.and_then(|s| s.trim().parse::<u16>().ok()).is_some_and(|n| (200..600).contains(&n))
+                };
                 match (it.next(), it.next(), it.next()) {
                     (a, None, None) => ok(a),
                     (a, b, None) => ok(a) && ok(b),
@@ -82,7 +84,9 @@ fn check_health_settings(
     if let (Some(p), Some(h)) = (protocol, hc_protocol) {
         let l4 = matches!(p, "TCP" | "TLS" | "UDP" | "TCP_UDP" | "GENEVE");
         if !l4 && matches!(h, "TCP") {
-            return Err(validation(format!("Health check protocol '{h}' is not supported for target groups with the '{p}' protocol")));
+            return Err(validation(format!(
+                "Health check protocol '{h}' is not supported for target groups with the '{p}' protocol"
+            )));
         }
         if !matches!(h, "HTTP" | "HTTPS" | "TCP") {
             return Err(validation(format!("Health check protocol '{h}' is not valid")));
@@ -120,7 +124,9 @@ impl Elb {
                 return Err(validation(format!("Protocol '{protocol}' is not valid")));
             }
             if input.port.is_none() {
-                return Err(validation("A port must be specified for target groups with target type other than 'lambda'"));
+                return Err(validation(
+                    "A port must be specified for target groups with target type other than 'lambda'",
+                ));
             }
             let vpc = input.vpc_id.as_deref().ok_or_else(|| {
                 validation("A VPC ID must be specified for target groups with target type other than 'lambda'")
@@ -145,7 +151,9 @@ impl Elb {
                 }
                 Some(v.clone())
             }
-            (Some(_), _) => return Err(validation("A protocol version can only be specified for HTTP and HTTPS target groups")),
+            (Some(_), _) => {
+                return Err(validation("A protocol version can only be specified for HTTP and HTTPS target groups"))
+            }
             (None, "HTTP" | "HTTPS") => Some("HTTP1".to_string()),
             (None, _) => None,
         };
@@ -187,7 +195,11 @@ impl Elb {
             port: input.port,
             vpc_id: input.vpc_id.clone(),
             health_check_protocol: if lambda { None } else { hc_protocol.clone() },
-            health_check_port: if lambda { None } else { Some(input.health_check_port.clone().unwrap_or_else(|| "traffic-port".into())) },
+            health_check_port: if lambda {
+                None
+            } else {
+                Some(input.health_check_port.clone().unwrap_or_else(|| "traffic-port".into()))
+            },
             health_check_enabled: Some(enabled),
             health_check_interval_seconds: Some(input.health_check_interval_seconds.unwrap_or(d.interval)),
             health_check_timeout_seconds: Some(input.health_check_timeout_seconds.unwrap_or(d.timeout)),
@@ -225,7 +237,9 @@ impl Elb {
                 )));
             }
             if r.target_groups.len() >= catalog::limit("target-groups") {
-                return Err(errors::too_many_target_groups("You have reached the maximum number of target groups for your account"));
+                return Err(errors::too_many_target_groups(
+                    "You have reached the maximum number of target groups for your account",
+                ));
             }
             r.target_groups.insert(
                 arn.clone(),
@@ -257,35 +271,34 @@ impl Elb {
                 "Target group names, target group ARNs, and a load balancer ARN cannot be specified at the same time",
             ));
         }
-        let all = self.with_region(ctx, |r| -> Result<Vec<t::TargetGroup>, ServiceError> {
-            if let Some(lb) = &input.load_balancer_arn {
-                super::lb::find_lb(r, lb)?;
-                return Ok(r
-                    .target_groups
-                    .values()
-                    .filter(|g| load_balancers_of(r, g.arn()).iter().any(|l| l == lb))
-                    .map(|g| describe_tg(r, g))
-                    .collect());
-            }
-            if !arns.is_empty() {
-                return arns.iter().map(|a| find_tg(r, a).map(|g| describe_tg(r, g))).collect();
-            }
-            if !wanted.is_empty() {
-                return wanted
-                    .iter()
-                    .map(|n| {
-                        r.target_groups
-                            .values()
-                            .find(|g| g.name() == n)
-                            .map(|g| describe_tg(r, g))
-                            .ok_or_else(|| errors::target_group_not_found(format!("Target groups '[{n}]' not found")))
-                    })
-                    .collect();
-            }
-            let mut v: Vec<_> = r.target_groups.values().map(|g| describe_tg(r, g)).collect();
-            v.sort_by(|a, b| a.target_group_name.cmp(&b.target_group_name));
-            Ok(v)
-        })?;
+        let all =
+            self.with_region(ctx, |r| -> Result<Vec<t::TargetGroup>, ServiceError> {
+                if let Some(lb) = &input.load_balancer_arn {
+                    super::lb::find_lb(r, lb)?;
+                    return Ok(r
+                        .target_groups
+                        .values()
+                        .filter(|g| load_balancers_of(r, g.arn()).iter().any(|l| l == lb))
+                        .map(|g| describe_tg(r, g))
+                        .collect());
+                }
+                if !arns.is_empty() {
+                    return arns.iter().map(|a| find_tg(r, a).map(|g| describe_tg(r, g))).collect();
+                }
+                if !wanted.is_empty() {
+                    return wanted
+                        .iter()
+                        .map(|n| {
+                            r.target_groups.values().find(|g| g.name() == n).map(|g| describe_tg(r, g)).ok_or_else(
+                                || errors::target_group_not_found(format!("Target groups '[{n}]' not found")),
+                            )
+                        })
+                        .collect();
+                }
+                let mut v: Vec<_> = r.target_groups.values().map(|g| describe_tg(r, g)).collect();
+                v.sort_by(|a, b| a.target_group_name.cmp(&b.target_group_name));
+                Ok(v)
+            })?;
         let (items, next) = names::page(&all, input.marker.as_deref(), input.page_size, 400)?;
         Ok(t::DescribeTargetGroupsOutput { target_groups: Some(items), next_marker: next })
     }
@@ -302,13 +315,17 @@ impl Elb {
             let lambda = current.target_type.as_deref() == Some("lambda");
             if let Some(p) = &input.health_check_protocol {
                 if lambda {
-                    return Err(validation("Health check protocol cannot be specified for target groups with target type 'lambda'"));
+                    return Err(validation(
+                        "Health check protocol cannot be specified for target groups with target type 'lambda'",
+                    ));
                 }
                 tg.health_check_protocol = Some(p.clone());
             }
             if let Some(p) = &input.health_check_port {
                 if lambda {
-                    return Err(validation("Health check port cannot be specified for target groups with target type 'lambda'"));
+                    return Err(validation(
+                        "Health check port cannot be specified for target groups with target type 'lambda'",
+                    ));
                 }
                 if p != "traffic-port" && p.parse::<u16>().is_err() {
                     return Err(validation(format!("Health check port '{p}' is not valid")));

@@ -36,12 +36,18 @@ impl Elb {
             match ty.as_str() {
                 "instance" => {
                     if !target.id.starts_with("i-") {
-                        return Err(errors::invalid_target(format!("The following targets are not valid instances: '{}'", target.id)));
+                        return Err(errors::invalid_target(format!(
+                            "The following targets are not valid instances: '{}'",
+                            target.id
+                        )));
                     }
                     if let Some(ec2) = self.ec2() {
-                        let info = ec2
-                            .instance_info(&account, &ctx.region, &target.id)
-                            .ok_or_else(|| errors::invalid_target(format!("The following targets are not valid instances: '{}'", target.id)))?;
+                        let info = ec2.instance_info(&account, &ctx.region, &target.id).ok_or_else(|| {
+                            errors::invalid_target(format!(
+                                "The following targets are not valid instances: '{}'",
+                                target.id
+                            ))
+                        })?;
                         if !matches!(info.state.as_str(), "running" | "pending" | "stopped" | "stopping") {
                             return Err(errors::invalid_target(format!(
                                 "The following targets are not in a running state and cannot be registered: '{}'",
@@ -62,10 +68,9 @@ impl Elb {
                     }
                 }
                 "ip" => {
-                    let ip: std::net::IpAddr = target
-                        .id
-                        .parse()
-                        .map_err(|_| errors::invalid_target(format!("The IP address '{}' is not a valid IPv4 address", target.id)))?;
+                    let ip: std::net::IpAddr = target.id.parse().map_err(|_| {
+                        errors::invalid_target(format!("The IP address '{}' is not a valid IPv4 address", target.id))
+                    })?;
                     // MWS also accepts loopback addresses, so processes on
                     // this machine can sit behind a load balancer.
                     let loopback = ip.is_loopback();
@@ -74,9 +79,11 @@ impl Elb {
                         (std::net::IpAddr::V4(v4), Some(ec2), Some(vpc)) => ec2
                             .vpc_info(ctx, &account, Some(vpc))
                             .is_some_and(|v| v.cidr_blocks.iter().any(|c| names::ipv4_in_cidr(&v4.to_string(), c))),
-                        (std::net::IpAddr::V6(v6), Some(ec2), Some(vpc)) => ec2
-                            .vpc_info(ctx, &account, Some(vpc))
-                            .is_some_and(|v| v.ipv6_cidr_blocks.iter().any(|c| names::ipv6_in_cidr(&v6.to_string(), c))),
+                        (std::net::IpAddr::V6(v6), Some(ec2), Some(vpc)) => {
+                            ec2.vpc_info(ctx, &account, Some(vpc)).is_some_and(|v| {
+                                v.ipv6_cidr_blocks.iter().any(|c| names::ipv6_in_cidr(&v6.to_string(), c))
+                            })
+                        }
                         (_, None, _) => true,
                         _ => false,
                     };
@@ -98,8 +105,11 @@ impl Elb {
                     }
                 }
                 "lambda" => {
-                    if input.targets.len() > 1 || !tg.targets.is_empty() && tg.targets.iter().any(|x| x.id != target.id) {
-                        return Err(errors::too_many_targets("You can register only one Lambda function per target group"));
+                    if input.targets.len() > 1 || !tg.targets.is_empty() && tg.targets.iter().any(|x| x.id != target.id)
+                    {
+                        return Err(errors::too_many_targets(
+                            "You can register only one Lambda function per target group",
+                        ));
                     }
                     if target.port.is_some() {
                         return Err(validation("A port cannot be specified for Lambda targets"));
@@ -133,7 +143,9 @@ impl Elb {
                     let alb_port = tg.tg.port.unwrap_or_default();
                     let ok = self.with_region(ctx, |r| {
                         r.load_balancers.get(&target.id).is_some_and(|l| l.ty() == "application")
-                            && r.listeners.values().any(|l| l.lb_arn() == target.id && l.listener.port == Some(alb_port))
+                            && r.listeners
+                                .values()
+                                .any(|l| l.lb_arn() == target.id && l.listener.port == Some(alb_port))
                     });
                     if !ok {
                         return Err(errors::invalid_target(format!(
@@ -142,7 +154,9 @@ impl Elb {
                         )));
                     }
                     if !tg.targets.is_empty() && tg.targets.iter().any(|x| x.id != target.id) {
-                        return Err(errors::too_many_targets("You can register only one Application Load Balancer per target group"));
+                        return Err(errors::too_many_targets(
+                            "You can register only one Application Load Balancer per target group",
+                        ));
                     }
                 }
                 _ => {}
@@ -164,7 +178,9 @@ impl Elb {
                     continue;
                 }
                 if tg.targets.len() >= 1000 {
-                    return Err(errors::too_many_targets("You have reached the maximum number of targets for this target group"));
+                    return Err(errors::too_many_targets(
+                        "You have reached the maximum number of targets for this target group",
+                    ));
                 }
                 self.inner.health.forget(&HealthKey::v2(&input.target_group_arn, &target.id, target.port));
                 tg.targets.push(target);
@@ -184,14 +200,18 @@ impl Elb {
         self.with_region(ctx, |r| {
             let in_use = !super::tg::load_balancers_of(r, &input.target_group_arn).is_empty();
             let tg = r.target_groups.get_mut(&input.target_group_arn).ok_or_else(super::tg::tg_not_found)?;
-            let delay: i64 = tg.attr("deregistration_delay.timeout_seconds").and_then(|v| v.parse().ok()).unwrap_or(300);
+            let delay: i64 =
+                tg.attr("deregistration_delay.timeout_seconds").and_then(|v| v.parse().ok()).unwrap_or(300);
             let default_port = tg.tg.port.unwrap_or_default();
             for target in &input.targets {
                 let port = if tg.target_type() == "lambda" { 0 } else { target.port.unwrap_or(default_port) };
                 let found = tg.targets.iter().position(|x| x.id == target.id && x.port == port);
                 let Some(i) = found else {
                     if tg.target_type() == "instance" && !target.id.starts_with("i-") {
-                        return Err(errors::invalid_target(format!("The following targets are not valid instances: '{}'", target.id)));
+                        return Err(errors::invalid_target(format!(
+                            "The following targets are not valid instances: '{}'",
+                            target.id
+                        )));
                     }
                     continue;
                 };
@@ -223,14 +243,17 @@ impl Elb {
                 Some(ts) if !ts.is_empty() => ts
                     .iter()
                     .map(|x| {
-                        let port = if tg.target_type() == "lambda" { 0 } else { x.port.or(tg.tg.port).unwrap_or_default() };
-                        tg.targets.iter().find(|y| y.id == x.id && y.port == port).cloned().unwrap_or(RegisteredTarget {
-                            id: x.id.clone(),
-                            port,
-                            availability_zone: x.availability_zone.clone(),
-                            registered_at: None,
-                            draining_until: None,
-                        })
+                        let port =
+                            if tg.target_type() == "lambda" { 0 } else { x.port.or(tg.tg.port).unwrap_or_default() };
+                        tg.targets.iter().find(|y| y.id == x.id && y.port == port).cloned().unwrap_or(
+                            RegisteredTarget {
+                                id: x.id.clone(),
+                                port,
+                                availability_zone: x.availability_zone.clone(),
+                                registered_at: None,
+                                draining_until: None,
+                            },
+                        )
                     })
                     .collect(),
                 _ => tg.targets.clone(),
@@ -251,7 +274,11 @@ impl Elb {
                     target: Some(t::TargetDescription {
                         id: target.id.clone(),
                         port: (tg.target_type() != "lambda").then_some(target.port),
-                        availability_zone: if tg.target_type() == "ip" || tg.target_type() == "alb" { target.availability_zone.clone() } else { None },
+                        availability_zone: if tg.target_type() == "ip" || tg.target_type() == "alb" {
+                            target.availability_zone.clone()
+                        } else {
+                            None
+                        },
                         quic_server_id: None,
                     }),
                     health_check_port: if tg.target_type() == "lambda" { None } else { port_shown },

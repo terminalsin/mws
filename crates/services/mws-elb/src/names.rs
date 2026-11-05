@@ -125,7 +125,12 @@ pub fn validation(message: impl Into<String>) -> ServiceError {
 }
 
 /// `elasticloadbalancing:<action>` on `resource`.
-pub fn authorize(ctx: &RequestContext, action: &str, resource: &str, extra: ConditionContext) -> Result<(), ServiceError> {
+pub fn authorize(
+    ctx: &RequestContext,
+    action: &str,
+    resource: &str,
+    extra: ConditionContext,
+) -> Result<(), ServiceError> {
     ctx.authorize(&format!("{SERVICE}:{action}"), resource, extra)
 }
 

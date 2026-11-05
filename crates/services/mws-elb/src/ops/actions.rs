@@ -64,9 +64,25 @@ pub(crate) fn normalize(
     for a in sorted {
         let ty = a.r#type.as_str();
         match (lb_type, ty) {
-            ("application", "forward" | "redirect" | "fixed-response" | "authenticate-oidc" | "authenticate-cognito" | "jwt-validation") => {}
+            (
+                "application",
+                "forward"
+                | "redirect"
+                | "fixed-response"
+                | "authenticate-oidc"
+                | "authenticate-cognito"
+                | "jwt-validation",
+            ) => {}
             ("network" | "gateway", "forward") => {}
-            (_, "forward" | "redirect" | "fixed-response" | "authenticate-oidc" | "authenticate-cognito" | "jwt-validation") => {
+            (
+                _,
+                "forward"
+                | "redirect"
+                | "fixed-response"
+                | "authenticate-oidc"
+                | "authenticate-cognito"
+                | "jwt-validation",
+            ) => {
                 return Err(errors::invalid_load_balancer_action(format!(
                     "The action type '{ty}' is not valid with a '{}' listener",
                     if protocol.is_empty() { "GENEVE" } else { protocol }
@@ -82,7 +98,8 @@ pub(crate) fn normalize(
         let mut a = a.clone();
         match ty {
             "forward" => {
-                let mut groups: Vec<t::TargetGroupTuple> = a.forward_config.as_ref().and_then(|f| f.target_groups.clone()).unwrap_or_default();
+                let mut groups: Vec<t::TargetGroupTuple> =
+                    a.forward_config.as_ref().and_then(|f| f.target_groups.clone()).unwrap_or_default();
                 if let Some(arn) = &a.target_group_arn {
                     if groups.is_empty() {
                         groups.push(t::TargetGroupTuple { target_group_arn: Some(arn.clone()), weight: Some(1) });
@@ -138,7 +155,8 @@ pub(crate) fn normalize(
                             "The target group '{arn}' must be in the load balancer's VPC"
                         )));
                     }
-                    let elsewhere: Vec<String> = super::tg::load_balancers_of(r, &arn).into_iter().filter(|l| l != lb_arn).collect();
+                    let elsewhere: Vec<String> =
+                        super::tg::load_balancers_of(r, &arn).into_iter().filter(|l| l != lb_arn).collect();
                     if !elsewhere.is_empty() {
                         return Err(errors::target_group_association_limit(format!(
                             "The following target groups cannot be associated with more than one load balancer: {arn}"
@@ -155,7 +173,9 @@ pub(crate) fn normalize(
                         validation("A duration must be specified when target group stickiness is enabled")
                     })?;
                     if !(1..=604_800).contains(&d) {
-                        return Err(validation("Target group stickiness duration must be between 1 and 604800 seconds"));
+                        return Err(validation(
+                            "Target group stickiness duration must be between 1 and 604800 seconds",
+                        ));
                     }
                 }
                 a.target_group_arn = (groups.len() == 1).then(|| groups[0].target_group_arn.clone()).flatten();
@@ -165,7 +185,10 @@ pub(crate) fn normalize(
                 });
             }
             "redirect" => {
-                let mut c = a.redirect_config.clone().ok_or_else(|| validation("A redirect config must be specified for a redirect action"))?;
+                let mut c = a
+                    .redirect_config
+                    .clone()
+                    .ok_or_else(|| validation("A redirect config must be specified for a redirect action"))?;
                 if !matches!(c.status_code.as_str(), "HTTP_301" | "HTTP_302") {
                     return Err(validation(format!("Redirect status code '{}' is not valid", c.status_code)));
                 }
@@ -197,16 +220,18 @@ pub(crate) fn normalize(
                 a.redirect_config = Some(c);
             }
             "fixed-response" => {
-                let c = a
-                    .fixed_response_config
-                    .clone()
-                    .ok_or_else(|| validation("A fixed response config must be specified for a fixed-response action"))?;
+                let c = a.fixed_response_config.clone().ok_or_else(|| {
+                    validation("A fixed response config must be specified for a fixed-response action")
+                })?;
                 let code: u16 = c.status_code.parse().unwrap_or(0);
                 if !(200..600).contains(&code) {
                     return Err(validation(format!("Fixed response status code '{}' is not valid", c.status_code)));
                 }
                 if let Some(ct) = &c.content_type {
-                    if !matches!(ct.as_str(), "text/plain" | "text/css" | "text/html" | "application/javascript" | "application/json") {
+                    if !matches!(
+                        ct.as_str(),
+                        "text/plain" | "text/css" | "text/html" | "application/javascript" | "application/json"
+                    ) {
                         return Err(validation(format!("Fixed response content type '{ct}' is not valid")));
                     }
                 }
@@ -215,7 +240,8 @@ pub(crate) fn normalize(
                 }
             }
             "authenticate-oidc" => {
-                let mut c = a.authenticate_oidc_config.clone().ok_or_else(|| validation("An OIDC config must be specified"))?;
+                let mut c =
+                    a.authenticate_oidc_config.clone().ok_or_else(|| validation("An OIDC config must be specified"))?;
                 if c.client_secret.is_none() && c.use_existing_client_secret != Some(true) {
                     return Err(validation("A client secret must be specified for an authenticate-oidc action"));
                 }
@@ -229,17 +255,18 @@ pub(crate) fn normalize(
                 a.authenticate_oidc_config = Some(c);
             }
             "authenticate-cognito" => {
-                let mut c = a.authenticate_cognito_config.clone().ok_or_else(|| validation("A Cognito config must be specified"))?;
+                let mut c = a
+                    .authenticate_cognito_config
+                    .clone()
+                    .ok_or_else(|| validation("A Cognito config must be specified"))?;
                 c.scope.get_or_insert_with(|| "openid".into());
                 c.session_cookie_name.get_or_insert_with(|| "AWSELBAuthSessionCookie".into());
                 c.session_timeout.get_or_insert(604_800);
                 c.on_unauthenticated_request.get_or_insert_with(|| "authenticate".into());
                 a.authenticate_cognito_config = Some(c);
             }
-            "jwt-validation" => {
-                if a.jwt_validation_config.is_none() {
-                    return Err(validation("A JWT validation config must be specified"));
-                }
+            "jwt-validation" if a.jwt_validation_config.is_none() => {
+                return Err(validation("A JWT validation config must be specified"));
             }
             _ => {}
         }

@@ -72,6 +72,25 @@ impl Ec2 {
         })
     }
 
+    /// The subnets of a VPC (the default VPC when `vpc_id` is `None`).
+    pub fn subnets_of_vpc(&self, ctx: &RequestContext, account: &str, vpc_id: Option<&str>) -> Vec<SubnetInfo> {
+        let vpc = match vpc_id {
+            Some(v) => v.to_string(),
+            None => match self.vpc_info(ctx, account, None) {
+                Some(v) => v.vpc_id,
+                None => return Vec::new(),
+            },
+        };
+        let ids: Vec<String> = self.with_region_of(account, &ctx.region, ctx, |r| {
+            r.subnets
+                .iter()
+                .filter(|(_, s)| s.vpc_id.as_deref() == Some(vpc.as_str()))
+                .map(|(id, _)| id.clone())
+                .collect()
+        });
+        ids.iter().filter_map(|id| self.subnet_info(ctx, account, id)).collect()
+    }
+
     /// A VPC in `account` and the request's Region; `None` for the default
     /// VPC lookup when the Region has none.
     pub fn vpc_info(&self, ctx: &RequestContext, account: &str, vpc_id: Option<&str>) -> Option<VpcInfo> {
@@ -113,7 +132,12 @@ impl Ec2 {
     }
 
     /// A security group in `account` and the request's Region.
-    pub fn security_group_info(&self, ctx: &RequestContext, account: &str, group_id: &str) -> Option<SecurityGroupInfo> {
+    pub fn security_group_info(
+        &self,
+        ctx: &RequestContext,
+        account: &str,
+        group_id: &str,
+    ) -> Option<SecurityGroupInfo> {
         self.with_region_of(account, &ctx.region, ctx, |r| {
             let g = r.security_groups.get(group_id)?;
             Some(SecurityGroupInfo {

@@ -32,7 +32,13 @@ pub(crate) fn pem_blocks(text: &str, label: &str) -> Vec<Vec<u8>> {
 }
 
 impl Elb {
-    fn read_s3(&self, ctx: &RequestContext, bucket: &str, key: &str, version: Option<&str>) -> Result<Vec<u8>, ServiceError> {
+    fn read_s3(
+        &self,
+        ctx: &RequestContext,
+        bucket: &str,
+        key: &str,
+        version: Option<&str>,
+    ) -> Result<Vec<u8>, ServiceError> {
         let s3 = self.s3().ok_or_else(|| errors::ca_certificates_bundle_not_found("S3 is not available"))?;
         let req = mws_s3::generated::types::GetObjectRequest {
             bucket: bucket.to_string(),
@@ -40,33 +46,49 @@ impl Elb {
             version_id: version.map(str::to_string),
             ..Default::default()
         };
-        s3.get_object(ctx, req).map(|o| o.body).map_err(|e| {
+        s3.get_object_as_caller(ctx, req).map(|o| o.body).map_err(|e| {
             if e.code == "AccessDenied" {
                 e
             } else {
-                errors::ca_certificates_bundle_not_found(format!("The specified S3 object 's3://{bucket}/{key}' was not found"))
+                errors::ca_certificates_bundle_not_found(format!(
+                    "The specified S3 object 's3://{bucket}/{key}' was not found"
+                ))
             }
         })
     }
 
-    fn read_bundle(&self, ctx: &RequestContext, bucket: &str, key: &str, version: Option<&str>) -> Result<(String, i32), ServiceError> {
+    fn read_bundle(
+        &self,
+        ctx: &RequestContext,
+        bucket: &str,
+        key: &str,
+        version: Option<&str>,
+    ) -> Result<(String, i32), ServiceError> {
         let body = self.read_s3(ctx, bucket, key, version)?;
-        let text = String::from_utf8(body).map_err(|_| errors::invalid_ca_certificates_bundle("The CA certificates bundle must be PEM encoded"))?;
+        let text = String::from_utf8(body)
+            .map_err(|_| errors::invalid_ca_certificates_bundle("The CA certificates bundle must be PEM encoded"))?;
         let ders = pem_blocks(&text, "CERTIFICATE");
         if ders.is_empty() {
             return Err(errors::invalid_ca_certificates_bundle("The CA certificates bundle contains no certificates"));
         }
         for der in &ders {
-            let (_, cert) = x509_parser::parse_x509_certificate(der)
-                .map_err(|_| errors::invalid_ca_certificates_bundle("The CA certificates bundle contains an invalid certificate"))?;
+            let (_, cert) = x509_parser::parse_x509_certificate(der).map_err(|_| {
+                errors::invalid_ca_certificates_bundle("The CA certificates bundle contains an invalid certificate")
+            })?;
             if !cert.is_ca() {
-                return Err(errors::invalid_ca_certificates_bundle("The CA certificates bundle contains a certificate that is not a CA"));
+                return Err(errors::invalid_ca_certificates_bundle(
+                    "The CA certificates bundle contains a certificate that is not a CA",
+                ));
             }
         }
         Ok((text, ders.len() as i32))
     }
 
-    pub(crate) fn create_trust_store_op(&self, ctx: &RequestContext, input: t::CreateTrustStoreInput) -> Result<t::CreateTrustStoreOutput, ServiceError> {
+    pub(crate) fn create_trust_store_op(
+        &self,
+        ctx: &RequestContext,
+        input: t::CreateTrustStoreInput,
+    ) -> Result<t::CreateTrustStoreOutput, ServiceError> {
         let tags = input.tags.clone().unwrap_or_default();
         names::check_tags(&tags)?;
         names::check_name("Trust store", &input.name)?;
@@ -81,7 +103,10 @@ impl Elb {
         )?;
         let store = self.with_region(ctx, |r| {
             if r.trust_stores.values().any(|s| s.store.name.as_deref() == Some(input.name.as_str())) {
-                return Err(errors::duplicate_trust_store_name(format!("A trust store with the name '{}' already exists", input.name)));
+                return Err(errors::duplicate_trust_store_name(format!(
+                    "A trust store with the name '{}' already exists",
+                    input.name
+                )));
             }
             if r.trust_stores.len() >= crate::catalog::limit("trust-stores-per-account") {
                 return Err(errors::too_many_trust_stores("You have reached the maximum number of trust stores"));
@@ -115,9 +140,15 @@ impl Elb {
         Ok(t::CreateTrustStoreOutput { trust_stores: Some(vec![store]) })
     }
 
-    pub(crate) fn modify_trust_store_op(&self, ctx: &RequestContext, input: t::ModifyTrustStoreInput) -> Result<t::ModifyTrustStoreOutput, ServiceError> {
+    pub(crate) fn modify_trust_store_op(
+        &self,
+        ctx: &RequestContext,
+        input: t::ModifyTrustStoreInput,
+    ) -> Result<t::ModifyTrustStoreOutput, ServiceError> {
         self.authorize_on(ctx, "ModifyTrustStore", &input.trust_store_arn)?;
-        self.with_region(ctx, |r| r.trust_stores.get(&input.trust_store_arn).map(|_| ()).ok_or_else(trust_store_not_found))?;
+        self.with_region(ctx, |r| {
+            r.trust_stores.get(&input.trust_store_arn).map(|_| ()).ok_or_else(trust_store_not_found)
+        })?;
         let (bundle, count) = self.read_bundle(
             ctx,
             &input.ca_certificates_bundle_s3_bucket,
@@ -137,17 +168,25 @@ impl Elb {
         })
     }
 
-    pub(crate) fn delete_trust_store_op(&self, ctx: &RequestContext, input: t::DeleteTrustStoreInput) -> Result<t::DeleteTrustStoreOutput, ServiceError> {
+    pub(crate) fn delete_trust_store_op(
+        &self,
+        ctx: &RequestContext,
+        input: t::DeleteTrustStoreInput,
+    ) -> Result<t::DeleteTrustStoreOutput, ServiceError> {
         self.authorize_on(ctx, "DeleteTrustStore", &input.trust_store_arn)?;
         self.with_region(ctx, |r| {
             if !r.trust_stores.contains_key(&input.trust_store_arn) {
                 return Err(trust_store_not_found());
             }
             let used = r.listeners.values().any(|l| {
-                l.listener.mutual_authentication.as_ref().and_then(|m| m.trust_store_arn.as_deref()) == Some(input.trust_store_arn.as_str())
+                l.listener.mutual_authentication.as_ref().and_then(|m| m.trust_store_arn.as_deref())
+                    == Some(input.trust_store_arn.as_str())
             });
             if used {
-                return Err(errors::trust_store_in_use(format!("Trust store '{}' is in use by a listener", input.trust_store_arn)));
+                return Err(errors::trust_store_in_use(format!(
+                    "Trust store '{}' is in use by a listener",
+                    input.trust_store_arn
+                )));
             }
             r.trust_stores.remove(&input.trust_store_arn);
             r.tags.remove(&input.trust_store_arn);
@@ -155,19 +194,30 @@ impl Elb {
         })
     }
 
-    pub(crate) fn describe_trust_stores_op(&self, ctx: &RequestContext, input: t::DescribeTrustStoresInput) -> Result<t::DescribeTrustStoresOutput, ServiceError> {
+    pub(crate) fn describe_trust_stores_op(
+        &self,
+        ctx: &RequestContext,
+        input: t::DescribeTrustStoresInput,
+    ) -> Result<t::DescribeTrustStoresOutput, ServiceError> {
         names::authorize(ctx, "DescribeTrustStores", "*", Default::default())?;
         let arns = input.trust_store_arns.unwrap_or_default();
         let wanted = input.names.unwrap_or_default();
         let all = self.with_region(ctx, |r| -> Result<Vec<t::TrustStore>, ServiceError> {
             if !arns.is_empty() {
-                return arns.iter().map(|a| r.trust_stores.get(a).map(|s| s.store.clone()).ok_or_else(trust_store_not_found)).collect();
+                return arns
+                    .iter()
+                    .map(|a| r.trust_stores.get(a).map(|s| s.store.clone()).ok_or_else(trust_store_not_found))
+                    .collect();
             }
             if !wanted.is_empty() {
                 return wanted
                     .iter()
                     .map(|n| {
-                        r.trust_stores.values().find(|s| s.store.name.as_deref() == Some(n.as_str())).map(|s| s.store.clone()).ok_or_else(trust_store_not_found)
+                        r.trust_stores
+                            .values()
+                            .find(|s| s.store.name.as_deref() == Some(n.as_str()))
+                            .map(|s| s.store.clone())
+                            .ok_or_else(trust_store_not_found)
                     })
                     .collect();
             }
@@ -189,7 +239,8 @@ impl Elb {
             }
             let mut lbs: Vec<String> = Vec::new();
             for l in r.listeners.values() {
-                if l.listener.mutual_authentication.as_ref().and_then(|m| m.trust_store_arn.as_deref()) == Some(input.trust_store_arn.as_str())
+                if l.listener.mutual_authentication.as_ref().and_then(|m| m.trust_store_arn.as_deref())
+                    == Some(input.trust_store_arn.as_str())
                     && !lbs.iter().any(|x| x == l.lb_arn())
                 {
                     lbs.push(l.lb_arn().to_string());
@@ -231,7 +282,9 @@ impl Elb {
         input: t::AddTrustStoreRevocationsInput,
     ) -> Result<t::AddTrustStoreRevocationsOutput, ServiceError> {
         self.authorize_on(ctx, "AddTrustStoreRevocations", &input.trust_store_arn)?;
-        self.with_region(ctx, |r| r.trust_stores.get(&input.trust_store_arn).map(|_| ()).ok_or_else(trust_store_not_found))?;
+        self.with_region(ctx, |r| {
+            r.trust_stores.get(&input.trust_store_arn).map(|_| ()).ok_or_else(trust_store_not_found)
+        })?;
         let mut parsed = Vec::new();
         for c in input.revocation_contents.iter().flatten() {
             let ty = c.revocation_type.clone().unwrap_or_else(|| "CRL".into());
@@ -243,22 +296,26 @@ impl Elb {
                 if e.code == "AccessDenied" {
                     e
                 } else {
-                    errors::revocation_content_not_found(format!("The specified S3 object 's3://{bucket}/{key}' was not found"))
+                    errors::revocation_content_not_found(format!(
+                        "The specified S3 object 's3://{bucket}/{key}' was not found"
+                    ))
                 }
             })?;
             let der = match std::str::from_utf8(&body) {
-                Ok(text) if text.contains("-----BEGIN X509 CRL-----") => pem_blocks(text, "X509 CRL").into_iter().next().unwrap_or_default(),
+                Ok(text) if text.contains("-----BEGIN X509 CRL-----") => {
+                    pem_blocks(text, "X509 CRL").into_iter().next().unwrap_or_default()
+                }
                 _ => body,
             };
             let (_, crl) = x509_parser::parse_x509_crl(&der)
                 .map_err(|_| errors::invalid_revocation_content("The revocation content is not a valid CRL"))?;
             let serials: Vec<String> = crl.iter_revoked_certificates().map(|rc| hex::encode(rc.raw_serial())).collect();
-            parsed.push((ty, (bucket, key, c.s3_object_version.clone()), serials));
+            parsed.push((ty, (bucket, key, c.s3_object_version.clone()), serials, der.clone()));
         }
         self.with_region(ctx, |r| {
             let s = r.trust_stores.get_mut(&input.trust_store_arn).ok_or_else(trust_store_not_found)?;
             let mut out = Vec::new();
-            for (ty, source, serials) in parsed {
+            for (ty, source, serials, crl) in parsed {
                 let id = s.next_revocation_id.max(1);
                 s.next_revocation_id = id + 1;
                 out.push(t::TrustStoreRevocation {
@@ -267,11 +324,13 @@ impl Elb {
                     revocation_type: Some(ty.clone()),
                     number_of_revoked_entries: Some(serials.len() as i64),
                 });
-                s.revocations.push(Revocation { id, ty, source, serials });
+                s.revocations.push(Revocation { id, ty, source, serials, crl });
             }
             let total: i64 = s.revocations.iter().map(|x| x.serials.len() as i64).sum();
             if total > 1_000_000 {
-                return Err(errors::too_many_trust_store_revocation_entries("The trust store has too many revocation entries"));
+                return Err(errors::too_many_trust_store_revocation_entries(
+                    "The trust store has too many revocation entries",
+                ));
             }
             s.store.total_revoked_entries = Some(total);
             Ok(t::AddTrustStoreRevocationsOutput { trust_store_revocations: Some(out) })
@@ -311,8 +370,7 @@ impl Elb {
                     return Err(errors::revocation_id_not_found(format!("Revocation ID '{id}' not found")));
                 }
             }
-            Ok(s
-                .revocations
+            Ok(s.revocations
                 .iter()
                 .filter(|x| ids.is_empty() || ids.contains(&x.id))
                 .map(|x| t::DescribeTrustStoreRevocation {
@@ -340,7 +398,9 @@ impl Elb {
         input: t::GetTrustStoreCaCertificatesBundleInput,
     ) -> Result<t::GetTrustStoreCaCertificatesBundleOutput, ServiceError> {
         self.authorize_on(ctx, "GetTrustStoreCaCertificatesBundle", &input.trust_store_arn)?;
-        self.with_region(ctx, |r| r.trust_stores.get(&input.trust_store_arn).map(|_| ()).ok_or_else(trust_store_not_found))?;
+        self.with_region(ctx, |r| {
+            r.trust_stores.get(&input.trust_store_arn).map(|_| ()).ok_or_else(trust_store_not_found)
+        })?;
         let account = account_of(ctx);
         let path = format!("trust-stores/{account}/{}/{}/bundle", ctx.region, urlencode(&input.trust_store_arn));
         Ok(t::GetTrustStoreCaCertificatesBundleOutput { location: Some(self.content_link(ctx, &path)) })
@@ -355,7 +415,10 @@ impl Elb {
         self.with_region(ctx, |r| {
             let s = r.trust_stores.get(&input.trust_store_arn).ok_or_else(trust_store_not_found)?;
             if !s.revocations.iter().any(|x| x.id == input.revocation_id) {
-                return Err(errors::revocation_id_not_found(format!("Revocation ID '{}' not found", input.revocation_id)));
+                return Err(errors::revocation_id_not_found(format!(
+                    "Revocation ID '{}' not found",
+                    input.revocation_id
+                )));
             }
             if input.revocation_id < 1 {
                 return Err(validation("The revocation ID is not valid"));
