@@ -57,17 +57,23 @@ impl DockerBackend {
     }
 
     async fn peer_address(&self, handle: &str) -> Result<String, BackendError> {
-        let ip = self
+        let out = self
             .run(&[
                 "inspect".into(),
                 "--format".into(),
-                "{{range .NetworkSettings.Networks}}{{.IPAddress}} {{end}}".into(),
+                "{{range $n, $v := .NetworkSettings.Networks}}{{$n}}={{$v.IPAddress}} {{end}}".into(),
                 handle.into(),
             ])
             .await?;
-        ip.split_whitespace()
-            .next()
-            .map(str::to_string)
+        // Nodes talk to each other over the default bridge; a VPC network
+        // is only for EC2 instances.
+        let nets: Vec<(&str, &str)> = out.split_whitespace().filter_map(|p| p.split_once('=')).collect();
+        nets.iter()
+            .find(|(n, _)| *n == "bridge")
+            .or_else(|| nets.iter().find(|(n, _)| !n.starts_with("mws-vpc-")))
+            .or(nets.first())
+            .map(|(_, ip)| ip.to_string())
+            .filter(|ip| !ip.is_empty())
             .ok_or_else(|| BackendError(format!("container {handle} has no IP address")))
     }
 }
@@ -188,6 +194,19 @@ impl EngineBackend for DockerBackend {
         if let Err(e) = self.run(&["start".into(), handle.clone()]).await {
             let _ = self.terminate(&handle).await;
             return Err(e);
+        }
+        // Join the VPC's network (when its instances have created it), so
+        // that EC2 instances in the VPC reach the node by name. A created
+        // container would accept a missing network and then fail to start.
+        if let Some((network, aliases)) = &spec.vpc_network {
+            let mut args: Vec<String> = vec!["network".into(), "connect".into()];
+            for a in aliases {
+                args.extend(["--alias".into(), a.clone()]);
+            }
+            args.extend([network.clone(), handle.clone()]);
+            if let Err(e) = self.run(&args).await {
+                tracing::debug!("ElastiCache node {} not on {network}: {e}", spec.name);
+            }
         }
         let peer_address = self.peer_address(&handle).await?;
         Ok(RunningNode { handle, peer_address })

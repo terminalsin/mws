@@ -330,7 +330,7 @@ impl DockerBackend {
     }
 
     fn network_name(vpc_id: &str) -> String {
-        format!("mws-{vpc_id}")
+        crate::network::docker_network_name(vpc_id)
     }
 
     /// Make sure the VPC's network exists; `true` when it uses the VPC's

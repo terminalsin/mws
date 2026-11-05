@@ -67,6 +67,13 @@ impl Proxies {
         Ok(port)
     }
 
+    /// Keep `task` (a listener of its own) under `key`, aborting it when
+    /// the key is closed.
+    pub fn insert_task(&self, key: &str, task: tokio::task::JoinHandle<()>) {
+        self.close(key);
+        self.map.lock().expect("proxy lock").insert(key.to_string(), Proxy { targets: Arc::default(), task });
+    }
+
     pub fn set_targets(&self, key: &str, targets: Vec<(String, u16)>) {
         if let Some(p) = self.map.lock().expect("proxy lock").get(key) {
             if let Ok(mut t) = p.targets.write() {
