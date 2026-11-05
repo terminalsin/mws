@@ -2,33 +2,35 @@
 
 > Crate: [`mws-kms`](../../crates/services/mws-kms) · Tests: [`tests/e2e-rust/tests/e2e/kms.rs`](../../tests/e2e-rust/tests/e2e/kms.rs)
 
-All 56 operations are generated from the AWS model (awsJson1.1).
+All 56 operations are generated from the AWS model (awsJson1.1) and implemented. Keys do real cryptography: results check out in standard tooling.
 
-## Behaviour
+✅ supported · 🟡 partial · ❌ not supported
 
-Keys do real cryptography: symmetric keys encrypt with AES-256-GCM and bind the
-encryption context, `Decrypt` finds the key from the ciphertext, and RSA, ECC
-(P-256/384/521, secp256k1), Ed25519, ML-DSA, HMAC, ECDH and ML-KEM keys sign,
-verify, encrypt, MAC, agree and encapsulate with results that check out in
-standard tooling. Data keys and data key pairs, `ReEncrypt`, `GenerateRandom`,
-aliases, tags, enable/disable, scheduled deletion (on the emulated clock),
-automatic and on-demand rotation (old ciphertexts keep decrypting), imported key
-material (all wrapping algorithms, expiry, re-import of the same material only),
-multi-Region keys and replicas, and `DryRun`.
+## Keys and cryptography
 
-Key policies are evaluated the way KMS does (the key policy must allow the
-caller, directly or by delegating to IAM), with the policy lockout safety check,
-and grants (with encryption context constraints) allow their grantees. Other
-services use KMS keys through the crate's API (`kms:ViaService`, AWS managed
-`alias/aws/*` keys, service principals).
+| Feature | Status | Details |
+| --- | :---: | --- |
+| Symmetric keys | ✅ | AES-256-GCM, bound to the encryption context; `Decrypt` finds the key from the ciphertext. |
+| Asymmetric keys | ✅ | RSA, ECC (P-256/384/521, secp256k1), Ed25519 and ML-DSA keys sign and verify; RSA keys encrypt. |
+| HMAC, ECDH and ML-KEM | ✅ | `GenerateMac`/`VerifyMac`, `DeriveSharedSecret`, and key encapsulation. |
+| Data keys | ✅ | Data keys and data key pairs, with and without plaintext; `ReEncrypt`, `GenerateRandom`. |
+| Imported key material | ✅ | All wrapping algorithms, expiry, re-import of the same material only. |
+| Multi-Region keys | ✅ | Primary keys, replicas and primary region updates. |
+| Lifecycle | ✅ | Enable/disable, scheduled deletion, automatic and on-demand rotation (old ciphertexts keep decrypting), all on the emulated clock; aliases, tags and `DryRun`. |
+| SM2, `ED25519_PH_SHA_512`, ML-DSA `EXTERNAL_MU` | ❌ | Not supported (SM2 exists only in China Regions). |
+| Nitro Enclaves `Recipient` | ❌ | Attestation documents are not supported. |
+| Custom key stores | 🟡 | Managed, but never connect (no CloudHSM, no reachable XKS proxy). |
 
-## Known gaps
+## Access control
 
-Not supported: SM2 (China Regions only), Nitro Enclaves `Recipient`,
-`ED25519_PH_SHA_512` and ML-DSA `EXTERNAL_MU`; custom key stores can be managed
-but never connect (no CloudHSM, no reachable XKS proxy). Key policy principals
-are not checked against IAM (AWS rejects unknown principals), `ListAliases`
-omits predefined AWS aliases that have no key yet, grants to service principals
-are not honoured, and grant tokens are ignored.
+| Feature | Status | Details |
+| --- | :---: | --- |
+| Key policies | ✅ | Evaluated as KMS does: the key policy must allow the caller, directly or by delegating to IAM; the policy lockout safety check applies. |
+| Key policy principals | 🟡 | Not checked against IAM, while AWS rejects unknown principals. |
+| Grants | ✅ | Grantees, operations and encryption context constraints; grants created through grants. |
+| Grant tokens and service principal grants | 🟡 | Grant tokens are ignored, and grants to service principals are not honoured. |
+| AWS managed keys | ✅ | `alias/aws/<service>` keys created on first use, as on AWS; `DescribeKey` on a predefined alias creates the key. |
+| `ListAliases` | 🟡 | Omits predefined AWS aliases that have no key yet. |
+| Use by other services | ✅ | `kms:ViaService`, `kms:CallerAccount` and service principals for S3, SQS, SNS, Secrets Manager, SSM, Logs, Kinesis, Firehose and others. |
 
 See also: [all services](README.md) · [authentication and authorization](../security.md).

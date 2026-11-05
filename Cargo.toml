@@ -34,6 +34,8 @@ members = [
     "crates/services/mws-secretsmanager",
     "crates/services/mws-sns",
     "crates/services/mws-acm",
+    "crates/services/mws-marketplace-entitlement",
+    "crates/services/mws-marketplace-metering",
     "crates/services/mws-kinesis",
     "crates/services/mws-firehose",
     "crates/services/mws-cloudwatch",
@@ -83,6 +85,8 @@ mws-events = { path = "crates/services/mws-events" }
 mws-secretsmanager = { path = "crates/services/mws-secretsmanager" }
 mws-sns = { path = "crates/services/mws-sns" }
 mws-acm = { path = "crates/services/mws-acm" }
+mws-marketplace-entitlement = { path = "crates/services/mws-marketplace-entitlement" }
+mws-marketplace-metering = { path = "crates/services/mws-marketplace-metering" }
 mws-kinesis = { path = "crates/services/mws-kinesis" }
 mws-firehose = { path = "crates/services/mws-firehose" }
 mws-cloudwatch = { path = "crates/services/mws-cloudwatch" }

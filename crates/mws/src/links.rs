@@ -745,3 +745,35 @@ impl mws_ec2::InstanceRoleCredentials for Ec2InstanceRoles {
         })
     }
 }
+
+/// CloudFormation service roles: the stack's `RoleARN`, assumed as
+/// `cloudformation.amazonaws.com`.
+pub struct CloudFormationRoles(pub mws_sts::Sts);
+
+impl mws_cloudformation::RoleAssumer for CloudFormationRoles {
+    fn assume(
+        &self,
+        role_arn: &str,
+        session_name: &str,
+        now: chrono::DateTime<chrono::Utc>,
+    ) -> Result<mws_core::Caller, String> {
+        let creds = self
+            .0
+            .assume_role_as_service(&mws_sts::ServiceAssume {
+                role_arn,
+                service_principal: "cloudformation.amazonaws.com",
+                session_name,
+                duration_seconds: 3600,
+                source_account: role_arn.split(':').nth(4),
+                source_arn: None,
+                now,
+            })
+            .map_err(|_| format!("Role {role_arn} is invalid or cannot be assumed"))?;
+        self.0
+            .credential_store()
+            .resolve(&creds.access_key_id, Some(&creds.session_token), now)
+            .map_err(|e| format!("{e:?}"))?
+            .map(|r| r.caller)
+            .ok_or_else(|| format!("Role {role_arn} is invalid or cannot be assumed"))
+    }
+}

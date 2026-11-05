@@ -140,6 +140,9 @@ pub struct Cx<'a> {
     /// Stack-level tags, which CloudFormation propagates to resources that
     /// take tags.
     pub stack_tags: &'a [(String, String)],
+    /// The emulated clock's offset from the wall clock: calls made later
+    /// in a deployment carry the time they are made.
+    pub offset: chrono::Duration,
 }
 
 impl Cx<'_> {
@@ -157,7 +160,9 @@ impl Cx<'_> {
 
     /// Call another service's operation as the stack's identity.
     pub async fn call(&self, service: &str, operation: &str, input: Value) -> HResult<Value> {
-        self.cfn.call(self.ctx, service, operation, input).await.map_err(|e| HandlerError::from_service(service, &e))
+        let mut ctx = self.ctx.clone();
+        ctx.received_at = chrono::Utc::now() + self.offset;
+        self.cfn.call(&ctx, service, operation, input).await.map_err(|e| HandlerError::from_service(service, &e))
     }
 
     /// A physical name CloudFormation would generate:

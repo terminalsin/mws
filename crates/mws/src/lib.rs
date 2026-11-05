@@ -8,8 +8,9 @@ use std::sync::Arc;
 
 use mws_acm::Acm;
 use mws_acmpca::PrivateCa;
+use mws_cloudformation::CloudFormation;
 use mws_cloudwatch::CloudWatch;
-use mws_core::Environment;
+use mws_core::{Environment, Service};
 use mws_ec2::{BackendChoice, Ec2};
 use mws_events::Events;
 use mws_firehose::Firehose;
@@ -18,6 +19,8 @@ use mws_kinesis::Kinesis;
 use mws_kms::Kms;
 use mws_lambda::Lambda;
 use mws_logs::Logs;
+use mws_marketplace_entitlement::Entitlement;
+use mws_marketplace_metering::Metering;
 use mws_organizations::Organizations;
 use mws_route53::Route53;
 use mws_s3::S3;
@@ -104,6 +107,9 @@ pub struct Mws {
     pub firehose: Firehose,
     pub cloudwatch: CloudWatch,
     pub ec2: Ec2,
+    pub marketplace_entitlement: Entitlement,
+    pub marketplace_metering: Metering,
+    pub cloudformation: CloudFormation,
 }
 
 /// Build the gateway with every service MWS emulates.
@@ -229,40 +235,58 @@ fn build_with_store(config: Config, store: Option<Arc<Store>>) -> Mws {
     let ec2 = Ec2::new(config.ec2_backend.resolve(config.ec2_docker_cli.as_deref()));
     tracing::info!(backend = ec2.backend_name(), "EC2 compute backend");
     ec2.set_instance_roles(Arc::new(links::Ec2InstanceRoles { iam: iam.clone(), sts: sts.clone() }));
+    let marketplace_entitlement = Entitlement::new(config.iam.account_id.clone());
+    let marketplace_metering = Metering::new(marketplace_entitlement.clone());
+    let cloudformation = CloudFormation::new();
+    cloudformation.set_role_assumer(Arc::new(links::CloudFormationRoles(sts.clone())));
+    let authorizer = iam.authorizer();
+    let credential_stores =
+        [iam.credential_store(), sts.credential_store(), s3.credential_store(), s3.object_lambda_credential_store()];
+    let services: Vec<Arc<dyn Service>> = vec![
+        Arc::new(iam),
+        Arc::new(sts),
+        Arc::new(route53.clone()),
+        Arc::new(pca),
+        Arc::new(acm.clone()),
+        Arc::new(kms.clone()),
+        Arc::new(organizations),
+        // S3 Control signs as `s3` too; it claims its `/v20180820/` paths.
+        Arc::new(s3control.clone()),
+        Arc::new(s3.clone()),
+        Arc::new(lambda.clone()),
+        Arc::new(logs.clone()),
+        Arc::new(sqs.clone()),
+        Arc::new(ssm.clone()),
+        Arc::new(events.clone()),
+        Arc::new(secretsmanager.clone()),
+        Arc::new(sns.clone()),
+        Arc::new(kinesis.clone()),
+        Arc::new(firehose.clone()),
+        Arc::new(cloudwatch.clone()),
+        Arc::new(ec2.clone()),
+        // Both Marketplace services sign as `aws-marketplace`; each claims
+        // its own `X-Amz-Target`.
+        Arc::new(marketplace_metering.clone()),
+        Arc::new(marketplace_entitlement.clone()),
+        Arc::new(cloudformation.clone()),
+    ];
+    // CloudFormation deploys resources through the other services' APIs.
+    cloudformation.set_services(services.iter().cloned());
     let mut gateway = Gateway::builder();
     if let Some(store) = store {
         gateway = gateway.store(store);
     }
-    let gateway = gateway
+    let mut gateway = gateway
         .scenario_principal(config.iam.root_access_key_id.clone())
         .environment(Environment { partition: config.iam.partition.clone(), ..Environment::default() })
-        .authorizer(iam.authorizer())
-        .credentials(iam.credential_store())
-        .credentials(sts.credential_store())
-        .credentials(s3.credential_store())
-        .credentials(s3.object_lambda_credential_store())
-        .service(Arc::new(iam))
-        .service(Arc::new(sts))
-        .service(Arc::new(route53.clone()))
-        .service(Arc::new(pca))
-        .service(Arc::new(acm.clone()))
-        .service(Arc::new(kms.clone()))
-        .service(Arc::new(organizations))
-        // S3 Control signs as `s3` too; it claims its `/v20180820/` paths.
-        .service(Arc::new(s3control.clone()))
-        .service(Arc::new(s3.clone()))
-        .service(Arc::new(lambda.clone()))
-        .service(Arc::new(logs.clone()))
-        .service(Arc::new(sqs.clone()))
-        .service(Arc::new(ssm.clone()))
-        .service(Arc::new(events.clone()))
-        .service(Arc::new(secretsmanager.clone()))
-        .service(Arc::new(sns.clone()))
-        .service(Arc::new(kinesis.clone()))
-        .service(Arc::new(firehose.clone()))
-        .service(Arc::new(cloudwatch.clone()))
-        .service(Arc::new(ec2.clone()))
-        .build();
+        .authorizer(authorizer);
+    for c in credential_stores {
+        gateway = gateway.credentials(c);
+    }
+    for s in services {
+        gateway = gateway.service(s);
+    }
+    let gateway = gateway.build();
     Mws {
         gateway,
         route53,
@@ -281,6 +305,9 @@ fn build_with_store(config: Config, store: Option<Arc<Store>>) -> Mws {
         firehose,
         cloudwatch,
         ec2,
+        marketplace_entitlement,
+        marketplace_metering,
+        cloudformation,
     }
 }
 

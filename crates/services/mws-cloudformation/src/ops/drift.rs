@@ -89,7 +89,15 @@ impl CloudFormation {
             Ok(c) => c,
             Err(_) => return d,
         };
-        let cx = Cx { cfn: self, ctx: &deploy, stack_name, stack_id, logical_id: &r.logical_id, stack_tags: tags };
+        let cx = Cx {
+            cfn: self,
+            ctx: &deploy,
+            stack_name,
+            stack_id,
+            logical_id: &r.logical_id,
+            stack_tags: tags,
+            offset: deploy.received_at - chrono::Utc::now(),
+        };
         match provider.read(&cx, physical, &r.properties).await {
             None => d,
             Some(Err(e)) if e.not_found => {

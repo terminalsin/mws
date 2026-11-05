@@ -247,6 +247,7 @@ impl Deployment {
             stack_id: &stack.id,
             logical_id,
             stack_tags: tags,
+            offset: self.offset,
         }
     }
 

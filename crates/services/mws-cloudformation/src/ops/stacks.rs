@@ -562,16 +562,22 @@ impl CloudFormation {
         ctx: &RequestContext,
         input: types::SignalResourceInput,
     ) -> Result<(), ServiceError> {
-        let (id, exists) = {
+        let (id, status) = {
             let st = self.state();
             let s = find(&st, ctx, &input.stack_name)?;
-            (s.id.clone(), s.resource(&input.logical_resource_id).is_some())
+            (s.id.clone(), s.resource(&input.logical_resource_id).map(|r| r.status.clone()))
         };
         ctx.authorize("cloudformation:SignalResource", &id, Default::default())?;
-        if !exists {
+        let Some(status) = status else {
             return Err(validation(format!(
                 "Resource {} does not exist for stack {}",
                 input.logical_resource_id, input.stack_name
+            )));
+        };
+        if !status.ends_with("_IN_PROGRESS") {
+            return Err(validation(format!(
+                "Resource {} is in {status} state and cannot be signaled",
+                input.logical_resource_id
             )));
         }
         self.signal(

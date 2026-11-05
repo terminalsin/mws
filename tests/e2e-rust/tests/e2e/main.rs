@@ -6,6 +6,7 @@
 mod acm;
 mod acmpca;
 mod acmpca_parity;
+mod cloudformation;
 mod cloudwatch;
 mod cloudwatch_parity;
 mod ec2;
@@ -27,6 +28,7 @@ mod lambda_urls;
 mod logs;
 mod logs_queries;
 mod logs_subscriptions;
+mod marketplace;
 mod object_lambda;
 mod organizations;
 mod parity;

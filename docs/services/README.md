@@ -1,8 +1,9 @@
 # Services
 
-MWS emulates 20 AWS services. Each is generated from AWS's official Smithy
+MWS emulates 22 AWS services. Each is generated from AWS's official Smithy
 model, so every operation in the model is routed and validated; operations
-outside the implemented set answer `NotImplemented`.
+outside the implemented set answer `NotImplemented`. Each service's page lists
+its features in a table: ✅ supported, 🟡 partial, ❌ not supported yet.
 
 Every service shares the same foundations:
 
@@ -67,6 +68,18 @@ Every service shares the same foundations:
 | [CloudWatch](cloudwatch.md) | 55 / 55 | Metrics, statistics and percentiles, metric math, alarms that act, dashboards, metric streams |
 | [CloudWatch Logs](logs.md) | 118 / 118 | Log events, filter patterns, Logs Insights, live tail, subscriptions, metric filters, exports |
 
+## Marketplace
+
+| Service | Operations | What's emulated |
+| --- | --- | --- |
+| [Marketplace Metering and Entitlement](marketplace.md) | 5 / 5 | SaaS registration tokens, batch and hourly metering with AWS's dedup and time windows, signed `RegisterUsage`, entitlements, a seedable catalog |
+
+## Management
+
+| Service | Operations | What's emulated |
+| --- | --- | --- |
+| [CloudFormation](cloudformation.md) | 35 / 90 | Stacks that create real resources in the other services, change sets, rollbacks, nested stacks, custom resources, drift detection |
+
 ## How services connect
 
 Services are wired together where AWS wires them, and each integration runs
@@ -88,3 +101,7 @@ with the permissions AWS would use:
 - Secrets Manager rotation runs your Lambda function; SSM resolves Secrets
   Manager references.
 - EC2 instances and Lambda functions receive role credentials from STS.
+- Marketplace Metering and the Entitlement Service share one Marketplace
+  catalog of products, subscriptions and entitlements.
+- CloudFormation deploys stacks through every other service's API, as the
+  caller or the stack's service role.
