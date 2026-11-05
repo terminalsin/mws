@@ -130,6 +130,7 @@ SDKs, S3 addressing, host-prefixed endpoints and calling as other identities.
 | [CloudWatch Logs](docs/services/logs.md) | 118 / 118 | awsJson 1.1 |
 | [Marketplace Metering and Entitlement](docs/services/marketplace.md) | 5 / 5 | awsJson 1.1, RPC v2 CBOR |
 | [CodeArtifact](docs/services/codeartifact.md) | 48 / 48 | restJson1, npm, PyPI, Maven, Cargo, RubyGems, NuGet, Swift |
+| [CloudTrail](docs/services/cloudtrail.md) | 61 / 61 (with CloudTrail Data) | awsJson 1.1, restJson1 |
 
 Operations outside the implemented set answer `NotImplemented`. Each service
 page lists what is emulated and its known gaps.

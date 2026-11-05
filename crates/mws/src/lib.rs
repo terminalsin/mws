@@ -13,6 +13,8 @@ use mws_acm::Acm;
 use mws_acmpca::PrivateCa;
 use mws_amplify::Amplify;
 use mws_autoscaling::AutoScaling;
+use mws_cloudtrail::CloudTrail;
+use mws_cloudtrail_data::CloudTrailData;
 use mws_cloudwatch::CloudWatch;
 use mws_codeartifact::CodeArtifact;
 use mws_core::Environment;
@@ -188,6 +190,7 @@ pub struct Mws {
     pub eks: Eks,
     pub efs: Efs,
     pub codeartifact: CodeArtifact,
+    pub cloudtrail: CloudTrail,
 }
 
 /// Build the gateway with every service MWS emulates.
@@ -380,6 +383,14 @@ fn build_with_store(config: Config, store: Option<Arc<Store>>) -> Mws {
     }
     let efs = Efs::new(ec2.clone(), kms.clone(), config.efs_dir.clone().unwrap_or_else(Efs::default_root));
     ec2.add_launch_extension(efs.instance_support());
+    let cloudtrail = CloudTrail::new()
+        .with_s3(s3.clone())
+        .with_logs(logs.clone())
+        .with_sts(sts.clone())
+        .with_kms(kms.clone())
+        .with_sns(sns.clone())
+        .with_events(events.clone());
+    cloudtrail.set_organizations(organizations.view());
     let mut gateway = Gateway::builder();
     if let Some(store) = store {
         gateway = gateway.store(store);
@@ -435,6 +446,10 @@ fn build_with_store(config: Config, store: Option<Arc<Store>>) -> Mws {
         .service(Arc::new(eks.clone()))
         .service(Arc::new(efs.clone()))
         .service(Arc::new(codeartifact.clone()))
+        .service(Arc::new(cloudtrail.clone()))
+        // CloudTrail records every API call the gateway dispatches.
+        .service(Arc::new(CloudTrailData::new(cloudtrail.clone())))
+        .observer(Arc::new(cloudtrail.clone()))
         .build();
     Mws {
         gateway,
@@ -469,6 +484,7 @@ fn build_with_store(config: Config, store: Option<Arc<Store>>) -> Mws {
         eks,
         efs,
         codeartifact,
+        cloudtrail,
     }
 }
 

@@ -314,6 +314,56 @@ dependencies = [
 ]
 
 [[package]]
+name = "aws-sdk-cloudtrail"
+version = "1.130.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "93c1480de7ad8f56caa394c710d960048972b75bf4a18749be024a15fa4cf774"
+dependencies = [
+ "arc-swap",
+ "aws-credential-types",
+ "aws-runtime",
+ "aws-smithy-async",
+ "aws-smithy-http",
+ "aws-smithy-json",
+ "aws-smithy-observability",
+ "aws-smithy-runtime",
+ "aws-smithy-runtime-api",
+ "aws-smithy-schema",
+ "aws-smithy-types",
+ "aws-types",
+ "bytes",
+ "fastrand",
+ "http 1.5.0",
+ "regex-lite",
+ "tracing",
+]
+
+[[package]]
+name = "aws-sdk-cloudtraildata"
+version = "1.120.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "74dc98872c2edd29d2604a5118ad8fff127aa112e641c4f33cb94a0292e2615e"
+dependencies = [
+ "arc-swap",
+ "aws-credential-types",
+ "aws-runtime",
+ "aws-smithy-async",
+ "aws-smithy-http",
+ "aws-smithy-json",
+ "aws-smithy-observability",
+ "aws-smithy-runtime",
+ "aws-smithy-runtime-api",
+ "aws-smithy-schema",
+ "aws-smithy-types",
+ "aws-types",
+ "bytes",
+ "fastrand",
+ "http 1.5.0",
+ "regex-lite",
+ "tracing",
+]
+
+[[package]]
 name = "aws-sdk-cloudwatch"
 version = "1.140.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2898,6 +2948,8 @@ dependencies = [
  "mws-acmpca",
  "mws-amplify",
  "mws-autoscaling",
+ "mws-cloudtrail",
+ "mws-cloudtrail-data",
  "mws-cloudwatch",
  "mws-codeartifact",
  "mws-core",
@@ -3054,6 +3106,52 @@ dependencies = [
 ]
 
 [[package]]
+name = "mws-cloudtrail"
+version = "0.1.0"
+dependencies = [
+ "async-trait",
+ "aws-lc-rs",
+ "base64 0.22.1",
+ "chrono",
+ "flate2",
+ "hex",
+ "md-5 0.10.6",
+ "mws-codegen",
+ "mws-core",
+ "mws-events",
+ "mws-iam",
+ "mws-iam-policy",
+ "mws-kms",
+ "mws-logs",
+ "mws-proto-json",
+ "mws-s3",
+ "mws-sns",
+ "mws-sts",
+ "rand 0.8.8",
+ "regex",
+ "serde",
+ "serde_json",
+ "sha2 0.10.9",
+ "tokio",
+ "tracing",
+ "uuid",
+]
+
+[[package]]
+name = "mws-cloudtrail-data"
+version = "0.1.0"
+dependencies = [
+ "async-trait",
+ "mws-cloudtrail",
+ "mws-codegen",
+ "mws-core",
+ "mws-proto-json",
+ "mws-proto-restjson",
+ "serde",
+ "serde_json",
+]
+
+[[package]]
 name = "mws-cloudwatch"
 version = "0.1.0"
 dependencies = [
@@ -3155,6 +3253,8 @@ dependencies = [
  "aws-sdk-acmpca",
  "aws-sdk-amplify",
  "aws-sdk-autoscaling",
+ "aws-sdk-cloudtrail",
+ "aws-sdk-cloudtraildata",
  "aws-sdk-cloudwatch",
  "aws-sdk-cloudwatchlogs",
  "aws-sdk-codeartifact",

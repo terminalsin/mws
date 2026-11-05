@@ -20,7 +20,7 @@ use serde_json::Value;
 
 use crate::common::{self, Constraints};
 use crate::json_codec::JsonCodec;
-use crate::naming::{ident, lower_camel, rust_str, snake_case, type_name};
+use crate::naming::{lower_camel, rust_str, snake_case, type_name};
 use crate::rust_types::{field_name, presence, Presence, TypeGen};
 use crate::xml_ser::is_http_bound;
 
@@ -139,7 +139,6 @@ impl Gen<'_, '_, '_> {
             snake_case(op.name())
         );
         let _ = writeln!(w, "    use hb::*;");
-        let method = ident(&snake_case(op.name()));
         match &op.input {
             Some(input_id) => {
                 let input = model.expect(input_id).clone();
@@ -172,10 +171,10 @@ impl Gen<'_, '_, '_> {
                     let _ = writeln!(w, "    }}");
                 }
                 let _ = writeln!(w, "    rd.finish(SERVICE_INFO.validation_error)?;");
-                let _ = writeln!(w, "    let mut out = handler.{method}(ctx, input).await?;");
+                let _ = writeln!(w, "    let mut out = {}?;", crate::common::handler_call(op, "input"));
             }
             None => {
-                let _ = writeln!(w, "    let mut out = handler.{method}(ctx, ()).await?;");
+                let _ = writeln!(w, "    let mut out = {}?;", crate::common::handler_call(op, "()"));
             }
         }
         let info = "&SERVICE_INFO";

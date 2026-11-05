@@ -18,7 +18,7 @@ use mws_smithy::{Member, Model, Shape, ShapeType};
 use serde_json::Value;
 
 use crate::common::{self, de_fn_name, qualified_type, ser_fn_name, Constraints};
-use crate::naming::{ident, lower_camel, rust_str, snake_case, type_name};
+use crate::naming::{lower_camel, rust_str, snake_case, type_name};
 use crate::rust_types::{field_name, presence, Presence, TypeGen};
 use crate::xml_ser::{is_http_bound, wire_name, XmlSer};
 
@@ -173,7 +173,6 @@ impl Gen<'_, '_> {
             snake_case(op.name())
         );
         let _ = writeln!(w, "    use de::*;");
-        let method = ident(&snake_case(op.name()));
         let uri =
             op.get_trait("http").and_then(|h| h.get("uri")).and_then(Value::as_str).unwrap_or_default().to_string();
         match &op.input {
@@ -212,10 +211,10 @@ impl Gen<'_, '_> {
                     let _ = writeln!(w, "    }}");
                 }
                 let _ = writeln!(w, "    d.finish(SERVICE_INFO.validation_error)?;");
-                let _ = writeln!(w, "    let mut out = handler.{method}(ctx, input).await?;");
+                let _ = writeln!(w, "    let mut out = {}?;", crate::common::handler_call(op, "input"));
             }
             None => {
-                let _ = writeln!(w, "    let mut out = handler.{method}(ctx, ()).await?;");
+                let _ = writeln!(w, "    let mut out = {}?;", crate::common::handler_call(op, "()"));
             }
         }
         let rid = "&ctx.request_id";
