@@ -39,6 +39,7 @@ Every service shares the same foundations:
 | --- | --- | --- |
 | [S3](s3.md) | 111 / 112 | Objects, multipart, versioning, checksums, policies, SSE, lifecycle, replication, notifications, Select, directory buckets |
 | [S3 Control](s3control.md) | 97 / 97 | Access points, Object Lambda, Batch Operations, Access Grants, multi-Region access points, Storage Lens |
+| [EFS](efs.md) | 31 / 31 | File systems as real directories, mount targets in VPC subnets, access points, policies, replication, mounts from Docker instances |
 
 ## Compute and networking
 
@@ -85,6 +86,12 @@ Every service shares the same foundations:
 | Service | Operations | What's emulated |
 | --- | --- | --- |
 | [Marketplace Metering and Entitlement](marketplace.md) | 5 / 5 | SaaS registration tokens, batch and hourly metering with AWS's dedup and time windows, signed `RegisterUsage`, entitlements, a seedable catalog |
+
+## Developer tools
+
+| Service | Operations | What's emulated |
+| --- | --- | --- |
+| [CodeArtifact](codeartifact.md) | 48 / 48 | Domains, repositories with upstreams and external connections, package groups, and npm, PyPI, Maven, Cargo, RubyGems, NuGet and Swift endpoints real clients use |
 
 ## How services connect
 
@@ -136,5 +143,10 @@ with the permissions AWS would use:
 - EKS creates cluster security groups in EC2 and runs managed node groups as
   Auto Scaling groups with EKS launch templates and IAM instance profiles,
   from AMIs SSM publishes.
+- EFS mount targets are network interfaces in EC2 subnets, and Docker-backed
+  instances mount EFS file systems, subject to security groups and the file
+  system policy.
+- CodeArtifact authorization tokens act as the IAM principal that requested
+  them, and domains are encrypted with KMS keys.
 - CloudTrail records every API call and delivers it to S3 (log and signed
   digest files), CloudWatch Logs, SNS and EventBridge.

@@ -217,6 +217,16 @@ impl Gateway {
                 };
             }
             Err(e) => {
+                // Services with their own credentials (CodeArtifact
+                // repository endpoints take `Bearer` and `Basic` tokens)
+                // check a non-SigV4 `Authorization` header themselves.
+                if let Some(service) =
+                    self.services.values().flatten().find(|s| s.recognizes(&request) && s.accepts_unsigned(&request))
+                {
+                    let ctx =
+                        self.context(request_id, self.env.default_region.clone(), Caller::anonymous(), remote, now);
+                    return service.handle(ctx, request).await;
+                }
                 let err = sigv4_error(e);
                 return match self.services.values().flatten().find(|s| s.recognizes(&request)) {
                     Some(service) => service.render_error(&request_id, &err),

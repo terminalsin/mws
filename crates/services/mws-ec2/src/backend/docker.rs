@@ -54,6 +54,10 @@ if [ -n "$MWS_SSH_PUBLIC_KEY" ]; then
   mkdir -p /root/.ssh && chmod 700 /root/.ssh
   grep -qxF "$MWS_SSH_PUBLIC_KEY" /root/.ssh/authorized_keys 2>/dev/null || echo "$MWS_SSH_PUBLIC_KEY" >> /root/.ssh/authorized_keys
 fi
+if [ -n "$MWS_BOOT_HOOKS" ]; then
+  echo "$MWS_BOOT_HOOKS" | base64 -d > /var/lib/cloud/instance/mws-boot-hooks.sh 2>/dev/null
+  sh /var/lib/cloud/instance/mws-boot-hooks.sh
+fi
 if [ -n "$MWS_USER_DATA" ] && [ ! -f /var/lib/cloud/instance/boot-finished ]; then
   echo "$MWS_USER_DATA" | base64 -d > /var/lib/cloud/instance/user-data.txt 2>/dev/null
   if head -c 2 /var/lib/cloud/instance/user-data.txt | grep -q '#!'; then
@@ -248,12 +252,29 @@ impl DockerBackend {
             args.push("-e".into());
             args.push(format!("{k}={v}"));
         }
+        for m in &spec.extras.mounts {
+            args.push("-v".into());
+            args.push(format!("{}:{}", m.source.display(), m.target));
+        }
+        for c in &spec.extras.capabilities {
+            args.push("--cap-add".into());
+            args.push(c.clone());
+        }
+        for o in &spec.extras.security_options {
+            args.push("--security-opt".into());
+            args.push(o.clone());
+        }
         if self.netfilter_image.is_some() {
             args.push("-e".into());
             args.push("MWS_WAIT_NETWORK=1".into());
         }
         if spec.boot {
             use base64::Engine;
+            if !spec.extras.boot_hooks.is_empty() {
+                let hooks = spec.extras.boot_hooks.join("\n");
+                args.push("-e".into());
+                args.push(format!("MWS_BOOT_HOOKS={}", base64::engine::general_purpose::STANDARD.encode(hooks)));
+            }
             if let Some(data) = &spec.user_data {
                 args.push("-e".into());
                 args.push(format!("MWS_USER_DATA={}", base64::engine::general_purpose::STANDARD.encode(data)));

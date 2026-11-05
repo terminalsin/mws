@@ -35,11 +35,19 @@ pub struct RestJsonOptions {
     /// A JSON key some services (Lambda) add to error bodies naming the
     /// fault: `User` for client errors, `Service` for server errors.
     pub error_fault_key: Option<&'static str>,
+    /// A JSON key some services (EFS) repeat the error code under in
+    /// error bodies.
+    pub error_code_key: Option<&'static str>,
 }
 
 impl Default for RestJsonOptions {
     fn default() -> Self {
-        Self { validation_error: "ValidationException", error_message_key: "message", error_fault_key: None }
+        Self {
+            validation_error: "ValidationException",
+            error_message_key: "message",
+            error_fault_key: None,
+            error_code_key: None,
+        }
     }
 }
 
@@ -85,9 +93,13 @@ impl Gen<'_, '_, '_> {
             Some(k) => format!("Some({})", rust_str(k)),
             None => "None".into(),
         };
+        let code_key = match self.options.error_code_key {
+            Some(k) => format!("Some({})", rust_str(k)),
+            None => "None".into(),
+        };
         let _ = writeln!(
             w,
-            "\npub const SERVICE_INFO: ServiceInfo = ServiceInfo {{ validation_error: {}, error_message_key: {}, error_fault_key: {fault_key} }};",
+            "\npub const SERVICE_INFO: ServiceInfo = ServiceInfo {{ validation_error: {}, error_message_key: {}, error_fault_key: {fault_key}, error_code_key: {code_key} }};",
             rust_str(self.options.validation_error),
             rust_str(self.options.error_message_key),
         );
