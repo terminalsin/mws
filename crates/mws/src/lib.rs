@@ -1,6 +1,9 @@
 //! Composition root. This is the only crate that knows which services exist.
 
+mod autoscaling;
+mod eks;
 mod links;
+mod ses;
 mod sinks;
 
 use std::path::PathBuf;
@@ -8,13 +11,19 @@ use std::sync::Arc;
 
 use mws_acm::Acm;
 use mws_acmpca::PrivateCa;
+use mws_amplify::Amplify;
+use mws_autoscaling::AutoScaling;
 use mws_cloudwatch::CloudWatch;
 use mws_core::Environment;
 use mws_ec2::{BackendChoice, Ec2};
+use mws_eks::Eks;
+use mws_elb::{Elb, ElbConfig};
 use mws_events::Events;
 use mws_firehose::Firehose;
+use mws_globalaccelerator::GlobalAccelerator;
 use mws_iam::{Iam, IamConfig};
 use mws_identitystore::IdentityStore;
+use mws_imagebuilder::ImageBuilder;
 use mws_kinesis::Kinesis;
 use mws_kms::Kms;
 use mws_lambda::Lambda;
@@ -22,11 +31,16 @@ use mws_logs::Logs;
 use mws_marketplace_entitlement::Entitlement;
 use mws_marketplace_metering::Metering;
 use mws_organizations::Organizations;
+use mws_pca_connector_scep::ScepConnector;
+use mws_ram::Ram;
+use mws_rds::Rds;
 use mws_route53::Route53;
 use mws_s3::S3;
 use mws_s3control::S3Control;
 use mws_secretsmanager::SecretsManager;
+use mws_securityhub::SecurityHub;
 use mws_server::{Gateway, Scenario, Store};
+use mws_ses::Ses;
 use mws_sns::Sns;
 use mws_sqs::Sqs;
 use mws_ssm::Ssm;
@@ -53,6 +67,20 @@ pub struct Config {
     pub ec2_backend: BackendChoice,
     /// The Docker-compatible CLI (`MWS_EC2_DOCKER`, e.g. `podman`).
     pub ec2_docker_cli: Option<String>,
+    /// Treat SES identities as verified as soon as they are created
+    /// (`MWS_SES_AUTO_VERIFY=1`), instead of waiting for the verification
+    /// link to be followed or the DNS records to appear. AWS never does.
+    pub ses_auto_verify: bool,
+    /// What runs RDS databases (`MWS_RDS_BACKEND`: `auto`, `docker` or
+    /// `metadata`). The binary defaults to `auto`; the library default runs
+    /// nothing.
+    pub rds_backend: mws_rds::BackendChoice,
+    /// The Docker-compatible CLI for RDS (`MWS_RDS_DOCKER`; falls back to
+    /// `MWS_EC2_DOCKER`).
+    pub rds_docker_cli: Option<String>,
+    /// The host address database ports are published on (`MWS_RDS_BIND`,
+    /// default `127.0.0.1`).
+    pub rds_bind: Option<String>,
 }
 
 impl Config {
@@ -79,6 +107,14 @@ impl Config {
             }),
             Err(_) => BackendChoice::Auto,
         };
+        let rds_backend = match std::env::var("MWS_RDS_BACKEND") {
+            Ok(v) => mws_rds::BackendChoice::parse(&v).unwrap_or_else(|| {
+                tracing::warn!("unknown MWS_RDS_BACKEND {v:?}; using auto");
+                mws_rds::BackendChoice::Auto
+            }),
+            Err(_) => mws_rds::BackendChoice::Auto,
+        };
+        let var = |name: &str| std::env::var(name).ok().filter(|v| !v.is_empty());
         Self {
             iam,
             db: path("MWS_DB"),
@@ -86,6 +122,11 @@ impl Config {
             skip_federation_signature_verification: skip,
             ec2_backend,
             ec2_docker_cli: std::env::var("MWS_EC2_DOCKER").ok().filter(|v| !v.is_empty()),
+            ses_auto_verify: std::env::var("MWS_SES_AUTO_VERIFY")
+                .is_ok_and(|v| matches!(v.as_str(), "1" | "true" | "yes")),
+            rds_backend,
+            rds_docker_cli: var("MWS_RDS_DOCKER").or_else(|| var("MWS_EC2_DOCKER")),
+            rds_bind: var("MWS_RDS_BIND"),
         }
     }
 }
@@ -110,8 +151,19 @@ pub struct Mws {
     pub firehose: Firehose,
     pub cloudwatch: CloudWatch,
     pub ec2: Ec2,
+    pub amplify: Amplify,
+    pub globalaccelerator: GlobalAccelerator,
     pub marketplace_entitlement: Entitlement,
     pub marketplace_metering: Metering,
+    pub ram: Ram,
+    pub scep: ScepConnector,
+    pub securityhub: SecurityHub,
+    pub imagebuilder: ImageBuilder,
+    pub elb: Elb,
+    pub autoscaling: AutoScaling,
+    pub ses: Ses,
+    pub rds: Rds,
+    pub eks: Eks,
 }
 
 /// Build the gateway with every service MWS emulates.
@@ -161,6 +213,7 @@ fn build_with_store(config: Config, store: Option<Arc<Store>>) -> Mws {
     let kms = Kms::new();
     let organizations = Organizations::new(iam.clone());
     iam.set_organizations(organizations.view());
+    let ram = Ram::new(iam.clone(), organizations.clone());
     let s3 = S3::new().with_kms(kms.clone());
     let logs = Logs::new().with_s3(s3.clone()).with_kms(kms.clone()).with_sts(sts.clone());
     let route53 = Route53::new().with_kms(kms.clone()).with_logs(logs.clone());
@@ -168,6 +221,9 @@ fn build_with_store(config: Config, store: Option<Arc<Store>>) -> Mws {
     let kinesis = Kinesis::new().with_kms(kms.clone());
     let s3control = S3Control::for_s3(s3.clone());
     let pca = PrivateCa::new().with_s3(s3.clone());
+    ram.register_resource_type(Arc::new(links::RamCertificateAuthorities(pca.clone())));
+    pca.set_policy_listener(Arc::new(links::CaPoliciesToRam(ram.clone())));
+    let scep = ScepConnector::new(pca.clone());
     let acm = Acm::new().with_private_ca(pca.clone()).with_route53(route53.clone()).with_sts(sts.clone());
     let lambda = Lambda::with_services(sts.clone(), s3.clone());
     let firehose = Firehose::new()
@@ -237,12 +293,64 @@ fn build_with_store(config: Config, store: Option<Arc<Store>>) -> Mws {
     let ec2 = Ec2::new(config.ec2_backend.resolve(config.ec2_docker_cli.as_deref()));
     tracing::info!(backend = ec2.backend_name(), "EC2 compute backend");
     ec2.set_instance_roles(Arc::new(links::Ec2InstanceRoles { iam: iam.clone(), sts: sts.clone() }));
+    let amplify = Amplify::with_services(s3.clone(), route53.clone());
+    let globalaccelerator = GlobalAccelerator::new();
+    globalaccelerator.add_endpoint_directory(Arc::new(links::GlobalAcceleratorEc2(ec2.clone())));
+    route53.add_alias_resolver(Arc::new(links::Route53ToGlobalAccelerator(globalaccelerator.clone())));
     let marketplace_entitlement = Entitlement::new(config.iam.account_id.clone());
     let marketplace_metering = Metering::new(marketplace_entitlement.clone());
     let identitystore = IdentityStore::new(iam.clone());
     let ssoadmin = SsoAdmin::new(iam.clone(), identitystore.clone(), organizations.clone());
     let ssooidc = SsoOidc::new(identitystore.clone(), ssoadmin.clone(), sts.clone());
     let ssoportal = SsoPortal::new(ssooidc.clone(), ssoadmin.clone(), sts.clone(), organizations.clone());
+    let securityhub = SecurityHub::new();
+    securityhub.set_organizations(Arc::new(links::SecurityHubOrganizations(organizations.clone())));
+    securityhub.set_event_sink(Arc::new(links::SecurityHubToEvents(events.clone())));
+    securityhub.set_export_sink(Arc::new(links::SecurityHubExports(s3.clone())));
+    let imagebuilder = ImageBuilder::with_ec2(ec2.clone());
+    imagebuilder.set_s3(Arc::new(s3.clone()));
+    imagebuilder.set_ssm(Arc::new(ssm.clone()));
+    imagebuilder.set_sns(Arc::new(sns.clone()));
+    imagebuilder.set_logs(Arc::new(logs.clone()));
+    imagebuilder.set_events(Arc::new(sinks::ImageBuilderEvents(events.clone())));
+    let elb = Elb::new(ElbConfig::from_env())
+        .with_ec2(ec2.clone())
+        .with_acm(acm.clone())
+        .with_lambda(lambda.clone())
+        .with_s3(s3.clone());
+    elb.set_metric_sink(Arc::new(links::ElbToCloudWatch(cloudwatch.clone())));
+    globalaccelerator.add_endpoint_directory(Arc::new(links::GlobalAcceleratorElb(elb.clone())));
+    let autoscaling = AutoScaling::new(ec2.clone());
+    autoscaling::wire(&autoscaling, &sns, &sqs, &events, &cloudwatch, &elb);
+    let ses = if config.ses_auto_verify { Ses::with_auto_verify() } else { Ses::new() };
+    ses.set_links(Arc::new(ses::SesLinks {
+        route53: route53.clone(),
+        s3: s3.clone(),
+        sns: sns.clone(),
+        lambda: lambda.clone(),
+        events: events.clone(),
+        firehose: firehose.clone(),
+        cloudwatch: cloudwatch.clone(),
+        sts: sts.clone(),
+        partition: config.iam.partition.clone(),
+    }));
+    ses.set_credentials(vec![iam.credential_store(), sts.credential_store()]);
+    ses.set_authorizer(iam.authorizer());
+    let rds = Rds::new(
+        config.rds_backend.resolve(config.rds_docker_cli.as_deref(), config.rds_bind.as_deref()),
+        kms.clone(),
+        secretsmanager.clone(),
+    );
+    tracing::info!(backend = rds.backend_name(), "RDS database backend");
+    rds.set_network(Arc::new(links::RdsNetwork(ec2.clone())));
+    rds.set_event_sink(Arc::new(links::RdsEvents { events: events.clone(), sns: sns.clone() }));
+    rds.set_export_store(Arc::new(links::RdsExports { sts: sts.clone(), s3: s3.clone() }));
+    let eks = Eks::with_sts(sts.clone());
+    eks.set_infrastructure(Arc::new(eks::EksInfrastructure {
+        ec2: ec2.clone(),
+        iam: iam.clone(),
+        autoscaling: autoscaling.clone(),
+    }));
     let mut gateway = Gateway::builder();
     if let Some(store) = store {
         gateway = gateway.store(store);
@@ -276,6 +384,9 @@ fn build_with_store(config: Config, store: Option<Arc<Store>>) -> Mws {
         .service(Arc::new(firehose.clone()))
         .service(Arc::new(cloudwatch.clone()))
         .service(Arc::new(ec2.clone()))
+        .service(Arc::new(amplify.clone()))
+        .service(Arc::new(globalaccelerator.clone()))
+        .service(Arc::new(rds.clone()))
         // Both Marketplace services sign as `aws-marketplace`; each claims
         // its own `X-Amz-Target`.
         .service(Arc::new(marketplace_metering.clone()))
@@ -284,6 +395,19 @@ fn build_with_store(config: Config, store: Option<Arc<Store>>) -> Mws {
         .service(Arc::new(ssoadmin))
         .service(Arc::new(ssooidc))
         .service(Arc::new(ssoportal))
+        .service(Arc::new(ram.clone()))
+        .service(Arc::new(scep.clone()))
+        .service(Arc::new(securityhub.clone()))
+        .service(Arc::new(imagebuilder.clone()))
+        // Both ELB APIs sign as `elasticloadbalancing`; the Classic one
+        // claims requests with its `2012-06-01` Version.
+        .service(Arc::new(elb.clone()))
+        .service(Arc::new(elb.classic()))
+        .service(Arc::new(autoscaling.clone()))
+        // SES v2 signs as `ses` too; it claims its `/v2/email/` paths.
+        .service(Arc::new(ses.v2()))
+        .service(Arc::new(ses.clone()))
+        .service(Arc::new(eks.clone()))
         .build();
     Mws {
         gateway,
@@ -303,8 +427,19 @@ fn build_with_store(config: Config, store: Option<Arc<Store>>) -> Mws {
         firehose,
         cloudwatch,
         ec2,
+        amplify,
+        globalaccelerator,
         marketplace_entitlement,
         marketplace_metering,
+        ram,
+        scep,
+        securityhub,
+        imagebuilder,
+        elb,
+        autoscaling,
+        ses,
+        rds,
+        eks,
     }
 }
 

@@ -26,6 +26,7 @@ pub mod generated {
 }
 
 mod handler;
+mod managed;
 mod names;
 mod ops;
 mod password;
@@ -43,6 +44,7 @@ use mws_core::{HttpRequest, HttpResponse, RequestContext, Service, ServiceError}
 use mws_kms::Kms;
 use mws_lambda::Lambda;
 
+pub use managed::{ManagedRotation, ManagedSecretSpec};
 pub use public::SecretReference;
 use state::State;
 
@@ -50,6 +52,8 @@ pub(crate) struct Inner {
     state: Mutex<State>,
     kms: Kms,
     lambda: std::sync::OnceLock<Lambda>,
+    /// Rotation of secrets other services own, by owning service.
+    managed: Mutex<std::collections::BTreeMap<String, Arc<dyn ManagedRotation>>>,
 }
 
 /// The Secrets Manager service. Cheap to clone; clones share state.
@@ -61,7 +65,14 @@ pub struct SecretsManager {
 impl SecretsManager {
     /// Secrets Manager encrypting with `kms`.
     pub fn new(kms: Kms) -> Self {
-        Self { inner: Arc::new(Inner { state: Mutex::new(State::default()), kms, lambda: Default::default() }) }
+        Self {
+            inner: Arc::new(Inner {
+                state: Mutex::new(State::default()),
+                kms,
+                lambda: Default::default(),
+                managed: Default::default(),
+            }),
+        }
     }
 
     /// Rotation functions run on this Lambda.

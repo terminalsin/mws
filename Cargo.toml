@@ -16,6 +16,7 @@ members = [
     "crates/mws-store",
     "crates/mws-event-pattern",
     "crates/mws-schedule",
+    "crates/mws-parquet",
     "crates/mws",
     "crates/services/mws-iam",
     "crates/services/mws-iam-policy",
@@ -44,6 +45,17 @@ members = [
     "crates/services/mws-ssoadmin",
     "crates/services/mws-ssooidc",
     "crates/services/mws-ssoportal",
+    "crates/services/mws-amplify",
+    "crates/services/mws-globalaccelerator",
+    "crates/services/mws-ram",
+    "crates/services/mws-pca-connector-scep",
+    "crates/services/mws-securityhub",
+    "crates/services/mws-imagebuilder",
+    "crates/services/mws-elb",
+    "crates/services/mws-autoscaling",
+    "crates/services/mws-ses",
+    "crates/services/mws-rds",
+    "crates/services/mws-eks",
     "tests/e2e-rust",
 ]
 
@@ -58,6 +70,7 @@ rust-version = "1.85"
 mws-core = { path = "crates/mws-core" }
 mws-event-pattern = { path = "crates/mws-event-pattern" }
 mws-schedule = { path = "crates/mws-schedule" }
+mws-parquet = { path = "crates/mws-parquet" }
 mws-sigv4 = { path = "crates/mws-sigv4" }
 mws-smithy = { path = "crates/mws-smithy" }
 mws-codegen = { path = "crates/mws-codegen" }
@@ -98,6 +111,17 @@ mws-identitystore = { path = "crates/services/mws-identitystore" }
 mws-ssoadmin = { path = "crates/services/mws-ssoadmin" }
 mws-ssooidc = { path = "crates/services/mws-ssooidc" }
 mws-ssoportal = { path = "crates/services/mws-ssoportal" }
+mws-amplify = { path = "crates/services/mws-amplify" }
+mws-globalaccelerator = { path = "crates/services/mws-globalaccelerator" }
+mws-ram = { path = "crates/services/mws-ram" }
+mws-pca-connector-scep = { path = "crates/services/mws-pca-connector-scep" }
+mws-securityhub = { path = "crates/services/mws-securityhub" }
+mws-imagebuilder = { path = "crates/services/mws-imagebuilder" }
+mws-elb = { path = "crates/services/mws-elb" }
+mws-autoscaling = { path = "crates/services/mws-autoscaling" }
+mws-ses = { path = "crates/services/mws-ses" }
+mws-rds = { path = "crates/services/mws-rds" }
+mws-eks = { path = "crates/services/mws-eks" }
 
 # external
 async-trait = "0.1"
@@ -128,6 +152,7 @@ roxmltree = "0.20"
 rusqlite = { version = "0.37", features = ["bundled"] }
 serde = { version = "1", features = ["derive"] }
 serde_json = { version = "1", features = ["preserve_order"] }
+serde_yaml = "0.9"
 sha1 = "0.10"
 sha2 = "0.10"
 flate2 = "1"
@@ -142,3 +167,4 @@ zip = { version = "2", default-features = false, features = ["deflate"] }
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 uuid = { version = "1", features = ["v4"] }
 x509-parser = { version = "0.16", features = ["verify"] }
+yaml-rust2 = "0.10"

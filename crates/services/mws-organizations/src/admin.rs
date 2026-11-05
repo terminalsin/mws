@@ -442,3 +442,17 @@ impl Organizations {
         Ok(types::ListTagsForResourceResponse { tags: Some(tags), next_token })
     }
 }
+
+impl Organizations {
+    /// Turn on trusted access for `service_principal` on the caller's
+    /// behalf, as services do when asked to integrate with the
+    /// organization (RAM's `EnableSharingWithAwsOrganization`). The caller
+    /// needs `organizations:EnableAWSServiceAccess` and must be in the
+    /// management account.
+    pub fn enable_service_access_for(&self, ctx: &RequestContext, service_principal: &str) -> Result<(), ServiceError> {
+        self.enable_aws_service_access(
+            ctx,
+            types::EnableAWSServiceAccessRequest { service_principal: service_principal.to_string() },
+        )
+    }
+}

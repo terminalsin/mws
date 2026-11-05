@@ -21,7 +21,6 @@
 //! every day or seven days. Moving the clock past a due time makes the next
 //! S3 request deliver the report (one report however many periods passed).
 
-use std::collections::BTreeMap;
 use std::io::Write;
 
 use base64::Engine;
@@ -335,7 +334,6 @@ impl S3 {
         let source_arn = format!("arn:{}:s3:::{}", job.partition, job.source);
         let data_key = format!("{base}/data/{}.{extension}", uuid::Uuid::new_v4());
         let put = |key: &str, body: Vec<u8>, content_type: &'static str| -> Result<(), String> {
-            let sse = self.inventory_sse(job, &bucket, key)?;
             let put = ServicePutObject {
                 bucket: &bucket,
                 key,
@@ -347,6 +345,7 @@ impl S3 {
                 acl: Some("bucket-owner-full-control"),
                 partition: &job.partition,
             };
+            let sse = self.inventory_sse(job, &put)?;
             self.put_object_as_service_with(put, sse).map(|_| ()).map_err(|e| e.to_string())
         };
         let size = body.len();
@@ -381,28 +380,12 @@ impl S3 {
 
     /// The encryption of a report object: SSE-S3, or SSE-KMS with a data
     /// key the service principal generates under the configured key.
-    fn inventory_sse(&self, job: &Job, bucket: &str, key: &str) -> Result<Sse, String> {
+    fn inventory_sse(&self, job: &Job, put: &ServicePutObject<'_>) -> Result<Sse, String> {
         let dest = &job.config.destination.s3_bucket_destination;
-        let Some(kms_key) = dest.encryption.as_ref().and_then(|e| e.ssekms.as_ref()).map(|k| k.key_id.clone()) else {
-            return Ok(Sse::default());
-        };
-        let Some(kms) = &self.kms else {
-            return Ok(Sse { algorithm: Some("aws:kms".into()), kms_key_id: Some(kms_key), ..Sse::default() });
-        };
-        let mut conditions = mws_core::ConditionContext::new();
-        conditions.insert("aws:SourceArn".into(), vec![format!("arn:{}:s3:::{}", job.partition, job.source)]);
-        conditions.insert("aws:SourceAccount".into(), vec![job.owner.clone()]);
-        let k =
-            kms.key_for_service(&kms_key, PRINCIPAL, &["kms:GenerateDataKey"], &conditions).map_err(|e| e.message)?;
-        let context =
-            BTreeMap::from([("aws:s3:arn".to_string(), format!("arn:{}:s3:::{bucket}/{key}", job.partition))]);
-        let dk = kms.generate_data_key_for_service(&k.arn, &context, 32).map_err(|e| e.message)?;
-        Ok(Sse {
-            algorithm: Some("aws:kms".into()),
-            kms_key_id: Some(dk.key_arn),
-            kms_data_key: Some(base64::engine::general_purpose::STANDARD.encode(&dk.ciphertext)),
-            ..Sse::default()
-        })
+        match dest.encryption.as_ref().and_then(|e| e.ssekms.as_ref()) {
+            Some(k) => self.service_kms_sse(put, &k.key_id),
+            None => Ok(Sse::default()),
+        }
     }
 }
 

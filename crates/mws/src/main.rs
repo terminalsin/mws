@@ -14,7 +14,7 @@ async fn main() {
         .parse()
         .expect("MWS_LISTEN must be host:port");
     let config = mws::Config::from_env();
-    let mws::Mws { gateway, route53, .. } = match mws::start(config.clone()).await {
+    let mws::Mws { gateway, route53, ses, .. } = match mws::start(config.clone()).await {
         Ok(m) => m,
         Err(e) => {
             eprintln!("mws: {e}");
@@ -28,6 +28,11 @@ async fn main() {
         tracing::info!(%dns, "Route 53 DNS responder listening (UDP and TCP)");
         tokio::spawn(mws_route53::serve_dns_tcp(route53.clone(), tcp));
         tokio::spawn(mws_route53::serve_dns(route53, socket));
+    }
+    if let Ok(smtp) = std::env::var("MWS_SES_SMTP_LISTEN") {
+        let tcp = tokio::net::TcpListener::bind(&smtp).await.expect("bind MWS_SES_SMTP_LISTEN");
+        tracing::info!(%smtp, "SES SMTP listener (receiving, and submission with SES SMTP credentials)");
+        tokio::spawn(mws_ses::serve_smtp(ses, tcp));
     }
     let listener = tokio::net::TcpListener::bind(listen).await.expect("bind MWS_LISTEN");
 
