@@ -105,7 +105,7 @@ pub(crate) fn layer_url_token(key: &str, account: &str, region: &str, repo: &str
 
 /// `(account, region)` named by a `Host` of the form
 /// `<account>.dkr.ecr.<region>.<anything>`.
-fn host_registry(request: &HttpRequest) -> Option<(String, String)> {
+pub(crate) fn host_registry(request: &HttpRequest) -> Option<(String, String)> {
     let host = request.headers().get(http::header::HOST)?.to_str().ok()?;
     let mut parts = host.split('.');
     let account = parts.next()?;

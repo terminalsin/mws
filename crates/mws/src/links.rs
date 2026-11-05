@@ -2145,3 +2145,40 @@ impl mws_elasticache::LogDelivery for ElastiCacheLogs {
         }
     }
 }
+
+/// ECR pull-through cache credentials: the rule's Secrets Manager secret
+/// (`{"username": ..., "accessToken": ...}`), read as the registry's
+/// account (AWS reads it with ECR's service-linked role).
+pub struct EcrUpstreamCredentials(pub mws_secretsmanager::SecretsManager);
+
+#[async_trait::async_trait]
+impl mws_ecr::UpstreamCredentials for EcrUpstreamCredentials {
+    async fn credentials(
+        &self,
+        ctx: &mws_core::RequestContext,
+        account: &str,
+        secret_arn: &str,
+    ) -> Result<(String, String), String> {
+        let caller = mws_core::Caller {
+            account_id: account.to_string(),
+            arn: format!("arn:{}:iam::{account}:root", ctx.partition),
+            user_id: account.to_string(),
+            access_key_id: String::new(),
+            kind: mws_core::CallerKind::Root,
+            session: None,
+        };
+        let rctx = mws_core::RequestContext { caller, ..ctx.clone() };
+        let s = self
+            .0
+            .read_for_reference(&rctx, secret_arn, None)
+            .map_err(|e| format!("The credentials in {secret_arn} can't be read: {}", e.message))?;
+        let text = s.secret_string;
+        let doc: serde_json::Value =
+            serde_json::from_str(&text).map_err(|_| format!("The secret {secret_arn} is not a JSON object."))?;
+        let field = |k: &str| doc.get(k).and_then(|v| v.as_str()).map(str::to_string);
+        match (field("username"), field("accessToken")) {
+            (Some(u), Some(t)) => Ok((u, t)),
+            _ => Err(format!("The secret {secret_arn} must have username and accessToken.")),
+        }
+    }
+}

@@ -691,3 +691,143 @@ async fn docker_push_and_pull_with_authorization_token() {
     run_docker(&host, &["rmi", &image], None);
     run_docker(&host, &["logout", &host], None);
 }
+
+/// `GET` a registry path with the root caller's registry password.
+async fn registry_get(mws: &Mws, ecr: &Client, path: &str) -> (u16, Vec<(String, String)>, Vec<u8>) {
+    let token = ecr.get_authorization_token().send().await.unwrap();
+    let auth = format!("Basic {}", token.authorization_data()[0].authorization_token().unwrap());
+    let accept = "application/vnd.oci.image.manifest.v1+json, application/vnd.docker.distribution.manifest.v2+json";
+    mws.raw("GET", path, &[("Authorization", &auth), ("Accept", accept)], b"").await
+}
+
+#[tokio::test]
+async fn pull_through_cache_from_an_upstream_ecr_registry() {
+    let mws = Mws::start().await;
+    let ecr = client(&mws).await;
+    let west = client_in(&mws, "us-west-2").await;
+    west.create_repository().repository_name("team/base").send().await.unwrap();
+    let digest_v1 = push(&west, "team/base", "v1", "upstream").await;
+    ecr.create_pull_through_cache_rule()
+        .ecr_repository_prefix("mirror")
+        .upstream_registry(UpstreamRegistry::Ecr)
+        .upstream_registry_url(format!("{ACCOUNT}.dkr.ecr.us-west-2.amazonaws.com"))
+        .custom_role_arn(format!("arn:aws:iam::{ACCOUNT}:role/ecr-pull-through"))
+        .send()
+        .await
+        .unwrap();
+    ecr.create_repository_creation_template()
+        .prefix("mirror")
+        .applied_for(RctAppliedFor::PullThroughCache)
+        .resource_tags(Tag::builder().key("cache").value("yes").build().unwrap())
+        .send()
+        .await
+        .unwrap();
+
+    // Nothing is cached until something pulls.
+    let e = ecr.describe_repositories().repository_names("mirror/team/base").send().await.unwrap_err();
+    assert_eq!(code(e.as_service_error().unwrap()), "RepositoryNotFoundException");
+    let (status, headers, manifest) = registry_get(&mws, &ecr, "/v2/mirror/team/base/manifests/v1").await;
+    assert_eq!(status, 200, "{}", String::from_utf8_lossy(&manifest));
+    assert!(headers.iter().any(|(k, v)| k == "docker-content-digest" && *v == digest_v1));
+    let parsed: serde_json::Value = serde_json::from_slice(&manifest).unwrap();
+    let layer = parsed["layers"][0]["digest"].as_str().unwrap();
+    let (status, _, body) = registry_get(&mws, &ecr, &format!("/v2/mirror/team/base/blobs/{layer}")).await;
+    assert_eq!((status, body.as_slice()), (200, b"layer upstream".as_slice()));
+
+    // The repository was created from the template, and holds the image.
+    let repo = ecr.describe_repositories().repository_names("mirror/team/base").send().await.unwrap();
+    let arn = repo.repositories()[0].repository_arn().unwrap().to_string();
+    let tags = ecr.list_tags_for_resource().resource_arn(&arn).send().await.unwrap();
+    assert_eq!(tags.tags()[0].key(), "cache");
+    let images = ecr.describe_images().repository_name("mirror/team/base").send().await.unwrap();
+    assert_eq!(images.image_details()[0].image_digest(), Some(digest_v1.as_str()));
+    assert_eq!(images.image_details()[0].image_tags(), ["v1"]);
+    let (status, _, _) = registry_get(&mws, &ecr, "/v2/mirror/team/base/manifests/missing").await;
+    assert_eq!(status, 404);
+
+    // A day later, the tag is checked upstream again.
+    let moved = push(&west, "team/base", "v1", "moved").await;
+    let (_, headers, _) = registry_get(&mws, &ecr, "/v2/mirror/team/base/manifests/v1").await;
+    assert!(headers.iter().any(|(k, v)| k == "docker-content-digest" && *v == digest_v1), "cached for a day");
+    let (status, _) = mws.control("POST", "/_mws/clock", Some(r#"{"advanceSeconds":90000}"#)).await;
+    assert_eq!(status, 200);
+    let (_, headers, _) = registry_get(&mws, &ecr, "/v2/mirror/team/base/manifests/v1").await;
+    assert!(headers.iter().any(|(k, v)| k == "docker-content-digest" && *v == moved));
+
+    // Pulling through needs ecr:BatchImportUpstreamImage.
+    let (_, cfg) = user_with_policy(
+        &mws,
+        "puller",
+        Some(r#"{"Version":"2012-10-17","Statement":[{"Effect":"Allow","Action":["ecr:GetAuthorizationToken","ecr:BatchGetImage","ecr:CreateRepository"],"Resource":"*"}]}"#),
+    )
+    .await;
+    let puller = Client::new(&cfg);
+    push(&west, "team/base", "v2", "second").await;
+    let (status, _, body) = registry_get(&mws, &puller, "/v2/mirror/team/base/manifests/v2").await;
+    assert_eq!(status, 403, "{}", String::from_utf8_lossy(&body));
+}
+
+#[tokio::test]
+async fn pull_through_cache_from_an_upstream_registry_over_http() {
+    // The upstream: another MWS whose ECR Public registry serves anonymous
+    // pulls, as public.ecr.aws does.
+    let upstream = Mws::start().await;
+    let public = aws_sdk_ecrpublic::Client::new(&upstream.root_sdk_config().await);
+    public.create_repository().repository_name("tools").send().await.unwrap();
+    let alias = public.describe_registries().send().await.unwrap().registries()[0].aliases()[0].name().to_string();
+    let config = br#"{"architecture":"amd64","os":"linux"}"#;
+    let layer = b"public layer";
+    for blob in [&config[..], &layer[..]] {
+        let up = public.initiate_layer_upload().repository_name("tools").send().await.unwrap();
+        let id = up.upload_id().unwrap().to_string();
+        public
+            .upload_layer_part()
+            .repository_name("tools")
+            .upload_id(&id)
+            .part_first_byte(0)
+            .part_last_byte(blob.len() as i64 - 1)
+            .layer_part_blob(aws_sdk_ecrpublic::primitives::Blob::new(blob))
+            .send()
+            .await
+            .unwrap();
+        public
+            .complete_layer_upload()
+            .repository_name("tools")
+            .upload_id(&id)
+            .layer_digests(digest(blob))
+            .send()
+            .await
+            .unwrap();
+    }
+    let manifest = serde_json::json!({
+        "schemaVersion": 2,
+        "mediaType": "application/vnd.oci.image.manifest.v1+json",
+        "config": {"mediaType": "application/vnd.oci.image.config.v1+json", "size": config.len(), "digest": digest(config)},
+        "layers": [{"mediaType": "application/vnd.oci.image.layer.v1.tar+gzip", "size": layer.len(), "digest": digest(layer)}],
+    })
+    .to_string();
+    public.put_image().repository_name("tools").image_tag("latest").image_manifest(&manifest).send().await.unwrap();
+
+    let mut endpoints = std::collections::BTreeMap::new();
+    endpoints.insert("public.ecr.aws".to_string(), format!("{}/v2/public.ecr.aws", upstream.endpoint));
+    let mws = Mws::start_with(mws::Config { ecr_upstream_endpoints: endpoints, ..Default::default() }).await;
+    let ecr = client(&mws).await;
+    ecr.create_pull_through_cache_rule()
+        .ecr_repository_prefix("ecr-public")
+        .upstream_registry_url("public.ecr.aws")
+        .send()
+        .await
+        .unwrap();
+    let path = format!("/v2/ecr-public/{alias}/tools/manifests/latest");
+    let (status, _, body) = registry_get(&mws, &ecr, &path).await;
+    assert_eq!(status, 200, "{}", String::from_utf8_lossy(&body));
+    assert_eq!(body, manifest.as_bytes());
+    let (status, _, body) =
+        registry_get(&mws, &ecr, &format!("/v2/ecr-public/{alias}/tools/blobs/{}", digest(layer))).await;
+    assert_eq!((status, body.as_slice()), (200, &layer[..]));
+    let images = ecr.describe_images().repository_name(format!("ecr-public/{alias}/tools")).send().await.unwrap();
+    assert_eq!(images.image_details()[0].image_tags(), ["latest"]);
+    // An image the upstream doesn't have is not found.
+    let (status, _, _) = registry_get(&mws, &ecr, &format!("/v2/ecr-public/{alias}/nope/manifests/latest")).await;
+    assert_eq!(status, 404);
+}

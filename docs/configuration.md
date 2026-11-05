@@ -60,6 +60,7 @@ See [State, scenarios and snapshots](state.md) for how the two interact.
 | `MWS_ELASTICACHE_DOCKER` | `docker` | The Docker-compatible CLI the ElastiCache backend drives. |
 | `MWS_ELASTICACHE_HOST` | `127.0.0.1` | The address ElastiCache endpoints name; node ports are published on the host. |
 | `MWS_ELASTICACHE_REDIS_IMAGE`, `MWS_ELASTICACHE_VALKEY_IMAGE`, `MWS_ELASTICACHE_MEMCACHED_IMAGE` | by engine version | Images to run instead of `redis:<version>-alpine`, `valkey/valkey:<version>-alpine` and `memcached:1.6-alpine`. |
+| `MWS_ECR_UPSTREAM_ENDPOINTS` | unset | Comma-separated `host=url` pairs that point ECR pull-through cache upstreams at other API bases, such as `quay.io=http://127.0.0.1:5000/v2`, instead of `https://<host>/v2`. |
 
 EC2 instances reach the instance metadata service and the AWS endpoint
 through the host, and EKS API servers call MWS's token and authorization
