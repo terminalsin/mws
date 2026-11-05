@@ -78,6 +78,7 @@ Every service shares the same foundations:
 | --- | --- | --- |
 | [CloudWatch](cloudwatch.md) | 55 / 55 | Metrics, statistics and percentiles, metric math, alarms that act, dashboards, metric streams |
 | [CloudWatch Logs](logs.md) | 118 / 118 | Log events, filter patterns, Logs Insights, live tail, subscriptions, metric filters, exports |
+| [CloudTrail](cloudtrail.md) | 60 / 60 | Every API call recorded; trails delivering to S3, CloudWatch Logs and EventBridge; event history; Lake SQL queries |
 
 ## Marketplace
 
@@ -135,3 +136,5 @@ with the permissions AWS would use:
 - EKS creates cluster security groups in EC2 and runs managed node groups as
   Auto Scaling groups with EKS launch templates and IAM instance profiles,
   from AMIs SSM publishes.
+- CloudTrail records every API call and delivers it to S3 (log and signed
+  digest files), CloudWatch Logs, SNS and EventBridge.

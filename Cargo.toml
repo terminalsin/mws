@@ -52,6 +52,7 @@ members = [
     "crates/services/mws-ses",
     "crates/services/mws-rds",
     "crates/services/mws-eks",
+    "crates/services/mws-cloudtrail",
     "tests/e2e-rust",
 ]
 
@@ -93,6 +94,7 @@ mws-s3control = { path = "crates/services/mws-s3control" }
 mws-logs = { path = "crates/services/mws-logs" }
 mws-sqs = { path = "crates/services/mws-sqs" }
 mws-ssm = { path = "crates/services/mws-ssm" }
+mws-cloudtrail = { path = "crates/services/mws-cloudtrail" }
 mws-events = { path = "crates/services/mws-events" }
 mws-secretsmanager = { path = "crates/services/mws-secretsmanager" }
 mws-sns = { path = "crates/services/mws-sns" }

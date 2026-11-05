@@ -66,6 +66,10 @@ flows through it and why the code is split the way it is.
    policies, resource policies, SCPs and RCPs with
    [`mws-iam-policy`](../crates/services/mws-iam-policy). See
    [Authentication and authorization](security.md).
+5. **Audit.** The generated layer hands each call's operation name, rendered
+   request parameters, response elements and error to `mws_core::trail`, and
+   the gateway passes them to every registered `ApiCallObserver` after the
+   call. CloudTrail is the observer that turns them into records.
 
 ## Protocols
 
@@ -95,7 +99,7 @@ crates/
   mws-server         HTTP front door: authentication, routing, /_mws control API,
                      scenarios, snapshots and persistence
   mws-core           service-agnostic contracts: ServiceError, RequestContext,
-                     Caller, Authorizer, CredentialStore, Service
+                     Caller, Authorizer, CredentialStore, Service, ApiCallObserver
   mws-sigv4          SigV4 verification (header and presigned query)
   mws-smithy         reads Smithy JSON AST models
   mws-codegen        generates server stubs from Smithy models (build time)
@@ -128,6 +132,7 @@ crates/
     mws-firehose       buffered delivery to S3, HTTP endpoints, Splunk, OpenSearch
     mws-cloudwatch     metrics, metric math, alarms that act, dashboards
     mws-logs           CloudWatch Logs: events, filter patterns, Insights, live tail
+    mws-cloudtrail     records every API call; trails, event history, Lake queries
 tests/
   e2e-rust           official Rust SDK against an in-process MWS
   e2e-python         boto3 against the mws binary
