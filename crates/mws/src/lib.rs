@@ -333,6 +333,7 @@ fn build_with_store(config: Config, store: Option<Arc<Store>>) -> Mws {
     tracing::info!(backend = rds.backend_name(), "RDS database backend");
     rds.set_network(Arc::new(links::RdsNetwork(ec2.clone())));
     rds.set_event_sink(Arc::new(links::RdsEvents { events: events.clone(), sns: sns.clone() }));
+    rds.set_export_store(Arc::new(links::RdsExports { sts: sts.clone(), s3: s3.clone() }));
     let mut gateway = Gateway::builder();
     if let Some(store) = store {
         gateway = gateway.store(store);

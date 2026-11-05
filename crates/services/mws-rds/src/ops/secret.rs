@@ -144,7 +144,17 @@ impl Rds {
         let Some(spec) = spec else { return };
         let backend = self.backend();
         tokio::spawn(async move {
-            if let Err(e) = backend.set_master_password(&spec, &old_password).await {
+            // The database may be busy for a moment (a backup pauses it,
+            // a restart is finishing): keep trying for a while.
+            let mut last = None;
+            for _ in 0..30 {
+                match backend.set_master_password(&spec, &old_password).await {
+                    Ok(()) => return,
+                    Err(e) => last = Some(e),
+                }
+                tokio::time::sleep(std::time::Duration::from_secs(1)).await;
+            }
+            if let Some(e) = last {
                 tracing::warn!(db = %spec.identifier, "could not set the new master password: {e}");
             }
         });

@@ -1148,3 +1148,57 @@ impl mws_globalaccelerator::EndpointDirectory for GlobalAcceleratorElb {
         })
     }
 }
+
+/// RDS snapshot exports, written to S3 as the export's role (assumed as
+/// `export.rds.amazonaws.com`) with SSE-KMS.
+pub(crate) struct RdsExports {
+    pub sts: mws_sts::Sts,
+    pub s3: mws_s3::S3,
+}
+
+#[async_trait::async_trait]
+impl mws_rds::ExportStore for RdsExports {
+    fn assume(&self, ctx: &RequestContext, role_arn: &str, source_arn: &str) -> Result<RequestContext, String> {
+        let creds = self
+            .sts
+            .assume_role_as_service(&mws_sts::ServiceAssume {
+                role_arn,
+                service_principal: "export.rds.amazonaws.com",
+                session_name: "rds-export",
+                duration_seconds: 3600,
+                source_account: Some(&ctx.caller.account_id),
+                source_arn: Some(source_arn),
+                now: ctx.received_at,
+            })
+            .map_err(|e| format!("{e:?}"))?;
+        let resolved = self
+            .sts
+            .credential_store()
+            .resolve(&creds.access_key_id, Some(&creds.session_token), ctx.received_at)
+            .map_err(|e| format!("{e:?}"))?
+            .ok_or_else(|| "the role session could not be resolved".to_string())?;
+        Ok(RequestContext { caller: resolved.caller, source_ip: None, ..ctx.clone() })
+    }
+
+    async fn put_object(
+        &self,
+        role: &RequestContext,
+        bucket: &str,
+        key: &str,
+        body: Vec<u8>,
+        kms_key: &str,
+    ) -> Result<(), String> {
+        use base64::Engine as _;
+        let request = serde_json::json!({
+            "Bucket": bucket,
+            "Key": key,
+            "Body": base64::engine::general_purpose::STANDARD.encode(&body),
+            "ServerSideEncryption": "aws:kms",
+            "SSEKMSKeyId": kms_key,
+        });
+        mws_core::Service::invoke(&self.s3, role.clone(), "PutObject", request)
+            .await
+            .map(|_| ())
+            .map_err(|e| format!("{}: {}", e.code, e.message))
+    }
+}

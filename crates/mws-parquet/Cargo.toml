@@ -1,0 +1,9 @@
+[package]
+name = "mws-parquet"
+description = "A small Apache Parquet writer (one row group, PLAIN pages, Thrift compact metadata) for files services deliver to S3."
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+chrono.workspace = true

@@ -25,6 +25,27 @@ fn tags_of<'a>(r: &'a mut RegionState, kind: &str, name: &str) -> Option<&'a mut
         "subgrp" => r.subnet_groups.get_mut(name).map(|g| &mut g.tags),
         "es" => r.event_subscriptions.get_mut(name).map(|g| &mut g.tags),
         "cluster-endpoint" => r.cluster_endpoints.get_mut(name).map(|g| &mut g.tags),
+        "ri" => r.reserved.get_mut(name).map(|g| &mut g.tags),
+        "shard-group" => r.shard_groups.get_mut(name).map(|g| g.tag_list.get_or_insert_with(Vec::new)),
+        "integration" => r
+            .integrations
+            .values_mut()
+            .find(|i| i.integration_arn.as_deref().is_some_and(|a| a.ends_with(&format!(":{name}"))))
+            .map(|i| i.tags.get_or_insert_with(Vec::new)),
+        "capacity-reservation" => {
+            r.capacity_reservations.get_mut(name).map(|c| c.tag_list.get_or_insert_with(Vec::new))
+        }
+        "deployment" => r.blue_green.get_mut(name).map(|b| b.tag_list.get_or_insert_with(Vec::new)),
+        "db-proxy" => r
+            .proxies
+            .values_mut()
+            .find(|p| p.proxy.db_proxy_arn.as_deref().is_some_and(|a| a.ends_with(&format!(":{name}"))))
+            .map(|p| &mut p.tags),
+        "db-proxy-endpoint" => r
+            .proxy_endpoints
+            .values_mut()
+            .find(|e| e.item.db_proxy_endpoint_arn.as_deref().is_some_and(|a| a.ends_with(&format!(":{name}"))))
+            .map(|e| &mut e.tags),
         _ => None,
     }
 }
@@ -47,6 +68,15 @@ fn not_found(kind: &str, name: &str, arn: &str) -> ServiceError {
         "cluster-endpoint" => {
             errors::db_cluster_endpoint_not_found_fault(format!("DBClusterEndpoint {name} not found."))
         }
+        "shard-group" => errors::db_shard_group_not_found_fault(format!("DBShardGroup {name} not found.")),
+        "integration" => errors::integration_not_found_fault(format!("Integration {name} not found.")),
+        "capacity-reservation" => {
+            errors::db_capacity_reservation_not_found_fault(format!("DBCapacityReservation {name} not found."))
+        }
+        "ri" => errors::reserved_db_instance_not_found_fault(format!("Reservation {name} not found.")),
+        "deployment" => errors::blue_green_deployment_not_found_fault(format!("BlueGreenDeployment {name} not found.")),
+        "db-proxy" => errors::db_proxy_not_found_fault(format!("DBProxy {name} not found.")),
+        "db-proxy-endpoint" => errors::db_proxy_endpoint_not_found_fault(format!("DBProxyEndpoint {name} not found.")),
         "global-cluster" => errors::global_cluster_not_found_fault(format!("Global cluster {name} not found.")),
         _ => invalid_parameter(format!("Invalid resource name: {arn}")),
     }

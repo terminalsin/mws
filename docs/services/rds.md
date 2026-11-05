@@ -1,8 +1,8 @@
 # Amazon RDS and Amazon Aurora
 
-> Crate: [`mws-rds`](../../crates/services/mws-rds) · Tests: [`tests/e2e-rust/tests/e2e/rds.rs`](../../tests/e2e-rust/tests/e2e/rds.rs), [`rds_docker.rs`](../../tests/e2e-rust/tests/e2e/rds_docker.rs)
+> Crate: [`mws-rds`](../../crates/services/mws-rds) · Tests: [`tests/e2e-rust/tests/e2e/rds.rs`](../../tests/e2e-rust/tests/e2e/rds.rs), [`rds_more.rs`](../../tests/e2e-rust/tests/e2e/rds_more.rs), [`rds_docker.rs`](../../tests/e2e-rust/tests/e2e/rds_docker.rs)
 
-103 of the model's 168 operations are implemented (awsQuery); the rest answer `NotImplemented`. Identifiers are stored in lower case, names and ARNs are accepted where RDS accepts them, and errors use RDS's codes (`DBInstanceNotFound`, `InvalidDBInstanceState`, `InvalidParameterCombination`, ...).
+All 168 of the model's operations are implemented (awsQuery). Identifiers are stored in lower case, names and ARNs are accepted where RDS accepts them, and errors use RDS's codes (`DBInstanceNotFound`, `InvalidDBInstanceState`, `InvalidParameterCombination`, ...).
 
 ✅ supported · 🟡 partial · ❌ not supported
 
@@ -15,9 +15,12 @@
 | Docker backend | ✅ | `MWS_RDS_BACKEND=docker` runs each DB instance (and each Aurora cluster) as a container of the engine's official image, with a data volume, the master user and database name, parameter group values as server settings, and memory limits from the instance class. The endpoint is `127.0.0.1` (or `MWS_RDS_BIND`) and the published port. |
 | Metadata backend | ✅ | `MWS_RDS_BACKEND=metadata` runs nothing; resources become available at once and endpoints use AWS-style host names. |
 | Read replicas | 🟡 | Created as a copy of the source's data, read-only; they do not stream changes from the source. `PromoteReadReplica` makes them writable. |
-| Engine upgrades | 🟡 | Minor upgrades switch the container image; major upgrades are recorded but keep the old image (no `pg_upgrade`). |
+| Engine upgrades | ✅ | Minor upgrades switch the container image. A PostgreSQL major upgrade (in place, in a restore or in a Blue/Green green) dumps the data with the old server and loads it into a data directory the new server initialized; MySQL and MariaDB upgrade their data directory on start. Pending (not `ApplyImmediately`) upgrades are recorded but not applied in a maintenance window. |
 | Log files | 🟡 | One file per instance (`error/postgresql.log` or `error/mysql-error.log`) with the container's log. |
-| IAM database authentication, Kerberos, RDS Proxy, Blue/Green deployments | ❌ | Recorded where the API takes them, not enforced; Proxy and Blue/Green answer `NotImplemented`. |
+| RDS Proxy | ✅ | Proxies, target groups (connection pool settings), targets (one DB instance or one Aurora cluster) and custom endpoints, with RDS's validation (auth secrets must exist, password auth types per engine family, subnets in two Availability Zones of one VPC, `iam:PassRole`, 20 proxies and 20 endpoints). With the Docker backend each proxy endpoint is a TCP listener that forwards to its target's database: on a loopback address of its own (`127.77.x.y`) on the engine's port when the host allows it, otherwise on an ephemeral port of `127.0.0.1`. `GET /_aws/rds/proxy-endpoints` lists them. The proxy does not pool connections, check `RequireTLS` or authenticate with the auth secrets or IAM; clients sign in with the database's own credentials. |
+| Blue/Green deployments | ✅ | The green environment is a copy of blue (a read replica of an instance, a clone of a cluster and its instances) with the requested engine version, parameter groups, class and storage. Switchover requires `AVAILABLE` and a timeout of at least 30 seconds; it copies blue's latest data and credentials to green, renames blue to `<name>-old1` and green to blue's name (endpoints follow the names) and emits `RDS-EVENT-0245`. `DeleteTarget` deletes green before a switchover; without it green replicas are promoted. Green does not replicate blue continuously: the switchover copy carries blue's writes. |
+| Other platforms | 🟡 | DB security groups (EC2-Classic) answer `DBSecurityGroupNotSupported` or not found, tenant databases (Oracle multitenant) `InvalidDBInstanceState`, `SwitchoverReadReplica` (Oracle) `InvalidDBInstanceState`, `ModifyCurrentDBClusterCapacity` (Serverless v1) and `ModifyActivityStream` (Oracle) errors. RDS Custom engine versions (`custom-oracle-*`, `custom-sqlserver-*`) are recorded and listed by `DescribeDBEngineVersions`, but no RDS Custom instance can be created. |
+| IAM database authentication, Kerberos | ❌ | Recorded where the API takes them, not enforced. |
 
 ## Aurora
 
@@ -29,7 +32,11 @@
 | Global databases | ✅ | Global clusters across Regions, secondaries inheriting the primary's credentials, switchover, failover and removal. Data is not replicated between Regions. |
 | Multi-AZ DB clusters | 🟡 | Non-Aurora clusters come with three instances sharing one database. |
 | Clones | 🟡 | `copy-on-write` restores share a clone group id and copy the data. |
-| Backtrack, Data API calls, Limitless, zero-ETL integrations | ❌ | `EnableHttpEndpoint` is recorded; the Data API itself is not emulated. |
+| Backtrack | ✅ | Aurora MySQL clusters take a `BacktrackWindow` (up to 72 hours) at creation. With the Docker backend `BacktrackDBCluster` really rewinds the cluster in place: its newest backup before the target time is rolled forward with its binary log to that time and swapped in under the same endpoint. `DescribeDBClusterBacktracks` lists them. |
+| Limitless Database | 🟡 | Aurora PostgreSQL clusters with `ClusterScalabilityType=limitless` take one DB shard group (create, modify, reboot, delete; ACU and redundancy checks). The shard group's endpoint reaches the cluster's database; there is no sharding. |
+| Zero-ETL integrations | 🟡 | Integrations from an Aurora cluster or DB instance to a Redshift, Redshift Serverless or Glue target, with names, data filters, KMS keys and quotas. No data reaches the target. |
+| Database activity streams | 🟡 | Aurora clusters start and stop an activity stream (mode, KMS key, `aws-rds-das-<resource id>` stream name). No Kinesis stream is created and no activity is recorded. |
+| Data API | ❌ | `EnableHttpEndpoint` is recorded; the Data API itself is not emulated. |
 
 ## Backups
 
@@ -37,8 +44,10 @@
 | --- | :---: | --- |
 | Snapshots | ✅ | Manual DB and cluster snapshots (copies of the data volume with the Docker backend), copies across Regions and keys, sharing with accounts or the public through the `restore` attribute, `CopyTagsToSnapshot`. |
 | Restores | ✅ | From DB and cluster snapshots, including snapshots shared from other accounts. |
-| Point-in-time restore | 🟡 | The restore time is checked against the restorable window, but the data is the source's latest state (no transaction log is kept). |
-| Automated backups | 🟡 | An automated snapshot when an instance is created, retained backups after deletion, `DeleteDBInstanceAutomatedBackup`. No daily backups on the emulated clock; backup replication across Regions is not supported. |
+| Point-in-time restore | ✅ | With the Docker backend the restore is real: PostgreSQL archives its WAL and MySQL and MariaDB keep a binary log, and a restore copies the newest backup taken before the restore time and replays the log up to it (PostgreSQL's `recovery_target_time`; MySQL's server replays the binary log as a relay log until the last transaction begun by then). `UseLatestRestorableTime` copies the current data. Works from live DB instances and clusters and from retained automated backups of deleted instances. Restore times are on the emulated clock; RDS maps them to the wall-clock time the log was written. |
+| Automated backups | ✅ | A snapshot when a database is created, then one a day on the emulated clock while the retention period is above zero, dropped after the retention period. Retained backups after deletion keep the transaction log for point-in-time restores, and `DeleteDBInstanceAutomatedBackup` removes them. |
+| Backup replication | 🟡 | `StartDBInstanceAutomatedBackupsReplication` (called in the destination Region) lists a `replicating` automated backup there and on the source instance; `Stop...` leaves it `retained`. The data is not copied, so the replicated backup can't be restored with the Docker backend. |
+| Exports to S3 | ✅ | `StartExportTask` exports a DB snapshot, a cluster snapshot or a live cluster (`ExportOnly` by database, schema or table). With the Docker backend the export reads every table from a copy of the data and writes one Parquet file per table under `<prefix>/<export id>/<database>/<schema>.<table>/1/`, then `export_tables_info_<id>_from_1_to_<n>.json` and `export_info_<id>.json`, all with SSE-KMS under the export's key and as the IAM role (assumed as `export.rds.amazonaws.com`). Integers, floating-point numbers and booleans keep their types; every other column is a string. Files are uncompressed. `CancelExportTask` stops an export between tables. |
 
 ## Configuration
 
@@ -48,8 +57,10 @@
 | Security groups | ✅ | VPC security groups checked against EC2; the VPC's default group otherwise. Traffic is not filtered. |
 | Parameter groups | ✅ | DB and cluster parameter groups with the engines' common parameters, defaults per family, static versus dynamic parameters, `pending-reboot`, resets and copies. Native parameters reach the server at its next start. |
 | Option groups | 🟡 | Created, copied and described; options are recorded but have no effect. |
-| CA certificates | ✅ | `rds-ca-rsa2048-g1` (default), `rds-ca-rsa4096-g1`, `rds-ca-ecc384-g1`. Connections are not TLS. |
-| Catalog | ✅ | Engine versions, major versions, orderable options, account quotas, source Regions. |
+| CA certificates | ✅ | `rds-ca-rsa2048-g1` (default), `rds-ca-rsa4096-g1`, `rds-ca-ecc384-g1`; `ModifyCertificates` sets the account's default for new DB instances (not kept in saved state). Connections are not TLS. |
+| Catalog | ✅ | Engine versions, major versions, orderable options, account quotas, source Regions, Serverless v2 platform versions. `DescribeDBRecommendations` lists none. |
+| Reserved instances | ✅ | An offerings catalog for every class, engine, term (one or three years), payment option and deployment, with prices in USD derived from the class's memory. Purchases are `payment-pending`, then `active`, and `retired` when their term ends on the emulated clock. |
+| Capacity reservations | 🟡 | DB capacity reservations per class, engine and Availability Zone, with start and end dates, commitments, modifications and cancellation; available capacity counts the account's matching instances. Reservations don't limit launches. |
 
 ## Integrations
 
@@ -60,6 +71,6 @@
 | Events | ✅ | `DescribeEvents` (14 days), event categories, event subscriptions publishing to SNS as `rds.amazonaws.com`, and `aws.rds` events on the default EventBridge bus. |
 | IAM | ✅ | Every operation authorizes `rds:<Action>` with RDS condition keys (`rds:DatabaseEngine`, `rds:DatabaseClass`, `rds:<kind>-tag/*`, `aws:RequestTag`, ...); role associations check `iam:PassRole`. |
 | Tags | ✅ | On every resource, by ARN. |
-| Reserved instances, Performance Insights, Enhanced Monitoring, exports to S3 | ❌ | Not yet. |
+| Performance Insights, Enhanced Monitoring, restores from S3 | ❌ | Recorded where the API takes them. `RestoreDBInstanceFromS3` and `RestoreDBClusterFromS3` answer `InvalidS3BucketFault`: Percona XtraBackup files are not read. |
 
 See also: [all services](README.md) · [configuration](../configuration.md).

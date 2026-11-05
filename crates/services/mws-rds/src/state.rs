@@ -4,6 +4,7 @@
 
 use std::collections::BTreeMap;
 
+use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 
 use crate::generated::types as t;
@@ -41,7 +42,50 @@ pub struct RegionState {
     pub retained_backups: BTreeMap<String, t::DBInstanceAutomatedBackup>,
     /// The same for clusters.
     pub retained_cluster_backups: BTreeMap<String, t::DBClusterAutomatedBackup>,
+    /// A deleted database's last data and transaction log, kept with its
+    /// retained automated backup (by resource id): the backend snapshot
+    /// name and when it was taken (wall clock).
+    pub retained_logs: BTreeMap<String, RetainedLog>,
     pub events: Vec<t::Event>,
+    pub proxies: BTreeMap<String, ProxyRecord>,
+    /// Custom proxy endpoints, by name.
+    pub proxy_endpoints: BTreeMap<String, Tagged<t::DBProxyEndpoint>>,
+    /// Blue/Green deployments, by identifier.
+    pub blue_green: BTreeMap<String, t::BlueGreenDeployment>,
+    /// Reserved DB instances, by reservation id.
+    pub reserved: BTreeMap<String, Tagged<t::ReservedDBInstance>>,
+    /// Snapshot exports to S3, by identifier.
+    pub export_tasks: BTreeMap<String, t::ExportTask>,
+    /// Aurora MySQL backtracks, by cluster identifier (oldest first).
+    pub backtracks: BTreeMap<String, Vec<t::DBClusterBacktrack>>,
+    /// Aurora Limitless shard groups, by identifier.
+    pub shard_groups: BTreeMap<String, t::DBShardGroup>,
+    /// Zero-ETL integrations, by name.
+    pub integrations: BTreeMap<String, t::Integration>,
+    /// DB capacity reservations, by identifier.
+    pub capacity_reservations: BTreeMap<String, t::DBCapacityReservation>,
+    /// Custom engine versions (RDS Custom), by (engine, version).
+    pub custom_engine_versions: BTreeMap<String, t::DBEngineVersion>,
+    /// Automated backups replicated into this Region, by source resource id.
+    pub replicated_backups: BTreeMap<String, t::DBInstanceAutomatedBackup>,
+}
+
+#[derive(Debug, Default, Clone, Serialize, Deserialize)]
+#[serde(default)]
+pub struct ProxyRecord {
+    pub proxy: t::DBProxy,
+    pub tags: Vec<t::Tag>,
+    pub target_group: t::DBProxyTargetGroup,
+    /// Registered targets: DB instance or cluster identifiers.
+    pub instances: Vec<String>,
+    pub clusters: Vec<String>,
+}
+
+#[derive(Debug, Default, Clone, Serialize, Deserialize)]
+#[serde(default)]
+pub struct RetainedLog {
+    pub backend_name: String,
+    pub data_time: Option<DateTime<Utc>>,
 }
 
 /// A resource whose shape has no tag list of its own.
@@ -117,6 +161,9 @@ pub struct SnapshotRecord {
     pub has_data: bool,
     /// The backend's name for the snapshot data.
     pub backend_name: String,
+    /// Wall-clock time the data was copied (a point-in-time restore
+    /// replays the log from here).
+    pub data_time: Option<DateTime<Utc>>,
 }
 
 #[derive(Debug, Default, Clone, Serialize, Deserialize)]
@@ -129,6 +176,7 @@ pub struct ClusterSnapshotRecord {
     pub restore: Vec<String>,
     pub has_data: bool,
     pub backend_name: String,
+    pub data_time: Option<DateTime<Utc>>,
 }
 
 #[derive(Debug, Default, Clone, Serialize, Deserialize)]
