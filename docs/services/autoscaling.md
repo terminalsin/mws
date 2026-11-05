@@ -24,7 +24,7 @@ and send notifications through [SNS](sns.md), [SQS](sqs.md) and
 | Tags | ✅ | `CreateOrUpdateTags`, `DeleteTags`, `DescribeTags` with filters, `aws:` keys refused, `autoscaling:ResourceTag` conditions. |
 | Metrics collection | ✅ | `EnableMetricsCollection` publishes the `AWS/AutoScaling` group metrics (`GroupMinSize` ... `GroupTotalCapacity`, warm pool metrics) to CloudWatch every minute. |
 | Account limits, catalogues | ✅ | `DescribeAccountLimits`, adjustment types, metric collection types, lifecycle hook and termination policy types, notification types, scaling process types. |
-| Mixed instances, Spot | 🟡 | Mixed instances policies are stored and their launch template and overrides (instance type, image) used; Spot options and allocation strategies are not modelled, so every instance is On-Demand. |
+| Mixed instances, Spot | 🟡 | Mixed instances policies' launch template and overrides (instance type, image) are used, and the instances distribution splits launches: the on-demand base capacity first, then the on-demand percentage above it (rounded up), the rest launched as Spot instances. Allocation strategies, Spot prices and interruptions are not modelled. |
 | Weighted capacity | 🟡 | Overrides' `WeightedCapacity` is kept on the instance, but capacity counts instances, not weights. |
 | ELB health checks | 🟡 | `HealthCheckType` `ELB`/`VPC_LATTICE`/`EBS` is accepted; only EC2 status and `SetInstanceHealth` mark instances unhealthy. |
 | Authorization | ✅ | `autoscaling:*` actions on group and launch configuration ARNs with AWS's condition keys (`autoscaling:MinSize`, `MaxSize`, `LaunchConfigurationName`, `LaunchTemplateVersionSpecified`, `VPCZoneIdentifiers`, resource tags). |
@@ -69,8 +69,9 @@ and send notifications through [SNS](sns.md), [SQS](sqs.md) and
 
 ## Known gaps
 
-- Capacity counts instances, not weights; Spot and allocation strategies are
-  not modelled.
+- Capacity counts instances, not weights; Spot allocation strategies, prices
+  and interruptions are not modelled, and scale-in does not rebalance the
+  On-Demand/Spot split.
 - Health checks other than EC2 status do not mark instances unhealthy.
 - Predictive scaling forecasts are flat and never scale the group.
 - Recurring scheduled actions are evaluated in UTC whatever their `TimeZone`.
