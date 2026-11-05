@@ -2557,6 +2557,39 @@ dependencies = [
 ]
 
 [[package]]
+name = "mws-elb"
+version = "0.1.0"
+dependencies = [
+ "async-trait",
+ "base64 0.22.1",
+ "bytes",
+ "chrono",
+ "hex",
+ "http 1.5.0",
+ "http-body-util",
+ "hyper 1.12.0",
+ "hyper-util",
+ "mws-acm",
+ "mws-codegen",
+ "mws-core",
+ "mws-ec2",
+ "mws-lambda",
+ "mws-proto-json",
+ "mws-proto-query",
+ "rand",
+ "rustls 0.23.46",
+ "rustls-pki-types",
+ "serde",
+ "serde_json",
+ "sha2 0.10.9",
+ "tokio",
+ "tokio-rustls 0.26.6",
+ "tracing",
+ "uuid",
+ "x509-parser",
+]
+
+[[package]]
 name = "mws-event-pattern"
 version = "0.1.0"
 dependencies = [
