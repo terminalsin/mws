@@ -52,7 +52,7 @@ its data kept, and `DeleteCluster` removes the container and its volume.
 | Access entries | ✅ | The username (with `{{SessionName}}`, `{{AccountID}}`, ... templates), Kubernetes groups and `extra` (`arn`, `canonicalArn`, `sessionName`, ...) come from the caller's access entry; principals without one are unauthenticated. In `API_AND_CONFIG_MAP` and `CONFIG_MAP` mode the cluster creator is `kubernetes-admin` in `system:masters`. |
 | Access policies | ✅ | An authorization webhook grants what the entry's access policies allow (cluster admin, admin, edit, view, admin view), at cluster or namespace scope; Kubernetes RBAC for the entry's groups applies as well. |
 | Nodes | 🟡 | Each managed node group instance is registered as a `Ready` Node (named by its private DNS name, `aws:///<az>/<id>` provider ID, EKS and topology labels, taints, capacity by instance type) and removed when the instance goes. No kubelet runs, so pods are scheduled but never start. |
-| Control plane logs | ❌ | Logging settings are stored; API server logs stay in the container (`docker logs`). |
+| Control plane logs | ✅ | The enabled log types go to the `/aws/eks/<cluster>/cluster` log group (created by EKS) in EKS's streams: `kube-apiserver-<hex>` (server output), `kube-apiserver-audit-<hex>` (the API server's audit events, Metadata level), `authenticator-<hex>` (aws-iam-authenticator's `access granted` / `access denied` lines), `kube-controller-manager-<hex>` and `kube-scheduler-<hex>`. k3s runs the components in one process, so their output is told apart by the Go source file each line names. |
 
 ## Managed node groups
 
@@ -69,7 +69,7 @@ its data kept, and `DeleteCluster` removes the container and its volume.
 | Labels, taints, update config, node repair | ✅ | Stored and returned, with EKS's validation. |
 | Remote access | ✅ | A `eks-remoteAccess-*` security group opening SSH when no source groups are given. |
 | Customer launch templates | ✅ | Copied into EKS's launch template: their instance type, user data, block devices, security groups and AMI (for `CUSTOM`) are kept, and EKS adds the instance profile. |
-| Spot capacity | 🟡 | The group's instances distribution and capacity rebalancing are set for Spot, but Auto Scaling launches on demand. |
+| Spot capacity | ✅ | `SPOT` node groups get an all-Spot instances distribution with capacity rebalancing, and their nodes are Spot instances (`InstanceLifecycle: spot`). |
 
 ## Access, identity and add-ons
 
@@ -90,7 +90,7 @@ its data kept, and `DeleteCluster` removes the container and its volume.
 | Feature | Status | Details |
 | --- | :---: | --- |
 | Workloads | ❌ | No kubelet runs (it would need privileged containers), so pods, Fargate pods, add-ons and capabilities run nothing. Without Docker there is no API server at all. |
-| Control plane logs | ❌ | Logging settings are stored; nothing is written to CloudWatch Logs. |
+| Control plane logs without Docker | ❌ | With the metadata backend there is no API server, so nothing is written to CloudWatch Logs. |
 | Events and metrics | ❌ | EKS publishes no EventBridge events or CloudWatch metrics. |
 
 See also: [all services](README.md) · [EC2 and VPC](ec2.md) · [authentication and authorization](../security.md).
