@@ -43,6 +43,7 @@ Every service shares the same foundations:
 | --- | --- | --- |
 | [Lambda](lambda.md) | 68 / 88 | Python, Node.js and custom runtimes that really run, SQS and Kinesis event sources, destinations, function URLs |
 | [EC2 and VPC](ec2.md) | 120 / 811 | Default VPCs, subnets, security groups, NAT gateways and VPC endpoints that filter and route real Docker traffic, AMIs, instances as Docker containers, instance metadata and profiles |
+| [ECS](ecs.md) | 88 / 88 | Clusters, tasks as Docker containers with awsvpc interfaces, services with rolling deployments and circuit breakers, task metadata, secrets and awslogs |
 | [Route 53](route53.md) | 71 / 71 | Public and private hosted zones, all routing policies, health checks, DNSSEC key management, an optional real DNS responder |
 
 ## Application integration
@@ -94,6 +95,6 @@ with the permissions AWS would use:
   from Private CA, which writes its CRLs into S3.
 - Secrets Manager rotation runs your Lambda function; SSM resolves Secrets
   Manager references.
-- EC2 instances and Lambda functions receive role credentials from STS.
+- EC2 instances, ECS tasks and Lambda functions receive role credentials from STS.
 - Marketplace Metering and the Entitlement Service share one Marketplace
   catalog of products, subscriptions and entitlements.

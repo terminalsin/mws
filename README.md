@@ -44,7 +44,7 @@ real Rust, Python and JavaScript SDKs.
   (awsQuery, awsJson, restXml, restJson, Smithy RPC v2 CBOR and ec2Query).
 - **Things actually happen.** KMS keys do real cryptography, Private CA and
   ACM issue real X.509 certificates, Lambda functions run on local runtimes,
-  EC2 instances can run as Docker containers, and events flow between
+  EC2 instances and ECS tasks can run as Docker containers, and events flow between
   services: S3 notifications reach SNS, SQS and Lambda; alarms page through
   SNS; Firehose delivers to S3.
 - **Built for test suites.** In memory by default, with optional SQLite
@@ -104,6 +104,7 @@ SDKs, S3 addressing, host-prefixed endpoints and calling as other identities.
 | [S3 Control](docs/services/s3control.md) | 97 / 97 | restXml |
 | [Lambda](docs/services/lambda.md) | 68 / 88 | restJson1 |
 | [EC2 and VPC](docs/services/ec2.md) | 120 / 811 | ec2Query |
+| [ECS](docs/services/ecs.md) | 88 / 88 | awsJson 1.1 |
 | [Route 53](docs/services/route53.md) | 71 / 71 | restXml |
 | [Private CA](docs/services/acm-pca.md) | 23 / 23 | awsJson 1.1 |
 | [Certificate Manager (ACM)](docs/services/acm.md) | 40 / 40 | awsJson 1.1 |

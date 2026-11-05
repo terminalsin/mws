@@ -7,10 +7,10 @@
 use std::time::Duration;
 
 use aws_sdk_ecs::types::{
-    Attribute, AwsVpcConfiguration, CapacityProviderStrategyItem, ContainerDefinition, Compatibility,
-    DaemonContainerDefinition, DeploymentController, DeploymentControllerType, DesiredStatus,
-    ExpressGatewayContainer, GatewayConfiguration, HostSharedAlbConfiguration, KeyValuePair, LaunchType,
-    NetworkConfiguration, NetworkMode, PortMapping, Resource, Scale, ScaleUnit, SettingName, Tag, TargetType,
+    Attribute, AwsVpcConfiguration, CapacityProviderStrategyItem, Compatibility, ContainerDefinition,
+    DaemonContainerDefinition, DeploymentController, DeploymentControllerType, DesiredStatus, ExpressGatewayContainer,
+    GatewayConfiguration, HostSharedAlbConfiguration, KeyValuePair, LaunchType, NetworkConfiguration, NetworkMode,
+    PortMapping, Resource, Scale, ScaleUnit, SettingName, Tag, TargetType,
 };
 use aws_sdk_ecs::Client;
 use mws_e2e::Mws;
@@ -79,7 +79,12 @@ async fn wait_task(ecs: &Client, cluster: &str, arn: &str, want: &str) -> aws_sd
     panic!("task {arn} never reached {want}");
 }
 
-async fn wait_service(ecs: &Client, cluster: &str, name: &str, check: impl Fn(&aws_sdk_ecs::types::Service) -> bool) -> aws_sdk_ecs::types::Service {
+async fn wait_service(
+    ecs: &Client,
+    cluster: &str,
+    name: &str,
+    check: impl Fn(&aws_sdk_ecs::types::Service) -> bool,
+) -> aws_sdk_ecs::types::Service {
     for _ in 0..300 {
         let d = ecs.describe_services().cluster(cluster).services(name).send().await.unwrap();
         if let Some(s) = d.services().first() {
@@ -139,7 +144,10 @@ async fn clusters_and_task_definitions() {
     ecs.update_cluster()
         .cluster("prod")
         .service_connect_defaults(
-            aws_sdk_ecs::types::ClusterServiceConnectDefaultsRequest::builder().namespace("prod.local").build().unwrap(),
+            aws_sdk_ecs::types::ClusterServiceConnectDefaultsRequest::builder()
+                .namespace("prod.local")
+                .build()
+                .unwrap(),
         )
         .send()
         .await
@@ -189,7 +197,7 @@ async fn clusters_and_task_definitions() {
 
     ecs.deregister_task_definition().task_definition("web:1").send().await.unwrap();
     let active = ecs.list_task_definitions().family_prefix("web").send().await.unwrap();
-    assert_eq!(active.task_definition_arns(), [second.clone()]);
+    assert_eq!(active.task_definition_arns(), std::slice::from_ref(&second));
     let del = ecs.delete_task_definitions().task_definitions("web:1").task_definitions("web:2").send().await.unwrap();
     assert_eq!(del.task_definitions().len(), 1);
     assert_eq!(del.task_definitions()[0].status(), Some(&aws_sdk_ecs::types::TaskDefinitionStatus::DeleteInProgress));
@@ -248,6 +256,18 @@ async fn fargate_tasks_get_network_interfaces() {
     assert_eq!(ni.private_ip_address(), Some(detail("privateIPv4Address").as_str()));
     assert_eq!(t.containers()[0].network_interfaces()[0].private_ipv4_address(), ni.private_ip_address());
 
+    // The task metadata endpoint (v4) containers find in
+    // ECS_CONTAINER_METADATA_URI_V4.
+    let task_id = arn.rsplit('/').next().unwrap();
+    let (status, _, body) = mws.raw("GET", &format!("/_aws/ecs/metadata/{task_id}/web/task"), &[], b"").await;
+    assert_eq!(status, 200);
+    let meta: serde_json::Value = serde_json::from_slice(&body).unwrap();
+    assert_eq!(meta["TaskARN"], arn.as_str());
+    assert_eq!(meta["Containers"][0]["Name"], "web");
+    assert_eq!(meta["Containers"][0]["Networks"][0]["IPv4Addresses"][0], ni.private_ip_address().unwrap());
+    let (status, _, _) = mws.raw("GET", "/_aws/ecs/metadata/nope/web", &[], b"").await;
+    assert_eq!(status, 404);
+
     let listed = ecs.list_tasks().started_by("e2e").send().await.unwrap();
     assert_eq!(listed.task_arns().len(), 2);
     let tags = ecs.list_tags_for_resource().resource_arn(&arn).send().await.unwrap();
@@ -260,7 +280,7 @@ async fn fargate_tasks_get_network_interfaces() {
     let after = eni_gone(&ec2, &eni).await;
     assert!(after, "the task's interface is deleted when it stops");
     let stopped_list = ecs.list_tasks().desired_status(DesiredStatus::Stopped).send().await.unwrap();
-    assert_eq!(stopped_list.task_arns(), [arn.clone()]);
+    assert_eq!(stopped_list.task_arns(), std::slice::from_ref(&arn));
 
     // The task-state APIs the agent calls.
     ecs.submit_task_state_change().task(&arn).status("STOPPED").send().await.unwrap();
@@ -429,14 +449,8 @@ async fn container_instances_place_tasks() {
     let d = ecs.describe_container_instances().cluster("ec2").container_instances(&ci_arn).send().await.unwrap();
     assert_eq!(d.container_instances()[0].running_tasks_count() + d.container_instances()[0].pending_tasks_count(), 1);
 
-    let started = ecs
-        .start_task()
-        .cluster("ec2")
-        .task_definition("worker")
-        .container_instances(&ci_arn)
-        .send()
-        .await
-        .unwrap();
+    let started =
+        ecs.start_task().cluster("ec2").task_definition("worker").container_instances(&ci_arn).send().await.unwrap();
     assert_eq!(started.failures()[0].reason(), Some("RESOURCE:PORTS"));
 
     // Attributes and constraints.
@@ -463,8 +477,9 @@ async fn container_instances_place_tasks() {
         .await
         .unwrap();
     assert_eq!(attrs.attributes()[0].value(), Some("a"));
-    let filtered = ecs.list_container_instances().cluster("ec2").filter("attribute:stack == blue").send().await.unwrap();
-    assert_eq!(filtered.container_instance_arns(), [ci_arn.clone()]);
+    let filtered =
+        ecs.list_container_instances().cluster("ec2").filter("attribute:stack == blue").send().await.unwrap();
+    assert_eq!(filtered.container_instance_arns(), std::slice::from_ref(&ci_arn));
     ecs.delete_attributes()
         .cluster("ec2")
         .attributes(Attribute::builder().name("zone").target_id(&ci_arn).build().unwrap())
@@ -510,7 +525,9 @@ async fn task_sets_protection_and_exec() {
     ecs.create_service()
         .service_name("ext")
         .desired_count(2)
-        .deployment_controller(DeploymentController::builder().r#type(DeploymentControllerType::External).build().unwrap())
+        .deployment_controller(
+            DeploymentController::builder().r#type(DeploymentControllerType::External).build().unwrap(),
+        )
         .send()
         .await
         .unwrap();
@@ -564,20 +581,13 @@ async fn task_sets_protection_and_exec() {
         .send()
         .await
         .unwrap();
-    assert_eq!(p.protected_tasks()[0].protection_enabled(), true);
+    assert!(p.protected_tasks()[0].protection_enabled());
     let got = ecs.get_task_protection().cluster("default").tasks(&task).send().await.unwrap();
     assert!(got.protected_tasks()[0].protection_enabled());
 
     // ExecuteCommand needs the task to have it enabled.
-    let no_exec = ecs
-        .execute_command()
-        .cluster("default")
-        .task(&task)
-        .command("ls")
-        .interactive(true)
-        .send()
-        .await
-        .unwrap_err();
+    let no_exec =
+        ecs.execute_command().cluster("default").task(&task).command("ls").interactive(true).send().await.unwrap_err();
     assert_eq!(no_exec.into_service_error().meta().code(), Some("InvalidParameterException"));
 
     ecs.delete_task_set().cluster("default").service("ext").task_set(&ts_arn).force(true).send().await.unwrap();
@@ -594,7 +604,8 @@ async fn settings_capacity_providers_and_tags() {
     let s = ecs.put_account_setting().name(SettingName::ContainerInsights).value("enhanced").send().await.unwrap();
     assert_eq!(s.setting().unwrap().value(), Some("enhanced"));
     ecs.put_account_setting_default().name(SettingName::TagResourceAuthorization).value("on").send().await.unwrap();
-    let listed = ecs.list_account_settings().name(SettingName::ContainerInsights).effective_settings(true).send().await.unwrap();
+    let listed =
+        ecs.list_account_settings().name(SettingName::ContainerInsights).effective_settings(true).send().await.unwrap();
     assert_eq!(listed.settings()[0].value(), Some("enhanced"));
     ecs.delete_account_setting().name(SettingName::ContainerInsights).send().await.unwrap();
     let bad = ecs.put_account_setting().name(SettingName::AwsvpcTrunking).value("maybe").send().await.unwrap_err();
@@ -611,7 +622,13 @@ async fn settings_capacity_providers_and_tags() {
         .await
         .unwrap();
     let cp_arn = cp.capacity_provider().unwrap().capacity_provider_arn().unwrap().to_string();
-    let d = ecs.describe_capacity_providers().capacity_providers("workers").capacity_providers("FARGATE").send().await.unwrap();
+    let d = ecs
+        .describe_capacity_providers()
+        .capacity_providers("workers")
+        .capacity_providers("FARGATE")
+        .send()
+        .await
+        .unwrap();
     assert_eq!(d.capacity_providers().len(), 2);
     ecs.update_capacity_provider()
         .name("workers")
@@ -648,7 +665,9 @@ async fn daemons_and_gateways() {
     let dtd = ecs
         .register_daemon_task_definition()
         .family("agent")
-        .container_definitions(DaemonContainerDefinition::builder().name("agent").image("datadog/agent").build().unwrap())
+        .container_definitions(
+            DaemonContainerDefinition::builder().name("agent").image("datadog/agent").build().unwrap(),
+        )
         .send()
         .await
         .unwrap();
@@ -759,7 +778,13 @@ async fn express_services_run_like_services() {
         .service_name("hello")
         .infrastructure_role_arn(&infra)
         .execution_role_arn(&exec)
-        .primary_container(ExpressGatewayContainer::builder().image("public.ecr.aws/nginx/nginx:latest").container_port(80).build().unwrap())
+        .primary_container(
+            ExpressGatewayContainer::builder()
+                .image("public.ecr.aws/nginx/nginx:latest")
+                .container_port(80)
+                .build()
+                .unwrap(),
+        )
         .send()
         .await
         .unwrap();
@@ -774,22 +799,22 @@ async fn express_services_run_like_services() {
     let running = wait_service(&ecs, "default", "hello", |s| s.running_count() == 1).await;
     assert_eq!(running.launch_type(), Some(&LaunchType::Fargate));
     let described = ecs.describe_express_gateway_service().service_arn(&arn).send().await.unwrap();
-    assert_eq!(described.service().unwrap().status().unwrap().status_code(), Some(&aws_sdk_ecs::types::ExpressGatewayServiceStatusCode::Active));
+    assert_eq!(
+        described.service().unwrap().status().unwrap().status_code(),
+        Some(&aws_sdk_ecs::types::ExpressGatewayServiceStatusCode::Active)
+    );
 
-    let updated = ecs
-        .update_express_gateway_service()
-        .service_arn(&arn)
-        .cpu("2048")
-        .memory("4096")
-        .send()
-        .await
-        .unwrap();
+    let updated =
+        ecs.update_express_gateway_service().service_arn(&arn).cpu("2048").memory("4096").send().await.unwrap();
     let target = updated.service().unwrap().target_configuration().unwrap();
     assert_eq!(target.cpu(), Some("2048"));
     assert!(target.task_definition_arn().unwrap().ends_with(":2"));
 
     let deleted = ecs.delete_express_gateway_service().service_arn(&arn).send().await.unwrap();
-    assert_eq!(deleted.service().unwrap().status().unwrap().status_code(), Some(&aws_sdk_ecs::types::ExpressGatewayServiceStatusCode::Draining));
+    assert_eq!(
+        deleted.service().unwrap().status().unwrap().status_code(),
+        Some(&aws_sdk_ecs::types::ExpressGatewayServiceStatusCode::Draining)
+    );
     mws.stop().await;
 }
 

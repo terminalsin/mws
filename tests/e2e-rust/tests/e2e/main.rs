@@ -12,6 +12,7 @@ mod ec2;
 mod ec2_docker;
 mod ec2_networking;
 mod ecs;
+mod ecs_docker;
 mod events;
 mod firehose;
 mod firehose_monitoring;
