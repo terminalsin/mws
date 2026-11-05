@@ -13,6 +13,8 @@ use mws_acm::Acm;
 use mws_acmpca::PrivateCa;
 use mws_amplify::Amplify;
 use mws_autoscaling::AutoScaling;
+use mws_bedrock::Bedrock;
+use mws_bedrock_runtime::BedrockRuntime;
 use mws_ce::CostExplorer;
 use mws_cloudformation::CloudFormation;
 use mws_cloudtrail::CloudTrail;
@@ -79,6 +81,10 @@ pub struct Config {
     pub ec2_backend: BackendChoice,
     /// The Docker-compatible CLI (`MWS_EC2_DOCKER`, e.g. `podman`).
     pub ec2_docker_cli: Option<String>,
+    /// What answers Bedrock model invocations (`MWS_BEDROCK_BACKEND`:
+    /// `echo`, `openai` or `anthropic`, with `MWS_BEDROCK_BACKEND_URL`,
+    /// `_API_KEY` and `_MODEL`). Defaults to the deterministic echo.
+    pub bedrock_backend: mws_bedrock_runtime::BackendConfig,
     /// Which quota values accounts start with (`MWS_QUOTA_PROFILE`:
     /// `established`, the default, or `new-account` for AWS's exact
     /// new-account defaults such as 5 standard EC2 vCPUs).
@@ -203,6 +209,7 @@ impl Config {
             skip_federation_signature_verification: skip,
             ec2_backend,
             ec2_docker_cli: std::env::var("MWS_EC2_DOCKER").ok().filter(|v| !v.is_empty()),
+            bedrock_backend: mws_bedrock_runtime::BackendConfig::from_env(),
             quota_profile,
             ses_auto_verify: std::env::var("MWS_SES_AUTO_VERIFY")
                 .is_ok_and(|v| matches!(v.as_str(), "1" | "true" | "yes")),
@@ -249,6 +256,8 @@ pub struct Mws {
     pub globalaccelerator: GlobalAccelerator,
     pub marketplace_entitlement: Entitlement,
     pub marketplace_metering: Metering,
+    pub bedrock: Bedrock,
+    pub bedrock_runtime: BedrockRuntime,
     pub cloudformation: CloudFormation,
     pub servicequotas: ServiceQuotas,
     pub ce: CostExplorer,
@@ -408,6 +417,9 @@ fn build_with_store(config: Config, store: Option<Arc<Store>>) -> Mws {
     route53.add_alias_resolver(Arc::new(links::Route53ToGlobalAccelerator(globalaccelerator.clone())));
     let marketplace_entitlement = Entitlement::new(config.iam.account_id.clone());
     let marketplace_metering = Metering::new(marketplace_entitlement.clone());
+    let bedrock = Bedrock::new();
+    let bedrock_runtime = BedrockRuntime::new(bedrock.clone(), s3.clone(), &config.bedrock_backend);
+    tracing::info!(backend = bedrock_runtime.backend_name(), "Bedrock model backend");
     let servicequotas = ServiceQuotas::new();
     servicequotas.set_profile(config.quota_profile);
     servicequotas.set_organizations(Arc::new(links::QuotaOrganizations(organizations.clone())));
@@ -592,6 +604,9 @@ fn build_with_store(config: Config, store: Option<Arc<Store>>) -> Mws {
         Arc::new(ecr_public.clone()),
         Arc::new(elasticache.clone()),
         Arc::new(ecs.clone()),
+        // bedrock-runtime signs as `bedrock` too; each claims its paths.
+        Arc::new(bedrock_runtime.clone()),
+        Arc::new(bedrock.clone()),
         Arc::new(cloudformation.clone()),
     ];
     // CloudFormation deploys resources through the other services' APIs.
@@ -638,6 +653,8 @@ fn build_with_store(config: Config, store: Option<Arc<Store>>) -> Mws {
         globalaccelerator,
         marketplace_entitlement,
         marketplace_metering,
+        bedrock,
+        bedrock_runtime,
         cloudformation,
         servicequotas,
         ce,

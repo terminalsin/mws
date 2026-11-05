@@ -246,6 +246,31 @@ impl S3 {
         self.store_service_object(put, sse)
     }
 
+    /// Write an object for a service acting with a role the caller passed
+    /// it (Bedrock batch inference and asynchronous invocation write their
+    /// output this way). MWS checks that the bucket exists but does not
+    /// evaluate the role's S3 permissions.
+    pub fn put_object_with_role(
+        &self,
+        bucket: &str,
+        key: &str,
+        body: Vec<u8>,
+        content_type: &str,
+    ) -> Result<String, ServicePutError> {
+        let put = ServicePutObject {
+            bucket,
+            key,
+            body,
+            content_type,
+            service_principal: "",
+            source_account: "",
+            source_arn: "",
+            acl: None,
+            partition: "aws",
+        };
+        self.store_service_object(put, Sse::default())
+    }
+
     /// Write an object a service is allowed to put.
     fn store_service_object(&self, put: ServicePutObject<'_>, sse: Sse) -> Result<String, ServicePutError> {
         let mut st = self.write();

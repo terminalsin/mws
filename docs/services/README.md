@@ -93,6 +93,12 @@ Every service shares the same foundations:
 | [CloudWatch Logs](logs.md) | 118 / 118 | Log events, filter patterns, Logs Insights, live tail, subscriptions, metric filters, exports |
 | [CloudTrail](cloudtrail.md) | 61 / 61 | Every API call recorded; trails delivering to S3, CloudWatch Logs and EventBridge; event history; Insights; Lake SQL queries, imports and channels |
 
+## Machine learning
+
+| Service | Operations | What's emulated |
+| --- | --- | --- |
+| [Bedrock and Bedrock Runtime](bedrock.md) | 117 / 119 | Model catalog, cross-Region and application inference profiles, InvokeModel and Converse (streaming too) in every provider's format, guardrails, batch and async jobs; a deterministic echo model or passthrough to OpenAI-compatible or Anthropic APIs |
+
 ## Marketplace
 
 | Service | Operations | What's emulated |
@@ -158,6 +164,8 @@ with the permissions AWS would use:
   Organizations for consolidated billing and sends anomaly alerts to SNS.
 - CloudFormation deploys stacks through every other service's API, as the
   caller or the stack's service role.
+- Bedrock Runtime resolves models, inference profiles and guardrails through
+  the Bedrock control plane, and batch and asynchronous jobs write to S3.
 - Security Hub registers its delegated administrator in Organizations, sends
   findings events to EventBridge and exports findings to S3 with KMS.
 - Auto Scaling groups launch and terminate EC2 instances, register them with

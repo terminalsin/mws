@@ -73,6 +73,23 @@ EC2 instances and ECS tasks reach the instance or task metadata service and the 
 through the host, so when using the Docker backend MWS must listen on an
 address containers can reach (the default `0.0.0.0` does).
 
+## Bedrock
+
+What answers Bedrock model invocations. The default echo model is
+deterministic and needs no network, so tests can assert on its answers; queue
+scripted answers with `POST /_aws/bedrock/responses` (see
+[Bedrock](services/bedrock.md#scripted-answers)).
+
+| Variable | Default | Description |
+| --- | --- | --- |
+| `MWS_BEDROCK_BACKEND` | `echo` | `echo`, `openai` (any OpenAI-compatible chat completions API: OpenAI, Ollama, vLLM, LM Studio) or `anthropic` (the Anthropic Messages API). |
+| `MWS_BEDROCK_BACKEND_URL` | `https://api.openai.com/v1` or `https://api.anthropic.com` | Base URL of the provider (for example `http://localhost:11434/v1` for Ollama). |
+| `MWS_BEDROCK_BACKEND_API_KEY` | `OPENAI_API_KEY` or `ANTHROPIC_API_KEY` | API key sent to the provider. |
+| `MWS_BEDROCK_BACKEND_MODEL` | derived from the Bedrock model id | Provider model to use for every request (for example `llama3.2`). Without it, Anthropic gets the Claude model matching the Bedrock id and OpenAI-compatible servers get the Bedrock id. |
+| `MWS_BEDROCK_MODELS` | unset | A JSON file with extra foundation models to add to the catalog (an array in `GetFoundationModel`'s shape plus `family`). |
+
+Embeddings, images and rerank are always answered locally.
+
 ## Client-side settings
 
 These are read by the AWS SDKs, not by MWS, but are the usual way to point

@@ -8,6 +8,8 @@ mod acmpca;
 mod acmpca_parity;
 mod amplify;
 mod autoscaling;
+mod bedrock;
+mod bedrock_runtime;
 mod cloudformation;
 mod cloudtrail;
 mod cloudtrail_parity;
