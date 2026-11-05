@@ -27,6 +27,7 @@ use mws_route53::Route53;
 use mws_s3::S3;
 use mws_s3control::S3Control;
 use mws_secretsmanager::SecretsManager;
+use mws_securityhub::SecurityHub;
 use mws_server::{Gateway, Scenario, Store};
 use mws_sns::Sns;
 use mws_sqs::Sqs;
@@ -117,6 +118,7 @@ pub struct Mws {
     pub marketplace_metering: Metering,
     pub bedrock: Bedrock,
     pub bedrock_runtime: BedrockRuntime,
+    pub securityhub: SecurityHub,
 }
 
 /// Build the gateway with every service MWS emulates.
@@ -247,6 +249,10 @@ fn build_with_store(config: Config, store: Option<Arc<Store>>) -> Mws {
     let bedrock = Bedrock::new();
     let bedrock_runtime = BedrockRuntime::new(bedrock.clone(), s3.clone(), &config.bedrock_backend);
     tracing::info!(backend = bedrock_runtime.backend_name(), "Bedrock model backend");
+    let securityhub = SecurityHub::new();
+    securityhub.set_organizations(Arc::new(links::SecurityHubOrganizations(organizations.clone())));
+    securityhub.set_event_sink(Arc::new(links::SecurityHubToEvents(events.clone())));
+    securityhub.set_export_sink(Arc::new(links::SecurityHubExports(s3.clone())));
     let mut gateway = Gateway::builder();
     if let Some(store) = store {
         gateway = gateway.store(store);
@@ -287,6 +293,7 @@ fn build_with_store(config: Config, store: Option<Arc<Store>>) -> Mws {
         // bedrock-runtime signs as `bedrock` too; each claims its paths.
         .service(Arc::new(bedrock_runtime.clone()))
         .service(Arc::new(bedrock.clone()))
+        .service(Arc::new(securityhub.clone()))
         .build();
     Mws {
         gateway,
@@ -310,6 +317,7 @@ fn build_with_store(config: Config, store: Option<Arc<Store>>) -> Mws {
         marketplace_metering,
         bedrock,
         bedrock_runtime,
+        securityhub,
     }
 }
 

@@ -1,6 +1,6 @@
 # Services
 
-MWS emulates 22 AWS services. Each is generated from AWS's official Smithy
+MWS emulates 23 AWS services. Each is generated from AWS's official Smithy
 model, so every operation in the model is routed and validated; operations
 outside the implemented set answer `NotImplemented`. Each service's page lists
 its features in a table: ✅ supported, 🟡 partial, ❌ not supported yet.
@@ -28,6 +28,7 @@ Every service shares the same foundations:
 | [KMS](kms.md) | 56 / 56 | Symmetric, asymmetric, HMAC and post-quantum keys with real cryptography, key policies, grants, rotation |
 | [Private CA](acm-pca.md) | 23 / 23 | Root and subordinate CAs issuing real X.509 certificates, CRLs in S3, OCSP, audit reports |
 | [Certificate Manager](acm.md) | 40 / 40 | Public certificates with real DNS validation through Route 53, private certificates, imports, expiry events |
+| [Security Hub](securityhub.md) | 126 / 126 | ASFF findings with every filter, workflow and history, insights, automation rules, standards and controls, members and Organizations delegated administration, central configuration, the V2 OCSF API with exports to S3 |
 | [Secrets Manager](secretsmanager.md) | 23 / 23 | KMS-sealed secret versions, staging labels, rotation that runs your Lambda function, replicas |
 
 ## Storage
@@ -42,7 +43,7 @@ Every service shares the same foundations:
 | Service | Operations | What's emulated |
 | --- | --- | --- |
 | [Lambda](lambda.md) | 68 / 88 | Python, Node.js and custom runtimes that really run, SQS and Kinesis event sources, destinations, function URLs |
-| [EC2 and VPC](ec2.md) | 107 / 811 | Default VPCs, subnets, security groups, AMIs, instances as Docker containers, instance metadata and profiles |
+| [EC2 and VPC](ec2.md) | 120 / 811 | Default VPCs, subnets, security groups, NAT gateways and VPC endpoints that filter and route real Docker traffic, AMIs, instances as Docker containers, instance metadata and profiles |
 | [Route 53](route53.md) | 71 / 71 | Public and private hosted zones, all routing policies, health checks, DNSSEC key management, an optional real DNS responder |
 
 ## Application integration
@@ -105,3 +106,5 @@ with the permissions AWS would use:
   catalog of products, subscriptions and entitlements.
 - Bedrock Runtime resolves models, inference profiles and guardrails through
   the Bedrock control plane, and batch and asynchronous jobs write to S3.
+- Security Hub registers its delegated administrator in Organizations, sends
+  findings events to EventBridge and exports findings to S3 with KMS.
