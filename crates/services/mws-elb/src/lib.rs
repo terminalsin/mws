@@ -111,6 +111,8 @@ pub(crate) struct Inner {
     data: data::Runtime,
     health: health::Health,
     logs: logs::Logs,
+    /// Service Quotas: load balancers and target groups per Region.
+    quotas: mws_servicequotas::QuotaLink,
 }
 
 /// Elastic Load Balancing (ELBv2). Cheap to clone; clones share state.
@@ -146,7 +148,26 @@ impl Elb {
                 data: data::Runtime::default(),
                 health: health::Health::default(),
                 logs: logs::Logs::default(),
+                quotas: Default::default(),
             }),
+        }
+    }
+
+    /// Service Quotas, whose applied values limit load balancers and
+    /// target groups.
+    pub fn set_service_quotas(&self, quotas: mws_servicequotas::ServiceQuotas) {
+        self.inner.quotas.set(quotas);
+    }
+
+    /// An account limit by its `DescribeAccountLimits` name: the applied
+    /// Service Quotas value where Service Quotas has the quota. Never call
+    /// with the state lock held.
+    pub(crate) fn limit(&self, ctx: &RequestContext, name: &str) -> usize {
+        match catalog::quota_code(name) {
+            Some(code) => {
+                self.inner.quotas.limit(&account_of(ctx), &ctx.region, "elasticloadbalancing", code, ctx.received_at)
+            }
+            None => catalog::limit(name),
         }
     }
 

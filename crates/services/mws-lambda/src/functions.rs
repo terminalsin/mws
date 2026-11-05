@@ -281,8 +281,8 @@ impl Lambda {
             (stored.size, stored.sha256)
         } else {
             let uri = input.code.image_uri.clone().unwrap_or_default();
-            version.image_uri = Some(uri.clone());
-            (0, crate::code::image_digest(&uri))
+            let sha = self.set_image(ctx, &mut version, &uri, input.architectures.as_deref())?;
+            (0, sha)
         };
 
         let now = timestamp(ctx.received_at);
@@ -400,7 +400,7 @@ impl Lambda {
             (None, Some(uri)) => types::FunctionCodeLocation {
                 repository_type: Some("ECR".into()),
                 image_uri: Some(uri.clone()),
-                resolved_image_uri: Some(uri.clone()),
+                resolved_image_uri: Some(v.resolved_image_uri.clone().unwrap_or_else(|| uri.clone())),
                 ..Default::default()
             },
             _ => types::FunctionCodeLocation::default(),
@@ -530,13 +530,14 @@ impl Lambda {
     ) -> Result<types::FunctionConfiguration, ServiceError> {
         let f = names::parse_function(ctx, &input.function_name, None)?;
         self.authorize_function(ctx, "lambda:UpdateFunctionCode", &f, ConditionContext::new())?;
-        let (package_type, csc) = {
+        let (package_type, csc, architectures) = {
             let st = self.read();
             let func = Self::function(&st, &f)?;
             check_revision(func.latest.config.revision_id.as_deref(), input.revision_id.as_deref())?;
             (
                 func.latest.config.package_type.clone().unwrap_or_else(|| "Zip".into()),
                 func.code_signing_config_arn.clone(),
+                func.latest.config.architectures.clone(),
             )
         };
         let mut new = Version::default();
@@ -546,8 +547,9 @@ impl Lambda {
                     "Please provide ImageUri when updating a function with packageType Image.",
                 )
             })?;
-            new.image_uri = Some(uri.clone());
-            (0, crate::code::image_digest(&uri))
+            let architectures = input.architectures.clone().or(architectures);
+            let sha = self.set_image(ctx, &mut new, &uri, architectures.as_deref())?;
+            (0, sha)
         } else {
             if input.image_uri.is_some() {
                 return Err(errors::invalid_parameter_value(
@@ -575,6 +577,8 @@ impl Lambda {
         let latest = &mut func.latest;
         latest.code_hex = new.code_hex;
         latest.image_uri = new.image_uri;
+        latest.resolved_image_uri = new.resolved_image_uri;
+        latest.image_run_config = new.image_run_config;
         latest.s3_source = new.s3_source;
         latest.config.code_sha256 = Some(sha);
         latest.config.code_size = size;
@@ -795,4 +799,26 @@ fn runtime_version_arn(ctx: &RequestContext, region: &str, runtime: &str) -> Str
     use sha2::Digest;
     let digest = hex::encode(sha2::Sha256::digest(runtime.as_bytes()));
     format!("arn:{}:lambda:{region}::runtime:{digest}", ctx.partition)
+}
+
+impl Lambda {
+    /// Point a version at an image, resolving it in ECR when ECR is wired
+    /// in; returns the `CodeSha256` (the resolved digest's hex).
+    fn set_image(
+        &self,
+        ctx: &RequestContext,
+        version: &mut Version,
+        uri: &str,
+        architectures: Option<&[String]>,
+    ) -> Result<String, ServiceError> {
+        version.image_uri = Some(uri.to_string());
+        Ok(match self.resolve_image(ctx, uri, architectures)? {
+            Some(image) => {
+                version.resolved_image_uri = Some(image.resolved_uri.clone());
+                version.image_run_config = Some(image.run_config());
+                image.resolved_digest.trim_start_matches("sha256:").to_string()
+            }
+            None => crate::code::image_digest(uri),
+        })
+    }
 }

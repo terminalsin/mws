@@ -1,0 +1,30 @@
+[package]
+name = "mws-elasticache"
+description = "Amazon ElastiCache for MWS: Redis OSS, Valkey and Memcached caches run by a pluggable engine backend (Docker containers, or metadata only)."
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+base64.workspace = true
+bytes.workspace = true
+async-trait.workspace = true
+chrono.workspace = true
+mws-core.workspace = true
+mws-proto-json.workspace = true
+mws-proto-query.workspace = true
+rand.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+sha2.workspace = true
+hex.workspace = true
+http.workspace = true
+rcgen.workspace = true
+rustls.workspace = true
+rustls-pki-types.workspace = true
+tokio-rustls.workspace = true
+tokio = { workspace = true, features = ["process", "io-util", "net"] }
+tracing.workspace = true
+
+[build-dependencies]
+mws-codegen.workspace = true

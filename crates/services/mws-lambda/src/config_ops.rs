@@ -11,7 +11,6 @@ use crate::names::{self, FunctionRef};
 use crate::state::{CodeSigningConfig, EventSourceMapping, Provisioned, RuntimeManagement};
 use crate::Lambda;
 
-const ACCOUNT_CONCURRENCY: i32 = 1000;
 const MIN_UNRESERVED: i32 = 100;
 
 fn qualifier_key(f: &FunctionRef) -> String {
@@ -32,6 +31,7 @@ impl Lambda {
     ) -> Result<types::Concurrency, ServiceError> {
         let f = names::parse_function(ctx, &input.function_name, None)?;
         self.authorize_function(ctx, "lambda:PutFunctionConcurrency", &f, ConditionContext::new())?;
+        let account_concurrency = self.account_concurrency(&f.account, ctx);
         let mut st = self.write();
         let others: i32 = st
             .functions
@@ -39,7 +39,7 @@ impl Lambda {
             .filter(|x| x.account_id == f.account && x.region == f.region && x.arn != f.arn())
             .filter_map(|x| x.reserved_concurrency)
             .sum();
-        if ACCOUNT_CONCURRENCY - others - input.reserved_concurrent_executions < MIN_UNRESERVED {
+        if account_concurrency - others - input.reserved_concurrent_executions < MIN_UNRESERVED {
             return Err(errors::invalid_parameter_value(format!(
                 "Specified ReservedConcurrentExecutions for function decreases account's UnreservedConcurrentExecution below its minimum value of [{MIN_UNRESERVED}]."
             )));
@@ -80,6 +80,7 @@ impl Lambda {
     ) -> Result<types::GetAccountSettingsResponse, ServiceError> {
         ctx.authorize("lambda:GetAccountSettings", "*", ConditionContext::new())?;
         let account = names::account_of(ctx);
+        let account_concurrency = self.account_concurrency(&account, ctx);
         let st = self.read();
         let funcs: Vec<_> =
             st.functions.values().filter(|f| f.account_id == account && f.region == ctx.region).collect();
@@ -94,8 +95,8 @@ impl Lambda {
                 total_code_size: 80_530_636_800,
                 code_size_unzipped: 262_144_000,
                 code_size_zipped: 52_428_800,
-                concurrent_executions: ACCOUNT_CONCURRENCY,
-                unreserved_concurrent_executions: Some(ACCOUNT_CONCURRENCY - reserved),
+                concurrent_executions: account_concurrency,
+                unreserved_concurrent_executions: Some(account_concurrency - reserved),
             }),
             account_usage: Some(types::AccountUsage {
                 total_code_size: total_code,

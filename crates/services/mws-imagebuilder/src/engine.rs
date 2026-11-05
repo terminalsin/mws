@@ -12,7 +12,7 @@ use crate::components::component_parameters;
 use crate::generated::types as t;
 use crate::images::{status_of, ACTIVE_STATES};
 use crate::state::{StepExecution, WorkflowExecution};
-use crate::toe::Document;
+use crate::toe::{self, Document};
 use crate::util::{date, Arn};
 use crate::workflows::{StepDef, WorkflowDocument};
 use crate::{distribution, ec2link, managed, ImageBuilder, ImageStateChange};
@@ -795,57 +795,142 @@ impl ImageBuilder {
         let comps: Vec<(String, Document, BTreeMap<String, String>)> =
             b.components.iter().map(|c| (c.arn.clone(), c.doc.clone(), c.params.clone())).collect();
         for (arn, doc, params) in comps {
+            let phases: Vec<String> = phases.iter().map(|p| p.to_string()).collect();
+            self.run_document(b, instance, &arn, &doc, &phases, &params, 0).await?;
+        }
+        Ok(())
+    }
+
+    /// Run `phases` of a component document (or of a document a step
+    /// nests with `ExecuteDocument`, `depth` levels down).
+    #[allow(clippy::too_many_arguments)]
+    fn run_document<'a>(
+        &'a self,
+        b: &'a mut Build,
+        instance: &'a str,
+        arn: &'a str,
+        doc: &'a Document,
+        phases: &'a [String],
+        params: &'a BTreeMap<String, String>,
+        depth: usize,
+    ) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<(), Failure>> + Send + 'a>> {
+        Box::pin(async move {
+            let step_failure = |phase: &str, step: Option<&toe::Step>, e: String| Failure {
+                status: "FAILED",
+                reason: match step {
+                    Some(s) => format!("Component '{arn}' failed in phase '{phase}', step '{}': {e}", s.name),
+                    None => format!("Component '{arn}': {e}"),
+                },
+                context: Some(Box::new(t::ImageFailureContext {
+                    component_failure: Some(t::ComponentFailureContext {
+                        component_arn: Some(arn.to_string()),
+                        phase_name: Some(phase.to_string()),
+                        step_name: step.map(|s| s.name.clone()),
+                        action: step.map(|s| s.action.clone()),
+                        error_message: Some(e.clone()),
+                    }),
+                    ..Default::default()
+                })),
+            };
+            // What steps print, for `{{ phase.Step.outputs.stdout }}`.
+            let mut outputs = BTreeMap::new();
             for phase in phases {
-                let steps = doc.plan(phase, &params).map_err(|e| Failure {
-                    status: "FAILED",
-                    reason: format!("Component '{arn}': {e}"),
-                    context: Some(Box::new(t::ImageFailureContext {
-                        component_failure: Some(t::ComponentFailureContext {
-                            component_arn: Some(arn.clone()),
-                            phase_name: Some(phase.to_string()),
-                            error_message: Some(e.clone()),
-                            ..Default::default()
-                        }),
-                        ..Default::default()
-                    })),
-                })?;
+                let steps = doc.plan(phase, params).map_err(|e| step_failure(phase, None, e))?;
                 for step in steps {
                     if self.cancelled(b) {
                         return Err(Failure::cancelled());
                     }
-                    b.note(format!("[{arn}] phase {phase}, step {} ({})", step.name, step.action));
+                    let iteration = step.iteration.as_ref().map(|v| format!(", loop value {v}")).unwrap_or_default();
+                    b.note(format!("[{arn}] phase {phase}, step {} ({}{iteration})", step.name, step.action));
                     let mut last = Ok(String::new());
                     for _ in 0..step.max_attempts {
-                        last = self.exec(b, instance, &step.script).await;
+                        last = if step.action == "ExecuteDocument" {
+                            self.execute_document(b, instance, arn, &step, &outputs, depth).await.map(|_| String::new())
+                        } else {
+                            match step.script(&outputs) {
+                                Ok(script) => self.exec(b, instance, &script).await,
+                                Err(e) => Err(Failure::failed(e)),
+                            }
+                        };
                         if last.is_ok() {
                             break;
                         }
                     }
-                    if let Err(f) = last {
-                        if step.on_failure == "Abort" {
-                            return Err(Failure {
-                                status: "FAILED",
-                                reason: format!(
-                                    "Component '{arn}' failed in phase '{phase}', step '{}': {}",
-                                    step.name, f.reason
-                                ),
-                                context: Some(Box::new(t::ImageFailureContext {
-                                    component_failure: Some(t::ComponentFailureContext {
-                                        component_arn: Some(arn.clone()),
-                                        phase_name: Some(phase.to_string()),
-                                        step_name: Some(step.name.clone()),
-                                        action: Some(step.action.clone()),
-                                        error_message: Some(f.reason.clone()),
-                                    }),
-                                    ..Default::default()
-                                })),
-                            });
+                    match last {
+                        Ok(stdout) => {
+                            outputs
+                                .insert(format!("{phase}.{}.outputs.stdout", step.name), stdout.trim_end().to_string());
+                        }
+                        // A nested document's failure already names its step.
+                        Err(f) if f.status == "CANCELLED" => return Err(f),
+                        Err(f) if step.on_failure == "Abort" => {
+                            if step.action == "ExecuteDocument" && f.context.is_some() {
+                                return Err(f);
+                            }
+                            return Err(step_failure(phase, Some(&step), f.reason));
+                        }
+                        Err(f) => {
+                            b.note(format!("Step {} failed ({}), continuing: {}", step.name, step.on_failure, f.reason))
                         }
                     }
                 }
             }
+            Ok(())
+        })
+    }
+
+    /// An `ExecuteDocument` step: read the nested document and run it.
+    async fn execute_document(
+        &self,
+        b: &mut Build,
+        instance: &str,
+        arn: &str,
+        step: &toe::Step,
+        outputs: &BTreeMap<String, String>,
+        depth: usize,
+    ) -> Result<(), Failure> {
+        // AWSTOE nests documents at most three levels deep.
+        if depth >= 3 {
+            return Err(Failure::failed("Documents can be nested at most 3 levels deep."));
         }
-        Ok(())
+        let nested = step.nested(outputs).map_err(Failure::failed)?;
+        let text = if nested.document.starts_with("s3://") {
+            self.document_from_uri(&b.svc, &nested.document).await.map_err(|e| Failure::failed(e.message))?
+        } else if nested.document.starts_with("arn:") {
+            let found = self
+                .resolve_component(&nested.document)
+                .filter(|f| f.owner == "aws" || f.owner == b.account || f.policy.is_some())
+                .ok_or_else(|| Failure::failed(format!("The component '{}' does not exist.", nested.document)))?;
+            found.component.data.unwrap_or_default()
+        } else {
+            let ec2 = self.ec2().ok_or_else(|| Failure::failed("EC2 is not available."))?;
+            let script = format!(
+                "cd {} 2>/dev/null || true\ncat {}",
+                toe::sh_quote(&b.working_directory()),
+                toe::sh_quote(&nested.document)
+            );
+            match ec2.run_command_on_instance(&b.account, &b.region, instance, &script).await {
+                // Nothing runs on metadata-only instances.
+                Ok(None) => {
+                    b.note(format!("Skipping nested document {} (the instance runs nothing)", nested.document));
+                    return Ok(());
+                }
+                Ok(Some(out)) if out.exit_code == 0 => out.stdout,
+                Ok(Some(out)) => {
+                    return Err(Failure::failed(format!(
+                        "The document '{}' could not be read: {}",
+                        nested.document,
+                        out.stderr.trim()
+                    )))
+                }
+                Err(e) => return Err(Failure::failed(e)),
+            }
+        };
+        let doc = Document::parse(&text)
+            .map_err(|e| Failure::failed(format!("The document '{}' is not valid: {e}", nested.document)))?;
+        let phases = nested.phases.unwrap_or_else(|| doc.phase_names().to_vec());
+        b.note(format!("[{arn}] running nested document {} ({})", nested.document, phases.join(", ")));
+        self.run_document(b, instance, arn, &doc, &phases, &nested.parameters, depth + 1).await
     }
 
     async fn collect_packages(&self, b: &mut Build, instance: &str) {

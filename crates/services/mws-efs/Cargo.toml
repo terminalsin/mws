@@ -1,0 +1,27 @@
+[package]
+name = "mws-efs"
+description = "Amazon EFS for MWS: file systems backed by real shared directories, mount targets in EC2 VPC subnets, access points and file system policies."
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+async-trait.workspace = true
+bytes.workspace = true
+form_urlencoded.workspace = true
+chrono.workspace = true
+http.workspace = true
+mws-core.workspace = true
+mws-ec2.workspace = true
+mws-iam-policy.workspace = true
+mws-kms.workspace = true
+mws-proto-json.workspace = true
+mws-proto-restjson.workspace = true
+rand.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+tracing.workspace = true
+uuid.workspace = true
+
+[build-dependencies]
+mws-codegen.workspace = true

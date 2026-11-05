@@ -17,6 +17,7 @@ md-5.workspace = true
 mws-core.workspace = true
 mws-proto-ec2.workspace = true
 mws-proto-json.workspace = true
+mws-servicequotas.workspace = true
 rand.workspace = true
 serde.workspace = true
 serde_json.workspace = true

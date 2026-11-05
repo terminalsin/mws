@@ -124,8 +124,10 @@ impl Document {
         }
     }
 
-    /// The steps of `phase` as scripts, with `{{ name }}` references
-    /// replaced by parameter and constant values.
+    /// The steps of `phase`, with `{{ name }}` references replaced by
+    /// parameter and constant values and loops unrolled. References to
+    /// earlier steps' outputs (`{{ build.Step.outputs.stdout }}`) stay
+    /// until the step runs ([`Step::script`]).
     pub fn plan(&self, phase: &str, params: &BTreeMap<String, String>) -> Result<Vec<Step>, String> {
         let mut vars = BTreeMap::new();
         for p in &self.parameters {
@@ -146,22 +148,101 @@ impl Document {
             if p.get("name").and_then(Value::as_str) != Some(phase) {
                 continue;
             }
-            for step in p["steps"].as_array().into_iter().flatten() {
-                let step = substitute(step, &vars);
-                let name = step["name"].as_str().unwrap_or_default().to_string();
-                let action = step["action"].as_str().unwrap_or_default().to_string();
-                let script = script_for(&action, &step["inputs"]).map_err(|e| format!("Step '{name}': {e}"))?;
-                out.push(Step {
-                    name,
-                    action,
-                    script,
-                    on_failure: step.get("onFailure").and_then(Value::as_str).unwrap_or("Abort").to_string(),
-                    max_attempts: step.get("maxAttempts").and_then(Value::as_u64).unwrap_or(1).clamp(1, 10) as u32,
-                });
+            for raw in p["steps"].as_array().into_iter().flatten() {
+                let name = raw["name"].as_str().unwrap_or_default().to_string();
+                let iterations = match raw.get("loop") {
+                    Some(l) => loop_iterations(&substitute(l, &vars)).map_err(|e| format!("Step '{name}': {e}"))?,
+                    None => vec![None],
+                };
+                for iteration in iterations {
+                    let mut step_vars = vars.clone();
+                    if let Some((loop_name, index, value)) = &iteration {
+                        for prefix in std::iter::once("loop").chain(loop_name.as_deref()) {
+                            step_vars.insert(format!("{prefix}.index"), index.to_string());
+                            step_vars.insert(format!("{prefix}.value"), value.clone());
+                        }
+                    }
+                    let step = substitute(raw, &step_vars);
+                    let action = step["action"].as_str().unwrap_or_default().to_string();
+                    let inputs = step.get("inputs").cloned().unwrap_or(Value::Null);
+                    let planned = Step {
+                        name: name.clone(),
+                        action,
+                        inputs,
+                        iteration: iteration.as_ref().map(|(_, _, v)| v.clone()),
+                        on_failure: step.get("onFailure").and_then(Value::as_str).unwrap_or("Abort").to_string(),
+                        max_attempts: step.get("maxAttempts").and_then(Value::as_u64).unwrap_or(1).clamp(1, 10) as u32,
+                    };
+                    // Check the inputs now, so a bad document fails before
+                    // anything runs.
+                    if planned.action == "ExecuteDocument" {
+                        planned.nested(&BTreeMap::new()).map(|_| ())
+                    } else {
+                        planned.script(&BTreeMap::new()).map(|_| ())
+                    }
+                    .map_err(|e| format!("Step '{name}': {e}"))?;
+                    out.push(planned);
+                }
             }
         }
         Ok(out)
     }
+
+    /// The phases in document order.
+    pub fn phase_names(&self) -> &[String] {
+        &self.phases
+    }
+}
+
+/// Most iterations one step's loop may run.
+const MAX_ITERATIONS: i64 = 1000;
+
+/// A step's `loop`: each iteration's loop name, index and value.
+#[allow(clippy::type_complexity)]
+fn loop_iterations(l: &Value) -> Result<Vec<Option<(Option<String>, usize, String)>>, String> {
+    let name = l.get("name").and_then(yaml::text);
+    let values: Vec<String> = if let Some(each) = l.get("forEach") {
+        match each {
+            Value::Array(a) => a.iter().filter_map(yaml::text).collect(),
+            Value::Object(_) => {
+                let delimiter = each.get("delimiter").and_then(yaml::text).unwrap_or_else(|| ",".into());
+                if delimiter.is_empty() {
+                    return Err("the loop's 'delimiter' must not be empty".into());
+                }
+                match each.get("list") {
+                    Some(Value::Array(a)) => a.iter().filter_map(yaml::text).collect(),
+                    Some(v) => match yaml::text(v) {
+                        Some(s) => s.split(delimiter.as_str()).map(str::to_string).collect(),
+                        None => return Err("the loop's 'forEach' needs a 'list'".into()),
+                    },
+                    None => return Err("the loop's 'forEach' needs a 'list'".into()),
+                }
+            }
+            _ => return Err("the loop's 'forEach' must be a list".into()),
+        }
+    } else if let Some(f) = l.get("for") {
+        let int = |key: &str| -> Result<i64, String> {
+            f.get(key)
+                .and_then(yaml::text)
+                .and_then(|v| v.trim().parse().ok())
+                .ok_or_else(|| format!("the loop's 'for' needs an integer '{key}'"))
+        };
+        let (start, end, by) = (int("start")?, int("end")?, int("updateBy")?);
+        if by == 0 || (end - start).signum() * by.signum() < 0 {
+            return Err(format!("the loop from {start} to {end} by {by} never ends"));
+        }
+        let count = (end - start) / by + 1;
+        if count > MAX_ITERATIONS {
+            return Err(format!("the loop runs {count} times; the most is {MAX_ITERATIONS}"));
+        }
+        (0..count).map(|i| (start + i * by).to_string()).collect()
+    } else {
+        return Err("the loop needs 'forEach' or 'for'".into());
+    };
+    if values.len() as i64 > MAX_ITERATIONS {
+        return Err(format!("the loop runs {} times; the most is {MAX_ITERATIONS}", values.len()));
+    }
+    Ok(values.into_iter().enumerate().map(|(i, v)| Some((name.clone(), i, v))).collect())
 }
 
 /// One step, ready to run.
@@ -169,10 +250,69 @@ impl Document {
 pub struct Step {
     pub name: String,
     pub action: String,
-    pub script: String,
+    pub inputs: Value,
+    /// The loop value, for a step that loops.
+    pub iteration: Option<String>,
     /// `Abort`, `Continue` or `Ignore`.
     pub on_failure: String,
     pub max_attempts: u32,
+}
+
+/// What an `ExecuteDocument` step runs.
+#[derive(Debug, Clone, PartialEq)]
+pub struct Nested {
+    /// An S3 URI, an Image Builder component ARN or a path on the instance.
+    pub document: String,
+    /// The phases to run; all of them when `None`.
+    pub phases: Option<Vec<String>>,
+    pub parameters: BTreeMap<String, String>,
+}
+
+impl Step {
+    /// The shell script, with `outputs` of earlier steps filled in.
+    pub fn script(&self, outputs: &BTreeMap<String, String>) -> Result<String, String> {
+        script_for(&self.action, &substitute(&self.inputs, outputs))
+    }
+
+    /// The document an `ExecuteDocument` step runs.
+    pub fn nested(&self, outputs: &BTreeMap<String, String>) -> Result<Nested, String> {
+        let inputs = substitute(&self.inputs, outputs);
+        let document = need(&inputs, "document")?;
+        let phases = match inputs.get("phases") {
+            None | Some(Value::Null) => None,
+            Some(Value::Array(a)) => Some(a.iter().filter_map(yaml::text).collect::<Vec<_>>()),
+            Some(v) => Some(
+                yaml::text(v)
+                    .unwrap_or_default()
+                    .split(',')
+                    .map(|p| p.trim().to_string())
+                    .filter(|p| !p.is_empty())
+                    .collect(),
+            ),
+        };
+        if let Some(bad) = phases.iter().flatten().find(|p| !PHASES.contains(&p.as_str())) {
+            return Err(format!("the phase name '{bad}' is not valid"));
+        }
+        let mut parameters = BTreeMap::new();
+        for p in inputs.get("parameters").and_then(Value::as_array).into_iter().flatten() {
+            let Some(o) = p.as_object() else { return Err("every parameter must be a mapping".into()) };
+            match (o.get("name").and_then(yaml::text), o.get("value").and_then(yaml::text)) {
+                (Some(n), Some(v)) if o.len() == 2 => {
+                    parameters.insert(n, v);
+                }
+                _ => {
+                    for (k, v) in o {
+                        let v = match v {
+                            Value::Array(a) => a.iter().filter_map(yaml::text).collect::<Vec<_>>().join(","),
+                            other => yaml::text(other).unwrap_or_default(),
+                        };
+                        parameters.insert(k.clone(), v);
+                    }
+                }
+            }
+        }
+        Ok(Nested { document, phases, parameters })
+    }
 }
 
 /// Replace `{{ name }}` in every string of `v`.
@@ -371,7 +511,8 @@ fn script_for(action: &str, inputs: &Value) -> Result<String, String> {
         "ExecutePowerShell" | "InstallMSI" | "UninstallMSI" => {
             return Err(format!("the action module '{action}' is only supported on Windows"));
         }
-        "ExecuteDocument" => return Err("the action module 'ExecuteDocument' is not supported by MWS".into()),
+        // The build runs nested documents itself (`Step::nested`).
+        "ExecuteDocument" => return Err("the action module 'ExecuteDocument' does not run as a script".into()),
         other => return Err(format!("the action module '{other}' is not valid")),
     }
     Ok(lines.join("\n"))
@@ -418,9 +559,91 @@ phases:
         p.insert("Greeting".to_string(), "hi".to_string());
         let steps = d.plan("build", &p).unwrap();
         assert_eq!(steps.len(), 2);
-        assert!(steps[0].script.contains("echo \"hi world\""));
-        assert!(steps[1].script.contains("base64 -d > '/etc/motd'"));
+        let none = BTreeMap::new();
+        assert!(steps[0].script(&none).unwrap().contains("echo \"hi world\""));
+        assert!(steps[1].script(&none).unwrap().contains("base64 -d > '/etc/motd'"));
         assert_eq!(d.plan("test", &p).unwrap().len(), 1);
+    }
+
+    #[test]
+    fn unrolls_loops() {
+        let doc = r#"
+schemaVersion: 1.0
+phases:
+  - name: build
+    steps:
+      - name: Each
+        action: ExecuteBash
+        loop:
+          name: pkg
+          forEach: [git, jq]
+        inputs:
+          commands: ["echo {{ loop.index }} {{ pkg.value }}"]
+      - name: Split
+        action: ExecuteBash
+        loop:
+          forEach:
+            list: a;b;c
+            delimiter: ";"
+        inputs:
+          commands: ["echo {{ loop.value }}"]
+      - name: Count
+        action: ExecuteBash
+        loop:
+          for:
+            start: 10
+            end: 0
+            updateBy: -5
+        inputs:
+          commands: ["echo {{ loop.value }} {{ build.Each.outputs.stdout }}"]
+"#;
+        let d = Document::parse(doc).unwrap();
+        let none = BTreeMap::new();
+        let steps = d.plan("build", &none).unwrap();
+        let scripts: Vec<String> = steps.iter().map(|s| s.script(&none).unwrap()).collect();
+        assert_eq!(
+            scripts,
+            vec![
+                "echo 0 git",
+                "echo 1 jq",
+                "echo a",
+                "echo b",
+                "echo c",
+                "echo 10 {{ build.Each.outputs.stdout }}",
+                "echo 5 {{ build.Each.outputs.stdout }}",
+                "echo 0 {{ build.Each.outputs.stdout }}",
+            ]
+        );
+        let mut outputs = BTreeMap::new();
+        outputs.insert("build.Each.outputs.stdout".to_string(), "jq".to_string());
+        assert_eq!(steps[5].script(&outputs).unwrap(), "echo 10 jq");
+        let forever = doc.replace("updateBy: -5", "updateBy: 5");
+        assert!(Document::parse(&forever).unwrap().plan("build", &none).unwrap_err().contains("never ends"));
+    }
+
+    #[test]
+    fn nested_documents() {
+        let doc = r#"
+schemaVersion: 1.0
+phases:
+  - name: build
+    steps:
+      - name: Nested
+        action: ExecuteDocument
+        inputs:
+          document: s3://bucket/doc.yaml
+          phases: build, validate
+          parameters:
+            - Greeting: hi
+            - name: Other
+              value: x
+"#;
+        let steps = Document::parse(doc).unwrap().plan("build", &BTreeMap::new()).unwrap();
+        let n = steps[0].nested(&BTreeMap::new()).unwrap();
+        assert_eq!(n.document, "s3://bucket/doc.yaml");
+        assert_eq!(n.phases, Some(vec!["build".to_string(), "validate".to_string()]));
+        assert_eq!(n.parameters.get("Greeting").map(String::as_str), Some("hi"));
+        assert_eq!(n.parameters.get("Other").map(String::as_str), Some("x"));
     }
 
     #[test]
