@@ -99,6 +99,8 @@ jobs:
       - uses: taiki-e/install-action@v2
         with:
           tool: nextest
+      # Third-party crates get no debug info: smaller objects, faster links.
+      - run: mkdir -p .cargo && printf '[profile.dev.package."*"]\ndebug = false\n' >> .cargo/config.toml
       # Every library and the mws binary, built for the whole workspace so
       # that sccache sees the same compiler invocations on every run.
       - run: cargo build --workspace --lib --bins

@@ -283,7 +283,9 @@ def plan(full: bool, base: str | None) -> dict:
         names = set(packages)
         affected = names
         clippy = "--workspace"
-        test_args = "--workspace"
+        # Crates without tests would only compile empty test binaries.
+        testable = sorted(c for c in names if c != E2E_PACKAGE and has_tests(packages[c]["dir"]))
+        test_args = " ".join(f"-p {c}" for c in [*testable, E2E_PACKAGE])
         selected = dict(services_of)
         python = ts = fmt = True
     else:
