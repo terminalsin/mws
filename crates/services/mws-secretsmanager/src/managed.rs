@@ -156,6 +156,12 @@ impl SecretsManager {
         }
     }
 
+    /// Whether a secret exists (and is not scheduled for deletion), for
+    /// services that read secrets for their callers, such as RDS Proxy.
+    pub fn secret_exists(&self, arn: &str) -> bool {
+        self.lock().secrets.get(arn).is_some_and(|s| s.deletion_date.is_none())
+    }
+
     /// Delete a managed secret at once (its owner's resource is gone).
     pub fn delete_managed_secret(&self, arn: &str) {
         self.lock().secrets.remove(arn);

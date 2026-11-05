@@ -927,8 +927,17 @@ async fn aurora_postgres_clusters_body() {
         .send()
         .await
         .unwrap();
-    let listed = rds.describe_db_cluster_snapshots().db_cluster_identifier("langfuse").send().await.unwrap();
+    let listed = rds
+        .describe_db_cluster_snapshots()
+        .db_cluster_identifier("langfuse")
+        .snapshot_type("manual")
+        .send()
+        .await
+        .unwrap();
     assert_eq!(listed.db_cluster_snapshots().len(), 2);
+    // The cluster's first automated backup is listed too.
+    let all = rds.describe_db_cluster_snapshots().db_cluster_identifier("langfuse").send().await.unwrap();
+    assert_eq!(all.db_cluster_snapshots().len(), 3);
     rds.modify_db_cluster_snapshot_attribute()
         .db_cluster_snapshot_identifier("langfuse-copy")
         .attribute_name("restore")

@@ -7,7 +7,9 @@ use chrono::{DateTime, Utc};
 use mws_core::{ConditionContext, RequestContext, ServiceError};
 
 use super::instance::{certificate, check_class, engine_of, param_family_mismatch, NewInstance};
+use super::pitr::Recovery;
 use super::{authorize, cluster_arn, cond, db_arn};
+use crate::backend::LogSource;
 use crate::catalog;
 use crate::generated::{errors, types as t};
 use crate::state::{ClusterRecord, ClusterSnapshotRecord, InstanceRecord, SnapshotRecord};
@@ -27,8 +29,12 @@ fn cluster_snapshot_not_found(id: &str) -> ServiceError {
 }
 
 /// The backend's name for a snapshot's data.
+/// The backend's name for a new snapshot's data. It is unique per
+/// creation, so emulators sharing one Docker host (or a snapshot recreated
+/// under an old name) never share a volume.
 pub(crate) fn backend_snapshot_name(snapshot_arn: &str) -> String {
-    format!("snap-{}", stable_token(snapshot_arn, 24))
+    let unique = format!("{snapshot_arn}/{}", uuid::Uuid::new_v4());
+    format!("snap-{}", stable_token(&unique, 24))
 }
 
 fn automated_name(id: &str, at: DateTime<Utc>) -> String {
@@ -76,7 +82,9 @@ pub(crate) fn automated_backup(ctx: &RequestContext, rec: &InstanceRecord) -> t:
             "auto-backup",
             &format!("ab-{}", stable_token(&resource, 26)),
         )),
-        db_instance_automated_backups_replications: Some(Vec::new()),
+        db_instance_automated_backups_replications: Some(
+            db.db_instance_automated_backups_replications.clone().unwrap_or_default(),
+        ),
         backup_target: db.backup_target.clone(),
         multi_tenant: Some(false),
         tag_list: db.tag_list.clone(),
@@ -196,6 +204,34 @@ struct RestoreOptions {
     ca_certificate_identifier: Option<String>,
     manage_master_user_password: Option<bool>,
     master_user_secret_kms_key_id: Option<String>,
+    /// Roll the data forward before the restore starts.
+    recovery: Option<Recovery>,
+    /// The snapshot is a temporary copy, dropped once restored.
+    drop_snapshot: bool,
+}
+
+/// What a recovery needs to know of a database that no longer runs.
+fn recovery_spec(
+    ctx: &RequestContext,
+    engine: &catalog::Engine,
+    image: &str,
+    s: &t::DBSnapshot,
+    password: &str,
+) -> crate::backend::DatabaseSpec {
+    crate::backend::DatabaseSpec {
+        name: String::new(),
+        account_id: account_of(ctx),
+        region: ctx.region.clone(),
+        identifier: s.db_instance_identifier.clone().unwrap_or_default(),
+        engine: engine.name.to_string(),
+        kind: engine.kind,
+        image: image.to_string(),
+        master_username: s.master_username.clone().unwrap_or_default(),
+        master_password: password.to_string(),
+        database_name: None,
+        parameters: Vec::new(),
+        memory_mib: 1024,
+    }
 }
 
 impl Rds {
@@ -304,6 +340,7 @@ impl Rds {
             restore: Vec::new(),
             has_data: false,
             backend_name: backend_name.clone(),
+            data_time: None,
         };
         self.with_region(ctx, |r| {
             if r.snapshots.contains_key(snapshot_id) {
@@ -320,6 +357,7 @@ impl Rds {
             Ok(())
         })?;
         self.emit(ctx, "db-snapshot", snapshot_id, &sarn, &["creation"], "Creating manual snapshot", "RDS-EVENT-0040");
+        let wall = chrono::Utc::now();
         let has_data = if self.backend().runs_databases() && rec.listen.is_some() {
             match self.backend().snapshot(&rec.backend_name, &backend_name).await {
                 Ok(()) => true,
@@ -334,6 +372,7 @@ impl Rds {
         let done = self.with_region(ctx, |r| {
             let s = r.snapshots.get_mut(snapshot_id)?;
             s.has_data = has_data;
+            s.data_time = has_data.then_some(wall);
             s.snapshot.status = Some("available".into());
             s.snapshot.percent_progress = Some(100);
             Some(s.snapshot.clone())
@@ -347,6 +386,14 @@ impl Rds {
         let name = automated_name(id, self.now());
         if let Err(e) = self.snapshot_instance(ctx, id, &name, "automated", Vec::new()).await {
             tracing::debug!(db = %id, "automated snapshot skipped: {}", e.message);
+        }
+    }
+
+    /// Take a cluster's automated snapshot.
+    pub(crate) async fn automated_cluster_snapshot(&self, ctx: &RequestContext, id: &str) {
+        let name = automated_name(id, self.now());
+        if let Err(e) = self.snapshot_cluster(ctx, id, &name, "automated", Vec::new()).await {
+            tracing::debug!(cluster = %id, "automated snapshot skipped: {}", e.message);
         }
     }
 
@@ -415,16 +462,19 @@ impl Rds {
                     restore: Vec::new(),
                     has_data: false,
                     backend_name: backend_name.clone(),
+                    data_time: None,
                 },
             );
             Ok(())
         })?;
+        let wall = chrono::Utc::now();
         let has_data = self.backend().runs_databases()
             && rec.listen.is_some()
             && self.backend().snapshot(&rec.backend_name, &backend_name).await.is_ok();
         let done = self.with_region(ctx, |r| {
             let s = r.cluster_snapshots.get_mut(snapshot_id)?;
             s.has_data = has_data;
+            s.data_time = has_data.then_some(wall);
             s.snapshot.status = Some("available".into());
             s.snapshot.percent_progress = Some(100);
             Some(s.snapshot.clone())
@@ -874,9 +924,11 @@ impl Rds {
             kms_key_id: kms_key,
             dbi_resource_id: Some(resource.clone()),
             ca_certificate_identifier: Some(
-                o.ca_certificate_identifier.clone().unwrap_or_else(|| catalog::DEFAULT_CERTIFICATE.into()),
+                o.ca_certificate_identifier.clone().unwrap_or_else(|| self.default_certificate(ctx)),
             ),
-            certificate_details: certificate(o.ca_certificate_identifier.as_deref()),
+            certificate_details: certificate(Some(
+                &o.ca_certificate_identifier.clone().unwrap_or_else(|| self.default_certificate(ctx)),
+            )),
             domain_memberships: Some(Vec::new()),
             copy_tags_to_snapshot: Some(o.copy_tags_to_snapshot.unwrap_or(false)),
             monitoring_interval: Some(0),
@@ -910,7 +962,9 @@ impl Rds {
                     port: o.port.unwrap_or(s.port.unwrap_or(engine.default_port)),
                     image: source.image.clone(),
                     from_snapshot: source.has_data.then(|| source.backend_name.clone()),
-                    first_backup: false,
+                    first_backup: retention > 0,
+                    recovery: o.recovery,
+                    drop_snapshot: o.drop_snapshot,
                 },
             )
             .await?;
@@ -977,6 +1031,7 @@ impl Rds {
             ca_certificate_identifier: input.ca_certificate_identifier,
             manage_master_user_password: input.manage_master_user_password,
             master_user_secret_kms_key_id: input.master_user_secret_kms_key_id,
+            ..Default::default()
         };
         let db = self
             .restore_instance(ctx, "RestoreDBInstanceFromDBSnapshot", &input.db_instance_identifier, source, o)
@@ -1018,131 +1073,193 @@ impl Rds {
         ctx: &RequestContext,
         input: t::RestoreDBInstanceToPointInTimeMessage,
     ) -> Result<t::RestoreDBInstanceToPointInTimeResult, ServiceError> {
-        // The source: a live instance or a retained automated backup.
-        let (rec, live) = if let Some(src) = &input.source_db_instance_identifier {
-            (self.instance(ctx, src)?, true)
-        } else {
-            let resource = input
-                .source_dbi_resource_id
-                .clone()
-                .or_else(|| {
-                    input.source_db_instance_automated_backups_arn.as_ref().and_then(|a| {
-                        self.with_region(ctx, |r| {
-                            r.retained_backups
-                                .values()
-                                .find(|b| b.db_instance_automated_backups_arn.as_ref() == Some(a))
-                                .and_then(|b| b.dbi_resource_id.clone())
-                        })
-                    })
+        // The source: a live instance, or a retained (or replicated)
+        // automated backup.
+        let resource = match (&input.source_db_instance_identifier, &input.source_dbi_resource_id) {
+            (Some(src), _) => self.instance(ctx, src)?.db.dbi_resource_id.unwrap_or_default(),
+            (None, Some(res)) => res.clone(),
+            (None, None) => {
+                let a = input.source_db_instance_automated_backups_arn.clone().ok_or_else(|| {
+                    invalid_combination(
+                        "Specify SourceDBInstanceIdentifier, SourceDbiResourceId or SourceDBInstanceAutomatedBackupsArn.",
+                    )
+                })?;
+                self.with_region(ctx, |r| {
+                    r.retained_backups
+                        .values()
+                        .find(|b| b.db_instance_automated_backups_arn.as_ref() == Some(&a))
+                        .and_then(|b| b.dbi_resource_id.clone())
                 })
-                .ok_or_else(|| invalid_combination("Specify SourceDBInstanceIdentifier, SourceDbiResourceId or SourceDBInstanceAutomatedBackupsArn."))?;
-            let live = self.with_region(ctx, |r| {
-                r.instances.values().find(|i| i.db.dbi_resource_id.as_ref() == Some(&resource)).cloned()
-            });
-            match live {
-                Some(l) => (l, true),
-                None => {
-                    let b = self.with_region(ctx, |r| r.retained_backups.get(&resource).cloned()).ok_or_else(|| {
-                        errors::db_instance_automated_backup_not_found_fault(format!(
-                            "Automated backup for {resource} not found."
-                        ))
-                    })?;
-                    // Restore a retained backup from its latest snapshot.
-                    let snap = self.with_region(ctx, |r| {
-                        r.snapshots
-                            .values()
-                            .filter(|s| s.snapshot.dbi_resource_id.as_ref() == Some(&resource))
-                            .max_by_key(|s| s.snapshot.snapshot_create_time)
-                            .cloned()
-                    });
-                    let Some(snap) = snap else {
-                        return Err(errors::db_instance_automated_backup_not_found_fault(format!(
-                            "No restorable backup exists for {}.",
-                            b.db_instance_identifier.unwrap_or_default()
-                        )));
-                    };
-                    let o = pitr_options(&input)?;
-                    let db = self
-                        .restore_instance(
-                            ctx,
-                            "RestoreDBInstanceToPointInTime",
-                            &input.target_db_instance_identifier,
-                            snap,
-                            o,
-                        )
-                        .await?;
-                    return Ok(t::RestoreDBInstanceToPointInTimeResult { db_instance: Some(db) });
-                }
+                .ok_or_else(|| {
+                    errors::db_instance_automated_backup_not_found_fault(format!("Automated backup {a} not found."))
+                })?
             }
         };
-        let _ = live;
-        let id = rec.db.db_instance_identifier.clone().unwrap_or_default();
-        authorize(
-            ctx,
-            "RestoreDBInstanceToPointInTime",
-            &db_arn(ctx, &id),
-            resource_tag_context("db", &rec.db.tag_list),
-        )?;
-        if rec.db.backup_retention_period.unwrap_or(0) == 0 {
-            return Err(errors::point_in_time_restore_not_enabled_fault(format!(
-                "Point-in-time restore is not enabled for DB instance {id}."
-            )));
-        }
-        self.check_restore_time(
-            rec.db.instance_create_time,
-            rec.db.latest_restorable_time,
-            input.restore_time,
-            input.use_latest_restorable_time,
-        )?;
-        // MWS keeps no transaction log: the restore copies the source as it
-        // is now.
-        let tmp_arn = arn(ctx, "snapshot", &format!("pitr-{}", resource_id("")));
-        let backend_name = backend_snapshot_name(&tmp_arn);
-        let has_data = self.backend().runs_databases()
-            && rec.listen.is_some()
-            && self.backend().snapshot(&rec.backend_name, &backend_name).await.is_ok();
-        let snap = SnapshotRecord {
-            snapshot: t::DBSnapshot {
-                engine: rec.db.engine.clone(),
-                engine_version: rec.db.engine_version.clone(),
-                master_username: rec.db.master_username.clone(),
-                allocated_storage: rec.db.allocated_storage,
-                port: Some(rec.port),
-                license_model: rec.db.license_model.clone(),
-                iops: rec.db.iops,
-                storage_throughput: rec.db.storage_throughput,
-                storage_type: rec.db.storage_type.clone(),
-                encrypted: rec.db.storage_encrypted,
-                kms_key_id: rec.db.kms_key_id.clone(),
-                timezone: rec.db.timezone.clone(),
-                option_group_name: rec
-                    .db
-                    .option_group_memberships
-                    .as_ref()
-                    .and_then(|o| o.first())
-                    .and_then(|o| o.option_group_name.clone()),
-                ..Default::default()
-            },
-            master_password: rec.master_password.clone(),
-            db_name: rec.db.db_name.clone(),
-            image: rec.image.clone(),
-            db_instance_class: rec.db.db_instance_class.clone().unwrap_or_default(),
-            restore: Vec::new(),
-            has_data,
-            backend_name: backend_name.clone(),
-        };
+        let live = self.with_region(ctx, |r| {
+            r.instances.values().find(|i| i.db.dbi_resource_id.as_deref() == Some(resource.as_str())).cloned()
+        });
         let o = pitr_options(&input)?;
-        let result = self
-            .restore_instance(ctx, "RestoreDBInstanceToPointInTime", &input.target_db_instance_identifier, snap, o)
-            .await;
-        if has_data {
-            let backend = self.backend();
-            tokio::spawn(async move {
-                tokio::time::sleep(std::time::Duration::from_secs(600)).await;
-                let _ = backend.delete_snapshot(&backend_name).await;
-            });
+        let latest_snapshot = |this: &Self| {
+            this.with_region(ctx, |r| {
+                r.snapshots
+                    .values()
+                    .filter(|s| s.snapshot.dbi_resource_id.as_deref() == Some(resource.as_str()))
+                    .max_by_key(|s| s.snapshot.snapshot_create_time)
+                    .cloned()
+            })
+        };
+        let (template, created, latest, log) = match &live {
+            Some(rec) => {
+                let id = rec.db.db_instance_identifier.clone().unwrap_or_default();
+                authorize(
+                    ctx,
+                    "RestoreDBInstanceToPointInTime",
+                    &db_arn(ctx, &id),
+                    resource_tag_context("db", &rec.db.tag_list),
+                )?;
+                if rec.db.backup_retention_period.unwrap_or(0) == 0 {
+                    return Err(errors::point_in_time_restore_not_enabled_fault(format!(
+                        "Point-in-time restore is not enabled for DB instance {id}."
+                    )));
+                }
+                let template = SnapshotRecord {
+                    snapshot: t::DBSnapshot {
+                        engine: rec.db.engine.clone(),
+                        engine_version: rec.db.engine_version.clone(),
+                        master_username: rec.db.master_username.clone(),
+                        allocated_storage: rec.db.allocated_storage,
+                        port: Some(rec.port),
+                        license_model: rec.db.license_model.clone(),
+                        iops: rec.db.iops,
+                        storage_throughput: rec.db.storage_throughput,
+                        storage_type: rec.db.storage_type.clone(),
+                        encrypted: rec.db.storage_encrypted,
+                        kms_key_id: rec.db.kms_key_id.clone(),
+                        timezone: rec.db.timezone.clone(),
+                        dbi_resource_id: rec.db.dbi_resource_id.clone(),
+                        option_group_name: rec
+                            .db
+                            .option_group_memberships
+                            .as_ref()
+                            .and_then(|o| o.first())
+                            .and_then(|o| o.option_group_name.clone()),
+                        ..Default::default()
+                    },
+                    master_password: rec.master_password.clone(),
+                    db_name: rec.db.db_name.clone(),
+                    image: rec.image.clone(),
+                    db_instance_class: rec.db.db_instance_class.clone().unwrap_or_default(),
+                    ..Default::default()
+                };
+                (template, rec.db.instance_create_time, ctx.received_at, None)
+            }
+            None => {
+                let b = self.with_region(ctx, |r| r.retained_backups.get(&resource).cloned()).ok_or_else(|| {
+                    errors::db_instance_automated_backup_not_found_fault(format!(
+                        "Automated backup for {resource} not found."
+                    ))
+                })?;
+                authorize(
+                    ctx,
+                    "RestoreDBInstanceToPointInTime",
+                    b.db_instance_automated_backups_arn.as_deref().unwrap_or_default(),
+                    ConditionContext::new(),
+                )?;
+                let Some(snap) = latest_snapshot(self) else {
+                    return Err(errors::db_instance_automated_backup_not_found_fault(format!(
+                        "No restorable backup exists for {}.",
+                        b.db_instance_identifier.unwrap_or_default()
+                    )));
+                };
+                let log = self.with_region(ctx, |r| r.retained_logs.get(&resource).cloned());
+                let latest = b.restore_window.as_ref().and_then(|w| w.latest_time).unwrap_or(ctx.received_at);
+                (snap, b.instance_create_time, latest, log)
+            }
+        };
+        let earliest = self.earliest_restorable(ctx, &resource, false, created);
+        self.check_restore_time(earliest, Some(latest), input.restore_time, input.use_latest_restorable_time)?;
+        let until = input.restore_time.unwrap_or(latest);
+        let tmp_arn = arn(ctx, "snapshot", &format!("pitr-{}", resource_id("")));
+        let target = backend_snapshot_name(&tmp_arn);
+        let mut o = o;
+        let mut source = SnapshotRecord { backend_name: target.clone(), has_data: false, ..template.clone() };
+        if self.backend().runs_databases() {
+            match &live {
+                Some(rec) if rec.listen.is_some() => {
+                    let spec = self.with_region(ctx, |r| self.instance_spec(r, rec, ctx));
+                    if let Err(e) = self.backend().seal_log(&spec).await {
+                        tracing::warn!(db = %rec.backend_name, "archiving the transaction log failed: {e}");
+                    }
+                    let sealed = chrono::Utc::now();
+                    let until_wall = self.wall_time(until);
+                    if until_wall >= sealed - chrono::Duration::seconds(1) {
+                        // Nothing to replay: the restore is a copy of now.
+                        source.has_data = self.backend().snapshot(&rec.backend_name, &target).await.is_ok();
+                    } else {
+                        let bases = self.recovery_bases(ctx, &resource, false, until_wall);
+                        if bases.is_empty() {
+                            tracing::warn!(db = %rec.backend_name, "no backup with data before the restore time");
+                            source.has_data = self.backend().snapshot(&rec.backend_name, &target).await.is_ok();
+                        } else {
+                            source.has_data = true;
+                            o.recovery = Some(Recovery {
+                                spec,
+                                bases,
+                                log: LogSource::Database(rec.backend_name.clone()),
+                                until: until_wall,
+                            });
+                        }
+                    }
+                    o.drop_snapshot = source.has_data;
+                }
+                Some(_) => {}
+                None => {
+                    // A deleted instance: its last data and log were kept.
+                    let until_wall = self.wall_time(until);
+                    match log {
+                        Some(l) if l.data_time.is_some_and(|t| until_wall >= t) => {
+                            source.has_data = self.backend().copy_snapshot(&l.backend_name, &target).await.is_ok();
+                            o.drop_snapshot = source.has_data;
+                        }
+                        Some(l) => {
+                            let bases = self.recovery_bases(ctx, &resource, false, until_wall);
+                            if !bases.is_empty() {
+                                let engine = engine_of(template.snapshot.engine.as_deref().unwrap_or_default())?;
+                                source.has_data = true;
+                                o.drop_snapshot = true;
+                                o.recovery = Some(Recovery {
+                                    spec: recovery_spec(
+                                        ctx,
+                                        engine,
+                                        &template.image,
+                                        &template.snapshot,
+                                        &template.master_password,
+                                    ),
+                                    bases,
+                                    log: LogSource::Snapshot(l.backend_name),
+                                    until: until_wall,
+                                });
+                            }
+                        }
+                        None => {
+                            // No log: the newest snapshot's data.
+                            if template.has_data {
+                                source.has_data =
+                                    self.backend().copy_snapshot(&template.backend_name, &target).await.is_ok();
+                                o.drop_snapshot = source.has_data;
+                            }
+                        }
+                    }
+                }
+            }
         }
-        Ok(t::RestoreDBInstanceToPointInTimeResult { db_instance: Some(result?) })
+        let db = self
+            .restore_instance(ctx, "RestoreDBInstanceToPointInTime", &input.target_db_instance_identifier, source, o)
+            .await;
+        if db.is_err() && self.backend().runs_databases() {
+            let _ = self.backend().delete_snapshot(&target).await;
+        }
+        Ok(t::RestoreDBInstanceToPointInTimeResult { db_instance: Some(db?) })
     }
 
     pub(crate) fn describe_db_instance_automated_backups_op(
@@ -1160,6 +1277,7 @@ impl Rds {
                 .map(|i| automated_backup(ctx, i))
                 .collect();
             v.extend(r.retained_backups.values().cloned());
+            v.extend(r.replicated_backups.values().cloned());
             v
         });
         let id = input.db_instance_identifier.as_deref().map(|i| name_of(i).to_ascii_lowercase());
@@ -1220,12 +1338,13 @@ impl Rds {
                 })
                 .map(|(k, _)| k.clone())
                 .collect();
-            let snaps: Vec<String> = keys
+            let mut snaps: Vec<String> = keys
                 .iter()
                 .filter_map(|k| r.snapshots.remove(k))
                 .filter(|s| s.has_data)
                 .map(|s| s.backend_name)
                 .collect();
+            snaps.extend(r.retained_logs.remove(&resource).map(|l| l.backend_name));
             (b, snaps)
         });
         let mut b = b.ok_or_else(|| {
@@ -1622,7 +1741,12 @@ impl Rds {
             image,
             pending_reboot: false,
         };
-        self.launch_cluster(ctx, rec, source.has_data.then(|| source.backend_name.clone())).await
+        let launch = super::cluster::Launch {
+            from_snapshot: source.has_data.then(|| source.backend_name.clone()),
+            recovery: o.recovery,
+            drop_snapshot: o.drop_snapshot,
+        };
+        self.launch_cluster(ctx, rec, launch).await
     }
 
     pub(crate) async fn restore_db_cluster_from_snapshot_op(
@@ -1674,6 +1798,7 @@ impl Rds {
             backup_retention_period: input.backup_retention_period,
             preferred_backup_window: input.preferred_backup_window,
             clone_group_id: None,
+            ..Default::default()
         };
         let c = self
             .restore_cluster(
@@ -1721,17 +1846,42 @@ impl Rds {
         }
         if !copy_on_write || input.restore_to_time.is_some() || input.use_latest_restorable_time.is_some() {
             self.check_restore_time(
-                src.cluster.earliest_restorable_time,
-                src.cluster.latest_restorable_time,
+                self.earliest_restorable(
+                    ctx,
+                    src.cluster.db_cluster_resource_id.as_deref().unwrap_or_default(),
+                    true,
+                    src.cluster.earliest_restorable_time,
+                ),
+                Some(ctx.received_at),
                 input.restore_to_time,
                 input.use_latest_restorable_time.or(copy_on_write.then_some(true)),
             )?;
         }
         let tmp_arn = arn(ctx, "cluster-snapshot", &format!("pitr-{}", resource_id("")));
-        let backend_name = backend_snapshot_name(&tmp_arn);
-        let has_data = self.backend().runs_databases()
-            && src.listen.is_some()
-            && self.backend().snapshot(&src.backend_name, &backend_name).await.is_ok();
+        let target = backend_snapshot_name(&tmp_arn);
+        let mut recovery = None;
+        let mut has_data = false;
+        if self.backend().runs_databases() && src.listen.is_some() {
+            let spec = self.with_region(ctx, |r| self.cluster_spec(r, &src, ctx));
+            if let Err(e) = self.backend().seal_log(&spec).await {
+                tracing::warn!(cluster = %sid, "archiving the transaction log failed: {e}");
+            }
+            let sealed = chrono::Utc::now();
+            let until_wall = input.restore_to_time.map(|t| self.wall_time(t));
+            let resource = src.cluster.db_cluster_resource_id.clone().unwrap_or_default();
+            let bases = until_wall
+                .filter(|u| *u < sealed - chrono::Duration::seconds(1))
+                .map(|u| self.recovery_bases(ctx, &resource, true, u))
+                .unwrap_or_default();
+            match until_wall {
+                Some(u) if !bases.is_empty() => {
+                    has_data = true;
+                    recovery =
+                        Some(Recovery { spec, bases, log: LogSource::Database(src.backend_name.clone()), until: u });
+                }
+                _ => has_data = self.backend().snapshot(&src.backend_name, &target).await.is_ok(),
+            }
+        }
         let source = ClusterSnapshotRecord {
             snapshot: t::DBClusterSnapshot {
                 engine: src.cluster.engine.clone(),
@@ -1749,7 +1899,8 @@ impl Rds {
             image: src.image.clone(),
             restore: Vec::new(),
             has_data,
-            backend_name: backend_name.clone(),
+            backend_name: target.clone(),
+            data_time: None,
         };
         let clone_group = copy_on_write
             .then(|| src.cluster.clone_group_id.clone().unwrap_or_else(|| uuid::Uuid::new_v4().to_string()));
@@ -1779,16 +1930,14 @@ impl Rds {
             backup_retention_period: input.backup_retention_period,
             preferred_backup_window: input.preferred_backup_window,
             clone_group_id: clone_group,
+            recovery,
+            drop_snapshot: has_data,
         };
         let result = self
             .restore_cluster(ctx, "RestoreDBClusterToPointInTime", &input.db_cluster_identifier, source, None, o)
             .await;
-        if has_data {
-            let backend = self.backend();
-            tokio::spawn(async move {
-                tokio::time::sleep(std::time::Duration::from_secs(600)).await;
-                let _ = backend.delete_snapshot(&backend_name).await;
-            });
+        if result.is_err() && has_data {
+            let _ = self.backend().delete_snapshot(&target).await;
         }
         Ok(t::RestoreDBClusterToPointInTimeResult { db_cluster: Some(result?) })
     }
@@ -1884,6 +2033,8 @@ struct ClusterRestore {
     backup_retention_period: Option<i32>,
     preferred_backup_window: Option<String>,
     clone_group_id: Option<String>,
+    recovery: Option<Recovery>,
+    drop_snapshot: bool,
 }
 
 fn pitr_options(input: &t::RestoreDBInstanceToPointInTimeMessage) -> Result<RestoreOptions, ServiceError> {
@@ -1912,6 +2063,7 @@ fn pitr_options(input: &t::RestoreDBInstanceToPointInTimeMessage) -> Result<Rest
         ca_certificate_identifier: input.ca_certificate_identifier.clone(),
         manage_master_user_password: input.manage_master_user_password,
         master_user_secret_kms_key_id: input.master_user_secret_kms_key_id.clone(),
+        ..Default::default()
     })
 }
 
@@ -1953,4 +2105,70 @@ fn share(
         return Err(errors::shared_snapshot_quota_exceeded_fault("A snapshot can be shared with at most 20 accounts."));
     }
     Ok(out)
+}
+
+impl Rds {
+    /// A new cluster `new_id` holding a copy of cluster `source_id`'s data
+    /// as of now (Blue/Green deployments' green cluster).
+    pub(crate) async fn clone_cluster(
+        &self,
+        ctx: &RequestContext,
+        source_id: &str,
+        new_id: &str,
+        parameter_group: Option<String>,
+        engine_version: Option<String>,
+        tags: Vec<t::Tag>,
+    ) -> Result<t::DBCluster, ServiceError> {
+        let src = self.cluster(ctx, source_id)?;
+        let tmp_arn = arn(ctx, "cluster-snapshot", &format!("bg-{}", resource_id("")));
+        let target = backend_snapshot_name(&tmp_arn);
+        let has_data = self.backend().runs_databases()
+            && src.listen.is_some()
+            && self.backend().snapshot(&src.backend_name, &target).await.is_ok();
+        let source = ClusterSnapshotRecord {
+            snapshot: t::DBClusterSnapshot {
+                engine: src.cluster.engine.clone(),
+                engine_version: src.cluster.engine_version.clone(),
+                master_username: src.cluster.master_username.clone(),
+                allocated_storage: src.cluster.allocated_storage,
+                port: src.cluster.port,
+                storage_encrypted: src.cluster.storage_encrypted,
+                kms_key_id: src.cluster.kms_key_id.clone(),
+                storage_type: src.cluster.storage_type.clone(),
+                ..Default::default()
+            },
+            master_password: src.master_password.clone(),
+            database_name: src.cluster.database_name.clone(),
+            image: src.image.clone(),
+            restore: Vec::new(),
+            has_data,
+            backend_name: target.clone(),
+            data_time: None,
+        };
+        let o = ClusterRestore {
+            subnet_group: src.cluster.db_subnet_group.clone(),
+            vpc_security_group_ids: src
+                .cluster
+                .vpc_security_groups
+                .as_ref()
+                .map(|g| g.iter().filter_map(|g| g.vpc_security_group_id.clone()).collect()),
+            tags,
+            parameter_group: parameter_group.or(src.cluster.db_cluster_parameter_group.clone()),
+            serverless_v2_scaling_configuration: src.cluster.serverless_v2_scaling_configuration.as_ref().map(|s| {
+                t::ServerlessV2ScalingConfiguration {
+                    min_capacity: s.min_capacity,
+                    max_capacity: s.max_capacity,
+                    seconds_until_auto_pause: s.seconds_until_auto_pause,
+                }
+            }),
+            backup_retention_period: src.cluster.backup_retention_period,
+            drop_snapshot: has_data,
+            ..Default::default()
+        };
+        let r = self.restore_cluster(ctx, "CreateBlueGreenDeployment", new_id, source, engine_version, o).await;
+        if r.is_err() && has_data {
+            let _ = self.backend().delete_snapshot(&target).await;
+        }
+        r
+    }
 }

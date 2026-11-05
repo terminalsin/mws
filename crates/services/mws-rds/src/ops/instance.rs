@@ -6,13 +6,14 @@ use std::collections::BTreeMap;
 use chrono::Duration;
 use mws_core::{ConditionContext, RequestContext, ServiceError};
 
+use super::pitr::Recovery;
 use super::{
     authorize, check_db_name, check_password, check_username, cond, db_arn, instance_host, instance_not_found,
     invalid_instance_state,
 };
 use crate::catalog::{self, Engine, Version};
 use crate::generated::{errors, types as t};
-use crate::state::{InstanceRecord, Listen};
+use crate::state::{InstanceRecord, Listen, RetainedLog};
 use crate::util::{
     account_of, backup_window, check_backup_window, check_maintenance_window, identifier, invalid_combination,
     invalid_parameter, maintenance_window, missing, name_of, opt, paginate, request_tag_context, resource_id,
@@ -31,6 +32,10 @@ pub(crate) struct NewInstance {
     pub from_snapshot: Option<String>,
     /// Make an automated backup once available.
     pub first_backup: bool,
+    /// Build `from_snapshot` by rolling a backup forward first.
+    pub recovery: Option<Recovery>,
+    /// `from_snapshot` is a temporary copy, dropped once restored.
+    pub drop_snapshot: bool,
 }
 
 pub(crate) fn resolve_version(
@@ -151,6 +156,10 @@ impl Rds {
             };
             db.endpoint = Some(self.endpoint_for(ctx, &instance_host(ctx, &id), rec.port, &listen));
         }
+        // The log is archived continuously: restorable up to now.
+        if status == "available" && db.backup_retention_period.unwrap_or(0) > 0 && db.db_cluster_identifier.is_none() {
+            db.latest_restorable_time = Some(ctx.received_at);
+        }
         db
     }
 
@@ -213,11 +222,34 @@ impl Rds {
                 let this = self.clone();
                 let ctx2 = ctx.clone();
                 let (from, first_backup) = (new.from_snapshot, new.first_backup);
+                let (recovery, drop_snapshot) = (new.recovery, new.drop_snapshot);
                 self.run_task(async move {
                     let spec =
                         this.with_region(&ctx2, |r| r.instances.get(&id).map(|rec| this.instance_spec(r, rec, &ctx2)));
                     let Some(spec) = spec else { return };
-                    match this.backend().create(&spec, from.as_deref()).await {
+                    if let (Some(rc), Some(target)) = (&recovery, &from) {
+                        if let Err(e) = this.recover_into(rc, target).await {
+                            tracing::warn!(db = %id, "point-in-time recovery failed: {e}");
+                            this.set_instance_status(&ctx2, &id, 1, "incompatible-restore", None);
+                            this.emit(
+                                &ctx2,
+                                "db-instance",
+                                &id,
+                                &db_arn(&ctx2, &id),
+                                &["failure"],
+                                &format!("Point-in-time recovery failed: {e}"),
+                                "RDS-EVENT-0035",
+                            );
+                            return;
+                        }
+                    }
+                    let created = this.backend().create(&spec, from.as_deref()).await;
+                    if drop_snapshot {
+                        if let Some(f) = &from {
+                            let _ = this.backend().delete_snapshot(f).await;
+                        }
+                    }
+                    match created {
                         Ok(l) => {
                             let listen = Listen { host: l.host, port: l.port };
                             if this.set_instance_status(&ctx2, &id, 1, "available", Some(listen)) && first_backup {
@@ -243,6 +275,22 @@ impl Rds {
             }
         }
         Ok(view)
+    }
+
+    /// Keep a deleted instance's last data and transaction log for
+    /// point-in-time restores of its retained automated backup.
+    pub(crate) async fn keep_log(&self, ctx: &RequestContext, rec: &InstanceRecord) -> Option<RetainedLog> {
+        let spec = self.with_region(ctx, |r| self.instance_spec(r, rec, ctx));
+        let _ = self.backend().seal_log(&spec).await;
+        let name = format!("log-{}", rec.backend_name);
+        let wall = chrono::Utc::now();
+        match self.backend().snapshot(&rec.backend_name, &name).await {
+            Ok(()) => Some(RetainedLog { backend_name: name, data_time: Some(wall) }),
+            Err(e) => {
+                tracing::warn!(db = %rec.backend_name, "keeping the transaction log failed: {e}");
+                None
+            }
+        }
     }
 
     /// Move an instance to `status` if no newer change happened since
@@ -475,7 +523,7 @@ impl Rds {
                     kms_key_id: cc.kms_key_id.clone(),
                     dbi_resource_id: Some(resource.clone()),
                     ca_certificate_identifier: Some(
-                        input.ca_certificate_identifier.clone().unwrap_or_else(|| catalog::DEFAULT_CERTIFICATE.into()),
+                        input.ca_certificate_identifier.clone().unwrap_or_else(|| self.default_certificate(ctx)),
                     ),
                     copy_tags_to_snapshot: Some(input.copy_tags_to_snapshot.unwrap_or(false)),
                     monitoring_interval: Some(input.monitoring_interval.unwrap_or(0)),
@@ -490,7 +538,9 @@ impl Rds {
                     customer_owned_ip_enabled: Some(false),
                     network_type: Some("IPV4".into()),
                     backup_target: Some("region".into()),
-                    certificate_details: certificate(input.ca_certificate_identifier.as_deref()),
+                    certificate_details: certificate(Some(
+                        &input.ca_certificate_identifier.clone().unwrap_or_else(|| self.default_certificate(ctx)),
+                    )),
                     dedicated_log_volume: Some(false),
                     is_storage_config_upgrade_available: Some(false),
                     engine_lifecycle_support: Some("open-source-rds-extended-support".into()),
@@ -502,6 +552,8 @@ impl Rds {
                 image: cl.image.clone(),
                 from_snapshot: None,
                 first_backup: false,
+                recovery: None,
+                drop_snapshot: false,
             }
         } else {
             let version = resolve_version(engine, &input.engine_version)?;
@@ -678,7 +730,7 @@ impl Rds {
                     kms_key_id: kms_key,
                     dbi_resource_id: Some(resource.clone()),
                     ca_certificate_identifier: Some(
-                        input.ca_certificate_identifier.clone().unwrap_or_else(|| catalog::DEFAULT_CERTIFICATE.into()),
+                        input.ca_certificate_identifier.clone().unwrap_or_else(|| self.default_certificate(ctx)),
                     ),
                     domain_memberships: Some(Vec::new()),
                     copy_tags_to_snapshot: Some(input.copy_tags_to_snapshot.unwrap_or(false)),
@@ -706,7 +758,9 @@ impl Rds {
                     network_type: Some(input.network_type.clone().unwrap_or_else(|| "IPV4".into())),
                     activity_stream_status: Some("stopped".into()),
                     backup_target: Some("region".into()),
-                    certificate_details: certificate(input.ca_certificate_identifier.as_deref()),
+                    certificate_details: certificate(Some(
+                        &input.ca_certificate_identifier.clone().unwrap_or_else(|| self.default_certificate(ctx)),
+                    )),
                     master_user_secret: secret,
                     dedicated_log_volume: Some(false),
                     is_storage_config_upgrade_available: Some(false),
@@ -723,6 +777,8 @@ impl Rds {
                 image: version.image.into(),
                 from_snapshot: None,
                 first_backup: retention > 0,
+                recovery: None,
+                drop_snapshot: false,
             }
         };
         let view = self.launch_instance(ctx, new).await?;
@@ -804,6 +860,7 @@ impl Rds {
         let mut pending = db.pending_modified_values.clone().unwrap_or_default();
         let mut restart = false;
         let mut new_password: Option<String> = None;
+        let mut new_image: Option<String> = None;
         let version =
             engine.version(db.engine_version.as_deref().unwrap_or_default()).unwrap_or(engine.default_version());
 
@@ -1002,6 +1059,7 @@ impl Rds {
                 }
                 if immediate {
                     db.engine_version = Some(target.version.into());
+                    new_image = Some(target.image.to_string());
                     restart = true;
                 } else {
                     pending.engine_version = Some(target.version.into());
@@ -1101,6 +1159,9 @@ impl Rds {
         let generation = self.with_region(ctx, |r| {
             let rec = r.instances.get_mut(&id).expect("looked up above");
             rec.db = db.clone();
+            if let Some(image) = &new_image {
+                rec.image = image.clone();
+            }
             if let Some(pw) = &new_password {
                 rec.master_password = pw.clone();
             }
@@ -1148,7 +1209,7 @@ impl Rds {
         Ok(t::ModifyDBInstanceResult { db_instance: Some(view) })
     }
 
-    fn rename_instance(&self, ctx: &RequestContext, old: &str, new: &str) {
+    pub(crate) fn rename_instance(&self, ctx: &RequestContext, old: &str, new: &str) {
         let arn = db_arn(ctx, new);
         self.with_region(ctx, |r| {
             if let Some(mut rec) = r.instances.remove(old) {
@@ -1240,6 +1301,12 @@ impl Rds {
             if rec.generation != generation {
                 return;
             }
+            let keep_log = retain
+                && rec.db.backup_retention_period.unwrap_or(0) > 0
+                && rec.db.db_cluster_identifier.is_none()
+                && rec.listen.is_some()
+                && this.backend().runs_databases();
+            let retained_log = if keep_log { this.keep_log(&ctx2, &rec).await } else { None };
             if rec.db.db_cluster_identifier.is_none() {
                 if let Err(e) = this.backend().delete(&rec.backend_name).await {
                     tracing::warn!(db = %id, "deleting the database failed: {e}");
@@ -1248,6 +1315,7 @@ impl Rds {
             this.delete_master_secret(&rec.db.master_user_secret);
             let automated: Vec<String> = this.with_region(&ctx2, |r| {
                 r.instances.remove(&id);
+                Rds::forget_proxy_targets(r, Some(&id), None);
                 for other in r.instances.values_mut() {
                     if let Some(list) = other.db.read_replica_db_instance_identifiers.as_mut() {
                         list.retain(|x| x != &id);
@@ -1271,7 +1339,14 @@ impl Rds {
                 if retain && rec.db.backup_retention_period.unwrap_or(0) > 0 {
                     let mut b = crate::ops::snapshot::automated_backup(&ctx2, &rec);
                     b.status = Some("retained".into());
-                    r.retained_backups.insert(rec.db.dbi_resource_id.clone().unwrap_or_default(), b);
+                    if let Some(w) = b.restore_window.as_mut() {
+                        w.latest_time = Some(this.now());
+                    }
+                    let resource = rec.db.dbi_resource_id.clone().unwrap_or_default();
+                    if let Some(l) = retained_log.clone() {
+                        r.retained_logs.insert(resource.clone(), l);
+                    }
+                    r.retained_backups.insert(resource, b);
                 }
                 let automated: Vec<String> = r
                     .snapshots
@@ -1542,6 +1617,8 @@ impl Rds {
                     image: source.image.clone(),
                     from_snapshot: self.backend().runs_databases().then(|| seed.clone()),
                     first_backup: false,
+                    recovery: None,
+                    drop_snapshot: true,
                 },
             )
             .await?;
@@ -1550,14 +1627,6 @@ impl Rds {
                 s.db.read_replica_db_instance_identifiers.get_or_insert_with(Vec::new).push(id.clone());
             }
         });
-        if self.backend().runs_databases() {
-            let backend = self.backend();
-            tokio::spawn(async move {
-                // Give the replica time to copy the seed before removing it.
-                tokio::time::sleep(std::time::Duration::from_secs(600)).await;
-                let _ = backend.delete_snapshot(&seed).await;
-            });
-        }
         Ok(t::CreateDBInstanceReadReplicaResult { db_instance: Some(view) })
     }
 

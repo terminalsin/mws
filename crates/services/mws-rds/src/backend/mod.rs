@@ -56,6 +56,29 @@ impl std::fmt::Display for BackendError {
 
 impl std::error::Error for BackendError {}
 
+/// Where a point-in-time recovery reads the transaction log (PostgreSQL's
+/// archived WAL, MySQL's binary log) from.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum LogSource {
+    /// A database that exists (by its backend name).
+    Database(String),
+    /// A snapshot holding a deleted database's last data and log.
+    Snapshot(String),
+}
+
+/// One table's contents, read from a snapshot for an export.
+#[derive(Debug, Clone, Default)]
+pub struct TableData {
+    pub database: String,
+    /// The PostgreSQL schema; MySQL has none (the database).
+    pub schema: Option<String>,
+    pub table: String,
+    /// Column names and their SQL types, in order.
+    pub columns: Vec<(String, String)>,
+    /// Each row as a JSON object (column name to value).
+    pub rows: Vec<serde_json::Map<String, serde_json::Value>>,
+}
+
 /// Runs databases. Every method may take a while (pulling an image,
 /// initializing a data directory); RDS calls them from background tasks
 /// while the API reports `creating`, `stopping` and so on, as AWS does.
@@ -97,6 +120,33 @@ pub trait DatabaseBackend: Send + Sync {
 
     /// What the database server logged.
     async fn logs(&self, name: &str) -> Result<String, BackendError>;
+
+    /// Make everything the database committed so far readable from its
+    /// transaction log (archive the current WAL segment, rotate the binary
+    /// log), so a recovery can replay up to now.
+    async fn seal_log(&self, _spec: &DatabaseSpec) -> Result<(), BackendError> {
+        Ok(())
+    }
+
+    /// Build snapshot `target`: snapshot `base`'s data rolled forward with
+    /// the transaction log in `log` up to `until` (wall clock), its master
+    /// password set to `spec`'s. `spec` describes the source database.
+    /// Read every user table out of snapshot `snapshot`, which holds a
+    /// database run as `spec` (whose `name` is free to use meanwhile).
+    async fn export_tables(&self, _spec: &DatabaseSpec, _snapshot: &str) -> Result<Vec<TableData>, BackendError> {
+        Ok(Vec::new())
+    }
+
+    async fn recover(
+        &self,
+        _spec: &DatabaseSpec,
+        _base: &str,
+        _log: &LogSource,
+        _target: &str,
+        _until: chrono::DateTime<chrono::Utc>,
+    ) -> Result<(), BackendError> {
+        Ok(())
+    }
 }
 
 /// Runs nothing: databases exist only as RDS metadata and move through

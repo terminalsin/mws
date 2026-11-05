@@ -17,6 +17,7 @@ hex.workspace = true
 http.workspace = true
 md-5.workspace = true
 mws-core.workspace = true
+mws-parquet.workspace = true
 mws-iam-policy.workspace = true
 mws-sigv4.workspace = true
 mws-kms.workspace = true

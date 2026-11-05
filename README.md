@@ -107,7 +107,7 @@ SDKs, S3 addressing, host-prefixed endpoints and calling as other identities.
 | [EC2 Auto Scaling](docs/services/autoscaling.md) | 68 / 68 | awsQuery |
 | [EC2 Image Builder](docs/services/imagebuilder.md) | 77 / 77 | restJson1 |
 | [Elastic Load Balancing](docs/services/elb.md) | 80 / 80 | awsQuery |
-| [RDS and Aurora](docs/services/rds.md) | 103 / 168 | awsQuery |
+| [RDS and Aurora](docs/services/rds.md) | 168 / 168 | awsQuery |
 | [EKS](docs/services/eks.md) | 70 / 70 | restJson1 |
 | [Route 53](docs/services/route53.md) | 71 / 71 | restXml |
 | [Amplify Hosting](docs/services/amplify.md) | 37 / 37 | restJson1 |
