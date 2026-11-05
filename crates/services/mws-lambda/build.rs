@@ -6,6 +6,7 @@ fn main() {
             validation_error: "ValidationException",
             error_message_key: "Message",
             error_fault_key: Some("Type"),
+            error_code_key: None,
         },
     );
 }
