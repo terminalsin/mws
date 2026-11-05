@@ -65,6 +65,13 @@ EC2 instances reach the instance metadata service and the AWS endpoint
 through the host, and EKS API servers call MWS's token and authorization
 webhooks at `host.docker.internal`, so with the Docker backends MWS must
 listen on an address containers can reach (the default `0.0.0.0` does).
+| `MWS_ECS_BACKEND` | `auto` | How ECS tasks run. `docker` runs each container as a Docker container, `metadata` runs nothing (tasks only change state), and `auto` uses Docker when a daemon answers and `metadata` otherwise. |
+| `MWS_ECS_DOCKER` | `MWS_EC2_DOCKER`, then `docker` | The Docker-compatible CLI the ECS backend drives. |
+| `MWS_ECS_PAUSE_IMAGE` | `alpine:3.20` | The image of the container that holds an `awsvpc` task's network namespace. |
+
+EC2 instances and ECS tasks reach the instance or task metadata service and the AWS endpoint
+through the host, so when using the Docker backend MWS must listen on an
+address containers can reach (the default `0.0.0.0` does).
 
 ## Client-side settings
 

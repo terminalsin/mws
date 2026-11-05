@@ -69,6 +69,7 @@ members = [
     "crates/services/mws-ecr-public",
 
     "crates/services/mws-elasticache",
+    "crates/services/mws-ecs",
     "tests/e2e-rust",
 ]
 
@@ -147,6 +148,7 @@ mws-codeartifact = { path = "crates/services/mws-codeartifact" }
 mws-ecr = { path = "crates/services/mws-ecr" }
 mws-ecr-public = { path = "crates/services/mws-ecr-public" }
 mws-elasticache = { path = "crates/services/mws-elasticache" }
+mws-ecs = { path = "crates/services/mws-ecs" }
 
 # external
 async-trait = "0.1"

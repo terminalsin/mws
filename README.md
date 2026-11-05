@@ -49,6 +49,7 @@ real Rust, Python and JavaScript SDKs.
   events flow between services: S3 notifications reach SNS, SQS and Lambda;
   alarms page through SNS; Firehose delivers to S3.
   EC2 instances and ElastiCache nodes can run as Docker containers, and events flow between
+  EC2 instances and ECS tasks can run as Docker containers, and events flow between
   services: S3 notifications reach SNS, SQS and Lambda; alarms page through
   SNS; Firehose delivers to S3.
 - **Built for test suites.** In memory by default, with optional SQLite
@@ -118,6 +119,7 @@ SDKs, S3 addressing, host-prefixed endpoints and calling as other identities.
 | [ECR](docs/services/ecr.md) | 62 / 62 | awsJson 1.1, Docker registry v2 |
 | [ECR Public](docs/services/ecr-public.md) | 23 / 23 | awsJson 1.1, Docker registry v2 |
 | [ElastiCache](docs/services/elasticache.md) | 77 / 77 | awsQuery |
+| [ECS](docs/services/ecs.md) | 88 / 88 | awsJson 1.1 |
 | [Route 53](docs/services/route53.md) | 71 / 71 | restXml |
 | [Amplify Hosting](docs/services/amplify.md) | 37 / 37 | restJson1 |
 | [Global Accelerator](docs/services/globalaccelerator.md) | 56 / 56 | awsJson 1.1 |

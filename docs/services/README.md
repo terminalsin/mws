@@ -58,6 +58,7 @@ Every service shares the same foundations:
 | [EKS](eks.md) | 70 / 70 | Clusters in your VPC, managed node groups as Auto Scaling groups, add-ons, access entries, Pod Identity, OIDC providers |
 | [ECR](ecr.md) | 62 / 62 | A real Docker registry (`docker push`/`pull` with `GetAuthorizationToken`), lifecycle policies, replication, creation templates |
 | [ECR Public](ecr-public.md) | 23 / 23 | Public registries with aliases and catalog data, anonymous pulls, authenticated pushes |
+| [ECS](ecs.md) | 88 / 88 | Clusters, tasks as Docker containers with awsvpc interfaces, services with rolling deployments and circuit breakers, task metadata, secrets and awslogs |
 | [Route 53](route53.md) | 71 / 71 | Public and private hosted zones, all routing policies, health checks, DNSSEC key management, an optional real DNS responder |
 | [Amplify Hosting](amplify.md) | 37 / 37 | Apps and branches whose deployments are really served: manual and S3 deploys, Git builds, rewrites, basic auth, custom domains |
 
@@ -136,6 +137,7 @@ with the permissions AWS would use:
 - GuardDuty sends findings to EventBridge and S3 (under KMS) and registers
   its delegated administrator with Organizations.
 - EC2 instances and Lambda functions receive role credentials from STS.
+- EC2 instances, ECS tasks and Lambda functions receive role credentials from STS.
 - Amplify deploys sites from S3 buckets (as `amplify.amazonaws.com`) and
   verifies custom domains through Route 53.
 - Global Accelerator endpoints and custom routing subnets are checked against

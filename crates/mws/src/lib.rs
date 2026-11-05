@@ -97,6 +97,13 @@ pub struct Config {
     /// The host address database ports are published on (`MWS_RDS_BIND`,
     /// default `127.0.0.1`).
     pub rds_bind: Option<String>,
+    /// What runs ECS tasks' containers (`MWS_ECS_BACKEND`: `auto`,
+    /// `docker` or `metadata`). The binary defaults to `auto`; the library
+    /// default runs nothing.
+    pub ecs_backend: mws_ecs::BackendChoice,
+    /// The Docker-compatible CLI for ECS (`MWS_ECS_DOCKER`; falls back to
+    /// `MWS_EC2_DOCKER`).
+    pub ecs_docker_cli: Option<String>,
     /// What runs EKS clusters' Kubernetes API servers (`MWS_EKS_BACKEND`:
     /// `auto`, `k3s` or `metadata`). The binary defaults to `auto` (k3s in
     /// Docker when a daemon answers); the library default runs nothing.
@@ -182,6 +189,13 @@ impl Config {
             Err(_) => mws_elasticache::BackendChoice::Auto,
         };
         let var = |name: &str| std::env::var(name).ok().filter(|v| !v.is_empty());
+        let ecs_backend = match std::env::var("MWS_ECS_BACKEND") {
+            Ok(v) => mws_ecs::BackendChoice::parse(&v).unwrap_or_else(|| {
+                tracing::warn!("unknown MWS_ECS_BACKEND {v:?}; using auto");
+                mws_ecs::BackendChoice::Auto
+            }),
+            Err(_) => mws_ecs::BackendChoice::Auto,
+        };
         Self {
             iam,
             db: path("MWS_DB"),
@@ -195,6 +209,8 @@ impl Config {
             rds_backend,
             rds_docker_cli: var("MWS_RDS_DOCKER").or_else(|| var("MWS_EC2_DOCKER")),
             rds_bind: var("MWS_RDS_BIND"),
+            ecs_backend,
+            ecs_docker_cli: var("MWS_ECS_DOCKER").or_else(|| var("MWS_EC2_DOCKER")),
             eks_backend,
             eks_docker_cli: var("MWS_EKS_DOCKER").or_else(|| var("MWS_EC2_DOCKER")),
             eks_bind: var("MWS_EKS_BIND"),
@@ -245,6 +261,7 @@ pub struct Mws {
     pub ses: Ses,
     pub rds: Rds,
     pub eks: Eks,
+    pub ecs: mws_ecs::Ecs,
     pub efs: Efs,
     pub codeartifact: CodeArtifact,
     pub cloudtrail: CloudTrail,
@@ -502,6 +519,17 @@ fn build_with_store(config: Config, store: Option<Arc<Store>>) -> Mws {
     elasticache.set_snapshot_bucket(Arc::new(links::ElastiCacheSnapshots(s3.clone())));
     elasticache.set_event_notifier(Arc::new(links::ElastiCacheNotifications(sns.clone())));
     elasticache.set_metric_publisher(Arc::new(links::ElastiCacheToCloudWatch(cloudwatch.clone())));
+    let ecs = mws_ecs::Ecs::new(config.ecs_backend.resolve(config.ecs_docker_cli.as_deref()));
+    tracing::info!(backend = ecs.backend_name(), "ECS container backend");
+    ecs.set_platform(Arc::new(links::EcsPlatform {
+        ec2: ec2.clone(),
+        sts: sts.clone(),
+        secretsmanager: secretsmanager.clone(),
+        ssm: ssm.clone(),
+        logs: logs.clone(),
+        elb: elb.clone(),
+        autoscaling: autoscaling.clone(),
+    }));
     let cloudformation = CloudFormation::new();
     cloudformation.set_role_assumer(Arc::new(links::CloudFormationRoles(sts.clone())));
     let authorizer = iam.authorizer();
@@ -563,6 +591,7 @@ fn build_with_store(config: Config, store: Option<Arc<Store>>) -> Mws {
         Arc::new(ecr.clone()),
         Arc::new(ecr_public.clone()),
         Arc::new(elasticache.clone()),
+        Arc::new(ecs.clone()),
         Arc::new(cloudformation.clone()),
     ];
     // CloudFormation deploys resources through the other services' APIs.
@@ -621,6 +650,7 @@ fn build_with_store(config: Config, store: Option<Arc<Store>>) -> Mws {
         ses,
         rds,
         eks,
+        ecs,
         efs,
         codeartifact,
         cloudtrail,

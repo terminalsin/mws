@@ -569,6 +569,29 @@ dependencies = [
 ]
 
 [[package]]
+name = "aws-sdk-ecs"
+version = "1.157.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "dd9803fbcd4e37bfc9cafb3a7efb94a13a18a9b95138d79bc6d440f3fda59c15"
+dependencies = [
+ "arc-swap",
+ "aws-credential-types",
+ "aws-runtime",
+ "aws-smithy-async",
+ "aws-smithy-http",
+ "aws-smithy-json",
+ "aws-smithy-observability",
+ "aws-smithy-runtime",
+ "aws-smithy-runtime-api",
+ "aws-smithy-schema",
+ "aws-smithy-types",
+ "aws-types",
+ "fastrand",
+ "regex-lite",
+ "tracing",
+]
+
+[[package]]
 name = "aws-sdk-efs"
 version = "1.123.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -3184,6 +3207,7 @@ dependencies = [
  "mws-ec2",
  "mws-ecr",
  "mws-ecr-public",
+ "mws-ecs",
  "mws-efs",
  "mws-eks",
  "mws-elasticache",
@@ -3546,6 +3570,7 @@ dependencies = [
  "aws-sdk-ec2",
  "aws-sdk-ecr",
  "aws-sdk-ecrpublic",
+ "aws-sdk-ecs",
  "aws-sdk-efs",
  "aws-sdk-eks",
  "aws-sdk-elasticache",
@@ -3597,6 +3622,7 @@ dependencies = [
  "mws",
  "mws-codeartifact",
  "mws-ec2",
+ "mws-ecs",
  "mws-eks",
  "mws-elasticache",
  "mws-rds",
@@ -3692,6 +3718,26 @@ dependencies = [
  "serde",
  "serde_json",
  "tokio",
+ "uuid",
+]
+
+[[package]]
+name = "mws-ecs"
+version = "0.1.0"
+dependencies = [
+ "async-trait",
+ "base64 0.22.1",
+ "bytes",
+ "chrono",
+ "http 1.5.0",
+ "mws-codegen",
+ "mws-core",
+ "mws-proto-json",
+ "rand 0.8.8",
+ "serde",
+ "serde_json",
+ "tokio",
+ "tracing",
  "uuid",
 ]
 
