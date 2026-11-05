@@ -9,8 +9,8 @@ use std::time::{Duration, SystemTime};
 
 use aws_credential_types::Credentials;
 use aws_sdk_eks::types::{
-    AccessScope, AccessScopeType, AuthenticationMode, CreateAccessConfigRequest, NodegroupScalingConfig,
-    VpcConfigRequest,
+    AccessScope, AccessScopeType, AuthenticationMode, CreateAccessConfigRequest, LogSetup, LogType, Logging,
+    NodegroupScalingConfig, VpcConfigRequest,
 };
 use aws_sigv4::http_request::{sign, SignableBody, SignableRequest, SignatureLocation, SigningSettings};
 use base64::Engine;
@@ -169,6 +169,20 @@ async fn clusters_run_a_kubernetes_api_server() {
         .role_arn(&e.cluster_role)
         .resources_vpc_config(VpcConfigRequest::builder().set_subnet_ids(Some(e.subnets.clone())).build())
         .access_config(CreateAccessConfigRequest::builder().authentication_mode(AuthenticationMode::Api).build())
+        .logging(
+            Logging::builder()
+                .cluster_logging(
+                    LogSetup::builder()
+                        .types(LogType::Api)
+                        .types(LogType::Audit)
+                        .types(LogType::Authenticator)
+                        .types(LogType::ControllerManager)
+                        .types(LogType::Scheduler)
+                        .enabled(true)
+                        .build(),
+                )
+                .build(),
+        )
         .send()
         .await
         .unwrap();
@@ -299,6 +313,85 @@ async fn clusters_run_a_kubernetes_api_server() {
         tokio::time::sleep(Duration::from_millis(500)).await;
     }
     assert!(revoked, "the deleted access entry still authenticates");
+
+    // The control plane's logs reach CloudWatch Logs, in EKS's streams.
+    let logs = aws_sdk_cloudwatchlogs::Client::new(&mws.root_sdk_config().await);
+    let events = |prefix: &'static str| {
+        let logs = logs.clone();
+        async move {
+            let streams = logs
+                .describe_log_streams()
+                .log_group_name("/aws/eks/kube/cluster")
+                .log_stream_name_prefix(prefix)
+                .send()
+                .await
+                .map(|s| s.log_streams().to_vec())
+                .unwrap_or_default();
+            let mut out = Vec::new();
+            for stream in streams.iter().filter(|s| {
+                // `kube-apiserver-` also prefixes the audit stream.
+                let name = s.log_stream_name().unwrap_or_default();
+                prefix != "kube-apiserver-" || !name.starts_with("kube-apiserver-audit-")
+            }) {
+                let name = stream.log_stream_name().unwrap().to_string();
+                assert_eq!(name.len(), prefix.len() + 32, "{name}");
+                let got = logs
+                    .get_log_events()
+                    .log_group_name("/aws/eks/kube/cluster")
+                    .log_stream_name(&name)
+                    .start_from_head(true)
+                    .send()
+                    .await
+                    .unwrap();
+                out.extend(got.events().iter().map(|e| e.message().unwrap_or_default().to_string()));
+            }
+            out
+        }
+    };
+    let mut found = false;
+    for _ in 0..60 {
+        let audit = events("kube-apiserver-audit-").await;
+        let authenticator = events("authenticator-").await;
+        let created_by_admin = audit.iter().any(|line| {
+            let v: Value = serde_json::from_str(line).unwrap();
+            v["kind"] == "Event"
+                && v["verb"] == "create"
+                && v["objectRef"]["resource"] == "configmaps"
+                && v["objectRef"]["namespace"] == "kube-system"
+                && v["user"]["username"] == admin_arn
+        });
+        let granted = authenticator
+            .iter()
+            .any(|l| l.contains("msg=\"access granted\"") && l.contains(&format!("arn=\"{admin_arn}\"")));
+        let denied = authenticator.iter().any(|l| l.contains("level=warning msg=\"access denied\""));
+        if created_by_admin && granted && denied {
+            found = true;
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(500)).await;
+    }
+    assert!(found, "audit and authenticator events in CloudWatch Logs");
+    assert!(events("kube-apiserver-").await.iter().any(|l| l.contains("Running kube-apiserver") || l.contains(".go:")));
+    assert!(events("kube-scheduler-").await.iter().any(|l| l.contains("Running kube-scheduler")));
+    assert!(events("kube-controller-manager-").await.iter().any(|l| l.contains("Running kube-controller-manager")));
+
+    // Turning a log type off stops its stream.
+    e.eks
+        .update_cluster_config()
+        .name("kube")
+        .logging(
+            Logging::builder()
+                .cluster_logging(LogSetup::builder().types(LogType::Authenticator).enabled(false).build())
+                .build(),
+        )
+        .send()
+        .await
+        .unwrap();
+    let before = events("authenticator-").await.len();
+    let (status, _) = kube.get("/api/v1/namespaces", &get_token(&admin_key, &admin_secret, "kube")).await;
+    assert_eq!(status, 200);
+    tokio::time::sleep(Duration::from_secs(1)).await;
+    assert_eq!(events("authenticator-").await.len(), before);
 
     // Managed node group instances register as Nodes.
     e.eks
