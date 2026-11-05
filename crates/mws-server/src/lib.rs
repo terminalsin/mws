@@ -26,8 +26,8 @@ use http_body_util::{BodyExt, Full, Limited};
 use hyper::body::Incoming;
 use hyper_util::rt::{TokioExecutor, TokioIo};
 use mws_core::{
-    Authorizer, Caller, CredentialError, CredentialStore, Environment, HttpRequest, HttpResponse, RequestContext,
-    ResolvedCredential, Service, ServiceError, StreamingBody,
+    ApiCall, Authorizer, Caller, CredentialError, CredentialStore, Environment, HttpRequest, HttpResponse,
+    RecordingAuthorizer, RequestContext, RequestObserver, ResolvedCredential, Service, ServiceError, StreamingBody,
 };
 use mws_sigv4::{SigV4Error, VerifyOptions};
 pub use mws_store::Store;
@@ -59,6 +59,8 @@ pub struct Gateway {
     clock_offset_ms: std::sync::atomic::AtomicI64,
     /// Where [`serve`] listens, as a URL.
     endpoint: std::sync::OnceLock<String>,
+    /// Told about every signed request routed to a service.
+    observers: Vec<Arc<dyn RequestObserver>>,
 }
 
 pub struct GatewayBuilder {
@@ -88,6 +90,12 @@ impl GatewayBuilder {
 
     pub fn authorizer(mut self, authorizer: Arc<dyn Authorizer>) -> Self {
         self.gateway.authorizer = authorizer;
+        self
+    }
+
+    /// Tell `observer` about every signed API call once it is answered.
+    pub fn observer(mut self, observer: Arc<dyn RequestObserver>) -> Self {
+        self.gateway.observers.push(observer);
         self
     }
 
@@ -134,6 +142,7 @@ impl Gateway {
                 state: state::StateHub::default(),
                 clock_offset_ms: std::sync::atomic::AtomicI64::new(0),
                 endpoint: std::sync::OnceLock::new(),
+                observers: Vec::new(),
             },
         }
     }
@@ -179,7 +188,7 @@ impl Gateway {
             }
             let region = alternate.region.unwrap_or_else(|| self.env.default_region.clone());
             let ctx = self.context(request_id, region, resolved.caller, remote, now);
-            return service.handle(ctx, request).await;
+            return self.dispatch(&service, ctx, request).await;
         }
         let parsed = match mws_sigv4::parse(&request) {
             Ok(p) => p,
@@ -252,7 +261,37 @@ impl Gateway {
             r => r.to_string(),
         };
         let ctx = self.context(request_id, region, resolved.caller, remote, now);
-        service.handle(ctx, request).await
+        self.dispatch(&service, ctx, request).await
+    }
+
+    /// Hand a signed request to its service, recording the actions it
+    /// authorizes for the observers.
+    async fn dispatch(
+        &self,
+        service: &Arc<dyn Service>,
+        mut ctx: RequestContext,
+        request: HttpRequest,
+    ) -> HttpResponse {
+        if self.observers.is_empty() {
+            return service.handle(ctx, request).await;
+        }
+        let recorder = Arc::new(RecordingAuthorizer::new(ctx.authorizer.clone()));
+        ctx.authorizer = recorder.clone();
+        let call = ApiCall {
+            request_id: ctx.request_id.clone(),
+            service: service.signing_name(),
+            account: ctx.caller.account_id.clone(),
+            region: ctx.region.clone(),
+            at: ctx.received_at,
+            actions: Vec::new(),
+            status: 0,
+        };
+        let response = service.handle(ctx, request).await;
+        let call = ApiCall { actions: recorder.actions(), status: response.status().as_u16(), ..call };
+        for observer in &self.observers {
+            observer.observe(&call);
+        }
+        response
     }
 
     fn resolve(

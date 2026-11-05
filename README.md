@@ -117,6 +117,8 @@ SDKs, S3 addressing, host-prefixed endpoints and calling as other identities.
 | [CloudWatch](docs/services/cloudwatch.md) | 55 / 55 | RPC v2 CBOR, awsJson 1.0, awsQuery |
 | [CloudWatch Logs](docs/services/logs.md) | 118 / 118 | awsJson 1.1 |
 | [Marketplace Metering and Entitlement](docs/services/marketplace.md) | 5 / 5 | awsJson 1.1, RPC v2 CBOR |
+| [Service Quotas](docs/services/servicequotas.md) | 26 / 26 | awsJson 1.1 |
+| [Cost Explorer](docs/services/ce.md) | 47 / 47 | awsJson 1.1 |
 
 Operations outside the implemented set answer `NotImplemented`. Each service
 page lists what is emulated and its known gaps.

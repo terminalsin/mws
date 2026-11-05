@@ -8,6 +8,7 @@ use std::sync::Arc;
 
 use mws_acm::Acm;
 use mws_acmpca::PrivateCa;
+use mws_ce::CostExplorer;
 use mws_cloudwatch::CloudWatch;
 use mws_core::Environment;
 use mws_ec2::{BackendChoice, Ec2};
@@ -26,6 +27,7 @@ use mws_s3::S3;
 use mws_s3control::S3Control;
 use mws_secretsmanager::SecretsManager;
 use mws_server::{Gateway, Scenario, Store};
+use mws_servicequotas::ServiceQuotas;
 use mws_sns::Sns;
 use mws_sqs::Sqs;
 use mws_ssm::Ssm;
@@ -108,6 +110,8 @@ pub struct Mws {
     pub ec2: Ec2,
     pub marketplace_entitlement: Entitlement,
     pub marketplace_metering: Metering,
+    pub servicequotas: ServiceQuotas,
+    pub ce: CostExplorer,
 }
 
 /// Build the gateway with every service MWS emulates.
@@ -235,6 +239,18 @@ fn build_with_store(config: Config, store: Option<Arc<Store>>) -> Mws {
     ec2.set_instance_roles(Arc::new(links::Ec2InstanceRoles { iam: iam.clone(), sts: sts.clone() }));
     let marketplace_entitlement = Entitlement::new(config.iam.account_id.clone());
     let marketplace_metering = Metering::new(marketplace_entitlement.clone());
+    let servicequotas = ServiceQuotas::new();
+    servicequotas.set_organizations(Arc::new(links::QuotaOrganizations(organizations.clone())));
+    servicequotas.set_usage_source(Arc::new(links::QuotaUsage { ec2: ec2.clone(), s3: s3.clone(), iam: iam.clone() }));
+    servicequotas.set_metric_publisher(Arc::new(links::UsageToCloudWatch(cloudwatch.clone())));
+    ec2.set_service_quotas(servicequotas.clone());
+    s3.set_service_quotas(servicequotas.clone());
+    iam.set_service_quotas(servicequotas.clone());
+    lambda.set_service_quotas(servicequotas.clone());
+    cloudwatch.set_service_quotas(servicequotas.clone());
+    let ce = CostExplorer::new();
+    ce.set_account_directory(Arc::new(links::CostAccounts(organizations.clone())));
+    ce.set_anomaly_notifier(Arc::new(links::AnomalyAlerts(sns.clone())));
     let mut gateway = Gateway::builder();
     if let Some(store) = store {
         gateway = gateway.store(store);
@@ -243,6 +259,8 @@ fn build_with_store(config: Config, store: Option<Arc<Store>>) -> Mws {
         .scenario_principal(config.iam.root_access_key_id.clone())
         .environment(Environment { partition: config.iam.partition.clone(), ..Environment::default() })
         .authorizer(iam.authorizer())
+        .observer(Arc::new(servicequotas.clone()))
+        .observer(Arc::new(ce.clone()))
         .credentials(iam.credential_store())
         .credentials(sts.credential_store())
         .credentials(s3.credential_store())
@@ -272,6 +290,8 @@ fn build_with_store(config: Config, store: Option<Arc<Store>>) -> Mws {
         // its own `X-Amz-Target`.
         .service(Arc::new(marketplace_metering.clone()))
         .service(Arc::new(marketplace_entitlement.clone()))
+        .service(Arc::new(servicequotas.clone()))
+        .service(Arc::new(ce.clone()))
         .build();
     Mws {
         gateway,
@@ -293,6 +313,8 @@ fn build_with_store(config: Config, store: Option<Arc<Store>>) -> Mws {
         ec2,
         marketplace_entitlement,
         marketplace_metering,
+        servicequotas,
+        ce,
     }
 }
 

@@ -569,6 +569,7 @@ impl Ec2 {
         tags: Vec<t::Tag>,
     ) -> Result<Vec<t::SecurityGroupRule>, ServiceError> {
         let account = account_of(ctx);
+        let limit = self.quota(&account, &ctx.region, crate::quotas::RULES_PER_GROUP, ctx.received_at);
         self.with_region(ctx, |r| {
             let group = r.security_groups.get(gid).ok_or_else(|| Kind::Group.not_found(gid))?;
             let _ = (group, action);
@@ -583,7 +584,7 @@ impl Ec2 {
                 }
             }
             let count = r.sg_rules.values().filter(|x| x.group_id == gid && x.egress == egress).count();
-            if count + new_rules.len() > 60 {
+            if (count + new_rules.len()) as f64 > limit {
                 return Err(err(
                     "RulesPerSecurityGroupLimitExceeded",
                     "The maximum number of rules per security group has been reached.",

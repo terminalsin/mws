@@ -25,6 +25,7 @@ mod handler;
 pub mod imds;
 mod keys;
 mod ops;
+mod quotas;
 mod state;
 mod util;
 
@@ -72,6 +73,7 @@ pub(crate) struct Inner {
     state: Mutex<State>,
     backend: Arc<dyn ComputeBackend>,
     roles: OnceLock<Arc<dyn InstanceRoleCredentials>>,
+    quotas: OnceLock<mws_servicequotas::ServiceQuotas>,
     imds: imds::ImdsState,
 }
 
@@ -94,6 +96,7 @@ impl Ec2 {
                 state: Mutex::new(State::default()),
                 backend,
                 roles: OnceLock::new(),
+                quotas: OnceLock::new(),
                 imds: Default::default(),
             }),
         }

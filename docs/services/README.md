@@ -74,6 +74,13 @@ Every service shares the same foundations:
 | --- | --- | --- |
 | [Marketplace Metering and Entitlement](marketplace.md) | 5 / 5 | SaaS registration tokens, batch and hourly metering with AWS's dedup and time windows, signed `RegisterUsage`, entitlements, a seedable catalog |
 
+## Cost and usage management
+
+| Service | Operations | What's emulated |
+| --- | --- | --- |
+| [Service Quotas](servicequotas.md) | 26 / 26 | AWS's quota codes and defaults, increase requests that services enforce, `AWS/Usage` metrics for quota alarms |
+| [Cost Explorer](ce.md) | 47 / 47 | Seeded and derived cost data, grouping and filters, forecasts, cost categories, allocation tags, anomaly alerts |
+
 ## How services connect
 
 Services are wired together where AWS wires them, and each integration runs
@@ -97,3 +104,7 @@ with the permissions AWS would use:
 - EC2 instances and Lambda functions receive role credentials from STS.
 - Marketplace Metering and the Entitlement Service share one Marketplace
   catalog of products, subscriptions and entitlements.
+- EC2, S3, IAM and Lambda enforce Service Quotas' applied values, and usage
+  is published to CloudWatch's `AWS/Usage` namespace.
+- Cost Explorer charges API calls at their request prices, follows
+  Organizations for consolidated billing and sends anomaly alerts to SNS.

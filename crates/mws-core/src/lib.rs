@@ -9,6 +9,7 @@ mod auth;
 mod error;
 pub mod eventstream;
 pub mod ids;
+mod observe;
 mod service;
 mod validate;
 
@@ -17,6 +18,7 @@ pub use auth::{
     CredentialStore, ResolvedCredential, ResourcePolicyMode, SessionInfo, SessionKind,
 };
 pub use error::{ErrorFault, ErrorField, ErrorValue, ServiceError};
+pub use observe::{ApiCall, RecordingAuthorizer, RequestObserver};
 pub use service::{AlternateSignature, HttpRequest, HttpResponse, RequestContext, Service, StreamingBody};
 pub use validate::{render_list, Validator};
 

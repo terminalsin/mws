@@ -319,11 +319,14 @@ impl CloudWatch {
         math::validate_queries(&widget.queries, "MetricWidget.metrics")?;
         let st = self.lock();
         let region = st.region_ref(&ctx.caller.account_id, &ctx.region);
-        let engine = Engine::new(region, &widget.queries, widget.start, widget.end).with_logs(
-            self.inner.logs.get(),
-            &ctx.caller.account_id,
-            &ctx.region,
-        );
+        let engine = Engine::new(region, &widget.queries, widget.start, widget.end)
+            .with_logs(self.inner.logs.get(), &ctx.caller.account_id, &ctx.region)
+            .with_quotas(self.inner.quotas.get().map(|quotas| crate::math::QuotaScope {
+                quotas,
+                account: &ctx.caller.account_id,
+                region: &ctx.region,
+                now: names::now(ctx),
+            }));
         let series: Vec<(String, BTreeMap<i64, f64>)> =
             math::results(&engine)?.into_iter().map(|(id, _label, points)| (id, points)).collect();
         drop(st);

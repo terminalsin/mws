@@ -301,6 +301,31 @@ dependencies = [
 ]
 
 [[package]]
+name = "aws-sdk-costexplorer"
+version = "1.138.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "79701c3536b4612ed53ff088631fda5da4ea5f1aaafd21179cd7bde9f431f569"
+dependencies = [
+ "arc-swap",
+ "aws-credential-types",
+ "aws-runtime",
+ "aws-smithy-async",
+ "aws-smithy-http",
+ "aws-smithy-json",
+ "aws-smithy-observability",
+ "aws-smithy-runtime",
+ "aws-smithy-runtime-api",
+ "aws-smithy-schema",
+ "aws-smithy-types",
+ "aws-types",
+ "bytes",
+ "fastrand",
+ "http 1.5.0",
+ "regex-lite",
+ "tracing",
+]
+
+[[package]]
 name = "aws-sdk-ec2"
 version = "1.275.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -638,6 +663,31 @@ name = "aws-sdk-secretsmanager"
 version = "1.125.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "ea7f719fbeab11b0215659f9b633649e2ebf94469d218304235368024174f7fc"
+dependencies = [
+ "arc-swap",
+ "aws-credential-types",
+ "aws-runtime",
+ "aws-smithy-async",
+ "aws-smithy-http",
+ "aws-smithy-json",
+ "aws-smithy-observability",
+ "aws-smithy-runtime",
+ "aws-smithy-runtime-api",
+ "aws-smithy-schema",
+ "aws-smithy-types",
+ "aws-types",
+ "bytes",
+ "fastrand",
+ "http 1.5.0",
+ "regex-lite",
+ "tracing",
+]
+
+[[package]]
+name = "aws-sdk-servicequotas"
+version = "1.121.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "ed60d2bb61f4df956ab1514fe416c138408a534cfcf45f761738ac9151d0beca"
 dependencies = [
  "arc-swap",
  "aws-credential-types",
@@ -2310,6 +2360,7 @@ dependencies = [
  "chrono",
  "mws-acm",
  "mws-acmpca",
+ "mws-ce",
  "mws-cloudwatch",
  "mws-core",
  "mws-ec2",
@@ -2328,6 +2379,7 @@ dependencies = [
  "mws-s3control",
  "mws-secretsmanager",
  "mws-server",
+ "mws-servicequotas",
  "mws-sns",
  "mws-sqs",
  "mws-ssm",
@@ -2398,6 +2450,23 @@ dependencies = [
 ]
 
 [[package]]
+name = "mws-ce"
+version = "0.1.0"
+dependencies = [
+ "async-trait",
+ "bytes",
+ "chrono",
+ "http 1.5.0",
+ "mws-codegen",
+ "mws-core",
+ "mws-proto-json",
+ "serde",
+ "serde_json",
+ "tracing",
+ "uuid",
+]
+
+[[package]]
 name = "mws-cloudwatch"
 version = "0.1.0"
 dependencies = [
@@ -2416,6 +2485,7 @@ dependencies = [
  "mws-proto-cbor",
  "mws-proto-json",
  "mws-proto-query",
+ "mws-servicequotas",
  "mws-sns",
  "rand",
  "regex",
@@ -2463,6 +2533,7 @@ dependencies = [
  "aws-sdk-acmpca",
  "aws-sdk-cloudwatch",
  "aws-sdk-cloudwatchlogs",
+ "aws-sdk-costexplorer",
  "aws-sdk-ec2",
  "aws-sdk-eventbridge",
  "aws-sdk-firehose",
@@ -2477,6 +2548,7 @@ dependencies = [
  "aws-sdk-s3",
  "aws-sdk-s3control",
  "aws-sdk-secretsmanager",
+ "aws-sdk-servicequotas",
  "aws-sdk-sns",
  "aws-sdk-sqs",
  "aws-sdk-ssm",
@@ -2521,6 +2593,7 @@ dependencies = [
  "mws-core",
  "mws-proto-ec2",
  "mws-proto-json",
+ "mws-servicequotas",
  "rand",
  "serde",
  "serde_json",
@@ -2614,6 +2687,7 @@ dependencies = [
  "mws-iam-policy",
  "mws-proto-json",
  "mws-proto-query",
+ "mws-servicequotas",
  "qrcode",
  "rand",
  "roxmltree",
@@ -2696,6 +2770,7 @@ dependencies = [
  "mws-proto-json",
  "mws-proto-restjson",
  "mws-s3",
+ "mws-servicequotas",
  "mws-sts",
  "rand",
  "serde",
@@ -2925,6 +3000,7 @@ dependencies = [
  "mws-kms",
  "mws-proto-json",
  "mws-proto-restxml",
+ "mws-servicequotas",
  "mws-sigv4",
  "percent-encoding",
  "rand",
@@ -3008,6 +3084,22 @@ dependencies = [
  "mws-core",
  "mws-sigv4",
  "mws-store",
+ "serde",
+ "serde_json",
+ "tokio",
+ "tracing",
+ "uuid",
+]
+
+[[package]]
+name = "mws-servicequotas"
+version = "0.1.0"
+dependencies = [
+ "async-trait",
+ "chrono",
+ "mws-codegen",
+ "mws-core",
+ "mws-proto-json",
  "serde",
  "serde_json",
  "tokio",

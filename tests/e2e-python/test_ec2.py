@@ -64,8 +64,9 @@ def test_instances_with_waiters_and_paginators(ec2):
     run = ec2.run_instances(
         ImageId=ami,
         InstanceType="t3.micro",
-        MinCount=3,
-        MaxCount=3,
+        # Two t3.micro instances fit the default 5 vCPU On-Demand quota.
+        MinCount=2,
+        MaxCount=2,
         UserData="#!/bin/sh\necho hi\n",
         TagSpecifications=[{"ResourceType": "instance", "Tags": [{"Key": "Name", "Value": name}]}],
     )

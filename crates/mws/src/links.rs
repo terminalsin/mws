@@ -745,3 +745,94 @@ impl mws_ec2::InstanceRoleCredentials for Ec2InstanceRoles {
         })
     }
 }
+
+/// Usage of the quotas other services enforce, for Service Quotas.
+pub struct QuotaUsage {
+    pub ec2: mws_ec2::Ec2,
+    pub s3: mws_s3::S3,
+    pub iam: mws_iam::Iam,
+}
+
+impl mws_servicequotas::UsageSource for QuotaUsage {
+    fn usage(&self, account: &str, region: &str, service: &str, code: &str) -> Option<f64> {
+        match (service, code) {
+            ("s3", "L-DC2B2D3D") => Some(self.s3.bucket_count(account) as f64),
+            ("iam", "L-FE177D64") => Some(self.iam.role_count(account) as f64),
+            ("ec2" | "vpc", _) => self.ec2.quota_usage(account, region, service, code),
+            _ => None,
+        }
+    }
+}
+
+/// Service Quotas publishing `AWS/Usage` metrics into CloudWatch.
+pub struct UsageToCloudWatch(pub mws_cloudwatch::CloudWatch);
+
+impl mws_servicequotas::MetricPublisher for UsageToCloudWatch {
+    fn publish(&self, data: Vec<mws_servicequotas::UsageDatum>) {
+        for d in data {
+            self.0.put_metric_as_service(mws_cloudwatch::ServiceMetric {
+                account: d.account,
+                region: d.region,
+                namespace: d.namespace,
+                metric_name: d.metric_name,
+                dimensions: d.dimensions,
+                unit: Some(d.unit),
+                timestamp: d.timestamp,
+                values: vec![(d.value, 1.0)],
+            });
+        }
+    }
+}
+
+/// Organizations as Service Quotas sees it (quota request templates).
+pub struct QuotaOrganizations(pub mws_organizations::Organizations);
+
+impl mws_servicequotas::OrganizationDirectory for QuotaOrganizations {
+    fn account(&self, account_id: &str) -> Option<mws_servicequotas::OrgAccount> {
+        let m = self.0.member_account(account_id)?;
+        Some(mws_servicequotas::OrgAccount {
+            management_account_id: m.management_account_id,
+            all_features: m.all_features,
+            joined_method: m.joined_method,
+            joined: m.joined,
+        })
+    }
+}
+
+/// Consolidated billing and account names for Cost Explorer.
+pub struct CostAccounts(pub mws_organizations::Organizations);
+
+impl mws_ce::AccountDirectory for CostAccounts {
+    fn payer(&self, account: &str) -> Option<String> {
+        self.0.member_account(account).map(|m| m.management_account_id)
+    }
+
+    fn name(&self, account: &str) -> Option<String> {
+        self.0.member_account(account).map(|m| m.name).filter(|n| !n.is_empty())
+    }
+}
+
+/// Cost anomaly alerts, published by `costalerts.amazonaws.com`.
+pub struct AnomalyAlerts(pub mws_sns::Sns);
+
+impl mws_ce::AnomalyNotifier for AnomalyAlerts {
+    fn notify(&self, ctx: &RequestContext, alert: mws_ce::AnomalyAlert) -> Result<(), String> {
+        self.0
+            .publish_as_service(
+                ctx,
+                &mws_sns::ServicePublish {
+                    topic_arn: &alert.topic_arn,
+                    service_principal: "costalerts.amazonaws.com",
+                    source_arn: &alert.subscription_arn,
+                    source_account: &alert.account,
+                    message: alert.message,
+                    subject: Some(alert.subject),
+                    attributes: Default::default(),
+                    message_group_id: None,
+                    message_deduplication_id: None,
+                },
+            )
+            .map(|_| ())
+            .map_err(|e| e.to_string())
+    }
+}

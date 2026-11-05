@@ -267,7 +267,12 @@ fn due(region: &Region, a: &Alarm, now: DateTime<Utc>) -> bool {
 
 /// The new state of a metric alarm, with its reason and reason data, or
 /// `None` to leave it as it is.
-pub fn evaluate_metric_alarm(region: &Region, a: &Alarm, now: DateTime<Utc>) -> Option<(String, String, String)> {
+pub fn evaluate_metric_alarm(
+    region: &Region,
+    a: &Alarm,
+    now: DateTime<Utc>,
+    quotas: Option<crate::math::QuotaScope<'_>>,
+) -> Option<(String, String, String)> {
     let m = a.metric.as_ref()?;
     if m.evaluation_criteria.is_some() {
         return None;
@@ -284,7 +289,7 @@ pub fn evaluate_metric_alarm(region: &Region, a: &Alarm, now: DateTime<Utc>) -> 
             (Some(name), _) => {
                 let key = MetricKey::new(m.namespace.as_deref().unwrap_or_default(), name, m.dimensions.as_deref());
                 let stat = m.statistic.clone().or(m.extended_statistic.clone()).unwrap_or_else(|| "Average".into());
-                let engine = Engine::new(Some(region), &[], start, end);
+                let engine = Engine::new(Some(region), &[], start, end).with_quotas(quotas);
                 let points = engine.metric_series(&key, &stat, period, m.unit.as_deref()).points;
                 // `EvaluateLowSampleCountPercentile: ignore`: a percentile
                 // over too few samples (10 / (1 - p)) to be statistically
@@ -301,7 +306,7 @@ pub fn evaluate_metric_alarm(region: &Region, a: &Alarm, now: DateTime<Utc>) -> 
                 (points, BTreeMap::new(), stat)
             }
             (None, Some(qs)) => {
-                let engine = Engine::new(Some(region), qs, start, end);
+                let engine = Engine::new(Some(region), qs, start, end).with_quotas(quotas);
                 let id = qs
                     .iter()
                     .find(|q| q.return_data != Some(false) && Some(&q.id) != m.threshold_metric_id.as_ref())?
@@ -425,12 +430,19 @@ pub fn evaluate_metric_alarm(region: &Region, a: &Alarm, now: DateTime<Utc>) -> 
 type Decision = (String, String, String);
 
 /// Evaluate every metric alarm of a Region, then its composites.
-pub fn evaluate_region(region: &mut Region, account: &str, region_name: &str, now: DateTime<Utc>) -> Vec<Transition> {
+pub fn evaluate_region(
+    region: &mut Region,
+    account: &str,
+    region_name: &str,
+    now: DateTime<Utc>,
+    quotas: Option<&mws_servicequotas::ServiceQuotas>,
+) -> Vec<Transition> {
+    let scope = quotas.map(|sq| crate::math::QuotaScope { quotas: sq, account, region: region_name, now });
     let evaluated: Vec<(String, Option<Decision>)> = region
         .alarms
         .values()
         .filter(|a| a.alarm_type == "MetricAlarm" && due(region, a, now))
-        .map(|a| (a.name().to_string(), evaluate_metric_alarm(region, a, now)))
+        .map(|a| (a.name().to_string(), evaluate_metric_alarm(region, a, now, scope)))
         .collect();
     let puts = region.puts;
     let mut out = Vec::new();
@@ -484,7 +496,7 @@ impl CloudWatch {
             let mut batches = Vec::new();
             for (key, region) in st.regions.iter_mut() {
                 let Some((account, region_name)) = key.split_once('/') else { continue };
-                out.extend(evaluate_region(region, account, region_name, now));
+                out.extend(evaluate_region(region, account, region_name, now, self.inner.quotas.get()));
                 batches.extend(crate::streams::due_batches(region, account, region_name, now));
                 for a in region.alarms.values_mut() {
                     let Some(l) = &a.log else { continue };
