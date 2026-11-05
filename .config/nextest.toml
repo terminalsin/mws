@@ -6,3 +6,14 @@ fail-fast = false
 failure-output = "immediate-final"
 # Flag slow tests after a minute; stop hung ones after ten.
 slow-timeout = { period = "60s", terminate-after = 10 }
+
+# Tests that run real Docker containers share the host's Docker daemon:
+# VPC networks with the same default CIDR, private IPs and container names.
+# Each test starts its own MWS, so run them one at a time per runner. Name a
+# Docker-backed module `<svc>_docker` or the test `..._docker_...` to join.
+[test-groups]
+docker = { max-threads = 1 }
+
+[[profile.default.overrides]]
+filter = 'test(/docker|kubernetes/) | test(=efs::instances_mount_and_share_a_file_system)'
+test-group = 'docker'
