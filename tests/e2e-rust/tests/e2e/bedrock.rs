@@ -587,7 +587,24 @@ async fn marketplace_endpoints() {
         .await
         .unwrap();
     assert_eq!(b.list_marketplace_model_endpoints().send().await.unwrap().marketplace_model_endpoints().len(), 1);
+
+    // A registered endpoint is invoked by its ARN.
+    let r = aws_sdk_bedrockruntime::Client::new(&mws.root_sdk_config().await);
+    let ask = || {
+        r.converse().model_id(&arn).messages(
+            aws_sdk_bedrockruntime::types::Message::builder()
+                .role(aws_sdk_bedrockruntime::types::ConversationRole::User)
+                .content(aws_sdk_bedrockruntime::types::ContentBlock::Text("hello endpoint".into()))
+                .build()
+                .unwrap(),
+        )
+    };
+    let out = ask().send().await.unwrap();
+    let text = out.output().unwrap().as_message().unwrap().content()[0].as_text().unwrap().clone();
+    assert_eq!(text, "hello endpoint");
     b.deregister_marketplace_model_endpoint().endpoint_arn(&arn).send().await.unwrap();
+    let e = ask().send().await.unwrap_err();
+    assert_eq!(code(e.as_service_error().unwrap()), "ValidationException");
     b.register_marketplace_model_endpoint()
         .endpoint_identifier(&arn)
         .model_source_identifier(source)

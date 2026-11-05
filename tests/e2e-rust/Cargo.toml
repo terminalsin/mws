@@ -48,7 +48,7 @@ aws-sdk-ram = "1"
 aws-sdk-pcaconnectorscep = "1"
 aws-sdk-securityhub = "1"
 aws-smithy-types = "1"
-aws-sigv4 = "1"
+aws-sigv4 = { version = "1", features = ["sign-http"] }
 aws-sdk-imagebuilder = "1"
 aws-sdk-elasticloadbalancingv2 = "1"
 aws-sdk-elasticloadbalancing = "1"
@@ -86,6 +86,7 @@ time.workspace = true
 aws-lc-rs.workspace = true
 base64.workspace = true
 form_urlencoded.workspace = true
+http.workspace = true
 chrono.workspace = true
 flate2.workspace = true
 regex.workspace = true

@@ -773,6 +773,9 @@ impl Bedrock {
         let id = random_id(12);
         let job_arn = arn(ctx, &format!("model-invocation-job/{id}"));
         ctx.authorize("bedrock:CreateModelInvocationJob", &job_arn, request_tag_context(&tags))?;
+        let mut passed = ConditionContext::new();
+        passed.insert("iam:PassedToService".into(), vec!["bedrock.amazonaws.com".into()]);
+        ctx.authorize("iam:PassRole", &input.role_arn, passed)?;
         let target = self
             .resolve_invocation(ctx, &input.model_id)
             .map_err(|_| validation(format!("The provided model identifier {} is invalid.", input.model_id)))?;
@@ -795,6 +798,7 @@ impl Bedrock {
                 .to_string()
         };
         let job = BatchJob {
+            context: ctx.clone(),
             account: ctx.caller.account_id.clone(),
             region: ctx.region.clone(),
             job_arn: job_arn.clone(),
@@ -1195,8 +1199,10 @@ impl Bedrock {
 }
 
 /// A batch inference job for bedrock-runtime to run.
-#[derive(Debug, Clone)]
+#[derive(Clone)]
 pub struct BatchJob {
+    /// The `CreateModelInvocationJob` request, for assuming the job role.
+    pub context: RequestContext,
     pub account: String,
     pub region: String,
     pub job_arn: String,

@@ -10,7 +10,10 @@ Requests must carry a valid [SigV4](https://docs.aws.amazon.com/IAM/latest/UserG
 signature, either in the `Authorization` header or as a presigned URL, from a
 known access key or STS session. S3 also accepts its `aws-chunked` streaming
 uploads with chunk and trailer signatures, browser POST uploads with signed
-policies, and directory bucket session credentials.
+policies, and directory bucket session credentials. Bedrock also accepts its
+API keys as bearer tokens: long-term keys are IAM service-specific
+credentials and short-term keys carry a presigned SigV4 URL (see
+[Bedrock](services/bedrock.md)).
 
 Failures come back the way each service reports them:
 

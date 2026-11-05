@@ -20,14 +20,16 @@ pub mod generated {
 
 pub mod backend;
 mod batch;
+mod checks;
 mod client;
 mod converse;
 mod handler;
+mod logging;
 mod native;
 pub mod prompt;
 
 use std::collections::BTreeMap;
-use std::sync::{Arc, Mutex, MutexGuard};
+use std::sync::{Arc, Mutex, MutexGuard, OnceLock};
 
 use chrono::{DateTime, Utc};
 use mws_bedrock::catalog::Family;
@@ -64,6 +66,8 @@ pub struct BedrockRuntime {
 struct Inner {
     bedrock: Bedrock,
     s3: S3,
+    logs: OnceLock<mws_logs::Logs>,
+    sts: OnceLock<mws_sts::Sts>,
     backend: Arc<dyn Backend>,
     backend_name: &'static str,
     script: Script,
@@ -201,6 +205,8 @@ impl BedrockRuntime {
                 script,
                 bedrock: bedrock.clone(),
                 s3,
+                logs: OnceLock::new(),
+                sts: OnceLock::new(),
                 state: Mutex::new(State::default()),
             }),
         };
@@ -216,6 +222,18 @@ impl BedrockRuntime {
             }
         }));
         runtime
+    }
+
+    /// Deliver invocation logs to CloudWatch Logs.
+    pub fn with_logs(self, logs: mws_logs::Logs) -> Self {
+        let _ = self.inner.logs.set(logs);
+        self
+    }
+
+    /// Assume the roles batch jobs and invocation logging name.
+    pub fn with_sts(self, sts: mws_sts::Sts) -> Self {
+        let _ = self.inner.sts.set(sts);
+        self
     }
 
     /// Which backend answers (`echo`, `openai` or `anthropic`).
@@ -381,6 +399,15 @@ impl BedrockRuntime {
         }
     }
 
+    fn modality(family: Family) -> logging::Modality {
+        match family {
+            Family::Video => logging::Modality::Video,
+            Family::Image => logging::Modality::Image,
+            f if f.conversational() => logging::Modality::Text,
+            _ => logging::Modality::Embedding,
+        }
+    }
+
     fn trace_on(trace: Option<&str>) -> bool {
         matches!(trace.map(str::to_ascii_uppercase).as_deref(), Some("ENABLED") | Some("ENABLED_FULL"))
     }
@@ -401,7 +428,22 @@ impl BedrockRuntime {
         )?;
         let model = target.model;
         let body = input.body.unwrap_or_default();
-        let (out, _) = self.invoke_native(model.family, &model.model_id, &body, &guards).await?;
+        let (out, run) = self.invoke_native(model.family, &model.model_id, &body, &guards).await?;
+        self.log_invocation(
+            ctx,
+            logging::Invocation {
+                operation: "InvokeModel",
+                model_id: &input.model_id,
+                modality: Self::modality(model.family),
+                input: serde_json::from_slice(&body).ok(),
+                output: out.clone(),
+                input_tokens: run.as_ref().map_or_else(
+                    || prompt::tokens(&String::from_utf8_lossy(&body)) as i64,
+                    |r| r.completion.input_tokens as i64,
+                ),
+                output_tokens: run.as_ref().map_or(0, |r| r.completion.output_tokens as i64),
+            },
+        );
         Ok(types::InvokeModelResponse {
             body: out.to_string().into_bytes(),
             content_type: "application/json".into(),
@@ -439,6 +481,18 @@ impl BedrockRuntime {
                 native::add_guardrail_fields(last, run.verdict.intervened, trace);
             }
         }
+        self.log_invocation(
+            ctx,
+            logging::Invocation {
+                operation: "InvokeModelWithResponseStream",
+                model_id: &input.model_id,
+                modality: logging::Modality::Text,
+                input: logging::request_json(),
+                output: Value::Array(chunks.clone()),
+                input_tokens: run.completion.input_tokens as i64,
+                output_tokens: run.completion.output_tokens as i64,
+            },
+        );
         Ok(types::InvokeModelWithResponseStreamResponse {
             body: chunks
                 .into_iter()
@@ -517,7 +571,7 @@ impl BedrockRuntime {
         let router = Self::router_trace(&target);
         let trace = (trace || router.is_some())
             .then(|| types::ConverseTrace { guardrail: trace.then(|| run.verdict.trace()), prompt_router: router });
-        Ok(types::ConverseResponse {
+        let out = types::ConverseResponse {
             output: types::ConverseOutput::Message(converse::message(&run.completion)),
             stop_reason: run.completion.stop_reason.converse().into(),
             usage: converse::usage(&run.completion),
@@ -529,7 +583,20 @@ impl BedrockRuntime {
             trace,
             performance_config: input.performance_config,
             service_tier: input.service_tier,
-        })
+        };
+        self.log_invocation(
+            ctx,
+            logging::Invocation {
+                operation: "Converse",
+                model_id: &input.model_id,
+                modality: logging::Modality::Text,
+                input: logging::request_json(),
+                output: generated::json_ser::ser_converse_response(&out),
+                input_tokens: run.completion.input_tokens as i64,
+                output_tokens: run.completion.output_tokens as i64,
+            },
+        );
+        Ok(out)
     }
 
     pub(crate) async fn converse_stream(
@@ -566,9 +633,29 @@ impl BedrockRuntime {
             guardrail: trace.then(|| run.verdict.trace()),
             prompt_router: router,
         });
-        Ok(types::ConverseStreamResponse {
+        let out = types::ConverseStreamResponse {
             stream: converse::stream(&run.completion, run.latency_ms, trace, input.service_tier),
-        })
+        };
+        let response = generated::json_ser::ser_converse_response(&types::ConverseResponse {
+            output: types::ConverseOutput::Message(converse::message(&run.completion)),
+            stop_reason: run.completion.stop_reason.converse().into(),
+            usage: converse::usage(&run.completion),
+            metrics: types::ConverseMetrics { latency_ms: run.latency_ms },
+            ..Default::default()
+        });
+        self.log_invocation(
+            ctx,
+            logging::Invocation {
+                operation: "ConverseStream",
+                model_id: &input.model_id,
+                modality: logging::Modality::Text,
+                input: logging::request_json(),
+                output: response,
+                input_tokens: run.completion.input_tokens as i64,
+                output_tokens: run.completion.output_tokens as i64,
+            },
+        );
+        Ok(out)
     }
 
     // CountTokens -------------------------------------------------------------
@@ -706,14 +793,19 @@ impl BedrockRuntime {
             if failure.is_some() {
                 break;
             }
-            if let Err(e) =
-                ctx.authorize("s3:PutObject", &format!("arn:{}:s3:::{bucket}/{key}", ctx.partition), Default::default())
-            {
-                failure = Some(format!("Access denied writing to {}: {}", out.s3_uri, e.message));
-                break;
-            }
-            if let Err(e) = self.inner.s3.put_object_with_role(&bucket, &key, body, ct) {
-                failure = Some(format!("Unable to write to the output S3 location {}: {e}", out.s3_uri));
+            // The output is written with the caller's own S3 permissions.
+            let put = mws_s3::generated::types::PutObjectRequest {
+                bucket: bucket.clone(),
+                key,
+                body,
+                content_type: Some(ct.into()),
+                ..Default::default()
+            };
+            if let Err(e) = self.inner.s3.put_object_as_caller(ctx, put) {
+                failure = Some(match &*e.code {
+                    "AccessDenied" => format!("Access denied writing to {}: {}", out.s3_uri, e.message),
+                    _ => format!("Unable to write to the output S3 location {}: {}", out.s3_uri, e.message),
+                });
             }
         }
         let now = ctx.received_at;
@@ -888,11 +980,22 @@ impl Service for BedrockRuntime {
         request.uri().path().starts_with(SIDE_CHANNEL)
     }
 
+    fn alternate_signature(&self, request: &HttpRequest) -> Option<Result<mws_core::AlternateSignature, ServiceError>> {
+        if !mws_bedrock::is_runtime_path(request.uri().path()) {
+            return None;
+        }
+        mws_bedrock::api_key::alternate(request)
+    }
+
     async fn handle(&self, ctx: RequestContext, request: HttpRequest) -> HttpResponse {
         if request.uri().path().starts_with(SIDE_CHANNEL) {
             return self.side_channel(&request);
         }
-        generated::dispatch(self, &ctx, &request).await
+        if let Err(e) = mws_bedrock::api_key::authorize(&ctx, &request) {
+            return self.render_error(&ctx.request_id, &e);
+        }
+        let body = request.body().to_vec();
+        logging::REQUEST_BODY.scope(body, generated::dispatch(self, &ctx, &request)).await
     }
 
     fn render_error(&self, request_id: &str, error: &ServiceError) -> HttpResponse {

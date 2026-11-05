@@ -17,6 +17,7 @@ pub mod generated {
     include!(concat!(env!("OUT_DIR"), "/bedrock_generated.rs"));
 }
 
+pub mod api_key;
 pub mod catalog;
 pub mod guard;
 mod handler;
@@ -143,7 +144,20 @@ impl Service for Bedrock {
         .any(|p| path.starts_with(p))
     }
 
+    fn alternate_signature(&self, request: &HttpRequest) -> Option<Result<mws_core::AlternateSignature, ServiceError>> {
+        // Bearer tokens with an API key's prefix are Bedrock's wherever they
+        // go; other bearer tokens only on paths that are surely Bedrock's.
+        let path = request.uri().path();
+        if is_runtime_path(path) || !(self.recognizes(request) || api_key::token_type(request).is_some()) {
+            return None;
+        }
+        api_key::alternate(request)
+    }
+
     async fn handle(&self, ctx: RequestContext, request: HttpRequest) -> HttpResponse {
+        if let Err(e) = api_key::authorize(&ctx, &request) {
+            return self.render_error(&ctx.request_id, &e);
+        }
         generated::dispatch(self, &ctx, &request).await
     }
 

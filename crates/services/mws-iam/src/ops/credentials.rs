@@ -539,13 +539,21 @@ impl Iam {
             "bedrock.amazonaws.com" => format!("BedrockAPIKey-{}-at-{account}", random_id("", 4).to_lowercase()),
             _ => format!("{name}-at-{account}"),
         };
+        // A Bedrock API key is `ABSK` and the base64 of `alias:secret`; the
+        // whole key is what a client sends as its bearer token.
+        let password = match service {
+            "bedrock.amazonaws.com" => {
+                format!("ABSK{}", B64.encode(format!("{service_user_name}:{}", B64.encode(secret))))
+            }
+            _ => B64.encode(secret),
+        };
         let now = Utc::now();
         let cred = ServiceCredential {
             id: random_id("ACCA", 17),
             user: key,
             service: service.to_string(),
             service_user_name,
-            password: B64.encode(secret),
+            password,
             active: true,
             created: now,
             expires: input.credential_age_days.map(|d| now + Duration::days(d as i64)),

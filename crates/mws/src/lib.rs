@@ -418,7 +418,9 @@ fn build_with_store(config: Config, store: Option<Arc<Store>>) -> Mws {
     let marketplace_entitlement = Entitlement::new(config.iam.account_id.clone());
     let marketplace_metering = Metering::new(marketplace_entitlement.clone());
     let bedrock = Bedrock::new();
-    let bedrock_runtime = BedrockRuntime::new(bedrock.clone(), s3.clone(), &config.bedrock_backend);
+    let bedrock_runtime = BedrockRuntime::new(bedrock.clone(), s3.clone(), &config.bedrock_backend)
+        .with_logs(logs.clone())
+        .with_sts(sts.clone());
     tracing::info!(backend = bedrock_runtime.backend_name(), "Bedrock model backend");
     let servicequotas = ServiceQuotas::new();
     servicequotas.set_profile(config.quota_profile);
