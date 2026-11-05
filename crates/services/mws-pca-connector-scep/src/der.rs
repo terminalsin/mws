@@ -146,7 +146,13 @@ pub fn decode_oid(bytes: &[u8]) -> String {
         v = (v << 7) | (b & 0x7f) as u64;
         if b & 0x80 == 0 {
             if parts.is_empty() {
-                let first = if v < 40 { 0 } else if v < 80 { 1 } else { 2 };
+                let first = if v < 40 {
+                    0
+                } else if v < 80 {
+                    1
+                } else {
+                    2
+                };
                 parts.push(first);
                 parts.push(v - first * 40);
             } else {

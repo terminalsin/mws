@@ -3,8 +3,8 @@
 //! messages.
 
 use aws_lc_rs::cipher::{
-    DecryptionContext, EncryptionContext, PaddedBlockDecryptingKey, PaddedBlockEncryptingKey, UnboundCipherKey, AES_128,
-    AES_192, AES_256,
+    DecryptionContext, EncryptionContext, PaddedBlockDecryptingKey, PaddedBlockEncryptingKey, UnboundCipherKey,
+    AES_128, AES_192, AES_256,
 };
 use aws_lc_rs::digest;
 use aws_lc_rs::iv::FixedLength;
@@ -224,7 +224,8 @@ pub fn open_envelope(envelope: &[u8], ra_key: &[u8]) -> Result<(Vec<u8>, String)
     let alg_oid = alg.child(0).and_then(Node::oid).ok_or(CmsError::Undecodable)?;
     let (cipher, _) = aes_for(&alg_oid).ok_or_else(|| CmsError::UnsupportedAlgorithm(alg_oid.clone()))?;
     let iv: [u8; 16] = alg.child(1).map(Node::bytes).and_then(|b| b.try_into().ok()).ok_or(CmsError::Undecodable)?;
-    let mut ciphertext = eci.child(2).filter(|n| n.context() == Some(0)).map(Node::bytes).ok_or(CmsError::Undecodable)?;
+    let mut ciphertext =
+        eci.child(2).filter(|n| n.context() == Some(0)).map(Node::bytes).ok_or(CmsError::Undecodable)?;
 
     let private = PrivateDecryptingKey::from_pkcs8(ra_key).map_err(|_| CmsError::Undecodable)?;
     let mut cek = None;
@@ -323,7 +324,13 @@ pub enum Reply {
 }
 
 /// A `CertRep` signed by the RA (`ra_key` PKCS#8, `ra_cert` DER).
-pub fn cert_rep(req: &PkiMessage, reply: &Reply, ra_key: &[u8], ra_cert: &[u8], now: DateTime<Utc>) -> Result<Vec<u8>, CmsError> {
+pub fn cert_rep(
+    req: &PkiMessage,
+    reply: &Reply,
+    ra_key: &[u8],
+    ra_cert: &[u8],
+    now: DateTime<Utc>,
+) -> Result<Vec<u8>, CmsError> {
     let key = RsaKeyPair::from_pkcs8(ra_key).map_err(|_| CmsError::Unencodable)?;
     let rng = SystemRandom::new();
     let mut nonce = [0u8; 16];

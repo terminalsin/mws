@@ -794,7 +794,13 @@ impl mws_ram::ShareableResourceType for RamCertificateAuthorities {
 pub(crate) struct CaPoliciesToRam(pub mws_ram::Ram);
 
 impl mws_acmpca::CaPolicyListener for CaPoliciesToRam {
-    fn policy_changed(&self, ca_arn: &str, owner_account: &str, policy: Option<&str>, now: chrono::DateTime<chrono::Utc>) {
+    fn policy_changed(
+        &self,
+        ca_arn: &str,
+        owner_account: &str,
+        policy: Option<&str>,
+        now: chrono::DateTime<chrono::Utc>,
+    ) {
         self.0.resource_policy_changed(ca_arn, owner_account, policy, now);
     }
 }

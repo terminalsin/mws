@@ -93,7 +93,9 @@ impl Ram {
 
     fn bind_principal(&self, s: &mut Value, share: &Share, principal: &str, partition: &str) {
         match PrincipalKind::parse(principal) {
-            Ok(PrincipalKind::Account(a)) => s["Principal"] = json!({ "AWS": format!("arn:{partition}:iam::{a}:root") }),
+            Ok(PrincipalKind::Account(a)) => {
+                s["Principal"] = json!({ "AWS": format!("arn:{partition}:iam::{a}:root") })
+            }
             Ok(PrincipalKind::Iam { arn, .. }) => s["Principal"] = json!({ "AWS": arn }),
             Ok(PrincipalKind::Organization { org_id }) => {
                 s["Principal"] = json!("*");
@@ -102,7 +104,12 @@ impl Ram {
             }
             Ok(PrincipalKind::OrganizationalUnit { org_id, ou_id }) => {
                 s["Principal"] = json!("*");
-                add_condition(s, "ForAnyValue:StringLike", "aws:PrincipalOrgPaths", json!(format!("{org_id}/*/{ou_id}/*")));
+                add_condition(
+                    s,
+                    "ForAnyValue:StringLike",
+                    "aws:PrincipalOrgPaths",
+                    json!(format!("{org_id}/*/{ou_id}/*")),
+                );
                 add_condition(s, "StringNotEquals", "aws:PrincipalAccount", json!(share.owner));
             }
             Ok(PrincipalKind::Service(svc)) => {
@@ -147,13 +154,7 @@ impl Ram {
         let (resources, partition): (Vec<String>, String) = {
             let st = self.lock();
             let resources = st.shares.values().flat_map(|s| s.resources.iter().map(|r| r.entity.clone())).collect();
-            let partition = st
-                .shares
-                .keys()
-                .next()
-                .and_then(|a| a.split(':').nth(1))
-                .unwrap_or("aws")
-                .to_string();
+            let partition = st.shares.keys().next().and_then(|a| a.split(':').nth(1)).unwrap_or("aws").to_string();
             (resources, partition)
         };
         self.push_policies(&partition, resources);
@@ -161,7 +162,11 @@ impl Ram {
 
     /// Resources in `share`, for pushing after a change.
     pub(crate) fn share_resources(&self, share_arn: &str) -> Vec<String> {
-        self.lock().shares.get(share_arn).map(|s| s.resources.iter().map(|r| r.entity.clone()).collect()).unwrap_or_default()
+        self.lock()
+            .shares
+            .get(share_arn)
+            .map(|s| s.resources.iter().map(|r| r.entity.clone()).collect())
+            .unwrap_or_default()
     }
 
     /// Expire invitations that have been pending too long.

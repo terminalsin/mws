@@ -72,7 +72,8 @@ fn form_pairs(q: &str) -> Vec<(String, String)> {
         .filter(|p| !p.is_empty())
         .map(|p| {
             let (k, v) = p.split_once('=').unwrap_or((p, ""));
-            let dec = |s: &str| percent_encoding::percent_decode_str(&s.replace('+', " ")).decode_utf8_lossy().into_owned();
+            let dec =
+                |s: &str| percent_encoding::percent_decode_str(&s.replace('+', " ")).decode_utf8_lossy().into_owned();
             (dec(k), dec(v))
         })
         .collect()
@@ -80,7 +81,8 @@ fn form_pairs(q: &str) -> Vec<(String, String)> {
 
 fn pem(label: &str, der: &[u8]) -> String {
     let b64 = base64::engine::general_purpose::STANDARD.encode(der);
-    let lines: Vec<&str> = b64.as_bytes().chunks(64).map(|c| std::str::from_utf8(c).expect("base64 is ASCII")).collect();
+    let lines: Vec<&str> =
+        b64.as_bytes().chunks(64).map(|c| std::str::from_utf8(c).expect("base64 is ASCII")).collect();
     format!("-----BEGIN {label}-----\n{}\n-----END {label}-----\n", lines.join("\n"))
 }
 
@@ -104,7 +106,11 @@ impl ScepConnector {
             return validation("The connector is not active.");
         }
         let Some(ca) = self.pca.ca_info(&connector.ca_arn) else {
-            return error(StatusCode::NOT_FOUND, "ResourceNotFoundException", "The certificate authority does not exist.");
+            return error(
+                StatusCode::NOT_FOUND,
+                "ResourceNotFoundException",
+                "The certificate authority does not exist.",
+            );
         };
         if ca.status != "ACTIVE" {
             return validation("The certificate authority is not active.");
@@ -148,7 +154,8 @@ impl ScepConnector {
         match req.message_type.as_str() {
             PKCS_REQ => self.enroll(ctx, connector, &req),
             GET_CERT_INITIAL => {
-                let issued = self.lock().connectors.get(&connector.arn).and_then(|c| c.issued.get(&req.transaction_id).cloned());
+                let issued =
+                    self.lock().connectors.get(&connector.arn).and_then(|c| c.issued.get(&req.transaction_id).cloned());
                 match issued {
                     Some(cert) => self.success(connector, &req, cert, now),
                     None => failure_rep(connector, &req, BAD_CERT_ID, now),
@@ -162,7 +169,13 @@ impl ScepConnector {
         }
     }
 
-    fn success(&self, connector: &Connector, req: &PkiMessage, cert: Vec<u8>, now: DateTime<chrono::Utc>) -> HttpResponse {
+    fn success(
+        &self,
+        connector: &Connector,
+        req: &PkiMessage,
+        cert: Vec<u8>,
+        now: DateTime<chrono::Utc>,
+    ) -> HttpResponse {
         let built = cms::envelope_for(&cms::certs_only(&[cert]), &req.signer_cert, &self.content_alg(connector, req))
             .and_then(|env| cms::cert_rep(req, &Reply::Success(env), &connector.ra_key, &connector.ra_cert, now));
         match built {
@@ -197,7 +210,11 @@ impl ScepConnector {
         if connector.ty == "INTUNE" {
             // Intune connectors validate requests with Microsoft Intune,
             // which MWS can't reach.
-            return error(StatusCode::BAD_REQUEST, "BadRequestException", "The connector does not have access to Azure.");
+            return error(
+                StatusCode::BAD_REQUEST,
+                "BadRequestException",
+                "The connector does not have access to Azure.",
+            );
         }
         if passwords.len() != 1 {
             return error(
@@ -206,7 +223,8 @@ impl ScepConnector {
                 "Exactly one challenge password is required in the certificate signing request.",
             );
         }
-        let valid = self.lock().challenges.values().any(|c| c.connector_arn == connector.arn && c.password == passwords[0]);
+        let valid =
+            self.lock().challenges.values().any(|c| c.connector_arn == connector.arn && c.password == passwords[0]);
         if !valid {
             let mut r = failure_rep(connector, req, BAD_REQUEST, now);
             r.headers_mut().insert("x-amzn-errortype", http::HeaderValue::from_static("BadRequestException"));
@@ -224,16 +242,15 @@ impl ScepConnector {
         let has_eku = csr
             .requested_extensions()
             .is_some_and(|mut e| e.any(|x| matches!(x, ParsedExtension::ExtendedKeyUsage(_))));
-        let passthrough = (!has_eku).then(|| {
-            let mut p = mws_acmpca::ApiPassthrough::default();
-            p.extensions = Some(mws_acmpca::generated::types::Extensions {
+        let passthrough = (!has_eku).then(|| mws_acmpca::ApiPassthrough {
+            extensions: Some(mws_acmpca::generated::types::Extensions {
                 extended_key_usage: Some(vec![mws_acmpca::generated::types::ExtendedKeyUsage {
                     extended_key_usage_type: Some("CLIENT_AUTH".into()),
                     extended_key_usage_object_identifier: None,
                 }]),
                 ..Default::default()
-            });
-            p
+            }),
+            ..Default::default()
         });
         let ca_end = self.pca.ca_info(&connector.ca_arn).and_then(|c| c.not_after);
         let mut not_after = now + Duration::days(365);
@@ -255,7 +272,9 @@ impl ScepConnector {
         let cert = match issued {
             Ok(i) => match x509_parser::pem::parse_x509_pem(i.certificate_pem.as_bytes()) {
                 Ok((_, p)) => p.contents,
-                Err(_) => return error(StatusCode::INTERNAL_SERVER_ERROR, "InternalServerException", "Issuance failed."),
+                Err(_) => {
+                    return error(StatusCode::INTERNAL_SERVER_ERROR, "InternalServerException", "Issuance failed.")
+                }
             },
             Err(ServiceIssueError::AccessDenied) => {
                 return error(
@@ -265,7 +284,11 @@ impl ScepConnector {
                 )
             }
             Err(ServiceIssueError::NotFound) => {
-                return error(StatusCode::NOT_FOUND, "ResourceNotFoundException", "The certificate authority does not exist.")
+                return error(
+                    StatusCode::NOT_FOUND,
+                    "ResourceNotFoundException",
+                    "The certificate authority does not exist.",
+                )
             }
             Err(ServiceIssueError::Refused(e)) => return validation(e.message),
         };

@@ -5,7 +5,11 @@ use mws_core::{ConditionContext, RequestContext, ServiceError};
 use crate::generated::{errors, types};
 
 /// Index-based pagination with an opaque token.
-pub fn paginate<T>(items: Vec<T>, max: Option<i32>, token: Option<&str>) -> Result<(Vec<T>, Option<String>), ServiceError> {
+pub fn paginate<T>(
+    items: Vec<T>,
+    max: Option<i32>,
+    token: Option<&str>,
+) -> Result<(Vec<T>, Option<String>), ServiceError> {
     if let Some(m) = max {
         if !(1..=500).contains(&m) {
             return Err(errors::invalid_max_results(format!(

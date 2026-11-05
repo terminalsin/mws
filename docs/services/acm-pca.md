@@ -17,6 +17,7 @@ All 23 operations are generated from the AWS model (awsJson1.1) and implemented.
 | Audit reports | 🟡 | JSON or CSV reports written to S3 as `acm-pca.amazonaws.com`; they complete synchronously. |
 | Lifecycle | ✅ | Disable, delete and restore; CAs expire and are permanently deleted on the emulated clock. |
 | Permissions and resource policies | ✅ | Evaluated by the IAM engine, scoped by account and Region. |
+| Sharing through RAM | ✅ | CAs shared with other accounts or with Connector for SCEP through [RAM](ram.md); the share's policy is evaluated alongside the CA's own, and a `PutPolicy` appears in RAM as a share created from policy. |
 | Resource policy actions | 🟡 | Not limited to the actions AWS allows in them. |
 | ML-DSA, SM2 and RSA-PSS keys | ❌ | Not supported. |
 | EC keys with other hashes | ❌ | Only the natural hash for each curve. |

@@ -12,10 +12,18 @@ pub const RAM_SERVICE_PRINCIPAL: &str = "ram.amazonaws.com";
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum PrincipalKind {
     Account(String),
-    Organization { org_id: String },
-    OrganizationalUnit { org_id: String, ou_id: String },
+    Organization {
+        org_id: String,
+    },
+    OrganizationalUnit {
+        org_id: String,
+        ou_id: String,
+    },
     /// An IAM role or user, in `account`.
-    Iam { arn: String, account: String },
+    Iam {
+        arn: String,
+        account: String,
+    },
     Service(String),
 }
 

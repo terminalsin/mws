@@ -83,7 +83,8 @@ impl Ca {
             (Some(p), None) | (None, Some(p)) => Some(p.clone()),
             (Some(own), Some(ram)) => {
                 let statements = |doc: &str| -> Vec<serde_json::Value> {
-                    match serde_json::from_str::<serde_json::Value>(doc).ok().and_then(|v| v.get("Statement").cloned()) {
+                    match serde_json::from_str::<serde_json::Value>(doc).ok().and_then(|v| v.get("Statement").cloned())
+                    {
                         Some(serde_json::Value::Array(a)) => a,
                         Some(one) => vec![one],
                         None => Vec::new(),

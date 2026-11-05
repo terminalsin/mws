@@ -35,7 +35,10 @@ impl Ram {
         util::check_arn(arn)?;
         st.invitations
             .get(arn)
-            .filter(|i| i.receiver == ctx.caller.account_id && util::arn_region_account(arn).is_some_and(|(r, _)| r == ctx.region))
+            .filter(|i| {
+                i.receiver == ctx.caller.account_id
+                    && util::arn_region_account(arn).is_some_and(|(r, _)| r == ctx.region)
+            })
             .ok_or_else(|| not_found(arn))
     }
 
@@ -46,10 +49,26 @@ impl Ram {
         accept: bool,
     ) -> Result<(types::ResourceShareInvitation, Vec<String>), ServiceError> {
         let action = if accept { "ram:AcceptResourceShareInvitation" } else { "ram:RejectResourceShareInvitation" };
-        let share_arn = self.lock().invitations.get(arn).map(|i| i.share_arn.clone()).unwrap_or_default();
+        let (share_arn, receiver) =
+            self.lock().invitations.get(arn).map(|i| (i.share_arn.clone(), i.receiver.clone())).unwrap_or_default();
         let mut cond = ConditionContext::new();
-        cond.insert("ram:ShareOwnerAccountId".into(), vec![util::arn_region_account(&share_arn).map(|(_, a)| a.to_string()).unwrap_or_default()]);
-        ctx.authorize(action, arn, cond)?;
+        cond.insert(
+            "ram:ShareOwnerAccountId".into(),
+            vec![util::arn_region_account(&share_arn).map(|(_, a)| a.to_string()).unwrap_or_default()],
+        );
+        // The invitation lives in the sender's account but is addressed to
+        // the receiver, whose own IAM policies decide who may answer it.
+        let addressed = serde_json::json!({
+            "Version": "2012-10-17",
+            "Statement": [{
+                "Effect": "Allow",
+                "Principal": { "AWS": format!("arn:{}:iam::{receiver}:root", ctx.partition) },
+                "Action": action,
+                "Resource": arn,
+            }]
+        })
+        .to_string();
+        ctx.authorize_with_resource_policy(action, arn, Some(&addressed), cond)?;
         let mut st = self.lock();
         let inv = self.received(&st, ctx, arn)?.clone();
         match inv.status.as_str() {
@@ -91,7 +110,10 @@ impl Ram {
     ) -> Result<types::AcceptResourceShareInvitationResponse, ServiceError> {
         let (inv, resources) = self.respond(ctx, &input.resource_share_invitation_arn, true)?;
         self.push_policies(&ctx.partition, resources);
-        Ok(types::AcceptResourceShareInvitationResponse { resource_share_invitation: Some(inv), client_token: input.client_token })
+        Ok(types::AcceptResourceShareInvitationResponse {
+            resource_share_invitation: Some(inv),
+            client_token: input.client_token,
+        })
     }
 
     pub(crate) fn reject_resource_share_invitation(
@@ -101,7 +123,10 @@ impl Ram {
     ) -> Result<types::RejectResourceShareInvitationResponse, ServiceError> {
         let (inv, resources) = self.respond(ctx, &input.resource_share_invitation_arn, false)?;
         self.push_policies(&ctx.partition, resources);
-        Ok(types::RejectResourceShareInvitationResponse { resource_share_invitation: Some(inv), client_token: input.client_token })
+        Ok(types::RejectResourceShareInvitationResponse {
+            resource_share_invitation: Some(inv),
+            client_token: input.client_token,
+        })
     }
 
     pub(crate) fn get_resource_share_invitations(

@@ -17,7 +17,7 @@ fn der(pem: &str) -> Vec<u8> {
     parse_x509_pem(pem.as_bytes()).unwrap().1.contents
 }
 
-fn assert_signed_by(child_pem: &str, issuer_pem: &str) {
+pub(crate) fn assert_signed_by(child_pem: &str, issuer_pem: &str) {
     let child_der = der(child_pem);
     let issuer_der = der(issuer_pem);
     let (_, child) = X509Certificate::from_der(&child_der).unwrap();
@@ -66,7 +66,7 @@ async fn issue(pca: &Client, ca: &str, csr: &str, template: Option<&str>, sig: S
 }
 
 /// Create a root CA, self-issue and import its certificate.
-async fn active_root(pca: &Client) -> (String, String) {
+pub(crate) async fn active_root(pca: &Client) -> (String, String) {
     let ca = create_ca(
         pca,
         CertificateAuthorityType::Root,
@@ -89,7 +89,7 @@ async fn active_root(pca: &Client) -> (String, String) {
     (ca, pem)
 }
 
-fn leaf_csr(cn: &str) -> String {
+pub(crate) fn leaf_csr(cn: &str) -> String {
     let key = rcgen::KeyPair::generate_for(&rcgen::PKCS_ECDSA_P256_SHA256).unwrap();
     let mut params = rcgen::CertificateParams::new(vec![cn.to_string(), "alt.example.test".into()]).unwrap();
     params.distinguished_name.push(rcgen::DnType::CommonName, cn);

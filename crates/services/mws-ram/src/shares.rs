@@ -58,7 +58,12 @@ struct Checked {
 
 impl Ram {
     /// The caller's share at `arn` in this region.
-    pub(crate) fn owned_share<'s>(&self, st: &'s State, ctx: &RequestContext, arn: &str) -> Result<&'s Share, ServiceError> {
+    pub(crate) fn owned_share<'s>(
+        &self,
+        st: &'s State,
+        ctx: &RequestContext,
+        arn: &str,
+    ) -> Result<&'s Share, ServiceError> {
         util::check_arn(arn)?;
         st.shares
             .get(arn)
@@ -66,7 +71,13 @@ impl Ram {
             .ok_or_else(|| not_found(arn))
     }
 
-    fn authorize_share(&self, ctx: &RequestContext, action: &str, arn: &str, extra: ConditionContext) -> Result<(), ServiceError> {
+    fn authorize_share(
+        &self,
+        ctx: &RequestContext,
+        action: &str,
+        arn: &str,
+        extra: ConditionContext,
+    ) -> Result<(), ServiceError> {
         let tags = self.lock().shares.get(arn).map(|s| s.tags.clone()).unwrap_or_default();
         let mut cond = util::resource_tag_context(&tags);
         cond.extend(extra);
@@ -201,7 +212,10 @@ impl Ram {
         }
         for (p, kind) in checked.principals {
             let external = externals.get(&p).copied().unwrap_or(false);
-            let already = share.principals.iter().any(|a| a.entity == p && matches!(a.status.as_str(), "ASSOCIATED" | "ASSOCIATING"));
+            let already = share
+                .principals
+                .iter()
+                .any(|a| a.entity == p && matches!(a.status.as_str(), "ASSOCIATED" | "ASSOCIATING"));
             let a = upsert(&mut share.principals, &p, now, |a| {
                 if !already {
                     a.status = if external { "ASSOCIATING" } else { "ASSOCIATED" }.into();
@@ -292,12 +306,16 @@ impl Ram {
                     "The client token was already used with different parameters.",
                 ));
             }
-            return Ok(types::CreateResourceShareResponse { resource_share: Some(share.wire()), client_token: input.client_token });
+            return Ok(types::CreateResourceShareResponse {
+                resource_share: Some(share.wire()),
+                client_token: input.client_token,
+            });
         }
         if input.name.is_empty() {
             return Err(errors::invalid_parameter("The name of a resource share can't be empty."));
         }
-        let checked = self.check_entities(ctx, &resources, &principals, input.sources.as_deref().unwrap_or_default())?;
+        let checked =
+            self.check_entities(ctx, &resources, &principals, input.sources.as_deref().unwrap_or_default())?;
         let now = ctx.received_at;
         let id = uuid::Uuid::new_v4().to_string();
         let arn = util::ram_arn(ctx, "resource-share", &id);
@@ -320,7 +338,8 @@ impl Ram {
         util::merge_tags(&mut share.tags, &tags)?;
         {
             let mut st = self.lock();
-            share.permissions = self.resolve_permissions(&st, ctx, input.permission_arns.as_deref().unwrap_or_default())?;
+            share.permissions =
+                self.resolve_permissions(&st, ctx, input.permission_arns.as_deref().unwrap_or_default())?;
             st.shares.insert(arn.clone(), share);
             util::remember_token(&mut st, ctx, input.client_token.as_deref(), &arn);
         }
@@ -351,7 +370,10 @@ impl Ram {
         self.owned_share(&st, ctx, arn)?;
         let share = st.shares.get_mut(arn).expect("checked above");
         if share.status != "ACTIVE" {
-            return Err(errors::invalid_state_transition(format!("The resource share {arn} is in the {} state.", share.status)));
+            return Err(errors::invalid_state_transition(format!(
+                "The resource share {arn} is in the {} state.",
+                share.status
+            )));
         }
         if let Some(name) = input.name {
             share.name = name;
@@ -433,7 +455,10 @@ impl Ram {
         let checked = self.check_entities(ctx, &resources, &principals, &sources)?;
         let out = self.apply_associations(ctx, arn, checked)?;
         self.push_policies(&ctx.partition, self.share_resources(arn));
-        Ok(types::AssociateResourceShareResponse { resource_share_associations: Some(out), client_token: input.client_token })
+        Ok(types::AssociateResourceShareResponse {
+            resource_share_associations: Some(out),
+            client_token: input.client_token,
+        })
     }
 
     pub(crate) fn disassociate_resource_share(
@@ -472,7 +497,9 @@ impl Ram {
             ] {
                 for w in wanted {
                     let Some(a) = list.iter_mut().find(|a| &a.entity == w && a.status != "DISASSOCIATED") else {
-                        return Err(errors::unknown_resource(format!("{w} is not associated with the resource share {arn}.")));
+                        return Err(errors::unknown_resource(format!(
+                            "{w} is not associated with the resource share {arn}."
+                        )));
                     };
                     a.status = "DISASSOCIATED".into();
                     a.updated = now;
@@ -495,7 +522,10 @@ impl Ram {
             touched
         };
         self.push_policies(&ctx.partition, touched);
-        Ok(types::DisassociateResourceShareResponse { resource_share_associations: Some(out), client_token: input.client_token })
+        Ok(types::DisassociateResourceShareResponse {
+            resource_share_associations: Some(out),
+            client_token: input.client_token,
+        })
     }
 
     /// Whether `account` can see `share` as a recipient (it is an
@@ -503,11 +533,19 @@ impl Ram {
     pub(crate) fn shared_with(&self, share: &Share, account: &str) -> bool {
         share.owner != account
             && share.status == "ACTIVE"
-            && share.principals.iter().any(|p| p.status == "ASSOCIATED" && self.covers(&p.entity, &share.owner, account))
+            && share
+                .principals
+                .iter()
+                .any(|p| p.status == "ASSOCIATED" && self.covers(&p.entity, &share.owner, account))
     }
 
     /// Shares visible as `resource_owner` (`SELF` or `OTHER-ACCOUNTS`).
-    fn visible_shares(&self, st: &State, ctx: &RequestContext, resource_owner: &str) -> Result<Vec<Share>, ServiceError> {
+    fn visible_shares(
+        &self,
+        st: &State,
+        ctx: &RequestContext,
+        resource_owner: &str,
+    ) -> Result<Vec<Share>, ServiceError> {
         let account = ctx.caller.account_id.as_str();
         Ok(match resource_owner {
             "SELF" => st.shares.values().filter(|s| s.owner == account && s.region == ctx.region).cloned().collect(),
@@ -545,11 +583,16 @@ impl Ram {
         }
         if let Some(p) = &input.permission_arn {
             shares.retain(|s| {
-                s.permissions.iter().any(|x| &x.arn == p && input.permission_version.is_none_or(|v| x.version as i32 == v))
+                s.permissions
+                    .iter()
+                    .any(|x| &x.arn == p && input.permission_version.is_none_or(|v| x.version as i32 == v))
             });
         }
         let (page, next) = paginate(shares, input.max_results, input.next_token.as_deref())?;
-        Ok(types::GetResourceSharesResponse { resource_shares: Some(page.iter().map(Share::wire).collect()), next_token: next })
+        Ok(types::GetResourceSharesResponse {
+            resource_shares: Some(page.iter().map(Share::wire).collect()),
+            next_token: next,
+        })
     }
 
     pub(crate) fn get_resource_share_associations(
@@ -799,11 +842,19 @@ impl Ram {
         // the caller must be allowed to do) and creates its service-linked
         // role.
         self.organizations.enable_service_access_for(ctx, RAM_SERVICE_PRINCIPAL)?;
-        self.iam.ensure_service_linked_role(account, RAM_SERVICE_PRINCIPAL, "AWSResourceAccessManagerServiceRolePolicy");
+        self.iam.ensure_service_linked_role(
+            account,
+            RAM_SERVICE_PRINCIPAL,
+            "AWSResourceAccessManagerServiceRolePolicy",
+        );
         Ok(types::EnableSharingWithAwsOrganizationResponse { return_value: Some(true) })
     }
 
-    pub(crate) fn tag_resource(&self, ctx: &RequestContext, input: types::TagResourceRequest) -> Result<(), ServiceError> {
+    pub(crate) fn tag_resource(
+        &self,
+        ctx: &RequestContext,
+        input: types::TagResourceRequest,
+    ) -> Result<(), ServiceError> {
         let arn = target_arn(input.resource_share_arn.as_deref(), input.resource_arn.as_deref())?;
         let mut cond = util::request_tag_context(&input.tags);
         cond.extend(self.target_tags(&arn).map(|t| util::resource_tag_context(&t)).unwrap_or_default());
@@ -816,7 +867,11 @@ impl Ram {
         Ok(())
     }
 
-    pub(crate) fn untag_resource(&self, ctx: &RequestContext, input: types::UntagResourceRequest) -> Result<(), ServiceError> {
+    pub(crate) fn untag_resource(
+        &self,
+        ctx: &RequestContext,
+        input: types::UntagResourceRequest,
+    ) -> Result<(), ServiceError> {
         let arn = target_arn(input.resource_share_arn.as_deref(), input.resource_arn.as_deref())?;
         let mut cond = ConditionContext::new();
         cond.insert("aws:TagKeys".into(), input.tag_keys.clone());
@@ -981,7 +1036,12 @@ impl Ram {
         perm.updated = Some(now);
         perm.versions.insert(
             1,
-            crate::state::PermissionVersion { template, created: Some(now), updated: Some(now), status: "ATTACHABLE".into() },
+            crate::state::PermissionVersion {
+                template,
+                created: Some(now),
+                updated: Some(now),
+                status: "ATTACHABLE".into(),
+            },
         );
         let share_arn = existing.unwrap_or_else(|| {
             let arn = format!("arn:{partition}:ram:{region}:{owner}:resource-share/{}", uuid::Uuid::new_v4());
@@ -1015,8 +1075,12 @@ impl Ram {
             .into_iter()
             .map(|p| Association { entity: p, created: now, updated: now, ..Default::default() })
             .collect();
-        share.permissions =
-            vec![SharePermission { arn: perm_arn, version: 1, resource_type: ty.resource_type().to_string(), updated: Some(now) }];
+        share.permissions = vec![SharePermission {
+            arn: perm_arn,
+            version: 1,
+            resource_type: ty.resource_type().to_string(),
+            updated: Some(now),
+        }];
     }
 }
 
@@ -1051,7 +1115,9 @@ fn target_arn(share: Option<&str>, resource: Option<&str>) -> Result<String, Ser
     match (share, resource) {
         (Some(s), None) => Ok(s.to_string()),
         (None, Some(r)) => Ok(r.to_string()),
-        (Some(_), Some(_)) => Err(errors::invalid_parameter("Specify either resourceShareArn or resourceArn, not both.")),
+        (Some(_), Some(_)) => {
+            Err(errors::invalid_parameter("Specify either resourceShareArn or resourceArn, not both."))
+        }
         (None, None) => Err(errors::missing_required_parameter("You must specify resourceShareArn or resourceArn.")),
     }
 }
@@ -1071,7 +1137,12 @@ pub fn wire_resource(share: &Share, r: &Association) -> types::Resource {
 }
 
 /// Find or add the association for `entity`, then let `f` update it.
-fn upsert(list: &mut Vec<Association>, entity: &str, now: DateTime<Utc>, f: impl FnOnce(&mut Association)) -> Association {
+fn upsert(
+    list: &mut Vec<Association>,
+    entity: &str,
+    now: DateTime<Utc>,
+    f: impl FnOnce(&mut Association),
+) -> Association {
     let idx = match list.iter().position(|a| a.entity == entity) {
         Some(i) => i,
         None => {

@@ -112,23 +112,40 @@ fn pem_to_der(pem: &str) -> Option<Vec<u8>> {
 }
 
 impl ScepConnector {
-    fn owned_connector<'s>(&self, st: &'s State, ctx: &RequestContext, arn: &str) -> Result<&'s Connector, ServiceError> {
+    fn owned_connector<'s>(
+        &self,
+        st: &'s State,
+        ctx: &RequestContext,
+        arn: &str,
+    ) -> Result<&'s Connector, ServiceError> {
         st.connectors
             .get(arn)
             .filter(|c| c.owner == ctx.caller.account_id && c.region == ctx.region)
             .ok_or_else(|| not_found(arn, "Connector"))
     }
 
-    fn owned_challenge<'s>(&self, st: &'s State, ctx: &RequestContext, arn: &str) -> Result<&'s Challenge, ServiceError> {
+    fn owned_challenge<'s>(
+        &self,
+        st: &'s State,
+        ctx: &RequestContext,
+        arn: &str,
+    ) -> Result<&'s Challenge, ServiceError> {
         st.challenges
             .get(arn)
-            .filter(|c| c.owner == ctx.caller.account_id && st.connectors.get(&c.connector_arn).is_some_and(|k| k.region == ctx.region))
+            .filter(|c| {
+                c.owner == ctx.caller.account_id
+                    && st.connectors.get(&c.connector_arn).is_some_and(|k| k.region == ctx.region)
+            })
             .ok_or_else(|| not_found(arn, "Challenge"))
     }
 
     fn resource_tags(&self, arn: &str) -> BTreeMap<String, String> {
         let st = self.lock();
-        st.connectors.get(arn).map(|c| c.tags.clone()).or_else(|| st.challenges.get(arn).map(|c| c.tags.clone())).unwrap_or_default()
+        st.connectors
+            .get(arn)
+            .map(|c| c.tags.clone())
+            .or_else(|| st.challenges.get(arn).map(|c| c.tags.clone()))
+            .unwrap_or_default()
     }
 
     fn authorize_on(&self, ctx: &RequestContext, action: &str, arn: &str) -> Result<(), ServiceError> {
@@ -149,7 +166,8 @@ impl ScepConnector {
             return Ok(types::CreateConnectorResponse { connector_arn: Some(arn) });
         }
         let ca_arn = input.certificate_authority_arn.clone();
-        let in_region = ca_arn.split(':').nth(3) == Some(ctx.region.as_str()) && ca_arn.contains(":certificate-authority/");
+        let in_region =
+            ca_arn.split(':').nth(3) == Some(ctx.region.as_str()) && ca_arn.contains(":certificate-authority/");
         let ca = self
             .pca
             .ca_info(&ca_arn)
@@ -181,7 +199,8 @@ impl ScepConnector {
             None => "GENERAL_PURPOSE",
         };
         let id = uuid::Uuid::new_v4().to_string();
-        let arn = format!("arn:{}:pca-connector-scep:{}:{}:connector/{id}", ctx.partition, ctx.region, ctx.caller.account_id);
+        let arn =
+            format!("arn:{}:pca-connector-scep:{}:{}:connector/{id}", ctx.partition, ctx.region, ctx.caller.account_id);
         let base = ctx.endpoint.clone().unwrap_or_else(|| "http://localhost:4566".into());
         let openid = (ty == "INTUNE").then(|| types::OpenIdConfiguration {
             issuer: Some(format!("https://oidc.pca-connector-scep.{}.amazonaws.com/{id}", ctx.region)),
@@ -193,7 +212,8 @@ impl ScepConnector {
         // as the connector's service principal: it is also how the
         // connector finds out whether the CA is shared with it.
         let (ra_key, csr) = ra_key_and_csr(&id)?;
-        let ra_validity = ca.not_after.map(|end| end.min(now + Duration::days(365))).unwrap_or(now + Duration::days(365));
+        let ra_validity =
+            ca.not_after.map(|end| end.min(now + Duration::days(365))).unwrap_or(now + Duration::days(365));
         let issued = self.pca.issue_as_service(ServiceIssue {
             service_principal: SERVICE_PRINCIPAL,
             source_account: &ctx.caller.account_id,
@@ -248,7 +268,9 @@ impl ScepConnector {
     ) -> Result<types::GetConnectorResponse, ServiceError> {
         self.authorize_on(ctx, "GetConnector", &input.connector_arn)?;
         let st = self.lock();
-        Ok(types::GetConnectorResponse { connector: Some(self.owned_connector(&st, ctx, &input.connector_arn)?.wire()) })
+        Ok(types::GetConnectorResponse {
+            connector: Some(self.owned_connector(&st, ctx, &input.connector_arn)?.wire()),
+        })
     }
 
     pub(crate) fn list_connectors(
@@ -268,7 +290,11 @@ impl ScepConnector {
         Ok(types::ListConnectorsResponse { connectors: Some(page), next_token: next })
     }
 
-    pub(crate) fn delete_connector(&self, ctx: &RequestContext, input: types::DeleteConnectorRequest) -> Result<(), ServiceError> {
+    pub(crate) fn delete_connector(
+        &self,
+        ctx: &RequestContext,
+        input: types::DeleteConnectorRequest,
+    ) -> Result<(), ServiceError> {
         let arn = &input.connector_arn;
         self.authorize_on(ctx, "DeleteConnector", arn)?;
         let mut st = self.lock();
@@ -291,7 +317,8 @@ impl ScepConnector {
         check_tags(&tags)?;
         let mut st = self.lock();
         let token = input.client_token.as_ref().map(|t| format!("{}/{t}", ctx.caller.account_id));
-        if let Some(existing) = token.as_ref().and_then(|t| st.client_tokens.get(t)).and_then(|a| st.challenges.get(a)) {
+        if let Some(existing) = token.as_ref().and_then(|t| st.client_tokens.get(t)).and_then(|a| st.challenges.get(a))
+        {
             return Ok(types::CreateChallengeResponse { challenge: Some(wire_challenge(existing)) });
         }
         let connector = self.owned_connector(&st, ctx, arn)?;
@@ -382,7 +409,11 @@ impl ScepConnector {
         Ok(types::ListChallengeMetadataResponse { challenges: Some(page), next_token: next })
     }
 
-    pub(crate) fn delete_challenge(&self, ctx: &RequestContext, input: types::DeleteChallengeRequest) -> Result<(), ServiceError> {
+    pub(crate) fn delete_challenge(
+        &self,
+        ctx: &RequestContext,
+        input: types::DeleteChallengeRequest,
+    ) -> Result<(), ServiceError> {
         self.authorize_on(ctx, "DeleteChallenge", &input.challenge_arn)?;
         let mut st = self.lock();
         self.owned_challenge(&st, ctx, &input.challenge_arn)?;
@@ -390,7 +421,12 @@ impl ScepConnector {
         Ok(())
     }
 
-    fn tags_mut<'s>(&self, st: &'s mut State, ctx: &RequestContext, arn: &str) -> Result<&'s mut BTreeMap<String, String>, ServiceError> {
+    fn tags_mut<'s>(
+        &self,
+        st: &'s mut State,
+        ctx: &RequestContext,
+        arn: &str,
+    ) -> Result<&'s mut BTreeMap<String, String>, ServiceError> {
         if self.owned_connector(st, ctx, arn).is_ok() {
             return Ok(&mut st.connectors.get_mut(arn).expect("checked").tags);
         }
@@ -412,7 +448,11 @@ impl ScepConnector {
         Ok(types::ListTagsForResourceResponse { tags: Some(tags) })
     }
 
-    pub(crate) fn tag_resource(&self, ctx: &RequestContext, input: types::TagResourceRequest) -> Result<(), ServiceError> {
+    pub(crate) fn tag_resource(
+        &self,
+        ctx: &RequestContext,
+        input: types::TagResourceRequest,
+    ) -> Result<(), ServiceError> {
         let mut cond = tag_context(&input.tags, "aws:RequestTag/");
         cond.extend(tag_context(&self.resource_tags(&input.resource_arn), "aws:ResourceTag/"));
         ctx.authorize("pca-connector-scep:TagResource", &input.resource_arn, cond)?;
@@ -425,7 +465,11 @@ impl ScepConnector {
         Ok(())
     }
 
-    pub(crate) fn untag_resource(&self, ctx: &RequestContext, input: types::UntagResourceRequest) -> Result<(), ServiceError> {
+    pub(crate) fn untag_resource(
+        &self,
+        ctx: &RequestContext,
+        input: types::UntagResourceRequest,
+    ) -> Result<(), ServiceError> {
         let mut cond = tag_context(&self.resource_tags(&input.resource_arn), "aws:ResourceTag/");
         cond.insert("aws:TagKeys".into(), input.tag_keys.clone());
         ctx.authorize("pca-connector-scep:UntagResource", &input.resource_arn, cond)?;
@@ -458,14 +502,15 @@ fn password() -> String {
 /// Key usages for the RA certificate: it signs replies and receives
 /// encrypted requests.
 fn ra_passthrough() -> mws_acmpca::ApiPassthrough {
-    let mut ext = mws_acmpca::ApiPassthrough::default();
-    ext.extensions = Some(mws_acmpca::generated::types::Extensions {
-        key_usage: Some(mws_acmpca::generated::types::KeyUsage {
-            digital_signature: true,
-            key_encipherment: true,
+    mws_acmpca::ApiPassthrough {
+        extensions: Some(mws_acmpca::generated::types::Extensions {
+            key_usage: Some(mws_acmpca::generated::types::KeyUsage {
+                digital_signature: true,
+                key_encipherment: true,
+                ..Default::default()
+            }),
             ..Default::default()
         }),
         ..Default::default()
-    });
-    ext
+    }
 }

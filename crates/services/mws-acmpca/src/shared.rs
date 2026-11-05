@@ -145,7 +145,8 @@ impl PrivateCa {
             context.insert("acm-pca:TemplateArn", vec![t.to_string()]);
         }
         let action = format!("acm-pca:{action}");
-        let eval = policy.evaluate(&Request { action: &action, resource: ca_arn, principal: &principal, context: &context });
+        let eval =
+            policy.evaluate(&Request { action: &action, resource: ca_arn, principal: &principal, context: &context });
         eval.allowed() && !eval.denied()
     }
 
@@ -159,7 +160,14 @@ impl PrivateCa {
             _ => return Err(ServiceIssueError::NotFound),
         };
         let allowed = |action: &str, template: Option<&str>| {
-            self.service_allowed(req.service_principal, req.source_account, req.source_arn, req.ca_arn, action, template)
+            self.service_allowed(
+                req.service_principal,
+                req.source_account,
+                req.source_arn,
+                req.ca_arn,
+                action,
+                template,
+            )
         };
         if !allowed("IssueCertificate", Some(req.template_arn)) || !allowed("GetCertificate", None) {
             return Err(ServiceIssueError::AccessDenied);

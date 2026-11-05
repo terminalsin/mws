@@ -67,7 +67,11 @@ impl Permission {
             is_resource_type_default: Some(false),
             permission_type: Some("CUSTOMER_MANAGED".into()),
             feature_set: Some(self.feature_set.clone()),
-            status: Some(if self.status == "DELETED" { "DELETED".into() } else { v.map(|v| v.status.clone()).unwrap_or_default() }),
+            status: Some(if self.status == "DELETED" {
+                "DELETED".into()
+            } else {
+                v.map(|v| v.status.clone()).unwrap_or_default()
+            }),
             tags: wire_tags(&self.tags),
         }
     }
@@ -88,13 +92,19 @@ impl Ram {
                 return Err(not_found(arn));
             }
             if version.is_some_and(|v| v != 1) {
-                return Err(errors::invalid_parameter(format!("Version {} of {arn} doesn't exist.", version.unwrap_or(0))));
+                return Err(errors::invalid_parameter(format!(
+                    "Version {} of {arn} doesn't exist.",
+                    version.unwrap_or(0)
+                )));
             }
             return Ok((m.resource_type.into(), 1));
         }
         let p = self.owned_permission(st, ctx, arn)?;
         if p.status != "ATTACHABLE" {
-            return Err(errors::operation_not_permitted(format!("The permission {arn} can't be attached ({}).", p.status)));
+            return Err(errors::operation_not_permitted(format!(
+                "The permission {arn} can't be attached ({}).",
+                p.status
+            )));
         }
         let version = match version {
             Some(v) if v > 0 && p.versions.contains_key(&(v as u32)) => v as u32,
@@ -104,7 +114,12 @@ impl Ram {
         Ok((p.resource_type.clone(), version))
     }
 
-    fn owned_permission<'s>(&self, st: &'s State, ctx: &RequestContext, arn: &str) -> Result<&'s Permission, ServiceError> {
+    fn owned_permission<'s>(
+        &self,
+        st: &'s State,
+        ctx: &RequestContext,
+        arn: &str,
+    ) -> Result<&'s Permission, ServiceError> {
         util::check_arn(arn)?;
         st.permissions
             .get(arn)
@@ -121,7 +136,9 @@ impl Ram {
         let Value::Object(o) = &doc else { return Err(bad("it must be a JSON object.".into())) };
         for k in o.keys() {
             if !matches!(k.as_str(), "Effect" | "Action" | "Condition") {
-                return Err(bad(format!("the element {k} isn't allowed; a template has only Effect, Action and Condition.")));
+                return Err(bad(format!(
+                    "the element {k} isn't allowed; a template has only Effect, Action and Condition."
+                )));
             }
         }
         if o.get("Effect").and_then(Value::as_str) != Some("Allow") {
@@ -164,7 +181,8 @@ impl Ram {
         cond.insert("ram:PermissionResourceType".into(), vec![input.resource_type.clone()]);
         ctx.authorize("ram:CreatePermission", &arn, cond)?;
         self.validate_template(&input.resource_type, &input.policy_template)?;
-        let resource_type = self.type_named(&input.resource_type).map(|t| t.resource_type().to_string()).unwrap_or_default();
+        let resource_type =
+            self.type_named(&input.resource_type).map(|t| t.resource_type().to_string()).unwrap_or_default();
         let mut st = self.lock();
         if let Some(existing) = util::idempotent(&st, ctx, input.client_token.as_deref()) {
             if let Some(p) = st.permissions.get(&existing) {
@@ -175,7 +193,10 @@ impl Ram {
             }
         }
         if st.permissions.get(&arn).is_some_and(|p| p.status != "DELETED") {
-            return Err(errors::permission_already_exists(format!("A permission named {} already exists.", input.name)));
+            return Err(errors::permission_already_exists(format!(
+                "A permission named {} already exists.",
+                input.name
+            )));
         }
         let now = ctx.received_at;
         let mut p = Permission {
@@ -210,7 +231,9 @@ impl Ram {
             let st = self.lock();
             let p = self.owned_permission(&st, ctx, arn)?;
             if p.feature_set != "STANDARD" {
-                return Err(errors::operation_not_permitted(format!("You can't add versions to {arn}; promote it first.")));
+                return Err(errors::operation_not_permitted(format!(
+                    "You can't add versions to {arn}; promote it first."
+                )));
             }
             if p.versions.len() >= MAX_VERSIONS {
                 return Err(errors::permission_versions_limit_exceeded(format!(
@@ -225,7 +248,10 @@ impl Ram {
         let next = p.versions.keys().max().copied().unwrap_or(0) + 1;
         p.versions.insert(next, version(input.policy_template, ctx.received_at));
         p.updated = Some(ctx.received_at);
-        Ok(types::CreatePermissionVersionResponse { permission: Some(p.detail(next)), client_token: input.client_token })
+        Ok(types::CreatePermissionVersionResponse {
+            permission: Some(p.detail(next)),
+            client_token: input.client_token,
+        })
     }
 
     pub(crate) fn get_permission(
@@ -237,7 +263,10 @@ impl Ram {
         self.authorize_permission(ctx, "GetPermission", arn)?;
         if let Some(m) = catalog::find(arn).filter(|m| self.type_named(m.resource_type).is_some()) {
             if input.permission_version.is_some_and(|v| v != 1) {
-                return Err(errors::invalid_parameter(format!("Version {} of {arn} doesn't exist.", input.permission_version.unwrap_or(0))));
+                return Err(errors::invalid_parameter(format!(
+                    "Version {} of {arn} doesn't exist.",
+                    input.permission_version.unwrap_or(0)
+                )));
             }
             return Ok(types::GetPermissionResponse { permission: Some(managed_detail(&m, &ctx.partition)) });
         }
@@ -253,7 +282,12 @@ impl Ram {
 
     /// A customer managed permission the caller owns, or one used by a share
     /// that is shared with the caller.
-    fn permission_visible<'s>(&self, st: &'s State, ctx: &RequestContext, arn: &str) -> Result<&'s Permission, ServiceError> {
+    fn permission_visible<'s>(
+        &self,
+        st: &'s State,
+        ctx: &RequestContext,
+        arn: &str,
+    ) -> Result<&'s Permission, ServiceError> {
         util::check_arn(arn)?;
         let p = st.permissions.get(arn).filter(|p| p.status != "DELETED").ok_or_else(|| not_found(arn))?;
         let account = ctx.caller.account_id.as_str();
@@ -290,7 +324,11 @@ impl Ram {
         if filter != "AWS_MANAGED" {
             let st = self.lock();
             for p in st.permissions.values() {
-                if p.owner == ctx.caller.account_id && p.region == ctx.region && p.status != "DELETED" && wanted(&p.resource_type) {
+                if p.owner == ctx.caller.account_id
+                    && p.region == ctx.region
+                    && p.status != "DELETED"
+                    && wanted(&p.resource_type)
+                {
                     out.push(summary_of(p.detail(p.default_version)));
                 }
             }
@@ -338,7 +376,8 @@ impl Ram {
 
     fn in_use(st: &State, arn: &str, version: Option<u32>) -> bool {
         st.shares.values().any(|s| {
-            s.status != "DELETED" && s.permissions.iter().any(|p| p.arn == arn && version.is_none_or(|v| p.version == v))
+            s.status != "DELETED"
+                && s.permissions.iter().any(|p| p.arn == arn && version.is_none_or(|v| p.version == v))
         })
     }
 
@@ -415,16 +454,24 @@ impl Ram {
             let mut st = self.lock();
             let share = self.owned_share(&st, ctx, arn)?;
             if share.status != "ACTIVE" {
-                return Err(errors::invalid_state_transition(format!("The resource share {arn} is in the {} state.", share.status)));
+                return Err(errors::invalid_state_transition(format!(
+                    "The resource share {arn} is in the {} state.",
+                    share.status
+                )));
             }
-            let (ty, version) = self.attachable_permission(&st, ctx, &input.permission_arn, input.permission_version)?;
+            let (ty, version) =
+                self.attachable_permission(&st, ctx, &input.permission_arn, input.permission_version)?;
             let replace = input.replace.unwrap_or(false);
             let share = st.shares.get_mut(arn).expect("checked above");
             match share.permissions.iter().position(|p| p.resource_type == ty) {
                 Some(i) if share.permissions[i].arn == input.permission_arn => share.permissions[i].version = version,
                 Some(i) if replace => {
-                    share.permissions[i] =
-                        SharePermission { arn: input.permission_arn.clone(), version, resource_type: ty, updated: Some(ctx.received_at) };
+                    share.permissions[i] = SharePermission {
+                        arn: input.permission_arn.clone(),
+                        version,
+                        resource_type: ty,
+                        updated: Some(ctx.received_at),
+                    };
                 }
                 Some(_) => {
                     return Err(errors::invalid_parameter(format!(
@@ -442,7 +489,10 @@ impl Ram {
             share.resources.iter().map(|r| r.entity.clone()).collect::<Vec<_>>()
         };
         self.push_policies(&ctx.partition, resources);
-        Ok(types::AssociateResourceSharePermissionResponse { return_value: Some(true), client_token: input.client_token })
+        Ok(types::AssociateResourceSharePermissionResponse {
+            return_value: Some(true),
+            client_token: input.client_token,
+        })
     }
 
     pub(crate) fn disassociate_resource_share_permission(
@@ -463,7 +513,11 @@ impl Ram {
                     input.permission_arn
                 )));
             };
-            if share.resources.iter().any(|r| r.status == "ASSOCIATED" && r.resource_type.as_deref() == Some(perm.resource_type.as_str())) {
+            if share
+                .resources
+                .iter()
+                .any(|r| r.status == "ASSOCIATED" && r.resource_type.as_deref() == Some(perm.resource_type.as_str()))
+            {
                 return Err(errors::operation_not_permitted(format!(
                     "The resource share still has {} resources, which need a permission. Replace the permission instead.",
                     perm.resource_type
@@ -475,10 +529,19 @@ impl Ram {
             share.resources.iter().map(|r| r.entity.clone()).collect::<Vec<_>>()
         };
         self.push_policies(&ctx.partition, resources);
-        Ok(types::DisassociateResourceSharePermissionResponse { return_value: Some(true), client_token: input.client_token })
+        Ok(types::DisassociateResourceSharePermissionResponse {
+            return_value: Some(true),
+            client_token: input.client_token,
+        })
     }
 
-    fn permission_meta(&self, st: &State, partition: &str, arn: &str, version: u32) -> Option<types::ResourceSharePermissionSummary> {
+    fn permission_meta(
+        &self,
+        st: &State,
+        partition: &str,
+        arn: &str,
+        version: u32,
+    ) -> Option<types::ResourceSharePermissionSummary> {
         if let Some(m) = catalog::find(arn) {
             return Some(summary_of(managed_detail(&m, partition)));
         }
@@ -497,7 +560,10 @@ impl Ram {
         let share = st
             .shares
             .get(arn)
-            .filter(|s| s.region == ctx.region && (s.owner == ctx.caller.account_id || self.shared_with(s, &ctx.caller.account_id)))
+            .filter(|s| {
+                s.region == ctx.region
+                    && (s.owner == ctx.caller.account_id || self.shared_with(s, &ctx.caller.account_id))
+            })
             .ok_or_else(|| crate::shares::not_found(arn))?;
         let out: Vec<_> = share
             .permissions
@@ -528,7 +594,8 @@ impl Ram {
             for p in &share.permissions {
                 let default_version = catalog::find(&p.arn).is_some()
                     || st.permissions.get(&p.arn).is_some_and(|x| x.default_version == p.version);
-                let feature_set = st.permissions.get(&p.arn).map(|x| x.feature_set.clone()).unwrap_or_else(|| "STANDARD".into());
+                let feature_set =
+                    st.permissions.get(&p.arn).map(|x| x.feature_set.clone()).unwrap_or_else(|| "STANDARD".into());
                 if input.permission_arn.as_ref().is_some_and(|a| a != &p.arn)
                     || input.permission_version.is_some_and(|v| v as u32 != p.version)
                     || input.association_status.as_ref().is_some_and(|s| s != status)
@@ -584,7 +651,9 @@ impl Ram {
             for share in st.shares.values_mut().filter(|s| s.owner == ctx.caller.account_id && s.status == "ACTIVE") {
                 let mut touched = false;
                 for p in share.permissions.iter_mut() {
-                    if p.arn == input.from_permission_arn && input.from_permission_version.is_none_or(|v| v as u32 == p.version) {
+                    if p.arn == input.from_permission_arn
+                        && input.from_permission_version.is_none_or(|v| v as u32 == p.version)
+                    {
                         *p = SharePermission {
                             arn: input.to_permission_arn.clone(),
                             version: to_version,
@@ -638,7 +707,10 @@ impl Ram {
             .map(wire_work)
             .collect();
         let (page, next) = paginate(out, input.max_results, input.next_token.as_deref())?;
-        Ok(types::ListReplacePermissionAssociationsWorkResponse { replace_permission_associations_works: Some(page), next_token: next })
+        Ok(types::ListReplacePermissionAssociationsWorkResponse {
+            replace_permission_associations_works: Some(page),
+            next_token: next,
+        })
     }
 
     pub(crate) fn promote_permission_created_from_policy(
@@ -651,11 +723,16 @@ impl Ram {
         let mut st = self.lock();
         let p = self.owned_permission(&st, ctx, arn)?.clone();
         if p.feature_set != "CREATED_FROM_POLICY" {
-            return Err(errors::operation_not_permitted(format!("The permission {arn} wasn't created from a resource policy.")));
+            return Err(errors::operation_not_permitted(format!(
+                "The permission {arn} wasn't created from a resource policy."
+            )));
         }
         let new_arn = util::ram_arn(ctx, "permission", &input.name);
         if st.permissions.get(&new_arn).is_some_and(|x| x.status != "DELETED") {
-            return Err(errors::permission_already_exists(format!("A permission named {} already exists.", input.name)));
+            return Err(errors::permission_already_exists(format!(
+                "A permission named {} already exists.",
+                input.name
+            )));
         }
         let now = ctx.received_at;
         let template = p.versions.get(&p.default_version).map(|v| v.template.clone()).unwrap_or_default();
@@ -675,7 +752,10 @@ impl Ram {
         };
         let summary = summary_of(promoted.detail(1));
         st.permissions.insert(new_arn, promoted);
-        Ok(types::PromotePermissionCreatedFromPolicyResponse { permission: Some(summary), client_token: input.client_token })
+        Ok(types::PromotePermissionCreatedFromPolicyResponse {
+            permission: Some(summary),
+            client_token: input.client_token,
+        })
     }
 }
 
