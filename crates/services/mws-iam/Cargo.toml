@@ -16,6 +16,7 @@ uuid.workspace = true
 x509-parser.workspace = true
 chrono.workspace = true
 mws-core.workspace = true
+mws-servicequotas.workspace = true
 mws-iam-policy.workspace = true
 mws-proto-json.workspace = true
 mws-proto-query.workspace = true

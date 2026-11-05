@@ -301,6 +301,7 @@ impl Handler for ClassicElb {
             (Some(ec2), Some(g)) => ec2.security_group_info(ctx, &account, g).map(|i| i.group_name),
             _ => None,
         };
+        let max_load_balancers = self.elb.limit(ctx, "classic-load-balancers");
         let created = self.with_region(ctx, |r| {
             if let Some(existing) = r.classic.get(&name) {
                 let same = existing
@@ -318,7 +319,7 @@ impl Handler for ClassicElb {
                     "Load Balancer named '{name}' already exists and it is configured with different parameters."
                 )));
             }
-            if r.classic.len() >= 20 {
+            if r.classic.len() >= max_load_balancers {
                 return Err(errors::too_many_access_points("Exceeded quota of account"));
             }
             let dns = format!(
@@ -1179,7 +1180,13 @@ impl Handler for ClassicElb {
         names::authorize(ctx, "DescribeAccountLimits", "*", Default::default())?;
         let all: Vec<ct::Limit> = catalog::CLASSIC_LIMITS
             .iter()
-            .map(|(n, m)| ct::Limit { name: Some(n.to_string()), max: Some(m.to_string()) })
+            .map(|(n, m)| {
+                let max = match catalog::quota_code(n) {
+                    Some(_) => self.elb.limit(ctx, n).to_string(),
+                    None => m.to_string(),
+                };
+                ct::Limit { name: Some(n.to_string()), max: Some(max) }
+            })
             .collect();
         let (items, next) = names::page(&all, input.marker.as_deref(), input.page_size, 400)?;
         Ok(ct::DescribeAccountLimitsOutput { limits: Some(items), next_marker: next })

@@ -22,6 +22,7 @@ mod catalog;
 mod forward;
 mod handler;
 mod ops;
+mod quotas;
 mod state;
 mod util;
 
@@ -121,6 +122,8 @@ pub(crate) struct Inner {
     forwarders: forward::Forwarders,
     /// CA overrides for new DB instances, by (account, Region).
     certificate_overrides: Mutex<std::collections::HashMap<(String, String), String>>,
+    /// Service Quotas: DB instances, clusters, snapshots and the rest.
+    quotas: mws_servicequotas::QuotaLink,
 }
 
 /// The RDS service. Cheap to clone; clones share state.
@@ -145,6 +148,7 @@ impl Rds {
                 schedule: Mutex::new(ops::pitr::Schedule::default()),
                 forwarders: forward::Forwarders::default(),
                 certificate_overrides: Mutex::new(Default::default()),
+                quotas: Default::default(),
             }),
         };
         secrets.set_managed_rotation("rds", Arc::new(ops::secret::Rotator(rds.clone())));
@@ -215,6 +219,21 @@ impl Rds {
     }
 
     /// Run `f` on the caller's account and Region.
+    /// Service Quotas, whose applied values limit DB instances, clusters
+    /// and snapshots.
+    pub fn set_service_quotas(&self, quotas: mws_servicequotas::ServiceQuotas) {
+        self.inner.quotas.set(quotas);
+    }
+
+    /// The applied value of an RDS quota for the caller. Never call with
+    /// the state lock held.
+    pub(crate) fn quota(&self, ctx: &RequestContext, code: &str) -> i64 {
+        self.inner
+            .quotas
+            .limit(&util::account_of(ctx), &ctx.region, "rds", code, ctx.received_at)
+            .min(i64::MAX as usize) as i64
+    }
+
     pub(crate) fn with_region<R>(&self, ctx: &RequestContext, f: impl FnOnce(&mut RegionState) -> R) -> R {
         let mut state = self.lock();
         let r = state.regions.entry(State::key(&util::account_of(ctx), &ctx.region)).or_default();

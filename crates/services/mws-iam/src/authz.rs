@@ -271,6 +271,9 @@ pub(crate) fn principal_policies(
         for (k, v) in &session.tags {
             ctx.insert(format!("aws:PrincipalTag/{k}"), vec![v.clone()]);
         }
+        for (k, v) in &session.provided_context {
+            ctx.insert(k.clone(), v.clone());
+        }
     }
     (set, principal, ctx)
 }

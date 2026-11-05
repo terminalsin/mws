@@ -8,7 +8,7 @@ use mws_smithy::{Model, Shape};
 
 use crate::common::{self, de_fn_name, ser_fn_name};
 use crate::json_codec::{self, JsonCodec};
-use crate::naming::{ident, rust_str, snake_case};
+use crate::naming::{rust_str, snake_case};
 use crate::rust_types::TypeGen;
 
 /// Per-service options that the model does not carry.
@@ -138,7 +138,6 @@ impl Gen<'_, '_> {
         let _ = writeln!(w, "    let op = {RT}::operation(&SERVICE_INFO, req)?;");
         let _ = writeln!(w, "    match op {{");
         for op in ops {
-            let method = ident(&snake_case(op.name()));
             let _ = writeln!(w, "        {} => {{", rust_str(op.name()));
             match &op.input {
                 Some(i) => {
@@ -150,10 +149,10 @@ impl Gen<'_, '_> {
                         de_fn_name(self.model.expect(i))
                     );
                     let _ = writeln!(w, "            d.finish(SERVICE_INFO.validation_error)?;");
-                    let _ = writeln!(w, "            let out = handler.{method}(ctx, input).await?;");
+                    let _ = writeln!(w, "            let out = {}?;", crate::common::handler_call(op, "input"));
                 }
                 None => {
-                    let _ = writeln!(w, "            let out = handler.{method}(ctx, ()).await?;");
+                    let _ = writeln!(w, "            let out = {}?;", crate::common::handler_call(op, "()"));
                 }
             }
             match &op.output {

@@ -1,0 +1,21 @@
+[package]
+name = "mws-oci"
+description = "The OCI distribution (Docker registry v2) protocol: request routing, manifests, content-addressed blobs, chunked uploads, referrers and registry tokens bound to an access key, for services that host container registries."
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+base64.workspace = true
+bytes.workspace = true
+form_urlencoded.workspace = true
+hex.workspace = true
+hmac.workspace = true
+http.workspace = true
+mws-core.workspace = true
+rand.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+chrono.workspace = true
+sha2.workspace = true
+uuid.workspace = true

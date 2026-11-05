@@ -799,6 +799,35 @@ async fn infrastructure_and_distribution_configurations() {
         .await
         .unwrap_err();
     assert_eq!(code(&err), "InvalidParameterValueException", "{}", message(&err));
+    // Cron fields are read in the schedule's time zone: 09:00 in Tokyo is
+    // midnight UTC.
+    let tokyo = ib
+        .create_image_pipeline()
+        .name("tokyo")
+        .image_recipe_arn(&recipe)
+        .infrastructure_configuration_arn(&infra)
+        .schedule(Schedule::builder().schedule_expression("cron(0 9 * * ? *)").timezone("Asia/Tokyo").build())
+        .send()
+        .await
+        .unwrap()
+        .image_pipeline_arn
+        .unwrap();
+    let got = ib.get_image_pipeline().image_pipeline_arn(&tokyo).send().await.unwrap().image_pipeline.unwrap();
+    assert_eq!(got.schedule().and_then(|s| s.timezone()), Some("Asia/Tokyo"));
+    let next = got.date_next_run().unwrap_or_default();
+    assert!(next.contains("T00:00:00"), "{next}");
+    let err = ib
+        .create_image_pipeline()
+        .name("bad-tz")
+        .image_recipe_arn(&recipe)
+        .infrastructure_configuration_arn(&infra)
+        .schedule(Schedule::builder().schedule_expression("cron(0 9 * * ? *)").timezone("Mars/Olympus").build())
+        .send()
+        .await
+        .unwrap_err();
+    assert_eq!(code(&err), "InvalidParameterValueException", "{}", message(&err));
+    assert!(message(&err).contains("Mars/Olympus"), "{}", message(&err));
+    ib.delete_image_pipeline().image_pipeline_arn(&tokyo).send().await.unwrap();
     ib.update_image_pipeline()
         .image_pipeline_arn(&pipeline)
         .image_recipe_arn(&recipe)
@@ -1312,6 +1341,106 @@ async fn sharing_imports_and_permissions() {
     assert_eq!(code(&err), "AccessDeniedException", "{}", message(&err));
 }
 
+/// Steps loop, and `ExecuteDocument` runs documents from S3 and other
+/// components; a bad nested document or loop fails the build at its step.
+#[tokio::test]
+async fn components_loop_and_nest_documents() {
+    let mws = Mws::start().await;
+    let ib = client(&mws).await;
+    instance_profile(&mws).await;
+    let s3 = Mws::s3(&mws.root_sdk_config().await);
+    s3.create_bucket().bucket("toe-docs").send().await.unwrap();
+    let nested = "name: nested\nschemaVersion: 1.0\nparameters:\n  - Who:\n      type: string\nphases:\n  - name: build\n    steps:\n      - name: Greet\n        action: CreateFile\n        inputs:\n          - path: /root/nested\n            content: hello {{ Who }}\n";
+    s3.put_object().bucket("toe-docs").key("nested.yaml").body(nested.as_bytes().to_vec().into()).send().await.unwrap();
+    s3.put_object().bucket("toe-docs").key("broken.yaml").body(b"phases: nope".to_vec().into()).send().await.unwrap();
+    let helper = ib
+        .create_component()
+        .name("helper")
+        .semantic_version("1.0.0")
+        .platform("Linux".into())
+        .data("name: helper\nschemaVersion: 1.0\nphases:\n  - name: build\n    steps:\n      - name: Hi\n        action: ExecuteBash\n        inputs:\n          commands: [\"echo hi\"]\n")
+        .send()
+        .await
+        .unwrap()
+        .component_build_version_arn
+        .unwrap();
+    let infra = ib
+        .create_infrastructure_configuration()
+        .name("toe")
+        .instance_profile_name("EC2InstanceProfileForImageBuilder")
+        .instance_types("t3.micro")
+        .send()
+        .await
+        .unwrap()
+        .infrastructure_configuration_arn
+        .unwrap();
+    let build = |name: &'static str, steps: String| {
+        let ib = ib.clone();
+        let infra = infra.clone();
+        async move {
+            let c = ib
+                .create_component()
+                .name(name)
+                .semantic_version("1.0.0")
+                .platform("Linux".into())
+                .data(format!("name: {name}\nschemaVersion: 1.0\nphases:\n  - name: build\n    steps:\n{steps}"))
+                .send()
+                .await
+                .unwrap()
+                .component_build_version_arn
+                .unwrap();
+            let recipe = ib
+                .create_image_recipe()
+                .name(name)
+                .semantic_version("1.0.0")
+                .parent_image(AL2023)
+                .components(ComponentConfiguration::builder().component_arn(c).build().unwrap())
+                .send()
+                .await
+                .unwrap()
+                .image_recipe_arn
+                .unwrap();
+            let image = ib
+                .create_image()
+                .image_recipe_arn(recipe)
+                .infrastructure_configuration_arn(infra)
+                .send()
+                .await
+                .unwrap()
+                .image_build_version_arn
+                .unwrap();
+            wait_for_image(&ib, &image).await
+        }
+    };
+
+    let good = build(
+        "nesting",
+        format!(
+            "      - name: Each\n        action: ExecuteBash\n        loop:\n          name: pkg\n          forEach: [git, jq]\n        inputs:\n          commands: [\"echo {{{{ pkg.value }}}}\"]\n      - name: FromS3\n        action: ExecuteDocument\n        inputs:\n          document: s3://toe-docs/nested.yaml\n          parameters:\n            - Who: world\n      - name: FromComponent\n        action: ExecuteDocument\n        inputs:\n          document: {helper}\n          phases: build\n"
+        ),
+    )
+    .await;
+    assert_eq!(good.state().unwrap().status(), Some(&ImageStatus::Available), "{:?}", good.state());
+
+    let broken = build(
+        "broken-nest",
+        "      - name: Nest\n        action: ExecuteDocument\n        inputs:\n          document: s3://toe-docs/broken.yaml\n".into(),
+    )
+    .await;
+    assert_eq!(broken.state().unwrap().status(), Some(&ImageStatus::Failed));
+    let reason = broken.state().unwrap().reason().unwrap_or_default().to_string();
+    assert!(reason.contains("Nest") && reason.contains("broken.yaml"), "{reason}");
+
+    let endless = build(
+        "endless",
+        "      - name: Count\n        action: ExecuteBash\n        loop:\n          for:\n            start: 1\n            end: 5\n            updateBy: -1\n        inputs:\n          commands: [\"echo {{ loop.value }}\"]\n".into(),
+    )
+    .await;
+    assert_eq!(endless.state().unwrap().status(), Some(&ImageStatus::Failed));
+    let reason = endless.state().unwrap().reason().unwrap_or_default().to_string();
+    assert!(reason.contains("Count") && reason.contains("never ends"), "{reason}");
+}
+
 fn docker_available() -> bool {
     std::process::Command::new("docker")
         .args(["version", "--format", "{{.Server.Version}}"])
@@ -1433,6 +1562,110 @@ async fn components_run_on_docker_instances() {
     assert_eq!(bad.state().unwrap().status(), Some(&ImageStatus::Failed));
     let reason = bad.state().unwrap().reason().unwrap_or_default().to_string();
     assert!(reason.contains("Run"), "{reason}");
+
+    // Loops, chained step outputs and a nested document read from the
+    // instance really run.
+    let steps = r#"name: toe-features
+schemaVersion: 1.0
+phases:
+  - name: build
+    steps:
+      - name: Each
+        action: ExecuteBash
+        loop:
+          name: pkg
+          forEach: [git, jq]
+        inputs:
+          commands: ["echo {{ loop.index }}-{{ pkg.value }} >> /root/loop"]
+      - name: Hello
+        action: ExecuteBash
+        inputs:
+          commands: ["echo chained"]
+      - name: Chain
+        action: ExecuteBash
+        inputs:
+          commands: ["echo '{{ build.Hello.outputs.stdout }}' > /root/chain"]
+      - name: WriteDoc
+        action: CreateFile
+        inputs:
+          - path: /root/nested.yaml
+            content: |
+              schemaVersion: 1.0
+              parameters:
+                - Who:
+                    type: string
+              phases:
+                - name: build
+                  steps:
+                    - name: Greet
+                      action: ExecuteBash
+                      inputs:
+                        commands: ["echo hello {{ Who }} > /root/nested"]
+      - name: Nest
+        action: ExecuteDocument
+        inputs:
+          document: /root/nested.yaml
+          parameters:
+            - Who: world
+"#;
+    let c = ib
+        .create_component()
+        .name("toe-features")
+        .semantic_version("1.0.0")
+        .platform("Linux".into())
+        .data(steps)
+        .send()
+        .await
+        .unwrap()
+        .component_build_version_arn
+        .unwrap();
+    let recipe = ib
+        .create_image_recipe()
+        .name("toe-features")
+        .semantic_version("1.0.0")
+        .parent_image(&alpine)
+        .components(ComponentConfiguration::builder().component_arn(c).build().unwrap())
+        .send()
+        .await
+        .unwrap()
+        .image_recipe_arn
+        .unwrap();
+    let image = ib
+        .create_image()
+        .image_recipe_arn(recipe)
+        .infrastructure_configuration_arn(&infra)
+        .send()
+        .await
+        .unwrap()
+        .image_build_version_arn
+        .unwrap();
+    let built = wait_for_image(&ib, &image).await;
+    assert_eq!(built.state().unwrap().status(), Some(&ImageStatus::Available), "{:?}", built.state());
+    let ami = built.output_resources().unwrap().amis()[0].image().unwrap().to_string();
+    let run = ec2
+        .run_instances()
+        .image_id(&ami)
+        .instance_type(aws_sdk_ec2::types::InstanceType::T3Micro)
+        .min_count(1)
+        .max_count(1)
+        .send()
+        .await
+        .unwrap();
+    let id = run.instances()[0].instance_id().unwrap().to_string();
+    let mut contents = String::new();
+    for _ in 0..120 {
+        let out = std::process::Command::new("docker")
+            .args(["exec", &format!("mws-ec2-{id}"), "cat", "/root/loop", "/root/chain", "/root/nested"])
+            .output()
+            .unwrap();
+        if out.status.success() {
+            contents = String::from_utf8_lossy(&out.stdout).to_string();
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(500)).await;
+    }
+    assert_eq!(contents, "0-git\n1-jq\nchained\nhello world\n");
+    ec2.terminate_instances().instance_ids(&id).send().await.unwrap();
 }
 
 /// Distributions add a launch template version that launches the new AMI.

@@ -746,6 +746,38 @@ impl mws_ec2::InstanceRoleCredentials for Ec2InstanceRoles {
     }
 }
 
+/// CloudFormation service roles: the stack's `RoleARN`, assumed as
+/// `cloudformation.amazonaws.com`.
+pub struct CloudFormationRoles(pub mws_sts::Sts);
+
+impl mws_cloudformation::RoleAssumer for CloudFormationRoles {
+    fn assume(
+        &self,
+        role_arn: &str,
+        session_name: &str,
+        now: chrono::DateTime<chrono::Utc>,
+    ) -> Result<mws_core::Caller, String> {
+        let creds = self
+            .0
+            .assume_role_as_service(&mws_sts::ServiceAssume {
+                role_arn,
+                service_principal: "cloudformation.amazonaws.com",
+                session_name,
+                duration_seconds: 3600,
+                source_account: role_arn.split(':').nth(4),
+                source_arn: None,
+                now,
+            })
+            .map_err(|_| format!("Role {role_arn} is invalid or cannot be assumed"))?;
+        self.0
+            .credential_store()
+            .resolve(&creds.access_key_id, Some(&creds.session_token), now)
+            .map_err(|e| format!("{e:?}"))?
+            .map(|r| r.caller)
+            .ok_or_else(|| format!("Role {role_arn} is invalid or cannot be assumed"))
+    }
+}
+
 /// Global Accelerator endpoints that live in EC2: instances, Elastic IP
 /// addresses and (for custom routing) VPC subnets.
 pub(crate) struct GlobalAcceleratorEc2(pub mws_ec2::Ec2);
@@ -1080,6 +1112,108 @@ impl mws_securityhub::ExportSink for SecurityHubExports {
     }
 }
 
+/// GuardDuty's view of AWS Organizations: accounts, and delegated
+/// administration registered with the caller's permissions.
+pub(crate) struct GuardDutyOrganizations(pub mws_organizations::Organizations);
+
+impl mws_guardduty::OrganizationLink for GuardDutyOrganizations {
+    fn organization(&self, account: &str) -> Option<mws_guardduty::OrgInfo> {
+        let o = self.0.organization_of(account)?;
+        Some(mws_guardduty::OrgInfo {
+            id: o.id,
+            management_account: o.management_account,
+            accounts: o
+                .accounts
+                .into_iter()
+                .map(|a| mws_guardduty::OrgAccount { id: a.id, email: a.email, joined: a.joined, status: a.status })
+                .collect(),
+        })
+    }
+
+    fn register_admin(&self, ctx: &RequestContext, admin: &str) -> Result<(), mws_core::ServiceError> {
+        // AWS makes these Organizations calls with the caller's credentials.
+        for action in ["organizations:EnableAWSServiceAccess", "organizations:RegisterDelegatedAdministrator"] {
+            ctx.authorize(action, "*", mws_core::ConditionContext::new())?;
+        }
+        self.0
+            .register_delegated_administrator_for_service(
+                &ctx.caller.account_id,
+                admin,
+                mws_guardduty::SERVICE_PRINCIPAL,
+                chrono::Utc::now(),
+            )
+            .map_err(guardduty_delegation_error)
+    }
+
+    fn deregister_admin(&self, ctx: &RequestContext, admin: &str) -> Result<(), mws_core::ServiceError> {
+        ctx.authorize("organizations:DeregisterDelegatedAdministrator", "*", mws_core::ConditionContext::new())?;
+        self.0
+            .deregister_delegated_administrator_for_service(
+                &ctx.caller.account_id,
+                admin,
+                mws_guardduty::SERVICE_PRINCIPAL,
+            )
+            .map_err(guardduty_delegation_error)
+    }
+}
+
+fn guardduty_delegation_error(e: mws_organizations::DelegationError) -> mws_core::ServiceError {
+    use mws_organizations::DelegationError;
+    let message = match e {
+        DelegationError::NotManagementAccount => "the caller is not the management account of an organization",
+        DelegationError::AccountNotInOrganization => "the account is not a member of the organization",
+        DelegationError::ManagementAccount => "the management account cannot be a delegated administrator",
+        DelegationError::NotAllFeatures => "the organization does not have all features enabled",
+    };
+    mws_core::ServiceError::client("BadRequestException", 400, message)
+}
+
+/// GuardDuty publishing destinations: findings exported into S3 as
+/// `guardduty.amazonaws.com`, SSE-KMS under the destination's key.
+pub(crate) struct GuardDutyToS3(pub mws_s3::S3);
+
+impl mws_guardduty::FindingExporter for GuardDutyToS3 {
+    fn export(&self, _ctx: &RequestContext, e: mws_guardduty::FindingExport) -> Result<(), String> {
+        let path = e.destination_arn.rsplit(":::").next().unwrap_or_default();
+        let (bucket, prefix) = path.split_once('/').unwrap_or((path, ""));
+        let key = match prefix.trim_end_matches('/') {
+            "" => e.key.clone(),
+            p => format!("{p}/{}", e.key),
+        };
+        let put = mws_s3::ServicePutObject {
+            bucket,
+            key: &key,
+            body: e.body,
+            content_type: "application/octet-stream",
+            service_principal: mws_guardduty::SERVICE_PRINCIPAL,
+            source_account: &e.account,
+            source_arn: &e.detector_arn,
+            acl: None,
+            partition: &e.partition,
+        };
+        self.0.put_object_as_service_kms(put, &e.kms_key_arn).map(|_| ()).map_err(|err| err.to_string())
+    }
+}
+
+/// GuardDuty findings imported into Security Hub as product `aws/guardduty`.
+pub(crate) struct GuardDutyToSecurityHub(pub mws_securityhub::SecurityHub);
+
+impl mws_guardduty::SecurityHubSink for GuardDutyToSecurityHub {
+    fn import_findings(&self, ctx: &RequestContext, account: &str, region: &str, findings: Vec<serde_json::Value>) {
+        let r = self.0.import_findings_as_service(
+            ctx,
+            account,
+            region,
+            "aws/guardduty",
+            mws_guardduty::SERVICE_PRINCIPAL,
+            findings,
+        );
+        for (id, code, message) in r.failed {
+            tracing::debug!(%id, %code, %message, "Security Hub rejected a GuardDuty finding");
+        }
+    }
+}
+
 /// Route 53 alias records that target an accelerator's DNS name answer with
 /// its static IP addresses.
 pub(crate) struct Route53ToGlobalAccelerator(pub mws_globalaccelerator::GlobalAccelerator);
@@ -1200,5 +1334,652 @@ impl mws_rds::ExportStore for RdsExports {
             .await
             .map(|_| ())
             .map_err(|e| format!("{}: {}", e.code, e.message))
+    }
+}
+
+/// Lambda container images come from ECR. Resolving one at
+/// `CreateFunction`/`UpdateFunctionCode` is a pull by the caller; starting
+/// an execution environment fetches the resolved digest as Lambda.
+pub struct LambdaImages(pub mws_ecr::Ecr);
+
+impl LambdaImages {
+    fn convert(&self, image: mws_ecr::PulledImage) -> mws_lambda::ContainerImage {
+        let blob = |d: &mws_oci::Descriptor, data: bytes::Bytes| mws_lambda::ImageBlob {
+            digest: d.digest.clone(),
+            media_type: d.media_type.clone(),
+            data,
+        };
+        mws_lambda::ContainerImage {
+            resolved_uri: self.0.image_uri(&image.location, &image.resolved_digest),
+            resolved_digest: image.resolved_digest,
+            digest: image.digest,
+            manifest: bytes::Bytes::from(image.manifest.into_bytes()),
+            manifest_media_type: image.media_type,
+            config: blob(&image.config, image.config_data),
+            layers: image.layers.into_iter().map(|(d, data)| blob(&d, data)).collect(),
+        }
+    }
+}
+
+impl mws_lambda::ImageSource for LambdaImages {
+    fn resolve(
+        &self,
+        ctx: &RequestContext,
+        uri: &str,
+        architecture: &str,
+    ) -> Result<mws_lambda::ContainerImage, mws_lambda::ImageError> {
+        let location =
+            self.0.locate_image(uri, &ctx.caller.account_id, &ctx.region).ok_or(mws_lambda::ImageError::Invalid)?;
+        match self.0.pull_image(Some(ctx), &location, architecture) {
+            Ok(image) => Ok(self.convert(image)),
+            Err(mws_ecr::PullError::NotFound) => Err(mws_lambda::ImageError::NotFound),
+            Err(mws_ecr::PullError::AccessDenied) => Err(mws_lambda::ImageError::AccessDenied),
+            Err(mws_ecr::PullError::Unsupported) => Err(mws_lambda::ImageError::Unsupported),
+        }
+    }
+
+    fn fetch(
+        &self,
+        account: &str,
+        region: &str,
+        resolved_uri: &str,
+        architecture: &str,
+    ) -> Option<mws_lambda::ContainerImage> {
+        let location = self.0.locate_image(resolved_uri, account, region)?;
+        self.0.pull_image(None, &location, architecture).ok().map(|i| self.convert(i))
+    }
+}
+
+/// Usage of the quotas other services enforce, for Service Quotas.
+pub struct QuotaUsage {
+    pub ec2: mws_ec2::Ec2,
+    pub s3: mws_s3::S3,
+    pub iam: mws_iam::Iam,
+}
+
+impl mws_servicequotas::UsageSource for QuotaUsage {
+    fn usage(&self, account: &str, region: &str, service: &str, code: &str) -> Option<f64> {
+        match (service, code) {
+            ("s3", "L-DC2B2D3D") => Some(self.s3.bucket_count(account) as f64),
+            ("iam", "L-FE177D64") => Some(self.iam.role_count(account) as f64),
+            ("ec2" | "vpc", _) => self.ec2.quota_usage(account, region, service, code),
+            _ => None,
+        }
+    }
+}
+
+/// Service Quotas publishing `AWS/Usage` metrics into CloudWatch.
+pub struct UsageToCloudWatch(pub mws_cloudwatch::CloudWatch);
+
+impl mws_servicequotas::MetricPublisher for UsageToCloudWatch {
+    fn publish(&self, data: Vec<mws_servicequotas::UsageDatum>) {
+        for d in data {
+            self.0.put_metric_as_service(mws_cloudwatch::ServiceMetric {
+                account: d.account,
+                region: d.region,
+                namespace: d.namespace,
+                metric_name: d.metric_name,
+                dimensions: d.dimensions,
+                unit: Some(d.unit),
+                timestamp: d.timestamp,
+                values: vec![(d.value, 1.0)],
+            });
+        }
+    }
+}
+
+/// Organizations as Service Quotas sees it (quota request templates).
+pub struct QuotaOrganizations(pub mws_organizations::Organizations);
+
+impl mws_servicequotas::OrganizationDirectory for QuotaOrganizations {
+    fn account(&self, account_id: &str) -> Option<mws_servicequotas::OrgAccount> {
+        let m = self.0.member_account(account_id)?;
+        Some(mws_servicequotas::OrgAccount {
+            management_account_id: m.management_account_id,
+            all_features: m.all_features,
+            joined_method: m.joined_method,
+            joined: m.joined,
+        })
+    }
+}
+
+/// Consolidated billing and account names for Cost Explorer.
+pub struct CostAccounts(pub mws_organizations::Organizations);
+
+impl mws_ce::AccountDirectory for CostAccounts {
+    fn payer(&self, account: &str) -> Option<String> {
+        self.0.member_account(account).map(|m| m.management_account_id)
+    }
+
+    fn name(&self, account: &str) -> Option<String> {
+        self.0.member_account(account).map(|m| m.name).filter(|n| !n.is_empty())
+    }
+}
+
+/// Cost anomaly alerts, published by `costalerts.amazonaws.com`.
+pub struct AnomalyAlerts(pub mws_sns::Sns);
+
+impl mws_ce::AnomalyNotifier for AnomalyAlerts {
+    fn notify(&self, ctx: &RequestContext, alert: mws_ce::AnomalyAlert) -> Result<(), String> {
+        self.0
+            .publish_as_service(
+                ctx,
+                &mws_sns::ServicePublish {
+                    topic_arn: &alert.topic_arn,
+                    service_principal: "costalerts.amazonaws.com",
+                    source_arn: &alert.subscription_arn,
+                    source_account: &alert.account,
+                    message: alert.message,
+                    subject: Some(alert.subject),
+                    attributes: Default::default(),
+                    message_group_id: None,
+                    message_deduplication_id: None,
+                },
+            )
+            .map(|_| ())
+            .map_err(|e| e.to_string())
+    }
+}
+
+/// ElastiCache subnet groups and security groups, read from EC2.
+pub(crate) struct ElastiCacheNetwork {
+    pub ec2: mws_ec2::Ec2,
+    pub partition: String,
+}
+
+fn subnet_info(s: mws_ec2::network::SubnetView) -> mws_elasticache::SubnetInfo {
+    mws_elasticache::SubnetInfo {
+        subnet_id: s.subnet_id,
+        vpc_id: s.vpc_id,
+        availability_zone: s.availability_zone,
+        ipv6: s.ipv6,
+    }
+}
+
+impl mws_elasticache::NetworkView for ElastiCacheNetwork {
+    fn subnet(&self, account: &str, region: &str, subnet_id: &str) -> Option<mws_elasticache::SubnetInfo> {
+        self.ec2.subnet_view(account, region, &self.partition, subnet_id).map(subnet_info)
+    }
+    fn default_subnets(&self, account: &str, region: &str) -> Vec<mws_elasticache::SubnetInfo> {
+        self.ec2.default_subnet_views(account, region, &self.partition).into_iter().map(subnet_info).collect()
+    }
+    fn security_group_vpc(&self, account: &str, region: &str, group_id: &str) -> Option<String> {
+        self.ec2.security_group_vpc(account, region, &self.partition, group_id)
+    }
+    fn default_security_group(&self, account: &str, region: &str, vpc_id: &str) -> Option<String> {
+        self.ec2.default_security_group(account, region, &self.partition, vpc_id)
+    }
+}
+
+/// ElastiCache snapshot exports to, and seeds from, S3, as
+/// `elasticache.amazonaws.com`.
+pub(crate) struct ElastiCacheSnapshots(pub mws_s3::S3);
+
+impl mws_elasticache::SnapshotBucket for ElastiCacheSnapshots {
+    fn export(
+        &self,
+        ctx: &RequestContext,
+        bucket: &str,
+        key: &str,
+        body: Vec<u8>,
+        source_arn: &str,
+    ) -> Result<(), mws_core::ServiceError> {
+        let account = source_arn.split(':').nth(4).unwrap_or_default();
+        let put = mws_s3::ServicePutObject {
+            bucket,
+            key,
+            body,
+            content_type: "application/octet-stream",
+            service_principal: "elasticache.amazonaws.com",
+            source_account: account,
+            source_arn,
+            acl: None,
+            partition: &ctx.partition,
+        };
+        let invalid =
+            |m: String| mws_core::ServiceError::new("InvalidParameterValue", 400, mws_core::ErrorFault::Client, m);
+        match self.0.put_object_as_service(put) {
+            Ok(_) => Ok(()),
+            Err(mws_s3::ServicePutError::NoSuchBucket) => Err(invalid(format!("The S3 bucket {bucket} does not exist."))),
+            Err(mws_s3::ServicePutError::AccessDenied { .. }) => Err(invalid(format!(
+                "No permission to access S3 bucket {bucket}: grant elasticache.amazonaws.com s3:PutObject in the bucket policy."
+            ))),
+            Err(e) => Err(invalid(format!("Could not write to S3 bucket {bucket}: {e}"))),
+        }
+    }
+
+    fn read(&self, s3_arn: &str) -> Option<Vec<u8>> {
+        let path = s3_arn.split(":::").nth(1)?;
+        let (bucket, key) = path.split_once('/')?;
+        self.0.object_bytes(bucket, key)
+    }
+}
+
+/// ElastiCache event notifications, published to SNS as
+/// `elasticache.amazonaws.com`.
+pub(crate) struct ElastiCacheNotifications(pub mws_sns::Sns);
+
+impl mws_elasticache::EventNotifier for ElastiCacheNotifications {
+    fn notify(&self, ctx: &RequestContext, topic_arn: &str, source_arn: &str, message: &str) {
+        let id = source_arn.rsplit(':').next().unwrap_or_default();
+        let account = source_arn.split(':').nth(4).unwrap_or_default();
+        let body = serde_json::json!({ message: id }).to_string();
+        let p = mws_sns::ServicePublish {
+            topic_arn,
+            service_principal: "elasticache.amazonaws.com",
+            source_arn,
+            source_account: account,
+            message: body,
+            subject: Some(message.to_string()),
+            attributes: Default::default(),
+            message_group_id: None,
+            message_deduplication_id: None,
+        };
+        if let Err(e) = self.0.publish_as_service(ctx, &p) {
+            tracing::debug!("ElastiCache notification to {topic_arn}: {e}");
+        }
+    }
+}
+
+/// ElastiCache publishes its `AWS/ElastiCache` metrics into CloudWatch.
+pub struct ElastiCacheToCloudWatch(pub mws_cloudwatch::CloudWatch);
+
+impl mws_elasticache::MetricPublisher for ElastiCacheToCloudWatch {
+    fn publish(&self, metrics: Vec<mws_elasticache::CacheMetric>) {
+        for m in metrics {
+            let Some(timestamp) = chrono::DateTime::from_timestamp_millis(m.timestamp) else { continue };
+            self.0.put_metric_as_service(mws_cloudwatch::ServiceMetric {
+                account: m.account,
+                region: m.region,
+                namespace: "AWS/ElastiCache".into(),
+                metric_name: m.metric_name.into(),
+                dimensions: m.dimensions,
+                unit: Some(m.unit.into()),
+                timestamp,
+                values: vec![(m.value, 1.0)],
+            });
+        }
+    }
+}
+
+/// What ECS tasks get from other services: EC2 network interfaces for
+/// `awsvpc` tasks, task and execution role sessions from STS, container
+/// secrets from Secrets Manager and Parameter Store, and `awslogs` output in
+/// CloudWatch Logs.
+pub(crate) struct EcsPlatform {
+    pub ec2: mws_ec2::Ec2,
+    pub sts: mws_sts::Sts,
+    pub secretsmanager: mws_secretsmanager::SecretsManager,
+    pub ssm: mws_ssm::Ssm,
+    pub logs: mws_logs::Logs,
+    pub elb: mws_elb::Elb,
+    pub autoscaling: mws_autoscaling::AutoScaling,
+}
+
+impl EcsPlatform {
+    /// ECS acting through its service-linked role: no caller policy applies.
+    fn service_linked(ctx: &RequestContext) -> RequestContext {
+        RequestContext { authorizer: std::sync::Arc::new(mws_core::AllowAll), ..ctx.clone() }
+    }
+}
+
+#[async_trait::async_trait]
+impl mws_ecs::TaskPlatform for EcsPlatform {
+    fn create_interface(
+        &self,
+        ctx: &RequestContext,
+        account: &str,
+        subnets: &[String],
+        security_groups: &[String],
+        assign_public_ip: bool,
+        description: &str,
+    ) -> Result<mws_ecs::platform::TaskInterface, mws_core::ServiceError> {
+        let subnet = subnets.first().cloned().unwrap_or_default();
+        let i = self.ec2.create_service_interface(
+            ctx,
+            account,
+            &subnet,
+            security_groups,
+            assign_public_ip,
+            description,
+            "ecs.amazonaws.com",
+        )?;
+        Ok(mws_ecs::platform::TaskInterface {
+            eni_id: i.eni_id,
+            private_ip: i.private_ip,
+            mac_address: i.mac_address,
+            private_dns_name: i.private_dns_name,
+            subnet_id: i.subnet_id,
+            vpc_id: i.vpc_id,
+            vpc_cidr: i.vpc_cidr,
+            availability_zone: i.availability_zone,
+        })
+    }
+
+    fn delete_interface(&self, ctx: &RequestContext, account: &str, eni_id: &str) {
+        self.ec2.delete_service_interface(ctx, account, eni_id);
+    }
+
+    fn assume_task_role(
+        &self,
+        role_arn: &str,
+        task_arn: &str,
+        account: &str,
+        now: chrono::DateTime<chrono::Utc>,
+    ) -> Result<mws_ecs::platform::RoleCredentials, String> {
+        let task_id = task_arn.rsplit('/').next().unwrap_or(task_arn);
+        let c = self
+            .sts
+            .assume_role_as_service(&mws_sts::ServiceAssume {
+                role_arn,
+                service_principal: "ecs-tasks.amazonaws.com",
+                session_name: task_id,
+                duration_seconds: 6 * 3600,
+                source_account: Some(account),
+                source_arn: Some(task_arn),
+                now,
+            })
+            .map_err(|e| match e {
+                mws_sts::ServiceAssumeError::NoSuchRole => format!("role {role_arn} does not exist"),
+                mws_sts::ServiceAssumeError::NotTrusted => {
+                    format!("ECS was unable to assume the role '{role_arn}' that was provided for this task.")
+                }
+            })?;
+        Ok(mws_ecs::platform::RoleCredentials {
+            access_key_id: c.access_key_id,
+            secret_access_key: c.secret_access_key,
+            session_token: c.session_token,
+            expiration: c.expiration,
+        })
+    }
+
+    fn role_context(
+        &self,
+        base: &RequestContext,
+        credentials: &mws_ecs::platform::RoleCredentials,
+    ) -> Option<RequestContext> {
+        let resolved = self
+            .sts
+            .credential_store()
+            .resolve(&credentials.access_key_id, Some(&credentials.session_token), base.received_at)
+            .ok()
+            .flatten()?;
+        Some(RequestContext { caller: resolved.caller, source_ip: None, ..base.clone() })
+    }
+
+    async fn read_secret(&self, ctx: &RequestContext, value_from: &str) -> Result<String, mws_core::ServiceError> {
+        if value_from.contains(":secretsmanager:") {
+            // arn:aws:secretsmanager:region:account:secret:name[:json-key[:version-stage[:version-id]]]
+            let parts: Vec<&str> = value_from.split(':').collect();
+            let arn = parts.iter().take(7).copied().collect::<Vec<_>>().join(":");
+            let key = parts.get(7).filter(|k| !k.is_empty());
+            let stage = parts.get(8).filter(|k| !k.is_empty());
+            let version = parts.get(9).filter(|k| !k.is_empty());
+            let s = self.secretsmanager.read_for_reference(ctx, &arn, version.or(stage).copied())?;
+            return match key {
+                None => Ok(s.secret_string),
+                Some(k) => {
+                    let v: serde_json::Value = serde_json::from_str(&s.secret_string).map_err(|_| {
+                        mws_core::ServiceError::new(
+                            "InvalidParameterException",
+                            400,
+                            mws_core::ErrorFault::Client,
+                            "The secret value is not valid JSON.",
+                        )
+                    })?;
+                    match v.get(*k) {
+                        Some(serde_json::Value::String(s)) => Ok(s.clone()),
+                        Some(other) => Ok(other.to_string()),
+                        None => Err(mws_core::ServiceError::new(
+                            "ResourceNotFoundException",
+                            400,
+                            mws_core::ErrorFault::Client,
+                            format!("The JSON key {k} was not found in the secret."),
+                        )),
+                    }
+                }
+            };
+        }
+        // A parameter name, or arn:aws:ssm:region:account:parameter/name.
+        let name = match value_from.split_once(":parameter") {
+            Some((_, rest)) if value_from.starts_with("arn:") => rest.to_string(),
+            _ => value_from.to_string(),
+        };
+        let out = mws_core::Service::invoke(
+            &self.ssm,
+            ctx.clone(),
+            "GetParameter",
+            serde_json::json!({ "Name": name, "WithDecryption": true }),
+        )
+        .await?;
+        Ok(out["Parameter"]["Value"].as_str().unwrap_or_default().to_string())
+    }
+
+    fn write_logs(
+        &self,
+        ctx: &RequestContext,
+        log_group: &str,
+        log_stream: &str,
+        create_group: bool,
+        events: Vec<mws_ecs::platform::LogEvent>,
+    ) -> Result<(), mws_core::ServiceError> {
+        let events = events
+            .into_iter()
+            .map(|e| mws_logs::ServiceLogEvent { timestamp: e.timestamp_ms, message: e.message })
+            .collect();
+        if create_group {
+            return self.logs.put_log_events_as_caller(ctx, log_group, log_stream, events);
+        }
+        // Without awslogs-create-group, a missing group fails the write.
+        self.logs.put_log_events_as_caller_existing_group(ctx, log_group, log_stream, events)
+    }
+
+    fn default_subnets(&self, ctx: &RequestContext, account: &str) -> Vec<String> {
+        self.ec2.default_subnets(ctx, account)
+    }
+
+    async fn update_targets(
+        &self,
+        ctx: &RequestContext,
+        target_group_arn: &str,
+        targets: &[(String, i32)],
+        register: bool,
+    ) -> Result<(), mws_core::ServiceError> {
+        let op = if register { "RegisterTargets" } else { "DeregisterTargets" };
+        let request = serde_json::json!({
+            "TargetGroupArn": target_group_arn,
+            "Targets": targets.iter().map(|(id, port)| serde_json::json!({"Id": id, "Port": port})).collect::<Vec<_>>(),
+        });
+        mws_core::Service::invoke(&self.elb, Self::service_linked(ctx), op, request).await.map(|_| ())
+    }
+
+    async fn target_health(&self, ctx: &RequestContext, target_group_arn: &str, id: &str, port: i32) -> Option<String> {
+        let request = serde_json::json!({
+            "TargetGroupArn": target_group_arn,
+            "Targets": [{"Id": id, "Port": port}],
+        });
+        let out = mws_core::Service::invoke(&self.elb, Self::service_linked(ctx), "DescribeTargetHealth", request)
+            .await
+            .ok()?;
+        out["TargetHealthDescriptions"][0]["TargetHealth"]["State"].as_str().map(String::from)
+    }
+
+    async fn scaling_group(&self, ctx: &RequestContext, name: &str) -> Option<mws_ecs::platform::ScalingGroup> {
+        let out = mws_core::Service::invoke(
+            &self.autoscaling,
+            Self::service_linked(ctx),
+            "DescribeAutoScalingGroups",
+            serde_json::json!({"AutoScalingGroupNames": [name]}),
+        )
+        .await
+        .ok()?;
+        let g = out.pointer("/AutoScalingGroups/0")?;
+        let int = |k: &str| g.get(k).and_then(serde_json::Value::as_i64).unwrap_or_default() as i32;
+        let text = |v: &serde_json::Value, k: &str| {
+            v.get(k).and_then(serde_json::Value::as_str).unwrap_or_default().to_string()
+        };
+        Some(mws_ecs::platform::ScalingGroup {
+            desired_capacity: int("DesiredCapacity"),
+            min_size: int("MinSize"),
+            max_size: int("MaxSize"),
+            instances: g
+                .get("Instances")
+                .and_then(serde_json::Value::as_array)
+                .into_iter()
+                .flatten()
+                .map(|i| mws_ecs::platform::ScalingGroupInstance {
+                    instance_id: text(i, "InstanceId"),
+                    lifecycle_state: text(i, "LifecycleState"),
+                    instance_type: text(i, "InstanceType"),
+                    availability_zone: text(i, "AvailabilityZone"),
+                })
+                .collect(),
+        })
+    }
+
+    async fn set_desired_capacity(
+        &self,
+        ctx: &RequestContext,
+        name: &str,
+        desired: i32,
+    ) -> Result<(), mws_core::ServiceError> {
+        mws_core::Service::invoke(
+            &self.autoscaling,
+            Self::service_linked(ctx),
+            "SetDesiredCapacity",
+            serde_json::json!({"AutoScalingGroupName": name, "DesiredCapacity": desired, "HonorCooldown": false}),
+        )
+        .await?;
+        self.autoscaling.tick().await;
+        Ok(())
+    }
+
+    async fn instance_type_resources(&self, ctx: &RequestContext, instance_type: &str) -> Option<(i32, i32)> {
+        let out = mws_core::Service::invoke(
+            &self.ec2,
+            Self::service_linked(ctx),
+            "DescribeInstanceTypes",
+            serde_json::json!({"InstanceTypes": [instance_type]}),
+        )
+        .await
+        .ok()?;
+        let t = out.pointer("/InstanceTypes/0")?;
+        let vcpus = t.pointer("/VCpuInfo/DefaultVCpus")?.as_i64()? as i32;
+        let mem = t.pointer("/MemoryInfo/SizeInMiB")?.as_i64()? as i32;
+        Some((vcpus, mem))
+    }
+
+    async fn create_express_ingress(
+        &self,
+        ctx: &RequestContext,
+        name: &str,
+        subnets: &[String],
+        security_groups: &[String],
+        port: i32,
+        health_check_path: &str,
+    ) -> Result<Option<mws_ecs::platform::ExpressIngress>, mws_core::ServiceError> {
+        use mws_core::Service;
+        let account = ctx.caller.account_id.clone();
+        let behalf = Self::service_linked(ctx);
+        let Some(first) = subnets.first().and_then(|s| self.ec2.subnet_info(ctx, &account, s)) else {
+            return Ok(None);
+        };
+        // An Application Load Balancer needs subnets in two zones.
+        let mut lb_subnets: Vec<String> = subnets.to_vec();
+        let mut zones: Vec<String> = subnets
+            .iter()
+            .filter_map(|s| self.ec2.subnet_info(ctx, &account, s))
+            .map(|s| s.availability_zone)
+            .collect();
+        for s in self.ec2.subnets_of_vpc(ctx, &account, Some(&first.vpc_id)) {
+            if zones.len() >= 2 {
+                break;
+            }
+            if !zones.contains(&s.availability_zone) {
+                zones.push(s.availability_zone.clone());
+                lb_subnets.push(s.subnet_id);
+            }
+        }
+        let base: String = format!("ecs-express-{name}").chars().take(32).collect();
+        let base = base.trim_end_matches('-').to_string();
+        let lb = self
+            .elb
+            .invoke(
+                behalf.clone(),
+                "CreateLoadBalancer",
+                serde_json::json!({
+                    "Name": base,
+                    "Subnets": lb_subnets,
+                    "SecurityGroups": security_groups,
+                    "Scheme": "internet-facing",
+                    "Type": "application",
+                }),
+            )
+            .await?;
+        let lb_arn =
+            lb.pointer("/LoadBalancers/0/LoadBalancerArn").and_then(|v| v.as_str()).unwrap_or_default().to_string();
+        let dns = lb.pointer("/LoadBalancers/0/DNSName").and_then(|v| v.as_str()).unwrap_or_default().to_string();
+        let lb_groups: Vec<String> = lb
+            .pointer("/LoadBalancers/0/SecurityGroups")
+            .and_then(|v| v.as_array())
+            .into_iter()
+            .flatten()
+            .filter_map(|v| v.as_str().map(String::from))
+            .collect();
+        let tg = self
+            .elb
+            .invoke(
+                behalf.clone(),
+                "CreateTargetGroup",
+                serde_json::json!({
+                    "Name": base,
+                    "Protocol": "HTTP",
+                    "Port": port,
+                    "VpcId": first.vpc_id,
+                    "TargetType": "ip",
+                    "HealthCheckPath": health_check_path,
+                }),
+            )
+            .await?;
+        let tg_arn =
+            tg.pointer("/TargetGroups/0/TargetGroupArn").and_then(|v| v.as_str()).unwrap_or_default().to_string();
+        let listener = self
+            .elb
+            .invoke(
+                behalf,
+                "CreateListener",
+                serde_json::json!({
+                    "LoadBalancerArn": lb_arn,
+                    "Protocol": "HTTP",
+                    "Port": 80,
+                    "DefaultActions": [{"Type": "forward", "TargetGroupArn": tg_arn}],
+                }),
+            )
+            .await?;
+        let listener_arn =
+            listener.pointer("/Listeners/0/ListenerArn").and_then(|v| v.as_str()).unwrap_or_default().to_string();
+        Ok(Some(mws_ecs::platform::ExpressIngress {
+            load_balancer_arn: lb_arn,
+            listener_arn,
+            target_group_arn: tg_arn,
+            dns_name: dns,
+            subnets: lb_subnets,
+            security_groups: lb_groups,
+        }))
+    }
+
+    async fn delete_express_ingress(&self, ctx: &RequestContext, ingress: &mws_ecs::platform::ExpressIngress) {
+        use mws_core::Service;
+        let behalf = Self::service_linked(ctx);
+        let calls = [
+            ("DeleteListener", serde_json::json!({"ListenerArn": ingress.listener_arn})),
+            ("DeleteLoadBalancer", serde_json::json!({"LoadBalancerArn": ingress.load_balancer_arn})),
+            ("DeleteTargetGroup", serde_json::json!({"TargetGroupArn": ingress.target_group_arn})),
+        ];
+        for (op, input) in calls {
+            if let Err(e) = self.elb.invoke(behalf.clone(), op, input).await {
+                tracing::warn!("ECS Express clean-up {op} failed: {} {}", e.code, e.message);
+            }
+        }
     }
 }
