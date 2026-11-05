@@ -100,10 +100,11 @@ pub struct ManagedAlarm {
 }
 
 /// Creates and deletes target tracking alarms in CloudWatch.
+#[async_trait::async_trait]
 pub trait AlarmManager: Send + Sync {
     /// Create or replace the alarm; returns its ARN.
-    fn put_alarm(&self, ctx: &RequestContext, alarm: &ManagedAlarm) -> Result<String, String>;
-    fn delete_alarms(&self, ctx: &RequestContext, names: &[String]);
+    async fn put_alarm(&self, ctx: &RequestContext, alarm: &ManagedAlarm) -> Result<String, String>;
+    async fn delete_alarms(&self, ctx: &RequestContext, names: &[String]);
 }
 
 /// Where a group's instances receive traffic.

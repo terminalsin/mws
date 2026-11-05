@@ -2663,6 +2663,7 @@ dependencies = [
  "chrono",
  "mws-acm",
  "mws-acmpca",
+ "mws-autoscaling",
  "mws-cloudwatch",
  "mws-core",
  "mws-ec2",

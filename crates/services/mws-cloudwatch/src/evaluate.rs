@@ -602,7 +602,8 @@ impl CloudWatch {
                     })
             }
             other => {
-                let target = self.inner.action_targets.lock().expect("action targets lock poisoned").get(other).cloned();
+                let target =
+                    self.inner.action_targets.lock().expect("action targets lock poisoned").get(other).cloned();
                 let Some(target) = target else {
                     return Err(format!("Actions of type {other} are not supported by MWS"));
                 };

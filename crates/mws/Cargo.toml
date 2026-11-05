@@ -23,6 +23,7 @@ mws-core.workspace = true
 mws-ec2.workspace = true
 mws-imagebuilder.workspace = true
 mws-elb.workspace = true
+mws-autoscaling.workspace = true
 mws-iam.workspace = true
 mws-kms.workspace = true
 mws-kinesis.workspace = true

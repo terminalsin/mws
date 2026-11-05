@@ -113,7 +113,7 @@ impl Handler for AutoScaling {
         self.delete_notification_configuration_op(ctx, input)
     }
     async fn delete_policy(&self, ctx: &RequestContext, input: types::DeletePolicyType) -> Result<(), ServiceError> {
-        self.delete_policy_op(ctx, input)
+        self.delete_policy_op(ctx, input).await
     }
     async fn delete_scheduled_action(
         &self,
@@ -336,7 +336,7 @@ impl Handler for AutoScaling {
         ctx: &RequestContext,
         input: types::PutScalingPolicyType,
     ) -> Result<types::PolicyARNType, ServiceError> {
-        self.put_scaling_policy_op(ctx, input)
+        self.put_scaling_policy_op(ctx, input).await
     }
     async fn put_scheduled_update_group_action(
         &self,

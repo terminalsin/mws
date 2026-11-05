@@ -146,7 +146,7 @@ fn apply(g: &mut Group, new: i32, cause: String, cooldown: Option<i64>, now: Dat
 }
 
 impl AutoScaling {
-    pub(crate) fn put_scaling_policy_op(
+    pub(crate) async fn put_scaling_policy_op(
         &self,
         ctx: &RequestContext,
         input: t::PutScalingPolicyType,
@@ -196,7 +196,6 @@ impl AutoScaling {
                 }
             }
         }
-        let now = self.now();
         let (policy, old_alarms) = self.with_region(ctx, |r| {
             let g = authorized_group(ctx, r, "PutScalingPolicy", &input.auto_scaling_group_name)?;
             let existing = g.policies.get(&input.policy_name).cloned();
@@ -250,7 +249,7 @@ impl AutoScaling {
             let mgr = self.alarms().cloned();
             if let Some(mgr) = &mgr {
                 if !old_alarms.is_empty() {
-                    mgr.delete_alarms(&sctx, &old_alarms);
+                    mgr.delete_alarms(&sctx, &old_alarms).await;
                 }
             }
             let cfg = policy.target_tracking_configuration.clone().expect("checked");
@@ -295,6 +294,7 @@ impl AutoScaling {
                 let alarm_arn = match &mgr {
                     Some(m) => m
                         .put_alarm(&sctx, a)
+                        .await
                         .map_err(|e| validation(format!("Could not create the target tracking alarm: {e}")))?,
                     None => format!("arn:{}:cloudwatch:{}:{account}:alarm:{}", ctx.partition, ctx.region, a.name),
                 };
@@ -310,7 +310,6 @@ impl AutoScaling {
                 }
             });
         }
-        let _ = now;
         Ok(t::PolicyARNType { policy_arn: policy.policy_arn, alarms: Some(alarms_out) })
     }
 
@@ -353,7 +352,7 @@ impl AutoScaling {
         })
     }
 
-    pub(crate) fn delete_policy_op(
+    pub(crate) async fn delete_policy_op(
         &self,
         ctx: &RequestContext,
         input: t::DeletePolicyType,
@@ -376,7 +375,7 @@ impl AutoScaling {
             Ok(g.policy_alarms.remove(&policy).unwrap_or_default())
         })?;
         if let (Some(mgr), false) = (self.alarms(), alarms.is_empty()) {
-            mgr.delete_alarms(&self.service_ctx(ctx, &account, &ctx.region), &alarms);
+            mgr.delete_alarms(&self.service_ctx(ctx, &account, &ctx.region), &alarms).await;
         }
         Ok(())
     }

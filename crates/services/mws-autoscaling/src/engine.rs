@@ -1075,7 +1075,7 @@ impl AutoScaling {
             if let Some(alarms) = self.alarms() {
                 let names: Vec<String> = g_snapshot.policy_alarms.values().flatten().cloned().collect();
                 if !names.is_empty() {
-                    alarms.delete_alarms(sctx, &names);
+                    alarms.delete_alarms(sctx, &names).await;
                 }
             }
         }

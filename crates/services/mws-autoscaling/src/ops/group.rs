@@ -644,7 +644,7 @@ impl AutoScaling {
         }
         let alarms: Vec<String> = removed.policy_alarms.values().flatten().cloned().collect();
         if let (Some(mgr), false) = (self.alarms(), alarms.is_empty()) {
-            mgr.delete_alarms(&sctx, &alarms);
+            mgr.delete_alarms(&sctx, &alarms).await;
         }
         let deregister = super::traffic::deregister_all_ops(&removed);
         for op in deregister {

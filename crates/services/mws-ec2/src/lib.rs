@@ -36,8 +36,8 @@ use std::sync::{Arc, Mutex, MutexGuard, OnceLock};
 use mws_core::{HttpRequest, HttpResponse, RequestContext, Service, ServiceError};
 
 pub use backend::{BackendChoice, CommandOutput, ComputeBackend, DockerBackend, MetadataBackend, VolumeMount};
-pub use public::{InstanceInfo, SecurityGroupInfo, SubnetInfo, VpcInfo};
 pub use ops::launch_template::ResolvedLaunchTemplate;
+pub use public::{InstanceInfo, SecurityGroupInfo, SubnetInfo, VpcInfo};
 use state::{RegionState, State};
 
 /// Credentials for an instance profile's role, as instance metadata serves
