@@ -1635,7 +1635,7 @@ impl mws_ecs::TaskPlatform for EcsPlatform {
         description: &str,
     ) -> Result<mws_ecs::platform::TaskInterface, mws_core::ServiceError> {
         let subnet = subnets.first().cloned().unwrap_or_default();
-        let i = self.ec2.create_service_interface(
+        let i = self.ec2.create_task_interface(
             ctx,
             account,
             &subnet,
@@ -1657,7 +1657,7 @@ impl mws_ecs::TaskPlatform for EcsPlatform {
     }
 
     fn delete_interface(&self, ctx: &RequestContext, account: &str, eni_id: &str) {
-        self.ec2.delete_service_interface(ctx, account, eni_id);
+        self.ec2.delete_task_interface(ctx, account, eni_id);
     }
 
     fn assume_task_role(
