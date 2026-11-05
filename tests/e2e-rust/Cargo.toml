@@ -30,6 +30,7 @@ aws-sdk-cloudwatch = "1"
 aws-sdk-ec2 = "1"
 aws-sdk-marketplaceentitlement = "1"
 aws-sdk-marketplacemetering = "1"
+aws-sdk-ecs = "1"
 aws-smithy-http-client = { version = "1", features = ["rustls-aws-lc"] }
 aws-smithy-runtime-api = { version = "1", features = ["client"] }
 zip.workspace = true
@@ -49,6 +50,7 @@ md-5.workspace = true
 serde_json.workspace = true
 mws.workspace = true
 mws-ec2.workspace = true
+mws-ecs.workspace = true
 mws-route53.workspace = true
 mws-server.workspace = true
 mws-sigv4.workspace = true

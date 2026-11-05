@@ -605,6 +605,8 @@ impl Ecs {
                 let running =
                     live.iter().filter(|l| l.deployment.as_deref() == Some(id.as_str()) && l.running).count() as i32;
                 let total = live.iter().filter(|l| l.deployment.as_deref() == Some(id.as_str())).count() as i32;
+                ts.running_count = running;
+                ts.pending_count = total - running;
                 let stable = running == ts.computed_desired_count && total == running;
                 let status = if stable { "STEADY_STATE" } else { "STABILIZING" };
                 if ts.stability_status.as_deref() != Some(status) {

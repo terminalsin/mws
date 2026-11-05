@@ -327,6 +327,29 @@ dependencies = [
 ]
 
 [[package]]
+name = "aws-sdk-ecs"
+version = "1.157.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "dd9803fbcd4e37bfc9cafb3a7efb94a13a18a9b95138d79bc6d440f3fda59c15"
+dependencies = [
+ "arc-swap",
+ "aws-credential-types",
+ "aws-runtime",
+ "aws-smithy-async",
+ "aws-smithy-http",
+ "aws-smithy-json",
+ "aws-smithy-observability",
+ "aws-smithy-runtime",
+ "aws-smithy-runtime-api",
+ "aws-smithy-schema",
+ "aws-smithy-types",
+ "aws-types",
+ "fastrand",
+ "regex-lite",
+ "tracing",
+]
+
+[[package]]
 name = "aws-sdk-eventbridge"
 version = "1.127.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2465,6 +2488,7 @@ dependencies = [
  "aws-sdk-cloudwatch",
  "aws-sdk-cloudwatchlogs",
  "aws-sdk-ec2",
+ "aws-sdk-ecs",
  "aws-sdk-eventbridge",
  "aws-sdk-firehose",
  "aws-sdk-iam",
@@ -2490,6 +2514,7 @@ dependencies = [
  "md-5 0.10.6",
  "mws",
  "mws-ec2",
+ "mws-ecs",
  "mws-route53",
  "mws-s3",
  "mws-server",

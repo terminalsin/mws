@@ -35,6 +35,16 @@ pub fn task_arn(scope: &Scope, cluster: &str, id: &str) -> String {
     scope.arn(&format!("task/{cluster}/{id}"))
 }
 
+/// The fixed host ports a task definition's containers take.
+fn host_ports(def: &t::TaskDefinition) -> Vec<i32> {
+    def.container_definitions
+        .iter()
+        .flatten()
+        .flat_map(|c| c.port_mappings.iter().flatten())
+        .filter_map(|m| m.host_port.filter(|p| *p > 0))
+        .collect()
+}
+
 /// Where a task runs, once resolved.
 #[derive(Debug, Clone, Default)]
 pub struct Placement {
@@ -205,13 +215,7 @@ pub fn place_on_instance(
     let (cpu, memory) = task_resources(def);
     let mut candidates: Vec<(&String, &crate::state::InstanceRecord, i64, i64)> = Vec::new();
     let mut failures = Vec::new();
-    let ports: Vec<i32> = def
-        .container_definitions
-        .iter()
-        .flatten()
-        .flat_map(|c| c.port_mappings.iter().flatten())
-        .filter_map(|m| m.host_port.filter(|p| *p > 0))
-        .collect();
+    let ports = host_ports(def);
     for (arn, inst) in r.container_instances.iter().filter(|(_, i)| i.cluster == cluster) {
         if inst.instance.status.as_deref() != Some("ACTIVE") || !inst.instance.agent_connected {
             continue;
@@ -792,13 +796,17 @@ impl Ecs {
                     continue;
                 }
                 let (cpu, mem) = task_resources(&def);
-                let (rem_cpu, rem_mem, _) = instances::remaining(r, &ci, inst);
+                let (rem_cpu, rem_mem, used_ports) = instances::remaining(r, &ci, inst);
                 if rem_cpu < cpu {
                     failures.push(failure(ci.clone(), "RESOURCE:CPU"));
                     continue;
                 }
                 if rem_mem < mem {
                     failures.push(failure(ci.clone(), "RESOURCE:MEMORY"));
+                    continue;
+                }
+                if host_ports(&def).iter().any(|p| used_ports.contains(p)) {
+                    failures.push(failure(ci.clone(), "RESOURCE:PORTS"));
                     continue;
                 }
                 let lt = "EC2";
