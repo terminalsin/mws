@@ -67,6 +67,7 @@ async fn tasks_run_as_containers() {
     let subnet = subnets.subnets()[0].subnet_id().unwrap().to_string();
 
     let script = r#"echo "secret=$DB_PASS"; echo "key=$AWS_ACCESS_KEY_ID"; echo "meta=$(wget -qO- "$ECS_CONTAINER_METADATA_URI_V4/task")"; echo done"#;
+    ecs.create_cluster().send().await.unwrap();
     ecs.register_task_definition()
         .family("job")
         .network_mode(NetworkMode::Awsvpc)
