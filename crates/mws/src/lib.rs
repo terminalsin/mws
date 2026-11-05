@@ -500,6 +500,7 @@ fn build_with_store(config: Config, store: Option<Arc<Store>>) -> Mws {
     elasticache.set_snapshot_bucket(Arc::new(links::ElastiCacheSnapshots(s3.clone())));
     elasticache.set_event_notifier(Arc::new(links::ElastiCacheNotifications(sns.clone())));
     elasticache.set_metric_publisher(Arc::new(links::ElastiCacheToCloudWatch(cloudwatch.clone())));
+    imagebuilder.set_ecr(Arc::new(ecr.clone()));
     let mut gateway = Gateway::builder();
     if let Some(store) = store {
         gateway = gateway.store(store);

@@ -28,6 +28,7 @@ pub mod generated {
 }
 
 mod components;
+mod container;
 mod distribution;
 mod ec2link;
 mod engine;
@@ -81,6 +82,7 @@ pub(crate) struct Inner {
     ssm: OnceLock<Arc<dyn Service>>,
     sns: OnceLock<Arc<dyn Service>>,
     logs: OnceLock<Arc<dyn Service>>,
+    ecr: OnceLock<Arc<dyn Service>>,
     events: OnceLock<Arc<dyn ImageEvents>>,
     /// Emulated clock minus wall clock, in milliseconds.
     clock_offset_ms: AtomicI64,
@@ -120,6 +122,7 @@ impl ImageBuilder {
                 ssm: OnceLock::new(),
                 sns: OnceLock::new(),
                 logs: OnceLock::new(),
+                ecr: OnceLock::new(),
                 events: OnceLock::new(),
                 clock_offset_ms: AtomicI64::new(0),
                 scheduler: AtomicBool::new(false),
@@ -149,6 +152,11 @@ impl ImageBuilder {
         let _ = self.inner.logs.set(logs);
     }
 
+    /// Amazon ECR, where container recipes push the images they build.
+    pub fn set_ecr(&self, ecr: Arc<dyn Service>) {
+        let _ = self.inner.ecr.set(ecr);
+    }
+
     /// Where image state change events go.
     pub fn set_events(&self, events: Arc<dyn ImageEvents>) {
         let _ = self.inner.events.set(events);
@@ -172,6 +180,10 @@ impl ImageBuilder {
 
     pub(crate) fn logs(&self) -> Option<&Arc<dyn Service>> {
         self.inner.logs.get()
+    }
+
+    pub(crate) fn ecr(&self) -> Option<&Arc<dyn Service>> {
+        self.inner.ecr.get()
     }
 
     pub(crate) fn events(&self) -> Option<&Arc<dyn ImageEvents>> {

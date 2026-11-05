@@ -430,6 +430,40 @@ impl ComputeBackend for DockerBackend {
         Ok(image_ref.to_string())
     }
 
+    async fn build_image(
+        &self,
+        _handle: &str,
+        dockerfile: &str,
+        files: &[(String, Vec<u8>)],
+    ) -> Result<Option<Vec<u8>>, BackendError> {
+        let id = uuid_like();
+        let dir = std::env::temp_dir().join(format!("mws-image-build-{id}"));
+        let io = |e: std::io::Error| BackendError(format!("preparing the build context: {e}"));
+        std::fs::create_dir_all(&dir).map_err(io)?;
+        let result = async {
+            for (name, data) in files {
+                let path = dir.join(name);
+                if let Some(parent) = path.parent() {
+                    std::fs::create_dir_all(parent).map_err(io)?;
+                }
+                std::fs::write(&path, data).map_err(io)?;
+            }
+            std::fs::write(dir.join("Dockerfile"), dockerfile).map_err(io)?;
+            let tag = format!("mws-image-build:{id}");
+            let dir_s = dir.to_string_lossy().to_string();
+            self.run(&["build".into(), "-q".into(), "-t".into(), tag.clone(), dir_s.clone()]).await?;
+            let archive = dir.join("image.tar");
+            let saved =
+                self.run(&["save".into(), "-o".into(), archive.to_string_lossy().to_string(), tag.clone()]).await;
+            let _ = self.run(&["rmi".into(), tag]).await;
+            saved?;
+            std::fs::read(&archive).map_err(io)
+        }
+        .await;
+        let _ = std::fs::remove_dir_all(&dir);
+        result.map(Some)
+    }
+
     async fn exec(&self, handle: &str, script: &str) -> Result<Option<CommandOutput>, BackendError> {
         // Prefer bash, as the SSM agent does; small images only have sh.
         let out = Command::new(&self.cli)
@@ -663,6 +697,14 @@ pub fn render_iptables(fw: &Firewall, gateways: &[String]) -> String {
     }
     out.push_str("-A MWS-ROUTE -j DROP\nCOMMIT\n");
     out
+}
+
+/// A unique enough name for temporary build files and tags.
+fn uuid_like() -> String {
+    use std::time::{SystemTime, UNIX_EPOCH};
+    static N: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+    let nanos = SystemTime::now().duration_since(UNIX_EPOCH).map(|d| d.as_nanos()).unwrap_or_default();
+    format!("{nanos:x}{:x}", N.fetch_add(1, std::sync::atomic::Ordering::Relaxed))
 }
 
 #[cfg(test)]
