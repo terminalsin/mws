@@ -602,7 +602,7 @@ impl AutoScaling {
                         Some(c) => c.instance_ids.get_or_insert_with(Vec::new).push(m.instance_id.clone()),
                         None => collections.push(t::InstanceCollection {
                             instance_type: Some(m.instance_type.clone()),
-                            market_type: Some("on-demand".into()),
+                            market_type: Some(if m.spot { "spot" } else { "on-demand" }.into()),
                             subnet_id: m.subnet_id.clone(),
                             availability_zone: Some(m.availability_zone.clone()),
                             availability_zone_id: m.availability_zone_id.clone(),

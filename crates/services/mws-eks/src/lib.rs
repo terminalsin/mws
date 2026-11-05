@@ -63,6 +63,8 @@ pub(crate) struct Inner {
     infra: OnceLock<Arc<dyn Infrastructure>>,
     control_plane: OnceLock<Arc<dyn ControlPlane>>,
     credentials: OnceLock<Vec<Arc<dyn CredentialStore>>>,
+    /// Control plane log followers, by control plane id.
+    log_followers: std::sync::Mutex<std::collections::HashMap<String, tokio::task::AbortHandle>>,
 }
 
 impl Inner {
@@ -73,6 +75,7 @@ impl Inner {
             infra: OnceLock::new(),
             control_plane: OnceLock::new(),
             credentials: OnceLock::new(),
+            log_followers: Default::default(),
         }
     }
 }
@@ -156,7 +159,7 @@ impl Service for Eks {
 
     async fn handle(&self, ctx: RequestContext, request: HttpRequest) -> HttpResponse {
         if request.uri().path().starts_with(kube::webhook::PREFIX) {
-            return self.serve_webhook(&request, ctx.received_at, &ctx.partition).await;
+            return self.serve_webhook(&request, ctx.received_at, &ctx.partition, ctx.source_ip.as_deref()).await;
         }
         self.settle(&ctx);
         generated::dispatch(self, &ctx, &request).await
