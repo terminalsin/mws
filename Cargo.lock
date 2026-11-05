@@ -288,6 +288,32 @@ dependencies = [
 ]
 
 [[package]]
+name = "aws-sdk-autoscaling"
+version = "1.140.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "ef4dcbc9edb6aa70f41d830a4677088081e57e38ba35b81e9a7d89edee5a0890"
+dependencies = [
+ "arc-swap",
+ "aws-credential-types",
+ "aws-runtime",
+ "aws-smithy-async",
+ "aws-smithy-http",
+ "aws-smithy-json",
+ "aws-smithy-observability",
+ "aws-smithy-query",
+ "aws-smithy-runtime",
+ "aws-smithy-runtime-api",
+ "aws-smithy-schema",
+ "aws-smithy-types",
+ "aws-smithy-xml",
+ "aws-types",
+ "fastrand",
+ "http 1.5.0",
+ "regex-lite",
+ "tracing",
+]
+
+[[package]]
 name = "aws-sdk-cloudwatch"
 version = "1.140.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2715,6 +2741,7 @@ dependencies = [
  "mws-acm",
  "mws-acmpca",
  "mws-amplify",
+ "mws-autoscaling",
  "mws-cloudwatch",
  "mws-core",
  "mws-ec2",
@@ -2846,6 +2873,27 @@ dependencies = [
 ]
 
 [[package]]
+name = "mws-autoscaling"
+version = "0.1.0"
+dependencies = [
+ "async-trait",
+ "base64 0.22.1",
+ "chrono",
+ "mws-codegen",
+ "mws-core",
+ "mws-ec2",
+ "mws-proto-json",
+ "mws-proto-query",
+ "mws-schedule",
+ "rand",
+ "serde",
+ "serde_json",
+ "tokio",
+ "tracing",
+ "uuid",
+]
+
+[[package]]
 name = "mws-cloudwatch"
 version = "0.1.0"
 dependencies = [
@@ -2911,6 +2959,7 @@ dependencies = [
  "aws-sdk-acm",
  "aws-sdk-acmpca",
  "aws-sdk-amplify",
+ "aws-sdk-autoscaling",
  "aws-sdk-cloudwatch",
  "aws-sdk-cloudwatchlogs",
  "aws-sdk-ec2",

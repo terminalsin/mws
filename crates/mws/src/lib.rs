@@ -1,5 +1,6 @@
 //! Composition root. This is the only crate that knows which services exist.
 
+mod autoscaling;
 mod links;
 mod ses;
 mod sinks;
@@ -10,6 +11,7 @@ use std::sync::Arc;
 use mws_acm::Acm;
 use mws_acmpca::PrivateCa;
 use mws_amplify::Amplify;
+use mws_autoscaling::AutoScaling;
 use mws_cloudwatch::CloudWatch;
 use mws_core::Environment;
 use mws_ec2::{BackendChoice, Ec2};
@@ -130,6 +132,7 @@ pub struct Mws {
     pub securityhub: SecurityHub,
     pub imagebuilder: ImageBuilder,
     pub elb: Elb,
+    pub autoscaling: AutoScaling,
     pub ses: Ses,
 }
 
@@ -283,6 +286,8 @@ fn build_with_store(config: Config, store: Option<Arc<Store>>) -> Mws {
         .with_s3(s3.clone());
     elb.set_metric_sink(Arc::new(links::ElbToCloudWatch(cloudwatch.clone())));
     globalaccelerator.add_endpoint_directory(Arc::new(links::GlobalAcceleratorElb(elb.clone())));
+    let autoscaling = AutoScaling::new(ec2.clone());
+    autoscaling::wire(&autoscaling, &sns, &sqs, &events, &cloudwatch, &elb);
     let ses = if config.ses_auto_verify { Ses::with_auto_verify() } else { Ses::new() };
     ses.set_links(Arc::new(ses::SesLinks {
         route53: route53.clone(),
@@ -344,6 +349,7 @@ fn build_with_store(config: Config, store: Option<Arc<Store>>) -> Mws {
         // claims requests with its `2012-06-01` Version.
         .service(Arc::new(elb.clone()))
         .service(Arc::new(elb.classic()))
+        .service(Arc::new(autoscaling.clone()))
         // SES v2 signs as `ses` too; it claims its `/v2/email/` paths.
         .service(Arc::new(ses.v2()))
         .service(Arc::new(ses.clone()))
@@ -375,6 +381,7 @@ fn build_with_store(config: Config, store: Option<Arc<Store>>) -> Mws {
         securityhub,
         imagebuilder,
         elb,
+        autoscaling,
         ses,
     }
 }

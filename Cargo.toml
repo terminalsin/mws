@@ -47,6 +47,7 @@ members = [
     "crates/services/mws-securityhub",
     "crates/services/mws-imagebuilder",
     "crates/services/mws-elb",
+    "crates/services/mws-autoscaling",
     "crates/services/mws-ses",
     "tests/e2e-rust",
 ]
@@ -105,6 +106,7 @@ mws-pca-connector-scep = { path = "crates/services/mws-pca-connector-scep" }
 mws-securityhub = { path = "crates/services/mws-securityhub" }
 mws-imagebuilder = { path = "crates/services/mws-imagebuilder" }
 mws-elb = { path = "crates/services/mws-elb" }
+mws-autoscaling = { path = "crates/services/mws-autoscaling" }
 mws-ses = { path = "crates/services/mws-ses" }
 
 # external
