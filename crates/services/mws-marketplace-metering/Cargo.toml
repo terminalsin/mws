@@ -1,0 +1,25 @@
+[package]
+name = "mws-marketplace-metering"
+description = "AWS Marketplace Metering Service for MWS: ResolveCustomer, MeterUsage, BatchMeterUsage and RegisterUsage against the Marketplace catalog, with IAM enforced."
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+async-trait.workspace = true
+aws-lc-rs.workspace = true
+base64.workspace = true
+bytes.workspace = true
+chrono.workspace = true
+form_urlencoded.workspace = true
+http.workspace = true
+mws-core.workspace = true
+mws-marketplace-entitlement.workspace = true
+mws-proto-json.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+sha2.workspace = true
+uuid.workspace = true
+
+[build-dependencies]
+mws-codegen.workspace = true
