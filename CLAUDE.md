@@ -56,3 +56,8 @@ override only) see the same behaviour as real AWS. Fidelity beats breadth.
 ## Checks
 
 `cargo fmt --all --check && cargo clippy --workspace --all-targets -- -D warnings && cargo test --workspace --all-targets`
+
+On pull requests CI runs only what a change affects (`.github/scripts/plan.py`,
+see docs/testing.md). It matches e2e modules to services by name, so name a
+new module after its service crate (`<svc>.rs`, `<svc>_<topic>.rs`) or add an
+alias in `MODULE_ALIASES`.

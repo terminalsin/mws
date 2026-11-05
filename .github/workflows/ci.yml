@@ -1,44 +1,167 @@
 name: CI
 
+# Pull requests build and test only what a change can affect: the crates it
+# touches, their reverse dependencies in the workspace, and the end-to-end
+# tests of those services (.github/scripts/plan.py decides, and the run's
+# summary shows why). Shared crates, the build setup and Cargo upgrades run
+# everything, as do pushes to master, the nightly run and manual runs.
+#
+#   plan ─┬─ lint (fmt + Clippy on the changed crates)
+#         └─ build (one test build, archived with nextest) ─┬─ unit tests
+#                                                           ├─ e2e shards (per service group)
+#                                                           ├─ python (boto3)
+#                                                           └─ typescript (SDK v3)
+
 on:
   push:
     branches: [master, main]
   pull_request:
+  schedule:
+    - cron: "17 3 * * *"
+  workflow_dispatch:
+
+concurrency:
+  group: ci-${{ github.event.pull_request.number || github.sha }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 env:
-  # Each end-to-end test binary links several AWS SDKs; full debug info
-  # makes the link step exhaust the runner's disk.
+  # The end-to-end test binary links every AWS SDK; full debug info makes the
+  # link step exhaust the runner's disk.
   CARGO_PROFILE_DEV_DEBUG: line-tables-only
   CARGO_INCREMENTAL: 0
+  CARGO_TERM_COLOR: always
 
 jobs:
-  rust:
+  plan:
     runs-on: ubuntu-latest
+    outputs:
+      rust: ${{ steps.plan.outputs.rust }}
+      fmt: ${{ steps.plan.outputs.fmt }}
+      clippy: ${{ steps.plan.outputs.clippy }}
+      test_packages: ${{ steps.plan.outputs.test_packages }}
+      matrix: ${{ steps.plan.outputs.matrix }}
+      python: ${{ steps.plan.outputs.python }}
+      ts: ${{ steps.plan.outputs.ts }}
+      binary: ${{ steps.plan.outputs.rust == 'true' || steps.plan.outputs.python == 'true' || steps.plan.outputs.ts == 'true' }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - id: plan
+        run: |
+          if [ "${{ github.event_name }}" = pull_request ]; then
+            python3 .github/scripts/plan.py --base "${{ github.event.pull_request.base.sha }}"
+          else
+            python3 .github/scripts/plan.py --full
+          fi
+
+  lint:
+    needs: plan
+    if: needs.plan.outputs.rust == 'true'
+    runs-on: ubuntu-latest
+    steps:
+      - run: nohup sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc /opt/hostedtoolcache/CodeQL > /dev/null 2>&1 &
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy, rustfmt
+      # Third-party crates only (workspace crates are never cached). Only
+      # master saves, so pull requests with new dependencies don't evict it.
+      - uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: lint
+          save-if: ${{ github.ref == 'refs/heads/master' }}
+      - if: needs.plan.outputs.fmt == 'true'
+        run: cargo fmt --all --check
+      - if: needs.plan.outputs.clippy != ''
+        run: cargo clippy ${{ needs.plan.outputs.clippy }} --all-targets -- -D warnings
+
+  build:
+    needs: plan
+    if: needs.plan.outputs.binary == 'true'
+    runs-on: ubuntu-latest
+    env:
+      # sccache caches every compiled library by content, workspace crates
+      # included, so crates a change does not touch come from the cache.
+      RUSTC_WRAPPER: sccache
+      SCCACHE_GHA_ENABLED: "true"
     steps:
       # Free disk for target/ (the runner starts with ~20 GB). Deleting takes
       # ~50s, so run it in the background while the job carries on.
       - run: nohup sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc /opt/hostedtoolcache/CodeQL > /dev/null 2>&1 &
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
-        with:
-          components: clippy, rustfmt
+      - uses: mozilla-actions/sccache-action@v0.0.9
       - uses: Swatinem/rust-cache@v2
-      - run: cargo fmt --all --check
-      - run: cargo clippy --workspace --all-targets -- -D warnings
+        with:
+          shared-key: build
+          save-if: ${{ github.ref == 'refs/heads/master' }}
+      - uses: taiki-e/install-action@v2
+        with:
+          tool: nextest
+      # Every library and the mws binary, built for the whole workspace so
+      # that sccache sees the same compiler invocations on every run.
+      - run: cargo build --workspace --lib --bins
+      - if: needs.plan.outputs.test_packages != ''
+        run: cargo nextest archive ${{ needs.plan.outputs.test_packages }} --archive-file tests.tar.zst
+      - if: always()
+        run: sccache --show-stats
+      - if: needs.plan.outputs.test_packages != ''
+        uses: actions/upload-artifact@v4
+        with:
+          name: tests
+          path: tests.tar.zst
+          retention-days: 1
+          compression-level: 0
+      - uses: actions/upload-artifact@v4
+        with:
+          name: mws-binary
+          path: target/debug/mws
+          retention-days: 1
+
+  test:
+    needs: [plan, build]
+    if: needs.plan.outputs.rust == 'true' && needs.plan.outputs.matrix != '{"include":[]}'
+    runs-on: ubuntu-latest
+    name: ${{ matrix.name }}
+    strategy:
+      fail-fast: false
+      matrix: ${{ fromJSON(needs.plan.outputs.matrix) }}
+    steps:
+      - uses: actions/checkout@v4
       # Lambda functions in the end-to-end tests run on this Python (with
-      # boto3, as Lambda's Python runtimes have it), so set it up first.
+      # boto3, as Lambda's Python runtimes have it).
       - uses: actions/setup-python@v5
         id: python
         with:
           python-version: "3.12"
       - run: pip install -r tests/e2e-python/requirements.txt
-      # --all-targets skips doctests: the workspace has none, and rustdoc
-      # still spends ~20s per run compiling an empty harness for every crate.
-      - run: cargo test --workspace --all-targets
+      - uses: taiki-e/install-action@v2
+        with:
+          tool: nextest
+      - uses: actions/download-artifact@v4
+        with:
+          name: tests
+      - run: cargo nextest run --archive-file tests.tar.zst --workspace-remap . --profile ci -E '${{ matrix.filter }}'
         env:
           MWS_LAMBDA_PYTHON: ${{ steps.python.outputs.python-path }}
-      # `cargo test` built target/debug/mws for crates/mws/tests/binary.rs;
-      # a separate `cargo build` would recompile the service crates.
+
+  python:
+    needs: [plan, build]
+    if: needs.plan.outputs.python == 'true'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        id: python
+        with:
+          python-version: "3.12"
+      - run: pip install -r tests/e2e-python/requirements.txt
+      - uses: actions/download-artifact@v4
+        with:
+          name: mws-binary
+          path: target/debug
+      - run: chmod +x target/debug/mws
       - run: pytest -q tests/e2e-python
         env:
           MWS_LAMBDA_PYTHON: ${{ steps.python.outputs.python-path }}
@@ -46,14 +169,16 @@ jobs:
   # Example applications written against the AWS SDK for JavaScript v3
   # (tests/e2e-ts), run against the MWS binary.
   typescript:
+    needs: [plan, build]
+    if: needs.plan.outputs.ts == 'true'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - uses: dtolnay/rust-toolchain@stable
-      - uses: Swatinem/rust-cache@v2
+      - uses: actions/download-artifact@v4
         with:
-          key: mws-binary
-      - run: cargo build -p mws
+          name: mws-binary
+          path: target/debug
+      - run: chmod +x target/debug/mws
       - uses: actions/setup-node@v4
         with:
           node-version: "22"
@@ -72,3 +197,18 @@ jobs:
         working-directory: tests/e2e-ts
       - if: failure()
         run: cat mws.log
+
+  # One check that sums up the run, whichever jobs the plan skipped.
+  ci:
+    needs: [plan, lint, build, test, python, typescript]
+    if: always()
+    runs-on: ubuntu-latest
+    steps:
+      - env:
+          NEEDS: ${{ toJSON(needs) }}
+        run: |
+          python3 -c '
+          import json, os, sys
+          bad = {k: v["result"] for k, v in json.loads(os.environ["NEEDS"]).items() if v["result"] not in ("success", "skipped")}
+          print(bad or "all jobs passed or were not needed")
+          sys.exit(1 if bad else 0)'
