@@ -67,7 +67,7 @@ pub use access_points::{
 pub use auth::policy_is_public;
 pub use checksum::compute as compute_checksum;
 pub use notifications::{event_message, EventBridgeSink, NotificationDestination, NotificationSource, ObjectEvent};
-pub use public::{ServicePutError, ServicePutObject};
+pub use public::{ServicePutError, ServicePutObject, ServiceRead};
 use state::State;
 
 /// A Signature Version 2 presigned URL or `Authorization: AWS ...` header.

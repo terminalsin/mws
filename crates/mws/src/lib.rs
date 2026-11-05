@@ -1,6 +1,9 @@
 //! Composition root. This is the only crate that knows which services exist.
 
+mod autoscaling;
+mod eks;
 mod links;
+mod ses;
 mod sinks;
 
 use std::path::PathBuf;
@@ -8,13 +11,19 @@ use std::sync::Arc;
 
 use mws_acm::Acm;
 use mws_acmpca::PrivateCa;
+use mws_amplify::Amplify;
+use mws_autoscaling::AutoScaling;
 use mws_cloudformation::CloudFormation;
 use mws_cloudwatch::CloudWatch;
 use mws_core::{Environment, Service};
 use mws_ec2::{BackendChoice, Ec2};
+use mws_eks::Eks;
+use mws_elb::{Elb, ElbConfig};
 use mws_events::Events;
 use mws_firehose::Firehose;
+use mws_globalaccelerator::GlobalAccelerator;
 use mws_iam::{Iam, IamConfig};
+use mws_imagebuilder::ImageBuilder;
 use mws_kinesis::Kinesis;
 use mws_kms::Kms;
 use mws_lambda::Lambda;
@@ -24,12 +33,14 @@ use mws_marketplace_metering::Metering;
 use mws_organizations::Organizations;
 use mws_pca_connector_scep::ScepConnector;
 use mws_ram::Ram;
+use mws_rds::Rds;
 use mws_route53::Route53;
 use mws_s3::S3;
 use mws_s3control::S3Control;
 use mws_secretsmanager::SecretsManager;
 use mws_securityhub::SecurityHub;
 use mws_server::{Gateway, Scenario, Store};
+use mws_ses::Ses;
 use mws_sns::Sns;
 use mws_sqs::Sqs;
 use mws_ssm::Ssm;
@@ -53,6 +64,20 @@ pub struct Config {
     pub ec2_backend: BackendChoice,
     /// The Docker-compatible CLI (`MWS_EC2_DOCKER`, e.g. `podman`).
     pub ec2_docker_cli: Option<String>,
+    /// Treat SES identities as verified as soon as they are created
+    /// (`MWS_SES_AUTO_VERIFY=1`), instead of waiting for the verification
+    /// link to be followed or the DNS records to appear. AWS never does.
+    pub ses_auto_verify: bool,
+    /// What runs RDS databases (`MWS_RDS_BACKEND`: `auto`, `docker` or
+    /// `metadata`). The binary defaults to `auto`; the library default runs
+    /// nothing.
+    pub rds_backend: mws_rds::BackendChoice,
+    /// The Docker-compatible CLI for RDS (`MWS_RDS_DOCKER`; falls back to
+    /// `MWS_EC2_DOCKER`).
+    pub rds_docker_cli: Option<String>,
+    /// The host address database ports are published on (`MWS_RDS_BIND`,
+    /// default `127.0.0.1`).
+    pub rds_bind: Option<String>,
 }
 
 impl Config {
@@ -79,6 +104,14 @@ impl Config {
             }),
             Err(_) => BackendChoice::Auto,
         };
+        let rds_backend = match std::env::var("MWS_RDS_BACKEND") {
+            Ok(v) => mws_rds::BackendChoice::parse(&v).unwrap_or_else(|| {
+                tracing::warn!("unknown MWS_RDS_BACKEND {v:?}; using auto");
+                mws_rds::BackendChoice::Auto
+            }),
+            Err(_) => mws_rds::BackendChoice::Auto,
+        };
+        let var = |name: &str| std::env::var(name).ok().filter(|v| !v.is_empty());
         Self {
             iam,
             db: path("MWS_DB"),
@@ -86,6 +119,11 @@ impl Config {
             skip_federation_signature_verification: skip,
             ec2_backend,
             ec2_docker_cli: std::env::var("MWS_EC2_DOCKER").ok().filter(|v| !v.is_empty()),
+            ses_auto_verify: std::env::var("MWS_SES_AUTO_VERIFY")
+                .is_ok_and(|v| matches!(v.as_str(), "1" | "true" | "yes")),
+            rds_backend,
+            rds_docker_cli: var("MWS_RDS_DOCKER").or_else(|| var("MWS_EC2_DOCKER")),
+            rds_bind: var("MWS_RDS_BIND"),
         }
     }
 }
@@ -110,12 +148,20 @@ pub struct Mws {
     pub firehose: Firehose,
     pub cloudwatch: CloudWatch,
     pub ec2: Ec2,
+    pub amplify: Amplify,
+    pub globalaccelerator: GlobalAccelerator,
     pub marketplace_entitlement: Entitlement,
     pub marketplace_metering: Metering,
     pub cloudformation: CloudFormation,
     pub ram: Ram,
     pub scep: ScepConnector,
     pub securityhub: SecurityHub,
+    pub imagebuilder: ImageBuilder,
+    pub elb: Elb,
+    pub autoscaling: AutoScaling,
+    pub ses: Ses,
+    pub rds: Rds,
+    pub eks: Eks,
 }
 
 /// Build the gateway with every service MWS emulates.
@@ -245,12 +291,60 @@ fn build_with_store(config: Config, store: Option<Arc<Store>>) -> Mws {
     let ec2 = Ec2::new(config.ec2_backend.resolve(config.ec2_docker_cli.as_deref()));
     tracing::info!(backend = ec2.backend_name(), "EC2 compute backend");
     ec2.set_instance_roles(Arc::new(links::Ec2InstanceRoles { iam: iam.clone(), sts: sts.clone() }));
+    let amplify = Amplify::with_services(s3.clone(), route53.clone());
+    let globalaccelerator = GlobalAccelerator::new();
+    globalaccelerator.add_endpoint_directory(Arc::new(links::GlobalAcceleratorEc2(ec2.clone())));
+    route53.add_alias_resolver(Arc::new(links::Route53ToGlobalAccelerator(globalaccelerator.clone())));
     let marketplace_entitlement = Entitlement::new(config.iam.account_id.clone());
     let marketplace_metering = Metering::new(marketplace_entitlement.clone());
     let securityhub = SecurityHub::new();
     securityhub.set_organizations(Arc::new(links::SecurityHubOrganizations(organizations.clone())));
     securityhub.set_event_sink(Arc::new(links::SecurityHubToEvents(events.clone())));
     securityhub.set_export_sink(Arc::new(links::SecurityHubExports(s3.clone())));
+    let imagebuilder = ImageBuilder::with_ec2(ec2.clone());
+    imagebuilder.set_s3(Arc::new(s3.clone()));
+    imagebuilder.set_ssm(Arc::new(ssm.clone()));
+    imagebuilder.set_sns(Arc::new(sns.clone()));
+    imagebuilder.set_logs(Arc::new(logs.clone()));
+    imagebuilder.set_events(Arc::new(sinks::ImageBuilderEvents(events.clone())));
+    let elb = Elb::new(ElbConfig::from_env())
+        .with_ec2(ec2.clone())
+        .with_acm(acm.clone())
+        .with_lambda(lambda.clone())
+        .with_s3(s3.clone());
+    elb.set_metric_sink(Arc::new(links::ElbToCloudWatch(cloudwatch.clone())));
+    globalaccelerator.add_endpoint_directory(Arc::new(links::GlobalAcceleratorElb(elb.clone())));
+    let autoscaling = AutoScaling::new(ec2.clone());
+    autoscaling::wire(&autoscaling, &sns, &sqs, &events, &cloudwatch, &elb);
+    let ses = if config.ses_auto_verify { Ses::with_auto_verify() } else { Ses::new() };
+    ses.set_links(Arc::new(ses::SesLinks {
+        route53: route53.clone(),
+        s3: s3.clone(),
+        sns: sns.clone(),
+        lambda: lambda.clone(),
+        events: events.clone(),
+        firehose: firehose.clone(),
+        cloudwatch: cloudwatch.clone(),
+        sts: sts.clone(),
+        partition: config.iam.partition.clone(),
+    }));
+    ses.set_credentials(vec![iam.credential_store(), sts.credential_store()]);
+    ses.set_authorizer(iam.authorizer());
+    let rds = Rds::new(
+        config.rds_backend.resolve(config.rds_docker_cli.as_deref(), config.rds_bind.as_deref()),
+        kms.clone(),
+        secretsmanager.clone(),
+    );
+    tracing::info!(backend = rds.backend_name(), "RDS database backend");
+    rds.set_network(Arc::new(links::RdsNetwork(ec2.clone())));
+    rds.set_event_sink(Arc::new(links::RdsEvents { events: events.clone(), sns: sns.clone() }));
+    rds.set_export_store(Arc::new(links::RdsExports { sts: sts.clone(), s3: s3.clone() }));
+    let eks = Eks::with_sts(sts.clone());
+    eks.set_infrastructure(Arc::new(eks::EksInfrastructure {
+        ec2: ec2.clone(),
+        iam: iam.clone(),
+        autoscaling: autoscaling.clone(),
+    }));
     let cloudformation = CloudFormation::new();
     cloudformation.set_role_assumer(Arc::new(links::CloudFormationRoles(sts.clone())));
     let authorizer = iam.authorizer();
@@ -278,6 +372,9 @@ fn build_with_store(config: Config, store: Option<Arc<Store>>) -> Mws {
         Arc::new(firehose.clone()),
         Arc::new(cloudwatch.clone()),
         Arc::new(ec2.clone()),
+        Arc::new(amplify.clone()),
+        Arc::new(globalaccelerator.clone()),
+        Arc::new(rds.clone()),
         // Both Marketplace services sign as `aws-marketplace`; each claims
         // its own `X-Amz-Target`.
         Arc::new(marketplace_metering.clone()),
@@ -285,6 +382,16 @@ fn build_with_store(config: Config, store: Option<Arc<Store>>) -> Mws {
         Arc::new(ram.clone()),
         Arc::new(scep.clone()),
         Arc::new(securityhub.clone()),
+        Arc::new(imagebuilder.clone()),
+        // Both ELB APIs sign as `elasticloadbalancing`; the Classic one
+        // claims requests with its `2012-06-01` Version.
+        Arc::new(elb.clone()),
+        Arc::new(elb.classic()),
+        Arc::new(autoscaling.clone()),
+        // SES v2 signs as `ses` too; it claims its `/v2/email/` paths.
+        Arc::new(ses.v2()),
+        Arc::new(ses.clone()),
+        Arc::new(eks.clone()),
         Arc::new(cloudformation.clone()),
     ];
     // CloudFormation deploys resources through the other services' APIs.
@@ -322,12 +429,20 @@ fn build_with_store(config: Config, store: Option<Arc<Store>>) -> Mws {
         firehose,
         cloudwatch,
         ec2,
+        amplify,
+        globalaccelerator,
         marketplace_entitlement,
         marketplace_metering,
         cloudformation,
         ram,
         scep,
         securityhub,
+        imagebuilder,
+        elb,
+        autoscaling,
+        ses,
+        rds,
+        eks,
     }
 }
 

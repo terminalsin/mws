@@ -13,7 +13,7 @@ All 71 operations are generated from the AWS model (restXml) and implemented. Re
 | Public and private hosted zones | ✅ | Create, get, list (by name and by VPC), count, comment and delete; VPC associations, including another account's VPC once the owner authorizes it. |
 | `ChangeResourceRecordSets` | ✅ | Atomic CREATE, UPSERT and DELETE with Route 53's `InvalidChangeBatch` messages, CNAME conflicts, apex rules and value checks for A, AAAA, CNAME, NS, PTR, MX, SRV, CAA and TXT. |
 | Routing policies | ✅ | Weighted, failover, multivalue, latency, geolocation and IP-based records, with Route 53's rules (one `SetIdentifier` policy, unique failover roles, valid regions and locations). |
-| Aliases | ✅ | Aliases to the zone's own records must find their target; `EvaluateTargetHealth`. |
+| Aliases | ✅ | Aliases to the zone's own records must find their target; `EvaluateTargetHealth`. Aliases to a Global Accelerator (hosted zone `Z2BJ6XQ5FK7U4H`) answer with its static IPs. |
 | `ListResourceRecordSets` | ✅ | Route 53's ordering, pagination and `\052` escaping. |
 | Changes | ✅ | `GetChange` reports `PENDING`, then `INSYNC`. |
 | Traffic policies and instances | ✅ | Versions, instances and their records. |

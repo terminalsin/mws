@@ -952,3 +952,108 @@ async fn iam_enforcement_and_instance_profiles() {
     assert_eq!(get("meta-data/iam/security-credentials/").await.0, 404);
     let _ = role_arn;
 }
+
+#[tokio::test]
+async fn launch_templates() {
+    use aws_sdk_ec2::types::{
+        LaunchTemplateSpecification, LaunchTemplateTagSpecificationRequest, RequestLaunchTemplateData,
+    };
+    let mws = Mws::start().await;
+    let ec2 = client(&mws).await;
+    let ami = alpine_ami(&ec2).await;
+
+    let created = ec2
+        .create_launch_template()
+        .launch_template_name("router")
+        .version_description("first")
+        .launch_template_data(
+            RequestLaunchTemplateData::builder()
+                .image_id(&ami)
+                .instance_type(InstanceType::T3Micro)
+                .tag_specifications(
+                    LaunchTemplateTagSpecificationRequest::builder()
+                        .resource_type(ResourceType::Instance)
+                        .tags(Tag::builder().key("Role").value("router").build())
+                        .build(),
+                )
+                .build(),
+        )
+        .client_token("lt-1")
+        .send()
+        .await
+        .unwrap();
+    let lt = created.launch_template().unwrap();
+    let id = lt.launch_template_id().unwrap().to_string();
+    assert!(id.starts_with("lt-"));
+    assert_eq!(lt.default_version_number(), Some(1));
+    assert_eq!(lt.latest_version_number(), Some(1));
+    let err = ec2
+        .create_launch_template()
+        .launch_template_name("router")
+        .launch_template_data(RequestLaunchTemplateData::builder().image_id(&ami).build())
+        .send()
+        .await
+        .unwrap_err();
+    assert_eq!(code(&err), "InvalidLaunchTemplateName.AlreadyExistsException", "{}", message(&err));
+
+    // A new version from the first, with another instance type.
+    let v2 = ec2
+        .create_launch_template_version()
+        .launch_template_id(&id)
+        .source_version("1")
+        .version_description("bigger")
+        .launch_template_data(RequestLaunchTemplateData::builder().instance_type(InstanceType::T3Small).build())
+        .send()
+        .await
+        .unwrap();
+    let v2 = v2.launch_template_version().unwrap();
+    assert_eq!(v2.version_number(), Some(2));
+    let data = v2.launch_template_data().unwrap();
+    assert_eq!(data.image_id(), Some(ami.as_str()));
+    assert_eq!(data.instance_type(), Some(&InstanceType::T3Small));
+
+    let versions = ec2.describe_launch_template_versions().launch_template_id(&id).send().await.unwrap();
+    assert_eq!(versions.launch_template_versions().len(), 2);
+    let latest =
+        ec2.describe_launch_template_versions().launch_template_id(&id).versions("$Latest").send().await.unwrap();
+    assert_eq!(latest.launch_template_versions()[0].version_number(), Some(2));
+    ec2.modify_launch_template().launch_template_id(&id).default_version("2").send().await.unwrap();
+    let described = ec2
+        .describe_launch_template_versions()
+        .launch_template_name("router")
+        .versions("$Default")
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(described.launch_template_versions()[0].version_number(), Some(2));
+    let templates = ec2.describe_launch_templates().launch_template_names("router").send().await.unwrap();
+    assert_eq!(templates.launch_templates()[0].default_version_number(), Some(2));
+
+    // RunInstances merges the default version under the call's parameters.
+    let run = ec2
+        .run_instances()
+        .launch_template(LaunchTemplateSpecification::builder().launch_template_id(&id).build())
+        .min_count(1)
+        .max_count(1)
+        .send()
+        .await
+        .unwrap();
+    let inst = &run.instances()[0];
+    assert_eq!(inst.image_id(), Some(ami.as_str()));
+    assert_eq!(inst.instance_type(), Some(&InstanceType::T3Small));
+    let tag = |k: &str| inst.tags().iter().find(|t| t.key() == Some(k)).and_then(|t| t.value()).map(str::to_string);
+    assert_eq!(tag("Role").as_deref(), Some("router"));
+    assert_eq!(tag("aws:ec2launchtemplate:id").as_deref(), Some(id.as_str()));
+    assert_eq!(tag("aws:ec2launchtemplate:version").as_deref(), Some("2"));
+    let data = ec2.get_launch_template_data().instance_id(inst.instance_id().unwrap()).send().await.unwrap();
+    assert_eq!(data.launch_template_data().unwrap().image_id(), Some(ami.as_str()));
+
+    // The default version can't be deleted; others can.
+    let del = ec2.delete_launch_template_versions().launch_template_id(&id).versions("2").send().await.unwrap();
+    assert_eq!(del.unsuccessfully_deleted_launch_template_versions().len(), 1);
+    let del = ec2.delete_launch_template_versions().launch_template_id(&id).versions("1").send().await.unwrap();
+    assert_eq!(del.successfully_deleted_launch_template_versions().len(), 1);
+    ec2.delete_launch_template().launch_template_id(&id).send().await.unwrap();
+    let err = ec2.describe_launch_templates().launch_template_ids(&id).send().await.unwrap_err();
+    assert_eq!(code(&err), "InvalidLaunchTemplateId.NotFound", "{}", message(&err));
+}

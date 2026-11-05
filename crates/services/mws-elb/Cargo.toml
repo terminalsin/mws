@@ -1,0 +1,41 @@
+[package]
+name = "mws-elb"
+description = "Elastic Load Balancing for MWS: Application, Network and Classic Load Balancers whose listeners really serve, proxying to EC2 instances, IP addresses and Lambda functions, with health checks, ACM certificates and CloudWatch metrics."
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+async-trait.workspace = true
+aws-lc-rs.workspace = true
+base64.workspace = true
+bytes.workspace = true
+chrono.workspace = true
+flate2.workspace = true
+hex.workspace = true
+http.workspace = true
+http-body-util.workspace = true
+hyper = { workspace = true, features = ["client"] }
+hyper-util.workspace = true
+mws-acm.workspace = true
+mws-core.workspace = true
+mws-ec2.workspace = true
+mws-lambda.workspace = true
+mws-proto-json.workspace = true
+mws-proto-query.workspace = true
+mws-s3.workspace = true
+rand.workspace = true
+regex.workspace = true
+rustls.workspace = true
+rustls-pki-types.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+sha2.workspace = true
+tokio = { workspace = true, features = ["io-util"] }
+tokio-rustls.workspace = true
+tracing.workspace = true
+uuid.workspace = true
+x509-parser.workspace = true
+
+[build-dependencies]
+mws-codegen.workspace = true

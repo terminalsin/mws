@@ -601,7 +601,32 @@ impl CloudWatch {
                         mws_lambda::ServiceInvokeError::Failed(m) => m,
                     })
             }
-            other => Err(format!("Actions of type {other} are not supported by MWS")),
+            other => {
+                let target =
+                    self.inner.action_targets.lock().expect("action targets lock poisoned").get(other).cloned();
+                let Some(target) = target else {
+                    return Err(format!("Actions of type {other} are not supported by MWS"));
+                };
+                let metric_value = t
+                    .alarm
+                    .state_reason_data
+                    .as_deref()
+                    .and_then(|d| serde_json::from_str::<Value>(d).ok())
+                    .and_then(|d| d["recentDatapoints"].as_array().and_then(|a| a.last().and_then(Value::as_f64)));
+                target.run(
+                    ctx,
+                    crate::AlarmAction {
+                        action_arn: action.to_string(),
+                        alarm_name: t.alarm.name().to_string(),
+                        alarm_arn: t.alarm.arn.clone(),
+                        account: t.account.clone(),
+                        region: t.region.clone(),
+                        state: t.alarm.state_value.clone(),
+                        threshold: t.alarm.metric.as_ref().and_then(|m| m.threshold),
+                        metric_value,
+                    },
+                )
+            }
         }
     }
 
