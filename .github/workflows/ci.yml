@@ -138,6 +138,20 @@ jobs:
         with:
           python-version: "3.12"
       - run: pip install -r tests/e2e-python/requirements.txt
+      # Docker-backed tests pull public images; anonymous Docker Hub pulls
+      # from shared runner IPs get rate-limited, so go through Google's
+      # mirror (the daemon falls back to Docker Hub for images it lacks).
+      - if: startsWith(matrix.name, 'e2e')
+        run: |
+          sudo python3 - <<'EOF'
+          import json, os
+          path = "/etc/docker/daemon.json"
+          config = json.load(open(path)) if os.path.exists(path) else {}
+          config["registry-mirrors"] = ["https://mirror.gcr.io"]
+          json.dump(config, open(path, "w"))
+          EOF
+          sudo systemctl restart docker
+          docker info --format '{{.RegistryConfig.Mirrors}}'
       - uses: taiki-e/install-action@v2
         with:
           tool: nextest
