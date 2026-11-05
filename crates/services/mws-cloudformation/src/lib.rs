@@ -34,6 +34,7 @@ use mws_core::{
 };
 use serde_json::Value;
 
+pub(crate) use crate::ops::{imports as ops_imports, new_stack_id as ops_new_stack_id};
 use crate::providers::Provider;
 use crate::state::State;
 
@@ -124,6 +125,13 @@ impl CloudFormation {
             return Some(providers::custom_resource_provider());
         }
         self.inner.providers.get(type_name).cloned()
+    }
+
+    pub(crate) fn resource_type_of(&self, stack_id: &str, logical_id: &str) -> Option<String> {
+        let st = self.state();
+        let s = st.stacks.get(stack_id)?;
+        let t = crate::template::Template::parse(&s.template_body).ok()?;
+        t.resource_type(logical_id).map(str::to_string)
     }
 
     pub(crate) fn has_type(&self, type_name: &str) -> bool {

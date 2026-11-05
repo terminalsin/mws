@@ -426,4 +426,4 @@ pub fn is_custom(type_name: &str) -> bool {
     type_name.starts_with("Custom::") || type_name == "AWS::CloudFormation::CustomResource"
 }
 
-pub use cfn::{custom_resource_provider, CUSTOM_RESOURCE};
+pub use cfn::{custom_resource_provider, CUSTOM_RESOURCE, NEW_PHYSICAL_ID};

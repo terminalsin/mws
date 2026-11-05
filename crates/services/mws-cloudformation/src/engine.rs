@@ -789,8 +789,14 @@ impl Deployment {
             let tags = Self::stack_tags(&stack);
             let cx = self.cx(&stack, &logical, &tags);
             match provider.update(&cx, &physical, &old.properties, &props, &old.attributes).await {
-                Ok(attrs) => {
+                Ok(mut attrs) => {
                     let now = self.now();
+                    // A custom resource may answer an update with a new
+                    // physical id; the old one is deleted in cleanup.
+                    if let Some(Value::String(p)) = attrs.remove(providers::NEW_PHYSICAL_ID) {
+                        self.with(|s| s.replaced.push(old.clone()));
+                        self.update_resource(&logical, |r| r.physical_id = Some(p));
+                    }
                     self.update_resource(&logical, |r| {
                         r.status = "UPDATE_COMPLETE".into();
                         r.status_reason = None;
