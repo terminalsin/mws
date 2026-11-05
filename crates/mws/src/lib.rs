@@ -13,6 +13,8 @@ use mws_acm::Acm;
 use mws_acmpca::PrivateCa;
 use mws_amplify::Amplify;
 use mws_autoscaling::AutoScaling;
+use mws_bedrock::Bedrock;
+use mws_bedrock_runtime::BedrockRuntime;
 use mws_ce::CostExplorer;
 use mws_cloudformation::CloudFormation;
 use mws_cloudtrail::CloudTrail;
@@ -79,6 +81,10 @@ pub struct Config {
     pub ec2_backend: BackendChoice,
     /// The Docker-compatible CLI (`MWS_EC2_DOCKER`, e.g. `podman`).
     pub ec2_docker_cli: Option<String>,
+    /// What answers Bedrock model invocations (`MWS_BEDROCK_BACKEND`:
+    /// `echo`, `openai` or `anthropic`, with `MWS_BEDROCK_BACKEND_URL`,
+    /// `_API_KEY` and `_MODEL`). Defaults to the deterministic echo.
+    pub bedrock_backend: mws_bedrock_runtime::BackendConfig,
     /// Which quota values accounts start with (`MWS_QUOTA_PROFILE`:
     /// `established`, the default, or `new-account` for AWS's exact
     /// new-account defaults such as 5 standard EC2 vCPUs).
@@ -97,6 +103,13 @@ pub struct Config {
     /// The host address database ports are published on (`MWS_RDS_BIND`,
     /// default `127.0.0.1`).
     pub rds_bind: Option<String>,
+    /// What runs ECS tasks' containers (`MWS_ECS_BACKEND`: `auto`,
+    /// `docker` or `metadata`). The binary defaults to `auto`; the library
+    /// default runs nothing.
+    pub ecs_backend: mws_ecs::BackendChoice,
+    /// The Docker-compatible CLI for ECS (`MWS_ECS_DOCKER`; falls back to
+    /// `MWS_EC2_DOCKER`).
+    pub ecs_docker_cli: Option<String>,
     /// What runs EKS clusters' Kubernetes API servers (`MWS_EKS_BACKEND`:
     /// `auto`, `k3s` or `metadata`). The binary defaults to `auto` (k3s in
     /// Docker when a daemon answers); the library default runs nothing.
@@ -127,6 +140,10 @@ pub struct Config {
     pub elasticache_docker_cli: Option<String>,
     /// The host ElastiCache endpoints name (`MWS_ELASTICACHE_HOST`,
     pub elasticache_host: Option<String>,
+    /// API bases for ECR pull-through cache upstreams
+    /// (`MWS_ECR_UPSTREAM_ENDPOINTS=host=url,...`, e.g.
+    /// `quay.io=http://127.0.0.1:5000/v2`), in place of `https://<host>/v2`.
+    pub ecr_upstream_endpoints: std::collections::BTreeMap<String, String>,
 }
 
 impl Config {
@@ -182,6 +199,13 @@ impl Config {
             Err(_) => mws_elasticache::BackendChoice::Auto,
         };
         let var = |name: &str| std::env::var(name).ok().filter(|v| !v.is_empty());
+        let ecs_backend = match std::env::var("MWS_ECS_BACKEND") {
+            Ok(v) => mws_ecs::BackendChoice::parse(&v).unwrap_or_else(|| {
+                tracing::warn!("unknown MWS_ECS_BACKEND {v:?}; using auto");
+                mws_ecs::BackendChoice::Auto
+            }),
+            Err(_) => mws_ecs::BackendChoice::Auto,
+        };
         Self {
             iam,
             db: path("MWS_DB"),
@@ -189,12 +213,15 @@ impl Config {
             skip_federation_signature_verification: skip,
             ec2_backend,
             ec2_docker_cli: std::env::var("MWS_EC2_DOCKER").ok().filter(|v| !v.is_empty()),
+            bedrock_backend: mws_bedrock_runtime::BackendConfig::from_env(),
             quota_profile,
             ses_auto_verify: std::env::var("MWS_SES_AUTO_VERIFY")
                 .is_ok_and(|v| matches!(v.as_str(), "1" | "true" | "yes")),
             rds_backend,
             rds_docker_cli: var("MWS_RDS_DOCKER").or_else(|| var("MWS_EC2_DOCKER")),
             rds_bind: var("MWS_RDS_BIND"),
+            ecs_backend,
+            ecs_docker_cli: var("MWS_ECS_DOCKER").or_else(|| var("MWS_EC2_DOCKER")),
             eks_backend,
             eks_docker_cli: var("MWS_EKS_DOCKER").or_else(|| var("MWS_EC2_DOCKER")),
             eks_bind: var("MWS_EKS_BIND"),
@@ -204,6 +231,12 @@ impl Config {
             elasticache_backend,
             elasticache_docker_cli: var("MWS_ELASTICACHE_DOCKER"),
             elasticache_host: var("MWS_ELASTICACHE_HOST"),
+            ecr_upstream_endpoints: std::env::var("MWS_ECR_UPSTREAM_ENDPOINTS")
+                .unwrap_or_default()
+                .split(',')
+                .filter_map(|pair| pair.split_once('='))
+                .map(|(h, u)| (h.trim().to_string(), u.trim().trim_end_matches('/').to_string()))
+                .collect(),
         }
     }
 }
@@ -233,6 +266,8 @@ pub struct Mws {
     pub globalaccelerator: GlobalAccelerator,
     pub marketplace_entitlement: Entitlement,
     pub marketplace_metering: Metering,
+    pub bedrock: Bedrock,
+    pub bedrock_runtime: BedrockRuntime,
     pub cloudformation: CloudFormation,
     pub servicequotas: ServiceQuotas,
     pub ce: CostExplorer,
@@ -245,6 +280,7 @@ pub struct Mws {
     pub ses: Ses,
     pub rds: Rds,
     pub eks: Eks,
+    pub ecs: mws_ecs::Ecs,
     pub efs: Efs,
     pub codeartifact: CodeArtifact,
     pub cloudtrail: CloudTrail,
@@ -395,6 +431,11 @@ fn build_with_store(config: Config, store: Option<Arc<Store>>) -> Mws {
     route53.add_alias_resolver(Arc::new(links::Route53ToGlobalAccelerator(globalaccelerator.clone())));
     let marketplace_entitlement = Entitlement::new(config.iam.account_id.clone());
     let marketplace_metering = Metering::new(marketplace_entitlement.clone());
+    let bedrock = Bedrock::new();
+    let bedrock_runtime = BedrockRuntime::new(bedrock.clone(), s3.clone(), &config.bedrock_backend)
+        .with_logs(logs.clone())
+        .with_sts(sts.clone());
+    tracing::info!(backend = bedrock_runtime.backend_name(), "Bedrock model backend");
     let servicequotas = ServiceQuotas::new();
     servicequotas.set_profile(config.quota_profile);
     servicequotas.set_organizations(Arc::new(links::QuotaOrganizations(organizations.clone())));
@@ -506,6 +547,21 @@ fn build_with_store(config: Config, store: Option<Arc<Store>>) -> Mws {
     elasticache.set_snapshot_bucket(Arc::new(links::ElastiCacheSnapshots(s3.clone())));
     elasticache.set_event_notifier(Arc::new(links::ElastiCacheNotifications(sns.clone())));
     elasticache.set_metric_publisher(Arc::new(links::ElastiCacheToCloudWatch(cloudwatch.clone())));
+    ecr.set_upstream_endpoints(config.ecr_upstream_endpoints.clone());
+    ecr.set_upstream_credentials(Arc::new(links::EcrUpstreamCredentials(secretsmanager.clone())));
+    imagebuilder.set_ecr(Arc::new(ecr.clone()));
+    elasticache.set_log_delivery(Arc::new(links::ElastiCacheLogs { logs: logs.clone(), firehose: firehose.clone() }));
+    let ecs = mws_ecs::Ecs::new(config.ecs_backend.resolve(config.ecs_docker_cli.as_deref()));
+    tracing::info!(backend = ecs.backend_name(), "ECS container backend");
+    ecs.set_platform(Arc::new(links::EcsPlatform {
+        ec2: ec2.clone(),
+        sts: sts.clone(),
+        secretsmanager: secretsmanager.clone(),
+        ssm: ssm.clone(),
+        logs: logs.clone(),
+        elb: elb.clone(),
+        autoscaling: autoscaling.clone(),
+    }));
     let cloudformation = CloudFormation::new();
     cloudformation.set_role_assumer(Arc::new(links::CloudFormationRoles(sts.clone())));
     let authorizer = iam.authorizer();
@@ -567,6 +623,10 @@ fn build_with_store(config: Config, store: Option<Arc<Store>>) -> Mws {
         Arc::new(ecr.clone()),
         Arc::new(ecr_public.clone()),
         Arc::new(elasticache.clone()),
+        Arc::new(ecs.clone()),
+        // bedrock-runtime signs as `bedrock` too; each claims its paths.
+        Arc::new(bedrock_runtime.clone()),
+        Arc::new(bedrock.clone()),
         Arc::new(cloudformation.clone()),
     ];
     // CloudFormation deploys resources through the other services' APIs.
@@ -613,6 +673,8 @@ fn build_with_store(config: Config, store: Option<Arc<Store>>) -> Mws {
         globalaccelerator,
         marketplace_entitlement,
         marketplace_metering,
+        bedrock,
+        bedrock_runtime,
         cloudformation,
         servicequotas,
         ce,
@@ -625,6 +687,7 @@ fn build_with_store(config: Config, store: Option<Arc<Store>>) -> Mws {
         ses,
         rds,
         eks,
+        ecs,
         efs,
         codeartifact,
         cloudtrail,

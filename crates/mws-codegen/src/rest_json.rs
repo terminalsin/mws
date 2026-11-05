@@ -5,10 +5,11 @@
 //! `httpQuery` (scalars and lists), `httpQueryParams`, `httpHeader`,
 //! `httpPrefixHeaders`, `httpResponseCode`, `httpPayload` (structure,
 //! union, document, string and blob, including `@streaming` blobs and
-//! event streams) and unbound body members. Body members use their Smithy
-//! member names (or `jsonName`); body timestamps are epoch seconds, header
-//! timestamps HTTP dates and query timestamps ISO 8601 unless
-//! `timestampFormat` says otherwise.
+//! output event streams; input event streams reach the handler empty)
+//! and unbound body members. Body members use their Smithy member names
+//! (or `jsonName`); body timestamps are epoch seconds, header timestamps
+//! HTTP dates and query timestamps ISO 8601 unless `timestampFormat`
+//! says otherwise.
 //!
 //! Spec: <https://smithy.io/2.0/aws/protocols/aws-restjson1-protocol.html>
 
@@ -141,6 +142,7 @@ impl Gen<'_, '_, '_> {
                 let has_body = input.members.iter().any(|m| {
                     !is_http_bound(m)
                         || (m.has_trait("httpPayload")
+                            && !model.expect(&m.target).has_trait("streaming")
                             && matches!(
                                 model.expect(&m.target).ty,
                                 ShapeType::Structure | ShapeType::Union | ShapeType::Document
@@ -383,6 +385,10 @@ impl Gen<'_, '_, '_> {
         }
         if m.has_trait("httpPayload") {
             return match target.ty {
+                // Input event streams (bidirectional streaming) need a
+                // full-duplex connection the gateway does not offer; the
+                // handler sees no events and answers for itself.
+                ShapeType::Union if target.has_trait("streaming") => "Some(Vec::new())".into(),
                 ShapeType::Structure | ShapeType::Union | ShapeType::Document => {
                     codec.de_expr_in(&m.target, "Some(&body)", "json_de::")
                 }

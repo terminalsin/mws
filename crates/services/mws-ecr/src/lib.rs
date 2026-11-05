@@ -34,6 +34,7 @@ mod images;
 mod lifecycle;
 mod names;
 mod pull;
+mod pull_through;
 mod registry;
 mod registry_config;
 mod replication;
@@ -46,6 +47,7 @@ use mws_core::{AlternateSignature, HttpRequest, HttpResponse, RequestContext, Se
 
 pub use names::repository_arn;
 pub use pull::{ImageLocation, PullError, PulledImage};
+pub use pull_through::UpstreamCredentials;
 use state::State;
 
 /// Where `GetDownloadUrlForLayer` links point.
@@ -86,6 +88,8 @@ pub(crate) struct Inner {
     registry_host: OnceLock<String>,
     /// Registry paths (`/v2/<prefix>/...`) another service serves.
     excluded_prefix: OnceLock<String>,
+    upstream_credentials: OnceLock<Arc<dyn pull_through::UpstreamCredentials>>,
+    upstream_endpoints: OnceLock<std::collections::BTreeMap<String, String>>,
 }
 
 /// The ECR service. Cheap to clone; clones share state.
@@ -179,6 +183,9 @@ impl Service for Ecr {
     async fn handle(&self, ctx: RequestContext, request: HttpRequest) -> HttpResponse {
         self.settle(&ctx);
         if self.is_registry_request(&request) {
+            if let Some(response) = self.pull_through(&ctx, &request).await {
+                return response;
+            }
             return registry::serve(self, &ctx, &request);
         }
         let token = request.headers().get("x-amz-security-token").and_then(|v| v.to_str().ok()).map(str::to_string);

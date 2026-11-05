@@ -25,6 +25,12 @@ fn view(s: &crate::generated::types::Subnet) -> SubnetView {
     }
 }
 
+/// The Docker network the Docker backend runs a VPC's instances on.
+/// Other services' containers join it to be reachable from instances.
+pub fn docker_network_name(vpc_id: &str) -> String {
+    format!("mws-{vpc_id}")
+}
+
 impl Ec2 {
     fn with_network<R>(&self, account: &str, region: &str, partition: &str, f: impl FnOnce(&RegionState) -> R) -> R {
         let mut state = self.lock();

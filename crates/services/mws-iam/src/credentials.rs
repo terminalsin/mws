@@ -14,7 +14,7 @@ impl CredentialStore for IamCredentials {
         &self,
         access_key_id: &str,
         session_token: Option<&str>,
-        _now: DateTime<Utc>,
+        now: DateTime<Utc>,
     ) -> Result<Option<ResolvedCredential>, CredentialError> {
         let cfg = &self.inner.config;
         let root = |account: &str| Caller {
@@ -32,6 +32,31 @@ impl CredentialStore for IamCredentials {
             }));
         }
         let accounts = self.inner.accounts.read().expect("IAM state lock poisoned");
+        // A Bedrock API key's alias stands in for an access key id; its
+        // secret is the whole key.
+        if access_key_id.starts_with("BedrockAPIKey-") {
+            let Some((account, state, cred)) = accounts.iter().find_map(|(id, s)| {
+                s.service_credentials
+                    .values()
+                    .find(|c| c.service == "bedrock.amazonaws.com" && c.service_user_name == access_key_id)
+                    .map(|c| (id, s, c))
+            }) else {
+                return Ok(None);
+            };
+            if !cred.active || session_token.is_some() || cred.expires.is_some_and(|e| e <= now) {
+                return Err(CredentialError::Invalid);
+            }
+            let user = state.users.get(&cred.user).ok_or(CredentialError::Invalid)?;
+            let caller = Caller {
+                account_id: account.clone(),
+                arn: user.arn.clone(),
+                user_id: user.id.clone(),
+                access_key_id: access_key_id.to_string(),
+                kind: CallerKind::User { name: user.name.clone() },
+                session: None,
+            };
+            return Ok(Some(ResolvedCredential { secret_access_key: cred.password.clone(), caller }));
+        }
         let Some((account, state, key)) =
             accounts.iter().find_map(|(id, s)| s.access_keys.get(access_key_id).map(|k| (id, s, k)))
         else {
