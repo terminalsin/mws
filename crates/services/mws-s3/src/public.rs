@@ -164,3 +164,80 @@ impl S3 {
         self.read().buckets.get(bucket).map(|b| b.region.clone())
     }
 }
+
+/// An AWS service principal reading from a customer bucket (Amplify
+/// deploying a site from a bucket). Access is decided by the bucket policy
+/// alone, as for service principals in AWS.
+#[derive(Debug, Clone)]
+pub struct ServiceRead<'a> {
+    pub bucket: &'a str,
+    /// The service principal, e.g. `amplify.amazonaws.com`.
+    pub service_principal: &'a str,
+    /// `aws:SourceAccount` and `aws:SourceArn` for the bucket policy.
+    pub source_account: &'a str,
+    pub source_arn: &'a str,
+    /// Partition for ARNs, normally `aws`.
+    pub partition: &'a str,
+}
+
+impl ServiceRead<'_> {
+    fn as_put(&self) -> ServicePutObject<'_> {
+        ServicePutObject {
+            bucket: self.bucket,
+            key: "",
+            body: Vec::new(),
+            content_type: "",
+            service_principal: self.service_principal,
+            source_account: self.source_account,
+            source_arn: self.source_arn,
+            acl: None,
+            partition: self.partition,
+        }
+    }
+}
+
+impl S3 {
+    /// Read the latest version of `key` as an AWS service principal
+    /// (`s3:GetObject` from the bucket policy). `Ok(None)` when there is no
+    /// such object.
+    pub fn get_object_as_service(&self, read: &ServiceRead<'_>, key: &str) -> Result<Option<Vec<u8>>, ServicePutError> {
+        let st = self.read();
+        let b = st.buckets.get(read.bucket).ok_or(ServicePutError::NoSuchBucket)?;
+        let resource = format!("arn:{}:s3:::{}/{key}", read.partition, b.name);
+        if !service_allowed(b, &read.as_put(), "s3:GetObject", &resource) {
+            return Err(ServicePutError::AccessDenied { action: "s3:GetObject".into() });
+        }
+        Ok(b.latest(key).filter(|v| !v.delete_marker).map(|v| v.data.to_vec()))
+    }
+
+    /// The keys under `prefix`, as an AWS service principal
+    /// (`s3:ListBucket` from the bucket policy, with `s3:prefix`).
+    pub fn list_objects_as_service(&self, read: &ServiceRead<'_>, prefix: &str) -> Result<Vec<String>, ServicePutError> {
+        let st = self.read();
+        let b = st.buckets.get(read.bucket).ok_or(ServicePutError::NoSuchBucket)?;
+        let Some(doc) = &b.policy else {
+            return Err(ServicePutError::AccessDenied { action: "s3:ListBucket".into() });
+        };
+        let put = read.as_put();
+        let allowed = Policy::parse(doc, PolicyKind::Resource).is_ok_and(|policy| {
+            let principal = PrincipalInfo { service: Some(put.service_principal.to_string()), ..Default::default() };
+            let mut context = ConditionContext::new();
+            context.insert("aws:SourceAccount", vec![put.source_account.to_string()]);
+            context.insert("aws:SourceArn", vec![put.source_arn.to_string()]);
+            context.insert("aws:PrincipalServiceName", vec![put.service_principal.to_string()]);
+            context.insert("aws:PrincipalIsAWSService", vec!["true".to_string()]);
+            context.insert("s3:prefix", vec![prefix.to_string()]);
+            let resource = format!("arn:{}:s3:::{}", put.partition, b.name);
+            let eval = policy.evaluate(&Request { action: "s3:ListBucket", resource: &resource, principal: &principal, context: &context });
+            eval.allowed() && !eval.denied()
+        });
+        if !allowed {
+            return Err(ServicePutError::AccessDenied { action: "s3:ListBucket".into() });
+        }
+        Ok(b.objects
+            .iter()
+            .filter(|(k, v)| k.starts_with(prefix) && v.last().is_some_and(|v| !v.delete_marker))
+            .map(|(k, _)| k.clone())
+            .collect())
+    }
+}

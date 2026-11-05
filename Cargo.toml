@@ -38,6 +38,7 @@ members = [
     "crates/services/mws-firehose",
     "crates/services/mws-cloudwatch",
     "crates/services/mws-ec2",
+    "crates/services/mws-amplify",
     "tests/e2e-rust",
 ]
 
@@ -86,6 +87,7 @@ mws-kinesis = { path = "crates/services/mws-kinesis" }
 mws-firehose = { path = "crates/services/mws-firehose" }
 mws-cloudwatch = { path = "crates/services/mws-cloudwatch" }
 mws-ec2 = { path = "crates/services/mws-ec2" }
+mws-amplify = { path = "crates/services/mws-amplify" }
 
 # external
 async-trait = "0.1"
@@ -116,6 +118,7 @@ roxmltree = "0.20"
 rusqlite = { version = "0.37", features = ["bundled"] }
 serde = { version = "1", features = ["derive"] }
 serde_json = { version = "1", features = ["preserve_order"] }
+serde_yaml = "0.9"
 sha1 = "0.10"
 sha2 = "0.10"
 flate2 = "1"

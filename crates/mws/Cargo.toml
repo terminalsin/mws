@@ -15,6 +15,7 @@ uuid.workspace = true
 chrono.workspace = true
 serde_json.workspace = true
 mws-acmpca.workspace = true
+mws-amplify.workspace = true
 mws-organizations.workspace = true
 mws-cloudwatch.workspace = true
 mws-core.workspace = true
