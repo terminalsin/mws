@@ -289,14 +289,29 @@ impl DockerBackend {
         }
         // A private IP is free again as soon as its instance terminates, but
         // the terminated container may still hold it for a moment while
-        // Docker removes it: wait for that rather than fail the launch.
+        // Docker removes it: wait for that. If something else keeps the
+        // address (another MWS on this daemon, a leftover container), let
+        // Docker pick one rather than fail the launch.
         let mut attempts = 0;
         let id = loop {
             match self.run(&args).await {
-                Err(e) if own_cidr && e.0.contains("Address already in use") && attempts < 40 => {
-                    attempts += 1;
+                Err(e) if own_cidr && e.0.contains("Address already in use") => {
                     let _ = self.run(&["rm".into(), "-f".into(), format!("mws-ec2-{}", spec.instance_id)]).await;
-                    tokio::time::sleep(std::time::Duration::from_millis(250)).await;
+                    attempts += 1;
+                    if attempts < 20 {
+                        tokio::time::sleep(std::time::Duration::from_millis(250)).await;
+                        continue;
+                    }
+                    let holder = self.ip_holder(&spec.network.vpc_id, &spec.private_ip).await;
+                    tracing::warn!(
+                        instance = %spec.instance_id,
+                        ip = %spec.private_ip,
+                        holder = holder.as_deref().unwrap_or("unknown"),
+                        "private IP still in use on the Docker network; launching with a Docker-assigned address"
+                    );
+                    if let Some(at) = args.iter().position(|a| a == "--ip") {
+                        args.drain(at..at + 2);
+                    }
                 }
                 result => break result?,
             }
@@ -304,6 +319,19 @@ impl DockerBackend {
         let handle = id.lines().last().unwrap_or_default().to_string();
         self.specs.lock().expect("specs lock poisoned").insert(handle.clone(), spec.clone());
         Ok(handle)
+    }
+
+    /// The container on the VPC's network that holds `ip`, if any.
+    async fn ip_holder(&self, vpc_id: &str, ip: &str) -> Option<String> {
+        let format = "{{range .Containers}}{{.Name}} {{.IPv4Address}}\n{{end}}";
+        let out = self
+            .run(&["network".into(), "inspect".into(), "--format".into(), format.into(), Self::network_name(vpc_id)])
+            .await
+            .ok()?;
+        out.lines()
+            .filter_map(|l| l.split_once(' '))
+            .find(|(_, addr)| addr.split('/').next() == Some(ip))
+            .map(|(name, _)| name.to_string())
     }
 
     /// Whether a daemon answers (blocking; used once at startup).
