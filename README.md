@@ -128,7 +128,7 @@ SDKs, S3 addressing, host-prefixed endpoints and calling as other identities.
 | [CloudWatch](docs/services/cloudwatch.md) | 55 / 55 | RPC v2 CBOR, awsJson 1.0, awsQuery |
 | [CloudWatch Logs](docs/services/logs.md) | 118 / 118 | awsJson 1.1 |
 | [Marketplace Metering and Entitlement](docs/services/marketplace.md) | 5 / 5 | awsJson 1.1, RPC v2 CBOR |
-| [CloudFormation](docs/services/cloudformation.md) | 35 / 90 | awsQuery |
+| [CloudFormation](docs/services/cloudformation.md) | 90 / 90 | awsQuery |
 
 Operations outside the implemented set answer `NotImplemented`. Each service
 page lists what is emulated and its known gaps.

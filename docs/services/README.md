@@ -89,7 +89,7 @@ Every service shares the same foundations:
 
 | Service | Operations | What's emulated |
 | --- | --- | --- |
-| [CloudFormation](cloudformation.md) | 35 / 90 | Stacks that create real resources in the other services, change sets, rollbacks, nested stacks, custom resources, drift detection |
+| [CloudFormation](cloudformation.md) | 90 / 90 | Stacks that create real resources in the other services, change sets (incl. IMPORT), StackSets, private registry types, modules and hooks, resource scans and generated templates, refactors |
 
 ## How services connect
 
