@@ -322,7 +322,7 @@ async fn groups_launch_replace_and_terminate_instances() {
         .unwrap();
     asg.update_auto_scaling_group().auto_scaling_group_name("web").desired_capacity(1).send().await.unwrap();
     let g = wait_group(&asg, "web", "1 instance", |g| g.instances().len() == 1).await;
-    assert_eq!(ids(&g), [keep.clone()]);
+    assert_eq!(ids(&g), std::slice::from_ref(&keep));
     assert!(g.instances()[0].protected_from_scale_in().unwrap());
 
     // TerminateInstanceInAutoScalingGroup: replaced unless the capacity
@@ -1379,7 +1379,7 @@ async fn load_balancers_get_the_group_instances() {
         .await
         .unwrap();
     let g = wait_group(&asg, "served", "2 InService", |g| in_service(g) == 2).await;
-    assert_eq!(g.target_group_arns(), [tg_arn.clone()]);
+    assert_eq!(g.target_group_arns(), std::slice::from_ref(&tg_arn));
     let registered = |elb: aws_sdk_elasticloadbalancingv2::Client, arn: String| async move {
         let h = elb.describe_target_health().target_group_arn(&arn).send().await.unwrap();
         let mut v: Vec<String> = h
@@ -1448,7 +1448,7 @@ async fn load_balancers_get_the_group_instances() {
         .await
         .unwrap();
     let g = group(&asg, "served").await;
-    assert_eq!(g.target_group_arns(), [tg_arn.clone()]);
+    assert_eq!(g.target_group_arns(), std::slice::from_ref(&tg_arn));
     for _ in 0..40 {
         if registered(elb.clone(), tg_arn.clone()).await == want {
             break;

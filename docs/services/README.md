@@ -47,6 +47,7 @@ Every service shares the same foundations:
 | [Lambda](lambda.md) | 68 / 88 | Python, Node.js and custom runtimes that really run, SQS and Kinesis event sources, destinations, function URLs |
 | [Global Accelerator](globalaccelerator.md) | 56 / 56 | Static anycast IPs, listeners, endpoint groups with health from EC2 and ELB, custom routing port mappings, BYOIP, cross-account attachments |
 | [EC2 and VPC](ec2.md) | 164 / 811 | Default VPCs, subnets, security groups, NAT gateways and VPC endpoints that filter and route real Docker traffic, AMIs, instances as Docker containers, instance metadata and profiles |
+| [EC2 Auto Scaling](autoscaling.md) | 68 / 68 | Groups that launch, replace and terminate real EC2 instances, lifecycle hooks, suspended processes, simple, step and target tracking policies driven by CloudWatch alarms, schedules, instance refreshes, warm pools, load balancer registration |
 | [EC2 Image Builder](imagebuilder.md) | 77 / 77 | Components, recipes and pipelines whose builds launch EC2 instances, run AWSTOE components and produce real AMIs, distribution, lifecycle policies |
 | [Elastic Load Balancing](elb.md) | 80 / 80 | Application, Network and Classic Load Balancers whose listeners really proxy: rules, stickiness, HTTPS with ACM certificates, mutual TLS, Lambda targets, health checks, metrics |
 | [Route 53](route53.md) | 71 / 71 | Public and private hosted zones, all routing policies, health checks, DNSSEC key management, an optional real DNS responder |
@@ -117,6 +118,9 @@ with the permissions AWS would use:
   catalog of products, subscriptions and entitlements.
 - Security Hub registers its delegated administrator in Organizations, sends
   findings events to EventBridge and exports findings to S3 with KMS.
+- Auto Scaling groups launch and terminate EC2 instances, register them with
+  load balancers, scale on CloudWatch alarms they create, publish group
+  metrics and notify SNS, SQS and EventBridge.
 - Image Builder launches EC2 instances, creates and copies AMIs, writes SSM
   parameters, logs to CloudWatch Logs and S3, notifies SNS and emits
   EventBridge events.
