@@ -7,7 +7,7 @@
 [![CI](https://github.com/terminalsin/mws/actions/workflows/ci.yml/badge.svg?branch=master)](https://github.com/terminalsin/mws/actions/workflows/ci.yml)
 [![License: MIT OR Apache-2.0](https://img.shields.io/badge/license-MIT%20OR%20Apache--2.0-blue.svg)](#license)
 [![Rust 1.85+](https://img.shields.io/badge/rust-1.85%2B-orange.svg)](https://www.rust-lang.org)
-[![Services](https://img.shields.io/badge/AWS%20services-29-success.svg)](docs/services/README.md)
+[![Services](https://img.shields.io/badge/AWS%20services-30-success.svg)](docs/services/README.md)
 
 [Getting started](docs/getting-started.md) ·
 [Services](docs/services/README.md) ·
@@ -44,7 +44,7 @@ real Rust, Python and JavaScript SDKs.
   (awsQuery, awsJson, restXml, restJson, Smithy RPC v2 CBOR and ec2Query).
 - **Things actually happen.** KMS keys do real cryptography, Private CA and
   ACM issue real X.509 certificates, Lambda functions run on local runtimes,
-  EC2 instances can run as Docker containers, and events flow between
+  EC2 instances and ElastiCache nodes can run as Docker containers, and events flow between
   services: S3 notifications reach SNS, SQS and Lambda; alarms page through
   SNS; Firehose delivers to S3.
 - **Built for test suites.** In memory by default, with optional SQLite
@@ -109,6 +109,7 @@ SDKs, S3 addressing, host-prefixed endpoints and calling as other identities.
 | [Elastic Load Balancing](docs/services/elb.md) | 80 / 80 | awsQuery |
 | [RDS and Aurora](docs/services/rds.md) | 168 / 168 | awsQuery |
 | [EKS](docs/services/eks.md) | 70 / 70 | restJson1 |
+| [ElastiCache](docs/services/elasticache.md) | 77 / 77 | awsQuery |
 | [Route 53](docs/services/route53.md) | 71 / 71 | restXml |
 | [Amplify Hosting](docs/services/amplify.md) | 37 / 37 | restJson1 |
 | [Global Accelerator](docs/services/globalaccelerator.md) | 56 / 56 | awsJson 1.1 |

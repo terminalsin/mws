@@ -46,6 +46,10 @@ See [State, scenarios and snapshots](state.md) for how the two interact.
 | `MWS_RDS_BACKEND` | `auto` | How RDS databases run. `docker` runs each DB instance (or Aurora cluster) as a PostgreSQL, MySQL or MariaDB container, `metadata` runs nothing (resources only change state), and `auto` uses Docker when a daemon answers and `metadata` otherwise. |
 | `MWS_RDS_DOCKER` | `MWS_EC2_DOCKER`, then `docker` | The Docker-compatible CLI the RDS backend drives. |
 | `MWS_RDS_BIND` | `127.0.0.1` | The host address database ports are published on. Endpoints report this address and the published port. |
+| `MWS_ELASTICACHE_BACKEND` | `auto` | How ElastiCache nodes run. `docker` runs each node as a Valkey, Redis OSS or Memcached container, `metadata` runs nothing, and `auto` uses Docker when a daemon answers. |
+| `MWS_ELASTICACHE_DOCKER` | `docker` | The Docker-compatible CLI the ElastiCache backend drives. |
+| `MWS_ELASTICACHE_HOST` | `127.0.0.1` | The address ElastiCache endpoints name; node ports are published on the host. |
+| `MWS_ELASTICACHE_REDIS_IMAGE`, `MWS_ELASTICACHE_VALKEY_IMAGE`, `MWS_ELASTICACHE_MEMCACHED_IMAGE` | by engine version | Images to run instead of `redis:<version>-alpine`, `valkey/valkey:<version>-alpine` and `memcached:1.6-alpine`. |
 
 EC2 instances reach the instance metadata service and the AWS endpoint
 through the host, so when using the Docker backend MWS must listen on an

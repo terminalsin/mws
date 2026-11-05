@@ -420,6 +420,32 @@ dependencies = [
 ]
 
 [[package]]
+name = "aws-sdk-elasticache"
+version = "1.129.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "e9b83ba8ae80b9422d5a773fcdc4d599c3df59d9ab646ade0e75ba4a95395aa7"
+dependencies = [
+ "arc-swap",
+ "aws-credential-types",
+ "aws-runtime",
+ "aws-smithy-async",
+ "aws-smithy-http",
+ "aws-smithy-json",
+ "aws-smithy-observability",
+ "aws-smithy-query",
+ "aws-smithy-runtime",
+ "aws-smithy-runtime-api",
+ "aws-smithy-schema",
+ "aws-smithy-types",
+ "aws-smithy-xml",
+ "aws-types",
+ "fastrand",
+ "http 1.5.0",
+ "regex-lite",
+ "tracing",
+]
+
+[[package]]
 name = "aws-sdk-elasticloadbalancing"
 version = "1.121.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2842,6 +2868,7 @@ dependencies = [
  "mws-core",
  "mws-ec2",
  "mws-eks",
+ "mws-elasticache",
  "mws-elb",
  "mws-events",
  "mws-firehose",
@@ -3062,6 +3089,7 @@ dependencies = [
  "aws-sdk-cloudwatchlogs",
  "aws-sdk-ec2",
  "aws-sdk-eks",
+ "aws-sdk-elasticache",
  "aws-sdk-elasticloadbalancing",
  "aws-sdk-elasticloadbalancingv2",
  "aws-sdk-eventbridge",
@@ -3100,6 +3128,7 @@ dependencies = [
  "md-5 0.10.6",
  "mws",
  "mws-ec2",
+ "mws-elasticache",
  "mws-rds",
  "mws-route53",
  "mws-s3",
@@ -3169,6 +3198,26 @@ dependencies = [
  "time",
  "tracing",
  "uuid",
+]
+
+[[package]]
+name = "mws-elasticache"
+version = "0.1.0"
+dependencies = [
+ "async-trait",
+ "base64 0.22.1",
+ "chrono",
+ "hex",
+ "mws-codegen",
+ "mws-core",
+ "mws-proto-json",
+ "mws-proto-query",
+ "rand 0.8.8",
+ "serde",
+ "serde_json",
+ "sha2 0.10.9",
+ "tokio",
+ "tracing",
 ]
 
 [[package]]

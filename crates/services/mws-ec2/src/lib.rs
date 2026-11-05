@@ -25,6 +25,7 @@ mod firewall;
 mod handler;
 pub mod imds;
 mod keys;
+pub mod network;
 mod ops;
 mod public;
 mod state;
