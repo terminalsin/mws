@@ -9,8 +9,8 @@ use std::sync::Arc;
 
 use mws_acm::Acm;
 use mws_acmpca::PrivateCa;
-use mws_autoscaling::AutoScaling;
 use mws_amplify::Amplify;
+use mws_autoscaling::AutoScaling;
 use mws_cloudwatch::CloudWatch;
 use mws_core::Environment;
 use mws_ec2::{BackendChoice, Ec2};

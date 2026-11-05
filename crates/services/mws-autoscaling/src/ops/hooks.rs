@@ -66,7 +66,7 @@ pub(crate) fn make_hook(
     })
 }
 
-fn test_message(account: &str, group: &str, group_arn: &str, now: chrono::DateTime<chrono::Utc>) -> String {
+pub(crate) fn test_message(account: &str, group: &str, group_arn: &str, now: chrono::DateTime<chrono::Utc>) -> String {
     json!({
         "AccountId": account,
         "RequestId": uuid::Uuid::new_v4().to_string(),

@@ -30,6 +30,7 @@ pub(crate) struct LaunchReq {
     pub availability_zone_id: Option<String>,
     pub warm: bool,
     pub launch_template: Option<(String, i64)>,
+    pub launch_template_name: Option<String>,
     pub launch_configuration: Option<t::LaunchConfiguration>,
     pub instance_type: Option<String>,
     pub image_id: Option<String>,
@@ -53,6 +54,7 @@ pub(crate) enum Op {
 pub(crate) struct Source {
     /// `(template id, version)` of the template launches use.
     pub template: Option<(String, i64)>,
+    pub template_name: Option<String>,
     pub template_data: Option<et::ResponseLaunchTemplateData>,
     /// The template the group names now (for "oldest launch template").
     pub current_template: Option<(String, i64)>,
@@ -567,18 +569,20 @@ impl Planner<'_> {
         }
     }
 
-    /// Zones members count in, including planned launches.
+    /// Zones members count in, including planned launches. Warm pool
+    /// launches balance over the whole group, so that the instances it
+    /// later brings in keep the zones balanced.
     fn zone_counts(&self, planned: &[LaunchReq], warm: bool) -> BTreeMap<String, usize> {
         let mut counts: BTreeMap<String, usize> = BTreeMap::new();
         for (zone, _) in self.g.subnet_zones.values() {
             counts.entry(zone.clone()).or_default();
         }
         for m in self.g.members.values() {
-            if m.warm == warm && !m.lifecycle_state.starts_with("Terminating") && m.lifecycle_state != "Standby" {
+            if (warm || !m.warm) && !m.lifecycle_state.starts_with("Terminating") && m.lifecycle_state != "Standby" {
                 *counts.entry(m.availability_zone.clone()).or_default() += 1;
             }
         }
-        for p in planned.iter().filter(|p| p.warm == warm) {
+        for p in planned.iter().filter(|p| warm || !p.warm) {
             *counts.entry(p.availability_zone.clone()).or_default() += 1;
         }
         counts
@@ -616,6 +620,7 @@ impl Planner<'_> {
             availability_zone_id: Some(zone_id).filter(|z| !z.is_empty()),
             warm,
             launch_template: self.source.template.clone(),
+            launch_template_name: self.source.template_name.clone(),
             launch_configuration: self.source.configuration.clone(),
             instance_type: ov.as_ref().and_then(|o| o.instance_type.clone()),
             image_id: ov.as_ref().and_then(|o| o.image_id.clone()),
@@ -736,7 +741,9 @@ impl Planner<'_> {
                 at(now)
             );
             for _ in counted..desired {
-                // Prefer a warmed instance.
+                // Prefer a warmed instance, from the zone with the fewest
+                // instances.
+                let counts = self.zone_counts(&planned, false);
                 let warmed = self
                     .g
                     .members
@@ -748,7 +755,13 @@ impl Planner<'_> {
                                 "Warmed:Running" | "Warmed:Stopped" | "Warmed:Hibernated"
                             )
                     })
-                    .min_by_key(|m| (m.lifecycle_state != "Warmed:Running", m.launched_at))
+                    .min_by_key(|m| {
+                        (
+                            counts.get(&m.availability_zone).copied().unwrap_or(0),
+                            m.lifecycle_state != "Warmed:Running",
+                            m.launched_at,
+                        )
+                    })
                     .map(|m| {
                         (
                             m.instance_id.clone(),
@@ -1006,6 +1019,7 @@ impl AutoScaling {
         let used = spec.as_ref().and_then(resolve);
         Source {
             template: used.as_ref().map(|r| (r.id.clone(), r.version)),
+            template_name: used.as_ref().map(|r| r.name.clone()),
             template_data: used.map(|r| r.data),
             current_template: current.map(|r| (r.id, r.version)),
             configuration: if spec.is_none() {
@@ -1135,20 +1149,7 @@ impl AutoScaling {
                                         launch_template: req.launch_template.as_ref().map(|(id, v)| {
                                             t::LaunchTemplateSpecification {
                                                 launch_template_id: Some(id.clone()),
-                                                launch_template_name: g
-                                                    .cfg
-                                                    .launch_template
-                                                    .as_ref()
-                                                    .and_then(|l| l.launch_template_name.clone())
-                                                    .or_else(|| {
-                                                        g.cfg.mixed_instances_policy.as_ref().and_then(|m| {
-                                                            m.launch_template.as_ref().and_then(|l| {
-                                                                l.launch_template_specification
-                                                                    .as_ref()
-                                                                    .and_then(|s| s.launch_template_name.clone())
-                                                            })
-                                                        })
-                                                    }),
+                                                launch_template_name: req.launch_template_name.clone(),
                                                 version: Some(v.to_string()),
                                             }
                                         }),
@@ -1327,11 +1328,11 @@ impl AutoScaling {
         } else if let Some(lc) = &req.launch_configuration {
             input.image_id = Some(lc.image_id.clone());
             input.instance_type = Some(lc.instance_type.clone());
-            input.key_name = lc.key_name.clone();
-            input.user_data = lc.user_data.clone();
+            input.key_name = lc.key_name.clone().filter(|v| !v.is_empty());
+            input.user_data = lc.user_data.clone().filter(|v| !v.is_empty());
             input.ebs_optimized = lc.ebs_optimized;
-            input.kernel_id = lc.kernel_id.clone();
-            input.ramdisk_id = lc.ramdisk_id.clone();
+            input.kernel_id = lc.kernel_id.clone().filter(|v| !v.is_empty());
+            input.ramdisk_id = lc.ramdisk_id.clone().filter(|v| !v.is_empty());
             input.monitoring = lc
                 .instance_monitoring
                 .as_ref()

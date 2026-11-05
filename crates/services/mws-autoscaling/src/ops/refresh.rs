@@ -49,10 +49,24 @@ pub(crate) fn advance(p: &mut Planner<'_>) {
     if p.g.suspended("InstanceRefresh") && status != "Cancelling" {
         return;
     }
-    let busy =
-        p.g.members.values().any(|m| {
-            !m.warm && (m.lifecycle_state.starts_with("Pending") || m.lifecycle_state.starts_with("Terminating"))
-        });
+    // New instances count as warming up (the refresh waits) until the
+    // instance warmup has passed since they went InService.
+    let warmup =
+        p.g.active_refresh()
+            .and_then(|r| r.info.preferences.as_ref().and_then(|x| x.instance_warmup))
+            .or(p.g.cfg.default_instance_warmup)
+            .unwrap_or(0)
+            .max(0);
+    let started = p.g.active_refresh().and_then(|r| r.info.start_time).unwrap_or(now);
+    let busy = p.g.members.values().any(|m| {
+        !m.warm
+            && (m.lifecycle_state.starts_with("Pending")
+                || m.lifecycle_state.starts_with("Terminating")
+                || (status != "Cancelling"
+                    && m.lifecycle_state == "InService"
+                    && m.launched_at >= started
+                    && m.in_service_at.is_some_and(|t| t + chrono::Duration::seconds(warmup as i64) > now)))
+    });
     let configuration = p.g.cfg.launch_configuration_name.clone();
     let target = match status.as_str() {
         "RollbackInProgress" => p.source.current_template.clone(),

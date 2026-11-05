@@ -8,6 +8,7 @@ use mws_ec2::generated::types as et;
 use mws_ec2::generated::Handler as _;
 
 use super::{authorized_group, render_group};
+use crate::engine::Op;
 use crate::generated::types as t;
 use crate::state::{Group, RegionState};
 use crate::util::{
@@ -429,15 +430,33 @@ impl AutoScaling {
         for ts in sources {
             g.traffic_sources.insert(ts.identifier.clone(), super::traffic::source_state(&ts, "Added"));
         }
-        self.with_region(ctx, |r| {
+        let created = self.with_region(ctx, |r| {
             if r.groups.contains_key(&name) {
                 return Err(already_exists(format!(
                     "AutoScalingGroup by this name already exists - A group with the name {name} already exists"
                 )));
             }
+            let tests: Vec<Op> = g
+                .hooks
+                .values()
+                .filter_map(|h| {
+                    Some(Op::Notify {
+                        target: h.notification_target_arn.clone()?,
+                        role: h.role_arn.clone(),
+                        subject: None,
+                        message: super::hooks::test_message(&account, &name, &g.arn(), now),
+                    })
+                })
+                .collect();
+            let arn = g.arn();
             r.groups.insert(name.clone(), g);
-            Ok(())
-        })
+            Ok((tests, arn))
+        })?;
+        let (tests, arn) = created;
+        for op in tests {
+            self.deliver(&sctx, &account, &ctx.region, &arn, op, now);
+        }
+        Ok(())
     }
 
     pub(crate) async fn update_auto_scaling_group_op(
