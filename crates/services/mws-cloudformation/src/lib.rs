@@ -18,11 +18,15 @@ mod callback;
 mod changes;
 mod dynamic;
 mod engine;
+mod iac;
 mod intrinsics;
 mod ops;
 mod parameters;
 mod policy;
 mod providers;
+mod refactor;
+mod registry;
+mod stacksets;
 mod state;
 mod template;
 
@@ -42,6 +46,51 @@ use crate::state::State;
 /// `cloudformation.amazonaws.com`, giving the identity to deploy with.
 pub trait RoleAssumer: Send + Sync {
     fn assume(&self, role_arn: &str, session_name: &str, now: chrono::DateTime<chrono::Utc>) -> Result<Caller, String>;
+
+    /// The caller that signs with credentials STS issued (role chaining:
+    /// a StackSets administration role assuming execution roles).
+    fn resolve(
+        &self,
+        access_key_id: &str,
+        session_token: Option<&str>,
+        now: chrono::DateTime<chrono::Utc>,
+    ) -> Option<Caller> {
+        let _ = (access_key_id, session_token, now);
+        None
+    }
+
+    /// The identity service-managed StackSets deploy with in an
+    /// Organizations member account: the account's StackSets execution
+    /// role, created on first use as AWS's service-linked role does.
+    /// Credentials for `role_arn` assumed by `service_principal`
+    /// (registry handlers get the type's execution role this way).
+    fn credentials(
+        &self,
+        role_arn: &str,
+        service_principal: &str,
+        session_name: &str,
+        now: chrono::DateTime<chrono::Utc>,
+    ) -> Result<(String, String, String), String> {
+        let _ = (service_principal, session_name, now);
+        Err(format!("Role {role_arn} is invalid or cannot be assumed"))
+    }
+
+    /// The identity registry handlers are deployed and invoked with in an
+    /// account, and the role their Lambda functions run as.
+    fn registry_identity(&self, account: &str, now: chrono::DateTime<chrono::Utc>) -> Result<(Caller, String), String> {
+        let _ = now;
+        Err(format!("Registry handlers cannot run in account {account}"))
+    }
+
+    fn org_member(
+        &self,
+        member_account: &str,
+        management_account: &str,
+        now: chrono::DateTime<chrono::Utc>,
+    ) -> Result<Caller, String> {
+        let _ = (now, management_account);
+        Err(format!("Account {member_account} cannot be deployed to"))
+    }
 }
 
 pub(crate) struct Inner {
@@ -127,6 +176,12 @@ impl CloudFormation {
         self.inner.providers.get(type_name).cloned()
     }
 
+    /// A resource type's provider in an account: the built-in ones, then
+    /// private and activated registry types.
+    pub(crate) fn provider_in(&self, account: &str, region: &str, type_name: &str) -> Option<Arc<dyn Provider>> {
+        self.provider(type_name).or_else(|| self.registry_provider(account, region, type_name))
+    }
+
     pub(crate) fn resource_type_of(&self, stack_id: &str, logical_id: &str) -> Option<String> {
         let st = self.state();
         let s = st.stacks.get(stack_id)?;
@@ -134,8 +189,10 @@ impl CloudFormation {
         t.resource_type(logical_id).map(str::to_string)
     }
 
-    pub(crate) fn has_type(&self, type_name: &str) -> bool {
-        providers::is_custom(type_name) || self.inner.providers.contains_key(type_name)
+    pub(crate) fn has_type(&self, ctx: &RequestContext, type_name: &str) -> bool {
+        providers::is_custom(type_name)
+            || self.inner.providers.contains_key(type_name)
+            || self.has_registry_type(&ctx.caller.account_id, &ctx.region, type_name)
     }
 
     /// Run another service's operation with `ctx`'s identity, marked as
@@ -158,6 +215,17 @@ impl CloudFormation {
         let mut c = ctx.clone();
         c.request_id = uuid::Uuid::new_v4().to_string();
         svc.invoke(c, operation, input).await
+    }
+
+    pub(crate) fn role_assumer(&self) -> Option<Arc<dyn RoleAssumer>> {
+        self.inner.roles.read().expect("roles lock poisoned").clone()
+    }
+
+    /// `ctx` with calls marked as made via CloudFormation.
+    pub(crate) fn via(&self, ctx: &RequestContext) -> RequestContext {
+        let mut c = ctx.clone();
+        c.authorizer = Arc::new(ViaCloudFormation(ctx.authorizer.clone()));
+        c
     }
 
     /// The identity a stack deploys with: `ctx` marked as called via

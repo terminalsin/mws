@@ -144,7 +144,7 @@ SDKs, S3 addressing, host-prefixed endpoints and calling as other identities.
 | [CloudTrail](docs/services/cloudtrail.md) | 61 / 61 (with CloudTrail Data) | awsJson 1.1, restJson1 |
 | [Service Quotas](docs/services/servicequotas.md) | 26 / 26 | awsJson 1.1 |
 | [Cost Explorer](docs/services/ce.md) | 47 / 47 | awsJson 1.1 |
-| [CloudFormation](docs/services/cloudformation.md) | 35 / 90 | awsQuery |
+| [CloudFormation](docs/services/cloudformation.md) | 90 / 90 | awsQuery |
 | [Bedrock and Bedrock Runtime](docs/services/bedrock.md) | 118 / 119 | restJson1 |
 
 Operations outside the implemented set answer `NotImplemented`. Each service

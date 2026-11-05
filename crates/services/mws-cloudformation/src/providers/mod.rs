@@ -14,6 +14,7 @@ mod logs;
 mod pca;
 mod route53;
 mod s3;
+pub mod scan;
 mod secrets;
 mod sns;
 mod sqs;

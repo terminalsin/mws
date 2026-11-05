@@ -116,7 +116,7 @@ Every service shares the same foundations:
 | [Cost Explorer](ce.md) | 47 / 47 | Seeded and derived cost data, grouping and filters, forecasts, cost categories, allocation tags, anomaly alerts |
 ## Management
 
-| [CloudFormation](cloudformation.md) | 35 / 90 | Stacks that create real resources in the other services, change sets, rollbacks, nested stacks, custom resources, drift detection |
+| [CloudFormation](cloudformation.md) | 90 / 90 | Stacks that create real resources in the other services, change sets (incl. IMPORT), StackSets, private registry types, modules and hooks, resource scans and generated templates, refactors |
 
 ## How services connect
 

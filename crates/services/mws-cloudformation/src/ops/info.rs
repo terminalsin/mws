@@ -40,7 +40,7 @@ impl CloudFormation {
         ctx.authorize("cloudformation:ValidateTemplate", "*", Default::default())?;
         let body = self.template_text(ctx, input.template_body.as_deref(), input.template_url.as_deref()).await?;
         let t = Template::parse(&body).map_err(validation)?;
-        self.check_template(&t)?;
+        self.check_template(ctx, &t)?;
         let (caps, iam) = required_capabilities(&t);
         let params = t
             .parameters()
@@ -84,7 +84,7 @@ impl CloudFormation {
             }
         };
         let t = Template::parse(&body).map_err(validation)?;
-        self.check_template(&t)?;
+        self.check_template(ctx, &t)?;
         let (caps, iam) = required_capabilities(&t);
         let params = t
             .parameters()
@@ -144,7 +144,7 @@ impl CloudFormation {
         ctx.authorize("cloudformation:EstimateTemplateCost", "*", Default::default())?;
         let body = self.template_text(ctx, input.template_body.as_deref(), input.template_url.as_deref()).await?;
         let t = Template::parse(&body).map_err(validation)?;
-        self.check_template(&t)?;
+        self.check_template(ctx, &t)?;
         Ok(types::EstimateTemplateCostOutput {
             url: Some(format!("https://calculator.aws/#/estimate?id={}", uuid::Uuid::new_v4().simple())),
         })
@@ -174,7 +174,14 @@ impl CloudFormation {
         let visibility = input.visibility.clone().unwrap_or_else(|| "PRIVATE".into());
         let kind = input.r#type.clone().unwrap_or_else(|| "RESOURCE".into());
         let prefix = input.filters.as_ref().and_then(|f| f.type_name_prefix.clone()).unwrap_or_default();
-        let all: Vec<types::TypeSummary> = if visibility == "PUBLIC" && kind == "RESOURCE" {
+        let category = input.filters.as_ref().and_then(|f| f.category.clone());
+        let publisher = input.filters.as_ref().and_then(|f| f.publisher_id.clone());
+        let deprecated = input.deprecated_status.clone().unwrap_or_else(|| "LIVE".into());
+        let mut all: Vec<types::TypeSummary> = if visibility == "PUBLIC"
+            && kind == "RESOURCE"
+            && matches!(category.as_deref(), None | Some("AWS_TYPES"))
+            && publisher.as_deref().is_none_or(|p| p == "aws-cloudformation")
+        {
             self.resource_types()
                 .into_iter()
                 .filter(|t| super::is_registry_type(t) && t.starts_with(&prefix))
@@ -193,6 +200,25 @@ impl CloudFormation {
         } else {
             Vec::new()
         };
+        if visibility == "PUBLIC"
+            && !matches!(category.as_deref(), Some("AWS_TYPES") | Some("ACTIVATED") | Some("REGISTERED"))
+        {
+            all.extend(self.public_type_summaries(ctx, &kind, publisher.as_deref()));
+        }
+        if visibility == "PRIVATE" {
+            all.extend(
+                self.private_type_summaries(ctx, &kind, category.as_deref(), &deprecated)
+                    .into_iter()
+                    .filter(|t| t.type_name.as_deref().is_some_and(|n| n.starts_with(&prefix)))
+                    .filter(|t| publisher.as_ref().is_none_or(|p| t.publisher_id.as_ref() == Some(p))),
+            );
+        }
+        if let Some(p) = &input.provisioning_type {
+            // Every built-in type is fully mutable.
+            if p != "FULLY_MUTABLE" {
+                all.retain(|t| t.publisher_id.as_deref() != Some("aws-cloudformation"));
+            }
+        }
         let size = input.max_results.map(|m| m.max(1) as usize).unwrap_or(100);
         let (items, next) = page(&all, input.next_token.as_deref(), size)?;
         Ok(types::ListTypesOutput { type_summaries: Some(items), next_token: next })
@@ -204,6 +230,9 @@ impl CloudFormation {
         input: types::DescribeTypeInput,
     ) -> Result<types::DescribeTypeOutput, ServiceError> {
         ctx.authorize("cloudformation:DescribeType", "*", Default::default())?;
+        if let Some(found) = self.describe_registry_type(ctx, &input) {
+            return found;
+        }
         let name = match (&input.type_name, &input.arn) {
             (Some(n), _) => n.clone(),
             (None, Some(arn)) => arn.rsplit('/').next().unwrap_or_default().replace('-', "::"),

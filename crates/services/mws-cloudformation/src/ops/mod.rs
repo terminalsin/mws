@@ -1,6 +1,6 @@
 //! Operation handlers.
 
-mod change_sets;
+pub(crate) mod change_sets;
 mod convert;
 mod drift;
 mod handler;
@@ -101,8 +101,11 @@ impl CloudFormation {
         match (body, url) {
             (Some(_), Some(_)) => Err(validation("Specify exactly one of TemplateBody or TemplateUrl.")),
             (None, None) => Err(validation("Either Template URL or Template Body must be specified.")),
-            (Some(b), None) => Ok(b.to_string()),
-            (None, Some(u)) => self.fetch_s3(ctx, u).await,
+            (Some(b), None) => self.expand_modules(ctx, b),
+            (None, Some(u)) => {
+                let text = self.fetch_s3(ctx, u).await?;
+                self.expand_modules(ctx, &text)
+            }
         }
     }
 
@@ -138,7 +141,7 @@ impl CloudFormation {
         notification_arns: &[String],
     ) -> Result<(Template, Vec<StackParameter>, EvalData), ServiceError> {
         let template = Template::parse(body).map_err(validation)?;
-        self.check_template(&template)?;
+        self.check_template(ctx, &template)?;
         check_capabilities(&template, capabilities)?;
         let mut params = parameters::assign(&template, provided, previous).map_err(validation)?;
         for p in params.iter_mut() {
@@ -160,13 +163,13 @@ impl CloudFormation {
 
     /// Structural and reference checks shared by every operation that
     /// takes a template.
-    pub(crate) fn check_template(&self, template: &Template) -> Result<(), ServiceError> {
+    pub(crate) fn check_template(&self, ctx: &RequestContext, template: &Template) -> Result<(), ServiceError> {
         template.check_references().map_err(validation)?;
         let mut unknown: Vec<String> = template
             .resources()
             .values()
             .filter_map(|r| r.get("Type").and_then(Value::as_str))
-            .filter(|t| !self.has_type(t))
+            .filter(|t| !self.has_type(ctx, t))
             .map(str::to_string)
             .collect();
         unknown.sort();
@@ -179,7 +182,7 @@ impl CloudFormation {
             let Some(props) = r.get("Properties") else { continue };
             for (res, attr) in crate::template::references(props).get_atts {
                 let Some(ty) = template.resource_type(&res) else { continue };
-                if let Some(p) = self.provider(ty) {
+                if let Some(p) = self.provider_in(&ctx.caller.account_id, &ctx.region, ty) {
                     if !p.open_attributes() && !p.attributes().contains(&attr.as_str()) && attr != "*" {
                         return Err(validation(format!(
                             "Template error: resource {res} does not support attribute type {attr} in Fn::GetAtt"
@@ -310,7 +313,7 @@ pub(crate) fn required_capabilities(template: &Template) -> (Vec<String>, Vec<St
     (caps, iam.into_iter().collect())
 }
 
-fn check_capabilities(template: &Template, given: &[String]) -> Result<(), ServiceError> {
+pub(crate) fn check_capabilities(template: &Template, given: &[String]) -> Result<(), ServiceError> {
     let (needed, _) = required_capabilities(template);
     for c in needed {
         let ok = given.contains(&c);

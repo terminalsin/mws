@@ -282,4 +282,454 @@ impl Handler for CloudFormation {
     ) -> Result<types::DescribeTypeOutput, ServiceError> {
         self.describe_type_op(ctx, input)
     }
+
+    async fn activate_organizations_access(
+        &self,
+        ctx: &RequestContext,
+        input: types::ActivateOrganizationsAccessInput,
+    ) -> Result<types::ActivateOrganizationsAccessOutput, ServiceError> {
+        let _ = input;
+        self.activate_organizations_access_op(ctx).await?;
+        Ok(Default::default())
+    }
+
+    async fn deactivate_organizations_access(
+        &self,
+        ctx: &RequestContext,
+        input: types::DeactivateOrganizationsAccessInput,
+    ) -> Result<types::DeactivateOrganizationsAccessOutput, ServiceError> {
+        let _ = input;
+        self.deactivate_organizations_access_op(ctx).await?;
+        Ok(Default::default())
+    }
+
+    async fn describe_organizations_access(
+        &self,
+        ctx: &RequestContext,
+        input: types::DescribeOrganizationsAccessInput,
+    ) -> Result<types::DescribeOrganizationsAccessOutput, ServiceError> {
+        self.describe_organizations_access_op(ctx, input).await
+    }
+
+    async fn create_stack_set(
+        &self,
+        ctx: &RequestContext,
+        input: types::CreateStackSetInput,
+    ) -> Result<types::CreateStackSetOutput, ServiceError> {
+        self.create_stack_set_op(ctx, input).await
+    }
+
+    async fn update_stack_set(
+        &self,
+        ctx: &RequestContext,
+        input: types::UpdateStackSetInput,
+    ) -> Result<types::UpdateStackSetOutput, ServiceError> {
+        self.update_stack_set_op(ctx, input).await
+    }
+
+    async fn delete_stack_set(
+        &self,
+        ctx: &RequestContext,
+        input: types::DeleteStackSetInput,
+    ) -> Result<types::DeleteStackSetOutput, ServiceError> {
+        self.delete_stack_set_op(ctx, input).await?;
+        Ok(Default::default())
+    }
+
+    async fn list_stack_sets(
+        &self,
+        ctx: &RequestContext,
+        input: types::ListStackSetsInput,
+    ) -> Result<types::ListStackSetsOutput, ServiceError> {
+        self.list_stack_sets_op(ctx, input).await
+    }
+
+    async fn describe_stack_set(
+        &self,
+        ctx: &RequestContext,
+        input: types::DescribeStackSetInput,
+    ) -> Result<types::DescribeStackSetOutput, ServiceError> {
+        self.describe_stack_set_op(ctx, input).await
+    }
+
+    async fn create_stack_instances(
+        &self,
+        ctx: &RequestContext,
+        input: types::CreateStackInstancesInput,
+    ) -> Result<types::CreateStackInstancesOutput, ServiceError> {
+        self.create_stack_instances_op(ctx, input).await
+    }
+
+    async fn update_stack_instances(
+        &self,
+        ctx: &RequestContext,
+        input: types::UpdateStackInstancesInput,
+    ) -> Result<types::UpdateStackInstancesOutput, ServiceError> {
+        self.update_stack_instances_op(ctx, input).await
+    }
+
+    async fn delete_stack_instances(
+        &self,
+        ctx: &RequestContext,
+        input: types::DeleteStackInstancesInput,
+    ) -> Result<types::DeleteStackInstancesOutput, ServiceError> {
+        self.delete_stack_instances_op(ctx, input).await
+    }
+
+    async fn describe_stack_instance(
+        &self,
+        ctx: &RequestContext,
+        input: types::DescribeStackInstanceInput,
+    ) -> Result<types::DescribeStackInstanceOutput, ServiceError> {
+        self.describe_stack_instance_op(ctx, input).await
+    }
+
+    async fn list_stack_instances(
+        &self,
+        ctx: &RequestContext,
+        input: types::ListStackInstancesInput,
+    ) -> Result<types::ListStackInstancesOutput, ServiceError> {
+        self.list_stack_instances_op(ctx, input).await
+    }
+
+    async fn describe_stack_set_operation(
+        &self,
+        ctx: &RequestContext,
+        input: types::DescribeStackSetOperationInput,
+    ) -> Result<types::DescribeStackSetOperationOutput, ServiceError> {
+        self.describe_stack_set_operation_op(ctx, input).await
+    }
+
+    async fn list_stack_set_operations(
+        &self,
+        ctx: &RequestContext,
+        input: types::ListStackSetOperationsInput,
+    ) -> Result<types::ListStackSetOperationsOutput, ServiceError> {
+        self.list_stack_set_operations_op(ctx, input).await
+    }
+
+    async fn list_stack_set_operation_results(
+        &self,
+        ctx: &RequestContext,
+        input: types::ListStackSetOperationResultsInput,
+    ) -> Result<types::ListStackSetOperationResultsOutput, ServiceError> {
+        self.list_stack_set_operation_results_op(ctx, input).await
+    }
+
+    async fn stop_stack_set_operation(
+        &self,
+        ctx: &RequestContext,
+        input: types::StopStackSetOperationInput,
+    ) -> Result<types::StopStackSetOperationOutput, ServiceError> {
+        self.stop_stack_set_operation_op(ctx, input).await?;
+        Ok(Default::default())
+    }
+
+    async fn detect_stack_set_drift(
+        &self,
+        ctx: &RequestContext,
+        input: types::DetectStackSetDriftInput,
+    ) -> Result<types::DetectStackSetDriftOutput, ServiceError> {
+        self.detect_stack_set_drift_op(ctx, input).await
+    }
+
+    async fn list_stack_instance_resource_drifts(
+        &self,
+        ctx: &RequestContext,
+        input: types::ListStackInstanceResourceDriftsInput,
+    ) -> Result<types::ListStackInstanceResourceDriftsOutput, ServiceError> {
+        self.list_stack_instance_resource_drifts_op(ctx, input).await
+    }
+
+    async fn list_stack_set_auto_deployment_targets(
+        &self,
+        ctx: &RequestContext,
+        input: types::ListStackSetAutoDeploymentTargetsInput,
+    ) -> Result<types::ListStackSetAutoDeploymentTargetsOutput, ServiceError> {
+        self.list_stack_set_auto_deployment_targets_op(ctx, input).await
+    }
+
+    async fn import_stacks_to_stack_set(
+        &self,
+        ctx: &RequestContext,
+        input: types::ImportStacksToStackSetInput,
+    ) -> Result<types::ImportStacksToStackSetOutput, ServiceError> {
+        self.import_stacks_to_stack_set_op(ctx, input).await
+    }
+
+    async fn register_type(
+        &self,
+        ctx: &RequestContext,
+        input: types::RegisterTypeInput,
+    ) -> Result<types::RegisterTypeOutput, ServiceError> {
+        self.register_type_op(ctx, input).await
+    }
+
+    async fn describe_type_registration(
+        &self,
+        ctx: &RequestContext,
+        input: types::DescribeTypeRegistrationInput,
+    ) -> Result<types::DescribeTypeRegistrationOutput, ServiceError> {
+        self.describe_type_registration_op(ctx, input)
+    }
+
+    async fn list_type_registrations(
+        &self,
+        ctx: &RequestContext,
+        input: types::ListTypeRegistrationsInput,
+    ) -> Result<types::ListTypeRegistrationsOutput, ServiceError> {
+        self.list_type_registrations_op(ctx, input)
+    }
+
+    async fn deregister_type(
+        &self,
+        ctx: &RequestContext,
+        input: types::DeregisterTypeInput,
+    ) -> Result<types::DeregisterTypeOutput, ServiceError> {
+        self.deregister_type_op(ctx, input)?;
+        Ok(Default::default())
+    }
+
+    async fn list_type_versions(
+        &self,
+        ctx: &RequestContext,
+        input: types::ListTypeVersionsInput,
+    ) -> Result<types::ListTypeVersionsOutput, ServiceError> {
+        self.list_type_versions_op(ctx, input)
+    }
+
+    async fn set_type_default_version(
+        &self,
+        ctx: &RequestContext,
+        input: types::SetTypeDefaultVersionInput,
+    ) -> Result<types::SetTypeDefaultVersionOutput, ServiceError> {
+        self.set_type_default_version_op(ctx, input)?;
+        Ok(Default::default())
+    }
+
+    async fn set_type_configuration(
+        &self,
+        ctx: &RequestContext,
+        input: types::SetTypeConfigurationInput,
+    ) -> Result<types::SetTypeConfigurationOutput, ServiceError> {
+        self.set_type_configuration_op(ctx, input)
+    }
+
+    async fn batch_describe_type_configurations(
+        &self,
+        ctx: &RequestContext,
+        input: types::BatchDescribeTypeConfigurationsInput,
+    ) -> Result<types::BatchDescribeTypeConfigurationsOutput, ServiceError> {
+        self.batch_describe_type_configurations_op(ctx, input)
+    }
+
+    async fn register_publisher(
+        &self,
+        ctx: &RequestContext,
+        input: types::RegisterPublisherInput,
+    ) -> Result<types::RegisterPublisherOutput, ServiceError> {
+        self.register_publisher_op(ctx, input)
+    }
+
+    async fn describe_publisher(
+        &self,
+        ctx: &RequestContext,
+        input: types::DescribePublisherInput,
+    ) -> Result<types::DescribePublisherOutput, ServiceError> {
+        self.describe_publisher_op(ctx, input)
+    }
+
+    async fn test_type(
+        &self,
+        ctx: &RequestContext,
+        input: types::TestTypeInput,
+    ) -> Result<types::TestTypeOutput, ServiceError> {
+        self.test_type_op(ctx, input).await
+    }
+
+    async fn publish_type(
+        &self,
+        ctx: &RequestContext,
+        input: types::PublishTypeInput,
+    ) -> Result<types::PublishTypeOutput, ServiceError> {
+        self.publish_type_op(ctx, input)
+    }
+
+    async fn activate_type(
+        &self,
+        ctx: &RequestContext,
+        input: types::ActivateTypeInput,
+    ) -> Result<types::ActivateTypeOutput, ServiceError> {
+        self.activate_type_op(ctx, input)
+    }
+
+    async fn deactivate_type(
+        &self,
+        ctx: &RequestContext,
+        input: types::DeactivateTypeInput,
+    ) -> Result<types::DeactivateTypeOutput, ServiceError> {
+        self.deactivate_type_op(ctx, input)?;
+        Ok(Default::default())
+    }
+
+    async fn record_handler_progress(
+        &self,
+        ctx: &RequestContext,
+        input: types::RecordHandlerProgressInput,
+    ) -> Result<types::RecordHandlerProgressOutput, ServiceError> {
+        self.record_handler_progress_op(ctx, input)?;
+        Ok(Default::default())
+    }
+
+    async fn get_hook_result(
+        &self,
+        ctx: &RequestContext,
+        input: types::GetHookResultInput,
+    ) -> Result<types::GetHookResultOutput, ServiceError> {
+        self.get_hook_result_op(ctx, input)
+    }
+
+    async fn list_hook_results(
+        &self,
+        ctx: &RequestContext,
+        input: types::ListHookResultsInput,
+    ) -> Result<types::ListHookResultsOutput, ServiceError> {
+        self.list_hook_results_op(ctx, input)
+    }
+
+    async fn start_resource_scan(
+        &self,
+        ctx: &RequestContext,
+        input: types::StartResourceScanInput,
+    ) -> Result<types::StartResourceScanOutput, ServiceError> {
+        self.start_resource_scan_op(ctx, input).await
+    }
+
+    async fn describe_resource_scan(
+        &self,
+        ctx: &RequestContext,
+        input: types::DescribeResourceScanInput,
+    ) -> Result<types::DescribeResourceScanOutput, ServiceError> {
+        self.describe_resource_scan_op(ctx, input)
+    }
+
+    async fn list_resource_scans(
+        &self,
+        ctx: &RequestContext,
+        input: types::ListResourceScansInput,
+    ) -> Result<types::ListResourceScansOutput, ServiceError> {
+        self.list_resource_scans_op(ctx, input)
+    }
+
+    async fn list_resource_scan_resources(
+        &self,
+        ctx: &RequestContext,
+        input: types::ListResourceScanResourcesInput,
+    ) -> Result<types::ListResourceScanResourcesOutput, ServiceError> {
+        self.list_resource_scan_resources_op(ctx, input)
+    }
+
+    async fn list_resource_scan_related_resources(
+        &self,
+        ctx: &RequestContext,
+        input: types::ListResourceScanRelatedResourcesInput,
+    ) -> Result<types::ListResourceScanRelatedResourcesOutput, ServiceError> {
+        self.list_resource_scan_related_resources_op(ctx, input)
+    }
+
+    async fn create_generated_template(
+        &self,
+        ctx: &RequestContext,
+        input: types::CreateGeneratedTemplateInput,
+    ) -> Result<types::CreateGeneratedTemplateOutput, ServiceError> {
+        self.create_generated_template_op(ctx, input).await
+    }
+
+    async fn describe_generated_template(
+        &self,
+        ctx: &RequestContext,
+        input: types::DescribeGeneratedTemplateInput,
+    ) -> Result<types::DescribeGeneratedTemplateOutput, ServiceError> {
+        self.describe_generated_template_op(ctx, input)
+    }
+
+    async fn get_generated_template(
+        &self,
+        ctx: &RequestContext,
+        input: types::GetGeneratedTemplateInput,
+    ) -> Result<types::GetGeneratedTemplateOutput, ServiceError> {
+        self.get_generated_template_op(ctx, input)
+    }
+
+    async fn list_generated_templates(
+        &self,
+        ctx: &RequestContext,
+        input: types::ListGeneratedTemplatesInput,
+    ) -> Result<types::ListGeneratedTemplatesOutput, ServiceError> {
+        self.list_generated_templates_op(ctx, input)
+    }
+
+    async fn update_generated_template(
+        &self,
+        ctx: &RequestContext,
+        input: types::UpdateGeneratedTemplateInput,
+    ) -> Result<types::UpdateGeneratedTemplateOutput, ServiceError> {
+        self.update_generated_template_op(ctx, input)
+    }
+
+    async fn delete_generated_template(
+        &self,
+        ctx: &RequestContext,
+        input: types::DeleteGeneratedTemplateInput,
+    ) -> Result<(), ServiceError> {
+        self.delete_generated_template_op(ctx, input)
+    }
+
+    async fn create_stack_refactor(
+        &self,
+        ctx: &RequestContext,
+        input: types::CreateStackRefactorInput,
+    ) -> Result<types::CreateStackRefactorOutput, ServiceError> {
+        self.create_stack_refactor_op(ctx, input).await
+    }
+
+    async fn describe_stack_refactor(
+        &self,
+        ctx: &RequestContext,
+        input: types::DescribeStackRefactorInput,
+    ) -> Result<types::DescribeStackRefactorOutput, ServiceError> {
+        self.describe_stack_refactor_op(ctx, input)
+    }
+
+    async fn execute_stack_refactor(
+        &self,
+        ctx: &RequestContext,
+        input: types::ExecuteStackRefactorInput,
+    ) -> Result<(), ServiceError> {
+        self.execute_stack_refactor_op(ctx, input).await
+    }
+
+    async fn list_stack_refactor_actions(
+        &self,
+        ctx: &RequestContext,
+        input: types::ListStackRefactorActionsInput,
+    ) -> Result<types::ListStackRefactorActionsOutput, ServiceError> {
+        self.list_stack_refactor_actions_op(ctx, input)
+    }
+
+    async fn list_stack_refactors(
+        &self,
+        ctx: &RequestContext,
+        input: types::ListStackRefactorsInput,
+    ) -> Result<types::ListStackRefactorsOutput, ServiceError> {
+        self.list_stack_refactors_op(ctx, input)
+    }
+
+    async fn describe_events(
+        &self,
+        ctx: &RequestContext,
+        input: types::DescribeEventsInput,
+    ) -> Result<types::DescribeEventsOutput, ServiceError> {
+        self.describe_events_op(ctx, input)
+    }
 }

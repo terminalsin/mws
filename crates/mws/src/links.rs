@@ -748,7 +748,7 @@ impl mws_ec2::InstanceRoleCredentials for Ec2InstanceRoles {
 
 /// CloudFormation service roles: the stack's `RoleARN`, assumed as
 /// `cloudformation.amazonaws.com`.
-pub struct CloudFormationRoles(pub mws_sts::Sts);
+pub struct CloudFormationRoles(pub mws_sts::Sts, pub mws_iam::Iam);
 
 impl mws_cloudformation::RoleAssumer for CloudFormationRoles {
     fn assume(
@@ -775,6 +775,74 @@ impl mws_cloudformation::RoleAssumer for CloudFormationRoles {
             .map_err(|e| format!("{e:?}"))?
             .map(|r| r.caller)
             .ok_or_else(|| format!("Role {role_arn} is invalid or cannot be assumed"))
+    }
+
+    fn resolve(
+        &self,
+        access_key_id: &str,
+        session_token: Option<&str>,
+        now: chrono::DateTime<chrono::Utc>,
+    ) -> Option<mws_core::Caller> {
+        self.0.credential_store().resolve(access_key_id, session_token, now).ok().flatten().map(|r| r.caller)
+    }
+
+    fn credentials(
+        &self,
+        role_arn: &str,
+        service_principal: &str,
+        session_name: &str,
+        now: chrono::DateTime<chrono::Utc>,
+    ) -> Result<(String, String, String), String> {
+        let creds = self
+            .0
+            .assume_role_as_service(&mws_sts::ServiceAssume {
+                role_arn,
+                service_principal,
+                session_name,
+                duration_seconds: 3600,
+                source_account: role_arn.split(':').nth(4),
+                source_arn: None,
+                now,
+            })
+            .map_err(|_| format!("Role {role_arn} is invalid or cannot be assumed"))?;
+        Ok((creds.access_key_id, creds.secret_access_key, creds.session_token))
+    }
+
+    fn registry_identity(
+        &self,
+        account: &str,
+        now: chrono::DateTime<chrono::Utc>,
+    ) -> Result<(mws_core::Caller, String), String> {
+        let role_arn = self.1.ensure_cloudformation_registry_role(account);
+        let (key, _, token) =
+            self.credentials(&role_arn, "resources.cloudformation.amazonaws.com", "CloudFormationRegistry", now)?;
+        let caller = self
+            .resolve(&key, Some(&token), now)
+            .ok_or_else(|| format!("Registry handlers cannot run in account {account}"))?;
+        Ok((caller, role_arn))
+    }
+
+    fn org_member(
+        &self,
+        member_account: &str,
+        management_account: &str,
+        now: chrono::DateTime<chrono::Utc>,
+    ) -> Result<mws_core::Caller, String> {
+        let role_arn = self.1.ensure_stacksets_execution_role(member_account, management_account);
+        let creds = self
+            .0
+            .assume_role_as_service(&mws_sts::ServiceAssume {
+                role_arn: &role_arn,
+                service_principal: "member.org.stacksets.cloudformation.amazonaws.com",
+                session_name: "AWSCloudFormation-StackSets",
+                duration_seconds: 3600,
+                source_account: Some(management_account),
+                source_arn: None,
+                now,
+            })
+            .map_err(|_| format!("Account {member_account} cannot be deployed to"))?;
+        self.resolve(&creds.access_key_id, Some(&creds.session_token), now)
+            .ok_or_else(|| format!("Account {member_account} cannot be deployed to"))
     }
 }
 

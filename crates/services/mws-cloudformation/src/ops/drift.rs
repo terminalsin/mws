@@ -82,7 +82,9 @@ impl CloudFormation {
             timestamp: now,
             ..Default::default()
         };
-        let (Some(provider), Some(physical)) = (self.provider(&r.resource_type), r.physical_id.as_deref()) else {
+        let (Some(provider), Some(physical)) =
+            (self.provider_in(&ctx.caller.account_id, &ctx.region, &r.resource_type), r.physical_id.as_deref())
+        else {
             return d;
         };
         let deploy = match self.deploy_context(ctx, None) {
