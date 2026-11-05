@@ -79,6 +79,8 @@ async fn tcp(host: &str, port: u16) -> Result<TcpStream> {
 
 pub struct Client {
     stream: BufReader<Box<dyn Stream>>,
+    /// Commands the node knows under other names (`rename-command`).
+    renames: Option<(&'static [&'static str], String)>,
 }
 
 const TIMEOUT: Duration = Duration::from_secs(30);
@@ -86,7 +88,7 @@ const TIMEOUT: Duration = Duration::from_secs(30);
 impl Client {
     pub async fn connect(host: &str, port: u16) -> Result<Self> {
         let stream = tcp(host, port).await?;
-        Ok(Self { stream: BufReader::new(Box::new(stream)) })
+        Ok(Self { stream: BufReader::new(Box::new(stream)), renames: None })
     }
 
     /// Connect over TLS, trusting `config`'s roots (encryption in transit).
@@ -100,7 +102,7 @@ impl Client {
         )
         .await
         .map_err(|_| RespError(format!("TLS handshake with {host}:{port} timed out")))??;
-        Ok(Self { stream: BufReader::new(Box::new(tls)) })
+        Ok(Self { stream: BufReader::new(Box::new(tls)), renames: None })
     }
 
     /// Connect (over TLS when `tls` is set) and authenticate.
@@ -144,7 +146,25 @@ impl Client {
         self.cmd_bytes(&args).await
     }
 
+    /// Send `commands` as `<COMMAND>-<suffix>`, the names a node started
+    /// with `rename-command` knows them by.
+    pub fn renamed(mut self, commands: &'static [&'static str], suffix: &str) -> Self {
+        self.renames = Some((commands, suffix.to_string()));
+        self
+    }
+
     pub async fn cmd_bytes(&mut self, args: &[&[u8]]) -> Result<Resp> {
+        let renamed = match (&self.renames, args.first()) {
+            (Some((commands, suffix)), Some(first)) => {
+                let name = String::from_utf8_lossy(first).to_ascii_uppercase();
+                commands.contains(&name.as_str()).then(|| format!("{name}-{suffix}").into_bytes())
+            }
+            _ => None,
+        };
+        let mut args = args.to_vec();
+        if let Some(r) = &renamed {
+            args[0] = r;
+        }
         let mut out = format!("*{}\r\n", args.len()).into_bytes();
         for a in args {
             out.extend_from_slice(format!("${}\r\n", a.len()).as_bytes());

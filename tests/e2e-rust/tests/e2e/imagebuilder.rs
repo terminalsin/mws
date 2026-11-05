@@ -1561,7 +1561,18 @@ async fn components_run_on_docker_instances() {
     let bad = build("failing", "exit 3").await;
     assert_eq!(bad.state().unwrap().status(), Some(&ImageStatus::Failed));
     let reason = bad.state().unwrap().reason().unwrap_or_default().to_string();
-    assert!(reason.contains("Run"), "{reason}");
+    if !reason.contains("Run") {
+        // Say why the build instance did not start.
+        let id = reason.split_whitespace().find(|w| w.starts_with("i-")).unwrap_or_default();
+        let out = ec2.describe_instances().instance_ids(id).send().await;
+        let why = out.ok().and_then(|o| {
+            o.reservations()
+                .iter()
+                .flat_map(|r| r.instances())
+                .find_map(|i| i.state_reason().and_then(|r| r.message()).map(str::to_string))
+        });
+        panic!("{reason} (instance: {why:?})");
+    }
 
     // Loops, chained step outputs and a nested document read from the
     // instance really run.
@@ -1798,4 +1809,239 @@ async fn distribution_updates_launch_templates() {
     let failed = wait_for_image(&ib, &failed).await;
     assert_eq!(failed.state().unwrap().status(), Some(&ImageStatus::Failed));
     assert!(failed.state().unwrap().reason().unwrap().contains("lt-0123456789abcdef0"), "{:?}", failed.state());
+}
+
+fn ecr_in(config: &aws_config::SdkConfig, region: &'static str) -> aws_sdk_ecr::Client {
+    let config = aws_sdk_ecr::config::Builder::from(config).region(aws_sdk_ecr::config::Region::new(region)).build();
+    aws_sdk_ecr::Client::from_conf(config)
+}
+
+/// Container recipes build an image and push it to ECR, then distribution
+/// pushes it to other Regions' repositories with the configured tags.
+#[tokio::test]
+async fn container_pipelines_push_to_ecr() {
+    let mws = Mws::start().await;
+    let ib = client(&mws).await;
+    let s = setup(&mws, &ib, "ctr").await;
+    let config = mws.root_sdk_config().await;
+    let ecr = ecr_in(&config, "us-east-1");
+    let ecr_west = ecr_in(&config, "us-west-2");
+    ecr.create_repository().repository_name("web").send().await.unwrap();
+    ecr_west.create_repository().repository_name("web-mirror").send().await.unwrap();
+
+    let recipe = ib
+        .create_container_recipe()
+        .container_type(ContainerType::Docker)
+        .name("web")
+        .semantic_version("1.0.0")
+        .parent_image("alpine:3.20")
+        .dockerfile_template_data(
+            "FROM {{{ imagebuilder:parentImage }}}\n{{{ imagebuilder:environments }}}\n{{{ imagebuilder:components }}}\n",
+        )
+        .components(ComponentConfiguration::builder().component_arn(&s.component).build().unwrap())
+        .target_repository(
+            TargetContainerRepository::builder()
+                .service(ContainerRepositoryService::Ecr)
+                .repository_name("web")
+                .build()
+                .unwrap(),
+        )
+        .send()
+        .await
+        .unwrap()
+        .container_recipe_arn
+        .unwrap();
+    let dist = ib
+        .create_distribution_configuration()
+        .name("ctr-west")
+        .distributions(
+            Distribution::builder()
+                .region("us-west-2")
+                .container_distribution_configuration(
+                    aws_sdk_imagebuilder::types::ContainerDistributionConfiguration::builder()
+                        .container_tags("latest")
+                        .container_tags("v1")
+                        .target_repository(
+                            TargetContainerRepository::builder()
+                                .service(ContainerRepositoryService::Ecr)
+                                .repository_name("web-mirror")
+                                .build()
+                                .unwrap(),
+                        )
+                        .build(),
+                )
+                .build()
+                .unwrap(),
+        )
+        .send()
+        .await
+        .unwrap()
+        .distribution_configuration_arn
+        .unwrap();
+    let pipeline = ib
+        .create_image_pipeline()
+        .name("web")
+        .container_recipe_arn(&recipe)
+        .infrastructure_configuration_arn(&s.infra)
+        .distribution_configuration_arn(&dist)
+        .send()
+        .await
+        .unwrap()
+        .image_pipeline_arn
+        .unwrap();
+    let image = ib.start_image_pipeline_execution().image_pipeline_arn(&pipeline).send().await.unwrap();
+    let image = wait_for_image(&ib, image.image_build_version_arn().unwrap()).await;
+    assert_eq!(image.state().unwrap().status(), Some(&ImageStatus::Available), "{:?}", image.state());
+    assert_eq!(image.r#type().map(|t| t.as_str()), Some("DOCKER"));
+
+    let containers = image.output_resources().unwrap().containers();
+    let home = containers.iter().find(|c| c.region() == Some("us-east-1")).unwrap();
+    assert_eq!(home.image_uris(), [format!("{ACCOUNT}.dkr.ecr.us-east-1.amazonaws.com/web:1.0.0-1")]);
+    let west = containers.iter().find(|c| c.region() == Some("us-west-2")).unwrap();
+    assert_eq!(west.image_uris().len(), 2);
+
+    // The images are really in ECR.
+    let images = ecr.describe_images().repository_name("web").send().await.unwrap();
+    let detail = &images.image_details()[0];
+    assert_eq!(detail.image_tags(), ["1.0.0-1"]);
+    let digest = detail.image_digest().unwrap().to_string();
+    let west_images = ecr_west.describe_images().repository_name("web-mirror").send().await.unwrap();
+    let mut tags = west_images.image_details()[0].image_tags().to_vec();
+    tags.sort();
+    assert_eq!(tags, ["latest", "v1"]);
+    assert_eq!(west_images.image_details()[0].image_digest(), Some(digest.as_str()));
+    let got = ecr
+        .batch_get_image()
+        .repository_name("web")
+        .image_ids(aws_sdk_ecr::types::ImageIdentifier::builder().image_tag("1.0.0-1").build())
+        .send()
+        .await
+        .unwrap();
+    let manifest: serde_json::Value = serde_json::from_str(got.images()[0].image_manifest().unwrap()).unwrap();
+    assert_eq!(manifest["mediaType"], "application/vnd.oci.image.manifest.v1+json");
+    assert!(!manifest["layers"].as_array().unwrap().is_empty());
+
+    // A target repository that doesn't exist fails the build.
+    let missing = ib
+        .create_container_recipe()
+        .container_type(ContainerType::Docker)
+        .name("orphan")
+        .semantic_version("1.0.0")
+        .parent_image("alpine:3.20")
+        .dockerfile_template_data(
+            "FROM {{{ imagebuilder:parentImage }}}\n{{{ imagebuilder:environments }}}\n{{{ imagebuilder:components }}}\n",
+        )
+        .components(ComponentConfiguration::builder().component_arn(&s.component).build().unwrap())
+        .target_repository(
+            TargetContainerRepository::builder()
+                .service(ContainerRepositoryService::Ecr)
+                .repository_name("nowhere")
+                .build()
+                .unwrap(),
+        )
+        .send()
+        .await
+        .unwrap()
+        .container_recipe_arn
+        .unwrap();
+    let failed = ib
+        .create_image()
+        .container_recipe_arn(&missing)
+        .infrastructure_configuration_arn(&s.infra)
+        .send()
+        .await
+        .unwrap()
+        .image_build_version_arn
+        .unwrap();
+    let failed = wait_for_image(&ib, &failed).await;
+    assert_eq!(failed.state().unwrap().status(), Some(&ImageStatus::Failed));
+    assert!(failed.state().unwrap().reason().unwrap().contains("nowhere"), "{:?}", failed.state());
+}
+
+/// With EC2's Docker backend container recipes really `docker build` the
+/// image, components included, and push its layers to ECR. Skipped
+/// without Docker.
+#[tokio::test]
+async fn container_images_build_with_docker() {
+    if !docker_available() {
+        eprintln!("skipping: no Docker daemon");
+        return;
+    }
+    let config = mws::Config { ec2_backend: mws_ec2::BackendChoice::Docker, ..Default::default() };
+    let mws = Mws::start_on_all_interfaces(config).await;
+    let ib = client(&mws).await;
+    let s = setup(&mws, &ib, "dctr").await;
+    let ecr = ecr_in(&mws.root_sdk_config().await, "us-east-1");
+    ecr.create_repository().repository_name("built").send().await.unwrap();
+    let component = ib
+        .create_component()
+        .name("container-marker")
+        .semantic_version("1.0.0")
+        .platform("Linux".into())
+        .data(
+            "name: container-marker\nschemaVersion: 1.0\nphases:\n  - name: build\n    steps:\n      - name: Mark\n        action: ExecuteBash\n        inputs:\n          commands:\n            - mkdir -p /etc && echo built-in-docker > /etc/mws-container-built\n",
+        )
+        .send()
+        .await
+        .unwrap()
+        .component_build_version_arn
+        .unwrap();
+    let recipe = ib
+        .create_container_recipe()
+        .container_type(ContainerType::Docker)
+        .name("built")
+        .semantic_version("1.0.0")
+        .parent_image("alpine:3.20")
+        .dockerfile_template_data(
+            "FROM {{{ imagebuilder:parentImage }}}\n{{{ imagebuilder:environments }}}\n{{{ imagebuilder:components }}}\n",
+        )
+        .components(ComponentConfiguration::builder().component_arn(&component).build().unwrap())
+        .target_repository(
+            TargetContainerRepository::builder()
+                .service(ContainerRepositoryService::Ecr)
+                .repository_name("built")
+                .build()
+                .unwrap(),
+        )
+        .send()
+        .await
+        .unwrap()
+        .container_recipe_arn
+        .unwrap();
+    let image = ib
+        .create_image()
+        .container_recipe_arn(&recipe)
+        .infrastructure_configuration_arn(&s.infra)
+        .send()
+        .await
+        .unwrap()
+        .image_build_version_arn
+        .unwrap();
+    let image = wait_for_image(&ib, &image).await;
+    assert_eq!(image.state().unwrap().status(), Some(&ImageStatus::Available), "{:?}", image.state());
+
+    // The component's file is in one of the pushed layers.
+    let got = ecr
+        .batch_get_image()
+        .repository_name("built")
+        .image_ids(aws_sdk_ecr::types::ImageIdentifier::builder().image_tag("1.0.0-1").build())
+        .send()
+        .await
+        .unwrap();
+    let manifest: serde_json::Value = serde_json::from_str(got.images()[0].image_manifest().unwrap()).unwrap();
+    let layers = manifest["layers"].as_array().unwrap();
+    assert!(layers.len() >= 2, "parent layers and the component's: {manifest}");
+    let mut found = false;
+    for layer in layers {
+        let digest = layer["digest"].as_str().unwrap();
+        let url = ecr.get_download_url_for_layer().repository_name("built").layer_digest(digest).send().await.unwrap();
+        let (status, _, body) = mws.raw("GET", url.download_url().unwrap(), &[], b"").await;
+        assert_eq!(status, 200);
+        let mut tar = Vec::new();
+        std::io::Read::read_to_end(&mut flate2::read::GzDecoder::new(body.as_slice()), &mut tar).unwrap();
+        if tar.windows(b"etc/mws-container-built".len()).any(|w| w == b"etc/mws-container-built") {
+            found = true;
+        }
+    }
+    assert!(found, "no layer holds /etc/mws-container-built");
 }

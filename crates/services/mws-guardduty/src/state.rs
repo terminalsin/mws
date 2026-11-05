@@ -219,6 +219,9 @@ pub struct MalwarePlan {
     pub created_at: DateTime<Utc>,
     pub status: String,
     pub tags: Tags,
+    /// `(code, message)` of an `ERROR` or `WARNING` status.
+    #[serde(default)]
+    pub status_reasons: Vec<(String, String)>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

@@ -129,8 +129,13 @@ pub(crate) fn build(
     let memcached = tpl.engine == EngineKind::Memcached;
     let info = t::CacheCluster {
         cache_cluster_id: Some(id.to_string()),
+        // With real nodes, the configuration endpoint is MWS's own listener
+        // answering `config get cluster` (see `discovery`).
         configuration_endpoint: memcached
-            .then(|| runtime.values().next().map(|n: &NodeRuntime| endpoint(svc, n.port)))
+            .then(|| match svc.runs_engines() {
+                true => Some(endpoint(svc, crate::proxy::free_port(&svc.options().bind_address))),
+                false => runtime.values().next().map(|n: &NodeRuntime| endpoint(svc, n.port)),
+            })
             .flatten(),
         client_download_landing_page: Some("https://console.aws.amazon.com/elasticache/home#client-download:".into()),
         cache_node_type: Some(tpl.node_type.clone()),
@@ -409,6 +414,9 @@ pub(crate) async fn create(
         set_tags(r, &resource, input.tags.clone());
         Ok(shown)
     })?;
+    if let Some(port) = out.configuration_endpoint.as_ref().and_then(|e| e.port) {
+        svc.open_discovery(&key, &id, port as u16, out.transit_encryption_enabled == Some(true));
+    }
     engine::start_cluster(svc, ctx, &key, &id);
     Ok(t::CreateCacheClusterResult { cache_cluster: Some(without_nodes(out)) })
 }
@@ -497,6 +505,8 @@ pub(crate) async fn modify(
         Nothing,
         AddNodes,
         Commands(Vec<Vec<String>>),
+        /// Replace the nodes with ones running a new engine version.
+        Upgrade,
     }
     let (out, after, removed) = svc.with_region(ctx, |r| {
         let c = r.clusters.get(&id).ok_or_else(|| not_found(&id))?;
@@ -521,6 +531,7 @@ pub(crate) async fn modify(
         let engine = c.engine();
         let mut c = c.clone();
         let mut after = After::Nothing;
+        let mut upgrade = false;
         let mut commands: Vec<Vec<String>> = Vec::new();
         let mut removed_handles = Vec::new();
         let mut pending = c.info.pending_modified_values.clone().unwrap_or_default();
@@ -625,6 +636,7 @@ pub(crate) async fn modify(
                 )));
             }
             if apply_now || target_engine != engine {
+                upgrade = target.version != cur || target_engine != engine;
                 c.info.engine = Some(target_engine.as_str().into());
                 c.engine = Some(target_engine);
                 c.info.engine_version = Some(target.version.into());
@@ -725,6 +737,12 @@ pub(crate) async fn modify(
                 _ => After::Commands(commands.clone()),
             };
         }
+        if upgrade {
+            after = After::Upgrade;
+            if svc.runs_engines() {
+                c.set_status("modifying");
+            }
+        }
         let shown = c.info.clone();
         r.clusters.insert(id.clone(), c);
         r.event(&id, "cache-cluster", "Cache cluster modified", now(ctx));
@@ -742,6 +760,7 @@ pub(crate) async fn modify(
             let nodes = svc.with_key(&key, ctx, |r| engine::nodes_of(r, None, Some(&id)));
             engine::run_everywhere(svc, nodes, cmds);
         }
+        After::Upgrade => engine::upgrade(svc, ctx, &key, None, Some(&id)),
         After::Nothing => {}
     }
     Ok(t::ModifyCacheClusterResult { cache_cluster: Some(without_nodes(out)) })
@@ -818,6 +837,7 @@ pub(crate) async fn delete(
         notify(svc, ctx, topic.as_deref(), &resource, "ElastiCache:CacheClusterDeleted");
         Ok((c.info, handles, snapshot))
     })?;
+    svc.close_discovery(&key, &id);
     match snapshot {
         // The nodes stay up until the final snapshot has their data.
         Some((name, sources)) => engine::snapshot(svc, ctx, &key, &name, sources, handles),

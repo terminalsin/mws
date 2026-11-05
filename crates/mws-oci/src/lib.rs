@@ -11,7 +11,9 @@
 //! - [`server`]: the `/v2/` HTTP API on top of a [`server::Backend`] that
 //!   decides who may do what and where repositories live.
 
+pub mod client;
 pub mod digest;
+mod http;
 pub mod manifest;
 pub mod server;
 pub mod store;

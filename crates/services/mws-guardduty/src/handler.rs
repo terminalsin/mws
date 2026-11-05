@@ -98,7 +98,7 @@ impl Handler for GuardDuty {
         ctx: &RequestContext,
         input: types::CreateMalwareProtectionPlanRequest,
     ) -> Result<types::CreateMalwareProtectionPlanResponse, ServiceError> {
-        GuardDuty::create_malware_protection_plan(self, ctx, input)
+        GuardDuty::create_malware_protection_plan(self, ctx, input).await
     }
     async fn create_members(
         &self,
@@ -713,7 +713,7 @@ impl Handler for GuardDuty {
         ctx: &RequestContext,
         input: types::SendObjectMalwareScanRequest,
     ) -> Result<types::SendObjectMalwareScanResponse, ServiceError> {
-        GuardDuty::send_object_malware_scan(self, ctx, input)
+        GuardDuty::send_object_malware_scan(self, ctx, input).await
     }
     async fn start_malware_scan(
         &self,
@@ -816,7 +816,7 @@ impl Handler for GuardDuty {
         ctx: &RequestContext,
         input: types::UpdateMalwareProtectionPlanRequest,
     ) -> Result<(), ServiceError> {
-        GuardDuty::update_malware_protection_plan(self, ctx, input)
+        GuardDuty::update_malware_protection_plan(self, ctx, input).await
     }
     async fn update_malware_scan_settings(
         &self,

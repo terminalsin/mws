@@ -287,7 +287,20 @@ impl DockerBackend {
         } else {
             args.push(spec.image.clone());
         }
-        let id = self.run(&args).await?;
+        // A private IP is free again as soon as its instance terminates, but
+        // the terminated container may still hold it for a moment while
+        // Docker removes it: wait for that rather than fail the launch.
+        let mut attempts = 0;
+        let id = loop {
+            match self.run(&args).await {
+                Err(e) if own_cidr && e.0.contains("Address already in use") && attempts < 40 => {
+                    attempts += 1;
+                    let _ = self.run(&["rm".into(), "-f".into(), format!("mws-ec2-{}", spec.instance_id)]).await;
+                    tokio::time::sleep(std::time::Duration::from_millis(250)).await;
+                }
+                result => break result?,
+            }
+        };
         let handle = id.lines().last().unwrap_or_default().to_string();
         self.specs.lock().expect("specs lock poisoned").insert(handle.clone(), spec.clone());
         Ok(handle)
@@ -330,7 +343,7 @@ impl DockerBackend {
     }
 
     fn network_name(vpc_id: &str) -> String {
-        format!("mws-{vpc_id}")
+        crate::network::docker_network_name(vpc_id)
     }
 
     /// Make sure the VPC's network exists; `true` when it uses the VPC's
@@ -428,6 +441,40 @@ impl ComputeBackend for DockerBackend {
     async fn create_image(&self, handle: &str, image_ref: &str) -> Result<String, BackendError> {
         self.run(&["commit".into(), handle.into(), image_ref.into()]).await?;
         Ok(image_ref.to_string())
+    }
+
+    async fn build_image(
+        &self,
+        _handle: &str,
+        dockerfile: &str,
+        files: &[(String, Vec<u8>)],
+    ) -> Result<Option<Vec<u8>>, BackendError> {
+        let id = uuid_like();
+        let dir = std::env::temp_dir().join(format!("mws-image-build-{id}"));
+        let io = |e: std::io::Error| BackendError(format!("preparing the build context: {e}"));
+        std::fs::create_dir_all(&dir).map_err(io)?;
+        let result = async {
+            for (name, data) in files {
+                let path = dir.join(name);
+                if let Some(parent) = path.parent() {
+                    std::fs::create_dir_all(parent).map_err(io)?;
+                }
+                std::fs::write(&path, data).map_err(io)?;
+            }
+            std::fs::write(dir.join("Dockerfile"), dockerfile).map_err(io)?;
+            let tag = format!("mws-image-build:{id}");
+            let dir_s = dir.to_string_lossy().to_string();
+            self.run(&["build".into(), "-q".into(), "-t".into(), tag.clone(), dir_s.clone()]).await?;
+            let archive = dir.join("image.tar");
+            let saved =
+                self.run(&["save".into(), "-o".into(), archive.to_string_lossy().to_string(), tag.clone()]).await;
+            let _ = self.run(&["rmi".into(), tag]).await;
+            saved?;
+            std::fs::read(&archive).map_err(io)
+        }
+        .await;
+        let _ = std::fs::remove_dir_all(&dir);
+        result.map(Some)
     }
 
     async fn exec(&self, handle: &str, script: &str) -> Result<Option<CommandOutput>, BackendError> {
@@ -663,6 +710,14 @@ pub fn render_iptables(fw: &Firewall, gateways: &[String]) -> String {
     }
     out.push_str("-A MWS-ROUTE -j DROP\nCOMMIT\n");
     out
+}
+
+/// A unique enough name for temporary build files and tags.
+fn uuid_like() -> String {
+    use std::time::{SystemTime, UNIX_EPOCH};
+    static N: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+    let nanos = SystemTime::now().duration_since(UNIX_EPOCH).map(|d| d.as_nanos()).unwrap_or_default();
+    format!("{nanos:x}{:x}", N.fetch_add(1, std::sync::atomic::Ordering::Relaxed))
 }
 
 #[cfg(test)]

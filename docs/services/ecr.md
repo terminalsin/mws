@@ -52,7 +52,7 @@ Docker talks plain HTTP to `localhost` and `127.0.0.0/8` registries by default. 
 | Replication | ✅ | Rules copy pushed images to other Regions and accounts (the destination's registry policy must allow `ecr:ReplicateImage`); backfills copy existing images; `DescribeImageReplicationStatus`. |
 | Registry policies and settings | ✅ | Registry policies, scanning configuration, account settings (`BASIC_SCAN_TYPE_VERSION`, `REGISTRY_POLICY_SCOPE`, `BLOB_MOUNTING`). |
 | Creation templates | ✅ | Prefix matching (longest first, then `ROOT`) for `CREATE_ON_PUSH`, `REPLICATION` and `PULL_THROUGH_CACHE`. |
-| Pull-through cache rules | 🟡 | Stored and validated; images are not fetched from the upstream registry. |
+| Pull-through cache rules | ✅ | A registry pull of `<prefix>/<repository>` fetches the manifest, then each layer as Docker asks for it, from the upstream registry (bearer-token and Basic authentication, the rule's Secrets Manager credentials, redirects to blob stores), creating the repository on first pull from a `PULL_THROUGH_CACHE` template. Needs `ecr:BatchImportUpstreamImage` (and `ecr:CreateRepository` for a new repository). Upstream ECR registries are read from MWS itself; `customRoleArn` is not assumed. `MWS_ECR_UPSTREAM_ENDPOINTS` points upstreams at mirrors. Cached tags are checked upstream again after 24 hours on the emulated clock, and served from the cache when the upstream can't be reached. |
 | Events | ✅ | Image push, delete, scan and lifecycle actions go to EventBridge as `aws.ecr`. |
 | Lambda | ✅ | Container image functions resolve and pull their images here, with the caller's pull permissions (see [Lambda](lambda.md#container-images)). |
 

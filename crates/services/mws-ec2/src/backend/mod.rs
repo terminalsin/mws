@@ -247,6 +247,21 @@ pub trait ComputeBackend: Send + Sync {
         Ok(())
     }
 
+    /// Build a container image on an instance, as `docker build` on it
+    /// would (what EC2 Image Builder does for container recipes):
+    /// `files` are the build context, `dockerfile` the Dockerfile. Returns
+    /// the image as a `docker save` archive, or `None` when the backend
+    /// runs nothing.
+    async fn build_image(
+        &self,
+        handle: &str,
+        dockerfile: &str,
+        files: &[(String, Vec<u8>)],
+    ) -> Result<Option<Vec<u8>>, BackendError> {
+        let _ = (handle, dockerfile, files);
+        Ok(None)
+    }
+
     /// Run a shell script inside a running instance, as root (what the SSM
     /// agent does for Run Command and EC2 Image Builder). `None` when the
     /// backend runs nothing, so there is nowhere to run it.

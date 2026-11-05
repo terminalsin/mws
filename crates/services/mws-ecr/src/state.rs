@@ -70,6 +70,8 @@ pub struct Repo {
     pub content: mws_oci::Repository,
     /// ECR's own record of each image, by digest.
     pub meta: BTreeMap<String, ImageMeta>,
+    /// Pull-through caches: when each tag was last checked upstream.
+    pub upstream_checked: BTreeMap<String, i64>,
 }
 
 impl Repo {

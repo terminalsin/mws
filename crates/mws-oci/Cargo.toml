@@ -1,6 +1,6 @@
 [package]
 name = "mws-oci"
-description = "The OCI distribution (Docker registry v2) protocol: request routing, manifests, content-addressed blobs, chunked uploads, referrers and registry tokens bound to an access key, for services that host container registries."
+description = "The OCI distribution (Docker registry v2) protocol: request routing, manifests, content-addressed blobs, chunked uploads, referrers and registry tokens bound to an access key, and a client for upstream registries, for services that host container registries."
 version.workspace = true
 edition.workspace = true
 license.workspace = true
@@ -19,3 +19,8 @@ serde_json.workspace = true
 chrono.workspace = true
 sha2.workspace = true
 uuid.workspace = true
+rustls.workspace = true
+rustls-native-certs.workspace = true
+rustls-pki-types.workspace = true
+tokio = { workspace = true, features = ["net", "io-util", "time"] }
+tokio-rustls.workspace = true
