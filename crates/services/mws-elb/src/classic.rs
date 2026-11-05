@@ -700,6 +700,7 @@ impl Handler for ClassicElb {
                 )));
             }
         }
+        let account = account_of(ctx);
         self.with_region(ctx, |r| {
             let lb = find(r, &input.load_balancer_name)?;
             let cur = &mut lb.attributes;
@@ -709,6 +710,22 @@ impl Handler for ClassicElb {
             if let Some(mut v) = a.access_log {
                 if v.enabled && v.emit_interval.is_none() {
                     v.emit_interval = Some(60);
+                }
+                let before = cur.access_log.clone().unwrap_or_default();
+                let moved = !before.enabled
+                    || before.s3_bucket_name != v.s3_bucket_name
+                    || before.s3_bucket_prefix != v.s3_bucket_prefix;
+                if v.enabled && moved {
+                    let arn = lb_arn(&State::key(&account, &ctx.region), &input.load_balancer_name);
+                    self.elb
+                        .check_log_bucket(
+                            &arn,
+                            &account,
+                            &ctx.region,
+                            v.s3_bucket_name.as_deref().unwrap_or_default(),
+                            v.s3_bucket_prefix.as_deref().unwrap_or_default(),
+                        )
+                        .map_err(errors::invalid_configuration_request)?;
                 }
                 cur.access_log = Some(v);
             }

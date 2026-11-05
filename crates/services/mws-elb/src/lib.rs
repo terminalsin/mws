@@ -34,6 +34,7 @@ mod catalog;
 mod classic;
 mod data;
 mod health;
+mod logs;
 mod metrics;
 mod names;
 mod ops;
@@ -109,6 +110,7 @@ pub(crate) struct Inner {
     template: Mutex<Option<(RequestContext, chrono::DateTime<chrono::Utc>)>>,
     data: data::Runtime,
     health: health::Health,
+    logs: logs::Logs,
 }
 
 /// Elastic Load Balancing (ELBv2). Cheap to clone; clones share state.
@@ -143,6 +145,7 @@ impl Elb {
                 template: Mutex::new(None),
                 data: data::Runtime::default(),
                 health: health::Health::default(),
+                logs: logs::Logs::default(),
             }),
         }
     }
@@ -369,6 +372,8 @@ impl Service for Elb {
         let state: State = serde_json::from_value(state).map_err(|e| format!("invalid ELB state: {e}"))?;
         *self.lock() = state;
         self.inner.health.clear();
+        self.inner.data.auth.clear();
+        self.inner.logs.clear();
         self.reconcile();
         Ok(())
     }
@@ -376,6 +381,8 @@ impl Service for Elb {
     fn reset_state(&self) {
         *self.lock() = State::default();
         self.inner.health.clear();
+        self.inner.data.auth.clear();
+        self.inner.logs.clear();
         self.reconcile();
     }
 }

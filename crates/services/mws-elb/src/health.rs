@@ -344,6 +344,7 @@ pub(crate) fn ensure_running(elb: &Elb) {
             let elb = Elb { inner };
             sweep_draining(&elb, elb.now());
             tick(&elb);
+            elb.flush_logs();
             // Every minute, as ELB does, and as soon as a target's health
             // changes.
             if last_metrics.elapsed() >= Duration::from_secs(60)
