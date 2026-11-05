@@ -58,6 +58,8 @@ pub(crate) struct Inner {
     queues: std::sync::OnceLock<Arc<dyn esm::QueueSource>>,
     /// The streams event source mappings poll, when Kinesis is wired in.
     streams: std::sync::OnceLock<Arc<dyn esm_stream::StreamSource>>,
+    /// Applied quota values (concurrent executions).
+    quotas: std::sync::OnceLock<mws_servicequotas::ServiceQuotas>,
     pollers: esm::Pollers,
     /// Where destination records for other services go.
     destinations: destinations::Sinks,
@@ -97,6 +99,7 @@ impl Lambda {
                 logs: std::sync::OnceLock::new(),
                 queues: std::sync::OnceLock::new(),
                 streams: std::sync::OnceLock::new(),
+                quotas: std::sync::OnceLock::new(),
                 pollers: esm::Pollers::default(),
                 destinations: destinations::Sinks::default(),
             }),
@@ -106,6 +109,21 @@ impl Lambda {
     /// Send function logs to CloudWatch Logs, written as the function's
     /// execution role like AWS does (so the role needs
     /// `logs:CreateLogGroup`, `logs:CreateLogStream` and `logs:PutLogEvents`).
+    /// Read the concurrent executions quota from Service Quotas.
+    pub fn set_service_quotas(&self, quotas: mws_servicequotas::ServiceQuotas) {
+        let _ = self.inner.quotas.set(quotas);
+    }
+
+    /// The account's concurrency limit in the request's Region. Never call
+    /// with the state lock held.
+    pub(crate) fn account_concurrency(&self, account: &str, ctx: &RequestContext) -> i32 {
+        let value = match self.inner.quotas.get() {
+            Some(q) => q.applied_value(account, &ctx.region, "lambda", "L-B99A9384", ctx.received_at),
+            None => 1000.0,
+        };
+        value.clamp(0.0, i32::MAX as f64) as i32
+    }
+
     pub fn set_logs(&self, logs: mws_logs::Logs) {
         let _ = self.inner.logs.set(logs);
     }

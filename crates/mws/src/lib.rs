@@ -24,6 +24,7 @@ use mws_s3::S3;
 use mws_s3control::S3Control;
 use mws_secretsmanager::SecretsManager;
 use mws_server::{Gateway, Scenario, Store};
+use mws_servicequotas::ServiceQuotas;
 use mws_sns::Sns;
 use mws_sqs::Sqs;
 use mws_ssm::Ssm;
@@ -104,6 +105,7 @@ pub struct Mws {
     pub firehose: Firehose,
     pub cloudwatch: CloudWatch,
     pub ec2: Ec2,
+    pub servicequotas: ServiceQuotas,
 }
 
 /// Build the gateway with every service MWS emulates.
@@ -229,6 +231,15 @@ fn build_with_store(config: Config, store: Option<Arc<Store>>) -> Mws {
     let ec2 = Ec2::new(config.ec2_backend.resolve(config.ec2_docker_cli.as_deref()));
     tracing::info!(backend = ec2.backend_name(), "EC2 compute backend");
     ec2.set_instance_roles(Arc::new(links::Ec2InstanceRoles { iam: iam.clone(), sts: sts.clone() }));
+    let servicequotas = ServiceQuotas::new();
+    servicequotas.set_organizations(Arc::new(links::QuotaOrganizations(organizations.clone())));
+    servicequotas.set_usage_source(Arc::new(links::QuotaUsage { ec2: ec2.clone(), s3: s3.clone(), iam: iam.clone() }));
+    servicequotas.set_metric_publisher(Arc::new(links::UsageToCloudWatch(cloudwatch.clone())));
+    ec2.set_service_quotas(servicequotas.clone());
+    s3.set_service_quotas(servicequotas.clone());
+    iam.set_service_quotas(servicequotas.clone());
+    lambda.set_service_quotas(servicequotas.clone());
+    cloudwatch.set_service_quotas(servicequotas.clone());
     let mut gateway = Gateway::builder();
     if let Some(store) = store {
         gateway = gateway.store(store);
@@ -237,6 +248,7 @@ fn build_with_store(config: Config, store: Option<Arc<Store>>) -> Mws {
         .scenario_principal(config.iam.root_access_key_id.clone())
         .environment(Environment { partition: config.iam.partition.clone(), ..Environment::default() })
         .authorizer(iam.authorizer())
+        .observer(Arc::new(servicequotas.clone()))
         .credentials(iam.credential_store())
         .credentials(sts.credential_store())
         .credentials(s3.credential_store())
@@ -262,6 +274,7 @@ fn build_with_store(config: Config, store: Option<Arc<Store>>) -> Mws {
         .service(Arc::new(firehose.clone()))
         .service(Arc::new(cloudwatch.clone()))
         .service(Arc::new(ec2.clone()))
+        .service(Arc::new(servicequotas.clone()))
         .build();
     Mws {
         gateway,
@@ -281,6 +294,7 @@ fn build_with_store(config: Config, store: Option<Arc<Store>>) -> Mws {
         firehose,
         cloudwatch,
         ec2,
+        servicequotas,
     }
 }
 

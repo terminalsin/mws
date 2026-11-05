@@ -434,8 +434,9 @@ impl Ec2 {
             input.dry_run,
         )?;
         let region = ctx.region.clone();
+        let limit = self.quota(&account, &region, crate::quotas::ELASTIC_IPS, ctx.received_at);
         self.with_region(ctx, |r| {
-            if r.addresses.len() >= 5 {
+            if r.addresses.len() as f64 >= limit {
                 return Err(err("AddressLimitExceeded", "The maximum number of addresses has been reached."));
             }
             let ip = input.address.clone().unwrap_or_else(new_public_ip);

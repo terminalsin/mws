@@ -318,8 +318,19 @@ fn references(e: &Expr, out: &mut BTreeSet<String>) {
 
 // ---- evaluation ----------------------------------------------------------------
 
+/// Where `SERVICE_QUOTA()` reads applied quota values.
+#[derive(Clone, Copy)]
+pub struct QuotaScope<'a> {
+    pub quotas: &'a mws_servicequotas::ServiceQuotas,
+    pub account: &'a str,
+    pub region: &'a str,
+    pub now: DateTime<Utc>,
+}
+
 pub struct Engine<'a> {
     pub region: Option<&'a Region>,
+    /// Service Quotas, for `SERVICE_QUOTA()`.
+    pub quotas: Option<QuotaScope<'a>>,
     /// CloudWatch Logs and the account and Region, for
     /// `INSIGHT_RULE_METRIC`.
     pub logs: Option<(&'a mws_logs::Logs, &'a str, &'a str)>,
@@ -342,6 +353,7 @@ impl<'a> Engine<'a> {
     ) -> Self {
         Self {
             region,
+            quotas: None,
             logs: None,
             queries,
             start,
@@ -354,6 +366,11 @@ impl<'a> Engine<'a> {
 
     pub fn with_logs(mut self, logs: Option<&'a mws_logs::Logs>, account: &'a str, region: &'a str) -> Self {
         self.logs = logs.map(|l| (l, account, region));
+        self
+    }
+
+    pub fn with_quotas(mut self, quotas: Option<QuotaScope<'a>>) -> Self {
+        self.quotas = quotas;
         self
     }
 
@@ -677,7 +694,18 @@ impl<'a> Engine<'a> {
                 let points = crate::insights::rule_metric(self, &rule, &metric, period);
                 Val::Series(Ts { label: format!("{rule} {metric}"), period, points, metric: None })
             }
-            "SERVICE_QUOTA" => return Err(err(id, "SERVICE_QUOTA is not supported for this metric")),
+            "SERVICE_QUOTA" => {
+                let unsupported = || err(id, "SERVICE_QUOTA is not supported for this metric");
+                let Val::Series(ts) = self.arg(id, args, 0, period)? else { return Err(unsupported()) };
+                let (key, _) = ts.metric.as_ref().ok_or_else(unsupported)?;
+                let scope = self.quotas.ok_or_else(unsupported)?;
+                let value = scope
+                    .quotas
+                    .quota_for_metric(scope.account, scope.region, &key.namespace, &key.name, &key.dimensions, scope.now)
+                    .ok_or_else(unsupported)?;
+                let points = ts.points.keys().map(|t| (*t, value)).collect();
+                Val::Series(Ts { label: format!("{} quota", ts.label), period: ts.period, points, metric: None })
+            }
             other => return Err(err(id, format!("Unknown function {other}"))),
         })
     }
@@ -1103,11 +1131,14 @@ impl CloudWatch {
         let st = self.lock();
         let region = st.region_ref(&ctx.caller.account_id, &ctx.region);
         let start = crate::metrics::round_start(input.start_time, now, 60);
-        let mut engine = Engine::new(region, &input.metric_data_queries, start, input.end_time).with_logs(
-            self.inner.logs.get(),
-            &ctx.caller.account_id,
-            &ctx.region,
-        );
+        let mut engine = Engine::new(region, &input.metric_data_queries, start, input.end_time)
+            .with_logs(self.inner.logs.get(), &ctx.caller.account_id, &ctx.region)
+            .with_quotas(self.inner.quotas.get().map(|quotas| QuotaScope {
+                quotas,
+                account: &ctx.caller.account_id,
+                region: &ctx.region,
+                now,
+            }));
         engine.retained = crate::metrics::retained_resolution(start, now);
         let series = results(&engine)?;
         drop(st);

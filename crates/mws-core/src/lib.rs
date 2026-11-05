@@ -9,6 +9,7 @@ mod auth;
 mod error;
 pub mod eventstream;
 pub mod ids;
+mod observe;
 mod service;
 mod validate;
 
@@ -16,6 +17,7 @@ pub use auth::{
     AllowAll, Authorizer, AuthzDecision, AuthzRequest, Caller, CallerKind, ConditionContext, CredentialError,
     CredentialStore, ResolvedCredential, ResourcePolicyMode, SessionInfo, SessionKind,
 };
+pub use observe::{ApiCall, RecordingAuthorizer, RequestObserver};
 pub use error::{ErrorFault, ErrorField, ErrorValue, ServiceError};
 pub use service::{AlternateSignature, HttpRequest, HttpResponse, RequestContext, Service, StreamingBody};
 pub use validate::{render_list, Validator};

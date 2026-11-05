@@ -38,6 +38,8 @@ members = [
     "crates/services/mws-firehose",
     "crates/services/mws-cloudwatch",
     "crates/services/mws-ec2",
+    "crates/services/mws-ce",
+    "crates/services/mws-servicequotas",
     "tests/e2e-rust",
 ]
 
@@ -84,6 +86,8 @@ mws-sns = { path = "crates/services/mws-sns" }
 mws-acm = { path = "crates/services/mws-acm" }
 mws-kinesis = { path = "crates/services/mws-kinesis" }
 mws-firehose = { path = "crates/services/mws-firehose" }
+mws-ce = { path = "crates/services/mws-ce" }
+mws-servicequotas = { path = "crates/services/mws-servicequotas" }
 mws-cloudwatch = { path = "crates/services/mws-cloudwatch" }
 mws-ec2 = { path = "crates/services/mws-ec2" }
 

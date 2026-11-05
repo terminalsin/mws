@@ -745,3 +745,56 @@ impl mws_ec2::InstanceRoleCredentials for Ec2InstanceRoles {
         })
     }
 }
+
+/// Usage of the quotas other services enforce, for Service Quotas.
+pub struct QuotaUsage {
+    pub ec2: mws_ec2::Ec2,
+    pub s3: mws_s3::S3,
+    pub iam: mws_iam::Iam,
+}
+
+impl mws_servicequotas::UsageSource for QuotaUsage {
+    fn usage(&self, account: &str, region: &str, service: &str, code: &str) -> Option<f64> {
+        match (service, code) {
+            ("s3", "L-DC2B2D3D") => Some(self.s3.bucket_count(account) as f64),
+            ("iam", "L-FE177D64") => Some(self.iam.role_count(account) as f64),
+            ("ec2" | "vpc", _) => self.ec2.quota_usage(account, region, service, code),
+            _ => None,
+        }
+    }
+}
+
+/// Service Quotas publishing `AWS/Usage` metrics into CloudWatch.
+pub struct UsageToCloudWatch(pub mws_cloudwatch::CloudWatch);
+
+impl mws_servicequotas::MetricPublisher for UsageToCloudWatch {
+    fn publish(&self, data: Vec<mws_servicequotas::UsageDatum>) {
+        for d in data {
+            self.0.put_metric_as_service(mws_cloudwatch::ServiceMetric {
+                account: d.account,
+                region: d.region,
+                namespace: d.namespace,
+                metric_name: d.metric_name,
+                dimensions: d.dimensions,
+                unit: Some(d.unit),
+                timestamp: d.timestamp,
+                values: vec![(d.value, 1.0)],
+            });
+        }
+    }
+}
+
+/// Organizations as Service Quotas sees it (quota request templates).
+pub struct QuotaOrganizations(pub mws_organizations::Organizations);
+
+impl mws_servicequotas::OrganizationDirectory for QuotaOrganizations {
+    fn account(&self, account_id: &str) -> Option<mws_servicequotas::OrgAccount> {
+        let m = self.0.member_account(account_id)?;
+        Some(mws_servicequotas::OrgAccount {
+            management_account_id: m.management_account_id,
+            all_features: m.all_features,
+            joined_method: m.joined_method,
+            joined: m.joined,
+        })
+    }
+}

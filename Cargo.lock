@@ -2279,6 +2279,7 @@ dependencies = [
  "mws-s3control",
  "mws-secretsmanager",
  "mws-server",
+ "mws-servicequotas",
  "mws-sns",
  "mws-sqs",
  "mws-ssm",
@@ -2349,6 +2350,21 @@ dependencies = [
 ]
 
 [[package]]
+name = "mws-ce"
+version = "0.1.0"
+dependencies = [
+ "async-trait",
+ "chrono",
+ "mws-codegen",
+ "mws-core",
+ "mws-proto-json",
+ "serde",
+ "serde_json",
+ "tracing",
+ "uuid",
+]
+
+[[package]]
 name = "mws-cloudwatch"
 version = "0.1.0"
 dependencies = [
@@ -2367,6 +2383,7 @@ dependencies = [
  "mws-proto-cbor",
  "mws-proto-json",
  "mws-proto-query",
+ "mws-servicequotas",
  "mws-sns",
  "rand",
  "regex",
@@ -2470,6 +2487,7 @@ dependencies = [
  "mws-core",
  "mws-proto-ec2",
  "mws-proto-json",
+ "mws-servicequotas",
  "rand",
  "serde",
  "serde_json",
@@ -2563,6 +2581,7 @@ dependencies = [
  "mws-iam-policy",
  "mws-proto-json",
  "mws-proto-query",
+ "mws-servicequotas",
  "qrcode",
  "rand",
  "roxmltree",
@@ -2645,6 +2664,7 @@ dependencies = [
  "mws-proto-json",
  "mws-proto-restjson",
  "mws-s3",
+ "mws-servicequotas",
  "mws-sts",
  "rand",
  "serde",
@@ -2832,6 +2852,7 @@ dependencies = [
  "mws-kms",
  "mws-proto-json",
  "mws-proto-restxml",
+ "mws-servicequotas",
  "mws-sigv4",
  "percent-encoding",
  "rand",
@@ -2915,6 +2936,22 @@ dependencies = [
  "mws-core",
  "mws-sigv4",
  "mws-store",
+ "serde",
+ "serde_json",
+ "tokio",
+ "tracing",
+ "uuid",
+]
+
+[[package]]
+name = "mws-servicequotas"
+version = "0.1.0"
+dependencies = [
+ "async-trait",
+ "chrono",
+ "mws-codegen",
+ "mws-core",
+ "mws-proto-json",
  "serde",
  "serde_json",
  "tokio",

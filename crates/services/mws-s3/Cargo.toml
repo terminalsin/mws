@@ -20,6 +20,7 @@ mws-core.workspace = true
 mws-iam-policy.workspace = true
 mws-sigv4.workspace = true
 mws-kms.workspace = true
+mws-servicequotas.workspace = true
 mws-proto-json.workspace = true
 mws-proto-restxml.workspace = true
 percent-encoding.workspace = true

@@ -188,7 +188,18 @@ impl Call {
             ));
         }
 
+        let bucket_limit = match self.links.quotas.get() {
+            Some(q) => q.applied_value(&account, &ctx.region, "s3", BUCKETS_QUOTA, ctx.received_at),
+            None => mws_servicequotas::catalog::quota("s3", BUCKETS_QUOTA).map_or(f64::INFINITY, |d| d.value),
+        };
         let mut st = self.write();
+        if !st.buckets.contains_key(&name) && st.buckets.values().filter(|b| b.owner == account).count() as f64 >= bucket_limit {
+            return Err(ServiceError::client(
+                "TooManyBuckets",
+                400,
+                "You have attempted to create more buckets than allowed",
+            ));
+        }
         if let Some(existing) = st.buckets.get(&name) {
             if existing.owner != account {
                 return Err(errors::bucket_already_exists(&name));
@@ -740,3 +751,6 @@ mod tests {
         }
     }
 }
+
+/// Service Quotas' "General purpose buckets" quota.
+const BUCKETS_QUOTA: &str = "L-DC2B2D3D";

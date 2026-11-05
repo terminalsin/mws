@@ -171,6 +171,16 @@ impl S3 {
         self
     }
 
+    /// Read the general purpose bucket quota from Service Quotas.
+    pub fn set_service_quotas(&self, quotas: mws_servicequotas::ServiceQuotas) {
+        let _ = self.links.quotas.set(quotas);
+    }
+
+    /// The number of general purpose buckets `account` owns.
+    pub fn bucket_count(&self, account: &str) -> usize {
+        self.read().buckets.values().filter(|b| b.owner == account).count()
+    }
+
     /// Act on lifecycle rules that have come due by `now`.
     fn run_lifecycle(&self, now: chrono::DateTime<chrono::Utc>) {
         if self.read().has_lifecycle() {

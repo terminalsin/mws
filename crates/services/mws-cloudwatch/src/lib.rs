@@ -71,6 +71,8 @@ pub(crate) struct Inner {
     pub(crate) logs: OnceLock<mws_logs::Logs>,
     pub(crate) kms: OnceLock<mws_kms::Kms>,
     pub(crate) streams: OnceLock<Arc<dyn MetricStreamDelivery>>,
+    /// Service Quotas, for `SERVICE_QUOTA()`.
+    pub(crate) quotas: OnceLock<mws_servicequotas::ServiceQuotas>,
 }
 
 #[derive(Clone)]
@@ -99,6 +101,7 @@ impl CloudWatch {
                 logs: OnceLock::new(),
                 kms: OnceLock::new(),
                 streams: OnceLock::new(),
+                quotas: OnceLock::new(),
             }),
         }
     }
@@ -125,6 +128,11 @@ impl CloudWatch {
     pub fn with_logs(self, logs: mws_logs::Logs) -> Self {
         let _ = self.inner.logs.set(logs);
         self
+    }
+
+    /// Service Quotas, for the `SERVICE_QUOTA()` metric math function.
+    pub fn set_service_quotas(&self, quotas: mws_servicequotas::ServiceQuotas) {
+        let _ = self.inner.quotas.set(quotas);
     }
 
     /// KMS, for dataset encryption keys.
