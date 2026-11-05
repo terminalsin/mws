@@ -1,0 +1,23 @@
+[package]
+name = "mws-ecs"
+description = "Amazon ECS for MWS: clusters, task definitions, services with rolling deployments, and tasks run by a pluggable container backend (Docker, or metadata only), with IAM enforced."
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+async-trait.workspace = true
+bytes.workspace = true
+chrono.workspace = true
+http.workspace = true
+mws-core.workspace = true
+mws-proto-json.workspace = true
+rand.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+tokio = { workspace = true, features = ["process", "io-util", "time"] }
+tracing.workspace = true
+uuid.workspace = true
+
+[build-dependencies]
+mws-codegen.workspace = true

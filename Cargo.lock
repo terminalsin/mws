@@ -2529,6 +2529,25 @@ dependencies = [
 ]
 
 [[package]]
+name = "mws-ecs"
+version = "0.1.0"
+dependencies = [
+ "async-trait",
+ "bytes",
+ "chrono",
+ "http 1.5.0",
+ "mws-codegen",
+ "mws-core",
+ "mws-proto-json",
+ "rand",
+ "serde",
+ "serde_json",
+ "tokio",
+ "tracing",
+ "uuid",
+]
+
+[[package]]
 name = "mws-event-pattern"
 version = "0.1.0"
 dependencies = [
