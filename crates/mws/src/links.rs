@@ -746,6 +746,65 @@ impl mws_ec2::InstanceRoleCredentials for Ec2InstanceRoles {
     }
 }
 
+/// Private CA certificate authorities, shareable through AWS RAM: RAM's
+/// policy for a shared CA becomes part of the CA's resource policy.
+pub(crate) struct RamCertificateAuthorities(pub mws_acmpca::PrivateCa);
+
+impl mws_ram::ShareableResourceType for RamCertificateAuthorities {
+    fn resource_type(&self) -> &'static str {
+        "acm-pca:CertificateAuthority"
+    }
+
+    fn service_name(&self) -> &'static str {
+        "acm-pca"
+    }
+
+    fn matches(&self, arn: &str) -> bool {
+        arn.split(':').nth(2) == Some("acm-pca") && arn.contains(":certificate-authority/")
+    }
+
+    fn locate(&self, arn: &str) -> Option<mws_ram::ResourceLocation> {
+        let ca = self.0.ca_info(arn)?;
+        Some(mws_ram::ResourceLocation { owner_account: ca.owner, region: arn.split(':').nth(3)?.to_string() })
+    }
+
+    fn set_shared_policy(&self, arn: &str, policy: Option<String>) {
+        self.0.set_shared_policy(arn, policy);
+    }
+
+    fn shareable_actions(&self) -> &'static [&'static str] {
+        &[
+            "acm-pca:DescribeCertificateAuthority",
+            "acm-pca:GetCertificate",
+            "acm-pca:GetCertificateAuthorityCertificate",
+            "acm-pca:IssueCertificate",
+            "acm-pca:ListPermissions",
+            "acm-pca:ListTags",
+            "acm-pca:RevokeCertificate",
+        ]
+    }
+
+    fn share_action(&self) -> &'static str {
+        "acm-pca:PutPolicy"
+    }
+}
+
+/// `PutPolicy` / `DeletePolicy` on a CA, mirrored as a RAM share created
+/// from the policy.
+pub(crate) struct CaPoliciesToRam(pub mws_ram::Ram);
+
+impl mws_acmpca::CaPolicyListener for CaPoliciesToRam {
+    fn policy_changed(
+        &self,
+        ca_arn: &str,
+        owner_account: &str,
+        policy: Option<&str>,
+        now: chrono::DateTime<chrono::Utc>,
+    ) {
+        self.0.resource_policy_changed(ca_arn, owner_account, policy, now);
+    }
+}
+
 /// Security Hub's view of AWS Organizations: the caller's organization and
 /// the delegated administrator `EnableOrganizationAdminAccount` registers.
 pub struct SecurityHubOrganizations(pub mws_organizations::Organizations);
@@ -845,6 +904,27 @@ impl mws_securityhub::ExportSink for SecurityHubExports {
         match kms_key_arn.filter(|k| !k.is_empty()) {
             Some(k) => self.0.put_object_as_service_kms(put, k).map(|_| ()),
             None => self.0.put_object_as_service(put).map(|_| ()).map_err(|e| e.to_string()),
+        }
+    }
+}
+
+/// ELB's `AWS/ApplicationELB`, `AWS/NetworkELB`, `AWS/GatewayELB` and
+/// `AWS/ELB` metrics.
+pub struct ElbToCloudWatch(pub mws_cloudwatch::CloudWatch);
+
+impl mws_elb::MetricSink for ElbToCloudWatch {
+    fn publish(&self, metrics: Vec<mws_elb::ElbMetric>) {
+        for m in metrics {
+            self.0.put_metric_as_service(mws_cloudwatch::ServiceMetric {
+                account: m.account,
+                region: m.region,
+                namespace: m.namespace.into(),
+                metric_name: m.metric_name.into(),
+                dimensions: m.dimensions,
+                unit: Some(m.unit.into()),
+                timestamp: m.timestamp,
+                values: vec![(m.value, 1.0)],
+            });
         }
     }
 }

@@ -186,6 +186,17 @@ impl S3 {
 }
 
 impl S3 {
+    /// `GetObject` with the caller's own permissions, for services that
+    /// read an object the caller names (ELB trust store bundles and
+    /// revocation lists): S3 authorizes it as the caller's request.
+    pub fn get_object_as_caller(
+        &self,
+        ctx: &mws_core::RequestContext,
+        input: crate::generated::types::GetObjectRequest,
+    ) -> Result<crate::generated::types::GetObjectOutput, mws_core::ServiceError> {
+        self.call(ctx, None).get_object(ctx, input)
+    }
+
     /// The account that owns `bucket`, if it exists (S3 Control checks
     /// this when creating access points).
     pub fn bucket_owner(&self, bucket: &str) -> Option<String> {

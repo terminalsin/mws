@@ -31,8 +31,12 @@ aws-sdk-ec2 = "1"
 aws-sdk-amplify = "1"
 aws-sdk-marketplaceentitlement = "1"
 aws-sdk-marketplacemetering = "1"
+aws-sdk-ram = "1"
+aws-sdk-pcaconnectorscep = "1"
 aws-sdk-securityhub = "1"
 aws-smithy-types = "1"
+aws-sdk-elasticloadbalancingv2 = "1"
+aws-sdk-elasticloadbalancing = "1"
 aws-smithy-http-client = { version = "1", features = ["rustls-aws-lc"] }
 aws-smithy-runtime-api = { version = "1", features = ["client"] }
 zip.workspace = true
@@ -43,6 +47,15 @@ rustls-pki-types.workspace = true
 tokio-rustls.workspace = true
 x509-parser.workspace = true
 urlencoding = "2"
+# An independent SCEP client (RustCrypto CMS), to check the connector's
+# endpoint against a CMS implementation that is not MWS's own.
+cms = { version = "0.2", features = ["builder"] }
+rsa = { version = "0.9", features = ["sha2"] }
+x509-cert = { version = "0.2", features = ["builder"] }
+sha2-010 = { package = "sha2", version = "0.10", features = ["oid"] }
+aes = "0.8"
+cbc = "0.1"
+rand_core-06 = { package = "rand_core", version = "0.6", features = ["getrandom"] }
 time.workspace = true
 aws-lc-rs.workspace = true
 base64.workspace = true
