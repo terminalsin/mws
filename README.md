@@ -142,6 +142,7 @@ SDKs, S3 addressing, host-prefixed endpoints and calling as other identities.
 | [CloudTrail](docs/services/cloudtrail.md) | 61 / 61 (with CloudTrail Data) | awsJson 1.1, restJson1 |
 | [Service Quotas](docs/services/servicequotas.md) | 26 / 26 | awsJson 1.1 |
 | [Cost Explorer](docs/services/ce.md) | 47 / 47 | awsJson 1.1 |
+| [CloudFormation](docs/services/cloudformation.md) | 35 / 90 | awsQuery |
 
 Operations outside the implemented set answer `NotImplemented`. Each service
 page lists what is emulated and its known gaps.

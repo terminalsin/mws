@@ -8,6 +8,7 @@ mod acmpca;
 mod acmpca_parity;
 mod amplify;
 mod autoscaling;
+mod cloudformation;
 mod cloudtrail;
 mod cloudtrail_parity;
 mod cloudwatch;

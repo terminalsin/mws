@@ -314,6 +314,32 @@ dependencies = [
 ]
 
 [[package]]
+name = "aws-sdk-cloudformation"
+version = "1.136.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "c49b9e8b9d3be364d6009dac09c2034450e45abe1b89ffe332da492f7b8d4e58"
+dependencies = [
+ "arc-swap",
+ "aws-credential-types",
+ "aws-runtime",
+ "aws-smithy-async",
+ "aws-smithy-http",
+ "aws-smithy-json",
+ "aws-smithy-observability",
+ "aws-smithy-query",
+ "aws-smithy-runtime",
+ "aws-smithy-runtime-api",
+ "aws-smithy-schema",
+ "aws-smithy-types",
+ "aws-smithy-xml",
+ "aws-types",
+ "fastrand",
+ "http 1.5.0",
+ "regex-lite",
+ "tracing",
+]
+
+[[package]]
 name = "aws-sdk-cloudtrail"
 version = "1.130.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -3149,6 +3175,7 @@ dependencies = [
  "mws-amplify",
  "mws-autoscaling",
  "mws-ce",
+ "mws-cloudformation",
  "mws-cloudtrail",
  "mws-cloudtrail-data",
  "mws-cloudwatch",
@@ -3335,6 +3362,32 @@ dependencies = [
 ]
 
 [[package]]
+name = "mws-cloudformation"
+version = "0.1.0"
+dependencies = [
+ "async-trait",
+ "base64 0.22.1",
+ "bytes",
+ "chrono",
+ "hex",
+ "http 1.5.0",
+ "mws-codegen",
+ "mws-core",
+ "mws-proto-json",
+ "mws-proto-query",
+ "rand 0.8.8",
+ "regex",
+ "serde",
+ "serde_json",
+ "serde_yaml",
+ "sha2 0.10.9",
+ "tokio",
+ "tracing",
+ "uuid",
+ "zip",
+]
+
+[[package]]
 name = "mws-cloudtrail"
 version = "0.1.0"
 dependencies = [
@@ -3483,6 +3536,7 @@ dependencies = [
  "aws-sdk-acmpca",
  "aws-sdk-amplify",
  "aws-sdk-autoscaling",
+ "aws-sdk-cloudformation",
  "aws-sdk-cloudtrail",
  "aws-sdk-cloudtraildata",
  "aws-sdk-cloudwatch",

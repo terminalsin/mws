@@ -14,11 +14,12 @@ use mws_acmpca::PrivateCa;
 use mws_amplify::Amplify;
 use mws_autoscaling::AutoScaling;
 use mws_ce::CostExplorer;
+use mws_cloudformation::CloudFormation;
 use mws_cloudtrail::CloudTrail;
 use mws_cloudtrail_data::CloudTrailData;
 use mws_cloudwatch::CloudWatch;
 use mws_codeartifact::CodeArtifact;
-use mws_core::Environment;
+use mws_core::{Environment, Service};
 use mws_ec2::{BackendChoice, Ec2};
 use mws_ecr::Ecr;
 use mws_ecr_public::EcrPublic;
@@ -232,6 +233,7 @@ pub struct Mws {
     pub globalaccelerator: GlobalAccelerator,
     pub marketplace_entitlement: Entitlement,
     pub marketplace_metering: Metering,
+    pub cloudformation: CloudFormation,
     pub servicequotas: ServiceQuotas,
     pub ce: CostExplorer,
     pub ram: Ram,
@@ -500,78 +502,90 @@ fn build_with_store(config: Config, store: Option<Arc<Store>>) -> Mws {
     elasticache.set_snapshot_bucket(Arc::new(links::ElastiCacheSnapshots(s3.clone())));
     elasticache.set_event_notifier(Arc::new(links::ElastiCacheNotifications(sns.clone())));
     elasticache.set_metric_publisher(Arc::new(links::ElastiCacheToCloudWatch(cloudwatch.clone())));
+    let cloudformation = CloudFormation::new();
+    cloudformation.set_role_assumer(Arc::new(links::CloudFormationRoles(sts.clone())));
+    let authorizer = iam.authorizer();
+    let credential_stores =
+        [iam.credential_store(), sts.credential_store(), s3.credential_store(), s3.object_lambda_credential_store()];
+    let services: Vec<Arc<dyn Service>> = vec![
+        Arc::new(iam),
+        Arc::new(sts),
+        Arc::new(route53.clone()),
+        Arc::new(pca),
+        Arc::new(acm.clone()),
+        Arc::new(kms.clone()),
+        Arc::new(organizations.clone()),
+        // S3 Control signs as `s3` too; it claims its `/v20180820/` paths.
+        Arc::new(s3control.clone()),
+        Arc::new(s3.clone()),
+        Arc::new(lambda.clone()),
+        Arc::new(logs.clone()),
+        Arc::new(sqs.clone()),
+        Arc::new(ssm.clone()),
+        Arc::new(events.clone()),
+        Arc::new(secretsmanager.clone()),
+        Arc::new(sns.clone()),
+        Arc::new(kinesis.clone()),
+        Arc::new(firehose.clone()),
+        Arc::new(cloudwatch.clone()),
+        Arc::new(ec2.clone()),
+        Arc::new(guardduty.clone()),
+        Arc::new(amplify.clone()),
+        Arc::new(globalaccelerator.clone()),
+        Arc::new(rds.clone()),
+        // Both Marketplace services sign as `aws-marketplace`; each claims
+        // its own `X-Amz-Target`.
+        Arc::new(marketplace_metering.clone()),
+        Arc::new(marketplace_entitlement.clone()),
+        Arc::new(servicequotas.clone()),
+        Arc::new(ce.clone()),
+        Arc::new(identitystore),
+        Arc::new(ssoadmin),
+        Arc::new(ssooidc),
+        Arc::new(ssoportal),
+        Arc::new(ram.clone()),
+        Arc::new(scep.clone()),
+        Arc::new(securityhub.clone()),
+        Arc::new(imagebuilder.clone()),
+        // Both ELB APIs sign as `elasticloadbalancing`; the Classic one
+        // claims requests with its `2012-06-01` Version.
+        Arc::new(elb.clone()),
+        Arc::new(elb.classic()),
+        Arc::new(autoscaling.clone()),
+        // SES v2 signs as `ses` too; it claims its `/v2/email/` paths.
+        Arc::new(ses.v2()),
+        Arc::new(ses.clone()),
+        Arc::new(eks.clone()),
+        Arc::new(efs.clone()),
+        Arc::new(codeartifact.clone()),
+        Arc::new(cloudtrail.clone()),
+        Arc::new(CloudTrailData::new(cloudtrail.clone())),
+        Arc::new(ecr.clone()),
+        Arc::new(ecr_public.clone()),
+        Arc::new(elasticache.clone()),
+        Arc::new(cloudformation.clone()),
+    ];
+    // CloudFormation deploys resources through the other services' APIs.
+    cloudformation.set_services(services.iter().cloned());
     let mut gateway = Gateway::builder();
     if let Some(store) = store {
         gateway = gateway.store(store);
     }
-    let gateway = gateway
+    let mut gateway = gateway
         .scenario_principal(config.iam.root_access_key_id.clone())
         .environment(Environment { partition: config.iam.partition.clone(), ..Environment::default() })
-        .authorizer(iam.authorizer())
         .request_observer(Arc::new(servicequotas.clone()))
         .request_observer(Arc::new(ce.clone()))
-        .credentials(iam.credential_store())
-        .credentials(sts.credential_store())
-        .credentials(s3.credential_store())
-        .credentials(s3.object_lambda_credential_store())
-        .service(Arc::new(iam))
-        .service(Arc::new(sts))
-        .service(Arc::new(route53.clone()))
-        .service(Arc::new(pca))
-        .service(Arc::new(acm.clone()))
-        .service(Arc::new(kms.clone()))
-        .service(Arc::new(organizations))
-        // S3 Control signs as `s3` too; it claims its `/v20180820/` paths.
-        .service(Arc::new(s3control.clone()))
-        .service(Arc::new(s3.clone()))
-        .service(Arc::new(lambda.clone()))
-        .service(Arc::new(logs.clone()))
-        .service(Arc::new(sqs.clone()))
-        .service(Arc::new(ssm.clone()))
-        .service(Arc::new(events.clone()))
-        .service(Arc::new(secretsmanager.clone()))
-        .service(Arc::new(sns.clone()))
-        .service(Arc::new(kinesis.clone()))
-        .service(Arc::new(firehose.clone()))
-        .service(Arc::new(cloudwatch.clone()))
-        .service(Arc::new(ec2.clone()))
-        .service(Arc::new(guardduty.clone()))
-        .service(Arc::new(amplify.clone()))
-        .service(Arc::new(globalaccelerator.clone()))
-        .service(Arc::new(rds.clone()))
-        // Both Marketplace services sign as `aws-marketplace`; each claims
-        // its own `X-Amz-Target`.
-        .service(Arc::new(marketplace_metering.clone()))
-        .service(Arc::new(marketplace_entitlement.clone()))
-        .service(Arc::new(servicequotas.clone()))
-        .service(Arc::new(ce.clone()))
-        .service(Arc::new(identitystore))
-        .service(Arc::new(ssoadmin))
-        .service(Arc::new(ssooidc))
-        .service(Arc::new(ssoportal))
-        .service(Arc::new(ram.clone()))
-        .service(Arc::new(scep.clone()))
-        .service(Arc::new(securityhub.clone()))
-        .service(Arc::new(imagebuilder.clone()))
-        // Both ELB APIs sign as `elasticloadbalancing`; the Classic one
-        // claims requests with its `2012-06-01` Version.
-        .service(Arc::new(elb.clone()))
-        .service(Arc::new(elb.classic()))
-        .service(Arc::new(autoscaling.clone()))
-        // SES v2 signs as `ses` too; it claims its `/v2/email/` paths.
-        .service(Arc::new(ses.v2()))
-        .service(Arc::new(ses.clone()))
-        .service(Arc::new(eks.clone()))
-        .service(Arc::new(efs.clone()))
-        .service(Arc::new(codeartifact.clone()))
-        .service(Arc::new(cloudtrail.clone()))
         // CloudTrail records every API call the gateway dispatches.
-        .service(Arc::new(CloudTrailData::new(cloudtrail.clone())))
         .observer(Arc::new(cloudtrail.clone()))
-        .service(Arc::new(ecr.clone()))
-        .service(Arc::new(ecr_public.clone()))
-        .service(Arc::new(elasticache.clone()))
-        .build();
+        .authorizer(authorizer);
+    for c in credential_stores {
+        gateway = gateway.credentials(c);
+    }
+    for s in services {
+        gateway = gateway.service(s);
+    }
+    let gateway = gateway.build();
     Mws {
         gateway,
         route53,
@@ -595,6 +609,7 @@ fn build_with_store(config: Config, store: Option<Arc<Store>>) -> Mws {
         globalaccelerator,
         marketplace_entitlement,
         marketplace_metering,
+        cloudformation,
         servicequotas,
         ce,
         ram,

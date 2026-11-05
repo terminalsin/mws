@@ -107,6 +107,9 @@ Every service shares the same foundations:
 
 | [Service Quotas](servicequotas.md) | 26 / 26 | AWS's quota codes and defaults, increase requests that services enforce, `AWS/Usage` metrics for quota alarms |
 | [Cost Explorer](ce.md) | 47 / 47 | Seeded and derived cost data, grouping and filters, forecasts, cost categories, allocation tags, anomaly alerts |
+## Management
+
+| [CloudFormation](cloudformation.md) | 35 / 90 | Stacks that create real resources in the other services, change sets, rollbacks, nested stacks, custom resources, drift detection |
 
 ## How services connect
 
@@ -151,6 +154,8 @@ with the permissions AWS would use:
   `AWS/Usage` namespace.
 - Cost Explorer charges API calls at their request prices, follows
   Organizations for consolidated billing and sends anomaly alerts to SNS.
+- CloudFormation deploys stacks through every other service's API, as the
+  caller or the stack's service role.
 - Security Hub registers its delegated administrator in Organizations, sends
   findings events to EventBridge and exports findings to S3 with KMS.
 - Auto Scaling groups launch and terminate EC2 instances, register them with
