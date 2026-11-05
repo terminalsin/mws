@@ -907,3 +907,24 @@ impl mws_securityhub::ExportSink for SecurityHubExports {
         }
     }
 }
+
+/// ELB's `AWS/ApplicationELB`, `AWS/NetworkELB`, `AWS/GatewayELB` and
+/// `AWS/ELB` metrics.
+pub struct ElbToCloudWatch(pub mws_cloudwatch::CloudWatch);
+
+impl mws_elb::MetricSink for ElbToCloudWatch {
+    fn publish(&self, metrics: Vec<mws_elb::ElbMetric>) {
+        for m in metrics {
+            self.0.put_metric_as_service(mws_cloudwatch::ServiceMetric {
+                account: m.account,
+                region: m.region,
+                namespace: m.namespace.into(),
+                metric_name: m.metric_name.into(),
+                dimensions: m.dimensions,
+                unit: Some(m.unit.into()),
+                timestamp: m.timestamp,
+                values: vec![(m.value, 1.0)],
+            });
+        }
+    }
+}

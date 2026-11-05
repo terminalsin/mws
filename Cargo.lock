@@ -338,6 +338,58 @@ dependencies = [
 ]
 
 [[package]]
+name = "aws-sdk-elasticloadbalancing"
+version = "1.121.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "1cc1c1101e7c87e6ede31c215929780b662afb334228bbc0d85a3fb280ab13ba"
+dependencies = [
+ "arc-swap",
+ "aws-credential-types",
+ "aws-runtime",
+ "aws-smithy-async",
+ "aws-smithy-http",
+ "aws-smithy-json",
+ "aws-smithy-observability",
+ "aws-smithy-query",
+ "aws-smithy-runtime",
+ "aws-smithy-runtime-api",
+ "aws-smithy-schema",
+ "aws-smithy-types",
+ "aws-smithy-xml",
+ "aws-types",
+ "fastrand",
+ "http 1.5.0",
+ "regex-lite",
+ "tracing",
+]
+
+[[package]]
+name = "aws-sdk-elasticloadbalancingv2"
+version = "1.134.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "9c0d9dbd0986fb7e2530f26edd37ea4e32d42835d7dd8ce41fedb2570caf837d"
+dependencies = [
+ "arc-swap",
+ "aws-credential-types",
+ "aws-runtime",
+ "aws-smithy-async",
+ "aws-smithy-http",
+ "aws-smithy-json",
+ "aws-smithy-observability",
+ "aws-smithy-query",
+ "aws-smithy-runtime",
+ "aws-smithy-runtime-api",
+ "aws-smithy-schema",
+ "aws-smithy-types",
+ "aws-smithy-xml",
+ "aws-types",
+ "fastrand",
+ "http 1.5.0",
+ "regex-lite",
+ "tracing",
+]
+
+[[package]]
 name = "aws-sdk-eventbridge"
 version = "1.127.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2508,6 +2560,7 @@ dependencies = [
  "mws-cloudwatch",
  "mws-core",
  "mws-ec2",
+ "mws-elb",
  "mws-events",
  "mws-firehose",
  "mws-iam",
@@ -2663,6 +2716,8 @@ dependencies = [
  "aws-sdk-cloudwatch",
  "aws-sdk-cloudwatchlogs",
  "aws-sdk-ec2",
+ "aws-sdk-elasticloadbalancing",
+ "aws-sdk-elasticloadbalancingv2",
  "aws-sdk-eventbridge",
  "aws-sdk-firehose",
  "aws-sdk-iam",
@@ -2735,6 +2790,41 @@ dependencies = [
  "serde_json",
  "tokio",
  "tracing",
+]
+
+[[package]]
+name = "mws-elb"
+version = "0.1.0"
+dependencies = [
+ "async-trait",
+ "base64 0.22.1",
+ "bytes",
+ "chrono",
+ "hex",
+ "http 1.5.0",
+ "http-body-util",
+ "hyper 1.12.0",
+ "hyper-util",
+ "mws-acm",
+ "mws-codegen",
+ "mws-core",
+ "mws-ec2",
+ "mws-lambda",
+ "mws-proto-json",
+ "mws-proto-query",
+ "mws-s3",
+ "rand",
+ "regex",
+ "rustls 0.23.46",
+ "rustls-pki-types",
+ "serde",
+ "serde_json",
+ "sha2 0.10.9",
+ "tokio",
+ "tokio-rustls 0.26.6",
+ "tracing",
+ "uuid",
+ "x509-parser",
 ]
 
 [[package]]
