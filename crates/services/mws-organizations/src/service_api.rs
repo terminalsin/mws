@@ -24,6 +24,8 @@ pub struct OrganizationAccount {
     pub path: String,
     /// `ACTIVE`, `SUSPENDED` or `PENDING_CLOSURE`.
     pub status: String,
+    /// When the account joined the organization.
+    pub joined: DateTime<Utc>,
 }
 
 /// Why a delegated administrator could not be registered.
@@ -46,14 +48,15 @@ impl Organizations {
         let org = state.org_of(account)?;
         let accounts = org
             .members
-            .keys()
-            .map(|id| {
+            .iter()
+            .map(|(id, member)| {
                 let info = state.accounts.get(id);
                 OrganizationAccount {
                     id: id.clone(),
                     email: info.map(|a| a.email.clone()).unwrap_or_default(),
                     path: org.account_path(id),
                     status: info.map(|a| a.status.clone()).unwrap_or_else(|| "ACTIVE".into()),
+                    joined: member.joined,
                 }
             })
             .collect();

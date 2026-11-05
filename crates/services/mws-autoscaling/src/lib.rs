@@ -156,6 +156,8 @@ pub(crate) struct Inner {
     scheduler: AtomicBool,
     /// Serializes reconciliation passes.
     reconciling: tokio::sync::Mutex<()>,
+    /// Service Quotas: groups and launch configurations per Region.
+    quotas: mws_servicequotas::QuotaLink,
 }
 
 /// The Auto Scaling service. Cheap to clone; clones share state.
@@ -175,8 +177,20 @@ impl AutoScaling {
                 template: Mutex::new(None),
                 scheduler: AtomicBool::new(false),
                 reconciling: tokio::sync::Mutex::new(()),
+                quotas: Default::default(),
             }),
         }
+    }
+
+    /// Service Quotas, whose applied values limit groups and launch
+    /// configurations.
+    pub fn set_service_quotas(&self, quotas: mws_servicequotas::ServiceQuotas) {
+        self.inner.quotas.set(quotas);
+    }
+
+    /// The applied value of an Auto Scaling quota for the caller.
+    pub(crate) fn quota(&self, ctx: &RequestContext, code: &str) -> usize {
+        self.inner.quotas.limit(&ctx.caller.account_id, &ctx.region, "autoscaling", code, ctx.received_at)
     }
 
     pub fn set_notification_sink(&self, sink: Arc<dyn NotificationSink>) {

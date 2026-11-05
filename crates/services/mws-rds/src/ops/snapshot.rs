@@ -342,16 +342,20 @@ impl Rds {
             backend_name: backend_name.clone(),
             data_time: None,
         };
+        let max = self.quota(ctx, crate::quotas::MANUAL_SNAPSHOTS);
         self.with_region(ctx, |r| {
             if r.snapshots.contains_key(snapshot_id) {
                 return Err(errors::db_snapshot_already_exists_fault(format!(
                     "Cannot create the snapshot because a snapshot with the identifier {snapshot_id} already exists."
                 )));
             }
-            if r.snapshots.values().filter(|s| s.snapshot.snapshot_type.as_deref() == Some("manual")).count() >= 100
+            if r.snapshots.values().filter(|s| s.snapshot.snapshot_type.as_deref() == Some("manual")).count() as i64
+                >= max
                 && kind == "manual"
             {
-                return Err(errors::snapshot_quota_exceeded_fault("Cannot create more than 100 manual snapshots."));
+                return Err(errors::snapshot_quota_exceeded_fault(format!(
+                    "Cannot create more than {max} manual snapshots."
+                )));
             }
             r.snapshots.insert(snapshot_id.to_string(), record);
             Ok(())

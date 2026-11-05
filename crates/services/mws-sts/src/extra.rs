@@ -194,6 +194,7 @@ impl Sts {
                 issued_at: ctx.received_at,
                 expires_at: ctx.received_at,
                 mfa_authenticated: false,
+                provided_context: Default::default(),
             },
         );
         self.iam().note_role_used(&role, &ctx.region);
@@ -281,6 +282,7 @@ impl Sts {
                 issued_at: ctx.received_at,
                 expires_at: ctx.received_at,
                 mfa_authenticated: false,
+                provided_context: Default::default(),
             },
         );
         Ok(types::AssumeRootResponse {
@@ -358,6 +360,7 @@ impl Sts {
                 issued_at: ctx.received_at,
                 expires_at: ctx.received_at,
                 mfa_authenticated: false,
+                provided_context: Default::default(),
             },
         );
         Ok(types::GetDelegatedAccessTokenResponse {

@@ -81,6 +81,7 @@ fn role_caller(role_arn: &str, ctx: &RequestContext) -> Option<Caller> {
             issued_at: ctx.received_at,
             expires_at: ctx.received_at + Duration::hours(1),
             mfa_authenticated: false,
+            provided_context: Default::default(),
         }),
     })
 }

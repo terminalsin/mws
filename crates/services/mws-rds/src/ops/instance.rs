@@ -182,9 +182,10 @@ impl Rds {
             image: new.image,
             pending_reboot: false,
         };
-        let quota = self.with_region(ctx, |r| r.instances.len());
-        if quota >= 40 {
-            return Err(errors::instance_quota_exceeded_fault("Cannot create more than 40 DB instances."));
+        let max = self.quota(ctx, crate::quotas::DB_INSTANCES);
+        let count = self.with_region(ctx, |r| r.instances.len()) as i64;
+        if count >= max {
+            return Err(errors::instance_quota_exceeded_fault(format!("Cannot create more than {max} DB instances.")));
         }
         self.with_region(ctx, |r| {
             if r.instances.contains_key(&id) {

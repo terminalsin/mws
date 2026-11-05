@@ -21,6 +21,7 @@ mws-proto-cbor.workspace = true
 mws-proto-json.workspace = true
 mws-proto-query.workspace = true
 mws-sns.workspace = true
+mws-servicequotas.workspace = true
 rand.workspace = true
 regex.workspace = true
 serde.workspace = true

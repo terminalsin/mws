@@ -22,6 +22,7 @@ mod effective;
 mod handler;
 mod handshakes;
 mod policies;
+mod public;
 mod service_api;
 mod state;
 mod structure;
@@ -32,8 +33,22 @@ use std::sync::{Arc, Mutex, MutexGuard};
 use mws_core::{HttpRequest, HttpResponse, RequestContext, Service, ServiceError};
 use mws_iam::Iam;
 
+pub use public::AccountSummary;
 pub use service_api::{DelegationError, OrganizationAccount, OrganizationSnapshot};
 use state::State;
+
+/// An account's membership of an organization.
+#[derive(Debug, Clone)]
+pub struct MemberAccount {
+    pub id: String,
+    pub name: String,
+    pub management_account_id: String,
+    /// All features enabled (not just consolidated billing).
+    pub all_features: bool,
+    /// `CREATED` or `INVITED`.
+    pub joined_method: String,
+    pub joined: chrono::DateTime<chrono::Utc>,
+}
 
 /// The Organizations service. Cheap to clone; clones share state.
 #[derive(Clone)]
@@ -51,6 +66,35 @@ impl Organizations {
     /// with [`Iam::set_organizations`].
     pub fn view(&self) -> Arc<dyn mws_iam::OrganizationView> {
         Arc::new(view::View { state: self.state.clone() })
+    }
+
+    /// An account's membership of its organization, for services that
+    /// work across an organization (billing, quota request templates).
+    pub fn member_account(&self, account_id: &str) -> Option<MemberAccount> {
+        let st = self.lock();
+        let org = st.org_of(account_id)?;
+        let member = org.members.get(account_id)?;
+        Some(MemberAccount {
+            id: account_id.to_string(),
+            name: st.accounts.get(account_id).map(|a| a.name.clone()).unwrap_or_default(),
+            management_account_id: org.management_account.clone(),
+            all_features: org.feature_set == "ALL",
+            joined_method: member.joined_method.clone(),
+            joined: member.joined,
+        })
+    }
+
+    /// Every account in the organization `management_account_id` manages,
+    /// the management account included.
+    pub fn member_accounts(&self, management_account_id: &str) -> Vec<MemberAccount> {
+        let ids: Vec<String> = {
+            let st = self.lock();
+            match st.org_of(management_account_id) {
+                Some(org) if org.management_account == management_account_id => org.members.keys().cloned().collect(),
+                _ => return Vec::new(),
+            }
+        };
+        ids.iter().filter_map(|id| self.member_account(id)).collect()
     }
 
     /// Never hold this while calling `ctx.authorize`: the IAM authorizer

@@ -26,8 +26,9 @@ use http_body_util::{BodyExt, Full, Limited};
 use hyper::body::Incoming;
 use hyper_util::rt::{TokioExecutor, TokioIo};
 use mws_core::{
-    Authorizer, Caller, CredentialError, CredentialStore, Environment, HttpRequest, HttpResponse, RequestContext,
-    ResolvedCredential, Service, ServiceError, StreamingBody,
+    ApiCall, ApiCallObserver, Authorizer, Caller, CredentialError, CredentialStore, Environment, HttpRequest,
+    HttpResponse, RecordingAuthorizer, RequestContext, RequestObserver, ResolvedCredential, Service, ServiceError,
+    StreamingBody,
 };
 use mws_sigv4::{SigV4Error, VerifyOptions};
 pub use mws_store::Store;
@@ -59,6 +60,11 @@ pub struct Gateway {
     clock_offset_ms: std::sync::atomic::AtomicI64,
     /// Where [`serve`] listens, as a URL.
     endpoint: std::sync::OnceLock<String>,
+    /// Told about every signed request routed to a service, with the
+    /// actions it authorized (Service Quotas, Cost Explorer).
+    request_observers: Vec<Arc<dyn RequestObserver>>,
+    /// Told about every API call a service handled (CloudTrail).
+    observers: Vec<Arc<dyn ApiCallObserver>>,
 }
 
 pub struct GatewayBuilder {
@@ -88,6 +94,18 @@ impl GatewayBuilder {
 
     pub fn authorizer(mut self, authorizer: Arc<dyn Authorizer>) -> Self {
         self.gateway.authorizer = authorizer;
+        self
+    }
+
+    /// Tell `observer` about every signed request once it is answered.
+    pub fn request_observer(mut self, observer: Arc<dyn RequestObserver>) -> Self {
+        self.gateway.request_observers.push(observer);
+        self
+    }
+
+    /// Tell `observer` about every API call services handle.
+    pub fn observer(mut self, observer: Arc<dyn ApiCallObserver>) -> Self {
+        self.gateway.observers.push(observer);
         self
     }
 
@@ -134,6 +152,8 @@ impl Gateway {
                 state: state::StateHub::default(),
                 clock_offset_ms: std::sync::atomic::AtomicI64::new(0),
                 endpoint: std::sync::OnceLock::new(),
+                request_observers: Vec::new(),
+                observers: Vec::new(),
             },
         }
     }
@@ -183,7 +203,7 @@ impl Gateway {
             }
             let region = alternate.region.unwrap_or_else(|| self.env.default_region.clone());
             let ctx = self.context(request_id, region, resolved.caller, remote, now);
-            return service.handle(ctx, request).await;
+            return self.dispatch(&service, ctx, request).await;
         }
         let parsed = match mws_sigv4::parse(&request) {
             Ok(p) => p,
@@ -199,7 +219,7 @@ impl Gateway {
                     (Some(service), _) => {
                         let ctx =
                             self.context(request_id, self.env.default_region.clone(), Caller::anonymous(), remote, now);
-                        service.handle(ctx, request).await
+                        self.dispatch(&service, ctx, request).await
                     }
                     (None, Some(service)) => {
                         service.render_error(&request_id, &ServiceError::missing_authentication_token())
@@ -208,8 +228,25 @@ impl Gateway {
                 };
             }
             Err(e) => {
+                // Services with their own credentials (CodeArtifact
+                // repository endpoints take `Bearer` and `Basic` tokens)
+                // check a non-SigV4 `Authorization` header themselves.
+                if let Some(service) =
+                    self.services.values().flatten().find(|s| s.recognizes(&request) && s.accepts_unsigned(&request))
+                {
+                    let ctx =
+                        self.context(request_id, self.env.default_region.clone(), Caller::anonymous(), remote, now);
+                    return service.handle(ctx, request).await;
+                }
                 let err = sigv4_error(e);
                 return match self.services.values().flatten().find(|s| s.recognizes(&request)) {
+                    // An `Authorization` header of the service's own that
+                    // names no caller (a registry's anonymous bearer token).
+                    Some(service) if service.anonymous_credentials(&request) => {
+                        let ctx =
+                            self.context(request_id, self.env.default_region.clone(), Caller::anonymous(), remote, now);
+                        service.handle(ctx, request).await
+                    }
                     Some(service) => service.render_error(&request_id, &err),
                     None => self.fallback_error(&request_id, &err),
                 };
@@ -256,7 +293,62 @@ impl Gateway {
             r => r.to_string(),
         };
         let ctx = self.context(request_id, region, resolved.caller, remote, now);
-        service.handle(ctx, request).await
+        self.dispatch(&service, ctx, request).await
+    }
+
+    /// Hand a signed request to its service, recording the actions it
+    /// authorizes for the request observers and telling the API call
+    /// observers about the call it made.
+    async fn dispatch(
+        &self,
+        service: &Arc<dyn Service>,
+        mut ctx: RequestContext,
+        request: HttpRequest,
+    ) -> HttpResponse {
+        if self.observers.is_empty() && self.request_observers.is_empty() {
+            return service.handle(ctx, request).await;
+        }
+        let recorder = (!self.request_observers.is_empty()).then(|| {
+            let recorder = Arc::new(RecordingAuthorizer::new(ctx.authorizer.clone()));
+            ctx.authorizer = recorder.clone();
+            recorder
+        });
+        let request_call = ApiCall {
+            request_id: ctx.request_id.clone(),
+            service: service.signing_name(),
+            account: ctx.caller.account_id.clone(),
+            region: ctx.region.clone(),
+            at: ctx.received_at,
+            actions: Vec::new(),
+            status: 0,
+        };
+        let response = if self.observers.is_empty() {
+            service.handle(ctx, request).await
+        } else {
+            let header = |name: http::header::HeaderName| {
+                request.headers().get(name).and_then(|v| v.to_str().ok()).map(str::to_string)
+            };
+            let mut facts = mws_core::trail::HttpFacts {
+                user_agent: header(http::header::USER_AGENT),
+                host: header(http::header::HOST),
+                status: 0,
+            };
+            let (response, call) = mws_core::trail::watch(service.handle(ctx.clone(), request)).await;
+            if let Some(call) = call {
+                facts.status = response.status().as_u16();
+                for o in &self.observers {
+                    o.observe(&ctx, &call, &facts);
+                }
+            }
+            response
+        };
+        if let Some(recorder) = recorder {
+            let call = ApiCall { actions: recorder.actions(), status: response.status().as_u16(), ..request_call };
+            for observer in &self.request_observers {
+                observer.observe(&call);
+            }
+        }
+        response
     }
 
     fn resolve(

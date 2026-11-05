@@ -2,3 +2,4 @@ boto3[crt]
 pytest
 cryptography>=42
 pyarrow
+twine

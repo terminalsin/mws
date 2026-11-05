@@ -338,7 +338,11 @@ impl Ec2 {
         let cidr = input.cidr_block.clone().ok_or_else(|| missing_parameter("CidrBlock"))?;
         parse_vpc_cidr(&cidr)?;
         let tenancy = input.instance_tenancy.clone().unwrap_or_else(|| "default".into());
+        let limit = self.quota(&account, &ctx.region, crate::quotas::VPCS, ctx.received_at);
         self.with_region(ctx, |r| {
+            if r.vpcs.len() as f64 >= limit {
+                return Err(err("VpcLimitExceeded", "The maximum number of VPCs has been reached."));
+            }
             let id = new_vpc(r, &account, &cidr, false, tags, None, &tenancy);
             let mut vpc = r.vpcs[&id].vpc.clone();
             vpc.state = Some("pending".into());

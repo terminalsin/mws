@@ -17,7 +17,8 @@ use crate::util::{
 };
 use crate::{account_of, AutoScaling};
 
-pub(crate) const MAX_GROUPS: usize = 500;
+/// Service Quotas: Auto Scaling groups per Region.
+pub(crate) const GROUPS_QUOTA: &str = "L-CDE20ADC";
 
 /// Subnets with their zones, the zones, and the subnet list.
 pub(crate) type Zones = (BTreeMap<String, (String, String)>, Vec<String>, Option<String>);
@@ -276,15 +277,16 @@ impl AutoScaling {
             cond.insert("autoscaling:VPCZoneIdentifiers".into(), v.split(',').map(|s| s.trim().to_string()).collect());
         }
         authorize(ctx, "CreateAutoScalingGroup", &group_resource(ctx, &account, &name), None, cond)?;
+        let max_groups = self.quota(ctx, GROUPS_QUOTA);
         let existing = self.with_region(ctx, |r| (r.groups.contains_key(&name), r.groups.len()));
         if existing.0 {
             return Err(already_exists(format!(
                 "AutoScalingGroup by this name already exists - A group with the name {name} already exists"
             )));
         }
-        if existing.1 >= MAX_GROUPS {
+        if existing.1 >= max_groups {
             return Err(limit_exceeded(format!(
-                "You have reached your limit of {MAX_GROUPS} Auto Scaling groups. Delete unused groups or request a limit increase."
+                "You have reached your limit of {max_groups} Auto Scaling groups. Delete unused groups or request a limit increase."
             )));
         }
         let desired = input.desired_capacity.unwrap_or(input.min_size);
@@ -1008,10 +1010,12 @@ impl AutoScaling {
         ctx: &RequestContext,
     ) -> Result<t::DescribeAccountLimitsAnswer, ServiceError> {
         authorize(ctx, "DescribeAccountLimits", "*", None, ConditionContext::new())?;
+        let max_groups = self.quota(ctx, GROUPS_QUOTA).min(i32::MAX as usize) as i32;
+        let max_lcs = self.quota(ctx, super::launch_config::LAUNCH_CONFIGURATIONS_QUOTA).min(i32::MAX as usize) as i32;
         let (groups, lcs) = self.with_region(ctx, |r| (r.groups.len() as i32, r.launch_configurations.len() as i32));
         Ok(t::DescribeAccountLimitsAnswer {
-            max_number_of_auto_scaling_groups: Some(MAX_GROUPS as i32),
-            max_number_of_launch_configurations: Some(super::launch_config::MAX_LAUNCH_CONFIGURATIONS as i32),
+            max_number_of_auto_scaling_groups: Some(max_groups),
+            max_number_of_launch_configurations: Some(max_lcs),
             number_of_auto_scaling_groups: Some(groups),
             number_of_launch_configurations: Some(lcs),
         })
