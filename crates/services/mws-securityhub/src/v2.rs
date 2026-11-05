@@ -227,6 +227,61 @@ fn software_docs(state: &State, ctx: &RequestContext) -> Vec<Value> {
     out
 }
 
+/// Columns of a CSV export without `SelectedFields`.
+const CSV_COLUMNS: &[&str] = &[
+    "metadata.uid",
+    "finding_info.uid",
+    "finding_info.title",
+    "severity",
+    "status",
+    "cloud.account.uid",
+    "cloud.region",
+    "metadata.product.name",
+    "finding_info.created_time_dt",
+    "finding_info.modified_time_dt",
+];
+
+/// An export file: OCSF documents as a JSON array (`OCSF_JSON`), or one CSV
+/// row per finding with the selected fields as columns.
+fn export_body(docs: &[Value], format: &str, selected: &[String]) -> (String, &'static str) {
+    let project = |d: &Value, f: &str| filters::values_at(d, f).first().map(|v| (*v).clone());
+    if format == "CSV" {
+        let columns: Vec<String> =
+            if selected.is_empty() { CSV_COLUMNS.iter().map(|c| c.to_string()).collect() } else { selected.to_vec() };
+        let cell = |v: Option<Value>| {
+            let text = match v {
+                None | Some(Value::Null) => String::new(),
+                Some(Value::String(s)) => s,
+                Some(other) => other.to_string(),
+            };
+            format!("\"{}\"", text.replace('"', "\"\""))
+        };
+        let mut out = columns.iter().map(|c| cell(Some(Value::String(c.clone())))).collect::<Vec<_>>().join(",");
+        for d in docs {
+            out.push('\n');
+            out.push_str(&columns.iter().map(|c| cell(project(d, c))).collect::<Vec<_>>().join(","));
+        }
+        out.push('\n');
+        return (out, "csv");
+    }
+    let docs: Vec<Value> = docs
+        .iter()
+        .map(|d| {
+            if selected.is_empty() {
+                return d.clone();
+            }
+            let mut m = serde_json::Map::new();
+            for f in selected {
+                if let Some(v) = project(d, f) {
+                    m.insert(f.clone(), v);
+                }
+            }
+            Value::Object(m)
+        })
+        .collect();
+    (Value::Array(docs).to_string(), "json")
+}
+
 impl SecurityHub {
     pub(crate) fn enable_security_hub_v2_op(
         &self,
@@ -869,26 +924,10 @@ impl SecurityHub {
         if let Some(id) = existing {
             return Ok(types::StartExportJobV2Response { export_job_id: id });
         }
-        let id = uuid::Uuid::new_v4().to_string();
-        let selected = out.selected_fields.clone().unwrap_or_default();
-        let lines: Vec<String> = docs
-            .iter()
-            .map(|d| {
-                if selected.is_empty() {
-                    return d.to_string();
-                }
-                let mut m = serde_json::Map::new();
-                for f in &selected {
-                    if let Some(v) = filters::values_at(d, f).first() {
-                        m.insert(f.clone(), (*v).clone());
-                    }
-                }
-                Value::Object(m).to_string()
-            })
-            .collect();
-        let body = if out.format == "JSON" { format!("[{}]", lines.join(",")) } else { lines.join("\n") };
+        let id = uuid::Uuid::new_v4().simple().to_string();
+        let (body, extension) = export_body(&docs, &out.format, out.selected_fields.as_deref().unwrap_or_default());
         let prefix = dest.object_prefix.clone().map(|p| format!("{}/", p.trim_end_matches('/'))).unwrap_or_default();
-        let object_key = format!("{prefix}AWSSecurityHub/{}/{}/{id}/findings.json", account(ctx), ctx.region);
+        let object_key = format!("{prefix}AWSSecurityHub/{}/{}/{id}/findings.{extension}", account(ctx), ctx.region);
         let outcome = match self.inner.exports.get() {
             Some(sink) => sink.put_object(ctx, &bucket, &object_key, body.into_bytes(), Some(&dest.kms_key_arn)),
             None => Err("Export destinations are not available.".to_string()),

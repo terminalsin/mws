@@ -659,6 +659,31 @@ dependencies = [
 ]
 
 [[package]]
+name = "aws-sdk-securityhub"
+version = "1.138.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "94b80e6d5503dd37869ce3ca7e0a87a000f5311267392bf2497e459726419b5d"
+dependencies = [
+ "arc-swap",
+ "aws-credential-types",
+ "aws-runtime",
+ "aws-smithy-async",
+ "aws-smithy-http",
+ "aws-smithy-json",
+ "aws-smithy-observability",
+ "aws-smithy-runtime",
+ "aws-smithy-runtime-api",
+ "aws-smithy-schema",
+ "aws-smithy-types",
+ "aws-types",
+ "bytes",
+ "fastrand",
+ "http 1.5.0",
+ "regex-lite",
+ "tracing",
+]
+
+[[package]]
 name = "aws-sdk-sns"
 version = "1.121.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2478,12 +2503,14 @@ dependencies = [
  "aws-sdk-s3",
  "aws-sdk-s3control",
  "aws-sdk-secretsmanager",
+ "aws-sdk-securityhub",
  "aws-sdk-sns",
  "aws-sdk-sqs",
  "aws-sdk-ssm",
  "aws-sdk-sts",
  "aws-smithy-http-client",
  "aws-smithy-runtime-api",
+ "aws-smithy-types",
  "base64 0.22.1",
  "chrono",
  "flate2",

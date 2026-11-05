@@ -230,9 +230,18 @@ impl<'t, 'm> JsonCodec<'t, 'm> {
                 format!("Value::from(*{x})")
             }
             ShapeType::Float | ShapeType::Double => format!("{RT}::ser_float(*{x} as f64)"),
-            ShapeType::Timestamp => format!("{RT}::ser_timestamp({x})"),
+            ShapeType::Timestamp => timestamp_ser(s.get_trait("timestampFormat"), x),
             ShapeType::Blob => format!("{RT}::ser_blob({x})"),
             _ => format!("{module}{}({x})", ser_fn_name(s)),
+        }
+    }
+
+    /// [`JsonCodec::ser_expr`] for a structure or union member: a member's
+    /// `timestampFormat` overrides its target's.
+    fn ser_member_expr(&self, m: &Member, x: &str) -> String {
+        match m.get_trait("timestampFormat") {
+            Some(format) if self.model.expect(&m.target).ty == ShapeType::Timestamp => timestamp_ser(Some(format), x),
+            _ => self.ser_expr(&m.target, x),
         }
     }
 
@@ -249,7 +258,7 @@ impl<'t, 'm> JsonCodec<'t, 'm> {
                     "            types::{ty}::{}(x) => {{ m.insert({}.into(), {}); }}",
                     type_name(&mem.name),
                     rust_str(&mem.name),
-                    self.ser_expr(&mem.target, deref)
+                    self.ser_member_expr(mem, deref)
                 );
             }
             let _ = writeln!(w, "        }}");
@@ -272,12 +281,12 @@ impl<'t, 'm> JsonCodec<'t, 'm> {
                         let _ = writeln!(
                             w,
                             "        if let Some(x) = &v.{field} {{ m.insert({name}.into(), {}); }}",
-                            self.ser_expr(&mem.target, x)
+                            self.ser_member_expr(mem, x)
                         );
                     }
                     _ => {
                         let x = if boxed { format!("&*v.{field}") } else { format!("&v.{field}") };
-                        let _ = writeln!(w, "        m.insert({name}.into(), {});", self.ser_expr(&mem.target, &x));
+                        let _ = writeln!(w, "        m.insert({name}.into(), {});", self.ser_member_expr(mem, &x));
                     }
                 }
             }
@@ -354,4 +363,14 @@ pub fn emit_invoke(model: &Model, ops: &[&Shape], de_mod: &str, ser_mod: &str, v
     }
     let _ = writeln!(w, "        other => Err(::mws_core::ServiceError::unknown_operation(other)),");
     let _ = writeln!(w, "    }}\n}}");
+}
+
+/// Serialize timestamp `x` (a reference) as `format` says: epoch seconds by
+/// default, RFC 3339 for `date-time`, IMF-fixdate for `http-date`.
+fn timestamp_ser(format: Option<&serde_json::Value>, x: &str) -> String {
+    match format.and_then(serde_json::Value::as_str) {
+        Some("date-time") => format!("{RT}::ser_timestamp_date_time({x})"),
+        Some("http-date") => format!("{RT}::ser_timestamp_http_date({x})"),
+        _ => format!("{RT}::ser_timestamp({x})"),
+    }
 }
