@@ -9,10 +9,6 @@ use mws_core::{ConditionContext, RequestContext, ServiceError};
 use crate::generated::errors;
 use crate::state::{Hub, State, Tags};
 
-pub fn partition(ctx: &RequestContext) -> &str {
-    &ctx.partition
-}
-
 pub fn account(ctx: &RequestContext) -> &str {
     &ctx.caller.account_id
 }
@@ -116,10 +112,6 @@ pub fn tag_conditions(tags: &BTreeMap<String, String>) -> ConditionContext {
         cond.insert("aws:TagKeys".into(), tags.keys().cloned().collect());
     }
     cond
-}
-
-pub fn resource_tag_conditions(tags: &Tags) -> ConditionContext {
-    tags.iter().map(|(k, v)| (format!("aws:ResourceTag/{k}"), vec![v.clone()])).collect()
 }
 
 /// Reject `aws:` keys and more than 50 tags.

@@ -17,11 +17,6 @@ use crate::{FindingEvent, SecurityHub};
 pub const SCHEMA_VERSION: &str = "2018-10-08";
 pub const IMPORTED: &str = "Security Hub Findings - Imported";
 
-/// Fields `BatchUpdateFindings` owns: once a customer sets them, provider
-/// imports no longer change them.
-const CUSTOMER_FIELDS: &[&str] =
-    &["Note", "UserDefinedFields", "VerificationState", "Workflow", "Severity", "Confidence", "Criticality", "Types", "RelatedFindings"];
-
 /// What [`SecurityHub::import_findings_as_service`] did.
 #[derive(Debug, Clone, Default)]
 pub struct ServiceImportResult {
@@ -62,7 +57,8 @@ pub fn normalized_for(label: &str) -> Option<i64> {
 
 /// Fill in whichever of `Label` and `Normalized` is missing.
 fn complete_severity(sev: &mut Map<String, Value>) {
-    match (sev.get("Label").and_then(Value::as_str).map(str::to_string), sev.get("Normalized").and_then(Value::as_i64)) {
+    match (sev.get("Label").and_then(Value::as_str).map(str::to_string), sev.get("Normalized").and_then(Value::as_i64))
+    {
         (Some(l), None) => {
             if let Some(n) = normalized_for(&l) {
                 sev.insert("Normalized".into(), json!(n));
@@ -84,7 +80,7 @@ pub fn to_wire(v: &Value) -> types::AwsSecurityFinding {
 /// own default product (`product/<account>/default`).
 pub enum ProductRef {
     Catalog(&'static catalog::Product),
-    Default { account: String },
+    Default,
 }
 
 pub fn product_of(arn: &str, region: &str) -> Option<ProductRef> {
@@ -95,7 +91,7 @@ pub fn product_of(arn: &str, region: &str) -> Option<ProductRef> {
     let key = parts[5].strip_prefix("product/")?;
     if let Some((acct, "default")) = key.split_once('/') {
         if acct == parts[4] && common::is_account_id(acct) {
-            return Some(ProductRef::Default { account: acct.to_string() });
+            return Some(ProductRef::Default);
         }
         return None;
     }
@@ -219,7 +215,9 @@ pub struct ImportScope<'a> {
 /// with an existing one, run automation rules, store it and return the
 /// event to publish. Errors are `(code, message)`.
 pub fn import_one(state: &mut State, scope: &ImportScope<'_>, mut f: Value) -> Result<FindingEvent, (String, String)> {
-    let bad = |m: &str| ("InvalidInput".to_string(), format!("Finding does not adhere to Amazon Security Finding Format. {m}"));
+    let bad = |m: &str| {
+        ("InvalidInput".to_string(), format!("Finding does not adhere to Amazon Security Finding Format. {m}"))
+    };
     let obj = f.as_object_mut().ok_or_else(|| bad("data should be object"))?;
     let id = obj.get("Id").and_then(Value::as_str).unwrap_or_default().to_string();
     let product_arn = obj.get("ProductArn").and_then(Value::as_str).unwrap_or_default().to_string();
@@ -247,14 +245,22 @@ pub fn import_one(state: &mut State, scope: &ImportScope<'_>, mut f: Value) -> R
         return Err(bad("data.Resources should NOT have fewer than 1 items"));
     }
     let key = crate::state::key(scope.account, scope.region);
-    let hub = state.hubs.get(&key).ok_or_else(|| ("InvalidAccessException".to_string(), format!("Account {} is not subscribed to AWS Security Hub", scope.account)))?;
+    let hub = state.hubs.get(&key).ok_or_else(|| {
+        (
+            "InvalidAccessException".to_string(),
+            format!("Account {} is not subscribed to AWS Security Hub", scope.account),
+        )
+    })?;
     let (product_name, company_name) = match product_of(&product_arn, scope.region) {
-        Some(ProductRef::Default { .. }) => ("Default".to_string(), "Personal".to_string()),
+        Some(ProductRef::Default) => ("Default".to_string(), "Personal".to_string()),
         Some(ProductRef::Catalog(p)) => {
             if !hub.products.contains(&product_arn) {
                 return Err((
                     "InvalidAccessException".into(),
-                    format!("Product {product_arn} is not enabled for importing findings in account {}.", scope.account),
+                    format!(
+                        "Product {product_arn} is not enabled for importing findings in account {}.",
+                        scope.account
+                    ),
                 ));
             }
             (p.name.to_string(), p.company.to_string())
@@ -303,7 +309,12 @@ pub fn import_one(state: &mut State, scope: &ImportScope<'_>, mut f: Value) -> R
         None => {
             obj.entry("WorkflowState").or_insert_with(|| json!("NEW"));
             obj.entry("Workflow").or_insert_with(|| json!({"Status": "NEW"}));
-            let mut rec = FindingRec { finding: f, history: Vec::new(), customer_fields: BTreeSet::new(), v2: Default::default() };
+            let mut rec = FindingRec {
+                finding: f,
+                history: Vec::new(),
+                customer_fields: BTreeSet::new(),
+                v2: Default::default(),
+            };
             rec.history.push(HistoryRec {
                 time: scope.now,
                 created: true,
@@ -333,12 +344,15 @@ pub fn import_one(state: &mut State, scope: &ImportScope<'_>, mut f: Value) -> R
                     }
                 }
             }
-            let status = |v: &Value, p: &str| filters::values_at(v, p).first().and_then(|x| x.as_str()).map(str::to_string);
+            let status =
+                |v: &Value, p: &str| filters::values_at(v, p).first().and_then(|x| x.as_str()).map(str::to_string);
             let was_archived = status(&prev, "RecordState").as_deref() == Some("ARCHIVED");
             let now_active = obj.get("RecordState").and_then(Value::as_str) == Some("ACTIVE");
             let old_compliance = status(&prev, "Compliance.Status");
-            let new_compliance = obj.get("Compliance").and_then(|c| c.get("Status")).and_then(Value::as_str).map(str::to_string);
-            let workflow = obj.get("Workflow").and_then(|w| w.get("Status")).and_then(Value::as_str).unwrap_or("NEW").to_string();
+            let new_compliance =
+                obj.get("Compliance").and_then(|c| c.get("Status")).and_then(Value::as_str).map(str::to_string);
+            let workflow =
+                obj.get("Workflow").and_then(|w| w.get("Status")).and_then(Value::as_str).unwrap_or("NEW").to_string();
             let mut new_workflow = None;
             if matches!(workflow.as_str(), "NOTIFIED" | "RESOLVED") {
                 let reopened = was_archived && now_active;
@@ -374,7 +388,13 @@ pub fn import_one(state: &mut State, scope: &ImportScope<'_>, mut f: Value) -> R
     Ok(event)
 }
 
-pub fn finding_event(partition: &str, account: &str, region: &str, finding: &Value, now: DateTime<Utc>) -> FindingEvent {
+pub fn finding_event(
+    partition: &str,
+    account: &str,
+    region: &str,
+    finding: &Value,
+    now: DateTime<Utc>,
+) -> FindingEvent {
     let fid = finding
         .get("ProductFields")
         .and_then(|p| p.get("aws/securityhub/FindingId"))
@@ -420,7 +440,11 @@ impl FieldUpdates {
             && self.related_findings.is_none()
     }
 
-    pub fn severity_from(normalized: Option<i32>, product: Option<f64>, label: Option<String>) -> Option<Map<String, Value>> {
+    pub fn severity_from(
+        normalized: Option<i32>,
+        product: Option<f64>,
+        label: Option<String>,
+    ) -> Option<Map<String, Value>> {
         if normalized.is_none() && product.is_none() && label.is_none() {
             return None;
         }
@@ -438,7 +462,12 @@ impl FieldUpdates {
     }
 
     /// Apply to a finding; returns the history updates.
-    pub fn apply(&self, rec: &mut FindingRec, updated_by_default: &str, now: DateTime<Utc>) -> Vec<(String, Option<String>, Option<String>)> {
+    pub fn apply(
+        &self,
+        rec: &mut FindingRec,
+        updated_by_default: &str,
+        now: DateTime<Utc>,
+    ) -> Vec<(String, Option<String>, Option<String>)> {
         let before = rec.finding.clone();
         let Some(obj) = rec.finding.as_object_mut() else { return Vec::new() };
         let mut touched = Vec::new();
@@ -591,7 +620,13 @@ impl SecurityHub {
             if !hub.products.contains(&product_arn) {
                 return result;
             }
-            let scope = ImportScope { partition: &ctx.partition, account, region, now: ctx.received_at, identity: service_principal };
+            let scope = ImportScope {
+                partition: &ctx.partition,
+                account,
+                region,
+                now: ctx.received_at,
+                identity: service_principal,
+            };
             let (r, events) = import_all(&mut state, &scope, jsons);
             result.success_count = r.success_count;
             result.failed.extend(r.failed);
@@ -656,7 +691,10 @@ impl SecurityHub {
                     let before = rec.finding.clone();
                     if let Some(obj) = rec.finding.as_object_mut() {
                         if let Some(n) = &input.note {
-                            obj.insert("Note".into(), json!({"Text": n.text, "UpdatedBy": n.updated_by, "UpdatedAt": iso(ctx.received_at)}));
+                            obj.insert(
+                                "Note".into(),
+                                json!({"Text": n.text, "UpdatedBy": n.updated_by, "UpdatedAt": iso(ctx.received_at)}),
+                            );
                         }
                         if let Some(r) = &input.record_state {
                             obj.insert("RecordState".into(), json!(r));
@@ -693,7 +731,10 @@ impl SecurityHub {
         }
         let updates = FieldUpdates {
             note: input.note.as_ref().map(|n| (n.text.clone(), n.updated_by.clone())),
-            severity: input.severity.as_ref().and_then(|s| FieldUpdates::severity_from(s.normalized, s.product, s.label.clone())),
+            severity: input
+                .severity
+                .as_ref()
+                .and_then(|s| FieldUpdates::severity_from(s.normalized, s.product, s.label.clone())),
             verification_state: input.verification_state.clone(),
             confidence: input.confidence,
             criticality: input.criticality,
@@ -714,7 +755,8 @@ impl SecurityHub {
             let keys = visible_keys(&state, account(ctx), &ctx.region);
             for ident in input.finding_identifiers {
                 let fkey = finding_key(&ident.product_arn, &ident.id);
-                let Some(hk) = keys.iter().find(|k| state.hubs.get(*k).is_some_and(|h| h.findings.contains_key(&fkey))).cloned()
+                let Some(hk) =
+                    keys.iter().find(|k| state.hubs.get(*k).is_some_and(|h| h.findings.contains_key(&fkey))).cloned()
                 else {
                     unprocessed.push(types::BatchUpdateFindingsUnprocessedFinding {
                         finding_identifier: ident,
@@ -723,7 +765,8 @@ impl SecurityHub {
                     });
                     continue;
                 };
-                let (acct, region) = hk.split_once('/').map(|(a, r)| (a.to_string(), r.to_string())).unwrap_or_default();
+                let (acct, region) =
+                    hk.split_once('/').map(|(a, r)| (a.to_string(), r.to_string())).unwrap_or_default();
                 let rec = state.hubs.get_mut(&hk).and_then(|h| h.findings.get_mut(&fkey)).expect("found above");
                 let changes = updates.apply(rec, &ctx.caller.arn, ctx.received_at);
                 if !changes.is_empty() {
@@ -785,7 +828,8 @@ impl SecurityHub {
                 next_token: None,
             })
             .collect();
-        let (page, next_token) = paginate(std::mem::take(&mut records), input.max_results, 100, input.next_token.as_deref())?;
+        let (page, next_token) =
+            paginate(std::mem::take(&mut records), input.max_results, 100, input.next_token.as_deref())?;
         Ok(types::GetFindingHistoryResponse { records: Some(page), next_token })
     }
 
@@ -802,7 +846,9 @@ impl SecurityHub {
         let acct = account(ctx).to_string();
         let h = common::hub_mut(&mut state, ctx)?;
         if h.insights.len() >= 100 {
-            return Err(crate::generated::errors::limit_exceeded("The maximum number of custom insights (100) has been reached."));
+            return Err(crate::generated::errors::limit_exceeded(
+                "The maximum number of custom insights (100) has been reached.",
+            ));
         }
         let arn = common::arn(ctx, &format!("insight/{acct}/custom/{}", uuid::Uuid::new_v4()));
         h.insights.insert(
@@ -853,7 +899,10 @@ impl SecurityHub {
         }
         let mut state = self.write();
         let h = common::hub_mut(&mut state, ctx)?;
-        let i = h.insights.get_mut(&input.insight_arn).ok_or_else(|| not_found(format!("Insight {} not found", input.insight_arn)))?;
+        let i = h
+            .insights
+            .get_mut(&input.insight_arn)
+            .ok_or_else(|| not_found(format!("Insight {} not found", input.insight_arn)))?;
         if let Some(n) = input.name {
             i.name = n;
         }
@@ -874,7 +923,9 @@ impl SecurityHub {
         authorize(ctx, "DeleteInsight", &input.insight_arn)?;
         let mut state = self.write();
         let h = common::hub_mut(&mut state, ctx)?;
-        h.insights.remove(&input.insight_arn).ok_or_else(|| not_found(format!("Insight {} not found", input.insight_arn)))?;
+        h.insights
+            .remove(&input.insight_arn)
+            .ok_or_else(|| not_found(format!("Insight {} not found", input.insight_arn)))?;
         Ok(types::DeleteInsightResponse { insight_arn: input.insight_arn })
     }
 
@@ -918,7 +969,11 @@ impl SecurityHub {
 }
 
 /// Import findings one by one, collecting failures and events.
-pub fn import_all(state: &mut State, scope: &ImportScope<'_>, findings: Vec<(String, Value)>) -> (ServiceImportResult, Vec<FindingEvent>) {
+pub fn import_all(
+    state: &mut State,
+    scope: &ImportScope<'_>,
+    findings: Vec<(String, Value)>,
+) -> (ServiceImportResult, Vec<FindingEvent>) {
     let mut result = ServiceImportResult::default();
     let mut events = Vec::new();
     for (id, f) in findings {

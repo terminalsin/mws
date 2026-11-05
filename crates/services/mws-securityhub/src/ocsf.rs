@@ -82,7 +82,10 @@ pub fn to_ocsf(f: &Value, overlay: &V2Overlay) -> Value {
     } else {
         (2004, "Detection Finding")
     };
-    let sev = overlay.severity_id.map(i64::from).unwrap_or_else(|| severity_id(str_at(f, &["Severity", "Label"]).unwrap_or("")));
+    let sev = overlay
+        .severity_id
+        .map(i64::from)
+        .unwrap_or_else(|| severity_id(str_at(f, &["Severity", "Label"]).unwrap_or("")));
     let status = overlay.status_id.map(i64::from).unwrap_or_else(|| {
         status_id(str_at(f, &["Workflow", "Status"]).unwrap_or("NEW"), str_at(f, &["RecordState"]).unwrap_or("ACTIVE"))
     });
@@ -196,7 +199,9 @@ pub fn to_ocsf(f: &Value, overlay: &V2Overlay) -> Value {
 
 fn strip_nulls(v: Value) -> Value {
     match v {
-        Value::Object(m) => Value::Object(m.into_iter().filter(|(_, v)| !v.is_null()).map(|(k, v)| (k, strip_nulls(v))).collect()),
+        Value::Object(m) => {
+            Value::Object(m.into_iter().filter(|(_, v)| !v.is_null()).map(|(k, v)| (k, strip_nulls(v))).collect())
+        }
         Value::Array(a) => Value::Array(a.into_iter().map(strip_nulls).collect()),
         v => v,
     }

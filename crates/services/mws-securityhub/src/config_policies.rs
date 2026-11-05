@@ -45,7 +45,8 @@ fn effective(h: &crate::state::Hub, path: &str, account: &str) -> Option<(String
     if let Some(a) = h.policy_associations.get(account) {
         return Some((a.policy_id.clone(), true, account.to_string()));
     }
-    let containers: Vec<&str> = path.split('/').filter(|p| !p.is_empty() && *p != account && !p.starts_with("o-")).collect();
+    let containers: Vec<&str> =
+        path.split('/').filter(|p| !p.is_empty() && *p != account && !p.starts_with("o-")).collect();
     for c in containers.iter().rev() {
         if let Some(a) = h.policy_associations.get(*c) {
             return Some((a.policy_id.clone(), false, c.to_string()));
@@ -72,15 +73,22 @@ fn validate_policy(p: &types::Policy, partition: &str, region: &str) -> Result<(
                 "Specify either EnabledSecurityControlIdentifiers or DisabledSecurityControlIdentifiers, not both.",
             ));
         }
-        for id in c.enabled_security_control_identifiers.iter().chain(c.disabled_security_control_identifiers.iter()).flatten() {
+        for id in c
+            .enabled_security_control_identifiers
+            .iter()
+            .chain(c.disabled_security_control_identifiers.iter())
+            .flatten()
+        {
             if catalog::control(id).is_none() {
                 return Err(invalid_input(format!("Invalid security control identifier: {id}")));
             }
         }
         for p in c.security_control_custom_parameters.iter().flatten() {
             let id = p.security_control_id.clone().unwrap_or_default();
-            let control = catalog::control(&id).ok_or_else(|| invalid_input(format!("Invalid security control identifier: {id}")))?;
-            crate::standards::validate_parameters(control, &p.parameters.clone().unwrap_or_default()).map_err(invalid_input)?;
+            let control = catalog::control(&id)
+                .ok_or_else(|| invalid_input(format!("Invalid security control identifier: {id}")))?;
+            crate::standards::validate_parameters(control, &p.parameters.clone().unwrap_or_default())
+                .map_err(invalid_input)?;
         }
     }
     if sh.service_enabled == Some(true) && sh.enabled_standard_identifiers.is_none() {
@@ -90,7 +98,14 @@ fn validate_policy(p: &types::Policy, partition: &str, region: &str) -> Result<(
 }
 
 /// Apply a policy to one account's hub.
-fn apply_policy(state: &mut State, partition: &str, account: &str, region: &str, policy: &types::Policy, now: chrono::DateTime<chrono::Utc>) {
+fn apply_policy(
+    state: &mut State,
+    partition: &str,
+    account: &str,
+    region: &str,
+    policy: &types::Policy,
+    now: chrono::DateTime<chrono::Utc>,
+) {
     let types::Policy::SecurityHub(sh) = policy;
     if sh.service_enabled == Some(false) {
         let k = key(account, region);
@@ -131,7 +146,8 @@ impl SecurityHub {
         let org = self.require_delegated_admin(ctx)?;
         let state = self.read();
         hub(&state, ctx)?;
-        let central = state.org_configs.get(&key(account(ctx), &ctx.region)).is_some_and(|c| c.configuration_type == "CENTRAL");
+        let central =
+            state.org_configs.get(&key(account(ctx), &ctx.region)).is_some_and(|c| c.configuration_type == "CENTRAL");
         if !central {
             return Err(errors::access_denied(
                 "The operation requires central configuration. Update the organization configuration to use CENTRAL configuration first.",
@@ -161,13 +177,21 @@ impl SecurityHub {
         input: types::CreateConfigurationPolicyRequest,
     ) -> Result<types::CreateConfigurationPolicyResponse, ServiceError> {
         let tags = input.tags.clone().unwrap_or_default();
-        common::authorize_with(ctx, "CreateConfigurationPolicy", &common::hub_arn(ctx, account(ctx)), common::tag_conditions(&tags))?;
+        common::authorize_with(
+            ctx,
+            "CreateConfigurationPolicy",
+            &common::hub_arn(ctx, account(ctx)),
+            common::tag_conditions(&tags),
+        )?;
         self.central_admin(ctx)?;
         validate_policy(&input.configuration_policy, &ctx.partition, &ctx.region)?;
         let mut state = self.write();
         let h = hub_mut(&mut state, ctx)?;
         if h.configuration_policies.values().any(|p| p.name == input.name) {
-            return Err(errors::resource_conflict(format!("A configuration policy named {} already exists.", input.name)));
+            return Err(errors::resource_conflict(format!(
+                "A configuration policy named {} already exists.",
+                input.name
+            )));
         }
         if h.configuration_policies.len() >= 20 {
             return Err(errors::limit_exceeded("You can't create more than 20 configuration policies."));
@@ -337,7 +361,9 @@ impl SecurityHub {
                         .find_map(|a| a.path.find(target_id).map(|i| a.path[..i + target_id.len()].to_string()))
                         .unwrap_or_default();
                     match effective(h, &format!("{path}/"), "") {
-                        Some((p, _, from)) if from != target_id => (p, false, h.policy_associations.get(&from).map(|a| a.updated_at)),
+                        Some((p, _, from)) if from != target_id => {
+                            (p, false, h.policy_associations.get(&from).map(|a| a.updated_at))
+                        }
                         _ => (SELF_MANAGED.to_string(), false, None),
                     }
                 }
@@ -465,7 +491,9 @@ impl SecurityHub {
                 continue;
             };
             let (target_id, target_type) = target_of(t);
-            match check_target(&org, &target_id, target_type).and_then(|_| self.association_summary(ctx, &org, &target_id, target_type)) {
+            match check_target(&org, &target_id, target_type)
+                .and_then(|_| self.association_summary(ctx, &org, &target_id, target_type))
+            {
                 Ok(s) => found.push(s),
                 Err(e) => unprocessed.push(types::UnprocessedConfigurationPolicyAssociation {
                     configuration_policy_association_identifiers: Some(ident.clone()),
@@ -511,11 +539,13 @@ impl SecurityHub {
             });
         }
         let (page, next_token) = paginate(all, input.max_results, 100, input.next_token.as_deref())?;
-        Ok(types::ListConfigurationPolicyAssociationsResponse { configuration_policy_association_summaries: Some(page), next_token })
+        Ok(types::ListConfigurationPolicyAssociationsResponse {
+            configuration_policy_association_summaries: Some(page),
+            next_token,
+        })
     }
 }
 
 fn policy_not_found(id: &str) -> ServiceError {
     not_found(format!("Configuration policy {id} not found."))
 }
-

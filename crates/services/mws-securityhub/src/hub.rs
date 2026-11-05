@@ -8,8 +8,8 @@ use mws_core::{RequestContext, ServiceError};
 
 use crate::catalog;
 use crate::common::{
-    self, account, authorize, authorize_hub, authorize_with, hub, hub_mut, invalid_input, iso, not_found, not_subscribed,
-    paginate,
+    self, account, authorize, authorize_hub, authorize_with, hub, hub_mut, invalid_input, iso, not_found,
+    not_subscribed, paginate,
 };
 use crate::findings::subscription_arn;
 use crate::generated::{errors, types};
@@ -30,7 +30,11 @@ pub fn new_hub(partition: &str, account: &str, region: &str, now: DateTime<Utc>,
         standards: Default::default(),
         control_overrides: Default::default(),
         security_controls: Default::default(),
-        products: catalog::PRODUCTS.iter().filter(|p| p.aws).map(|p| catalog::product_arn(partition, region, p)).collect(),
+        products: catalog::PRODUCTS
+            .iter()
+            .filter(|p| p.aws)
+            .map(|p| catalog::product_arn(partition, region, p))
+            .collect(),
         action_targets: Default::default(),
         insights: Default::default(),
         findings: Default::default(),
@@ -71,7 +75,14 @@ pub fn enable_standard(
 
 /// Enable Security Hub for an account (organization auto-enable, central
 /// configuration, `CreateMembers` for organization accounts).
-pub fn ensure_hub(state: &mut State, partition: &str, account: &str, region: &str, now: DateTime<Utc>, default_standards: bool) {
+pub fn ensure_hub(
+    state: &mut State,
+    partition: &str,
+    account: &str,
+    region: &str,
+    now: DateTime<Utc>,
+    default_standards: bool,
+) {
     let key = crate::state::key(account, region);
     state.hubs.entry(key).or_insert_with(|| new_hub(partition, account, region, now, default_standards));
 }
@@ -172,22 +183,22 @@ impl SecurityHub {
 
     // ---- tags ------------------------------------------------------------------
 
-    fn tags_slot<'s>(state: &'s mut State, ctx: &RequestContext, arn: &str) -> Result<&'s mut crate::state::Tags, ServiceError> {
+    fn tags_slot<'s>(
+        state: &'s mut State,
+        ctx: &RequestContext,
+        arn: &str,
+    ) -> Result<&'s mut crate::state::Tags, ServiceError> {
         let acct = account(ctx).to_string();
         if common::arn_account(arn) != Some(acct.as_str()) || common::arn_region(arn) != Some(ctx.region.as_str()) {
             return Err(not_found(format!("Resource {arn} not found")));
         }
         let key = crate::state::key(&acct, &ctx.region);
+        let mut v2_aggregator = false;
         if let Some(v2) = state.hubs_v2.get_mut(&key) {
             if v2.arn == arn {
                 return Ok(&mut v2.tags);
             }
-            if v2.aggregators.contains_key(arn) {
-                let h = state.hubs.get_mut(&key);
-                if let Some(h) = h {
-                    return Ok(h.resource_tags.entry(arn.to_string()).or_default());
-                }
-            }
+            v2_aggregator = v2.aggregators.contains_key(arn);
         }
         let h = state.hubs.get_mut(&key).ok_or_else(|| not_subscribed(&acct))?;
         if h.arn == arn {
@@ -197,6 +208,7 @@ impl SecurityHub {
             || h.automation_rules_v2.values().any(|r| r.arn == arn)
             || h.configuration_policies.values().any(|p| p.arn == arn)
             || h.connectors.values().any(|c| c.arn == arn)
+            || v2_aggregator
             || h.finding_aggregator.as_ref().is_some_and(|a| a.arn == arn);
         if !exists {
             return Err(not_found(format!("Resource {arn} not found")));
@@ -264,7 +276,12 @@ impl SecurityHub {
                 description: Some(p.description.into()),
                 categories: Some(p.categories.iter().map(|c| c.to_string()).collect()),
                 integration_types: Some(p.integration_types.iter().map(|c| c.to_string()).collect()),
-                marketplace_url: (!p.aws).then(|| format!("https://aws.amazon.com/marketplace/search/results?searchTerms={}", p.name.replace(' ', "+"))),
+                marketplace_url: (!p.aws).then(|| {
+                    format!(
+                        "https://aws.amazon.com/marketplace/search/results?searchTerms={}",
+                        p.name.replace(' ', "+")
+                    )
+                }),
                 activation_url: None,
                 product_subscription_resource_policy: None,
             })
@@ -447,7 +464,11 @@ impl SecurityHub {
             return Err(errors::resource_conflict("A finding aggregator already exists for this account."));
         }
         let arn = common::arn(ctx, &format!("finding-aggregator/{}", uuid::Uuid::new_v4()));
-        let agg = AggregatorRec { arn: arn.clone(), region_linking_mode: input.region_linking_mode.clone(), regions: regions.clone() };
+        let agg = AggregatorRec {
+            arn: arn.clone(),
+            region_linking_mode: input.region_linking_mode.clone(),
+            regions: regions.clone(),
+        };
         hub_mut(&mut state, ctx)?.finding_aggregator = Some(agg);
         Ok(types::CreateFindingAggregatorResponse {
             finding_aggregator_arn: Some(arn),
@@ -459,7 +480,11 @@ impl SecurityHub {
 
     /// The aggregator with `arn` in any of the caller's Regions, as
     /// `(hub key, record)`.
-    fn find_aggregator(state: &State, ctx: &RequestContext, arn: &str) -> Result<(String, AggregatorRec), ServiceError> {
+    fn find_aggregator(
+        state: &State,
+        ctx: &RequestContext,
+        arn: &str,
+    ) -> Result<(String, AggregatorRec), ServiceError> {
         let acct = account(ctx);
         state
             .hubs

@@ -2327,6 +2327,7 @@ dependencies = [
  "mws-s3",
  "mws-s3control",
  "mws-secretsmanager",
+ "mws-securityhub",
  "mws-server",
  "mws-sns",
  "mws-sqs",

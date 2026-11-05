@@ -35,6 +35,7 @@ impl SecurityHub {
             .ok_or_else(|| not_found(format!("Connector {id} not found.")))
     }
 
+    #[allow(clippy::too_many_arguments)]
     fn insert_connector(
         &self,
         ctx: &RequestContext,
@@ -103,7 +104,12 @@ impl SecurityHub {
         input: types::CreateConnectorV2Request,
     ) -> Result<types::CreateConnectorV2Response, ServiceError> {
         let tags = input.tags.clone().unwrap_or_default();
-        common::authorize_with(ctx, "CreateConnectorV2", &common::hub_arn(ctx, account(ctx)), common::tag_conditions(&tags))?;
+        common::authorize_with(
+            ctx,
+            "CreateConnectorV2",
+            &common::hub_arn(ctx, account(ctx)),
+            common::tag_conditions(&tags),
+        )?;
         crate::v2::require_v2(&self.read(), ctx)?;
         let provider = match input.provider {
             types::ProviderConfiguration::JiraCloud(j) => types::ProviderDetail::JiraCloud(types::JiraCloudDetail {
@@ -145,8 +151,11 @@ impl SecurityHub {
             return Err(errors::validation("AuthCode must not be empty."));
         }
         let mut state = self.write();
-        let (hub_key, id) =
-            state.pending_oauth.get(&input.auth_state).cloned().ok_or_else(|| errors::validation("The AuthState is invalid or expired."))?;
+        let (hub_key, id) = state
+            .pending_oauth
+            .get(&input.auth_state)
+            .cloned()
+            .ok_or_else(|| errors::validation("The AuthState is invalid or expired."))?;
         if hub_key != crate::state::key(account(ctx), &ctx.region) {
             return Err(errors::validation("The AuthState is invalid or expired."));
         }
@@ -223,7 +232,10 @@ impl SecurityHub {
             _ => return Err(invalid_input("The provider configuration doesn't match the connector's provider.")),
         }
         c.updated_at = ctx.received_at;
-        Ok(types::UpdateConnectorV2Response { connector_status: Some(c.status.clone()), enablement_status: Some("ENABLED".into()) })
+        Ok(types::UpdateConnectorV2Response {
+            connector_status: Some(c.status.clone()),
+            enablement_status: Some("ENABLED".into()),
+        })
     }
 
     pub(crate) fn delete_connector_v2_op(
@@ -326,7 +338,12 @@ impl SecurityHub {
         input: types::CreateConnectorRequest,
     ) -> Result<types::CreateConnectorResponse, ServiceError> {
         let tags = input.tags.clone().unwrap_or_default();
-        common::authorize_with(ctx, "CreateConnector", &common::hub_arn(ctx, account(ctx)), common::tag_conditions(&tags))?;
+        common::authorize_with(
+            ctx,
+            "CreateConnector",
+            &common::hub_arn(ctx, account(ctx)),
+            common::tag_conditions(&tags),
+        )?;
         let types::CspmProviderConfiguration::Azure(a) = input.provider;
         let provider = types::ProviderDetail::Azure(types::AzureDetail {
             aws_config_connector_arn: a.aws_config_connector_arn,
@@ -382,12 +399,17 @@ impl SecurityHub {
         if input.description.is_some() {
             c.description = input.description;
         }
-        if let (Some(types::CspmProviderUpdateConfiguration::Azure(u)), types::ProviderDetail::Azure(a)) = (input.provider, &mut c.provider) {
+        if let (Some(types::CspmProviderUpdateConfiguration::Azure(u)), types::ProviderDetail::Azure(a)) =
+            (input.provider, &mut c.provider)
+        {
             a.scope_configuration = u.scope_configuration;
             a.azure_regions = u.azure_regions;
         }
         c.updated_at = ctx.received_at;
-        Ok(types::UpdateConnectorResponse { connector_status: Some(c.status.clone()), enablement_status: Some("ENABLED".into()) })
+        Ok(types::UpdateConnectorResponse {
+            connector_status: Some(c.status.clone()),
+            enablement_status: Some("ENABLED".into()),
+        })
     }
 
     pub(crate) fn delete_connector_op(

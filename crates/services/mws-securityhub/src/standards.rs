@@ -23,7 +23,11 @@ fn subscription<'h>(h: &'h Hub, standards_arn: &str) -> Option<(&'h String, &'h 
 }
 
 /// `ENABLED` or `DISABLED` for a control in a standard of a hub.
-pub fn association_status(h: &Hub, standards_arn: &str, control_id: &str) -> (String, Option<&ControlOverride>) {
+pub fn association_status<'h>(
+    h: &'h Hub,
+    standards_arn: &str,
+    control_id: &str,
+) -> (String, Option<&'h ControlOverride>) {
     if subscription(h, standards_arn).is_none() {
         return ("DISABLED".into(), None);
     }
@@ -49,9 +53,13 @@ fn default_value(p: &Param) -> Option<types::ParameterValue> {
     match p {
         Param::Integer { default, .. } => default.map(types::ParameterValue::Integer),
         Param::IntegerList { default, .. } => Some(types::ParameterValue::IntegerList(default.to_vec())),
-        Param::StringList { default, .. } => Some(types::ParameterValue::StringList(default.iter().map(|s| s.to_string()).collect())),
+        Param::StringList { default, .. } => {
+            Some(types::ParameterValue::StringList(default.iter().map(|s| s.to_string()).collect()))
+        }
         Param::Boolean { default, .. } => Some(types::ParameterValue::Boolean(*default)),
-        Param::EnumList { default, .. } => Some(types::ParameterValue::EnumList(default.iter().map(|s| s.to_string()).collect())),
+        Param::EnumList { default, .. } => {
+            Some(types::ParameterValue::EnumList(default.iter().map(|s| s.to_string()).collect()))
+        }
     }
 }
 
@@ -61,10 +69,10 @@ pub fn current_parameters(h: &Hub, c: &Control) -> BTreeMap<String, types::Param
     c.params
         .iter()
         .map(|p| {
-            let conf = custom.and_then(|s| s.parameters.get(p.name())).cloned().unwrap_or(types::ParameterConfiguration {
-                value_type: "DEFAULT".into(),
-                value: default_value(p),
-            });
+            let conf = custom
+                .and_then(|s| s.parameters.get(p.name()))
+                .cloned()
+                .unwrap_or(types::ParameterConfiguration { value_type: "DEFAULT".into(), value: default_value(p) });
             (p.name().to_string(), conf)
         })
         .collect()
@@ -104,7 +112,9 @@ fn definition(c: &Control) -> types::SecurityControlDefinition {
                 ),
                 Param::Boolean { description, default, .. } => (
                     description,
-                    types::ConfigurationOptions::Boolean(types::BooleanConfigurationOptions { default_value: Some(*default) }),
+                    types::ConfigurationOptions::Boolean(types::BooleanConfigurationOptions {
+                        default_value: Some(*default),
+                    }),
                 ),
                 Param::EnumList { description, allowed, default, .. } => (
                     description,
@@ -115,7 +125,10 @@ fn definition(c: &Control) -> types::SecurityControlDefinition {
                     }),
                 ),
             };
-            (p.name().to_string(), types::ParameterDefinition { description: description.to_string(), configuration_options: options })
+            (
+                p.name().to_string(),
+                types::ParameterDefinition { description: description.to_string(), configuration_options: options },
+            )
         })
         .collect();
     types::SecurityControlDefinition {
@@ -132,7 +145,10 @@ fn definition(c: &Control) -> types::SecurityControlDefinition {
 }
 
 /// Check customized parameters against a control's definitions.
-pub fn validate_parameters(c: &Control, params: &BTreeMap<String, types::ParameterConfiguration>) -> Result<(), String> {
+pub fn validate_parameters(
+    c: &Control,
+    params: &BTreeMap<String, types::ParameterConfiguration>,
+) -> Result<(), String> {
     for (name, conf) in params {
         let Some(p) = c.params.iter().find(|p| p.name() == name) else {
             return Err(format!("{name} is not a valid parameter for control {}.", c.id));
@@ -170,7 +186,9 @@ fn subscription_wire(arn: &str, s: &crate::state::StandardsSub, status: &str) ->
         standards_arn: s.standards_arn.clone(),
         standards_input: s.input.clone(),
         standards_status: status.to_string(),
-        standards_controls_updatable: Some(if status == "READY" { "READY_FOR_UPDATES" } else { "NOT_READY_FOR_UPDATES" }.into()),
+        standards_controls_updatable: Some(
+            if status == "READY" { "READY_FOR_UPDATES" } else { "NOT_READY_FOR_UPDATES" }.into(),
+        ),
         standards_status_reason: None,
         provider: None,
     }
@@ -191,7 +209,10 @@ impl SecurityHub {
                 description: Some(s.description.into()),
                 enabled_by_default: Some(s.enabled_by_default),
                 provider: None,
-                standards_managed_by: Some(types::StandardsManagedBy { company: Some("AWS".into()), product: Some("Security Hub".into()) }),
+                standards_managed_by: Some(types::StandardsManagedBy {
+                    company: Some("AWS".into()),
+                    product: Some("Security Hub".into()),
+                }),
             })
             .collect();
         let (page, next_token) = paginate(all, input.max_results, 100, input.next_token.as_deref())?;
@@ -276,10 +297,9 @@ impl SecurityHub {
         authorize(ctx, "DescribeStandardsControls", &input.standards_subscription_arn)?;
         let state = self.read();
         let h = hub(&state, ctx)?;
-        let sub = h
-            .standards
-            .get(&input.standards_subscription_arn)
-            .ok_or_else(|| not_found(format!("Standards subscription {} not found", input.standards_subscription_arn)))?;
+        let sub = h.standards.get(&input.standards_subscription_arn).ok_or_else(|| {
+            not_found(format!("Standards subscription {} not found", input.standards_subscription_arn))
+        })?;
         let s = catalog::standard_from_arn(&sub.standards_arn).expect("subscribed standards are in the catalogue");
         let controls: Vec<types::StandardsControl> = catalog::controls_in(s.key)
             .map(|(c, cid, reqs)| {
@@ -312,7 +332,8 @@ impl SecurityHub {
         let resource = input.standards_control_arn.splitn(6, ':').nth(5).unwrap_or_default().to_string();
         let path = resource.strip_prefix("control/").ok_or_else(|| invalid_input("Invalid StandardsControlArn"))?;
         let (key, cid) = path.rsplit_once('/').ok_or_else(|| invalid_input("Invalid StandardsControlArn"))?;
-        let s = catalog::standard(key).ok_or_else(|| not_found(format!("Control {} not found", input.standards_control_arn)))?;
+        let s = catalog::standard(key)
+            .ok_or_else(|| not_found(format!("Control {} not found", input.standards_control_arn)))?;
         let (c, _, _) = catalog::controls_in(s.key)
             .find(|(_, x, _)| *x == cid)
             .ok_or_else(|| not_found(format!("Control {} not found", input.standards_control_arn)))?;
@@ -323,7 +344,9 @@ impl SecurityHub {
         let mut state = self.write();
         let h = hub_mut(&mut state, ctx)?;
         let standards_arn = catalog::standards_arn(&ctx.partition, &ctx.region, s);
-        if subscription(h, &standards_arn).is_none() || common::arn_account(&input.standards_control_arn) != Some(account(ctx)) {
+        if subscription(h, &standards_arn).is_none()
+            || common::arn_account(&input.standards_control_arn) != Some(account(ctx))
+        {
             return Err(not_found(format!("Control {} not found", input.standards_control_arn)));
         }
         h.control_overrides.insert(
@@ -400,7 +423,8 @@ impl SecurityHub {
         drop(state);
         let all: Vec<types::SecurityControlDefinition> = match &input.standards_arn {
             Some(arn) => {
-                let s = catalog::standard_from_arn(arn).ok_or_else(|| invalid_input(format!("Invalid StandardsArn: {arn}")))?;
+                let s = catalog::standard_from_arn(arn)
+                    .ok_or_else(|| invalid_input(format!("Invalid StandardsArn: {arn}")))?;
                 catalog::controls_in(s.key).map(|(c, _, _)| definition(c)).collect()
             }
             None => catalog::CONTROLS.iter().map(definition).collect(),
@@ -461,7 +485,10 @@ impl SecurityHub {
             .collect();
         drop(state);
         let (page, next_token) = paginate(all, input.max_results, 100, input.next_token.as_deref())?;
-        Ok(types::ListStandardsControlAssociationsResponse { standards_control_association_summaries: page, next_token })
+        Ok(types::ListStandardsControlAssociationsResponse {
+            standards_control_association_summaries: page,
+            next_token,
+        })
     }
 
     pub(crate) fn batch_get_standards_control_associations_op(
@@ -526,7 +553,8 @@ impl SecurityHub {
                 }
             };
             let in_standard = catalog::control(&u.security_control_id).is_some_and(|c| {
-                catalog::standard_from_arn(&u.standards_arn).is_some_and(|s| c.in_standards.iter().any(|(k, _, _)| *k == s.key))
+                catalog::standard_from_arn(&u.standards_arn)
+                    .is_some_and(|s| c.in_standards.iter().any(|(k, _, _)| *k == s.key))
             });
             if !in_standard {
                 unprocessed.push(fail(u, "NOT_FOUND", "The control is not associated with the standard"));
@@ -542,17 +570,29 @@ impl SecurityHub {
             }
             h.control_overrides.insert(
                 override_key(&u.standards_arn, &u.security_control_id),
-                ControlOverride { status: u.association_status.clone(), reason: u.updated_reason.clone(), updated_at: ctx.received_at },
+                ControlOverride {
+                    status: u.association_status.clone(),
+                    reason: u.updated_reason.clone(),
+                    updated_at: ctx.received_at,
+                },
             );
         }
-        Ok(types::BatchUpdateStandardsControlAssociationsResponse { unprocessed_association_updates: Some(unprocessed) })
+        Ok(types::BatchUpdateStandardsControlAssociationsResponse {
+            unprocessed_association_updates: Some(unprocessed),
+        })
     }
 }
 
 /// Set every control's status in every enabled standard of a hub, as
 /// central configuration does: enabled unless listed as disabled (or, with
 /// an enabled list, unless missing from it).
-pub fn apply_control_policy(h: &mut Hub, partition: &str, enabled: Option<&[String]>, disabled: Option<&[String]>, now: chrono::DateTime<chrono::Utc>) {
+pub fn apply_control_policy(
+    h: &mut Hub,
+    partition: &str,
+    enabled: Option<&[String]>,
+    disabled: Option<&[String]>,
+    now: chrono::DateTime<chrono::Utc>,
+) {
     let subs: Vec<String> = h.standards.values().map(|s| s.standards_arn.clone()).collect();
     for standards_arn in subs {
         let Some(s) = catalog::standard_from_arn(&standards_arn) else { continue };
@@ -568,7 +608,11 @@ pub fn apply_control_policy(h: &mut Hub, partition: &str, enabled: Option<&[Stri
             } else {
                 h.control_overrides.insert(
                     key,
-                    ControlOverride { status: "DISABLED".into(), reason: Some("Disabled by configuration policy".into()), updated_at: now },
+                    ControlOverride {
+                        status: "DISABLED".into(),
+                        reason: Some("Disabled by configuration policy".into()),
+                        updated_at: now,
+                    },
                 );
             }
         }

@@ -37,7 +37,10 @@ pub fn apply_rules(state: &State, scope: &ImportScope<'_>, rec: &mut FindingRec)
             let Some(u) = &a.finding_fields_update else { continue };
             let updates = FieldUpdates {
                 note: u.note.as_ref().map(|n| (n.text.clone(), n.updated_by.clone())),
-                severity: u.severity.as_ref().and_then(|s| FieldUpdates::severity_from(s.normalized, s.product, s.label.clone())),
+                severity: u
+                    .severity
+                    .as_ref()
+                    .and_then(|s| FieldUpdates::severity_from(s.normalized, s.product, s.label.clone())),
                 verification_state: u.verification_state.clone(),
                 confidence: u.confidence,
                 criticality: u.criticality,
@@ -132,7 +135,11 @@ fn metadata(c: &types::AutomationRulesConfig) -> types::AutomationRulesMetadata 
 }
 
 fn unprocessed(arn: &str, code: i32, message: &str) -> types::UnprocessedAutomationRule {
-    types::UnprocessedAutomationRule { rule_arn: Some(arn.to_string()), error_code: Some(code), error_message: Some(message.to_string()) }
+    types::UnprocessedAutomationRule {
+        rule_arn: Some(arn.to_string()),
+        error_code: Some(code),
+        error_message: Some(message.to_string()),
+    }
 }
 
 /// A V2 rule by id or ARN.
@@ -147,7 +154,12 @@ impl SecurityHub {
         input: types::CreateAutomationRuleRequest,
     ) -> Result<types::CreateAutomationRuleResponse, ServiceError> {
         let tags = input.tags.clone().unwrap_or_default();
-        common::authorize_with(ctx, "CreateAutomationRule", &common::hub_arn(ctx, account(ctx)), common::tag_conditions(&tags))?;
+        common::authorize_with(
+            ctx,
+            "CreateAutomationRule",
+            &common::hub_arn(ctx, account(ctx)),
+            common::tag_conditions(&tags),
+        )?;
         check_order(input.rule_order)?;
         check_actions(&input.actions)?;
         let mut state = self.write();
@@ -303,7 +315,12 @@ impl SecurityHub {
         input: types::CreateAutomationRuleV2Request,
     ) -> Result<types::CreateAutomationRuleV2Response, ServiceError> {
         let tags = input.tags.clone().unwrap_or_default();
-        common::authorize_with(ctx, "CreateAutomationRuleV2", &common::hub_arn(ctx, account(ctx)), common::tag_conditions(&tags))?;
+        common::authorize_with(
+            ctx,
+            "CreateAutomationRuleV2",
+            &common::hub_arn(ctx, account(ctx)),
+            common::tag_conditions(&tags),
+        )?;
         if !(1.0..=1000.0).contains(&input.rule_order) {
             return Err(errors::validation("RuleOrder must be between 1 and 1000."));
         }
@@ -379,7 +396,9 @@ impl SecurityHub {
         let mut state = self.write();
         crate::v2::require_v2(&state, ctx)?;
         let h = hub_mut(&mut state, ctx)?;
-        let id = v2_key(&h.automation_rules_v2, &input.identifier).ok_or_else(|| rule_not_found(&input.identifier))?.to_string();
+        let id = v2_key(&h.automation_rules_v2, &input.identifier)
+            .ok_or_else(|| rule_not_found(&input.identifier))?
+            .to_string();
         let r = h.automation_rules_v2.get_mut(&id).expect("found");
         if let Some(v) = input.rule_status {
             r.status = v;
@@ -412,7 +431,9 @@ impl SecurityHub {
         let mut state = self.write();
         crate::v2::require_v2(&state, ctx)?;
         let h = hub_mut(&mut state, ctx)?;
-        let id = v2_key(&h.automation_rules_v2, &input.identifier).ok_or_else(|| rule_not_found(&input.identifier))?.to_string();
+        let id = v2_key(&h.automation_rules_v2, &input.identifier)
+            .ok_or_else(|| rule_not_found(&input.identifier))?
+            .to_string();
         if let Some(r) = h.automation_rules_v2.remove(&id) {
             h.resource_tags.remove(&r.arn);
         }
@@ -440,7 +461,10 @@ impl SecurityHub {
                 rule_status: Some(r.status.clone()),
                 description: Some(r.description.clone()),
                 actions: Some(
-                    r.actions.iter().map(|a| types::AutomationRulesActionTypeObjectV2 { r#type: a.r#type.clone() }).collect(),
+                    r.actions
+                        .iter()
+                        .map(|a| types::AutomationRulesActionTypeObjectV2 { r#type: Some(a.r#type.clone()) })
+                        .collect(),
                 ),
                 created_at: Some(r.created_at),
                 updated_at: Some(r.updated_at),
@@ -454,4 +478,3 @@ impl SecurityHub {
 fn rule_not_found(id: &str) -> ServiceError {
     not_found(format!("Automation rule {id} not found."))
 }
-

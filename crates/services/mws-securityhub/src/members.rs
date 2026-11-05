@@ -7,7 +7,7 @@ use mws_core::{RequestContext, ServiceError};
 use crate::common::{self, account, authorize_hub, hub, invalid_input, not_found, paginate};
 use crate::generated::{errors, types};
 use crate::hub::ensure_hub;
-use crate::state::{key, MemberRec, OrgConfig, State};
+use crate::state::{key, MemberRec, State};
 use crate::{OrgInfo, SecurityHub};
 
 fn result(account: &str, message: &str) -> types::Result {
@@ -56,7 +56,14 @@ impl SecurityHub {
             if known {
                 continue;
             }
-            ensure_hub(&mut state, &ctx.partition, &a.id, &ctx.region, ctx.received_at, config.auto_enable_standards == "DEFAULT");
+            ensure_hub(
+                &mut state,
+                &ctx.partition,
+                &a.id,
+                &ctx.region,
+                ctx.received_at,
+                config.auto_enable_standards == "DEFAULT",
+            );
             state.members.entry(admin_key.clone()).or_default().insert(
                 a.id.clone(),
                 MemberRec {
@@ -84,8 +91,10 @@ impl SecurityHub {
             return Err(errors::invalid_access("A member account can't add member accounts."));
         }
         let admin_key = key(account(ctx), &ctx.region);
-        let is_delegated = org.as_ref().is_some_and(|o| delegated_admin(&state, o, &ctx.region).as_deref() == Some(account(ctx)));
-        let standards = state.org_configs.get(&admin_key).cloned().unwrap_or_default().auto_enable_standards == "DEFAULT";
+        let is_delegated =
+            org.as_ref().is_some_and(|o| delegated_admin(&state, o, &ctx.region).as_deref() == Some(account(ctx)));
+        let standards =
+            state.org_configs.get(&admin_key).cloned().unwrap_or_default().auto_enable_standards == "DEFAULT";
         let mut unprocessed = Vec::new();
         for d in input.account_details {
             if !common::is_account_id(&d.account_id) {
@@ -98,7 +107,8 @@ impl SecurityHub {
             }
             if let Some(other) = state.administrator_of(&d.account_id, &ctx.region) {
                 if other != account(ctx) {
-                    unprocessed.push(result(&d.account_id, "Account is already a member of another administrator account"));
+                    unprocessed
+                        .push(result(&d.account_id, "Account is already a member of another administrator account"));
                     continue;
                 }
             }
@@ -276,7 +286,9 @@ impl SecurityHub {
         input: types::DeclineInvitationsRequest,
     ) -> Result<types::DeclineInvitationsResponse, ServiceError> {
         authorize_hub(ctx, "DeclineInvitations")?;
-        Ok(types::DeclineInvitationsResponse { unprocessed_accounts: Some(self.drop_invitations(ctx, input.account_ids)) })
+        Ok(types::DeclineInvitationsResponse {
+            unprocessed_accounts: Some(self.drop_invitations(ctx, input.account_ids)),
+        })
     }
 
     pub(crate) fn delete_invitations_op(
@@ -285,7 +297,9 @@ impl SecurityHub {
         input: types::DeleteInvitationsRequest,
     ) -> Result<types::DeleteInvitationsResponse, ServiceError> {
         authorize_hub(ctx, "DeleteInvitations")?;
-        Ok(types::DeleteInvitationsResponse { unprocessed_accounts: Some(self.drop_invitations(ctx, input.account_ids)) })
+        Ok(types::DeleteInvitationsResponse {
+            unprocessed_accounts: Some(self.drop_invitations(ctx, input.account_ids)),
+        })
     }
 
     fn administrator(&self, ctx: &RequestContext) -> Result<Option<types::Invitation>, ServiceError> {
@@ -366,11 +380,10 @@ impl SecurityHub {
         hub(&state, ctx)?;
         let admin_key = key(account(ctx), &ctx.region);
         for a in &input.account_ids {
-            let m = state
-                .members
-                .get_mut(&admin_key)
-                .and_then(|m| m.get_mut(a))
-                .ok_or_else(|| invalid_input(format!("Account {a} is not a member of this administrator account.")))?;
+            let m =
+                state.members.get_mut(&admin_key).and_then(|m| m.get_mut(a)).ok_or_else(|| {
+                    invalid_input(format!("Account {a} is not a member of this administrator account."))
+                })?;
             m.status = "Removed".into();
             m.updated_at = ctx.received_at;
         }
@@ -391,10 +404,8 @@ impl SecurityHub {
             let members = state.members.entry(admin_key.clone()).or_default();
             match members.get(&a) {
                 None => unprocessed.push(result(&a, "Account not found")),
-                Some(m) if m.organization && m.status == "Enabled" => unprocessed.push(result(
-                    &a,
-                    "An organization member account must be disassociated before it can be deleted",
-                )),
+                Some(m) if m.organization && m.status == "Enabled" => unprocessed
+                    .push(result(&a, "An organization member account must be disassociated before it can be deleted")),
                 Some(_) => {
                     members.remove(&a);
                 }
@@ -457,7 +468,9 @@ impl SecurityHub {
                 "Account {} is not the management account of the organization.",
                 account(ctx)
             ))),
-            None => Err(errors::invalid_access(format!("Account {} is not part of an AWS organization.", account(ctx)))),
+            None => {
+                Err(errors::invalid_access(format!("Account {} is not part of an AWS organization.", account(ctx))))
+            }
         }
     }
 
@@ -469,7 +482,10 @@ impl SecurityHub {
         authorize_hub(ctx, "EnableOrganizationAdminAccount")?;
         let org = self.managed_org(ctx)?;
         if !org.accounts.iter().any(|a| a.id == input.admin_account_id) {
-            return Err(invalid_input(format!("Account {} is not a member of the organization.", input.admin_account_id)));
+            return Err(invalid_input(format!(
+                "Account {} is not a member of the organization.",
+                input.admin_account_id
+            )));
         }
         let mgmt_key = key(account(ctx), &ctx.region);
         if let Some(existing) = self.read().org_admins.get(&mgmt_key) {
@@ -487,7 +503,7 @@ impl SecurityHub {
         let mut state = self.write();
         state.org_admins.insert(mgmt_key, input.admin_account_id.clone());
         ensure_hub(&mut state, &ctx.partition, &input.admin_account_id, &ctx.region, ctx.received_at, true);
-        state.org_configs.entry(key(&input.admin_account_id, &ctx.region)).or_insert_with(OrgConfig::default);
+        state.org_configs.entry(key(&input.admin_account_id, &ctx.region)).or_default();
         Ok(types::EnableOrganizationAdminAccountResponse {
             admin_account_id: Some(input.admin_account_id),
             feature: Some(input.feature.unwrap_or_else(|| "SecurityHub".into())),
@@ -518,7 +534,11 @@ impl SecurityHub {
             state.org_configs.remove(&admin_key);
         }
         if let Some(link) = self.organizations() {
-            let still_admin = self.read().org_admins.iter().any(|(k, a)| k.starts_with(&format!("{}/", account(ctx))) && *a == input.admin_account_id);
+            let still_admin = self
+                .read()
+                .org_admins
+                .iter()
+                .any(|(k, a)| k.starts_with(&format!("{}/", account(ctx))) && *a == input.admin_account_id);
             if !still_admin {
                 link.deregister_delegated_administrator(account(ctx), &input.admin_account_id);
             }
@@ -536,7 +556,9 @@ impl SecurityHub {
             errors::invalid_access(format!("Account {} is not part of an AWS organization.", account(ctx)))
         })?;
         let state = self.read();
-        if org.management_account != account(ctx) && delegated_admin(&state, &org, &ctx.region).as_deref() != Some(account(ctx)) {
+        if org.management_account != account(ctx)
+            && delegated_admin(&state, &org, &ctx.region).as_deref() != Some(account(ctx))
+        {
             return Err(errors::invalid_access(format!(
                 "Account {} is not the management account of the organization.",
                 account(ctx)
@@ -557,7 +579,9 @@ impl SecurityHub {
 
     /// The caller must be its organization's delegated administrator.
     pub(crate) fn require_delegated_admin(&self, ctx: &RequestContext) -> Result<OrgInfo, ServiceError> {
-        let not_admin = || errors::invalid_access(format!("Account {} is not an administrator for this organization", account(ctx)));
+        let not_admin = || {
+            errors::invalid_access(format!("Account {} is not an administrator for this organization", account(ctx)))
+        };
         let org = self.org_of(account(ctx)).ok_or_else(not_admin)?;
         if delegated_admin(&self.read(), &org, &ctx.region).as_deref() != Some(account(ctx)) {
             return Err(not_admin());

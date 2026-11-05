@@ -29,8 +29,8 @@ pub mod generated {
     include!(concat!(env!("OUT_DIR"), "/securityhub_generated.rs"));
 }
 
-pub mod catalog;
 mod automation;
+pub mod catalog;
 mod common;
 mod config_policies;
 mod connectors;
@@ -192,7 +192,8 @@ impl Service for SecurityHub {
         // Security Hub's error bodies repeat the error code as `Code`.
         let mut error = error.clone();
         if error.json_auth_equivalent().is_none() && !error.fields.iter().any(|f| f.name == "Code") {
-            let code = if error.code == "AccessDenied" { "AccessDeniedException".to_string() } else { error.code.to_string() };
+            let code =
+                if error.code == "AccessDenied" { "AccessDeniedException".to_string() } else { error.code.to_string() };
             error = error.with_field("Code", mws_core::ErrorValue::String(code));
         }
         mws_proto_restjson::error_response(&generated::SERVICE_INFO, request_id, &error)

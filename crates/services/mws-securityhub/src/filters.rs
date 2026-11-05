@@ -135,7 +135,9 @@ pub fn to_json<T: serde::Serialize>(filters: &T) -> Value {
 
 fn strip_nulls(v: Value) -> Value {
     match v {
-        Value::Object(m) => Value::Object(m.into_iter().filter(|(_, v)| !v.is_null()).map(|(k, v)| (k, strip_nulls(v))).collect()),
+        Value::Object(m) => {
+            Value::Object(m.into_iter().filter(|(_, v)| !v.is_null()).map(|(k, v)| (k, strip_nulls(v))).collect())
+        }
         Value::Array(a) => Value::Array(a.into_iter().map(strip_nulls).collect()),
         v => v,
     }
@@ -457,10 +459,18 @@ mod tests {
     fn strings_combine_like_security_hub() {
         let f = json!({"Severity": {"Label": "HIGH"}, "Resources": [{"Type": "AwsS3Bucket"}, {"Type": "AwsIamRole"}]});
         let now = Utc::now();
-        assert!(matches_asff(&f, &json!({"severity_label": [{"value": "HIGH", "comparison": "EQUALS"}, {"value": "LOW", "comparison": "EQUALS"}]}), now));
+        assert!(matches_asff(
+            &f,
+            &json!({"severity_label": [{"value": "HIGH", "comparison": "EQUALS"}, {"value": "LOW", "comparison": "EQUALS"}]}),
+            now
+        ));
         assert!(!matches_asff(&f, &json!({"severity_label": [{"value": "LOW", "comparison": "EQUALS"}]}), now));
         assert!(matches_asff(&f, &json!({"resource_type": [{"value": "AwsIam", "comparison": "PREFIX"}]}), now));
-        assert!(!matches_asff(&f, &json!({"resource_type": [{"value": "AwsIamRole", "comparison": "NOT_EQUALS"}]}), now));
+        assert!(!matches_asff(
+            &f,
+            &json!({"resource_type": [{"value": "AwsIamRole", "comparison": "NOT_EQUALS"}]}),
+            now
+        ));
     }
 
     #[test]

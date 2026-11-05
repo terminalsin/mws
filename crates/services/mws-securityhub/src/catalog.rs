@@ -99,11 +99,36 @@ pub fn standard_from_arn(arn: &str) -> Option<&'static Standard> {
 
 /// A control parameter's definition.
 pub enum Param {
-    Integer { name: &'static str, description: &'static str, min: i32, max: i32, default: Option<i32> },
-    IntegerList { name: &'static str, description: &'static str, min: i32, max: i32, default: &'static [i32] },
-    StringList { name: &'static str, description: &'static str, default: &'static [&'static str] },
-    Boolean { name: &'static str, description: &'static str, default: bool },
-    EnumList { name: &'static str, description: &'static str, allowed: &'static [&'static str], default: &'static [&'static str] },
+    Integer {
+        name: &'static str,
+        description: &'static str,
+        min: i32,
+        max: i32,
+        default: Option<i32>,
+    },
+    IntegerList {
+        name: &'static str,
+        description: &'static str,
+        min: i32,
+        max: i32,
+        default: &'static [i32],
+    },
+    StringList {
+        name: &'static str,
+        description: &'static str,
+        default: &'static [&'static str],
+    },
+    Boolean {
+        name: &'static str,
+        description: &'static str,
+        default: bool,
+    },
+    EnumList {
+        name: &'static str,
+        description: &'static str,
+        allowed: &'static [&'static str],
+        default: &'static [&'static str],
+    },
 }
 
 impl Param {
@@ -129,8 +154,21 @@ pub struct Control {
 }
 
 const RUNTIMES: &[&str] = &[
-    "dotnet8", "java21", "java17", "java11", "java8.al2", "nodejs22.x", "nodejs20.x", "nodejs18.x", "python3.13",
-    "python3.12", "python3.11", "python3.10", "python3.9", "ruby3.3", "ruby3.2",
+    "dotnet8",
+    "java21",
+    "java17",
+    "java11",
+    "java8.al2",
+    "nodejs22.x",
+    "nodejs20.x",
+    "nodejs18.x",
+    "python3.13",
+    "python3.12",
+    "python3.11",
+    "python3.10",
+    "python3.9",
+    "ruby3.3",
+    "ruby3.2",
 ];
 
 macro_rules! c {
@@ -260,11 +298,13 @@ pub fn control(id: &str) -> Option<&'static Control> {
 }
 
 /// The controls in a standard, with the standard's own control IDs.
-pub fn controls_in(standard_key: &str) -> impl Iterator<Item = (&'static Control, &'static str, &'static [&'static str])> {
+pub fn controls_in(
+    standard_key: &str,
+) -> impl Iterator<Item = (&'static Control, &'static str, &'static [&'static str])> {
     let key = standard_key.to_string();
-    CONTROLS.iter().filter_map(move |c| {
-        c.in_standards.iter().find(|(s, _, _)| *s == key).map(|(_, cid, reqs)| (c, *cid, *reqs))
-    })
+    CONTROLS
+        .iter()
+        .filter_map(move |c| c.in_standards.iter().find(|(s, _, _)| *s == key).map(|(_, cid, reqs)| (c, *cid, *reqs)))
 }
 
 pub fn description(c: &Control) -> String {
@@ -318,14 +358,54 @@ pub fn product_arn(partition: &str, region: &str, p: &Product) -> String {
 /// Security Hub's managed insights: `(number, name, group by, filters as
 /// ASFF filter JSON)`.
 pub const MANAGED_INSIGHTS: &[(u32, &str, &str, &str)] = &[
-    (1, "AWS resources with the most findings", "ResourceId", r#"{"RecordState":[{"Value":"ACTIVE","Comparison":"EQUALS"}],"WorkflowStatus":[{"Value":"NEW","Comparison":"EQUALS"},{"Value":"NOTIFIED","Comparison":"EQUALS"}]}"#),
-    (2, "S3 buckets with public write or read permissions", "ResourceId", r#"{"ResourceType":[{"Value":"AwsS3Bucket","Comparison":"EQUALS"}],"Type":[{"Value":"Effects/Data Exposure","Comparison":"PREFIX"}],"RecordState":[{"Value":"ACTIVE","Comparison":"EQUALS"}]}"#),
-    (3, "AMIs that are generating the most findings", "ResourceAwsEc2InstanceImageId", r#"{"ResourceType":[{"Value":"AwsEc2Instance","Comparison":"EQUALS"}],"RecordState":[{"Value":"ACTIVE","Comparison":"EQUALS"}]}"#),
-    (10, "Users with the most suspicious activity", "ResourceAwsIamAccessKeyUserName", r#"{"ResourceType":[{"Value":"AwsIamAccessKey","Comparison":"EQUALS"}],"RecordState":[{"Value":"ACTIVE","Comparison":"EQUALS"}]}"#),
-    (13, "AWS resources with the most findings of high or critical severity", "ResourceId", r#"{"SeverityLabel":[{"Value":"HIGH","Comparison":"EQUALS"},{"Value":"CRITICAL","Comparison":"EQUALS"}],"RecordState":[{"Value":"ACTIVE","Comparison":"EQUALS"}]}"#),
-    (17, "Top accounts by counts of findings", "AwsAccountId", r#"{"RecordState":[{"Value":"ACTIVE","Comparison":"EQUALS"}]}"#),
-    (18, "Top products by counts of findings", "ProductName", r#"{"RecordState":[{"Value":"ACTIVE","Comparison":"EQUALS"}]}"#),
-    (19, "Severity by counts of findings", "SeverityLabel", r#"{"RecordState":[{"Value":"ACTIVE","Comparison":"EQUALS"}]}"#),
+    (
+        1,
+        "AWS resources with the most findings",
+        "ResourceId",
+        r#"{"RecordState":[{"Value":"ACTIVE","Comparison":"EQUALS"}],"WorkflowStatus":[{"Value":"NEW","Comparison":"EQUALS"},{"Value":"NOTIFIED","Comparison":"EQUALS"}]}"#,
+    ),
+    (
+        2,
+        "S3 buckets with public write or read permissions",
+        "ResourceId",
+        r#"{"ResourceType":[{"Value":"AwsS3Bucket","Comparison":"EQUALS"}],"Type":[{"Value":"Effects/Data Exposure","Comparison":"PREFIX"}],"RecordState":[{"Value":"ACTIVE","Comparison":"EQUALS"}]}"#,
+    ),
+    (
+        3,
+        "AMIs that are generating the most findings",
+        "ResourceAwsEc2InstanceImageId",
+        r#"{"ResourceType":[{"Value":"AwsEc2Instance","Comparison":"EQUALS"}],"RecordState":[{"Value":"ACTIVE","Comparison":"EQUALS"}]}"#,
+    ),
+    (
+        10,
+        "Users with the most suspicious activity",
+        "ResourceAwsIamAccessKeyUserName",
+        r#"{"ResourceType":[{"Value":"AwsIamAccessKey","Comparison":"EQUALS"}],"RecordState":[{"Value":"ACTIVE","Comparison":"EQUALS"}]}"#,
+    ),
+    (
+        13,
+        "AWS resources with the most findings of high or critical severity",
+        "ResourceId",
+        r#"{"SeverityLabel":[{"Value":"HIGH","Comparison":"EQUALS"},{"Value":"CRITICAL","Comparison":"EQUALS"}],"RecordState":[{"Value":"ACTIVE","Comparison":"EQUALS"}]}"#,
+    ),
+    (
+        17,
+        "Top accounts by counts of findings",
+        "AwsAccountId",
+        r#"{"RecordState":[{"Value":"ACTIVE","Comparison":"EQUALS"}]}"#,
+    ),
+    (
+        18,
+        "Top products by counts of findings",
+        "ProductName",
+        r#"{"RecordState":[{"Value":"ACTIVE","Comparison":"EQUALS"}]}"#,
+    ),
+    (
+        19,
+        "Severity by counts of findings",
+        "SeverityLabel",
+        r#"{"RecordState":[{"Value":"ACTIVE","Comparison":"EQUALS"}]}"#,
+    ),
 ];
 
 pub fn managed_insight_arn(partition: &str, n: u32) -> String {
