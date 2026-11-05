@@ -169,7 +169,7 @@ pub fn check_launch(
 
 /// The (allowed) placement constraints: `distinctInstance` and `memberOf`
 /// expressions on attributes (`attribute:name == value`, `in [...]`, `!=`).
-fn constraint_ok(r: &Region, inst: &crate::state::InstanceRecord, expr: &str) -> bool {
+pub fn constraint_ok(r: &Region, inst: &crate::state::InstanceRecord, expr: &str) -> bool {
     let expr = expr.trim();
     let Some(rest) = expr.strip_prefix("attribute:") else { return true };
     let attrs = instances::all_attributes(r, inst);
@@ -578,6 +578,16 @@ impl Ecs {
             .map_err(ecs_denial)?;
         }
         Ok(())
+    }
+
+    /// `iam:PassRole` on `role`, passed to `service`.
+    pub(crate) fn pass_role(&self, ctx: &RequestContext, role: &str, service: &str) -> Result<(), ServiceError> {
+        ctx.authorize(
+            "iam:PassRole",
+            role,
+            mws_core::ConditionContext::from([("iam:PassedToService".to_string(), vec![service.to_string()])]),
+        )
+        .map_err(ecs_denial)
     }
 
     /// `ecs:TagResource` is needed to tag a resource on creation.
@@ -1257,7 +1267,7 @@ fn made_up_interface(conf: &t::AwsVpcConfiguration) -> TaskInterface {
     let ip = format!("10.0.{}.{}", rng.gen_range(0..255), rng.gen_range(4..250));
     let mac: Vec<String> = (0..6).map(|i| format!("{:02x}", if i == 0 { 0x0a } else { rng.gen::<u8>() })).collect();
     TaskInterface {
-        eni_id: format!("eni-{:017x}", rng.gen::<u64>() & 0x1_ffff_ffff_ffff_ffff),
+        eni_id: format!("eni-{:017x}", rng.gen::<u64>()),
         private_dns_name: format!("ip-{}.ec2.internal", ip.replace('.', "-")),
         private_ip: ip,
         mac_address: mac.join(":"),

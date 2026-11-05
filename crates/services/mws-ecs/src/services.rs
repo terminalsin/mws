@@ -197,10 +197,23 @@ impl Ecs {
         rec.service.service_registries = Some(config.service_registries.clone());
         let conf = rec.service.deployment_configuration.clone().unwrap_or_default();
         let breaker = conf.deployment_circuit_breaker.clone().unwrap_or_default();
+        // A rollback continues the current service deployment.
+        if let Some(reason) = rollback_of {
+            if let Some(sd) = rec.current_deployment_arn.clone().and_then(|a| r.service_deployments.get_mut(&a)) {
+                sd.status = Some("ROLLBACK_IN_PROGRESS".into());
+                sd.updated_at = Some(now);
+                sd.rollback = Some(t::Rollback {
+                    reason: Some(reason),
+                    started_at: Some(now),
+                    service_revision_arn: Some(revision_arn.clone()),
+                });
+            }
+            return;
+        }
         // The previous deployment finishes as superseded.
         if let Some(prev) = rec.current_deployment_arn.clone() {
             if let Some(sd) = r.service_deployments.get_mut(&prev) {
-                if matches!(sd.status.as_deref(), Some("PENDING" | "IN_PROGRESS")) && rollback_of.is_none() {
+                if matches!(sd.status.as_deref(), Some("PENDING" | "IN_PROGRESS")) {
                     sd.status = Some("STOPPED".into());
                     sd.status_reason = Some("Service deployment was superseded by a new deployment.".into());
                     sd.stopped_at = Some(now);
@@ -222,15 +235,10 @@ impl Ecs {
                 requested_task_count: desired,
                 ..Default::default()
             }),
-            status: Some(if rollback_of.is_some() { "ROLLBACK_IN_PROGRESS" } else { "IN_PROGRESS" }.into()),
+            status: Some("IN_PROGRESS".into()),
             status_reason: None,
             lifecycle_stage: Some("RECONCILE_SERVICE".into()),
             deployment_configuration: Some(conf.clone()),
-            rollback: rollback_of.map(|reason| t::Rollback {
-                reason: Some(reason),
-                started_at: Some(now),
-                service_revision_arn: Some(revision_arn.clone()),
-            }),
             deployment_circuit_breaker: Some(t::ServiceDeploymentCircuitBreaker {
                 status: Some(if breaker.enable { "MONITORING" } else { "DISABLED" }.into()),
                 failure_count: 0,
@@ -923,11 +931,6 @@ impl Ecs {
                     }
                     let config = revision_config(&rev);
                     me.new_deployment(r, scope, &service, config, now, Some("Service deployment rolled back because a stop was requested.".into()));
-                    if let Some(d) = r.service_deployments.get_mut(&input.service_deployment_arn) {
-                        d.status = Some("STOPPED".into());
-                        d.stopped_at = Some(now);
-                        d.status_reason = Some("Service deployment stopped by user.".into());
-                    }
                 }
                 _ => {
                     if let Some(d) = r.service_deployments.get_mut(&input.service_deployment_arn) {

@@ -85,4 +85,10 @@ pub trait TaskPlatform: Send + Sync {
         create_group: bool,
         events: Vec<LogEvent>,
     ) -> Result<(), ServiceError>;
+
+    /// The default VPC's subnets in `account` and `ctx`'s Region, for
+    /// Express services created without a network configuration.
+    fn default_subnets(&self, _ctx: &RequestContext, _account: &str) -> Vec<String> {
+        Vec::new()
+    }
 }

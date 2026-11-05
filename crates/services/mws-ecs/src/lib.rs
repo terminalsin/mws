@@ -64,6 +64,8 @@ pub(crate) struct Inner {
     /// the wall clock, for work done in the background.
     template: Mutex<Option<(RequestContext, chrono::Duration)>>,
     scheduler_started: AtomicBool,
+    /// Wakes the scheduler early.
+    kick: tokio::sync::Notify,
 }
 
 /// The ECS service. Cheap to clone; clones share state.
@@ -88,6 +90,7 @@ impl Ecs {
                 runners: Mutex::new(HashMap::new()),
                 template: Mutex::new(None),
                 scheduler_started: AtomicBool::new(false),
+                kick: tokio::sync::Notify::new(),
             }),
         }
     }

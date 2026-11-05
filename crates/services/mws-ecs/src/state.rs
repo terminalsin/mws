@@ -84,6 +84,8 @@ pub struct TaskRecord {
     pub runtime_ids: BTreeMap<String, String>,
     /// Whether the task ever reached `RUNNING`.
     pub reached_running: bool,
+    /// Whether the scheduler has counted this task's failure to start.
+    pub failure_counted: bool,
     pub protection: Option<Protection>,
     /// Credentials handed to the task's containers, if it has a task role.
     pub credentials: Option<TaskCredentials>,
