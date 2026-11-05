@@ -19,6 +19,8 @@ use mws_kinesis::Kinesis;
 use mws_kms::Kms;
 use mws_lambda::Lambda;
 use mws_logs::Logs;
+use mws_marketplace_entitlement::Entitlement;
+use mws_marketplace_metering::Metering;
 use mws_organizations::Organizations;
 use mws_route53::Route53;
 use mws_s3::S3;
@@ -106,6 +108,8 @@ pub struct Mws {
     pub cloudwatch: CloudWatch,
     pub ec2: Ec2,
     pub globalaccelerator: GlobalAccelerator,
+    pub marketplace_entitlement: Entitlement,
+    pub marketplace_metering: Metering,
 }
 
 /// Build the gateway with every service MWS emulates.
@@ -234,6 +238,8 @@ fn build_with_store(config: Config, store: Option<Arc<Store>>) -> Mws {
     let globalaccelerator = GlobalAccelerator::new();
     globalaccelerator.add_endpoint_directory(Arc::new(links::GlobalAcceleratorEc2(ec2.clone())));
     route53.add_alias_resolver(Arc::new(links::Route53ToGlobalAccelerator(globalaccelerator.clone())));
+    let marketplace_entitlement = Entitlement::new(config.iam.account_id.clone());
+    let marketplace_metering = Metering::new(marketplace_entitlement.clone());
     let mut gateway = Gateway::builder();
     if let Some(store) = store {
         gateway = gateway.store(store);
@@ -268,6 +274,10 @@ fn build_with_store(config: Config, store: Option<Arc<Store>>) -> Mws {
         .service(Arc::new(cloudwatch.clone()))
         .service(Arc::new(ec2.clone()))
         .service(Arc::new(globalaccelerator.clone()))
+        // Both Marketplace services sign as `aws-marketplace`; each claims
+        // its own `X-Amz-Target`.
+        .service(Arc::new(marketplace_metering.clone()))
+        .service(Arc::new(marketplace_entitlement.clone()))
         .build();
     Mws {
         gateway,
@@ -288,6 +298,8 @@ fn build_with_store(config: Config, store: Option<Arc<Store>>) -> Mws {
         cloudwatch,
         ec2,
         globalaccelerator,
+        marketplace_entitlement,
+        marketplace_metering,
     }
 }
 
