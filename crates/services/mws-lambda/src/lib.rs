@@ -7,7 +7,8 @@
 //! `python3`/`node` with MWS's runtime client; `provided.*` functions run
 //! their own `bootstrap`. Functions get credentials for their execution
 //! role from STS, and `AWS_ENDPOINT_URL` pointing back at MWS, so AWS SDKs
-//! inside them talk to the emulator.
+//! inside them talk to the emulator. Container image functions pull their
+//! image from ECR (through [`ImageSource`]) and run it in Docker.
 //!
 //! AWS couples Lambda to IAM (execution roles, `iam:PassRole`), STS (role
 //! credentials) and S3 (deployment packages in buckets, S3 Object Lambda),
@@ -27,6 +28,7 @@ mod esm_stream;
 mod function_url;
 mod functions;
 mod handler;
+mod image;
 mod invoke;
 mod layers;
 mod names;
@@ -43,6 +45,7 @@ use mws_core::{HttpRequest, HttpResponse, RequestContext, Service, ServiceError}
 pub use destinations::{DestinationMessage, DestinationSink};
 pub use esm::{QueueFacts, QueueMessage, QueueMessageAttribute, QueueSource};
 pub use esm_stream::{StreamPosition, StreamRead, StreamRecord, StreamShard, StreamSource};
+pub use image::{ContainerImage, ImageBlob, ImageError, ImageSource};
 pub use names::FunctionRef;
 pub use service_invoke::{ServiceInvocation, ServiceInvocationResult, ServiceInvokeError};
 use state::State;
@@ -63,6 +66,8 @@ pub(crate) struct Inner {
     pollers: esm::Pollers,
     /// Where destination records for other services go.
     destinations: destinations::Sinks,
+    /// Where container images come from, when ECR is wired in.
+    images: std::sync::OnceLock<Arc<dyn image::ImageSource>>,
 }
 
 /// The Lambda service. Cheap to clone; clones share state.
@@ -102,6 +107,7 @@ impl Lambda {
                 quotas: std::sync::OnceLock::new(),
                 pollers: esm::Pollers::default(),
                 destinations: destinations::Sinks::default(),
+                images: std::sync::OnceLock::new(),
             }),
         }
     }

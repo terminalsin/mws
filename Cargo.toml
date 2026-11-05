@@ -17,6 +17,7 @@ members = [
     "crates/mws-event-pattern",
     "crates/mws-schedule",
     "crates/mws-parquet",
+    "crates/mws-oci",
     "crates/mws",
     "crates/services/mws-iam",
     "crates/services/mws-iam-policy",
@@ -54,6 +55,13 @@ members = [
     "crates/services/mws-ses",
     "crates/services/mws-rds",
     "crates/services/mws-eks",
+    "crates/services/mws-efs",
+    "crates/services/mws-codeartifact",
+    "crates/services/mws-cloudtrail",
+    "crates/services/mws-cloudtrail-data",
+    "crates/services/mws-ecr",
+    "crates/services/mws-ecr-public",
+
     "tests/e2e-rust",
 ]
 
@@ -69,6 +77,7 @@ mws-core = { path = "crates/mws-core" }
 mws-event-pattern = { path = "crates/mws-event-pattern" }
 mws-schedule = { path = "crates/mws-schedule" }
 mws-parquet = { path = "crates/mws-parquet" }
+mws-oci = { path = "crates/mws-oci" }
 mws-sigv4 = { path = "crates/mws-sigv4" }
 mws-smithy = { path = "crates/mws-smithy" }
 mws-codegen = { path = "crates/mws-codegen" }
@@ -95,6 +104,8 @@ mws-s3control = { path = "crates/services/mws-s3control" }
 mws-logs = { path = "crates/services/mws-logs" }
 mws-sqs = { path = "crates/services/mws-sqs" }
 mws-ssm = { path = "crates/services/mws-ssm" }
+mws-cloudtrail = { path = "crates/services/mws-cloudtrail" }
+mws-cloudtrail-data = { path = "crates/services/mws-cloudtrail-data" }
 mws-events = { path = "crates/services/mws-events" }
 mws-secretsmanager = { path = "crates/services/mws-secretsmanager" }
 mws-sns = { path = "crates/services/mws-sns" }
@@ -118,6 +129,10 @@ mws-autoscaling = { path = "crates/services/mws-autoscaling" }
 mws-ses = { path = "crates/services/mws-ses" }
 mws-rds = { path = "crates/services/mws-rds" }
 mws-eks = { path = "crates/services/mws-eks" }
+mws-efs = { path = "crates/services/mws-efs" }
+mws-codeartifact = { path = "crates/services/mws-codeartifact" }
+mws-ecr = { path = "crates/services/mws-ecr" }
+mws-ecr-public = { path = "crates/services/mws-ecr-public" }
 
 # external
 async-trait = "0.1"
@@ -125,6 +140,7 @@ aws-lc-rs = "1"
 base64 = "0.22"
 bytes = "1"
 chrono = { version = "0.4", default-features = false, features = ["clock", "std", "serde"] }
+chrono-tz = "0.10"
 form_urlencoded = "1"
 hex = "0.4"
 hmac = "0.12"

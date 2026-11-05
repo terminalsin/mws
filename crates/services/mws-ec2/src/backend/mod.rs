@@ -48,6 +48,57 @@ pub struct LaunchSpec {
     /// EBS data volumes attached at launch (the root volume is the
     /// instance's own disk).
     pub volumes: Vec<VolumeMount>,
+    /// What [`LaunchExtension`]s add.
+    pub extras: LaunchExtras,
+}
+
+/// A host directory shared into an instance.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct HostMount {
+    pub source: std::path::PathBuf,
+    /// Where it appears inside the instance.
+    pub target: String,
+}
+
+/// Additions to an instance's launch, from services that reach into
+/// instances the way AWS's do through the network (file systems to mount,
+/// helpers to install).
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct LaunchExtras {
+    pub mounts: Vec<HostMount>,
+    /// Shell run by the boot script of OS images before the user data.
+    pub boot_hooks: Vec<String>,
+    /// Linux capabilities the instance needs (`SYS_ADMIN` for mounts).
+    pub capabilities: Vec<String>,
+    /// Backend security options (Docker `--security-opt`).
+    pub security_options: Vec<String>,
+}
+
+impl LaunchExtras {
+    pub fn merge(&mut self, other: LaunchExtras) {
+        for m in other.mounts {
+            if !self.mounts.contains(&m) {
+                self.mounts.push(m);
+            }
+        }
+        self.boot_hooks.extend(other.boot_hooks);
+        for c in other.capabilities {
+            if !self.capabilities.contains(&c) {
+                self.capabilities.push(c);
+            }
+        }
+        for o in other.security_options {
+            if !self.security_options.contains(&o) {
+                self.security_options.push(o);
+            }
+        }
+    }
+}
+
+/// Lets another service extend every instance launch (see
+/// [`crate::Ec2::add_launch_extension`]).
+pub trait LaunchExtension: Send + Sync {
+    fn extend(&self, spec: &LaunchSpec) -> LaunchExtras;
 }
 
 /// An EBS volume attached to an instance, at its device name.

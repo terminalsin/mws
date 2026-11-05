@@ -438,11 +438,14 @@ impl Eks {
         }
 
         let response = rec.nodegroup.clone();
-        let mut st = self.write();
-        let crec = util::cluster(&mut st, ctx, &cluster)?;
-        let kind = if ami_type.starts_with("WINDOWS") { "EC2_WINDOWS" } else { "EC2_LINUX" };
-        crate::access::ensure_node_entry(ctx, crec, &cluster, &role, kind);
-        crec.nodegroups.insert(name, rec);
+        {
+            let mut st = self.write();
+            let crec = util::cluster(&mut st, ctx, &cluster)?;
+            let kind = if ami_type.starts_with("WINDOWS") { "EC2_WINDOWS" } else { "EC2_LINUX" };
+            crate::access::ensure_node_entry(ctx, crec, &cluster, &role, kind);
+            crec.nodegroups.insert(name.clone(), rec);
+        }
+        self.sync_nodes(ctx, &cluster, &name).await;
         Ok(types::CreateNodegroupResponse { nodegroup: Some(response) })
     }
 
@@ -495,7 +498,9 @@ impl Eks {
         };
         let Some((group, s)) = target else { return };
         let (min, max, desired) = (s.min_size.unwrap_or(0), s.max_size.unwrap_or(0), s.desired_size.unwrap_or(0));
-        if let Err(e) = infra.scale_node_group(&util::scope(ctx), &group, min, max, desired).await {
+        let scaled = infra.scale_node_group(&util::scope(ctx), &group, min, max, desired).await;
+        self.sync_nodes(ctx, cluster, name).await;
+        if let Err(e) = scaled {
             let mut st = self.write();
             let Ok(rec) = util::cluster(&mut st, ctx, cluster) else { return };
             if let Some(n) = rec.nodegroups.get_mut(name) {
@@ -520,46 +525,49 @@ impl Eks {
         };
         let Some(group) = group else { return };
         let state = infra.node_group_state(&util::scope(ctx), &group).await;
-        let mut st = self.write();
-        let Ok(rec) = util::cluster(&mut st, ctx, cluster) else { return };
-        let Some(n) = rec.nodegroups.get_mut(name) else { return };
-        let ng = &mut n.nodegroup;
-        if let Some(issues) = ng.health.as_mut().and_then(|h| h.issues.as_mut()) {
-            issues.retain(|i| !GROUP_ISSUES.contains(&i.code.as_deref().unwrap_or_default()));
-        }
-        match &state {
-            None => degrade(
-                ng,
-                "AutoScalingGroupNotFound",
-                format!("Auto Scaling group {group} not found."),
-                vec![group.clone()],
-            ),
-            Some(s) => {
-                ng.scaling_config = Some(types::NodegroupScalingConfig {
-                    min_size: Some(s.min_size),
-                    max_size: Some(s.max_size),
-                    desired_size: Some(s.desired_capacity),
-                });
-                let blocked = blocking_processes(s);
-                if !blocked.is_empty() {
-                    degrade(
-                        ng,
-                        "AutoScalingGroupInvalidConfiguration",
-                        format!(
-                            "The Auto Scaling group {group} has suspended processes: {}. EKS can't manage the node group's nodes until they are resumed.",
-                            blocked.join(", ")
-                        ),
-                        vec![group.clone()],
-                    );
+        {
+            let mut st = self.write();
+            let Ok(rec) = util::cluster(&mut st, ctx, cluster) else { return };
+            let Some(n) = rec.nodegroups.get_mut(name) else { return };
+            let ng = &mut n.nodegroup;
+            if let Some(issues) = ng.health.as_mut().and_then(|h| h.issues.as_mut()) {
+                issues.retain(|i| !GROUP_ISSUES.contains(&i.code.as_deref().unwrap_or_default()));
+            }
+            match &state {
+                None => degrade(
+                    ng,
+                    "AutoScalingGroupNotFound",
+                    format!("Auto Scaling group {group} not found."),
+                    vec![group.clone()],
+                ),
+                Some(s) => {
+                    ng.scaling_config = Some(types::NodegroupScalingConfig {
+                        min_size: Some(s.min_size),
+                        max_size: Some(s.max_size),
+                        desired_size: Some(s.desired_capacity),
+                    });
+                    let blocked = blocking_processes(s);
+                    if !blocked.is_empty() {
+                        degrade(
+                            ng,
+                            "AutoScalingGroupInvalidConfiguration",
+                            format!(
+                                "The Auto Scaling group {group} has suspended processes: {}. EKS can't manage the node group's nodes until they are resumed.",
+                                blocked.join(", ")
+                            ),
+                            vec![group.clone()],
+                        );
+                    }
                 }
             }
+            let degraded = ng.health.as_ref().and_then(|h| h.issues.as_ref()).is_some_and(|i| !i.is_empty());
+            match (ng.status.as_deref(), degraded) {
+                (Some("ACTIVE"), true) => ng.status = Some("DEGRADED".into()),
+                (Some("DEGRADED"), false) => ng.status = Some("ACTIVE".into()),
+                _ => {}
+            }
         }
-        let degraded = ng.health.as_ref().and_then(|h| h.issues.as_ref()).is_some_and(|i| !i.is_empty());
-        match (ng.status.as_deref(), degraded) {
-            (Some("ACTIVE"), true) => ng.status = Some("DEGRADED".into()),
-            (Some("DEGRADED"), false) => ng.status = Some("ACTIVE".into()),
-            _ => {}
-        }
+        self.sync_nodes(ctx, cluster, name).await;
     }
 
     pub(crate) async fn update_nodegroup_config(
@@ -827,26 +835,29 @@ impl Eks {
                 Some(message) => Err(message),
                 None => infra.roll_node_group(&scope, &spec, &template).await.map_err(|e| e.to_string()),
             };
-            let mut st = self.write();
-            let rec = util::cluster(&mut st, ctx, &cluster)?;
-            match outcome {
-                Ok(version) => {
-                    if let Some(n) = rec.nodegroups.get_mut(&name) {
-                        n.launch_template_version = Some(version);
+            {
+                let mut st = self.write();
+                let rec = util::cluster(&mut st, ctx, &cluster)?;
+                match outcome {
+                    Ok(version) => {
+                        if let Some(n) = rec.nodegroups.get_mut(&name) {
+                            n.launch_template_version = Some(version);
+                        }
                     }
-                }
-                Err(message) => {
-                    // The node group keeps its version and launch template.
-                    if let Some(n) = rec.nodegroups.get_mut(&name) {
-                        let (ng, image) = previous;
-                        n.nodegroup.version = ng.version;
-                        n.nodegroup.release_version = ng.release_version;
-                        n.nodegroup.launch_template = ng.launch_template;
-                        n.image_id = image;
+                    Err(message) => {
+                        // The node group keeps its version and launch template.
+                        if let Some(n) = rec.nodegroups.get_mut(&name) {
+                            let (ng, image) = previous;
+                            n.nodegroup.version = ng.version;
+                            n.nodegroup.release_version = ng.release_version;
+                            n.nodegroup.launch_template = ng.launch_template;
+                            n.image_id = image;
+                        }
+                        crate::updates::fail(rec, &id, "NodeCreationFailure", message, vec![spec.group_name.clone()])
                     }
-                    crate::updates::fail(rec, &id, "NodeCreationFailure", message, vec![spec.group_name.clone()])
                 }
             }
+            self.sync_nodes(ctx, &cluster, &name).await;
         }
         Ok(types::UpdateNodegroupVersionResponse { update: Some(update) })
     }
@@ -894,6 +905,7 @@ impl Eks {
             if let Some(group) = group.filter(|_| template.is_some()) {
                 infra.delete_node_group(&scope, &group, template.as_deref()).await;
             }
+            self.sync_nodes(ctx, &cluster, &name).await;
             if let Some(p) = profile {
                 infra.delete_instance_profile(&scope, util::arn_name(&p), &role).await;
             }

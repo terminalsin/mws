@@ -1203,6 +1203,59 @@ impl mws_rds::ExportStore for RdsExports {
     }
 }
 
+/// Lambda container images come from ECR. Resolving one at
+/// `CreateFunction`/`UpdateFunctionCode` is a pull by the caller; starting
+/// an execution environment fetches the resolved digest as Lambda.
+pub struct LambdaImages(pub mws_ecr::Ecr);
+
+impl LambdaImages {
+    fn convert(&self, image: mws_ecr::PulledImage) -> mws_lambda::ContainerImage {
+        let blob = |d: &mws_oci::Descriptor, data: bytes::Bytes| mws_lambda::ImageBlob {
+            digest: d.digest.clone(),
+            media_type: d.media_type.clone(),
+            data,
+        };
+        mws_lambda::ContainerImage {
+            resolved_uri: self.0.image_uri(&image.location, &image.resolved_digest),
+            resolved_digest: image.resolved_digest,
+            digest: image.digest,
+            manifest: bytes::Bytes::from(image.manifest.into_bytes()),
+            manifest_media_type: image.media_type,
+            config: blob(&image.config, image.config_data),
+            layers: image.layers.into_iter().map(|(d, data)| blob(&d, data)).collect(),
+        }
+    }
+}
+
+impl mws_lambda::ImageSource for LambdaImages {
+    fn resolve(
+        &self,
+        ctx: &RequestContext,
+        uri: &str,
+        architecture: &str,
+    ) -> Result<mws_lambda::ContainerImage, mws_lambda::ImageError> {
+        let location =
+            self.0.locate_image(uri, &ctx.caller.account_id, &ctx.region).ok_or(mws_lambda::ImageError::Invalid)?;
+        match self.0.pull_image(Some(ctx), &location, architecture) {
+            Ok(image) => Ok(self.convert(image)),
+            Err(mws_ecr::PullError::NotFound) => Err(mws_lambda::ImageError::NotFound),
+            Err(mws_ecr::PullError::AccessDenied) => Err(mws_lambda::ImageError::AccessDenied),
+            Err(mws_ecr::PullError::Unsupported) => Err(mws_lambda::ImageError::Unsupported),
+        }
+    }
+
+    fn fetch(
+        &self,
+        account: &str,
+        region: &str,
+        resolved_uri: &str,
+        architecture: &str,
+    ) -> Option<mws_lambda::ContainerImage> {
+        let location = self.0.locate_image(resolved_uri, account, region)?;
+        self.0.pull_image(None, &location, architecture).ok().map(|i| self.convert(i))
+    }
+}
+
 /// Usage of the quotas other services enforce, for Service Quotas.
 pub struct QuotaUsage {
     pub ec2: mws_ec2::Ec2,

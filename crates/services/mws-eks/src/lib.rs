@@ -32,25 +32,29 @@ mod capabilities;
 mod catalog;
 mod certs;
 mod clusters;
+mod control;
 mod fargate;
 mod handler;
 mod identity;
 mod infra;
 mod insights;
+pub mod kube;
 mod nodegroups;
 mod state;
 mod tags;
 mod updates;
 mod util;
 
-use std::sync::{Arc, OnceLock, RwLock, RwLockWriteGuard};
+use std::sync::{Arc, OnceLock, RwLock, RwLockReadGuard, RwLockWriteGuard};
 
 use mws_core::{HttpRequest, HttpResponse, RequestContext, Service, ServiceError};
 
 pub use infra::{
-    GroupState, Infrastructure, InfrastructureError, LaunchTemplateRef, NodeGroupSpec, NodeGroupTemplate, Scope,
-    SubnetFacts,
+    GroupState, Infrastructure, InfrastructureError, InstanceFacts, LaunchTemplateRef, NodeGroupSpec,
+    NodeGroupTemplate, Scope, SubnetFacts,
 };
+use kube::ControlPlane;
+use mws_core::CredentialStore;
 use state::State;
 
 pub(crate) struct Inner {
@@ -59,6 +63,21 @@ pub(crate) struct Inner {
     infra: OnceLock<Arc<dyn Infrastructure>>,
     /// Service Quotas: clusters, node groups and Fargate profiles.
     quotas: mws_servicequotas::QuotaLink,
+    control_plane: OnceLock<Arc<dyn ControlPlane>>,
+    credentials: OnceLock<Vec<Arc<dyn CredentialStore>>>,
+}
+
+impl Inner {
+    fn new(sts: Option<mws_sts::Sts>) -> Self {
+        Self {
+            state: RwLock::new(State::default()),
+            sts,
+            infra: OnceLock::new(),
+            quotas: Default::default(),
+            control_plane: OnceLock::new(),
+            credentials: OnceLock::new(),
+        }
+    }
 }
 
 /// The EKS service. Cheap to clone; clones share state.
@@ -77,27 +96,13 @@ impl Eks {
     /// EKS on its own: roles are not checked and clusters own nothing in
     /// EC2.
     pub fn new() -> Self {
-        Self {
-            inner: Arc::new(Inner {
-                state: RwLock::new(State::default()),
-                sts: None,
-                infra: OnceLock::new(),
-                quotas: Default::default(),
-            }),
-        }
+        Self { inner: Arc::new(Inner::new(None)) }
     }
 
     /// EKS that checks roles the way AWS does: they must exist and trust
     /// the service that will assume them.
     pub fn with_sts(sts: mws_sts::Sts) -> Self {
-        Self {
-            inner: Arc::new(Inner {
-                state: RwLock::new(State::default()),
-                sts: Some(sts),
-                infra: OnceLock::new(),
-                quotas: Default::default(),
-            }),
-        }
+        Self { inner: Arc::new(Inner::new(Some(sts))) }
     }
 
     /// Service Quotas, whose applied values limit clusters, node groups
@@ -116,6 +121,29 @@ impl Eks {
     /// instance profiles and instances.
     pub fn set_infrastructure(&self, infra: Arc<dyn Infrastructure>) {
         let _ = self.inner.infra.set(infra);
+    }
+
+    /// What runs each cluster's Kubernetes API server. Without one,
+    /// clusters are EKS metadata only.
+    pub fn set_control_plane(&self, control_plane: Arc<dyn ControlPlane>) {
+        let _ = self.inner.control_plane.set(control_plane);
+    }
+
+    /// The credential stores that check `aws eks get-token` tokens.
+    pub fn set_credentials(&self, stores: Vec<Arc<dyn CredentialStore>>) {
+        let _ = self.inner.credentials.set(stores);
+    }
+
+    pub(crate) fn control_plane(&self) -> Option<&Arc<dyn ControlPlane>> {
+        self.inner.control_plane.get()
+    }
+
+    pub(crate) fn credentials(&self) -> &[Arc<dyn CredentialStore>] {
+        self.inner.credentials.get().map(Vec::as_slice).unwrap_or_default()
+    }
+
+    pub(crate) fn read(&self) -> RwLockReadGuard<'_, State> {
+        self.inner.state.read().expect("EKS state lock poisoned")
     }
 
     pub(crate) fn infra(&self) -> Option<&Arc<dyn Infrastructure>> {
@@ -137,7 +165,14 @@ impl Service for Eks {
         "eks"
     }
 
+    fn serves_unauthenticated(&self, request: &HttpRequest) -> bool {
+        request.uri().path().starts_with(kube::webhook::PREFIX)
+    }
+
     async fn handle(&self, ctx: RequestContext, request: HttpRequest) -> HttpResponse {
+        if request.uri().path().starts_with(kube::webhook::PREFIX) {
+            return self.serve_webhook(&request, ctx.received_at, &ctx.partition).await;
+        }
         self.settle(&ctx);
         generated::dispatch(self, &ctx, &request).await
     }
@@ -163,11 +198,21 @@ impl Service for Eks {
 
     fn import_state(&self, state: serde_json::Value) -> Result<(), String> {
         let state: State = serde_json::from_value(state).map_err(|e| format!("invalid EKS state: {e}"))?;
+        let before = self.control_plane_ids();
         *self.write() = state;
+        let after = self.control_plane_ids();
+        for id in before.into_iter().filter(|id| !after.contains(id)) {
+            self.remove_control_plane(id);
+        }
+        self.resume_control_planes();
         Ok(())
     }
 
     fn reset_state(&self) {
+        let ids = self.control_plane_ids();
         *self.write() = State::default();
+        for id in ids {
+            self.remove_control_plane(id);
+        }
     }
 }

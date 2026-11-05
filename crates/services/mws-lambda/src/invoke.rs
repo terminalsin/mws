@@ -10,7 +10,7 @@ use mws_core::{ConditionContext, RequestContext, ServiceError};
 use crate::destinations::DestinationMessage;
 use crate::generated::{errors, types};
 use crate::names::{self, FunctionRef};
-use crate::runtime::{Job, LaunchError, LaunchSpec, Outcome};
+use crate::runtime::{image_tag, ContainerLaunch, Job, LaunchError, LaunchSpec, Outcome};
 use crate::Lambda;
 
 /// Largest synchronous request payload (6 MB).
@@ -89,14 +89,18 @@ impl Lambda {
             (v, func.reserved_concurrency, version)
         };
         let config = &spec_parts.config;
-        if config.package_type.as_deref() == Some("Image") {
-            return Err(errors::service("MWS cannot run container image functions locally."));
-        }
-        let hex =
-            spec_parts.code_hex.clone().ok_or_else(|| errors::service("The function has no deployment package."))?;
-        let code_dir = self.extracted("code", &hex)?;
+        let container = if config.package_type.as_deref() == Some("Image") {
+            Some(self.prepare_container(f, &spec_parts).await?)
+        } else {
+            None
+        };
+        let code_dir = match (&container, &spec_parts.code_hex) {
+            (Some(_), _) => self.inner.runtimes.base_dir().to_path_buf(),
+            (None, Some(hex)) => self.extracted("code", hex)?,
+            (None, None) => return Err(errors::service("The function has no deployment package.")),
+        };
         let mut layer_dirs = Vec::new();
-        for l in config.layers.iter().flatten() {
+        for l in config.layers.iter().flatten().filter(|_| container.is_none()) {
             let Some(arn) = &l.arn else { continue };
             let hex = {
                 let st = self.read();
@@ -108,7 +112,7 @@ impl Lambda {
                 layer_dirs.push(self.extracted("layers", &hex)?);
             }
         }
-        let env = self.environment(ctx, f, config, &executed_version)?;
+        let env = self.environment(ctx, f, config, &executed_version, container.is_some())?;
         let log_target = (
             env.get("AWS_LAMBDA_LOG_GROUP_NAME").cloned(),
             env.get("AWS_LAMBDA_LOG_STREAM_NAME").cloned(),
@@ -126,6 +130,7 @@ impl Lambda {
             env,
             timeout: Duration::from_secs(timeout),
             memory_mb: config.memory_size.unwrap_or(crate::functions::DEFAULT_MEMORY),
+            container,
         };
         let job = Job {
             request_id: uuid::Uuid::new_v4().to_string(),
@@ -141,9 +146,40 @@ impl Lambda {
                 Ok(Ran { outcome, executed_version })
             }
             Err(LaunchError::Throttled) => Err(throttled()),
-            Err(LaunchError::Unsupported(m)) => Err(errors::service(m)),
-            Err(LaunchError::Io(m)) => Err(errors::service(format!("Starting the execution environment failed: {m}"))),
+            Err(e) => Err(launch_error(e)),
         }
+    }
+
+    /// Load a container image function's image into the engine and work
+    /// out how its container starts.
+    async fn prepare_container(
+        &self,
+        f: &FunctionRef,
+        v: &crate::state::Version,
+    ) -> Result<ContainerLaunch, ServiceError> {
+        let config = &v.config;
+        let image = match (&v.resolved_image_uri, &v.image_run_config) {
+            (Some(uri), Some(run)) => (uri, run),
+            _ => {
+                return Err(errors::service("MWS runs container image functions from images in its own ECR registry."))
+            }
+        };
+        let tag = image_tag(config.code_sha256.as_deref().unwrap_or_default());
+        let pulled = if self.inner.runtimes.image_loaded(&tag) {
+            None
+        } else {
+            self.fetch_image(&f.account, &f.region, image.0, config.architectures.as_deref())
+        };
+        self.inner.runtimes.load_image(&tag, pulled.as_ref()).await.map_err(launch_error)?;
+        let overrides = config.image_config_response.as_ref().and_then(|r| r.image_config.as_ref());
+        let run = image.1;
+        Ok(ContainerLaunch {
+            image: tag,
+            entrypoint: overrides.and_then(|o| o.entry_point.clone()).unwrap_or_else(|| run.entrypoint.clone()),
+            command: overrides.and_then(|o| o.command.clone()).unwrap_or_else(|| run.command.clone()),
+            working_dir: overrides.and_then(|o| o.working_directory.clone()).or_else(|| run.working_dir.clone()),
+            ephemeral_mb: config.ephemeral_storage.as_ref().map_or(512, |e| e.size),
+        })
     }
 
     /// The function's environment: Lambda's reserved variables, role
@@ -154,9 +190,11 @@ impl Lambda {
         f: &FunctionRef,
         config: &types::FunctionConfiguration,
         version: &str,
+        container: bool,
     ) -> Result<BTreeMap<String, String>, ServiceError> {
         let mut env = BTreeMap::new();
-        for key in ["PATH", "HOME", "SYSTEMROOT", "TMPDIR", "TEMP", "TMP"] {
+        // A container keeps its image's own variables (PATH, ...).
+        for key in ["PATH", "HOME", "SYSTEMROOT", "TMPDIR", "TEMP", "TMP"].iter().filter(|_| !container) {
             if let Ok(v) = std::env::var(key) {
                 env.insert(key.to_string(), v);
             }
@@ -193,7 +231,10 @@ impl Lambda {
             ("AWS_LAMBDA_LOG_STREAM_NAME", stream),
         ];
         for (k, v) in reserved {
-            env.insert(k.into(), v);
+            // Images name their handler and execution environment themselves.
+            if !(container && matches!(k, "_HANDLER" | "AWS_EXECUTION_ENV")) {
+                env.insert(k.into(), v);
+            }
         }
         if let Some(level) = config.logging_config.as_ref().and_then(|l| l.application_log_level.clone()) {
             env.insert("AWS_LAMBDA_LOG_LEVEL".into(), level);
@@ -544,4 +585,13 @@ pub fn log_tail(logs: &str) -> String {
     let bytes = logs.as_bytes();
     let start = bytes.len().saturating_sub(LOG_TAIL);
     base64::engine::general_purpose::STANDARD.encode(&bytes[start..])
+}
+
+fn launch_error(e: LaunchError) -> ServiceError {
+    match e {
+        LaunchError::Throttled => throttled(),
+        LaunchError::Unsupported(m) => errors::service(m),
+        LaunchError::InvalidEntrypoint(m) => errors::service(format!("Runtime.InvalidEntrypoint: {m}")),
+        LaunchError::Io(m) => errors::service(format!("Starting the execution environment failed: {m}")),
+    }
 }

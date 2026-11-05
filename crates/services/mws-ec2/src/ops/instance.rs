@@ -783,6 +783,7 @@ impl Ec2 {
                     ssh_public_key: key.as_ref().map(|k| k.public_key.clone()),
                     env,
                     volumes: data_volumes,
+                    extras: Default::default(),
                 };
                 launched.push((instance_id.clone(), 1, spec));
                 r.instances.insert(instance_id.clone(), rec);
@@ -790,7 +791,8 @@ impl Ec2 {
             }
             Ok(out)
         })?;
-        for (id, gen, spec) in launched {
+        for (id, gen, mut spec) in launched {
+            self.extend_launch(&mut spec);
             self.transition(ctx, &account, &id, gen, Transition::Launch(Box::new(spec))).await;
         }
         Ok(t::Reservation {
