@@ -107,14 +107,10 @@ impl Amplify {
                 } else if kind == "BUCKET_PREFIX" {
                     Err("A BUCKET_PREFIX source must be an s3:// URL.".into())
                 } else {
-                    let response = crate::http::send(crate::http::Request {
-                        method: "GET",
-                        url,
-                        headers: Vec::new(),
-                        body: None,
-                    })
-                    .await
-                    .map_err(|e| format!("Downloading {url} failed: {e}"))?;
+                    let response =
+                        crate::http::send(crate::http::Request { method: "GET", url, headers: Vec::new(), body: None })
+                            .await
+                            .map_err(|e| format!("Downloading {url} failed: {e}"))?;
                     if response.status != 200 {
                         return Err(format!("Downloading {url} failed with HTTP status {}.", response.status));
                     }

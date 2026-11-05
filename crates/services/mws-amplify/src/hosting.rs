@@ -160,8 +160,7 @@ pub(crate) fn parse_custom_headers(yaml: &str) -> Result<CustomHeaders, String> 
     if yaml.trim().is_empty() {
         return Ok(CustomHeaders { custom_headers: Vec::new() });
     }
-    let parsed: CustomHeaders =
-        serde_yaml::from_str(yaml).map_err(|e| format!("Invalid custom headers: {e}"))?;
+    let parsed: CustomHeaders = serde_yaml::from_str(yaml).map_err(|e| format!("Invalid custom headers: {e}"))?;
     for rule in &parsed.custom_headers {
         if glob_regex(&rule.pattern).is_none() {
             return Err(format!("Invalid custom header pattern: {}", rule.pattern));
@@ -251,9 +250,7 @@ impl Amplify {
         if response.status() != 401 {
             self.add_custom_headers(&mut response, &view, &t.path);
         }
-        let header = |name: &str| {
-            request.headers().get(name).and_then(|v| v.to_str().ok()).unwrap_or("").to_string()
-        };
+        let header = |name: &str| request.headers().get(name).and_then(|v| v.to_str().ok()).unwrap_or("").to_string();
         self.record_access(
             &t.app_id,
             AccessEntry {
@@ -304,14 +301,18 @@ impl Amplify {
             }
         }
         if !matches!(*request.method(), http::Method::GET | http::Method::HEAD | http::Method::OPTIONS) {
-            return s3_style_error(405, "MethodNotAllowed", "The specified method is not allowed against this resource.");
+            return s3_style_error(
+                405,
+                "MethodNotAllowed",
+                "The specified method is not allowed against this resource.",
+            );
         }
         if view.files.is_empty() {
             return response(404, &[("content-type", "text/html".into())], not_found_page());
         }
         let path = decode_path(&t.path);
         let query = request.uri().query().map(|q| format!("?{q}")).unwrap_or_default();
-        let exists = matches!(resolve(&view.files, &path), Resolved::File(_));
+        let exists = !matches!(resolve(&view.files, &path), Resolved::Missing);
         for rule in &view.rules {
             let Some(m) = rule.matches(&t.host, &path) else { continue };
             match rule.status.as_str() {
@@ -347,7 +348,11 @@ impl Amplify {
                 }
                 response(
                     status,
-                    &[("content-type", content_type(&key).into()), ("etag", etag), ("cache-control", "public, max-age=0, must-revalidate".into())],
+                    &[
+                        ("content-type", content_type(&key).into()),
+                        ("etag", etag),
+                        ("cache-control", "public, max-age=0, must-revalidate".into()),
+                    ],
                     self.file_bytes(hash),
                 )
             }
@@ -410,7 +415,11 @@ impl Amplify {
 
     fn upload(&self, request: &HttpRequest, rest: &str) -> HttpResponse {
         if request.method() != http::Method::PUT {
-            return s3_style_error(405, "MethodNotAllowed", "The specified method is not allowed against this resource.");
+            return s3_style_error(
+                405,
+                "MethodNotAllowed",
+                "The specified method is not allowed against this resource.",
+            );
         }
         let token = rest.split('/').next().unwrap_or("");
         let mut st = self.write();

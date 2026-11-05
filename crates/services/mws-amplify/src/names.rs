@@ -55,10 +55,7 @@ pub fn encode_segment(s: &str) -> String {
 
 /// The subdomain label a branch is served under: its display name.
 pub fn display_name(branch: &str) -> String {
-    branch
-        .chars()
-        .map(|c| if c.is_ascii_alphanumeric() || c == '-' { c.to_ascii_lowercase() } else { '-' })
-        .collect()
+    branch.chars().map(|c| if c.is_ascii_alphanumeric() || c == '-' { c.to_ascii_lowercase() } else { '-' }).collect()
 }
 
 pub fn not_found(kind: &str, id: &str) -> ServiceError {

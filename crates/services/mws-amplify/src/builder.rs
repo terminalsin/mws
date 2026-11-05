@@ -102,7 +102,9 @@ fn plan(spec_text: &str, checkout: &Path, env: &BTreeMap<String, String>) -> Res
         let wanted = env.get("AMPLIFY_MONOREPO_APP_ROOT").map(|r| r.trim_matches('/').to_string());
         let mut apps = spec.applications;
         let index = wanted
-            .and_then(|w| apps.iter().position(|a| a.app_root.as_deref().map(|r| r.trim_matches('/')) == Some(w.as_str())))
+            .and_then(|w| {
+                apps.iter().position(|a| a.app_root.as_deref().map(|r| r.trim_matches('/')) == Some(w.as_str()))
+            })
             .unwrap_or(0);
         let app = apps.swap_remove(index);
         (app.app_root, app.backend, app.frontend)
@@ -242,9 +244,13 @@ impl Amplify {
             self.inner.running.lock().expect("running jobs lock").remove(&job.key());
             return;
         }
-        let dir = std::env::temp_dir()
-            .join("mws-amplify")
-            .join(format!("{}-{}-{}-{}", job.app_id, crate::names::display_name(&job.branch), job.job_id, uuid::Uuid::new_v4().simple()));
+        let dir = std::env::temp_dir().join("mws-amplify").join(format!(
+            "{}-{}-{}-{}",
+            job.app_id,
+            crate::names::display_name(&job.branch),
+            job.job_id,
+            uuid::Uuid::new_v4().simple()
+        ));
         let result = self.run_build_steps(&job, &stop, &dir).await;
         let _ = std::fs::remove_dir_all(&dir);
         match result {
@@ -284,7 +290,9 @@ impl Amplify {
             clone.args(["--depth", "1", "--branch", &job.branch]);
         }
         clone.arg(clone_url(&repository, token.as_deref())).arg(&checkout);
-        run(self, job, stop, clone, "git clone").await.map_err(|e| e.replace(token.as_deref().unwrap_or("\u{0}"), "****"))?;
+        run(self, job, stop, clone, "git clone")
+            .await
+            .map_err(|e| e.replace(token.as_deref().unwrap_or("\u{0}"), "****"))?;
         if pinned {
             let mut co = tokio::process::Command::new("git");
             co.current_dir(&checkout).args(["checkout", "--quiet", &commit]);

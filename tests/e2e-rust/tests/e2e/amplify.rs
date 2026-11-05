@@ -23,7 +23,12 @@ fn zip(files: &[(&str, &str)]) -> Vec<u8> {
     buf.into_inner()
 }
 
-async fn wait_for_job(amplify: &aws_sdk_amplify::Client, app: &str, branch: &str, job: &str) -> aws_sdk_amplify::types::Job {
+async fn wait_for_job(
+    amplify: &aws_sdk_amplify::Client,
+    app: &str,
+    branch: &str,
+    job: &str,
+) -> aws_sdk_amplify::types::Job {
     for _ in 0..600 {
         let j = amplify.get_job().app_id(app).branch_name(branch).job_id(job).send().await.unwrap();
         let job = j.job.unwrap();
@@ -201,11 +206,8 @@ async fn manual_deployments_are_served() {
 
     let deployment = amplify.create_deployment().app_id(&app_id).branch_name("main").send().await.unwrap();
     let job_id = deployment.job_id().unwrap().to_string();
-    let site = zip(&[
-        ("index.html", "<h1>home</h1>"),
-        ("docs/index.html", "<h1>docs</h1>"),
-        ("app.js", "console.log(1)"),
-    ]);
+    let site =
+        zip(&[("index.html", "<h1>home</h1>"), ("docs/index.html", "<h1>docs</h1>"), ("app.js", "console.log(1)")]);
     let (status, _, _) = mws.raw("PUT", deployment.zip_upload_url(), &[], &site).await;
     assert_eq!(status, 200);
     let started = amplify.start_deployment().app_id(&app_id).branch_name("main").job_id(&job_id).send().await.unwrap();
@@ -363,7 +365,13 @@ async fn deployments_from_s3_follow_the_bucket_policy() {
     s3.create_bucket().bucket("site-builds").send().await.unwrap();
     let bundle = zip(&[("index.html", "from a zip")]);
     s3.put_object().bucket("site-builds").key("v1/site.zip").body(bundle.into()).send().await.unwrap();
-    s3.put_object().bucket("site-builds").key("v2/index.html").body(b"from a prefix".to_vec().into()).send().await.unwrap();
+    s3.put_object()
+        .bucket("site-builds")
+        .key("v2/index.html")
+        .body(b"from a prefix".to_vec().into())
+        .send()
+        .await
+        .unwrap();
     s3.put_object().bucket("site-builds").key("v2/css/app.css").body(b"body{}".to_vec().into()).send().await.unwrap();
 
     // Amplify reads the bucket as amplify.amazonaws.com: without a bucket
@@ -420,7 +428,13 @@ async fn deployments_from_s3_follow_the_bucket_policy() {
     assert_eq!(header(&headers, "content-type"), Some("text/css"));
 
     // A zip anywhere on HTTP (here, a presigned S3 URL).
-    s3.put_object().bucket("site-builds").key("v3.zip").body(zip(&[("index.html", "over http")]).into()).send().await.unwrap();
+    s3.put_object()
+        .bucket("site-builds")
+        .key("v3.zip")
+        .body(zip(&[("index.html", "over http")]).into())
+        .send()
+        .await
+        .unwrap();
     let presigned = s3
         .get_object()
         .bucket("site-builds")
@@ -466,7 +480,11 @@ async fn repository_builds_run_the_build_spec() {
         "version: 1\nfrontend:\n  phases:\n    preBuild:\n      commands:\n        - mkdir -p dist\n    build:\n      commands:\n        - cp src/page.html dist/index.html\n        - echo \"$AWS_BRANCH $GREETING\" > dist/env.txt\n  artifacts:\n    baseDirectory: dist\n    files:\n      - '**/*'\n",
     )
     .unwrap();
-    std::fs::write(repo.join("customHttp.yml"), "customHeaders:\n  - pattern: '**'\n    headers:\n      - key: X-Built\n        value: 'yes'\n").unwrap();
+    std::fs::write(
+        repo.join("customHttp.yml"),
+        "customHeaders:\n  - pattern: '**'\n    headers:\n      - key: X-Built\n        value: 'yes'\n",
+    )
+    .unwrap();
     git(&repo, &["init", "-q"]);
     git(&repo, &["add", "."]);
     git(&repo, &["commit", "-q", "-m", "first page"]);
@@ -493,7 +511,8 @@ async fn repository_builds_run_the_build_spec() {
     let err = amplify.create_deployment().app_id(&app_id).branch_name("main").send().await.unwrap_err();
     assert_eq!(err.code(), Some("BadRequestException"));
 
-    let started = amplify.start_job().app_id(&app_id).branch_name("main").job_type(JobType::Release).send().await.unwrap();
+    let started =
+        amplify.start_job().app_id(&app_id).branch_name("main").job_type(JobType::Release).send().await.unwrap();
     let id = started.job_summary().unwrap().job_id().to_string();
     let job = wait_for_job(&amplify, &app_id, "main", &id).await;
     let steps: Vec<(&str, &str)> = job.steps().iter().map(|s| (s.step_name(), s.status().as_str())).collect();
@@ -521,7 +540,8 @@ async fn repository_builds_run_the_build_spec() {
     git(&repo, &["commit", "-q", "-am", "second page"]);
     let hook = amplify.create_webhook().app_id(&app_id).branch_name("main").send().await.unwrap().webhook.unwrap();
     let query = hook.webhook_url().split_once('?').unwrap().1;
-    let (status, _, body) = mws.raw("POST", &format!("/prod/webhooks?{query}"), &[("Content-Type", "application/json")], b"{}").await;
+    let (status, _, body) =
+        mws.raw("POST", &format!("/prod/webhooks?{query}"), &[("Content-Type", "application/json")], b"{}").await;
     assert_eq!(status, 200, "{}", String::from_utf8_lossy(&body));
     let hook_job: serde_json::Value = serde_json::from_slice(&body).unwrap();
     let hook_id = hook_job["jobId"].as_str().unwrap();
@@ -542,7 +562,8 @@ async fn repository_builds_run_the_build_spec() {
         .send()
         .await
         .unwrap();
-    let failed = amplify.start_job().app_id(&app_id).branch_name("main").job_type(JobType::Release).send().await.unwrap();
+    let failed =
+        amplify.start_job().app_id(&app_id).branch_name("main").job_type(JobType::Release).send().await.unwrap();
     let failed_id = failed.job_summary().unwrap().job_id().to_string();
     let job = wait_for_job(&amplify, &app_id, "main", &failed_id).await;
     assert_eq!(job.summary().unwrap().status(), &JobStatus::Failed);

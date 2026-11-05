@@ -212,7 +212,11 @@ impl S3 {
 
     /// The keys under `prefix`, as an AWS service principal
     /// (`s3:ListBucket` from the bucket policy, with `s3:prefix`).
-    pub fn list_objects_as_service(&self, read: &ServiceRead<'_>, prefix: &str) -> Result<Vec<String>, ServicePutError> {
+    pub fn list_objects_as_service(
+        &self,
+        read: &ServiceRead<'_>,
+        prefix: &str,
+    ) -> Result<Vec<String>, ServicePutError> {
         let st = self.read();
         let b = st.buckets.get(read.bucket).ok_or(ServicePutError::NoSuchBucket)?;
         let Some(doc) = &b.policy else {
@@ -228,7 +232,12 @@ impl S3 {
             context.insert("aws:PrincipalIsAWSService", vec!["true".to_string()]);
             context.insert("s3:prefix", vec![prefix.to_string()]);
             let resource = format!("arn:{}:s3:::{}", put.partition, b.name);
-            let eval = policy.evaluate(&Request { action: "s3:ListBucket", resource: &resource, principal: &principal, context: &context });
+            let eval = policy.evaluate(&Request {
+                action: "s3:ListBucket",
+                resource: &resource,
+                principal: &principal,
+                context: &context,
+            });
             eval.allowed() && !eval.denied()
         });
         if !allowed {

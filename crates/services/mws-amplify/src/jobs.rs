@@ -62,7 +62,13 @@ fn parse_job_id(id: &str) -> Result<u64, ServiceError> {
 }
 
 fn step(name: &str, now: DateTime<Utc>) -> types::Step {
-    types::Step { step_name: name.into(), start_time: now, status: "PENDING".into(), end_time: now, ..Default::default() }
+    types::Step {
+        step_name: name.into(),
+        start_time: now,
+        status: "PENDING".into(),
+        end_time: now,
+        ..Default::default()
+    }
 }
 
 impl Amplify {
@@ -131,7 +137,13 @@ impl Amplify {
     }
 
     /// A link that downloads `data` for an hour.
-    pub(crate) fn download_link(&self, endpoint: &str, now: DateTime<Utc>, content_type: &str, data: Vec<u8>) -> String {
+    pub(crate) fn download_link(
+        &self,
+        endpoint: &str,
+        now: DateTime<Utc>,
+        content_type: &str,
+        data: Vec<u8>,
+    ) -> String {
         let token = names::random_alnum(40);
         let mut st = self.write();
         let blob = st.put_blob(data);
@@ -219,13 +231,7 @@ impl Amplify {
 
     /// One job at a time per branch.
     pub(crate) fn branch_lock(&self, app_id: &str, branch: &str) -> Arc<tokio::sync::Mutex<()>> {
-        self.inner
-            .branch_locks
-            .lock()
-            .expect("branch locks")
-            .entry(format!("{app_id}/{branch}"))
-            .or_default()
-            .clone()
+        self.inner.branch_locks.lock().expect("branch locks").entry(format!("{app_id}/{branch}")).or_default().clone()
     }
 
     pub(crate) fn register_running(&self, job: &JobRef) -> Arc<tokio::sync::Notify> {
@@ -293,9 +299,7 @@ impl Amplify {
             let b = branch(rec, &input.branch_name)?;
             authorize(ctx, "CreateDeployment", &b.branch.branch_arn, ConditionContext::new())?;
             if !rec.app.repository.is_empty() {
-                return Err(bad_request(
-                    "Operation not supported. App is already connected a repository.",
-                ));
+                return Err(bad_request("Operation not supported. App is already connected a repository."));
             }
             drop(st);
             let now = ctx.received_at;
@@ -361,8 +365,7 @@ impl Amplify {
                     }
                     j.summary.status = "PENDING".into();
                     j.summary.start_time = now;
-                    let source =
-                        Source::Uploaded { uploaded: j.uploaded.clone(), expected: j.expected_files.clone() };
+                    let source = Source::Uploaded { uploaded: j.uploaded.clone(), expected: j.expected_files.clone() };
                     (n, source)
                 }
                 (None, Some(url)) => {
@@ -389,8 +392,13 @@ impl Amplify {
                 }
             }
         };
-        let job =
-            JobRef { app_id: input.app_id, branch: input.branch_name, job_id, endpoint: endpoint(ctx), clock: Clock::of(ctx) };
+        let job = JobRef {
+            app_id: input.app_id,
+            branch: input.branch_name,
+            job_id,
+            endpoint: endpoint(ctx),
+            clock: Clock::of(ctx),
+        };
         let summary = self.with_job(&job, |j| j.summary.clone()).expect("job exists");
         self.spawn_deployment(job, source);
         Ok(types::StartDeploymentResult { job_summary: summary })
@@ -413,9 +421,11 @@ impl Amplify {
                 ));
             }
             if input.job_type == "RETRY" {
-                let id = input.job_id.as_deref().filter(|j| !j.is_empty()).ok_or_else(|| {
-                    bad_request("jobId is required to retry a job.")
-                })?;
+                let id = input
+                    .job_id
+                    .as_deref()
+                    .filter(|j| !j.is_empty())
+                    .ok_or_else(|| bad_request("jobId is required to retry a job."))?;
                 let j = b.jobs.get(&parse_job_id(id)?).ok_or_else(|| not_found("Job", id))?;
                 if !matches!(j.summary.status.as_str(), "FAILED" | "CANCELLED") {
                     return Err(bad_request(format!("Job {id} can only be retried after it failed or was cancelled.")));
@@ -443,7 +453,8 @@ impl Amplify {
         commit: (String, String, DateTime<Utc>),
     ) -> Result<types::JobSummary, ServiceError> {
         let now = ctx.received_at;
-        let id = self.new_job(app_id, branch_name, job_type, commit, now).ok_or_else(|| not_found("Branch", branch_name))?;
+        let id =
+            self.new_job(app_id, branch_name, job_type, commit, now).ok_or_else(|| not_found("Branch", branch_name))?;
         let job = JobRef {
             app_id: app_id.into(),
             branch: branch_name.into(),

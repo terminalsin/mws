@@ -163,10 +163,14 @@ impl Amplify {
             auto_branch_creation_patterns: input.auto_branch_creation_patterns,
             auto_branch_creation_config: input.auto_branch_creation_config,
             repository_clone_method: token.as_ref().map(|_| "TOKEN".into()),
-            cache_config: Some(input.cache_config.unwrap_or(types::CacheConfig { r#type: "AMPLIFY_MANAGED_NO_COOKIES".into() })),
+            cache_config: Some(
+                input.cache_config.unwrap_or(types::CacheConfig { r#type: "AMPLIFY_MANAGED_NO_COOKIES".into() }),
+            ),
             webhook_create_time: None,
             waf_configuration: None,
-            job_config: Some(input.job_config.unwrap_or(types::JobConfig { build_compute_type: "STANDARD_8GB".into() })),
+            job_config: Some(
+                input.job_config.unwrap_or(types::JobConfig { build_compute_type: "STANDARD_8GB".into() }),
+            ),
         };
         let rec = AppRecord {
             account: ctx.caller.account_id.clone(),
@@ -198,11 +202,8 @@ impl Amplify {
     ) -> Result<types::ListAppsResult, ServiceError> {
         authorize(ctx, "ListApps", &names::caller_app_arn(ctx, "*"), ConditionContext::new())?;
         let st = self.read();
-        let mut apps: Vec<&AppRecord> = st
-            .apps
-            .values()
-            .filter(|a| a.account == ctx.caller.account_id && a.region == ctx.region)
-            .collect();
+        let mut apps: Vec<&AppRecord> =
+            st.apps.values().filter(|a| a.account == ctx.caller.account_id && a.region == ctx.region).collect();
         apps.sort_by_key(|a| (a.app.create_time, a.app.app_id.clone()));
         let all: Vec<types::App> = apps.into_iter().map(render_app).collect();
         let (apps, next_token) = names::paginate(&all, input.next_token.as_deref(), input.max_results)?;
@@ -455,7 +456,8 @@ impl Amplify {
                 d.domain.sub_domains.retain(|s| s.sub_domain_setting.branch_name != input.branch_name);
             }
             st.webhooks.retain(|_, w| {
-                !(w.webhook.app_id.as_deref() == Some(input.app_id.as_str()) && w.webhook.branch_name == input.branch_name)
+                !(w.webhook.app_id.as_deref() == Some(input.app_id.as_str())
+                    && w.webhook.branch_name == input.branch_name)
             });
             st.uploads.retain(|_, u| !(u.app_id == input.app_id && u.branch_name == input.branch_name));
             st.artifacts.retain(|_, a| !(a.app_id == input.app_id && a.branch_name == input.branch_name));
@@ -527,8 +529,7 @@ impl Amplify {
             .cloned()
             .collect();
         all.sort_by_key(|e| e.create_time);
-        let (backend_environments, next_token) =
-            names::paginate(&all, input.next_token.as_deref(), input.max_results)?;
+        let (backend_environments, next_token) = names::paginate(&all, input.next_token.as_deref(), input.max_results)?;
         Ok(types::ListBackendEnvironmentsResult { backend_environments, next_token })
     }
 
@@ -550,11 +551,7 @@ impl Amplify {
 
     // ----- webhooks -----
 
-    fn webhook<'a>(
-        ctx: &RequestContext,
-        st: &'a State,
-        id: &str,
-    ) -> Result<&'a WebhookRecord, ServiceError> {
+    fn webhook<'a>(ctx: &RequestContext, st: &'a State, id: &str) -> Result<&'a WebhookRecord, ServiceError> {
         st.webhooks
             .get(id)
             .filter(|w| w.account == ctx.caller.account_id && w.region == ctx.region)
@@ -674,7 +671,8 @@ impl Amplify {
         arn: &str,
     ) -> Result<&'a mut Option<BTreeMap<String, String>>, ServiceError> {
         let missing = || errors::resource_not_found(format!("Resource {arn} not found."));
-        let rest = arn.split_once(":apps/").map(|(_, r)| r).ok_or_else(|| bad_request(format!("Invalid ARN: {arn}")))?;
+        let rest =
+            arn.split_once(":apps/").map(|(_, r)| r).ok_or_else(|| bad_request(format!("Invalid ARN: {arn}")))?;
         let mut parts = rest.splitn(3, '/');
         let app_id = parts.next().unwrap_or_default();
         let rec = st

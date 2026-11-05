@@ -49,8 +49,8 @@ fn check_certificate(settings: Option<&types::CertificateSettings>) -> Result<()
 }
 
 fn certificate(settings: Option<types::CertificateSettings>, record: &DomainRecord) -> types::Certificate {
-    let settings =
-        settings.unwrap_or(types::CertificateSettings { r#type: "AMPLIFY_MANAGED".into(), custom_certificate_arn: None });
+    let settings = settings
+        .unwrap_or(types::CertificateSettings { r#type: "AMPLIFY_MANAGED".into(), custom_certificate_arn: None });
     let managed = settings.r#type != "CUSTOM";
     types::Certificate {
         r#type: settings.r#type,
@@ -68,7 +68,10 @@ fn sync_branch_domains(rec: &mut AppRecord) {
     let mut mapped = Vec::new();
     for d in rec.domains.values() {
         for s in &d.domain.sub_domains {
-            mapped.push((s.sub_domain_setting.branch_name.clone(), fqdn(&s.sub_domain_setting.prefix, &d.domain.domain_name)));
+            mapped.push((
+                s.sub_domain_setting.branch_name.clone(),
+                fqdn(&s.sub_domain_setting.prefix, &d.domain.domain_name),
+            ));
         }
     }
     for (branch, host) in mapped {
@@ -163,9 +166,10 @@ impl Amplify {
         let domain_name = normalize(&input.domain_name);
         let record = {
             let mut st = self.write();
-            let taken = st.apps.values().any(|a| {
-                a.account == ctx.caller.account_id && a.domains.keys().any(|d| d == &domain_name)
-            });
+            let taken = st
+                .apps
+                .values()
+                .any(|a| a.account == ctx.caller.account_id && a.domains.keys().any(|d| d == &domain_name));
             let rec = app_mut(ctx, &mut st, &input.app_id)?;
             let arn = format!("{}/domains/{domain_name}", rec.app.app_arn);
             authorize(ctx, "CreateDomainAssociation", &arn, ConditionContext::new())?;
@@ -179,7 +183,11 @@ impl Amplify {
             let distribution = format!("d{}.cloudfront.net", names::random_alnum(13));
             let mut record = DomainRecord {
                 verification_name: format!("_{}.{domain_name}.", names::random_hex(32)),
-                verification_value: format!("_{}.{}.acm-validations.aws.", names::random_hex(32), names::random_alnum(10)),
+                verification_value: format!(
+                    "_{}.{}.acm-validations.aws.",
+                    names::random_hex(32),
+                    names::random_alnum(10)
+                ),
                 distribution: distribution.clone(),
                 ..DomainRecord::default()
             };
@@ -229,8 +237,7 @@ impl Amplify {
         authorize(ctx, "ListDomainAssociations", &format!("{}/domains/*", rec.app.app_arn), ConditionContext::new())?;
         self.refresh_domains(rec);
         let all: Vec<types::DomainAssociation> = rec.domains.values().map(|d| d.domain.clone()).collect();
-        let (domain_associations, next_token) =
-            names::paginate(&all, input.next_token.as_deref(), input.max_results)?;
+        let (domain_associations, next_token) = names::paginate(&all, input.next_token.as_deref(), input.max_results)?;
         Ok(types::ListDomainAssociationsResult { domain_associations, next_token })
     }
 
