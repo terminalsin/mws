@@ -11,7 +11,7 @@ use crate::Ec2;
 
 /// A network interface a service made.
 #[derive(Debug, Clone, Default)]
-pub struct ServiceInterface {
+pub struct TaskInterface {
     pub eni_id: String,
     pub private_ip: String,
     pub mac_address: String,
@@ -29,7 +29,7 @@ impl Ec2 {
     /// VPC's default group when empty). No IAM check: the calling service
     /// authorized its own action.
     #[allow(clippy::too_many_arguments)]
-    pub fn create_service_interface(
+    pub fn create_task_interface(
         &self,
         ctx: &RequestContext,
         account: &str,
@@ -38,7 +38,7 @@ impl Ec2 {
         assign_public: bool,
         description: &str,
         requester: &str,
-    ) -> Result<ServiceInterface, ServiceError> {
+    ) -> Result<TaskInterface, ServiceError> {
         Kind::Subnet.check(subnet_id)?;
         let region = ctx.region.clone();
         self.with_region_of(account, &ctx.region, ctx, |r| {
@@ -56,7 +56,7 @@ impl Ec2 {
             eni.requester_managed = Some(true);
             eni.requester_id = Some(requester.to_string());
             eni.status = Some("in-use".into());
-            Ok(ServiceInterface {
+            Ok(TaskInterface {
                 eni_id: id.clone(),
                 private_ip: ip,
                 mac_address: eni.mac_address.clone().unwrap_or_default(),
@@ -70,8 +70,8 @@ impl Ec2 {
         })
     }
 
-    /// Delete an interface [`Ec2::create_service_interface`] made.
-    pub fn delete_service_interface(&self, ctx: &RequestContext, account: &str, eni_id: &str) {
+    /// Delete an interface [`Ec2::create_task_interface`] made.
+    pub fn delete_task_interface(&self, ctx: &RequestContext, account: &str, eni_id: &str) {
         self.with_region_of(account, &ctx.region, ctx, |r| {
             r.network_interfaces.remove(eni_id);
         });

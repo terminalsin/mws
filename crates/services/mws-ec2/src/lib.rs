@@ -47,8 +47,7 @@ pub use public::{
     availability_zones, InstanceInfo, InstanceNetwork, SecurityGroupInfo, ServiceInterface, ServiceInterfaceError,
     ServiceInterfaceRequest, SubnetInfo, VpcInfo,
 };
-pub use public::{InstanceInfo, SecurityGroupInfo, SubnetInfo, VpcInfo};
-pub use service_eni::ServiceInterface;
+pub use service_eni::TaskInterface;
 use state::{RegionState, State};
 
 /// Credentials for an instance profile's role, as instance metadata serves
