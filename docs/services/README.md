@@ -28,6 +28,7 @@ Every service shares the same foundations:
 | [KMS](kms.md) | 56 / 56 | Symmetric, asymmetric, HMAC and post-quantum keys with real cryptography, key policies, grants, rotation |
 | [Private CA](acm-pca.md) | 23 / 23 | Root and subordinate CAs issuing real X.509 certificates, CRLs in S3, OCSP, audit reports |
 | [Certificate Manager](acm.md) | 40 / 40 | Public certificates with real DNS validation through Route 53, private certificates, imports, expiry events |
+| [GuardDuty](guardduty.md) | 102 / 102 | Detectors and features, sample findings to EventBridge and S3, suppression rules, members, Organizations delegated administrator |
 | [Secrets Manager](secretsmanager.md) | 23 / 23 | KMS-sealed secret versions, staging labels, rotation that runs your Lambda function, replicas |
 
 ## Storage
@@ -88,4 +89,6 @@ with the permissions AWS would use:
   from Private CA, which writes its CRLs into S3.
 - Secrets Manager rotation runs your Lambda function; SSM resolves Secrets
   Manager references.
+- GuardDuty sends findings to EventBridge and S3 (under KMS) and registers
+  its delegated administrator with Organizations.
 - EC2 instances and Lambda functions receive role credentials from STS.
