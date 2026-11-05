@@ -69,6 +69,8 @@ impl Run {
 pub(crate) struct Health {
     runs: Mutex<HashMap<HealthKey, Run>>,
     started: AtomicBool,
+    /// A target's health changed since host counts were last published.
+    changed: AtomicBool,
 }
 
 impl Health {
@@ -342,7 +344,11 @@ pub(crate) fn ensure_running(elb: &Elb) {
             let elb = Elb { inner };
             sweep_draining(&elb, elb.now());
             tick(&elb);
-            if last_metrics.elapsed() >= Duration::from_secs(60) {
+            // Every minute, as ELB does, and as soon as a target's health
+            // changes.
+            if last_metrics.elapsed() >= Duration::from_secs(60)
+                || elb.inner.health.changed.swap(false, Ordering::SeqCst)
+            {
                 last_metrics = Instant::now();
                 publish_host_counts(&elb);
             }
@@ -381,8 +387,9 @@ fn tick(elb: &Elb) {
                     match run.healthy {
                         None => run.healthy = Some(true),
                         Some(false) if run.successes >= p.healthy_threshold => run.healthy = Some(true),
-                        _ => {}
+                        _ => return,
                     }
+                    elb.inner.health.changed.store(true, Ordering::SeqCst);
                 }
                 Err((reason, desc)) => {
                     run.successes = 0;
@@ -390,6 +397,7 @@ fn tick(elb: &Elb) {
                     run.last_failure = Some((reason, desc));
                     if run.healthy != Some(false) && run.failures >= p.unhealthy_threshold {
                         run.healthy = Some(false);
+                        elb.inner.health.changed.store(true, Ordering::SeqCst);
                     }
                 }
             }

@@ -123,9 +123,7 @@ impl Elb {
         let tls = matches!(protocol.as_str(), "HTTPS" | "TLS");
         let certs: Vec<t::Certificate> = input.certificates.clone().unwrap_or_default();
         if tls && certs.is_empty() {
-            return Err(errors::certificate_not_found(format!(
-                "A certificate must be specified for {protocol} listeners"
-            )));
+            return Err(validation(format!("A certificate must be specified for {protocol} listeners")));
         }
         if !tls && !certs.is_empty() {
             return Err(validation(format!("Certificates cannot be specified for {protocol} listeners")));
@@ -339,9 +337,7 @@ impl Elb {
         }
         if tls {
             if listener.certificates.as_ref().is_none_or(Vec::is_empty) {
-                return Err(errors::certificate_not_found(format!(
-                    "A certificate must be specified for {protocol} listeners"
-                )));
+                return Err(validation(format!("A certificate must be specified for {protocol} listeners")));
             }
             let p = input
                 .ssl_policy

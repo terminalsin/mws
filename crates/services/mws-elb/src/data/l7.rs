@@ -91,7 +91,13 @@ pub(crate) enum Decision {
 }
 
 pub(crate) fn elb_error(status: u16) -> Decision {
-    let reason = StatusCode::from_u16(status).ok().and_then(|s| s.canonical_reason()).unwrap_or("Error");
+    // The phrases ELB's own error pages use.
+    let reason = match status {
+        503 => "Service Temporarily Unavailable",
+        504 => "Gateway Time-out",
+        413 => "Request Entity Too Large",
+        _ => StatusCode::from_u16(status).ok().and_then(|s| s.canonical_reason()).unwrap_or("Error"),
+    };
     let body = format!(
         "<html>\r\n<head><title>{status} {reason}</title></head>\r\n<body>\r\n<center><h1>{status} {reason}</h1></center>\r\n</body>\r\n</html>\r\n"
     );
@@ -406,13 +412,9 @@ fn redirect(c: &t::RedirectActionConfig, spec: &FrontSpec, host: &str, path: &st
         path,
         query.unwrap_or(""),
     );
+    // ELB always writes the port, default or not.
     let scheme = protocol.to_ascii_lowercase();
-    let default_port = (scheme == "https" && port == "443") || (scheme == "http" && port == "80");
-    let mut location = format!("{scheme}://{host_out}");
-    if !default_port {
-        location.push(':');
-        location.push_str(&port);
-    }
+    let mut location = format!("{scheme}://{host_out}:{port}");
     location.push_str(&path_out);
     if !query_out.is_empty() {
         location.push('?');

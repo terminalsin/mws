@@ -198,7 +198,9 @@ impl Elb {
             health_check_port: if lambda {
                 None
             } else {
-                Some(input.health_check_port.clone().unwrap_or_else(|| "traffic-port".into()))
+                // GENEVE target groups check port 80 unless told otherwise.
+                let default = if input.protocol.as_deref() == Some("GENEVE") { "80" } else { "traffic-port" };
+                Some(input.health_check_port.clone().unwrap_or_else(|| default.into()))
             },
             health_check_enabled: Some(enabled),
             health_check_interval_seconds: Some(input.health_check_interval_seconds.unwrap_or(d.interval)),
