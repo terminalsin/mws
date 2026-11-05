@@ -845,6 +845,10 @@ impl mws_securityhub::ExportSink for SecurityHubExports {
         match kms_key_arn.filter(|k| !k.is_empty()) {
             Some(k) => self.0.put_object_as_service_kms(put, k).map(|_| ()),
             None => self.0.put_object_as_service(put).map(|_| ()).map_err(|e| e.to_string()),
+        }
+    }
+}
+
 /// ELB's `AWS/ApplicationELB`, `AWS/NetworkELB`, `AWS/GatewayELB` and
 /// `AWS/ELB` metrics.
 pub struct ElbToCloudWatch(pub mws_cloudwatch::CloudWatch);

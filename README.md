@@ -104,7 +104,6 @@ SDKs, S3 addressing, host-prefixed endpoints and calling as other identities.
 | [S3 Control](docs/services/s3control.md) | 97 / 97 | restXml |
 | [Lambda](docs/services/lambda.md) | 68 / 88 | restJson1 |
 | [EC2 and VPC](docs/services/ec2.md) | 120 / 811 | ec2Query |
-| [EC2 and VPC](docs/services/ec2.md) | 107 / 811 | ec2Query |
 | [Elastic Load Balancing](docs/services/elb.md) | 80 / 80 | awsQuery |
 | [Route 53](docs/services/route53.md) | 71 / 71 | restXml |
 | [Private CA](docs/services/acm-pca.md) | 23 / 23 | awsJson 1.1 |

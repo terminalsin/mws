@@ -44,7 +44,6 @@ Every service shares the same foundations:
 | --- | --- | --- |
 | [Lambda](lambda.md) | 68 / 88 | Python, Node.js and custom runtimes that really run, SQS and Kinesis event sources, destinations, function URLs |
 | [EC2 and VPC](ec2.md) | 120 / 811 | Default VPCs, subnets, security groups, NAT gateways and VPC endpoints that filter and route real Docker traffic, AMIs, instances as Docker containers, instance metadata and profiles |
-| [EC2 and VPC](ec2.md) | 107 / 811 | Default VPCs, subnets, security groups, AMIs, instances as Docker containers, instance metadata and profiles |
 | [Elastic Load Balancing](elb.md) | 80 / 80 | Application, Network and Classic Load Balancers whose listeners really proxy: rules, stickiness, HTTPS with ACM certificates, mutual TLS, Lambda targets, health checks, metrics |
 | [Route 53](route53.md) | 71 / 71 | Public and private hosted zones, all routing policies, health checks, DNSSEC key management, an optional real DNS responder |
 
