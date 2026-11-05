@@ -23,7 +23,7 @@ All 77 operations of the model are implemented (restJson1). Builds are real: the
 
 | Feature | Status | Details |
 | --- | :---: | --- |
-| Pipelines | ✅ | Manual runs and cron schedules on the emulated clock, `EXPRESSION_MATCH_AND_DEPENDENCY_UPDATES_AVAILABLE` (builds only when a resolved input changed), auto-disable after consecutive failures, image tests on or off. |
+| Pipelines | ✅ | Manual runs and cron schedules on the emulated clock (in the schedule's IANA `timezone`, UTC by default), `EXPRESSION_MATCH_AND_DEPENDENCY_UPDATES_AVAILABLE` (builds only when a resolved input changed), auto-disable after consecutive failures, image tests on or off. |
 | Build workflow | ✅ | Steps recorded as workflow and step executions: launch the build instance with the infrastructure configuration, run the build and validate phases, collect packages, `CreateImage`, terminate; then a test instance runs the test phases. Image state moves `PENDING`, `BUILDING`, `TESTING`, `DISTRIBUTING`, `INTEGRATING`, `AVAILABLE` (or `FAILED` with the failing component and step, or `CANCELLED`). |
 | Components that run | ✅ | With EC2's Docker backend the AWSTOE steps run inside the build instance's container (`ExecuteBash`, file and folder actions, `S3Download` through the AWS CLI, `WebDownload`, `UpdateOS`, `Assert`, ...), and the AMI is a `docker commit` of the result. With the metadata backend steps succeed without running. |
 | Custom workflows | ✅ | `WaitForAction` with `ListWaitingWorkflowSteps` and `SendWorkflowStepAction` (resume or stop), JSONPath step inputs, `if` conditions, parameters, `onFailure`. |
@@ -31,7 +31,7 @@ All 77 operations of the model are implemented (restJson1). Builds are real: the
 | Cancel, retry, import | 🟡 | `CancelImageCreation`, `RetryImage` and `ImportDiskImage` (an AMI from an S3 ISO) work; `ImportVmImage` reports that the import task does not exist because VM Import/Export is not emulated. |
 | Container images | 🟡 | Container recipes build, but nothing is pushed to ECR (not emulated yet). |
 | Scan findings | 🟡 | `ListImageScanFindings` and the aggregations answer empty lists (no Inspector). |
-| AWSTOE coverage | 🟡 | Windows-only actions are no-ops, a step's `loop` runs it once, `ExecuteDocument` fails the step; schedule time zones other than UTC are treated as UTC. |
+| AWSTOE coverage | 🟡 | Step `loop`s (`forEach` lists or delimited strings, `for` ranges; `{{ loop.value }}`, `{{ loop.index }}`, named loops), chained outputs (`{{ build.Step.outputs.stdout }}`), `onFailure` and `maxAttempts`, and `ExecuteDocument` with documents from S3, Image Builder component ARNs or files on the instance (with phases and parameters, nested up to three levels). Nested S3 documents are read with Image Builder's service-linked role rather than the instance profile. Windows-only actions (`ExecutePowerShell`, `InstallMSI`, `UninstallMSI`) fail the step because instances run Linux. |
 
 ## Lifecycle and integrations
 
