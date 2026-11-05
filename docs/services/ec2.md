@@ -41,7 +41,7 @@
 | Instance profiles | ✅ | Role credentials assumed by `ec2.amazonaws.com`; `RunInstances` checks `iam:PassRole`. |
 | EBS volumes and snapshots | ✅ | Volumes, snapshots and their copies, modifications, attributes, sharing, locks, archive tiers, fast snapshot restores, the Recycle Bin, encryption by default and root volume replacement. With the Docker backend each volume is a Docker volume mounted at its device path in the instance, and snapshots copy its data. |
 | Launch templates | ✅ | Versions (from a source version), `$Latest` and `$Default`, `ModifyLaunchTemplate`, `GetLaunchTemplateData`; `RunInstances` with a launch template merges its data under the call's parameters and tags instances with `aws:ec2launchtemplate:*`. |
-| Spot, Auto Scaling | ❌ | Not yet. |
+| Spot instances | 🟡 | `RunInstances` with `InstanceMarketOptions` (or a launch template's) of market type `spot` launches Spot instances: `InstanceLifecycle: spot`, a `SpotInstanceRequestId`, and the `instance-lifecycle` and `spot-instance-request-id` filters. Spot requests, fleets, prices and interruptions are not emulated. |
 
 ## Access control
 
