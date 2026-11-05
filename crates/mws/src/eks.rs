@@ -16,6 +16,7 @@ pub(crate) struct EksInfrastructure {
     pub ec2: mws_ec2::Ec2,
     pub iam: mws_iam::Iam,
     pub autoscaling: mws_autoscaling::AutoScaling,
+    pub logs: mws_logs::Logs,
 }
 
 const CLUSTER_ROLE: &str = "AWSServiceRoleForAmazonEKS";
@@ -444,6 +445,16 @@ impl Infrastructure for EksInfrastructure {
                 image_id: str_at(&i, "ImageId").to_string(),
             })
             .collect()
+    }
+
+    async fn control_plane_logs(&self, scope: &Scope<'_>, cluster: &str, stream: &str, events: Vec<(i64, String)>) {
+        let events = events.into_iter().map(|(timestamp, message)| mws_logs::ServiceLogEvent { timestamp, message });
+        let group = format!("/aws/eks/{cluster}/cluster");
+        if let Err(e) =
+            self.logs.put_log_events_as_caller(&service_ctx(scope, CLUSTER_ROLE), &group, stream, events.collect())
+        {
+            tracing::debug!(cluster, stream, "EKS could not write control plane logs: {}", e.message);
+        }
     }
 
     async fn delete_node_group(&self, scope: &Scope<'_>, group: &str, template_id: Option<&str>) {

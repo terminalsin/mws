@@ -2,12 +2,15 @@
 //! backend, and keeping what EKS reports (endpoint, certificate authority,
 //! status, nodes) in step with it.
 
+use std::collections::BTreeMap;
 use std::time::Duration;
 
 use base64::Engine;
+use chrono::{DateTime, Utc};
 use mws_core::RequestContext;
+use sha2::Digest;
 
-use crate::kube::{nodes, ControlPlaneSpec};
+use crate::kube::{nodes, ControlPlaneSpec, LogLine};
 use crate::state::{ClusterRec, ControlPlaneRec};
 use crate::{util, Eks};
 
@@ -21,6 +24,20 @@ fn webhook_base(ctx: &RequestContext) -> String {
         }
     }
     endpoint
+}
+
+/// EKS's stream for a log type: `kube-apiserver-audit-<32 hex>`, the
+/// suffix fixed per control plane and type.
+fn log_stream(kind: &str, id: &str) -> String {
+    let prefix = match kind {
+        "audit" => "kube-apiserver-audit",
+        "authenticator" => "authenticator",
+        "controllerManager" => "kube-controller-manager",
+        "scheduler" => "kube-scheduler",
+        _ => "kube-apiserver",
+    };
+    let digest = sha2::Sha256::digest(format!("{id}/{prefix}").as_bytes());
+    format!("{prefix}-{}", hex::encode(&digest[..16]))
 }
 
 fn spec(account: &str, region: &str, name: &str, rec: &ClusterRec) -> Option<ControlPlaneSpec> {
@@ -87,10 +104,14 @@ impl Eks {
                     .and_then(|rec| spec(&account, &region, &name, rec))
             };
             let Some(spec) = spec else { return };
+            let started = Utc::now();
             let result = if upgrade { backend.upgrade(&spec).await } else { backend.ensure(&spec).await };
+            let ok = result.is_ok();
             if !me.record_control_plane(&account, &region, &name, &spec.id, result) {
                 // Deleted meanwhile.
                 backend.delete(&spec.id).await;
+            } else if ok {
+                me.follow_logs(&account, &region, &name, &spec.id, started).await;
             }
         });
     }
@@ -163,8 +184,86 @@ impl Eks {
         }
     }
 
+    /// Ship the API server's logs to CloudWatch Logs, for the log types
+    /// the cluster's logging configuration enables at the time.
+    async fn follow_logs(&self, account: &str, region: &str, name: &str, id: &str, since: DateTime<Utc>) {
+        let (Some(backend), Some(_)) = (self.control_plane().cloned(), self.infra()) else { return };
+        let Some(mut rx) = backend.follow_logs(id, since).await else { return };
+        let me = self.clone();
+        let (account, region, name) = (account.to_string(), region.to_string(), name.to_string());
+        let task = tokio::spawn(async move {
+            let mut batch = Vec::new();
+            loop {
+                match tokio::time::timeout(Duration::from_millis(250), rx.recv()).await {
+                    Ok(Some(line)) => {
+                        batch.push(line);
+                        if batch.len() < 1000 {
+                            continue;
+                        }
+                    }
+                    Ok(None) => {
+                        me.ship_logs(&account, &region, &name, std::mem::take(&mut batch)).await;
+                        break;
+                    }
+                    Err(_) => {}
+                }
+                if !batch.is_empty() {
+                    me.ship_logs(&account, &region, &name, std::mem::take(&mut batch)).await;
+                }
+            }
+        });
+        if let Some(old) = self.inner.log_followers.lock().unwrap().insert(id.to_string(), task.abort_handle()) {
+            old.abort();
+        }
+    }
+
+    /// Write `lines` to the streams of the log types that are enabled.
+    async fn ship_logs(&self, account: &str, region: &str, name: &str, lines: Vec<LogLine>) {
+        let mut streams: BTreeMap<String, Vec<(i64, String)>> = BTreeMap::new();
+        for line in lines {
+            let kind = crate::kube::log_type(&line);
+            streams.entry(kind.to_string()).or_default().push((line.timestamp_ms, line.message));
+        }
+        for (kind, events) in streams {
+            self.write_control_plane_log(account, region, name, &kind, events).await;
+        }
+    }
+
+    /// Write events of log type `kind` (`api`, `audit`, `authenticator`,
+    /// ...) when the cluster enables it.
+    pub(crate) async fn write_control_plane_log(
+        &self,
+        account: &str,
+        region: &str,
+        name: &str,
+        kind: &str,
+        events: Vec<(i64, String)>,
+    ) {
+        let Some(infra) = self.infra().cloned() else { return };
+        let (partition, stream) = {
+            let st = self.read();
+            let Some(rec) = st.regions.get(&format!("{account}/{region}")).and_then(|r| r.clusters.get(name)) else {
+                return;
+            };
+            let enabled = rec.cluster.logging.as_ref().and_then(|l| l.cluster_logging.as_ref()).is_some_and(|setups| {
+                setups
+                    .iter()
+                    .any(|s| s.enabled == Some(true) && s.types.as_ref().is_some_and(|t| t.iter().any(|t| t == kind)))
+            });
+            let Some(cp) = rec.control_plane.as_ref().filter(|_| enabled) else { return };
+            let arn = rec.cluster.arn.clone().unwrap_or_default();
+            let partition = arn.split(':').nth(1).unwrap_or("aws").to_string();
+            (partition, log_stream(kind, &cp.id))
+        };
+        let scope = crate::Scope { account, region, partition: &partition, now: Utc::now() };
+        infra.control_plane_logs(&scope, name, &stream, events).await;
+    }
+
     /// Stop and remove a cluster's API server.
     pub(crate) fn remove_control_plane(&self, id: String) {
+        if let Some(follower) = self.inner.log_followers.lock().unwrap().remove(&id) {
+            follower.abort();
+        }
         let Some(backend) = self.control_plane().cloned() else { return };
         if tokio::runtime::Handle::try_current().is_ok() {
             tokio::spawn(async move { backend.delete(&id).await });
