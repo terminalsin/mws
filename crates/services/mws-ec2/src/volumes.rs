@@ -124,13 +124,14 @@ impl Ec2 {
         };
         let Some(handle) = handle else { return Ok(()) };
         if let Some(new_handle) = self.backend().set_volumes(&handle, &wanted).await? {
-            let mut state = self.lock();
-            if let Some(rec) = state.regions.get_mut(&key).and_then(|r| r.instances.get_mut(instance_id)) {
-                if rec.handle.as_deref() == Some(handle.as_str()) {
-                    rec.handle = Some(new_handle.clone());
+            {
+                let mut state = self.lock();
+                if let Some(rec) = state.regions.get_mut(&key).and_then(|r| r.instances.get_mut(instance_id)) {
+                    if rec.handle.as_deref() == Some(handle.as_str()) {
+                        rec.handle = Some(new_handle.clone());
+                    }
                 }
             }
-            drop(state);
             // The new container needs its firewall (and waits for it).
             self.firewall_on_boot(account, region, instance_id, &new_handle).await;
         }
