@@ -36,6 +36,8 @@ pub(crate) struct LaunchReq {
     pub image_id: Option<String>,
     pub weighted_capacity: Option<String>,
     pub template_data: Option<et::ResponseLaunchTemplateData>,
+    /// Launch on the Spot market (the mixed instances policy's share).
+    pub spot: bool,
 }
 
 #[derive(Debug, Clone)]
@@ -60,6 +62,7 @@ pub(crate) struct Source {
     pub current_template: Option<(String, i64)>,
     pub configuration: Option<t::LaunchConfiguration>,
     pub overrides: Vec<t::LaunchTemplateOverrides>,
+    pub distribution: Option<t::InstancesDistribution>,
 }
 
 fn instance_arn(partition: &str, region: &str, account: &str, id: &str) -> String {
@@ -607,6 +610,7 @@ impl Planner<'_> {
         let n = self.g.members.len() + planned.len();
         let ov =
             (!self.source.overrides.is_empty()).then(|| self.source.overrides[n % self.source.overrides.len()].clone());
+        let spot = !warm && self.next_is_spot(planned);
         let description =
             if warm { "Launching a new EC2 instance into warm pool" } else { "Launching a new EC2 instance" };
         let details = json!({"Subnet ID": subnet, "Availability Zone": zone});
@@ -626,7 +630,37 @@ impl Planner<'_> {
             image_id: ov.as_ref().and_then(|o| o.image_id.clone()),
             weighted_capacity: ov.as_ref().and_then(|o| o.weighted_capacity.clone()),
             template_data: self.source.template_data.clone(),
+            spot,
         })
+    }
+
+    /// Whether the next launch is Spot: the instances distribution's
+    /// on-demand base capacity comes first, then its on-demand percentage
+    /// of the capacity above it (rounded up), the rest Spot.
+    fn next_is_spot(&self, planned: &[LaunchReq]) -> bool {
+        let Some(d) = &self.source.distribution else { return false };
+        let base = d.on_demand_base_capacity.unwrap_or(0).max(0) as usize;
+        let pct = d.on_demand_percentage_above_base_capacity.unwrap_or(100).clamp(0, 100) as usize;
+        let live = self.g.members.values().filter(|m| !m.warm && !m.lifecycle_state.starts_with("Terminating"));
+        let (mut spot, mut on_demand) = (0usize, 0usize);
+        for m in live {
+            if m.spot {
+                spot += 1;
+            } else {
+                on_demand += 1;
+            }
+        }
+        for p in planned.iter().filter(|p| !p.warm) {
+            if p.spot {
+                spot += 1;
+            } else {
+                on_demand += 1;
+            }
+        }
+        let total = spot + on_demand + 1;
+        let above = total.saturating_sub(base);
+        let wanted = total.min(base) + (above * pct).div_ceil(100);
+        on_demand >= wanted
     }
 
     fn outdated(&self, m: &Member) -> bool {
@@ -1028,6 +1062,7 @@ impl AutoScaling {
                 None
             },
             overrides,
+            distribution: g.cfg.mixed_instances_policy.as_ref().and_then(|m| m.instances_distribution.clone()),
         }
     }
 
@@ -1158,6 +1193,7 @@ impl AutoScaling {
                                             == Some(true)
                                             && !req.warm,
                                         weighted_capacity: req.weighted_capacity.clone(),
+                                        spot: req.spot,
                                         launched_at: now,
                                         warm: req.warm,
                                         activity_id: Some(req.activity_id.clone()),
@@ -1288,6 +1324,10 @@ impl AutoScaling {
         req: &LaunchReq,
     ) -> Result<(String, String, Option<String>), String> {
         let mut input = et::RunInstancesRequest { min_count: 1, max_count: 1, ..Default::default() };
+        if req.spot {
+            input.instance_market_options =
+                Some(et::InstanceMarketOptionsRequest { market_type: Some("spot".into()), spot_options: None });
+        }
         let instance_tags: Vec<et::Tag> = tags
             .iter()
             .filter(|t| t.propagate_at_launch == Some(true))
