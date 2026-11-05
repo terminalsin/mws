@@ -1,0 +1,23 @@
+[package]
+name = "mws-ram"
+description = "AWS Resource Access Manager for MWS: resource shares that grant other accounts, organizations and service principals real access."
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+async-trait.workspace = true
+chrono.workspace = true
+mws-core.workspace = true
+mws-iam.workspace = true
+mws-iam-policy.workspace = true
+mws-organizations.workspace = true
+mws-proto-json.workspace = true
+mws-proto-restjson.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+tracing.workspace = true
+uuid.workspace = true
+
+[build-dependencies]
+mws-codegen.workspace = true

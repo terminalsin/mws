@@ -778,6 +778,65 @@ impl mws_cloudformation::RoleAssumer for CloudFormationRoles {
     }
 }
 
+/// Private CA certificate authorities, shareable through AWS RAM: RAM's
+/// policy for a shared CA becomes part of the CA's resource policy.
+pub(crate) struct RamCertificateAuthorities(pub mws_acmpca::PrivateCa);
+
+impl mws_ram::ShareableResourceType for RamCertificateAuthorities {
+    fn resource_type(&self) -> &'static str {
+        "acm-pca:CertificateAuthority"
+    }
+
+    fn service_name(&self) -> &'static str {
+        "acm-pca"
+    }
+
+    fn matches(&self, arn: &str) -> bool {
+        arn.split(':').nth(2) == Some("acm-pca") && arn.contains(":certificate-authority/")
+    }
+
+    fn locate(&self, arn: &str) -> Option<mws_ram::ResourceLocation> {
+        let ca = self.0.ca_info(arn)?;
+        Some(mws_ram::ResourceLocation { owner_account: ca.owner, region: arn.split(':').nth(3)?.to_string() })
+    }
+
+    fn set_shared_policy(&self, arn: &str, policy: Option<String>) {
+        self.0.set_shared_policy(arn, policy);
+    }
+
+    fn shareable_actions(&self) -> &'static [&'static str] {
+        &[
+            "acm-pca:DescribeCertificateAuthority",
+            "acm-pca:GetCertificate",
+            "acm-pca:GetCertificateAuthorityCertificate",
+            "acm-pca:IssueCertificate",
+            "acm-pca:ListPermissions",
+            "acm-pca:ListTags",
+            "acm-pca:RevokeCertificate",
+        ]
+    }
+
+    fn share_action(&self) -> &'static str {
+        "acm-pca:PutPolicy"
+    }
+}
+
+/// `PutPolicy` / `DeletePolicy` on a CA, mirrored as a RAM share created
+/// from the policy.
+pub(crate) struct CaPoliciesToRam(pub mws_ram::Ram);
+
+impl mws_acmpca::CaPolicyListener for CaPoliciesToRam {
+    fn policy_changed(
+        &self,
+        ca_arn: &str,
+        owner_account: &str,
+        policy: Option<&str>,
+        now: chrono::DateTime<chrono::Utc>,
+    ) {
+        self.0.resource_policy_changed(ca_arn, owner_account, policy, now);
+    }
+}
+
 /// Security Hub's view of AWS Organizations: the caller's organization and
 /// the delegated administrator `EnableOrganizationAdminAccount` registers.
 pub struct SecurityHubOrganizations(pub mws_organizations::Organizations);

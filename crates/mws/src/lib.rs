@@ -22,6 +22,8 @@ use mws_logs::Logs;
 use mws_marketplace_entitlement::Entitlement;
 use mws_marketplace_metering::Metering;
 use mws_organizations::Organizations;
+use mws_pca_connector_scep::ScepConnector;
+use mws_ram::Ram;
 use mws_route53::Route53;
 use mws_s3::S3;
 use mws_s3control::S3Control;
@@ -111,6 +113,8 @@ pub struct Mws {
     pub marketplace_entitlement: Entitlement,
     pub marketplace_metering: Metering,
     pub cloudformation: CloudFormation,
+    pub ram: Ram,
+    pub scep: ScepConnector,
     pub securityhub: SecurityHub,
 }
 
@@ -161,6 +165,7 @@ fn build_with_store(config: Config, store: Option<Arc<Store>>) -> Mws {
     let kms = Kms::new();
     let organizations = Organizations::new(iam.clone());
     iam.set_organizations(organizations.view());
+    let ram = Ram::new(iam.clone(), organizations.clone());
     let s3 = S3::new().with_kms(kms.clone());
     let logs = Logs::new().with_s3(s3.clone()).with_kms(kms.clone()).with_sts(sts.clone());
     let route53 = Route53::new().with_kms(kms.clone()).with_logs(logs.clone());
@@ -168,6 +173,9 @@ fn build_with_store(config: Config, store: Option<Arc<Store>>) -> Mws {
     let kinesis = Kinesis::new().with_kms(kms.clone());
     let s3control = S3Control::for_s3(s3.clone());
     let pca = PrivateCa::new().with_s3(s3.clone());
+    ram.register_resource_type(Arc::new(links::RamCertificateAuthorities(pca.clone())));
+    pca.set_policy_listener(Arc::new(links::CaPoliciesToRam(ram.clone())));
+    let scep = ScepConnector::new(pca.clone());
     let acm = Acm::new().with_private_ca(pca.clone()).with_route53(route53.clone()).with_sts(sts.clone());
     let lambda = Lambda::with_services(sts.clone(), s3.clone());
     let firehose = Firehose::new()
@@ -274,6 +282,8 @@ fn build_with_store(config: Config, store: Option<Arc<Store>>) -> Mws {
         // its own `X-Amz-Target`.
         Arc::new(marketplace_metering.clone()),
         Arc::new(marketplace_entitlement.clone()),
+        Arc::new(ram.clone()),
+        Arc::new(scep.clone()),
         Arc::new(securityhub.clone()),
         Arc::new(cloudformation.clone()),
     ];
@@ -315,6 +325,8 @@ fn build_with_store(config: Config, store: Option<Arc<Store>>) -> Mws {
         marketplace_entitlement,
         marketplace_metering,
         cloudformation,
+        ram,
+        scep,
         securityhub,
     }
 }
