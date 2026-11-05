@@ -26,6 +26,7 @@ use mws_route53::Route53;
 use mws_s3::S3;
 use mws_s3control::S3Control;
 use mws_secretsmanager::SecretsManager;
+use mws_securityhub::SecurityHub;
 use mws_server::{Gateway, Scenario, Store};
 use mws_sns::Sns;
 use mws_sqs::Sqs;
@@ -110,6 +111,7 @@ pub struct Mws {
     pub amplify: Amplify,
     pub marketplace_entitlement: Entitlement,
     pub marketplace_metering: Metering,
+    pub securityhub: SecurityHub,
 }
 
 /// Build the gateway with every service MWS emulates.
@@ -238,6 +240,10 @@ fn build_with_store(config: Config, store: Option<Arc<Store>>) -> Mws {
     let amplify = Amplify::with_services(s3.clone(), route53.clone());
     let marketplace_entitlement = Entitlement::new(config.iam.account_id.clone());
     let marketplace_metering = Metering::new(marketplace_entitlement.clone());
+    let securityhub = SecurityHub::new();
+    securityhub.set_organizations(Arc::new(links::SecurityHubOrganizations(organizations.clone())));
+    securityhub.set_event_sink(Arc::new(links::SecurityHubToEvents(events.clone())));
+    securityhub.set_export_sink(Arc::new(links::SecurityHubExports(s3.clone())));
     let mut gateway = Gateway::builder();
     if let Some(store) = store {
         gateway = gateway.store(store);
@@ -276,6 +282,7 @@ fn build_with_store(config: Config, store: Option<Arc<Store>>) -> Mws {
         // its own `X-Amz-Target`.
         .service(Arc::new(marketplace_metering.clone()))
         .service(Arc::new(marketplace_entitlement.clone()))
+        .service(Arc::new(securityhub.clone()))
         .build();
     Mws {
         gateway,
@@ -298,6 +305,7 @@ fn build_with_store(config: Config, store: Option<Arc<Store>>) -> Mws {
         amplify,
         marketplace_entitlement,
         marketplace_metering,
+        securityhub,
     }
 }
 

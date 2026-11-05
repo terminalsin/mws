@@ -55,6 +55,8 @@ pub enum Kind {
     Snapshot,
     KeyPairId,
     SecurityGroupRule,
+    VpcEndpoint,
+    PrefixList,
 }
 
 impl Kind {
@@ -76,6 +78,8 @@ impl Kind {
             Kind::Snapshot => "snap",
             Kind::KeyPairId => "key",
             Kind::SecurityGroupRule => "sgr",
+            Kind::VpcEndpoint => "vpce",
+            Kind::PrefixList => "pl",
         }
     }
 
@@ -97,6 +101,8 @@ impl Kind {
             Kind::Snapshot => "InvalidSnapshotID.Malformed",
             Kind::KeyPairId => "InvalidKeyPairId.Malformed",
             Kind::SecurityGroupRule => "InvalidSecurityGroupRuleId.Malformed",
+            Kind::VpcEndpoint => "InvalidVpcEndpointId.Malformed",
+            Kind::PrefixList => "InvalidPrefixListId.Malformed",
         }
     }
 
@@ -125,6 +131,8 @@ impl Kind {
             Kind::SecurityGroupRule => {
                 ("InvalidSecurityGroupRuleId.NotFound", format!("The security group rule ID '{id}' does not exist"))
             }
+            Kind::VpcEndpoint => ("InvalidVpcEndpoint.NotFound", format!("The Vpc Endpoint Id '{id}' does not exist")),
+            Kind::PrefixList => ("InvalidPrefixListID.NotFound", format!("The prefix list ID '{id}' does not exist")),
         };
         err(code, msg)
     }

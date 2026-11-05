@@ -714,4 +714,110 @@ impl Handler for Ec2 {
     ) -> Result<types::UpdateSecurityGroupRuleDescriptionsIngressResult, ServiceError> {
         self.update_security_group_rule_descriptions_ingress_op(ctx, input)
     }
+    // VPC endpoints, prefix lists and Elastic IP attributes
+    async fn create_vpc_endpoint(
+        &self,
+        ctx: &RequestContext,
+        input: types::CreateVpcEndpointRequest,
+    ) -> Result<types::CreateVpcEndpointResult, ServiceError> {
+        self.create_vpc_endpoint_op(ctx, input)
+    }
+    async fn delete_vpc_endpoints(
+        &self,
+        ctx: &RequestContext,
+        input: types::DeleteVpcEndpointsRequest,
+    ) -> Result<types::DeleteVpcEndpointsResult, ServiceError> {
+        self.delete_vpc_endpoints_op(ctx, input)
+    }
+    async fn describe_vpc_endpoints(
+        &self,
+        ctx: &RequestContext,
+        input: types::DescribeVpcEndpointsRequest,
+    ) -> Result<types::DescribeVpcEndpointsResult, ServiceError> {
+        self.describe_vpc_endpoints_op(ctx, input)
+    }
+    async fn modify_vpc_endpoint(
+        &self,
+        ctx: &RequestContext,
+        input: types::ModifyVpcEndpointRequest,
+    ) -> Result<types::ModifyVpcEndpointResult, ServiceError> {
+        self.modify_vpc_endpoint_op(ctx, input)
+    }
+    async fn describe_vpc_endpoint_services(
+        &self,
+        ctx: &RequestContext,
+        input: types::DescribeVpcEndpointServicesRequest,
+    ) -> Result<types::DescribeVpcEndpointServicesResult, ServiceError> {
+        self.describe_vpc_endpoint_services_op(ctx, input)
+    }
+    async fn describe_prefix_lists(
+        &self,
+        ctx: &RequestContext,
+        input: types::DescribePrefixListsRequest,
+    ) -> Result<types::DescribePrefixListsResult, ServiceError> {
+        self.describe_prefix_lists_op(ctx, input)
+    }
+    async fn describe_managed_prefix_lists(
+        &self,
+        ctx: &RequestContext,
+        input: types::DescribeManagedPrefixListsRequest,
+    ) -> Result<types::DescribeManagedPrefixListsResult, ServiceError> {
+        self.describe_managed_prefix_lists_op(ctx, input)
+    }
+    async fn get_managed_prefix_list_entries(
+        &self,
+        ctx: &RequestContext,
+        input: types::GetManagedPrefixListEntriesRequest,
+    ) -> Result<types::GetManagedPrefixListEntriesResult, ServiceError> {
+        self.get_managed_prefix_list_entries_op(ctx, input)
+    }
+    async fn create_managed_prefix_list(
+        &self,
+        ctx: &RequestContext,
+        input: types::CreateManagedPrefixListRequest,
+    ) -> Result<types::CreateManagedPrefixListResult, ServiceError> {
+        self.create_managed_prefix_list_op(ctx, input)
+    }
+    async fn modify_managed_prefix_list(
+        &self,
+        ctx: &RequestContext,
+        input: types::ModifyManagedPrefixListRequest,
+    ) -> Result<types::ModifyManagedPrefixListResult, ServiceError> {
+        self.modify_managed_prefix_list_op(ctx, input)
+    }
+    async fn delete_managed_prefix_list(
+        &self,
+        ctx: &RequestContext,
+        input: types::DeleteManagedPrefixListRequest,
+    ) -> Result<types::DeleteManagedPrefixListResult, ServiceError> {
+        self.delete_managed_prefix_list_op(ctx, input)
+    }
+    async fn get_managed_prefix_list_associations(
+        &self,
+        ctx: &RequestContext,
+        input: types::GetManagedPrefixListAssociationsRequest,
+    ) -> Result<types::GetManagedPrefixListAssociationsResult, ServiceError> {
+        self.get_managed_prefix_list_associations_op(ctx, input)
+    }
+    async fn describe_addresses_attribute(
+        &self,
+        ctx: &RequestContext,
+        input: types::DescribeAddressesAttributeRequest,
+    ) -> Result<types::DescribeAddressesAttributeResult, ServiceError> {
+        self.describe_addresses_attribute_op(ctx, input)
+    }
+    async fn modify_address_attribute(
+        &self,
+        ctx: &RequestContext,
+        input: types::ModifyAddressAttributeRequest,
+    ) -> Result<types::ModifyAddressAttributeResult, ServiceError> {
+        self.modify_address_attribute_op(ctx, input)
+    }
+    async fn reset_address_attribute(
+        &self,
+        ctx: &RequestContext,
+        input: types::ResetAddressAttributeRequest,
+    ) -> Result<types::ResetAddressAttributeResult, ServiceError> {
+        self.reset_address_attribute_op(ctx, input)
+    }
 }

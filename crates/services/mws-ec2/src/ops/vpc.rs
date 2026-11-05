@@ -15,6 +15,13 @@ use crate::{account_of, Ec2};
 
 pub const DEFAULT_VPC_CIDR: &str = "172.31.0.0/16";
 
+/// Deleted NAT gateways stay visible for an hour, as in EC2.
+pub fn expire_deleted(r: &mut RegionState, now: DateTime<Utc>) {
+    r.nat_gateways.retain(|_, n| {
+        n.state.as_deref() != Some("deleted") || n.delete_time.is_none_or(|t| now - t < chrono::Duration::hours(1))
+    });
+}
+
 /// Create the default VPC and its companions, as a new account has them.
 pub fn init_region(r: &mut RegionState, account: &str, region: &str, partition: &str, now: DateTime<Utc>) {
     let dopt = default_dhcp_options(r, account, region);
@@ -386,7 +393,9 @@ impl Ec2 {
                 || r.route_tables
                     .values()
                     .any(|rt| in_vpc(&rt.vpc_id) && !rt.associations.iter().flatten().any(|a| a.main == Some(true)))
-                || r.network_acls.values().any(|a| in_vpc(&a.vpc_id) && a.is_default != Some(true));
+                || r.network_acls.values().any(|a| in_vpc(&a.vpc_id) && a.is_default != Some(true))
+                || r.vpc_endpoints.values().any(|e| in_vpc(&e.vpc_id))
+                || r.nat_gateways.values().any(|n| in_vpc(&n.vpc_id) && n.state.as_deref() != Some("deleted"));
             if dependency {
                 return Err(err(
                     "DependencyViolation",
@@ -1001,6 +1010,17 @@ impl Ec2 {
                 state: Some("available".into()),
                 vpc_id: Some(input.vpc_id.clone()),
             }]);
+            // Routes left as blackholes by a detach work again.
+            for rt in r.route_tables.values_mut() {
+                if rt.vpc_id.as_deref() != Some(input.vpc_id.as_str()) {
+                    continue;
+                }
+                for route in rt.routes.iter_mut().flatten() {
+                    if route.gateway_id.as_deref() == Some(input.internet_gateway_id.as_str()) {
+                        route.state = Some("active".into());
+                    }
+                }
+            }
             Ok(())
         })
     }
@@ -1029,6 +1049,21 @@ impl Ec2 {
                     format!("resource {} is not attached to network {}", input.internet_gateway_id, input.vpc_id),
                 ));
             }
+            // Public addresses in the VPC need the gateway.
+            let vpc = input.vpc_id.as_str();
+            let in_vpc = |eni: &str| r.network_interfaces.get(eni).is_some_and(|n| n.vpc_id.as_deref() == Some(vpc));
+            let mapped = r.network_interfaces.values().any(|n| {
+                n.vpc_id.as_deref() == Some(vpc) && n.association.as_ref().is_some_and(|a| a.public_ip.is_some())
+            }) || r.addresses.values().any(|a| a.network_interface_id.as_deref().is_some_and(in_vpc));
+            if mapped {
+                return Err(err(
+                    "DependencyViolation",
+                    format!(
+                        "Network {vpc} has some mapped public address(es). Please unmap those public address(es) before detaching the gateway."
+                    ),
+                ));
+            }
+            let igw = r.internet_gateways.get_mut(&input.internet_gateway_id).expect("checked");
             igw.attachments = Some(Vec::new());
             // Routes through it become blackholes.
             for rt in r.route_tables.values_mut() {
@@ -1368,6 +1403,21 @@ impl Ec2 {
                         "route.destination-cidr-block" => {
                             routes.iter().filter_map(|r| r.destination_cidr_block.clone()).collect()
                         }
+                        "route.destination-ipv6-cidr-block" => {
+                            routes.iter().filter_map(|r| r.destination_ipv6_cidr_block.clone()).collect()
+                        }
+                        "route.destination-prefix-list-id" => {
+                            routes.iter().filter_map(|r| r.destination_prefix_list_id.clone()).collect()
+                        }
+                        "route.egress-only-internet-gateway-id" => {
+                            routes.iter().filter_map(|r| r.egress_only_internet_gateway_id.clone()).collect()
+                        }
+                        "route.transit-gateway-id" => {
+                            routes.iter().filter_map(|r| r.transit_gateway_id.clone()).collect()
+                        }
+                        "route.vpc-peering-connection-id" => {
+                            routes.iter().filter_map(|r| r.vpc_peering_connection_id.clone()).collect()
+                        }
                         "route.gateway-id" => routes.iter().filter_map(|r| r.gateway_id.clone()).collect(),
                         "route.nat-gateway-id" => routes.iter().filter_map(|r| r.nat_gateway_id.clone()).collect(),
                         "route.instance-id" => routes.iter().filter_map(|r| r.instance_id.clone()).collect(),
@@ -1476,6 +1526,7 @@ impl Ec2 {
             if rt.routes.iter().flatten().any(|x| {
                 x.destination_cidr_block.as_deref() == Some(dest.as_str())
                     || x.destination_ipv6_cidr_block.as_deref() == Some(dest.as_str())
+                    || x.destination_prefix_list_id.as_deref() == Some(dest.as_str())
             }) {
                 return Err(err("RouteAlreadyExists", format!("The route identified by {dest} already exists.")));
             }

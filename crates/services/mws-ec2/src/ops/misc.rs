@@ -589,6 +589,8 @@ fn not_found_for(id: &str) -> ServiceError {
         "vol" => Some(Kind::Volume),
         "snap" => Some(Kind::Snapshot),
         "key" => Some(Kind::KeyPairId),
+        "vpce" => Some(Kind::VpcEndpoint),
+        "pl" => Some(Kind::PrefixList),
         _ => None,
     };
     match kind {

@@ -41,6 +41,20 @@ pub struct RegionState {
     pub volumes: BTreeMap<String, t::Volume>,
     pub snapshots: BTreeMap<String, t::Snapshot>,
     pub iam_associations: BTreeMap<String, t::IamInstanceProfileAssociation>,
+    pub vpc_endpoints: BTreeMap<String, t::VpcEndpoint>,
+    /// Customer-managed prefix lists (AWS-managed ones are not stored).
+    pub prefix_lists: BTreeMap<String, PrefixListRecord>,
+    /// Reverse DNS (`ModifyAddressAttribute`) by allocation id.
+    pub address_domain_names: BTreeMap<String, String>,
+}
+
+/// A customer-managed prefix list with every version's entries.
+#[derive(Debug, Default, Clone, Serialize, Deserialize)]
+#[serde(default)]
+pub struct PrefixListRecord {
+    pub list: t::ManagedPrefixList,
+    /// Entries of version `n` at index `n - 1`.
+    pub versions: Vec<Vec<t::PrefixListEntry>>,
 }
 
 #[derive(Debug, Default, Clone, Serialize, Deserialize)]
@@ -152,6 +166,8 @@ impl RegionState {
             "i" => self.instances.get_mut(id).map(|v| &mut v.instance.tags),
             "vol" => self.volumes.get_mut(id).map(|v| &mut v.tags),
             "snap" => self.snapshots.get_mut(id).map(|v| &mut v.tags),
+            "vpce" => self.vpc_endpoints.get_mut(id).map(|v| &mut v.tags),
+            "pl" => self.prefix_lists.get_mut(id).map(|v| &mut v.list.tags),
             _ => None,
         }
     }
@@ -175,6 +191,8 @@ impl RegionState {
             "i" => "instance",
             "vol" => "volume",
             "snap" => "snapshot",
+            "vpce" => "vpc-endpoint",
+            "pl" => "prefix-list",
             _ => return None,
         })
     }
@@ -233,6 +251,12 @@ impl RegionState {
         }
         for v in self.snapshots.values() {
             push(v.snapshot_id.as_ref(), &v.tags);
+        }
+        for v in self.vpc_endpoints.values() {
+            push(v.vpc_endpoint_id.as_ref(), &v.tags);
+        }
+        for v in self.prefix_lists.values() {
+            push(v.list.prefix_list_id.as_ref(), &v.list.tags);
         }
         out.sort_by(|a, b| a.0.cmp(&b.0));
         out
