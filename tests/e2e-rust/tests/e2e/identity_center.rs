@@ -157,6 +157,9 @@ impl Center {
         };
         let err = token().await.unwrap_err();
         assert_eq!(aws_sdk_ssooidc::error::ProvideErrorMetadata::code(&err), Some("AuthorizationPendingException"));
+        // Polling faster than the interval is told to slow down.
+        let err = token().await.unwrap_err();
+        assert_eq!(aws_sdk_ssooidc::error::ProvideErrorMetadata::code(&err), Some("SlowDownException"));
         let uri = auth.verification_uri_complete().unwrap();
         assert!(uri.contains(auth.user_code().unwrap()), "{uri}");
         let (status, _, page) = self.mws.raw("GET", uri, &[], b"").await;

@@ -177,6 +177,9 @@ impl SsoAdmin {
                 _ => {}
             }
         }
+        if let Some(key) = input.encryption_configuration.as_ref().and_then(|e| e.kms_key_arn.as_deref()) {
+            self.check_kms_key(&r, key)?;
+        }
         self.with_instance(&r.arn, |i| {
             if let Some(n) = input.name {
                 i.name = Some(n);
@@ -434,5 +437,40 @@ impl SsoAdmin {
         })?;
         let (page, next_token) = paginate(tags, None, 50, input.next_token.as_deref())?;
         Ok(types::ListTagsForResourceResponse { tags: Some(page), next_token })
+    }
+}
+
+impl SsoAdmin {
+    /// A customer managed key must be a usable symmetric encryption key
+    /// whose key policy lets IAM Identity Center and Identity Store use it
+    /// for this instance (AWS's baseline key policy).
+    fn check_kms_key(&self, r: &InstanceRef, key: &str) -> Result<(), ServiceError> {
+        let invalid = |why: String| errors::validation(format!("The KMS key {key} can't be used: {why}"));
+        let store_arn = self.identity.store(&r.identity_store_id).map(|s| s.arn).unwrap_or_default();
+        let checks = [
+            (SERVICE_PRINCIPAL, "kms:EncryptionContext:aws:sso:instance-arn", r.arn.clone()),
+            ("identitystore.amazonaws.com", "kms:EncryptionContext:aws:identitystore:identitystore-arn", store_arn),
+        ];
+        for (principal, context_key, value) in checks {
+            let mut conditions = ConditionContext::new();
+            conditions.insert(context_key.to_string(), vec![value]);
+            conditions.insert("aws:SourceAccount".to_string(), vec![r.owner.clone()]);
+            let k = self
+                .kms
+                .key_for_service(
+                    key,
+                    principal,
+                    &["kms:DescribeKey", "kms:Decrypt", "kms:GenerateDataKeyWithoutPlaintext"],
+                    &conditions,
+                )
+                .map_err(|e| invalid(e.message))?;
+            if k.key_spec != "SYMMETRIC_DEFAULT" || k.key_usage != "ENCRYPT_DECRYPT" {
+                return Err(invalid("it must be a symmetric encryption key.".into()));
+            }
+            if k.key_state != "Enabled" {
+                return Err(invalid(format!("it is {}.", k.key_state)));
+            }
+        }
+        Ok(())
     }
 }

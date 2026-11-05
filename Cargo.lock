@@ -4050,6 +4050,7 @@ dependencies = [
  "mws-core",
  "mws-iam",
  "mws-identitystore",
+ "mws-kms",
  "mws-organizations",
  "mws-proto-json",
  "serde",

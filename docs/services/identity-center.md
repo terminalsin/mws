@@ -24,8 +24,8 @@ and the access portal hands out real STS credentials for those roles, so
 | Organization instance | 🟡 | `CreateInstance` in an Organizations management account creates the organization instance (AWS enables it from the console, and refuses `CreateInstance` there). It enables trusted access for `sso.amazonaws.com` and the `AWSServiceRoleForSSO` service-linked role. |
 | Account instances | ✅ | `CreateInstance` anywhere else; one instance per account; permission sets off until `UpdateInstance` enables them; assignments only to the owning account. |
 | Delegated administrators | ✅ | A delegated administrator for `sso.amazonaws.com` in the same organization manages the organization instance (but can't delete it). |
-| Regions | 🟡 | `AddRegion`, `RemoveRegion`, `DescribeRegion`, `ListRegions`; replication completes at once. |
-| Encryption configuration | 🟡 | Stored and returned; customer managed KMS keys aren't checked. |
+| Regions | ✅ | `AddRegion`, `RemoveRegion`, `DescribeRegion`, `ListRegions`. Replication completes at once (MWS has one copy of the data). |
+| Encryption configuration | ✅ | AWS owned or customer managed keys. A customer managed key must be an enabled symmetric encryption key whose key policy lets `sso.amazonaws.com` and `identitystore.amazonaws.com` use it for this instance (AWS's baseline key policy), or `UpdateInstance` fails. |
 | Attributes for access control | ✅ | `${path:...}` sources (including `enterprise.*`) resolved from the user and sent as session tags on portal credentials. |
 | Tags | ✅ | On instances, permission sets, applications and trusted token issuers. |
 
@@ -38,8 +38,8 @@ and the access portal hands out real STS credentials for those roles, so
 | Lookups | ✅ | `GetUserId`/`GetGroupId` by unique attribute or external id; `ListUsers`/`ListGroups` filters. |
 | Concurrency | ✅ | Revisions with `ConflictException` (`CONCURRENT_MODIFICATION`). |
 | Access | ✅ | IAM authorization on the store and entity ARNs; other accounts of the organization may read. |
-| Identity store settings | 🟡 | `UpdateIdentityStore` network configuration is stored, not enforced. |
-| External identity providers and SCIM | ❌ | The identity source is always the Identity Center directory. |
+| Network controls | ✅ | `UpdateIdentityStore` network configuration is enforced on every Identity Store call: requests never arrive through a VPC endpoint or from a VPC in MWS, so a store requiring either admits only source IPs in `ApiAllowSourceIps`. |
+| External identity providers and SCIM | ❌ | The identity source is always the Identity Center directory: there is no SCIM endpoint or external SAML identity provider (AWS configures both in the console). |
 
 ## Permission sets and account assignments
 
@@ -64,16 +64,16 @@ and the access portal hands out real STS credentials for those roles, so
 | Browser sign-in | 🟡 | The verification page at `/_aws/sso-oidc/device` and `/authorize` ask only for a user name or email (MWS keeps no passwords). Tests can `POST` `user_code` and `username` (or `decision=deny`) to the device page, or pass `username` to `/authorize`. |
 | `GetRoleCredentials` | ✅ | Real STS credentials for the provisioned role through its SAML trust policy, the session named after the user, for the permission set's session duration, tagged with the access control attributes. Unassigned roles answer `ForbiddenException`. |
 | `ListAccounts`, `ListAccountRoles`, `Logout` | ✅ | From the user's direct and group assignments, with account names from Organizations. |
-| `slow_down` | ❌ | Polling faster than the interval isn't penalized. |
+| `slow_down` | ✅ | Polling a pending device code faster than the interval answers `SlowDownException` and adds five seconds to the interval (RFC 8628). |
 
 ## Applications and trusted identity propagation
 
 | Feature | Status | Details |
 | --- | :---: | --- |
 | Customer managed OAuth applications | ✅ | Applications, assignment configuration and assignments, access scopes, IAM authentication method, grants, session configuration. |
-| SAML 2.0 applications | 🟡 | The custom SAML provider exists; MWS doesn't serve SAML assertions to applications. |
+| SAML 2.0 applications | ❌ | As in AWS, the API creates only OAuth applications (`CreateApplication` with the custom SAML provider is refused); SAML applications are configured in the console, which MWS doesn't have. |
 | Trusted token issuers | ✅ | OIDC JWT issuers mapping a claim to an Identity Store attribute. |
 | `CreateTokenWithIAM` | ✅ | Authorization code, refresh token, JWT bearer (trusted token issuer, audiences, signature checked through OIDC discovery unless `MWS_SKIP_FEDERATION_SIGNATURE_VERIFICATION`) and token exchange; the actor policy must allow the caller, and assignments are enforced. Returns an ID token with `sts:identity_context`. |
-| Identity-enhanced sessions | ❌ | The identity context can't be passed to STS `ProvidedContexts` yet. |
+| Identity-enhanced sessions | ✅ | The `identityContext` is an STS trusted context assertion: `AssumeRole` with `ProvidedContexts` (provider `arn:aws:iam::aws:contextProvider/IdentityCenter`, trust policy allowing `sts:SetContext`) gives the session the `identitystore:UserId` and `identitystore:IdentityStoreArn` condition keys. |
 
 See also: [all services](README.md) · [IAM](iam.md) · [STS](sts.md) · [Organizations](organizations.md).

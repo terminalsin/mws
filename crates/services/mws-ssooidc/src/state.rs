@@ -54,6 +54,10 @@ pub struct DeviceAuth {
     pub identity_store_id: String,
     pub expires_at: DateTime<Utc>,
     pub approval: Approval,
+    /// When the client last polled `CreateToken`, and how many seconds it
+    /// must wait between polls (RFC 8628: `slow_down` adds five).
+    pub last_poll: Option<DateTime<Utc>>,
+    pub interval: i64,
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]

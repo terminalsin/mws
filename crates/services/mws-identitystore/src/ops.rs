@@ -89,11 +89,19 @@ impl IdentityStore {
         resource: Option<String>,
     ) -> Result<String, ServiceError> {
         let id = store_id(raw_store).to_string();
-        let (owner, arn) = {
+        let (owner, arn, network) = {
             let st = self.lock();
             let s = st.stores.get(&id).ok_or_else(|| store_not_found(&id))?;
-            (s.account.clone(), s.arn())
+            (s.account.clone(), s.arn(), s.network.clone())
         };
+        if let Some(n) = &network {
+            if !crate::network::allows(n, ctx.source_ip.as_deref()) {
+                return Err(errors::access_denied(format!(
+                    "User: {} is not authorized to perform: {action} on resource: {arn} because the request doesn't come from a network the identity store's network configuration allows",
+                    ctx.caller.arn
+                )));
+            }
+        }
         let caller = ctx.caller.account_id.as_str();
         if caller != owner {
             let same_org = || {

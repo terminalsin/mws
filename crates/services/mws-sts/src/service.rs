@@ -100,6 +100,7 @@ impl Sts {
                 issued_at: a.now,
                 expires_at: a.now,
                 mfa_authenticated: false,
+                provided_context: Default::default(),
             },
         );
         let c = issued.credentials;
@@ -177,6 +178,7 @@ impl Sts {
                 issued_at: a.now,
                 expires_at: a.now,
                 mfa_authenticated: false,
+                provided_context: Default::default(),
             },
         );
         self.iam().note_role_used(&role, a.region);

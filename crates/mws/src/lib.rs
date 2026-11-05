@@ -300,7 +300,7 @@ fn build_with_store(config: Config, store: Option<Arc<Store>>) -> Mws {
     let marketplace_entitlement = Entitlement::new(config.iam.account_id.clone());
     let marketplace_metering = Metering::new(marketplace_entitlement.clone());
     let identitystore = IdentityStore::new(iam.clone());
-    let ssoadmin = SsoAdmin::new(iam.clone(), identitystore.clone(), organizations.clone());
+    let ssoadmin = SsoAdmin::new(iam.clone(), identitystore.clone(), organizations.clone(), kms.clone());
     let ssooidc = SsoOidc::new(identitystore.clone(), ssoadmin.clone(), sts.clone());
     let ssoportal = SsoPortal::new(ssooidc.clone(), ssoadmin.clone(), sts.clone(), organizations.clone());
     let securityhub = SecurityHub::new();

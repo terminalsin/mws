@@ -311,7 +311,12 @@ impl Handler for Sts {
             ctx.authorize_against_trust_policy("sts:TagSession", &role.arn, &role.trust_policy, cond.clone())?;
         }
         if input.source_identity.is_some() {
-            ctx.authorize_against_trust_policy("sts:SetSourceIdentity", &role.arn, &role.trust_policy, cond)?;
+            ctx.authorize_against_trust_policy("sts:SetSourceIdentity", &role.arn, &role.trust_policy, cond.clone())?;
+        }
+        let provided_context = self.provided_context(ctx, input.provided_contexts.as_deref())?;
+        if !provided_context.is_empty() {
+            ctx.authorize_against_trust_policy("sts:SetContext", &role.arn, &role.trust_policy, cond)
+                .map_err(|_| not_authorized())?;
         }
 
         let mfa = self.check_mfa(caller, input.serial_number.as_deref(), input.token_code.as_deref())?;
@@ -330,6 +335,7 @@ impl Handler for Sts {
                 issued_at: ctx.received_at,
                 expires_at: ctx.received_at,
                 mfa_authenticated: mfa,
+                provided_context,
             },
         );
         self.iam().note_role_used(&role, &ctx.region);
@@ -437,6 +443,7 @@ impl Handler for Sts {
                 issued_at: ctx.received_at,
                 expires_at: ctx.received_at,
                 mfa_authenticated: false,
+                provided_context: Default::default(),
             },
         );
         self.iam().note_role_used(&role, &ctx.region);
@@ -485,6 +492,7 @@ impl Handler for Sts {
                 issued_at: ctx.received_at,
                 expires_at: ctx.received_at,
                 mfa_authenticated: mfa,
+                provided_context: Default::default(),
             },
         );
         Ok(types::GetSessionTokenResponse {
@@ -536,6 +544,7 @@ impl Handler for Sts {
                 issued_at: ctx.received_at,
                 expires_at: ctx.received_at,
                 mfa_authenticated: false,
+                provided_context: Default::default(),
             },
         );
         Ok(types::GetFederationTokenResponse {

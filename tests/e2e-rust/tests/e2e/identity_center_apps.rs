@@ -7,8 +7,8 @@ use aws_lc_rs::digest;
 use aws_sdk_ssoadmin::error::ProvideErrorMetadata;
 use aws_sdk_ssoadmin::types::{
     AccessControlAttribute, AccessControlAttributeValue, AuthenticationMethod, AuthenticationMethodType,
-    AuthorizationCodeGrant, AuthorizedTokenIssuer, Grant, GrantType, IamAuthenticationMethod,
-    InstanceAccessControlAttributeConfiguration, JwksRetrievalOption, JwtBearerGrant, OidcJwtConfiguration,
+    AuthorizationCodeGrant, AuthorizedTokenIssuer, EncryptionConfiguration, Grant, GrantType, IamAuthenticationMethod,
+    InstanceAccessControlAttributeConfiguration, JwksRetrievalOption, JwtBearerGrant, KmsKeyType, OidcJwtConfiguration,
     OidcJwtUpdateConfiguration, PermissionsBoundary, PrincipalType, RefreshTokenGrant, Tag, TokenExchangeGrant,
     TrustedTokenIssuerConfiguration, TrustedTokenIssuerType, TrustedTokenIssuerUpdateConfiguration,
     UserBackgroundSessionApplicationStatus,
@@ -68,6 +68,46 @@ async fn instance_settings_regions_tags_and_permission_set_policies() {
     assert_eq!(described.name(), Some("corp-sso"));
     let err = a.update_instance().instance_arn(inst).permission_sets_enabled(false).send().await.unwrap_err();
     assert_eq!(err.code(), Some("ValidationException"));
+
+    // A customer managed KMS key must let Identity Center use it.
+    let kms = aws_sdk_kms::Client::new(&c.admin_config);
+    let key = kms.create_key().send().await.unwrap().key_metadata().unwrap().arn().unwrap().to_string();
+    let cmk = |key: &str| {
+        EncryptionConfiguration::builder().key_type(KmsKeyType::CustomerManagedKey).kms_key_arn(key).build().unwrap()
+    };
+    let err = a.update_instance().instance_arn(inst).encryption_configuration(cmk(&key)).send().await.unwrap_err();
+    assert_eq!(err.code(), Some("ValidationException"));
+    let store_arn = format!("arn:aws:identitystore::123456789012:identitystore/{}", c.store);
+    let policy = serde_json::json!({"Version": "2012-10-17", "Statement": [
+        {"Effect": "Allow", "Principal": {"AWS": "arn:aws:iam::123456789012:root"}, "Action": "kms:*", "Resource": "*"},
+        {"Effect": "Allow", "Principal": {"Service": "sso.amazonaws.com"},
+         "Action": ["kms:Decrypt", "kms:ReEncryptTo", "kms:ReEncryptFrom", "kms:GenerateDataKeyWithoutPlaintext"],
+         "Resource": "*",
+         "Condition": {"StringLike": {"kms:EncryptionContext:aws:sso:instance-arn": inst},
+                       "StringEquals": {"aws:SourceAccount": "123456789012"}}},
+        {"Effect": "Allow", "Principal": {"Service": "identitystore.amazonaws.com"},
+         "Action": ["kms:Decrypt", "kms:ReEncryptTo", "kms:ReEncryptFrom", "kms:GenerateDataKeyWithoutPlaintext"],
+         "Resource": "*",
+         "Condition": {"StringLike": {"kms:EncryptionContext:aws:identitystore:identitystore-arn": store_arn}}},
+        {"Effect": "Allow", "Principal": {"Service": ["sso.amazonaws.com", "identitystore.amazonaws.com"]},
+         "Action": "kms:DescribeKey", "Resource": "*"}
+    ]});
+    kms.put_key_policy().key_id(&key).policy(policy.to_string()).send().await.unwrap();
+    a.update_instance().instance_arn(inst).encryption_configuration(cmk(&key)).send().await.unwrap();
+    let described = a.describe_instance().instance_arn(inst).send().await.unwrap();
+    let enc = described.encryption_configuration_details().unwrap();
+    assert_eq!(enc.kms_key_arn(), Some(key.as_str()));
+    kms.disable_key().key_id(&key).send().await.unwrap();
+    let err = a.update_instance().instance_arn(inst).encryption_configuration(cmk(&key)).send().await.unwrap_err();
+    assert_eq!(err.code(), Some("ValidationException"));
+    a.update_instance()
+        .instance_arn(inst)
+        .encryption_configuration(
+            EncryptionConfiguration::builder().key_type(KmsKeyType::AwsOwnedKmsKey).build().unwrap(),
+        )
+        .send()
+        .await
+        .unwrap();
 
     // Regions.
     assert_eq!(
@@ -626,6 +666,69 @@ async fn applications_and_create_token_with_iam() {
     assert!(out.id_token().unwrap().split('.').count() == 3);
     assert!(out.aws_additional_details().unwrap().identity_context().is_some());
     assert_eq!(out.scope(), ["openid"]);
+
+    // An identity-enhanced role session: the identity context becomes
+    // `identitystore:*` condition keys through STS `ProvidedContexts`.
+    let root_iam = aws_sdk_iam::Client::new(&c.mws.root_sdk_config().await);
+    root_iam
+        .put_user_policy()
+        .user_name("backend")
+        .policy_name("assume")
+        .policy_document(
+            r#"{"Version":"2012-10-17","Statement":{"Effect":"Allow","Action":"sts:AssumeRole","Resource":"*"}}"#,
+        )
+        .send()
+        .await
+        .unwrap();
+    let trust = |actions: &str| {
+        format!(
+            r#"{{"Version":"2012-10-17","Statement":{{"Effect":"Allow","Principal":{{"AWS":"arn:aws:iam::123456789012:user/backend"}},"Action":{actions}}}}}"#
+        )
+    };
+    for (name, actions) in
+        [("app-role", r#"["sts:AssumeRole","sts:SetContext"]"#), ("plain-role", r#""sts:AssumeRole""#)]
+    {
+        root_iam.create_role().role_name(name).assume_role_policy_document(trust(actions)).send().await.unwrap();
+        root_iam
+            .put_role_policy()
+            .role_name(name)
+            .policy_name("by-user")
+            .policy_document(format!(
+                r#"{{"Version":"2012-10-17","Statement":{{"Effect":"Allow","Action":"iam:ListRoles","Resource":"*","Condition":{{"StringEquals":{{"identitystore:UserId":"{alice}"}}}}}}}}"#
+            ))
+            .send()
+            .await
+            .unwrap();
+    }
+    let identity_context = out.aws_additional_details().unwrap().identity_context().unwrap();
+    let context = aws_sdk_sts::types::ProvidedContext::builder()
+        .provider_arn("arn:aws:iam::aws:contextProvider/IdentityCenter")
+        .context_assertion(identity_context)
+        .build();
+    let sts = aws_sdk_sts::Client::new(&backend);
+    let assume = |role: &str, ctx: Option<aws_sdk_sts::types::ProvidedContext>| {
+        sts.assume_role()
+            .role_arn(format!("arn:aws:iam::123456789012:role/{role}"))
+            .role_session_name("app")
+            .set_provided_contexts(ctx.map(|c| vec![c]))
+            .send()
+    };
+    let enhanced = assume("app-role", Some(context.clone())).await.unwrap();
+    let enhanced = aws_sdk_iam::Client::new(&mws_e2e::sts_config(&c.mws, enhanced.credentials().unwrap()).await);
+    enhanced.list_roles().send().await.unwrap();
+    let plain = assume("app-role", None).await.unwrap();
+    let plain = aws_sdk_iam::Client::new(&mws_e2e::sts_config(&c.mws, plain.credentials().unwrap()).await);
+    let err = plain.list_roles().send().await.unwrap_err();
+    assert_eq!(aws_sdk_iam::error::ProvideErrorMetadata::code(&err), Some("AccessDenied"));
+    // The trust policy must allow sts:SetContext.
+    let err = assume("plain-role", Some(context)).await.unwrap_err();
+    assert_eq!(aws_sdk_sts::error::ProvideErrorMetadata::code(&err), Some("AccessDenied"));
+    let forged = aws_sdk_sts::types::ProvidedContext::builder()
+        .provider_arn("arn:aws:iam::aws:contextProvider/IdentityCenter")
+        .context_assertion("Zm9yZ2Vk")
+        .build();
+    let err = assume("app-role", Some(forged)).await.unwrap_err();
+    assert_eq!(aws_sdk_sts::error::ProvideErrorMetadata::code(&err), Some("ValidationError"));
     // Application tokens don't open the AWS access portal.
     let portal = aws_sdk_sso::Client::new(&c.mws.root_sdk_config().await);
     let err = portal.list_accounts().access_token(out.access_token().unwrap()).send().await.unwrap_err();

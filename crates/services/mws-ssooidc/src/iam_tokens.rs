@@ -181,7 +181,18 @@ impl SsoOidc {
         let refresh = app.grants.contains_key(GRANT_REFRESH_TOKEN);
         let (access, refresh_token) = self.issue(session, now, TOKEN_SECONDS, refresh);
         let instance_id = app.instance_arn.rsplit('/').next().unwrap_or_default().to_string();
-        let identity_context = random(48);
+        // The identity context is an STS trusted context assertion: a role
+        // session created with it (`ProvidedContexts`) is identity-enhanced.
+        let store_arn = self.identity.store(&app.identity_store_id).map(|s| s.arn).unwrap_or_default();
+        let identity_context = self.sts.issue_context_assertion(mws_sts::IdentityContext {
+            provider_arn: mws_sts::IDENTITY_CENTER_CONTEXT_PROVIDER.to_string(),
+            keys: [
+                ("identitystore:UserId".to_string(), vec![user_id.clone()]),
+                ("identitystore:IdentityStoreArn".to_string(), vec![store_arn]),
+            ]
+            .into(),
+            expires_at: now + chrono::Duration::seconds(TOKEN_SECONDS),
+        });
         let id_token = self.sign_jwt(&serde_json::json!({
             "iss": format!("https://identitycenter.amazonaws.com/{instance_id}"),
             "sub": user_id,

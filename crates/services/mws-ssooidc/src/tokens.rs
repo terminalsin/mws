@@ -65,6 +65,10 @@ pub fn invalid_client_metadata(d: impl Into<String>) -> ServiceError {
 pub fn invalid_redirect_uri(d: impl Into<String>) -> ServiceError {
     oauth(errors::invalid_redirect_uri, "invalid_redirect_uri", d)
 }
+pub fn slow_down() -> ServiceError {
+    oauth(errors::slow_down, "slow_down", "Client is polling too frequently")
+}
+
 pub fn authorization_pending() -> ServiceError {
     oauth(errors::authorization_pending, "authorization_pending", "Authorization is still pending")
 }

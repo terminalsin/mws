@@ -35,6 +35,7 @@ use std::sync::{Arc, Mutex, MutexGuard};
 use mws_core::{HttpRequest, HttpResponse, RequestContext, Service, ServiceError};
 use mws_iam::Iam;
 use mws_identitystore::IdentityStore;
+use mws_kms::Kms;
 use mws_organizations::Organizations;
 
 pub use public::{AccountRole, ApplicationInfo, InstanceInfo, TokenIssuerInfo};
@@ -48,11 +49,12 @@ pub struct SsoAdmin {
     iam: Iam,
     identity: IdentityStore,
     organizations: Organizations,
+    kms: Kms,
 }
 
 impl SsoAdmin {
-    pub fn new(iam: Iam, identity: IdentityStore, organizations: Organizations) -> Self {
-        Self { state: Arc::default(), iam, identity, organizations }
+    pub fn new(iam: Iam, identity: IdentityStore, organizations: Organizations, kms: Kms) -> Self {
+        Self { state: Arc::default(), iam, identity, organizations, kms }
     }
 
     /// Never hold this while calling `ctx.authorize` or IAM.

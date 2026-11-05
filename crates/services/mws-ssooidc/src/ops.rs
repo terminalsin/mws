@@ -147,6 +147,8 @@ impl Handler for SsoOidc {
                 identity_store_id: store,
                 expires_at: ctx.received_at + Duration::seconds(DEVICE_CODE_SECONDS),
                 approval: Approval::Pending,
+                last_poll: None,
+                interval: 1,
             },
         );
         Ok(types::StartDeviceAuthorizationResponse {
@@ -183,7 +185,18 @@ impl Handler for SsoOidc {
                     return Err(expired_token("Device code has expired"));
                 }
                 let user_id = match device.approval {
-                    Approval::Pending => return Err(authorization_pending()),
+                    Approval::Pending => {
+                        let mut st = self.lock();
+                        let d = st.devices.get_mut(&code).expect("looked up above");
+                        let interval = d.interval.max(1);
+                        let too_soon = d.last_poll.is_some_and(|t| now < t + chrono::Duration::seconds(interval));
+                        d.last_poll = Some(now);
+                        if too_soon {
+                            d.interval = interval + 5;
+                            return Err(slow_down());
+                        }
+                        return Err(authorization_pending());
+                    }
                     Approval::Denied => {
                         self.lock().devices.remove(&code);
                         return Err(access_denied("The user denied the authorization request"));

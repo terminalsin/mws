@@ -15,6 +15,7 @@ pub mod generated {
 }
 
 mod attrs;
+mod network;
 mod ops;
 mod public;
 mod state;

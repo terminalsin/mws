@@ -219,6 +219,27 @@ async fn users_groups_and_memberships() {
     let err = ids.describe_user().identity_store_id(store).user_id(&bob).send().await.unwrap_err();
     assert_eq!(err.code(), Some("ResourceNotFoundException"));
 
+    // Network controls: MWS requests never come through a VPC endpoint, so
+    // a store that requires one admits only allowed source IPs.
+    let restrict = |cidr: &str| {
+        NetworkConfiguration::builder().vpce_access_required(true).api_allow_source_ips(cidr).build().unwrap()
+    };
+    ids.update_identity_store()
+        .identity_store_id(store)
+        .network_configuration(restrict("127.0.0.0/8"))
+        .send()
+        .await
+        .unwrap();
+    ids.list_users().identity_store_id(store).send().await.unwrap();
+    ids.update_identity_store()
+        .identity_store_id(store)
+        .network_configuration(restrict("10.0.0.0/8"))
+        .send()
+        .await
+        .unwrap();
+    let err = ids.list_users().identity_store_id(store).send().await.unwrap_err();
+    assert_eq!(err.code(), Some("AccessDeniedException"));
+
     // Only principals the store's account allows may use it.
     let (_, nobody) = mws_e2e::user_with_policy(&c.mws, "nobody", None).await;
     let denied = aws_sdk_identitystore::Client::new(&nobody);
