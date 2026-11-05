@@ -4,6 +4,7 @@ fn main() {
         "guardduty_generated.rs",
         mws_codegen::RestJsonOptions {
             validation_error: "BadRequestException",
+            error_code_key: None,
             error_message_key: "message",
             error_fault_key: None,
         },
