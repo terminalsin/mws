@@ -1509,6 +1509,9 @@ impl mws_elasticache::NetworkView for ElastiCacheNetwork {
     fn default_security_group(&self, account: &str, region: &str, vpc_id: &str) -> Option<String> {
         self.ec2.default_security_group(account, region, &self.partition, vpc_id)
     }
+    fn docker_network(&self, vpc_id: &str) -> Option<String> {
+        Some(mws_ec2::network::docker_network_name(vpc_id))
+    }
 }
 
 /// ElastiCache snapshot exports to, and seeds from, S3, as
@@ -1980,6 +1983,165 @@ impl mws_ecs::TaskPlatform for EcsPlatform {
             if let Err(e) = self.elb.invoke(behalf.clone(), op, input).await {
                 tracing::warn!("ECS Express clean-up {op} failed: {} {}", e.code, e.message);
             }
+        }
+    }
+}
+
+/// ElastiCache slow and engine logs, delivered the way vended logs are:
+/// to CloudWatch Logs as `delivery.logs.amazonaws.com` (adding that
+/// principal to the account's `AWSLogDeliveryWrite20150319` resource
+/// policy, as AWS does), and to Firehose streams tagged
+/// `LogDeliveryEnabled=true` through the log delivery service-linked role.
+pub(crate) struct ElastiCacheLogs {
+    pub logs: mws_logs::Logs,
+    pub firehose: mws_firehose::Firehose,
+}
+
+const LOG_DELIVERY_POLICY: &str = "AWSLogDeliveryWrite20150319";
+
+fn log_delivery_ctx(b: &mws_elasticache::LogBatch) -> RequestContext {
+    let role = "AWSServiceRoleForLogDelivery";
+    RequestContext {
+        request_id: uuid::Uuid::new_v4().to_string(),
+        region: b.region.clone(),
+        partition: b.partition.clone(),
+        received_at: chrono::Utc::now(),
+        caller: mws_core::Caller {
+            account_id: b.account.clone(),
+            arn: format!("arn:{}:sts::{}:assumed-role/{role}/LogDelivery", b.partition, b.account),
+            user_id: format!("AROA{}:LogDelivery", uuid::Uuid::new_v4().simple().to_string()[..17].to_uppercase()),
+            access_key_id: String::new(),
+            kind: mws_core::CallerKind::AssumedRole { role_name: role.into(), session_name: "LogDelivery".into() },
+            session: None,
+        },
+        source_ip: None,
+        secure_transport: true,
+        authorizer: std::sync::Arc::new(mws_core::AllowAll),
+        endpoint: None,
+    }
+}
+
+impl ElastiCacheLogs {
+    /// Let `delivery.logs.amazonaws.com` write to `log_group`.
+    async fn allow_delivery(&self, b: &mws_elasticache::LogBatch) -> Result<(), String> {
+        use mws_core::Service;
+        let ctx = log_delivery_ctx(b);
+        let resource = format!("arn:{}:logs:{}:{}:log-group:{}:*", b.partition, b.region, b.account, b.destination);
+        let existing = self
+            .logs
+            .invoke(ctx.clone(), "DescribeResourcePolicies", serde_json::json!({}))
+            .await
+            .map_err(|e| e.message)?;
+        let mut doc = existing["resourcePolicies"]
+            .as_array()
+            .into_iter()
+            .flatten()
+            .find(|p| p["policyName"] == LOG_DELIVERY_POLICY)
+            .and_then(|p| p["policyDocument"].as_str())
+            .and_then(|d| serde_json::from_str::<serde_json::Value>(d).ok())
+            .unwrap_or_else(|| {
+                serde_json::json!({
+                    "Version": "2012-10-17",
+                    "Statement": [{
+                        "Sid": "AWSLogDeliveryWrite",
+                        "Effect": "Allow",
+                        "Principal": {"Service": "delivery.logs.amazonaws.com"},
+                        "Action": ["logs:CreateLogStream", "logs:PutLogEvents"],
+                        "Resource": [],
+                        "Condition": {"StringEquals": {"aws:SourceAccount": b.account}},
+                    }],
+                })
+            });
+        let resources = &mut doc["Statement"][0]["Resource"];
+        if let Some(one) = resources.as_str().map(str::to_string) {
+            *resources = serde_json::json!([one]);
+        }
+        if let Some(list) = resources.as_array_mut() {
+            if !list.iter().any(|r| r == &serde_json::Value::String(resource.clone())) {
+                list.push(resource.into());
+            }
+        }
+        self.logs
+            .invoke(
+                ctx,
+                "PutResourcePolicy",
+                serde_json::json!({"policyName": LOG_DELIVERY_POLICY, "policyDocument": doc.to_string()}),
+            )
+            .await
+            .map(|_| ())
+            .map_err(|e| e.message)
+    }
+}
+
+#[async_trait::async_trait]
+impl mws_elasticache::LogDelivery for ElastiCacheLogs {
+    async fn deliver(&self, b: mws_elasticache::LogBatch) -> Result<(), String> {
+        let now = chrono::Utc::now().timestamp_millis();
+        match b.destination_type.as_str() {
+            "cloudwatch-logs" => {
+                let writer = mws_logs::ServiceLogWriter {
+                    partition: &b.partition,
+                    account: &b.account,
+                    region: &b.region,
+                    log_group: &b.destination,
+                    service_principal: "delivery.logs.amazonaws.com",
+                    source_account: &b.account,
+                    source_arn: &b.source_arn,
+                };
+                let events = || {
+                    b.events
+                        .iter()
+                        .map(|(t, m)| mws_logs::ServiceLogEvent { timestamp: *t, message: m.clone() })
+                        .collect::<Vec<_>>()
+                };
+                match self.logs.put_log_events_as_service(&writer, &b.log_stream, events(), now) {
+                    Err(mws_logs::ServiceLogError::AccessDenied { .. }) => {
+                        self.allow_delivery(&b).await?;
+                        self.logs.put_log_events_as_service(&writer, &b.log_stream, events(), now)
+                    }
+                    other => other,
+                }
+                .map_err(|e| e.to_string())
+            }
+            "kinesis-firehose" => {
+                use mws_core::Service;
+                let ctx = log_delivery_ctx(&b);
+                let tags = self
+                    .firehose
+                    .invoke(
+                        ctx.clone(),
+                        "ListTagsForDeliveryStream",
+                        serde_json::json!({"DeliveryStreamName": b.destination}),
+                    )
+                    .await
+                    .map_err(|e| e.message)?;
+                let enabled = tags["Tags"]
+                    .as_array()
+                    .into_iter()
+                    .flatten()
+                    .any(|t| t["Key"] == "LogDeliveryEnabled" && t["Value"] == "true");
+                if !enabled {
+                    return Err(format!(
+                        "Delivery stream {} must have the tag LogDeliveryEnabled with the value true.",
+                        b.destination
+                    ));
+                }
+                for (_, message) in &b.events {
+                    let mut data = message.clone().into_bytes();
+                    data.push(b'\n');
+                    self.firehose
+                        .put_record(
+                            &ctx,
+                            mws_firehose::generated::types::PutRecordInput {
+                                delivery_stream_name: b.destination.clone(),
+                                record: mws_firehose::generated::types::Record { data },
+                            },
+                        )
+                        .map_err(|e| e.message)?;
+                }
+                Ok(())
+            }
+            other => Err(format!("Unsupported destination type {other}")),
         }
     }
 }

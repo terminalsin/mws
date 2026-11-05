@@ -40,7 +40,10 @@ pub(crate) fn start(
     source: &str,
     kms: Option<String>,
 ) -> Result<String, ServiceError> {
-    check_name(name)?;
+    // Automatic snapshots carry ElastiCache's own `automatic.` names.
+    if source != "automated" {
+        check_name(name)?;
+    }
     if r.snapshots.contains_key(name) {
         return Err(errors::snapshot_already_exists_fault(format!("Snapshot {name} already exists.")));
     }

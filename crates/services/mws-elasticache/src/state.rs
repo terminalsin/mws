@@ -44,6 +44,9 @@ pub struct RegionState {
     /// Service update actions by `<update>/<resource id>`: status and when
     /// it last changed.
     pub update_actions: BTreeMap<String, (String, DateTime<Utc>)>,
+    /// When each source last had an automatic snapshot started, by
+    /// `rg/<id>`, `cluster/<id>` or `serverless/<name>`.
+    pub automatic_snapshots: BTreeMap<String, DateTime<Utc>>,
 }
 
 impl RegionState {
