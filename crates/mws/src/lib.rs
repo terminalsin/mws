@@ -533,6 +533,7 @@ fn build_with_store(config: Config, store: Option<Arc<Store>>) -> Mws {
     elasticache.set_snapshot_bucket(Arc::new(links::ElastiCacheSnapshots(s3.clone())));
     elasticache.set_event_notifier(Arc::new(links::ElastiCacheNotifications(sns.clone())));
     elasticache.set_metric_publisher(Arc::new(links::ElastiCacheToCloudWatch(cloudwatch.clone())));
+    imagebuilder.set_ecr(Arc::new(ecr.clone()));
     elasticache.set_log_delivery(Arc::new(links::ElastiCacheLogs { logs: logs.clone(), firehose: firehose.clone() }));
     let ecs = mws_ecs::Ecs::new(config.ecs_backend.resolve(config.ecs_docker_cli.as_deref()));
     tracing::info!(backend = ecs.backend_name(), "ECS container backend");

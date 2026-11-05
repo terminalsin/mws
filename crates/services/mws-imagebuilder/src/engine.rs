@@ -55,6 +55,10 @@ struct Build {
     parent_ami: Option<String>,
     components: Vec<Component>,
     log: Vec<(chrono::DateTime<chrono::Utc>, String)>,
+    /// The container image a container build made, for distribution.
+    container_image: Option<crate::container::OciImage>,
+    /// Where the container image was pushed in the build Region.
+    container_uri: Option<String>,
 }
 
 impl Build {
@@ -203,6 +207,8 @@ impl ImageBuilder {
             parent_ami: None,
             components: Vec::new(),
             log: Vec::new(),
+            container_image: None,
+            container_uri: None,
         };
         b.note(format!("Build of {} started", b.arn));
         let result = self.run_stages(&mut b).await;
@@ -343,7 +349,7 @@ impl ImageBuilder {
         // Distribute.
         self.set_status(b, "DISTRIBUTING")?;
         if container {
-            let containers = self.container_outputs(b);
+            let containers = self.distribute_containers(b).await?;
             self.set_outputs(b, Vec::new(), Some(containers));
         } else {
             let distribution_workflows = self.workflows_of(b, "DISTRIBUTION", container);
@@ -610,6 +616,11 @@ impl ImageBuilder {
                 };
                 let id = self.launch(b, ec2, kind, &image, inputs).await?;
                 Ok(json!({ "instanceId": id }))
+            }
+            "ExecuteComponents" if kind != "TEST" && b.image.container_recipe.is_some() => {
+                let instance = instance_input()?;
+                let uri = self.build_container(b, ec2, &instance).await?;
+                Ok(json!({ "imageUri": uri }))
             }
             "ExecuteComponents" => {
                 let instance = instance_input()?;
@@ -1146,34 +1157,96 @@ impl ImageBuilder {
         Ok(out)
     }
 
-    fn container_outputs(&self, b: &Build) -> Vec<t::Container> {
-        let Some(cr) = &b.image.container_recipe else { return Vec::new() };
-        let tag = format!("{}-{}", b.image.version.clone().unwrap_or_default(), b.build_number());
-        let mut out = Vec::new();
+    fn container_tag(b: &Build) -> String {
+        format!("{}-{}", b.image.version.clone().unwrap_or_default(), b.build_number())
+    }
+
+    /// Build the container recipe's image on the build instance (or a
+    /// marker image when EC2 runs nothing) and push it to the recipe's
+    /// target repository.
+    async fn build_container(&self, b: &mut Build, ec2: &ec2link::Ec2, instance: &str) -> Result<String, Failure> {
+        let cr =
+            b.image.container_recipe.clone().ok_or_else(|| Failure::failed("The image has no container recipe."))?;
+        let (dockerfile, files) = {
+            let comps: Vec<crate::container::BakeComponent<'_>> = b
+                .components
+                .iter()
+                .map(|c| crate::container::BakeComponent { arn: &c.arn, doc: &c.doc, params: &c.params })
+                .collect();
+            crate::container::render(&cr, None, &comps).map_err(Failure::failed)?
+        };
+        b.note(format!("Building the container image from {}", cr.parent_image.clone().unwrap_or_default()));
+        let built = ec2
+            .build_image_on_instance(&b.account, &b.region, instance, &dockerfile, &files)
+            .await
+            .map_err(|e| Failure::failed(format!("Building the container image failed: {e}")))?;
+        let image = match built {
+            Some(archive) => crate::container::OciImage::from_docker_save(&archive).map_err(Failure::failed)?,
+            None => crate::container::OciImage::marker(&cr, &b.arn, &dockerfile),
+        };
+        let ecr = self.ecr().ok_or_else(|| Failure::failed("Amazon ECR is not available."))?.clone();
+        let repo = cr.target_repository.as_ref().map(|r| r.repository_name.clone()).unwrap_or_default();
+        let tag = Self::container_tag(b);
+        let (uri, digest) = image
+            .push(&ecr, &b.svc, &repo, std::slice::from_ref(&tag))
+            .await
+            .map_err(|e| Failure::failed(format!("Pushing the image to ECR repository '{repo}' failed: {e}")))?;
+        b.note(format!("Pushed {uri}:{tag} ({digest})"));
+        let full = format!("{uri}:{tag}");
+        b.container_image = Some(image);
+        b.container_uri = Some(full.clone());
+        Ok(full)
+    }
+
+    /// Push the built container image to each distribution's repository.
+    async fn distribute_containers(&self, b: &mut Build) -> Result<Vec<t::Container>, Failure> {
+        let Some(cr) = b.image.container_recipe.clone() else { return Ok(Vec::new()) };
+        let tag = Self::container_tag(b);
+        let fallback = |account: &str, region: &str, repo: &str, tag: &str| {
+            format!("{account}.dkr.ecr.{region}.amazonaws.com/{repo}:{tag}")
+        };
         let repo = cr.target_repository.clone().map(|r| r.repository_name).unwrap_or_default();
-        out.push(t::Container {
+        let mut out = vec![t::Container {
             region: Some(b.region.clone()),
-            image_uris: Some(vec![format!("{}.dkr.ecr.{}.amazonaws.com/{repo}:{tag}", b.account, b.region)]),
-        });
-        for d in b.image.distribution_configuration.as_ref().and_then(|d| d.distributions.clone()).unwrap_or_default() {
-            if let Some(c) = d.container_distribution_configuration {
-                let tags = c.container_tags.clone().unwrap_or_else(|| vec![tag.clone()]);
-                out.push(t::Container {
-                    region: Some(d.region.clone()),
-                    image_uris: Some(
-                        tags.iter()
-                            .map(|t| {
-                                format!(
-                                    "{}.dkr.ecr.{}.amazonaws.com/{}:{t}",
-                                    b.account, d.region, c.target_repository.repository_name
-                                )
-                            })
-                            .collect(),
-                    ),
-                });
-            }
+            image_uris: Some(vec![b
+                .container_uri
+                .clone()
+                .unwrap_or_else(|| fallback(&b.account, &b.region, &repo, &tag))]),
+        }];
+        let distributions = b.image.distribution_configuration.as_ref().and_then(|d| d.distributions.clone());
+        for d in distributions.unwrap_or_default() {
+            let Some(c) = d.container_distribution_configuration else { continue };
+            let tags = c.container_tags.clone().filter(|t| !t.is_empty()).unwrap_or_else(|| vec![tag.clone()]);
+            let target = c.target_repository.repository_name.clone();
+            let uris = match (&b.container_image, self.ecr()) {
+                (Some(image), Some(ecr)) => {
+                    let ctx = self.service_ctx(&b.svc, &b.account, &d.region);
+                    let (uri, _) = image.push(ecr, &ctx, &target, &tags).await.map_err(|e| Failure {
+                        status: "FAILED",
+                        reason: format!(
+                            "Distribution failed: pushing to ECR repository '{target}' in {} failed: {e}",
+                            d.region
+                        ),
+                        context: Some(Box::new(t::ImageFailureContext {
+                            distribution_failure: Some(t::DistributionFailureContext {
+                                error_message: Some(e.clone()),
+                                region_failures: Some(vec![t::RegionFailure {
+                                    region: Some(d.region.clone()),
+                                    error_message: Some(e.clone()),
+                                    ..Default::default()
+                                }]),
+                            }),
+                            ..Default::default()
+                        })),
+                    })?;
+                    b.note(format!("Pushed the image to {uri} in {} as {}", d.region, tags.join(", ")));
+                    tags.iter().map(|t| format!("{uri}:{t}")).collect()
+                }
+                _ => tags.iter().map(|t| fallback(&b.account, &d.region, &target, t)).collect(),
+            };
+            out.push(t::Container { region: Some(d.region.clone()), image_uris: Some(uris) });
         }
-        out
+        Ok(out)
     }
 
     async fn import_iso(&self, b: &mut Build) -> Result<(), Failure> {

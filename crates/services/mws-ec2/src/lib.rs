@@ -174,6 +174,29 @@ impl Ec2 {
         self.backend().exec(&handle, script).await.map_err(|e| e.to_string())
     }
 
+    /// Build a container image on a running instance (`docker build` with
+    /// `files` as the context). The image comes back as a `docker save`
+    /// archive, or `None` when the backend runs nothing.
+    pub async fn build_image_on_instance(
+        &self,
+        account: &str,
+        region: &str,
+        instance_id: &str,
+        dockerfile: &str,
+        files: &[(String, Vec<u8>)],
+    ) -> Result<Option<Vec<u8>>, String> {
+        let handle = {
+            let state = self.lock();
+            let inst = state
+                .regions
+                .get(&State::key(account, region))
+                .and_then(|r| r.instances.get(instance_id))
+                .ok_or_else(|| format!("instance {instance_id} does not exist"))?;
+            inst.handle.clone().ok_or_else(|| format!("instance {instance_id} has not started"))?
+        };
+        self.backend().build_image(&handle, dockerfile, files).await.map_err(|e| e.to_string())
+    }
+
     pub(crate) fn backend(&self) -> Arc<dyn ComputeBackend> {
         self.inner.backend.clone()
     }
