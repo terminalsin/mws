@@ -102,9 +102,10 @@ impl SsoAdmin {
             if !mine {
                 continue;
             }
-            let (Some(ps), Some(p)) =
-                (i.permission_sets.get(&a.permission_set), i.provisioned.get(&(a.permission_set.clone(), a.account.clone())))
-            else {
+            let (Some(ps), Some(p)) = (
+                i.permission_sets.get(&a.permission_set),
+                i.provisioned.get(&(a.permission_set.clone(), a.account.clone())),
+            ) else {
                 continue;
             };
             let role = AccountRole {
@@ -153,6 +154,11 @@ impl SsoAdmin {
             }
         }
         tags
+    }
+
+    /// The user name AWS names role sessions after.
+    pub fn user_name(&self, identity_store_id: &str, user_id: &str) -> Option<String> {
+        self.identity.user(identity_store_id, user_id).map(|u| u.user_name)
     }
 
     pub fn application_info(&self, application_arn: &str) -> Option<ApplicationInfo> {

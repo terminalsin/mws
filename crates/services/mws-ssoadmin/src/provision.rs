@@ -47,7 +47,8 @@ impl SsoAdmin {
         let (instance_id, region, ps, existing) = {
             let st = self.lock();
             let i = st.instances.get(instance_arn).ok_or("The instance no longer exists.")?;
-            let ps: PermissionSet = i.permission_sets.get(ps_arn).cloned().ok_or("The permission set no longer exists.")?;
+            let ps: PermissionSet =
+                i.permission_sets.get(ps_arn).cloned().ok_or("The permission set no longer exists.")?;
             let existing = i.provisioned.get(&(ps_arn.to_string(), account.to_string())).map(|p| p.role_name.clone());
             (i.id.clone(), i.primary_region.clone(), ps, existing)
         };

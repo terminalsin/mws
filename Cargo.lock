@@ -401,6 +401,31 @@ dependencies = [
 ]
 
 [[package]]
+name = "aws-sdk-identitystore"
+version = "1.122.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "5a1767a32cb5b7240f41d07c00d741fe8577b20f500a322bfe0e68e6d01732db"
+dependencies = [
+ "arc-swap",
+ "aws-credential-types",
+ "aws-runtime",
+ "aws-smithy-async",
+ "aws-smithy-http",
+ "aws-smithy-json",
+ "aws-smithy-observability",
+ "aws-smithy-runtime",
+ "aws-smithy-runtime-api",
+ "aws-smithy-schema",
+ "aws-smithy-types",
+ "aws-types",
+ "bytes",
+ "fastrand",
+ "http 1.5.0",
+ "regex-lite",
+ "tracing",
+]
+
+[[package]]
 name = "aws-sdk-kinesis"
 version = "1.130.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -690,6 +715,31 @@ name = "aws-sdk-sso"
 version = "1.119.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "3c414f25ec4aa9dc18f5cc8f55e18848bb509fcda4ce7c77bee6072e95806bc9"
+dependencies = [
+ "arc-swap",
+ "aws-credential-types",
+ "aws-runtime",
+ "aws-smithy-async",
+ "aws-smithy-http",
+ "aws-smithy-json",
+ "aws-smithy-observability",
+ "aws-smithy-runtime",
+ "aws-smithy-runtime-api",
+ "aws-smithy-schema",
+ "aws-smithy-types",
+ "aws-types",
+ "bytes",
+ "fastrand",
+ "http 1.5.0",
+ "regex-lite",
+ "tracing",
+]
+
+[[package]]
+name = "aws-sdk-ssoadmin"
+version = "1.125.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "eaa767d48380d113a090efd4d568198455d87f38fbd29251e2d4b816d28c0390"
 dependencies = [
  "arc-swap",
  "aws-credential-types",
@@ -2269,6 +2319,7 @@ dependencies = [
  "mws-events",
  "mws-firehose",
  "mws-iam",
+ "mws-identitystore",
  "mws-kinesis",
  "mws-kms",
  "mws-lambda",
@@ -2282,6 +2333,9 @@ dependencies = [
  "mws-sns",
  "mws-sqs",
  "mws-ssm",
+ "mws-ssoadmin",
+ "mws-ssooidc",
+ "mws-ssoportal",
  "mws-sts",
  "serde_json",
  "tokio",
@@ -2418,6 +2472,7 @@ dependencies = [
  "aws-sdk-eventbridge",
  "aws-sdk-firehose",
  "aws-sdk-iam",
+ "aws-sdk-identitystore",
  "aws-sdk-kinesis",
  "aws-sdk-kms",
  "aws-sdk-lambda",
@@ -2429,9 +2484,13 @@ dependencies = [
  "aws-sdk-sns",
  "aws-sdk-sqs",
  "aws-sdk-ssm",
+ "aws-sdk-sso",
+ "aws-sdk-ssoadmin",
+ "aws-sdk-ssooidc",
  "aws-sdk-sts",
  "aws-smithy-http-client",
  "aws-smithy-runtime-api",
+ "aws-smithy-types",
  "base64 0.22.1",
  "chrono",
  "flate2",
@@ -3070,15 +3129,21 @@ name = "mws-ssooidc"
 version = "0.1.0"
 dependencies = [
  "async-trait",
+ "aws-lc-rs",
+ "base64 0.22.1",
+ "bytes",
  "chrono",
+ "form_urlencoded",
+ "http 1.5.0",
  "mws-codegen",
  "mws-core",
+ "mws-identitystore",
  "mws-proto-json",
  "mws-proto-restjson",
- "regex",
+ "mws-ssoadmin",
+ "mws-sts",
  "serde",
  "serde_json",
- "uuid",
 ]
 
 [[package]]
@@ -3086,15 +3151,16 @@ name = "mws-ssoportal"
 version = "0.1.0"
 dependencies = [
  "async-trait",
- "chrono",
  "mws-codegen",
  "mws-core",
+ "mws-organizations",
  "mws-proto-json",
  "mws-proto-restjson",
- "regex",
+ "mws-ssoadmin",
+ "mws-ssooidc",
+ "mws-sts",
  "serde",
  "serde_json",
- "uuid",
 ]
 
 [[package]]

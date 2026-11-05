@@ -13,9 +13,9 @@ const MAX_PERMISSION_SETS: usize = 2000;
 fn check_session_duration(d: &str) -> Result<(), ServiceError> {
     match duration_seconds(d) {
         Some(s) if (3600..=43200).contains(&s) => Ok(()),
-        _ => Err(errors::validation(format!(
-            "The session duration {d} is invalid. It must be between PT1H and PT12H."
-        ))),
+        _ => {
+            Err(errors::validation(format!("The session duration {d} is invalid. It must be between PT1H and PT12H.")))
+        }
     }
 }
 
@@ -84,13 +84,12 @@ impl SsoAdmin {
                 return Err(errors::validation("Permission sets are not enabled for this instance."));
             }
             if i.permission_sets.values().any(|p| p.name == input.name) {
-                return Err(errors::conflict(format!(
-                    "PermissionSet with name {} already exists.",
-                    input.name
-                )));
+                return Err(errors::conflict(format!("PermissionSet with name {} already exists.", input.name)));
             }
             if i.permission_sets.len() >= MAX_PERMISSION_SETS {
-                return Err(errors::service_quota_exceeded("The instance has reached the maximum number of permission sets."));
+                return Err(errors::service_quota_exceeded(
+                    "The instance has reached the maximum number of permission sets.",
+                ));
             }
             let arn = format!("arn:{}:sso:::permissionSet/{}/ps-{}", ctx.partition, i.id, hex(16));
             let p = PermissionSet {
@@ -201,7 +200,9 @@ impl SsoAdmin {
         let arn = input.managed_policy_arn;
         self.edit(&r, &input.permission_set_arn, |p| {
             if p.managed.contains(&arn) {
-                return Err(errors::conflict(format!("Managed policy {arn} is already attached to the permission set.")));
+                return Err(errors::conflict(format!(
+                    "Managed policy {arn} is already attached to the permission set."
+                )));
             }
             if p.managed.len() + p.customer_managed.len() >= MAX_MANAGED {
                 return Err(errors::service_quota_exceeded(
@@ -332,7 +333,10 @@ impl SsoAdmin {
             Ok(ps_mut(i, &input.permission_set_arn)?
                 .customer_managed
                 .iter()
-                .map(|(name, path)| types::CustomerManagedPolicyReference { name: name.clone(), path: Some(path.clone()) })
+                .map(|(name, path)| types::CustomerManagedPolicyReference {
+                    name: name.clone(),
+                    path: Some(path.clone()),
+                })
                 .collect::<Vec<_>>())
         })?;
         let (page, next_token) = paginate(all, input.max_results, 100, input.next_token.as_deref())?;
@@ -431,9 +435,10 @@ impl SsoAdmin {
             "sso:GetPermissionsBoundaryForPermissionSet",
         )?;
         self.with_instance(&r.arn, |i| {
-            let b = ps_mut(i, &input.permission_set_arn)?.boundary.clone().ok_or_else(|| {
-                not_found("The permission set doesn't have a permissions boundary.")
-            })?;
+            let b = ps_mut(i, &input.permission_set_arn)?
+                .boundary
+                .clone()
+                .ok_or_else(|| not_found("The permission set doesn't have a permissions boundary."))?;
             Ok(types::GetPermissionsBoundaryForPermissionSetResponse { permissions_boundary: Some(b) })
         })
     }

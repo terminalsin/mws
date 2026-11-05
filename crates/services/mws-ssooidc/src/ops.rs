@@ -60,12 +60,7 @@ impl SsoOidc {
         }
     }
 
-    fn token_response(
-        &self,
-        ctx: &RequestContext,
-        c: &Client,
-        session: Session,
-    ) -> types::CreateTokenResponse {
+    fn token_response(&self, ctx: &RequestContext, c: &Client, session: Session) -> types::CreateTokenResponse {
         let refresh = c.grant_types.iter().any(|g| g == GRANT_REFRESH_TOKEN);
         let seconds = if refresh { REFRESHABLE_TOKEN_SECONDS } else { TOKEN_SECONDS };
         let (access, refresh_token) = self.issue(session, ctx.received_at, seconds, refresh);
@@ -209,7 +204,11 @@ impl Handler for SsoOidc {
             GRANT_AUTHORIZATION_CODE => {
                 Self::check_grant(&c, GRANT_AUTHORIZATION_CODE)?;
                 let code = input.code.ok_or_else(|| invalid_request("code is required"))?;
-                let auth = self.lock().codes.remove(&code).ok_or_else(|| invalid_grant("Invalid authorization code provided"))?;
+                let auth = self
+                    .lock()
+                    .codes
+                    .remove(&code)
+                    .ok_or_else(|| invalid_grant("Invalid authorization code provided"))?;
                 if auth.client_id != c.id || auth.expires_at <= now {
                     return Err(invalid_grant("Invalid authorization code provided"));
                 }
@@ -234,7 +233,11 @@ impl Handler for SsoOidc {
             GRANT_REFRESH_TOKEN => {
                 Self::check_grant(&c, GRANT_REFRESH_TOKEN)?;
                 let token = input.refresh_token.ok_or_else(|| invalid_request("refreshToken is required"))?;
-                let session = self.lock().refresh.remove(&token).ok_or_else(|| invalid_grant("Invalid refresh token provided"))?;
+                let session = self
+                    .lock()
+                    .refresh
+                    .remove(&token)
+                    .ok_or_else(|| invalid_grant("Invalid refresh token provided"))?;
                 if session.client_id != c.id {
                     return Err(invalid_grant("Invalid refresh token provided"));
                 }

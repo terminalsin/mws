@@ -42,37 +42,37 @@ pub fn oauth(make: fn(String) -> ServiceError, code: &str, description: impl Int
 }
 
 pub fn invalid_client(d: impl Into<String>) -> ServiceError {
-    oauth(|m| errors::invalid_client(m), "invalid_client", d)
+    oauth(errors::invalid_client, "invalid_client", d)
 }
 pub fn invalid_grant(d: impl Into<String>) -> ServiceError {
-    oauth(|m| errors::invalid_grant(m), "invalid_grant", d)
+    oauth(errors::invalid_grant, "invalid_grant", d)
 }
 pub fn invalid_request(d: impl Into<String>) -> ServiceError {
-    oauth(|m| errors::invalid_request(m), "invalid_request", d)
+    oauth(errors::invalid_request, "invalid_request", d)
 }
 pub fn invalid_scope(d: impl Into<String>) -> ServiceError {
-    oauth(|m| errors::invalid_scope(m), "invalid_scope", d)
+    oauth(errors::invalid_scope, "invalid_scope", d)
 }
 pub fn unsupported_grant_type(d: impl Into<String>) -> ServiceError {
-    oauth(|m| errors::unsupported_grant_type(m), "unsupported_grant_type", d)
+    oauth(errors::unsupported_grant_type, "unsupported_grant_type", d)
 }
 pub fn unauthorized_client(d: impl Into<String>) -> ServiceError {
-    oauth(|m| errors::unauthorized_client(m), "unauthorized_client", d)
+    oauth(errors::unauthorized_client, "unauthorized_client", d)
 }
 pub fn invalid_client_metadata(d: impl Into<String>) -> ServiceError {
-    oauth(|m| errors::invalid_client_metadata(m), "invalid_client_metadata", d)
+    oauth(errors::invalid_client_metadata, "invalid_client_metadata", d)
 }
 pub fn invalid_redirect_uri(d: impl Into<String>) -> ServiceError {
-    oauth(|m| errors::invalid_redirect_uri(m), "invalid_redirect_uri", d)
+    oauth(errors::invalid_redirect_uri, "invalid_redirect_uri", d)
 }
 pub fn authorization_pending() -> ServiceError {
-    oauth(|m| errors::authorization_pending(m), "authorization_pending", "Authorization is still pending")
+    oauth(errors::authorization_pending, "authorization_pending", "Authorization is still pending")
 }
 pub fn expired_token(d: impl Into<String>) -> ServiceError {
-    oauth(|m| errors::expired_token(m), "expired_token", d)
+    oauth(errors::expired_token, "expired_token", d)
 }
 pub fn access_denied(d: impl Into<String>) -> ServiceError {
-    oauth(|m| errors::access_denied(m), "access_denied", d)
+    oauth(errors::access_denied, "access_denied", d)
 }
 
 /// Whether a PKCE `code_verifier` matches the challenge the authorization

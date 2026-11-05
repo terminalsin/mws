@@ -175,6 +175,11 @@ fn unknown(path: &str) -> String {
 pub fn user_value(user: &types::User, path: &str) -> Vec<String> {
     let lower = path.to_ascii_lowercase();
     let one = |v: &Option<String>| v.iter().cloned().collect::<Vec<_>>();
+    // Access control attributes write the enterprise extension as
+    // `enterprise.department`.
+    if let Some(rest) = path.strip_prefix("enterprise.") {
+        return user_value(user, &format!("aws:identitystore:enterprise.{rest}"));
+    }
     if let Some(rest) = path.strip_prefix("aws:identitystore:") {
         let (name, member) = rest.split_once('.').unwrap_or((rest, ""));
         let Some(doc) = user

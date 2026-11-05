@@ -35,7 +35,11 @@ fn status_metadata(s: &types::AccountAssignmentOperationStatus) -> types::Accoun
     }
 }
 
-fn filter_status<T>(items: Vec<T>, filter: &Option<types::OperationStatusFilter>, status: impl Fn(&T) -> Option<&str>) -> Vec<T> {
+fn filter_status<T>(
+    items: Vec<T>,
+    filter: &Option<types::OperationStatusFilter>,
+    status: impl Fn(&T) -> Option<&str>,
+) -> Vec<T> {
     match filter.as_ref().and_then(|f| f.status.as_deref()) {
         Some(want) => items.into_iter().filter(|i| status(i) == Some(want)).collect(),
         None => items,
@@ -81,7 +85,10 @@ impl SsoAdmin {
         if exists {
             Ok(())
         } else {
-            Err(not_found(format!("Principal {id} of type {kind} doesn't exist in identity store {}.", r.identity_store_id)))
+            Err(not_found(format!(
+                "Principal {id} of type {kind} doesn't exist in identity store {}.",
+                r.identity_store_id
+            )))
         }
     }
 
@@ -90,7 +97,8 @@ impl SsoAdmin {
         ctx: &RequestContext,
         input: types::CreateAccountAssignmentRequest,
     ) -> Result<types::CreateAccountAssignmentResponse, ServiceError> {
-        let r = self.permission_set(ctx, &input.instance_arn, &input.permission_set_arn, "sso:CreateAccountAssignment")?;
+        let r =
+            self.permission_set(ctx, &input.instance_arn, &input.permission_set_arn, "sso:CreateAccountAssignment")?;
         self.check_target(&r, &input.target_id)?;
         self.check_principal(&r, &input.principal_type, &input.principal_id)?;
         let a = Assignment {
@@ -132,7 +140,8 @@ impl SsoAdmin {
         ctx: &RequestContext,
         input: types::DeleteAccountAssignmentRequest,
     ) -> Result<types::DeleteAccountAssignmentResponse, ServiceError> {
-        let r = self.permission_set(ctx, &input.instance_arn, &input.permission_set_arn, "sso:DeleteAccountAssignment")?;
+        let r =
+            self.permission_set(ctx, &input.instance_arn, &input.permission_set_arn, "sso:DeleteAccountAssignment")?;
         self.check_target(&r, &input.target_id)?;
         let a = Assignment {
             account: input.target_id,
@@ -217,7 +226,8 @@ impl SsoAdmin {
         ctx: &RequestContext,
         input: types::ListAccountAssignmentsRequest,
     ) -> Result<types::ListAccountAssignmentsResponse, ServiceError> {
-        let r = self.permission_set(ctx, &input.instance_arn, &input.permission_set_arn, "sso:ListAccountAssignments")?;
+        let r =
+            self.permission_set(ctx, &input.instance_arn, &input.permission_set_arn, "sso:ListAccountAssignments")?;
         let all = self.with_instance(&r.arn, |i| {
             Ok(i.assignments
                 .iter()
@@ -264,7 +274,8 @@ impl SsoAdmin {
         ctx: &RequestContext,
         input: types::ProvisionPermissionSetRequest,
     ) -> Result<types::ProvisionPermissionSetResponse, ServiceError> {
-        let r = self.permission_set(ctx, &input.instance_arn, &input.permission_set_arn, "sso:ProvisionPermissionSet")?;
+        let r =
+            self.permission_set(ctx, &input.instance_arn, &input.permission_set_arn, "sso:ProvisionPermissionSet")?;
         let ps = input.permission_set_arn.clone();
         let accounts: Vec<String> = match (input.target_type.as_str(), &input.target_id) {
             ("AWS_ACCOUNT", Some(id)) => {
@@ -306,7 +317,9 @@ impl SsoAdmin {
             i.provisionings.insert(request_id.clone(), done);
             Ok(())
         })?;
-        Ok(types::ProvisionPermissionSetResponse { permission_set_provisioning_status: Some(status("IN_PROGRESS", None)) })
+        Ok(types::ProvisionPermissionSetResponse {
+            permission_set_provisioning_status: Some(status("IN_PROGRESS", None)),
+        })
     }
 
     pub(crate) fn describe_permission_set_provisioning_status(
@@ -317,7 +330,8 @@ impl SsoAdmin {
         let r = self.instance(ctx, &input.instance_arn, "sso:DescribePermissionSetProvisioningStatus", None)?;
         let id = input.provision_permission_set_request_id;
         self.with_instance(&r.arn, |i| {
-            let s = i.provisionings.get(&id).cloned().ok_or_else(|| not_found(format!("Request {id} doesn't exist.")))?;
+            let s =
+                i.provisionings.get(&id).cloned().ok_or_else(|| not_found(format!("Request {id} doesn't exist.")))?;
             Ok(types::DescribePermissionSetProvisioningStatusResponse { permission_set_provisioning_status: Some(s) })
         })
     }

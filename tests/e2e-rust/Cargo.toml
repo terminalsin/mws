@@ -28,6 +28,11 @@ aws-sdk-kinesis = "1"
 aws-sdk-firehose = "1"
 aws-sdk-cloudwatch = "1"
 aws-sdk-ec2 = "1"
+aws-sdk-ssoadmin = "1"
+aws-sdk-identitystore = "1"
+aws-sdk-sso = "1"
+aws-sdk-ssooidc = "1"
+aws-smithy-types = "1"
 aws-smithy-http-client = { version = "1", features = ["rustls-aws-lc"] }
 aws-smithy-runtime-api = { version = "1", features = ["client"] }
 zip.workspace = true

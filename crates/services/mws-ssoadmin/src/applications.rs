@@ -115,7 +115,9 @@ impl SsoAdmin {
         let p = providers(&ctx.partition)
             .into_iter()
             .find(|p| p.application_provider_arn == input.application_provider_arn)
-            .ok_or_else(|| not_found(format!("Application provider {} doesn't exist.", input.application_provider_arn)))?;
+            .ok_or_else(|| {
+                not_found(format!("Application provider {} doesn't exist.", input.application_provider_arn))
+            })?;
         Ok(types::DescribeApplicationProviderResponse {
             application_provider_arn: p.application_provider_arn,
             federation_protocol: p.federation_protocol,
@@ -143,7 +145,9 @@ impl SsoAdmin {
         let store_arn = self.identity.store(&r.identity_store_id).map(|s| s.arn);
         self.with_instance(&r.arn, |i| {
             if i.applications.len() >= 3000 {
-                return Err(errors::service_quota_exceeded("The instance has reached the maximum number of applications."));
+                return Err(errors::service_quota_exceeded(
+                    "The instance has reached the maximum number of applications.",
+                ));
             }
             let id: String = format!("apl-{}", hex(16));
             let arn = format!("arn:{}:sso::{}:application/{}/{id}", ctx.partition, ctx.caller.account_id, i.id);
@@ -287,7 +291,10 @@ impl SsoAdmin {
         if exists {
             Ok(())
         } else {
-            Err(not_found(format!("Principal {id} of type {kind} doesn't exist in identity store {}.", r.identity_store_id)))
+            Err(not_found(format!(
+                "Principal {id} of type {kind} doesn't exist in identity store {}.",
+                r.identity_store_id
+            )))
         }
     }
 
@@ -391,7 +398,9 @@ impl SsoAdmin {
         let r = self.application(ctx, &input.application_arn, "sso:PutApplicationAccessScope")?;
         self.with_app(&r, &input.application_arn, |a| {
             if !a.scopes.contains_key(&input.scope) && a.scopes.len() >= 25 {
-                return Err(errors::service_quota_exceeded("The application has reached the maximum number of scopes."));
+                return Err(errors::service_quota_exceeded(
+                    "The application has reached the maximum number of scopes.",
+                ));
             }
             a.scopes.insert(input.scope, input.authorized_targets.unwrap_or_default());
             Ok(())
@@ -550,11 +559,10 @@ impl SsoAdmin {
     ) -> Result<types::GetApplicationGrantResponse, ServiceError> {
         let r = self.application(ctx, &input.application_arn, "sso:GetApplicationGrant")?;
         self.with_app(&r, &input.application_arn, |a| {
-            let grant = a
-                .grants
-                .get(&input.grant_type)
-                .cloned()
-                .ok_or_else(|| not_found(format!("Grant {} doesn't exist for the application.", input.grant_type)))?;
+            let grant =
+                a.grants.get(&input.grant_type).cloned().ok_or_else(|| {
+                    not_found(format!("Grant {} doesn't exist for the application.", input.grant_type))
+                })?;
             Ok(types::GetApplicationGrantResponse { grant })
         })
     }
@@ -654,7 +662,13 @@ impl SsoAdmin {
     }
 
     fn token_issuer(&self, ctx: &RequestContext, arn: &str, action: &str) -> Result<InstanceRef, ServiceError> {
-        let r = self.owner_of(ctx, arn, action).map_err(|e| if e.code == "ResourceNotFoundException" { tti_not_found(arn) } else { e })?;
+        let r = self.owner_of(ctx, arn, action).map_err(|e| {
+            if e.code == "ResourceNotFoundException" {
+                tti_not_found(arn)
+            } else {
+                e
+            }
+        })?;
         self.with_instance(&r.arn, |i| i.token_issuers.get(arn).map(|_| ()).ok_or_else(|| tti_not_found(arn)))?;
         Ok(r)
     }

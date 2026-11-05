@@ -75,7 +75,9 @@ impl Holder {
 /// Roles IAM Identity Center provisions are only modifiable by AWS.
 fn reserved_guard(h: Holder, state: &State, name: &str) -> Result<(), ServiceError> {
     match (h, state.role(name)) {
-        (Holder::Role, Some(r)) if crate::ops::roles::is_reserved(r) => Err(crate::ops::service_roles::protected(&r.name)),
+        (Holder::Role, Some(r)) if crate::ops::roles::is_reserved(r) => {
+            Err(crate::ops::service_roles::protected(&r.name))
+        }
         _ => Ok(()),
     }
 }

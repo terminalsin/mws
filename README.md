@@ -7,7 +7,7 @@
 [![CI](https://github.com/terminalsin/mws/actions/workflows/ci.yml/badge.svg?branch=master)](https://github.com/terminalsin/mws/actions/workflows/ci.yml)
 [![License: MIT OR Apache-2.0](https://img.shields.io/badge/license-MIT%20OR%20Apache--2.0-blue.svg)](#license)
 [![Rust 1.85+](https://img.shields.io/badge/rust-1.85%2B-orange.svg)](https://www.rust-lang.org)
-[![Services](https://img.shields.io/badge/AWS%20services-20-success.svg)](docs/services/README.md)
+[![Services](https://img.shields.io/badge/AWS%20services-24-success.svg)](docs/services/README.md)
 
 [Getting started](docs/getting-started.md) ·
 [Services](docs/services/README.md) ·
@@ -99,6 +99,7 @@ SDKs, S3 addressing, host-prefixed endpoints and calling as other identities.
 | [IAM](docs/services/iam.md) | 180 / 180 | awsQuery |
 | [STS](docs/services/sts.md) | 11 / 11 | awsQuery |
 | [Organizations](docs/services/organizations.md) | 63 / 63 | awsJson 1.1 |
+| [IAM Identity Center](docs/services/identity-center.md) (SSO Admin, Identity Store, SSO OIDC, portal) | 109 / 109 | awsJson 1.1, restJson1 |
 | [KMS](docs/services/kms.md) | 56 / 56 | awsJson 1.1 |
 | [S3](docs/services/s3.md) | 111 / 112 | restXml |
 | [S3 Control](docs/services/s3control.md) | 97 / 97 | restXml |

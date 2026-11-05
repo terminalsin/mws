@@ -112,7 +112,11 @@ impl IdentityStore {
         Ok(id)
     }
 
-    fn with_store<T>(&self, id: &str, f: impl FnOnce(&mut Store) -> Result<T, ServiceError>) -> Result<T, ServiceError> {
+    fn with_store<T>(
+        &self,
+        id: &str,
+        f: impl FnOnce(&mut Store) -> Result<T, ServiceError>,
+    ) -> Result<T, ServiceError> {
         let mut st = self.lock();
         let s = st.stores.get_mut(id).ok_or_else(|| store_not_found(id))?;
         f(s)
@@ -372,9 +376,9 @@ impl Handler for IdentityStore {
             Ok(s.users
                 .values()
                 .filter(|u| {
-                    filters.iter().all(|f| {
-                        u.user_name.as_deref().is_some_and(|n| n.eq_ignore_ascii_case(&f.attribute_value))
-                    })
+                    filters
+                        .iter()
+                        .all(|f| u.user_name.as_deref().is_some_and(|n| n.eq_ignore_ascii_case(&f.attribute_value)))
                 })
                 .cloned()
                 .map(|u| with_extensions(u, input.extensions.as_deref()))
@@ -394,21 +398,19 @@ impl Handler for IdentityStore {
             let found = match &input.alternate_identifier {
                 types::AlternateIdentifier::UniqueAttribute(a) => {
                     if !attrs::is_unique_user_attribute(&a.attribute_path) {
-                        return Err(errors::validation(format!(
-                            "{} is not a unique attribute.",
-                            a.attribute_path
-                        )));
+                        return Err(errors::validation(format!("{} is not a unique attribute.", a.attribute_path)));
                     }
                     let want: serde_json::Value =
                         serde_json::from_str(&a.attribute_value).unwrap_or(serde_json::Value::Null);
                     let want = want.as_str().unwrap_or_default().to_string();
-                    s.users.values().find(|u| {
-                        attrs::user_value(u, &a.attribute_path).iter().any(|v| v.eq_ignore_ascii_case(&want))
-                    })
+                    s.users
+                        .values()
+                        .find(|u| attrs::user_value(u, &a.attribute_path).iter().any(|v| v.eq_ignore_ascii_case(&want)))
                 }
-                types::AlternateIdentifier::ExternalId(e) => s.users.values().find(|u| {
-                    u.external_ids.iter().flatten().any(|x| x.issuer == e.issuer && x.id == e.id)
-                }),
+                types::AlternateIdentifier::ExternalId(e) => s
+                    .users
+                    .values()
+                    .find(|u| u.external_ids.iter().flatten().any(|x| x.issuer == e.issuer && x.id == e.id)),
             };
             let u = found.ok_or_else(|| not_found("USER", "", "USER not found."))?;
             Ok(types::GetUserIdResponse {
@@ -556,9 +558,9 @@ impl Handler for IdentityStore {
             Ok(s.groups
                 .values()
                 .filter(|g| {
-                    filters.iter().all(|f| {
-                        g.display_name.as_deref().is_some_and(|n| n.eq_ignore_ascii_case(&f.attribute_value))
-                    })
+                    filters
+                        .iter()
+                        .all(|f| g.display_name.as_deref().is_some_and(|n| n.eq_ignore_ascii_case(&f.attribute_value)))
                 })
                 .cloned()
                 .collect::<Vec<_>>())
@@ -577,19 +579,17 @@ impl Handler for IdentityStore {
             let found = match &input.alternate_identifier {
                 types::AlternateIdentifier::UniqueAttribute(a) => {
                     if !a.attribute_path.eq_ignore_ascii_case("displayName") {
-                        return Err(errors::validation(format!(
-                            "{} is not a unique attribute.",
-                            a.attribute_path
-                        )));
+                        return Err(errors::validation(format!("{} is not a unique attribute.", a.attribute_path)));
                     }
                     let want: serde_json::Value =
                         serde_json::from_str(&a.attribute_value).unwrap_or(serde_json::Value::Null);
                     let want = want.as_str().unwrap_or_default().to_string();
                     s.groups.values().find(|g| g.display_name.as_deref().is_some_and(|n| n.eq_ignore_ascii_case(&want)))
                 }
-                types::AlternateIdentifier::ExternalId(e) => s.groups.values().find(|g| {
-                    g.external_ids.iter().flatten().any(|x| x.issuer == e.issuer && x.id == e.id)
-                }),
+                types::AlternateIdentifier::ExternalId(e) => s
+                    .groups
+                    .values()
+                    .find(|g| g.external_ids.iter().flatten().any(|x| x.issuer == e.issuer && x.id == e.id)),
             };
             let g = found.ok_or_else(|| not_found("GROUP", "", "GROUP not found."))?;
             Ok(types::GetGroupIdResponse {
@@ -646,13 +646,8 @@ impl Handler for IdentityStore {
         input: types::DescribeGroupMembershipRequest,
     ) -> Result<types::DescribeGroupMembershipResponse, ServiceError> {
         let arn = self.membership_arn_for(&input.membership_id);
-        let id = self.gate(
-            ctx,
-            &input.identity_store_id,
-            "identitystore:DescribeGroupMembership",
-            Access::Read,
-            Some(arn),
-        )?;
+        let id =
+            self.gate(ctx, &input.identity_store_id, "identitystore:DescribeGroupMembership", Access::Read, Some(arn))?;
         let mid = resource_id(&input.membership_id).to_string();
         self.with_store(&id, |s| {
             let m = s.memberships.get(&mid).ok_or_else(|| membership_not_found(&mid))?;

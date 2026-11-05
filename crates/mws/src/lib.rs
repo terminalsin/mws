@@ -14,6 +14,7 @@ use mws_ec2::{BackendChoice, Ec2};
 use mws_events::Events;
 use mws_firehose::Firehose;
 use mws_iam::{Iam, IamConfig};
+use mws_identitystore::IdentityStore;
 use mws_kinesis::Kinesis;
 use mws_kms::Kms;
 use mws_lambda::Lambda;
@@ -27,6 +28,9 @@ use mws_server::{Gateway, Scenario, Store};
 use mws_sns::Sns;
 use mws_sqs::Sqs;
 use mws_ssm::Ssm;
+use mws_ssoadmin::SsoAdmin;
+use mws_ssooidc::SsoOidc;
+use mws_ssoportal::SsoPortal;
 use mws_sts::Sts;
 
 #[derive(Debug, Clone, Default)]
@@ -229,6 +233,10 @@ fn build_with_store(config: Config, store: Option<Arc<Store>>) -> Mws {
     let ec2 = Ec2::new(config.ec2_backend.resolve(config.ec2_docker_cli.as_deref()));
     tracing::info!(backend = ec2.backend_name(), "EC2 compute backend");
     ec2.set_instance_roles(Arc::new(links::Ec2InstanceRoles { iam: iam.clone(), sts: sts.clone() }));
+    let identitystore = IdentityStore::new(iam.clone());
+    let ssoadmin = SsoAdmin::new(iam.clone(), identitystore.clone(), organizations.clone());
+    let ssooidc = SsoOidc::new(identitystore.clone(), ssoadmin.clone(), sts.clone());
+    let ssoportal = SsoPortal::new(ssooidc.clone(), ssoadmin.clone(), sts.clone(), organizations.clone());
     let mut gateway = Gateway::builder();
     if let Some(store) = store {
         gateway = gateway.store(store);
@@ -262,6 +270,10 @@ fn build_with_store(config: Config, store: Option<Arc<Store>>) -> Mws {
         .service(Arc::new(firehose.clone()))
         .service(Arc::new(cloudwatch.clone()))
         .service(Arc::new(ec2.clone()))
+        .service(Arc::new(identitystore))
+        .service(Arc::new(ssoadmin))
+        .service(Arc::new(ssooidc))
+        .service(Arc::new(ssoportal))
         .build();
     Mws {
         gateway,

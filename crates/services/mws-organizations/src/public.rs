@@ -20,7 +20,12 @@ impl Organizations {
     pub fn account_summary(&self, account_id: &str) -> Option<AccountSummary> {
         let state = self.lock();
         let a = state.accounts.get(account_id)?;
-        Some(AccountSummary { id: a.id.clone(), name: a.name.clone(), email: a.email.clone(), status: a.status.clone() })
+        Some(AccountSummary {
+            id: a.id.clone(),
+            name: a.name.clone(),
+            email: a.email.clone(),
+            status: a.status.clone(),
+        })
     }
 
     /// The ids of every account in the organization `account_id` belongs to.

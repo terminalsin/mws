@@ -109,10 +109,10 @@ impl SsoAdmin {
         let r = self.instance(ctx, &input.instance_arn, "sso:DescribeInstance", None)?;
         let store_arn = self.identity.store(&r.identity_store_id).map(|s| s.arn);
         self.with_instance(&r.arn, |i| {
-            let enc = i.encryption.clone().unwrap_or(types::EncryptionConfiguration {
-                key_type: "AWS_OWNED_KMS_KEY".into(),
-                kms_key_arn: None,
-            });
+            let enc = i
+                .encryption
+                .clone()
+                .unwrap_or(types::EncryptionConfiguration { key_type: "AWS_OWNED_KMS_KEY".into(), kms_key_arn: None });
             Ok(types::DescribeInstanceResponse {
                 instance_arn: Some(i.arn.clone()),
                 identity_store_id: Some(i.identity_store_id.clone()),
@@ -201,9 +201,7 @@ impl SsoAdmin {
     ) -> Result<types::DeleteInstanceResponse, ServiceError> {
         let r = self.instance(ctx, &input.instance_arn, "sso:DeleteInstance", None)?;
         if r.delegated {
-            return Err(errors::access_denied(
-                "Only the account that owns the instance can delete it.",
-            ));
+            return Err(errors::access_denied("Only the account that owns the instance can delete it."));
         }
         let Some(inst) = self.lock().instances.remove(&r.arn) else {
             return Err(instance_not_found(&r.arn));

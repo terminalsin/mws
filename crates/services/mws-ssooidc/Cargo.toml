@@ -1,6 +1,6 @@
 [package]
 name = "mws-ssooidc"
-description = "TODO"
+description = "AWS IAM Identity Center OIDC (sso-oidc) for MWS: client registration, device and authorization code (PKCE) grants, refresh tokens, CreateTokenWithIAM and a sign-in page."
 version.workspace = true
 edition.workspace = true
 license.workspace = true
@@ -8,13 +8,19 @@ license.workspace = true
 [dependencies]
 async-trait.workspace = true
 chrono.workspace = true
+aws-lc-rs.workspace = true
+base64.workspace = true
+bytes.workspace = true
+form_urlencoded.workspace = true
+http.workspace = true
 mws-core.workspace = true
+mws-identitystore.workspace = true
+mws-ssoadmin.workspace = true
+mws-sts.workspace = true
 mws-proto-json.workspace = true
 mws-proto-restjson.workspace = true
-regex.workspace = true
 serde.workspace = true
 serde_json.workspace = true
-uuid.workspace = true
 
 [build-dependencies]
 mws-codegen.workspace = true

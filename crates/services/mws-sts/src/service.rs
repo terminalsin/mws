@@ -157,7 +157,8 @@ impl Sts {
             actions.push("sts:TagSession");
         }
         for action in actions {
-            let eval = policy.evaluate(&Request { action, resource: &role.arn, principal: &principal, context: &context });
+            let eval =
+                policy.evaluate(&Request { action, resource: &role.arn, principal: &principal, context: &context });
             if !eval.allowed() || eval.denied() {
                 return Err(ServiceAssumeError::NotTrusted);
             }
