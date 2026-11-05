@@ -34,6 +34,7 @@ See [State, scenarios and snapshots](state.md) for how the two interact.
 | `MWS_DNS_LISTEN` | unset | An address such as `127.0.0.1:5353` starts the Route 53 DNS responder (UDP and TCP), which answers queries from the emulated hosted zones. |
 | `MWS_LAMBDA_PYTHON` | `python3.x`, then `python3` from `PATH` | Interpreter that runs Python Lambda functions. |
 | `MWS_LAMBDA_NODE` | `node` from `PATH` | Interpreter that runs Node.js Lambda functions. |
+| `MWS_LAMBDA_DOCKER` | `docker` | The Docker-compatible CLI that runs container image Lambda functions (for example `podman`). |
 | `MWS_EC2_BACKEND` | `auto` | How EC2 instances run. `docker` runs each instance as a container, `metadata` runs nothing (instances only change state), and `auto` uses Docker when a daemon answers and `metadata` otherwise. |
 | `MWS_EC2_DOCKER` | `docker` | The Docker-compatible CLI the EC2 backend drives (for example `podman`). |
 | `MWS_EC2_FIREWALL` | `on` | With the Docker backend, whether security groups, network ACLs and route tables filter instances' traffic (`off` leaves it unfiltered). |

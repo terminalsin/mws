@@ -24,7 +24,7 @@ fn code<E: ProvideErrorMetadata>(e: &E) -> String {
     e.code().unwrap_or_default().to_string()
 }
 
-fn digest(data: &[u8]) -> String {
+pub(crate) fn digest(data: &[u8]) -> String {
     format!("sha256:{}", hex::encode(Sha256::digest(data)))
 }
 
@@ -78,7 +78,7 @@ async fn image(ecr: &Client, repo: &str, content: &str) -> String {
     .to_string()
 }
 
-async fn push(ecr: &Client, repo: &str, tag: &str, content: &str) -> String {
+pub(crate) async fn push(ecr: &Client, repo: &str, tag: &str, content: &str) -> String {
     let manifest = image(ecr, repo, content).await;
     let out = ecr.put_image().repository_name(repo).image_tag(tag).image_manifest(&manifest).send().await.unwrap();
     out.image().unwrap().image_id().unwrap().image_digest().unwrap().to_string()
@@ -612,7 +612,7 @@ async fn registry_api_challenges_and_token_exchange() {
 
 /// Run `docker` with a config directory of `host`'s own, so that tests
 /// running at once don't share (and race on) stored credentials.
-fn docker(host: &str, args: &[&str], stdin: Option<&str>) -> std::process::Output {
+pub(crate) fn docker(host: &str, args: &[&str], stdin: Option<&str>) -> std::process::Output {
     use std::io::Write;
     let config = std::env::temp_dir().join(format!("mws-docker-{}", host.replace([':', '.'], "-")));
     let mut child = Command::new("docker")

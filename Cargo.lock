@@ -395,6 +395,54 @@ dependencies = [
 ]
 
 [[package]]
+name = "aws-sdk-ecr"
+version = "1.138.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "1aecb6e71c02b1eab61918637b688fc89e1aca2c59827ce4b43303dc349454a5"
+dependencies = [
+ "arc-swap",
+ "aws-credential-types",
+ "aws-runtime",
+ "aws-smithy-async",
+ "aws-smithy-http",
+ "aws-smithy-json",
+ "aws-smithy-observability",
+ "aws-smithy-runtime",
+ "aws-smithy-runtime-api",
+ "aws-smithy-schema",
+ "aws-smithy-types",
+ "aws-types",
+ "bytes",
+ "fastrand",
+ "http 1.5.0",
+ "regex-lite",
+ "tracing",
+]
+
+[[package]]
+name = "aws-sdk-ecrpublic"
+version = "1.122.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "4281d24d5a84f82e1caf6e44463e429b4e84efd036494007021c08d2dc7f182f"
+dependencies = [
+ "arc-swap",
+ "aws-credential-types",
+ "aws-runtime",
+ "aws-smithy-async",
+ "aws-smithy-http",
+ "aws-smithy-json",
+ "aws-smithy-observability",
+ "aws-smithy-runtime",
+ "aws-smithy-runtime-api",
+ "aws-smithy-schema",
+ "aws-smithy-types",
+ "aws-types",
+ "fastrand",
+ "regex-lite",
+ "tracing",
+]
+
+[[package]]
 name = "aws-sdk-eks"
 version = "1.160.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2833,6 +2881,7 @@ version = "0.1.0"
 dependencies = [
  "async-trait",
  "base64 0.22.1",
+ "bytes",
  "chrono",
  "mws-acm",
  "mws-acmpca",
@@ -2841,6 +2890,8 @@ dependencies = [
  "mws-cloudwatch",
  "mws-core",
  "mws-ec2",
+ "mws-ecr",
+ "mws-ecr-public",
  "mws-eks",
  "mws-elb",
  "mws-events",
@@ -2854,6 +2905,7 @@ dependencies = [
  "mws-logs",
  "mws-marketplace-entitlement",
  "mws-marketplace-metering",
+ "mws-oci",
  "mws-organizations",
  "mws-pca-connector-scep",
  "mws-ram",
@@ -3061,6 +3113,8 @@ dependencies = [
  "aws-sdk-cloudwatch",
  "aws-sdk-cloudwatchlogs",
  "aws-sdk-ec2",
+ "aws-sdk-ecr",
+ "aws-sdk-ecrpublic",
  "aws-sdk-eks",
  "aws-sdk-elasticloadbalancing",
  "aws-sdk-elasticloadbalancingv2",
@@ -3097,6 +3151,7 @@ dependencies = [
  "chrono",
  "cms",
  "flate2",
+ "hex",
  "md-5 0.10.6",
  "mws",
  "mws-ec2",
@@ -3145,6 +3200,53 @@ dependencies = [
  "serde_json",
  "tokio",
  "tracing",
+]
+
+[[package]]
+name = "mws-ecr"
+version = "0.1.0"
+dependencies = [
+ "async-trait",
+ "base64 0.22.1",
+ "bytes",
+ "chrono",
+ "form_urlencoded",
+ "http 1.5.0",
+ "mws-codegen",
+ "mws-core",
+ "mws-iam-policy",
+ "mws-kms",
+ "mws-oci",
+ "mws-proto-json",
+ "rand 0.8.8",
+ "regex",
+ "serde",
+ "serde_json",
+ "tokio",
+ "tracing",
+ "uuid",
+]
+
+[[package]]
+name = "mws-ecr-public"
+version = "0.1.0"
+dependencies = [
+ "async-trait",
+ "base64 0.22.1",
+ "bytes",
+ "chrono",
+ "form_urlencoded",
+ "http 1.5.0",
+ "mws-codegen",
+ "mws-core",
+ "mws-iam-policy",
+ "mws-oci",
+ "mws-proto-json",
+ "rand 0.8.8",
+ "serde",
+ "serde_json",
+ "tokio",
+ "uuid",
 ]
 
 [[package]]
@@ -3490,6 +3592,25 @@ dependencies = [
  "mws-core",
  "mws-marketplace-entitlement",
  "mws-proto-json",
+ "serde",
+ "serde_json",
+ "sha2 0.10.9",
+ "uuid",
+]
+
+[[package]]
+name = "mws-oci"
+version = "0.1.0"
+dependencies = [
+ "base64 0.22.1",
+ "bytes",
+ "chrono",
+ "form_urlencoded",
+ "hex",
+ "hmac 0.12.1",
+ "http 1.5.0",
+ "mws-core",
+ "rand 0.8.8",
  "serde",
  "serde_json",
  "sha2 0.10.9",
