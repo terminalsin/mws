@@ -246,6 +246,59 @@ dependencies = [
 ]
 
 [[package]]
+name = "aws-sdk-bedrock"
+version = "1.166.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "6a2046512ecd16913d858634bfa07fe2769b794f852989940f2d5fcab7877968"
+dependencies = [
+ "arc-swap",
+ "aws-credential-types",
+ "aws-runtime",
+ "aws-smithy-async",
+ "aws-smithy-http",
+ "aws-smithy-json",
+ "aws-smithy-observability",
+ "aws-smithy-runtime",
+ "aws-smithy-runtime-api",
+ "aws-smithy-schema",
+ "aws-smithy-types",
+ "aws-types",
+ "bytes",
+ "fastrand",
+ "http 1.5.0",
+ "regex-lite",
+ "tracing",
+]
+
+[[package]]
+name = "aws-sdk-bedrockruntime"
+version = "1.153.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "89b8aeb4b1b6d5f9d377264cff21b4e4d773e66ee3c5582b4099a8fbc702bdb3"
+dependencies = [
+ "arc-swap",
+ "aws-credential-types",
+ "aws-runtime",
+ "aws-sigv4",
+ "aws-smithy-async",
+ "aws-smithy-eventstream",
+ "aws-smithy-http",
+ "aws-smithy-json",
+ "aws-smithy-observability",
+ "aws-smithy-runtime",
+ "aws-smithy-runtime-api",
+ "aws-smithy-schema",
+ "aws-smithy-types",
+ "aws-types",
+ "bytes",
+ "fastrand",
+ "http 1.5.0",
+ "http-body-util",
+ "regex-lite",
+ "tracing",
+]
+
+[[package]]
 name = "aws-sdk-cloudwatch"
 version = "1.140.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2349,6 +2402,39 @@ dependencies = [
 ]
 
 [[package]]
+name = "mws-bedrock"
+version = "0.1.0"
+dependencies = [
+ "async-trait",
+ "base64 0.22.1",
+ "chrono",
+ "hex",
+ "mws-codegen",
+ "mws-core",
+ "mws-proto-json",
+ "mws-proto-restjson",
+ "rand",
+ "regex",
+ "serde",
+ "serde_json",
+ "sha2 0.10.9",
+ "tracing",
+]
+
+[[package]]
+name = "mws-bedrock-runtime"
+version = "0.1.0"
+dependencies = [
+ "async-trait",
+ "mws-codegen",
+ "mws-core",
+ "mws-proto-json",
+ "mws-proto-restjson",
+ "serde",
+ "serde_json",
+]
+
+[[package]]
 name = "mws-cloudwatch"
 version = "0.1.0"
 dependencies = [
@@ -2412,6 +2498,8 @@ dependencies = [
  "aws-lc-rs",
  "aws-sdk-acm",
  "aws-sdk-acmpca",
+ "aws-sdk-bedrock",
+ "aws-sdk-bedrockruntime",
  "aws-sdk-cloudwatch",
  "aws-sdk-cloudwatchlogs",
  "aws-sdk-ec2",

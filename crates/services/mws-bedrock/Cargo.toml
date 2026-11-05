@@ -1,0 +1,24 @@
+[package]
+name = "mws-bedrock"
+description = "Amazon Bedrock control plane for MWS: the model catalog, inference profiles, guardrails, Provisioned Throughput, customization and batch jobs."
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+async-trait.workspace = true
+base64.workspace = true
+chrono.workspace = true
+hex.workspace = true
+rand.workspace = true
+regex.workspace = true
+sha2.workspace = true
+tracing.workspace = true
+mws-core.workspace = true
+mws-proto-json.workspace = true
+mws-proto-restjson.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+
+[build-dependencies]
+mws-codegen.workspace = true

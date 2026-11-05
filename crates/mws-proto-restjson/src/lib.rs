@@ -75,6 +75,12 @@ impl Decoder {
         Self::default()
     }
 
+    /// `None` for missing or JSON null (generated code calls this as an
+    /// associated function, which `Deref` does not forward).
+    pub fn present(v: Option<&Value>) -> Option<&Value> {
+        mws_proto_json::Decoder::present(v)
+    }
+
     pub fn finish(self, code: &'static str) -> Result<(), ServiceError> {
         self.json.finish(code)
     }
