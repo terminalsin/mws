@@ -1,6 +1,7 @@
 //! Composition root. This is the only crate that knows which services exist.
 
 mod autoscaling;
+mod eks;
 mod links;
 mod ses;
 mod sinks;
@@ -15,6 +16,7 @@ use mws_autoscaling::AutoScaling;
 use mws_cloudwatch::CloudWatch;
 use mws_core::Environment;
 use mws_ec2::{BackendChoice, Ec2};
+use mws_eks::Eks;
 use mws_elb::{Elb, ElbConfig};
 use mws_events::Events;
 use mws_firehose::Firehose;
@@ -157,6 +159,7 @@ pub struct Mws {
     pub autoscaling: AutoScaling,
     pub ses: Ses,
     pub rds: Rds,
+    pub eks: Eks,
 }
 
 /// Build the gateway with every service MWS emulates.
@@ -334,6 +337,8 @@ fn build_with_store(config: Config, store: Option<Arc<Store>>) -> Mws {
     rds.set_network(Arc::new(links::RdsNetwork(ec2.clone())));
     rds.set_event_sink(Arc::new(links::RdsEvents { events: events.clone(), sns: sns.clone() }));
     rds.set_export_store(Arc::new(links::RdsExports { sts: sts.clone(), s3: s3.clone() }));
+    let eks = Eks::with_sts(sts.clone());
+    eks.set_infrastructure(Arc::new(eks::EksInfrastructure { ec2: ec2.clone(), iam: iam.clone() }));
     let mut gateway = Gateway::builder();
     if let Some(store) = store {
         gateway = gateway.store(store);
@@ -386,6 +391,7 @@ fn build_with_store(config: Config, store: Option<Arc<Store>>) -> Mws {
         // SES v2 signs as `ses` too; it claims its `/v2/email/` paths.
         .service(Arc::new(ses.v2()))
         .service(Arc::new(ses.clone()))
+        .service(Arc::new(eks.clone()))
         .build();
     Mws {
         gateway,
@@ -417,6 +423,7 @@ fn build_with_store(config: Config, store: Option<Arc<Store>>) -> Mws {
         autoscaling,
         ses,
         rds,
+        eks,
     }
 }
 

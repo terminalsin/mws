@@ -51,6 +51,7 @@ members = [
     "crates/services/mws-autoscaling",
     "crates/services/mws-ses",
     "crates/services/mws-rds",
+    "crates/services/mws-eks",
     "tests/e2e-rust",
 ]
 
@@ -112,6 +113,7 @@ mws-elb = { path = "crates/services/mws-elb" }
 mws-autoscaling = { path = "crates/services/mws-autoscaling" }
 mws-ses = { path = "crates/services/mws-ses" }
 mws-rds = { path = "crates/services/mws-rds" }
+mws-eks = { path = "crates/services/mws-eks" }
 
 # external
 async-trait = "0.1"
