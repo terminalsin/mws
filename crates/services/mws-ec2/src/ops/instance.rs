@@ -202,6 +202,8 @@ fn instance_filter(i: &t::Instance, rec: &InstanceRecord, name: &str) -> Option<
         }
         "network-interface.mac-address" => enis.iter().filter_map(|n| n.mac_address.clone()).collect(),
         "state-reason-code" => i.state_reason.as_ref().map(|r| s(&r.code)).unwrap_or_default(),
+        "instance-lifecycle" => i.instance_lifecycle.clone().into_iter().collect(),
+        "spot-instance-request-id" => i.spot_instance_request_id.clone().into_iter().collect(),
         "metadata-options.http-tokens" => i.metadata_options.as_ref().map(|m| s(&m.http_tokens)).unwrap_or_default(),
         "metadata-options.http-endpoint" => {
             i.metadata_options.as_ref().map(|m| s(&m.http_endpoint)).unwrap_or_default()
@@ -397,6 +399,13 @@ impl Ec2 {
                 });
             }
         }
+        let spot = match input.instance_market_options.as_ref().and_then(|m| m.market_type.as_deref()) {
+            None => false,
+            Some("spot") => true,
+            Some(other) => {
+                return Err(err("Unsupported", format!("The market type '{other}' is not supported for this request.")))
+            }
+        };
         let image_id = input.image_id.clone().ok_or_else(|| missing_parameter("ImageId"))?;
         let image = self.find_image(ctx, &image_id)?;
         if image.record.image.state.as_deref() != Some("available") {
@@ -716,6 +725,8 @@ impl Ec2 {
                     }),
                     maintenance_options: Some(t::InstanceMaintenanceOptions { auto_recovery: Some("default".into()), ..Default::default() }),
                     network_performance_options: Some(t::InstanceNetworkPerformanceOptions { bandwidth_weighting: Some("default".into()) }),
+                    instance_lifecycle: spot.then(|| "spot".to_string()),
+                    spot_instance_request_id: spot.then(|| new_id("sir")[..12].to_string()),
                     ..Default::default()
                 };
                 let role_arn = profile.as_ref().and_then(|p| p.role_arn.clone());
