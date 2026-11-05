@@ -32,6 +32,15 @@ pub struct ServicePutObject<'a> {
     pub partition: &'a str,
 }
 
+/// Extras for [`S3::put_object_as_service_with_options`].
+#[derive(Debug, Clone, Default)]
+pub struct ServicePutOptions {
+    /// SSE-KMS with this key ARN.
+    pub kms_key_arn: Option<String>,
+    /// User metadata, without the `x-amz-meta-` prefix.
+    pub metadata: std::collections::BTreeMap<String, String>,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ServicePutError {
     NoSuchBucket,
@@ -179,6 +188,52 @@ impl S3 {
         })
     }
 
+    /// [`S3::put_object_as_service`], encrypting the object with a KMS key
+    /// and storing user metadata (`x-amz-meta-*`), as CloudTrail writes its
+    /// log and digest files. The caller has checked that the key policy
+    /// lets the service principal generate data keys; a key that cannot is
+    /// reported as access denied for `kms:GenerateDataKey`.
+    pub fn put_object_as_service_with_options(
+        &self,
+        put: ServicePutObject<'_>,
+        options: ServicePutOptions,
+    ) -> Result<String, ServicePutError> {
+        let sse = match (&options.kms_key_arn, &self.kms) {
+            (Some(key), Some(kms)) => {
+                let context = std::collections::BTreeMap::from([(
+                    "aws:s3:arn".to_string(),
+                    format!("arn:{}:s3:::{}/{}", put.partition, put.bucket, put.key),
+                )]);
+                let dk = kms
+                    .generate_data_key_for_service(key, &context, 32)
+                    .map_err(|_| ServicePutError::AccessDenied { action: "kms:GenerateDataKey".into() })?;
+                Sse {
+                    algorithm: Some("aws:kms".into()),
+                    kms_key_id: Some(dk.key_arn),
+                    kms_data_key: Some(base64::Engine::encode(
+                        &base64::engine::general_purpose::STANDARD,
+                        &dk.ciphertext,
+                    )),
+                    ..Sse::default()
+                }
+            }
+            (Some(key), None) => {
+                Sse { algorithm: Some("aws:kms".into()), kms_key_id: Some(key.clone()), ..Sse::default() }
+            }
+            (None, _) => Sse::default(),
+        };
+        let bucket = put.bucket.to_string();
+        let key = put.key.to_string();
+        let etag = self.put_object_as_service_with(put, sse)?;
+        if !options.metadata.is_empty() {
+            let mut st = self.write();
+            if let Some(v) = st.buckets.get_mut(&bucket).and_then(|b| b.version_mut(&key, None)) {
+                v.metadata = options.metadata;
+            }
+        }
+        Ok(etag)
+    }
+
     /// [`S3::put_object_as_service`] with the object's encryption.
     pub(crate) fn put_object_as_service_with(
         &self,
@@ -248,6 +303,29 @@ impl S3 {
         input: crate::generated::types::GetObjectRequest,
     ) -> Result<crate::generated::types::GetObjectOutput, mws_core::ServiceError> {
         self.call(ctx, None).get_object(ctx, input)
+    }
+
+    /// The keys of the current (not deleted) objects under `prefix`,
+    /// bypassing authorization: for services that read what a role they
+    /// assumed may read (CloudTrail Lake imports).
+    pub fn object_keys(&self, bucket: &str, prefix: &str) -> Option<Vec<String>> {
+        let st = self.read();
+        let b = st.buckets.get(bucket)?;
+        Some(
+            b.objects
+                .range(prefix.to_string()..)
+                .take_while(|(k, _)| k.starts_with(prefix))
+                .filter(|(_, v)| v.last().is_some_and(|v| !v.delete_marker))
+                .map(|(k, _)| k.clone())
+                .collect(),
+        )
+    }
+
+    /// The user metadata (`x-amz-meta-*`) of an object's latest version.
+    pub fn object_metadata(&self, bucket: &str, key: &str) -> Option<std::collections::BTreeMap<String, String>> {
+        let st = self.read();
+        let v = st.buckets.get(bucket)?.latest(key)?;
+        (!v.delete_marker).then(|| v.metadata.clone())
     }
 
     /// The account that owns `bucket`, if it exists (S3 Control checks

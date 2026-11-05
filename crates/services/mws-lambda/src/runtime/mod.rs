@@ -8,8 +8,15 @@
 //! time and stays warm for later ones; more are started when all are busy,
 //! up to the function's reserved concurrency. Environments of a changed or
 //! deleted function, and ones idle for a while, are shut down.
+//!
+//! Container image functions run the same way, as containers (see
+//! [`container`]).
 
-use std::collections::{BTreeMap, HashMap};
+mod container;
+
+use std::collections::{BTreeMap, HashMap, HashSet};
+
+pub use container::{image_tag, ContainerLaunch};
 use std::convert::Infallible;
 use std::path::{Path, PathBuf};
 use std::process::Stdio;
@@ -48,6 +55,8 @@ pub struct LaunchSpec {
     pub env: BTreeMap<String, String>,
     pub timeout: Duration,
     pub memory_mb: i32,
+    /// Set for container image functions, which run as containers.
+    pub container: Option<ContainerLaunch>,
 }
 
 /// One invocation to run.
@@ -75,6 +84,8 @@ pub enum LaunchError {
     Unsupported(String),
     /// Reserved concurrency is used up.
     Throttled,
+    /// A container's entry point cannot start.
+    InvalidEntrypoint(String),
     Io(String),
 }
 
@@ -133,12 +144,21 @@ impl Drop for Env {
 pub struct Runtimes {
     base: PathBuf,
     pools: Mutex<HashMap<String, Vec<Arc<Env>>>>,
+    /// Container images loaded into the engine by this process.
+    images: Mutex<HashSet<String>>,
+    /// Serializes image loads.
+    loading: tokio::sync::Mutex<()>,
 }
 
 impl Default for Runtimes {
     fn default() -> Self {
         let base = std::env::temp_dir().join(format!("mws-lambda-{}", std::process::id()));
-        Self { base, pools: Mutex::new(HashMap::new()) }
+        Self {
+            base,
+            pools: Mutex::new(HashMap::new()),
+            images: Mutex::new(HashSet::new()),
+            loading: tokio::sync::Mutex::new(()),
+        }
     }
 }
 
@@ -247,7 +267,6 @@ impl Runtimes {
     fn launch(&self, spec: &LaunchSpec) -> Result<Env, LaunchError> {
         let io = |e: std::io::Error| LaunchError::Io(e.to_string());
         let runtime_dir = self.write_runtime_files().map_err(io)?;
-        let (program, args) = command_for(spec, &runtime_dir)?;
 
         let listener = std::net::TcpListener::bind("127.0.0.1:0").map_err(io)?;
         listener.set_nonblocking(true).map_err(io)?;
@@ -265,22 +284,35 @@ impl Runtimes {
 
         let mut env_vars = spec.env.clone();
         env_vars.insert("AWS_LAMBDA_RUNTIME_API".into(), addr.to_string());
-        env_vars.insert("LAMBDA_RUNTIME_DIR".into(), runtime_dir.display().to_string());
-        env_vars.insert("LAMBDA_TASK_ROOT".into(), spec.code_dir.display().to_string());
-        add_search_paths(&mut env_vars, spec);
-
-        let mut cmd = tokio::process::Command::new(&program);
-        cmd.args(&args)
-            .current_dir(&spec.code_dir)
-            .env_clear()
-            .envs(&env_vars)
-            .stdin(Stdio::null())
-            .stdout(Stdio::piped())
-            .stderr(Stdio::piped())
-            .kill_on_drop(true);
+        let mut container_name = None;
+        let mut cmd = match &spec.container {
+            Some(c) => {
+                env_vars.insert("LAMBDA_RUNTIME_DIR".into(), "/var/runtime".into());
+                env_vars.insert("LAMBDA_TASK_ROOT".into(), "/var/task".into());
+                let name = format!("mws-lambda-{}", uuid::Uuid::new_v4().simple());
+                let run =
+                    container::command(c, &name, &spec.function_arn, spec.memory_mb, &env_vars).inspect_err(|_| {
+                        server.abort();
+                    })?;
+                container_name = Some(name);
+                let mut cmd = tokio::process::Command::new(run.program);
+                cmd.args(&run.args).envs(&run.env);
+                cmd
+            }
+            None => {
+                let (program, args) = command_for(spec, &runtime_dir).inspect_err(|_| server.abort())?;
+                env_vars.insert("LAMBDA_RUNTIME_DIR".into(), runtime_dir.display().to_string());
+                env_vars.insert("LAMBDA_TASK_ROOT".into(), spec.code_dir.display().to_string());
+                add_search_paths(&mut env_vars, spec);
+                let mut cmd = tokio::process::Command::new(program);
+                cmd.args(&args).current_dir(&spec.code_dir).env_clear().envs(&env_vars);
+                cmd
+            }
+        };
+        cmd.stdin(Stdio::null()).stdout(Stdio::piped()).stderr(Stdio::piped()).kill_on_drop(true);
         let mut child = cmd.spawn().map_err(|e| {
             server.abort();
-            LaunchError::Io(format!("starting {}: {e}", program.display()))
+            LaunchError::Io(format!("starting {}: {e}", cmd.as_std().get_program().to_string_lossy()))
         })?;
 
         let logs = Arc::new(Mutex::new(Vec::new()));
@@ -297,6 +329,9 @@ impl Runtimes {
             let status = tokio::select! {
                 s = child.wait() => s,
                 _ = kill_rx => {
+                    if let Some(name) = &container_name {
+                        container::remove(name).await;
+                    }
                     let _ = child.kill().await;
                     child.wait().await
                 }
@@ -479,7 +514,22 @@ async fn run(env: &Arc<Env>, spec: &LaunchSpec, job: Job) -> Outcome {
             // An init error the runtime reported says more than the exit.
             match env.api.init_error.borrow().clone() {
                 Some(p) => Err(p),
-                None => Err(sandbox_error("Runtime.ExitError", &request_id, &format!("Runtime exited with error: {desc}"))),
+                None => match (&spec.container, desc.as_str()) {
+                    // The engine's command line reports a container whose
+                    // entry point cannot start with these.
+                    (Some(c), "exit status 126" | "exit status 127") => Err(sandbox_error(
+                        "Runtime.InvalidEntrypoint",
+                        &request_id,
+                        &format!(
+                            "fork/exec {}: no such file or directory",
+                            c.entrypoint.first().or(c.command.first()).map(String::as_str).unwrap_or_default()
+                        ),
+                    )),
+                    (Some(_), "exit status 137") => {
+                        Err(sandbox_error("Runtime.ExitError", &request_id, "Runtime exited with error: signal: killed"))
+                    }
+                    _ => Err(sandbox_error("Runtime.ExitError", &request_id, &format!("Runtime exited with error: {desc}"))),
+                },
             }
         }
         e = init_error.wait_for(Option::is_some) => {

@@ -9,6 +9,9 @@ use serde::de::DeserializeOwned;
 use serde::Serialize;
 
 use crate::catalog;
+
+/// Service Quotas: clusters per Region.
+const CLUSTERS_QUOTA: &str = "L-1194D53C";
 use crate::generated::{errors, types};
 use crate::infra::SubnetFacts;
 use crate::state::{AccessEntryRec, ClusterRec};
@@ -30,7 +33,8 @@ impl Eks {
         let Some(region) = st.regions.get_mut(&format!("{}/{}", util::account(ctx), ctx.region)) else { return };
         region.clusters.retain(|_, c| c.cluster.status.as_deref() != Some("DELETING"));
         for rec in region.clusters.values_mut() {
-            if matches!(rec.cluster.status.as_deref(), Some("CREATING" | "UPDATING")) {
+            let serving = rec.control_plane.as_ref().is_none_or(|c| c.ready);
+            if matches!(rec.cluster.status.as_deref(), Some("CREATING" | "UPDATING")) && serving {
                 rec.cluster.status = Some("ACTIVE".into());
             }
             rec.nodegroups.retain(|_, n| n.nodegroup.status.as_deref() != Some("DELETING"));
@@ -125,8 +129,10 @@ impl Eks {
         let arn = util::cluster_arn(ctx, &name);
         util::authorize(ctx, "CreateCluster", &arn, None, input.tags.as_ref(), ConditionContext::new())?;
         util::check_create_tags(input.tags.as_ref())?;
+        let max_clusters = self.quota(ctx, CLUSTERS_QUOTA);
         {
             let mut st = self.write();
+            let clusters = util::region(&mut st, ctx).clusters.len();
             if let Some(existing) = util::region(&mut st, ctx).clusters.get(&name) {
                 if input.client_request_token.is_some()
                     && existing.cluster.client_request_token == input.client_request_token
@@ -134,6 +140,12 @@ impl Eks {
                     return Ok(types::CreateClusterResponse { cluster: Some(existing.cluster.clone()) });
                 }
                 return Err(in_use(&name));
+            }
+            if clusters >= max_clusters {
+                return Err(errors::resource_limit_exceeded(format!(
+                    "You have reached the limit of {max_clusters} clusters in this Region. Delete unused clusters or request a quota increase."
+                ))
+                .with_field("clusterName", text(&name)));
             }
         }
         let version = match input.version.as_deref() {
@@ -359,6 +371,7 @@ impl Eks {
             ..Default::default()
         };
         crate::certs::refresh_cluster_certificate(&mut rec);
+        self.plan_control_plane(ctx, &mut rec, bootstrap.then(|| creator_principal(ctx)));
         if mode != "CONFIG_MAP" && bootstrap {
             let creator = creator_principal(ctx);
             let mut entry = crate::access::new_entry(ctx, &name, &creator, "STANDARD", None, Vec::new(), None);
@@ -405,7 +418,9 @@ impl Eks {
         if region.clusters.contains_key(&name) {
             return Err(in_use(&name));
         }
-        region.clusters.insert(name, rec);
+        region.clusters.insert(name.clone(), rec);
+        drop(st);
+        self.start_control_plane(util::account(ctx), &ctx.region, &name, false);
         Ok(types::CreateClusterResponse { cluster: Some(response) })
     }
 
@@ -414,6 +429,8 @@ impl Eks {
         ctx: &RequestContext,
         input: types::DescribeClusterRequest,
     ) -> Result<types::DescribeClusterResponse, ServiceError> {
+        self.await_control_plane(ctx, &input.name).await;
+        self.settle(ctx);
         let arn = util::cluster_arn(ctx, &input.name);
         let mut st = self.write();
         let rec = util::cluster(&mut st, ctx, &input.name)?;
@@ -452,7 +469,7 @@ impl Eks {
     ) -> Result<types::DeleteClusterResponse, ServiceError> {
         let name = input.name.clone();
         let arn = util::cluster_arn(ctx, &name);
-        let (response, sg) = {
+        let (response, sg, control_plane) = {
             let mut st = self.write();
             let rec = util::cluster(&mut st, ctx, &name)?;
             util::authorize(ctx, "DeleteCluster", &arn, rec.cluster.tags.as_ref(), None, ConditionContext::new())?;
@@ -485,8 +502,11 @@ impl Eks {
                 .owns_security_group
                 .then(|| rec.cluster.resources_vpc_config.as_ref().and_then(|v| v.cluster_security_group_id.clone()))
                 .flatten();
-            (rec.cluster.clone(), sg)
+            (rec.cluster.clone(), sg, rec.control_plane.as_ref().map(|c| c.id.clone()))
         };
+        if let Some(id) = control_plane {
+            self.remove_control_plane(id);
+        }
         if let (Some(infra), Some(sg)) = (self.infra(), sg) {
             if let Err(e) = infra.delete_security_group(&util::scope(ctx), &sg).await {
                 tracing::warn!(cluster = %name, "EKS could not delete the cluster security group: {e}");
@@ -604,6 +624,10 @@ impl Eks {
         rec.cluster.version = Some(target.version.into());
         rec.cluster.platform_version = Some(target.platform_version.into());
         rec.cluster.status = Some("UPDATING".into());
+        let upgrade = rec.control_plane.as_mut().map(|cp| {
+            cp.version = target.version.into();
+            cp.ready = false;
+        });
         let update = crate::updates::push(
             rec,
             ctx.received_at,
@@ -611,6 +635,10 @@ impl Eks {
             vec![param("Version", target.version), param("PlatformVersion", target.platform_version)],
             None,
         );
+        drop(st);
+        if upgrade.is_some() {
+            self.start_control_plane(util::account(ctx), &ctx.region, &input.name, true);
+        }
         Ok(types::UpdateClusterVersionResponse { update: Some(update) })
     }
 

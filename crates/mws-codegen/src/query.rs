@@ -8,7 +8,7 @@ use mws_smithy::{Model, Shape, ShapeType};
 use serde_json::Value;
 
 use crate::common::{self, de_fn_name, qualified_type, ser_fn_name, Constraints};
-use crate::naming::{lower_camel, rust_str, snake_case, type_name};
+use crate::naming::{lower_camel, rust_str, type_name};
 use crate::rust_types::{field_name, presence, Presence, TypeGen};
 use crate::xml_ser::XmlSer;
 
@@ -167,7 +167,6 @@ impl<'m> Gen<'m> {
         let _ = writeln!(w, "        None => Err(ServiceError::missing_action()),");
         for op in ops {
             let name = op.name();
-            let method = crate::naming::ident(&snake_case(name));
             let _ = writeln!(w, "        Some({}) => {{", rust_str(name));
             match &op.input {
                 Some(i) => {
@@ -179,11 +178,11 @@ impl<'m> Gen<'m> {
                     );
                     let _ = writeln!(w, "            match d.finish_as({}) {{", rust_str(self.validation_error));
                     let _ = writeln!(w, "                Err(e) => Err(e),");
-                    let _ = writeln!(w, "                Ok(()) => handler.{method}(ctx, input).await,");
+                    let _ = writeln!(w, "                Ok(()) => {},", crate::common::handler_call(op, "input"));
                     let _ = writeln!(w, "            }}");
                 }
                 None => {
-                    let _ = writeln!(w, "            handler.{method}(ctx, ()).await");
+                    let _ = writeln!(w, "            {}", crate::common::handler_call(op, "()"));
                 }
             }
             match &op.output {

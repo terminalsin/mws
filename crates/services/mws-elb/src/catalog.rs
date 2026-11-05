@@ -407,6 +407,20 @@ pub fn limit(name: &str) -> usize {
     V2_LIMITS.iter().find(|l| l.0 == name).and_then(|l| l.1.parse().ok()).unwrap_or(usize::MAX)
 }
 
+/// The Service Quotas code of an account limit, where Service Quotas has it.
+pub fn quota_code(name: &str) -> Option<&'static str> {
+    Some(match name {
+        "application-load-balancers" => "L-53DA6B97",
+        "network-load-balancers" => "L-69A177A2",
+        "classic-load-balancers" => "L-E9E9831D",
+        "target-groups" => "L-B22855CB",
+        "rules-per-application-load-balancer" => "L-7EED9B64",
+        "listeners-per-application-load-balancer" => "L-B6DF7632",
+        "listeners-per-network-load-balancer" => "L-57A373D6",
+        _ => return None,
+    })
+}
+
 /// Classic Load Balancer account limits.
 pub const CLASSIC_LIMITS: &[(&str, &str)] =
     &[("classic-load-balancers", "20"), ("classic-listeners", "100"), ("classic-registered-instances", "1000")];

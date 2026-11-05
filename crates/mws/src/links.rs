@@ -1203,6 +1203,150 @@ impl mws_rds::ExportStore for RdsExports {
     }
 }
 
+/// Lambda container images come from ECR. Resolving one at
+/// `CreateFunction`/`UpdateFunctionCode` is a pull by the caller; starting
+/// an execution environment fetches the resolved digest as Lambda.
+pub struct LambdaImages(pub mws_ecr::Ecr);
+
+impl LambdaImages {
+    fn convert(&self, image: mws_ecr::PulledImage) -> mws_lambda::ContainerImage {
+        let blob = |d: &mws_oci::Descriptor, data: bytes::Bytes| mws_lambda::ImageBlob {
+            digest: d.digest.clone(),
+            media_type: d.media_type.clone(),
+            data,
+        };
+        mws_lambda::ContainerImage {
+            resolved_uri: self.0.image_uri(&image.location, &image.resolved_digest),
+            resolved_digest: image.resolved_digest,
+            digest: image.digest,
+            manifest: bytes::Bytes::from(image.manifest.into_bytes()),
+            manifest_media_type: image.media_type,
+            config: blob(&image.config, image.config_data),
+            layers: image.layers.into_iter().map(|(d, data)| blob(&d, data)).collect(),
+        }
+    }
+}
+
+impl mws_lambda::ImageSource for LambdaImages {
+    fn resolve(
+        &self,
+        ctx: &RequestContext,
+        uri: &str,
+        architecture: &str,
+    ) -> Result<mws_lambda::ContainerImage, mws_lambda::ImageError> {
+        let location =
+            self.0.locate_image(uri, &ctx.caller.account_id, &ctx.region).ok_or(mws_lambda::ImageError::Invalid)?;
+        match self.0.pull_image(Some(ctx), &location, architecture) {
+            Ok(image) => Ok(self.convert(image)),
+            Err(mws_ecr::PullError::NotFound) => Err(mws_lambda::ImageError::NotFound),
+            Err(mws_ecr::PullError::AccessDenied) => Err(mws_lambda::ImageError::AccessDenied),
+            Err(mws_ecr::PullError::Unsupported) => Err(mws_lambda::ImageError::Unsupported),
+        }
+    }
+
+    fn fetch(
+        &self,
+        account: &str,
+        region: &str,
+        resolved_uri: &str,
+        architecture: &str,
+    ) -> Option<mws_lambda::ContainerImage> {
+        let location = self.0.locate_image(resolved_uri, account, region)?;
+        self.0.pull_image(None, &location, architecture).ok().map(|i| self.convert(i))
+    }
+}
+
+/// Usage of the quotas other services enforce, for Service Quotas.
+pub struct QuotaUsage {
+    pub ec2: mws_ec2::Ec2,
+    pub s3: mws_s3::S3,
+    pub iam: mws_iam::Iam,
+}
+
+impl mws_servicequotas::UsageSource for QuotaUsage {
+    fn usage(&self, account: &str, region: &str, service: &str, code: &str) -> Option<f64> {
+        match (service, code) {
+            ("s3", "L-DC2B2D3D") => Some(self.s3.bucket_count(account) as f64),
+            ("iam", "L-FE177D64") => Some(self.iam.role_count(account) as f64),
+            ("ec2" | "vpc", _) => self.ec2.quota_usage(account, region, service, code),
+            _ => None,
+        }
+    }
+}
+
+/// Service Quotas publishing `AWS/Usage` metrics into CloudWatch.
+pub struct UsageToCloudWatch(pub mws_cloudwatch::CloudWatch);
+
+impl mws_servicequotas::MetricPublisher for UsageToCloudWatch {
+    fn publish(&self, data: Vec<mws_servicequotas::UsageDatum>) {
+        for d in data {
+            self.0.put_metric_as_service(mws_cloudwatch::ServiceMetric {
+                account: d.account,
+                region: d.region,
+                namespace: d.namespace,
+                metric_name: d.metric_name,
+                dimensions: d.dimensions,
+                unit: Some(d.unit),
+                timestamp: d.timestamp,
+                values: vec![(d.value, 1.0)],
+            });
+        }
+    }
+}
+
+/// Organizations as Service Quotas sees it (quota request templates).
+pub struct QuotaOrganizations(pub mws_organizations::Organizations);
+
+impl mws_servicequotas::OrganizationDirectory for QuotaOrganizations {
+    fn account(&self, account_id: &str) -> Option<mws_servicequotas::OrgAccount> {
+        let m = self.0.member_account(account_id)?;
+        Some(mws_servicequotas::OrgAccount {
+            management_account_id: m.management_account_id,
+            all_features: m.all_features,
+            joined_method: m.joined_method,
+            joined: m.joined,
+        })
+    }
+}
+
+/// Consolidated billing and account names for Cost Explorer.
+pub struct CostAccounts(pub mws_organizations::Organizations);
+
+impl mws_ce::AccountDirectory for CostAccounts {
+    fn payer(&self, account: &str) -> Option<String> {
+        self.0.member_account(account).map(|m| m.management_account_id)
+    }
+
+    fn name(&self, account: &str) -> Option<String> {
+        self.0.member_account(account).map(|m| m.name).filter(|n| !n.is_empty())
+    }
+}
+
+/// Cost anomaly alerts, published by `costalerts.amazonaws.com`.
+pub struct AnomalyAlerts(pub mws_sns::Sns);
+
+impl mws_ce::AnomalyNotifier for AnomalyAlerts {
+    fn notify(&self, ctx: &RequestContext, alert: mws_ce::AnomalyAlert) -> Result<(), String> {
+        self.0
+            .publish_as_service(
+                ctx,
+                &mws_sns::ServicePublish {
+                    topic_arn: &alert.topic_arn,
+                    service_principal: "costalerts.amazonaws.com",
+                    source_arn: &alert.subscription_arn,
+                    source_account: &alert.account,
+                    message: alert.message,
+                    subject: Some(alert.subject),
+                    attributes: Default::default(),
+                    message_group_id: None,
+                    message_deduplication_id: None,
+                },
+            )
+            .map(|_| ())
+            .map_err(|e| e.to_string())
+    }
+}
+
 /// ElastiCache subnet groups and security groups, read from EC2.
 pub(crate) struct ElastiCacheNetwork {
     pub ec2: mws_ec2::Ec2,

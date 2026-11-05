@@ -7,6 +7,7 @@
 [![CI](https://github.com/terminalsin/mws/actions/workflows/ci.yml/badge.svg?branch=master)](https://github.com/terminalsin/mws/actions/workflows/ci.yml)
 [![License: MIT OR Apache-2.0](https://img.shields.io/badge/license-MIT%20OR%20Apache--2.0-blue.svg)](#license)
 [![Rust 1.85+](https://img.shields.io/badge/rust-1.85%2B-orange.svg)](https://www.rust-lang.org)
+[![Services](https://img.shields.io/badge/AWS%20services-33-success.svg)](docs/services/README.md)
 [![Services](https://img.shields.io/badge/AWS%20services-30-success.svg)](docs/services/README.md)
 
 [Getting started](docs/getting-started.md) ·
@@ -44,6 +45,9 @@ real Rust, Python and JavaScript SDKs.
   (awsQuery, awsJson, restXml, restJson, Smithy RPC v2 CBOR and ec2Query).
 - **Things actually happen.** KMS keys do real cryptography, Private CA and
   ACM issue real X.509 certificates, Lambda functions run on local runtimes,
+  EC2 instances can run as Docker containers and mount EFS file systems, and
+  events flow between services: S3 notifications reach SNS, SQS and Lambda;
+  alarms page through SNS; Firehose delivers to S3.
   EC2 instances and ElastiCache nodes can run as Docker containers, and events flow between
   services: S3 notifications reach SNS, SQS and Lambda; alarms page through
   SNS; Firehose delivers to S3.
@@ -99,6 +103,7 @@ SDKs, S3 addressing, host-prefixed endpoints and calling as other identities.
 | [IAM](docs/services/iam.md) | 180 / 180 | awsQuery |
 | [STS](docs/services/sts.md) | 11 / 11 | awsQuery |
 | [Organizations](docs/services/organizations.md) | 63 / 63 | awsJson 1.1 |
+| [IAM Identity Center](docs/services/identity-center.md) (SSO Admin, Identity Store, SSO OIDC, portal) | 109 / 109 | awsJson 1.1, restJson1 |
 | [KMS](docs/services/kms.md) | 56 / 56 | awsJson 1.1 |
 | [S3](docs/services/s3.md) | 111 / 112 | restXml |
 | [S3 Control](docs/services/s3control.md) | 97 / 97 | restXml |
@@ -109,6 +114,9 @@ SDKs, S3 addressing, host-prefixed endpoints and calling as other identities.
 | [Elastic Load Balancing](docs/services/elb.md) | 80 / 80 | awsQuery |
 | [RDS and Aurora](docs/services/rds.md) | 168 / 168 | awsQuery |
 | [EKS](docs/services/eks.md) | 70 / 70 | restJson1 |
+| [EFS](docs/services/efs.md) | 31 / 31 | restJson1 |
+| [ECR](docs/services/ecr.md) | 62 / 62 | awsJson 1.1, Docker registry v2 |
+| [ECR Public](docs/services/ecr-public.md) | 23 / 23 | awsJson 1.1, Docker registry v2 |
 | [ElastiCache](docs/services/elasticache.md) | 77 / 77 | awsQuery |
 | [Route 53](docs/services/route53.md) | 71 / 71 | restXml |
 | [Amplify Hosting](docs/services/amplify.md) | 37 / 37 | restJson1 |
@@ -129,6 +137,10 @@ SDKs, S3 addressing, host-prefixed endpoints and calling as other identities.
 | [CloudWatch](docs/services/cloudwatch.md) | 55 / 55 | RPC v2 CBOR, awsJson 1.0, awsQuery |
 | [CloudWatch Logs](docs/services/logs.md) | 118 / 118 | awsJson 1.1 |
 | [Marketplace Metering and Entitlement](docs/services/marketplace.md) | 5 / 5 | awsJson 1.1, RPC v2 CBOR |
+| [CodeArtifact](docs/services/codeartifact.md) | 48 / 48 | restJson1, npm, PyPI, Maven, Cargo, RubyGems, NuGet, Swift |
+| [CloudTrail](docs/services/cloudtrail.md) | 61 / 61 (with CloudTrail Data) | awsJson 1.1, restJson1 |
+| [Service Quotas](docs/services/servicequotas.md) | 26 / 26 | awsJson 1.1 |
+| [Cost Explorer](docs/services/ce.md) | 47 / 47 | awsJson 1.1 |
 
 Operations outside the implemented set answer `NotImplemented`. Each service
 page lists what is emulated and its known gaps.
