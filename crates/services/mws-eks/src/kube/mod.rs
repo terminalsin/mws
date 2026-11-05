@@ -13,6 +13,8 @@ pub(crate) mod webhook;
 use std::collections::BTreeMap;
 use std::sync::Arc;
 
+use chrono::{DateTime, Utc};
+
 pub use k3s::K3s;
 
 /// What a control plane needs to run one cluster's API server.
@@ -89,6 +91,103 @@ pub trait ControlPlane: Send + Sync {
 
     /// Make the nodes labelled with node group `nodegroup` exactly `nodes`.
     async fn sync_nodes(&self, id: &str, nodegroup: &str, nodes: &[NodeObject]) -> Result<(), ControlPlaneError>;
+
+    /// Follow the running API server's logs from `since` on: what its
+    /// components write, and its audit log. The channel closes when the
+    /// server stops; dropping the receiver stops following.
+    async fn follow_logs(&self, id: &str, since: DateTime<Utc>) -> Option<tokio::sync::mpsc::Receiver<LogLine>>;
+}
+
+/// Where a control plane log line comes from.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum LogSource {
+    /// The server's own output (API server, controller manager, scheduler).
+    Server,
+    /// One audit event (JSON).
+    Audit,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct LogLine {
+    pub source: LogSource,
+    pub timestamp_ms: i64,
+    pub message: String,
+}
+
+/// The EKS log type (`api`, `controllerManager`, `scheduler`, `audit`) of
+/// a control plane line. k3s runs the components in one process, so
+/// server output is told apart by the Go source file klog names.
+pub(crate) fn log_type(line: &LogLine) -> &'static str {
+    if line.source == LogSource::Audit {
+        return "audit";
+    }
+    let msg = line.message.as_str();
+    if msg.contains("msg=\"Running kube-scheduler") {
+        return "scheduler";
+    }
+    if msg.contains("msg=\"Running kube-controller-manager") || msg.contains("msg=\"Running cloud-controller-manager") {
+        return "controllerManager";
+    }
+    let Some(file) = klog_file(msg) else { return "api" };
+    const SCHEDULER: &[&str] =
+        &["scheduler.go", "schedule_one.go", "eventhandlers.go", "scheduling_queue.go", "framework.go"];
+    const API_CONTROLLERS: &[&str] = &[
+        "apf_controller.go",
+        "requestheader_controller.go",
+        "naming_controller.go",
+        "nonstructuralschema_controller.go",
+        "local_available_controller.go",
+        "remote_available_controller.go",
+        "system_namespaces_controller.go",
+        "default_servicecidr_controller.go",
+        "crdregistration_controller.go",
+        "apiapproval_controller.go",
+        "customresource_discovery_controller.go",
+        "cluster_authentication_trust_controller.go",
+        "legacy_controller.go",
+        "gc_admission.go",
+    ];
+    const CONTROLLER_MANAGER: &[&str] = &[
+        "controllermanager.go",
+        "resource_quota_monitor.go",
+        "garbagecollector.go",
+        "graph_builder.go",
+        "range_allocator.go",
+        "taint_eviction.go",
+        "replica_set.go",
+        "disruption.go",
+        "stateful_set.go",
+        "horizontal.go",
+        "tokencleaner.go",
+        "pv_controller_base.go",
+        "attach_detach_controller.go",
+        "legacy_serviceaccount_token_cleaner.go",
+        "publisher.go",
+        "deployment_controller.go",
+        "endpointslice_controller.go",
+    ];
+    if SCHEDULER.contains(&file) {
+        "scheduler"
+    } else if CONTROLLER_MANAGER.contains(&file)
+        || (file.ends_with("_controller.go") && !API_CONTROLLERS.contains(&file))
+    {
+        "controllerManager"
+    } else {
+        "api"
+    }
+}
+
+/// `options.go` in `I1105 19:32:57.807928      46 options.go:263] ...`.
+fn klog_file(msg: &str) -> Option<&str> {
+    let mut parts = msg.split_whitespace();
+    let level = parts.next()?;
+    if level.len() != 5 || !matches!(level.as_bytes()[0], b'I' | b'W' | b'E' | b'F') {
+        return None;
+    }
+    parts.next()?;
+    parts.next()?;
+    let source = parts.next()?.strip_suffix(']')?;
+    source.split(':').next()
 }
 
 /// Which control plane to run (`MWS_EKS_BACKEND`).
