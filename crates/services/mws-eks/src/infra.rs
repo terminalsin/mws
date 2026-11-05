@@ -195,4 +195,11 @@ pub trait Infrastructure: Send + Sync {
 
     /// Delete the group (terminating its instances) and the launch template.
     async fn delete_node_group(&self, scope: &Scope<'_>, group: &str, template_id: Option<&str>);
+
+    /// Write control plane log events (`(timestamp ms, message)`) to the
+    /// cluster's `/aws/eks/<cluster>/cluster` log group in CloudWatch Logs,
+    /// creating the group and stream as EKS does.
+    async fn control_plane_logs(&self, scope: &Scope<'_>, cluster: &str, stream: &str, events: Vec<(i64, String)>) {
+        let _ = (scope, cluster, stream, events);
+    }
 }

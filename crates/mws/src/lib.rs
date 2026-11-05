@@ -419,6 +419,7 @@ fn build_with_store(config: Config, store: Option<Arc<Store>>) -> Mws {
         ec2: ec2.clone(),
         iam: iam.clone(),
         autoscaling: autoscaling.clone(),
+        logs: logs.clone(),
     }));
     eks.set_credentials(vec![iam.credential_store(), sts.credential_store()]);
     if let Some(cp) = config.eks_backend.resolve(config.eks_docker_cli.as_deref(), config.eks_bind.as_deref()) {

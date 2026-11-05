@@ -234,6 +234,7 @@ impl Eks {
         request: &HttpRequest,
         now: DateTime<Utc>,
         partition: &str,
+        client: Option<&str>,
     ) -> HttpResponse {
         let Some((account, region, cluster, what)) = route(request.uri().path()) else {
             return respond(json!({"error": "not found"}));
@@ -250,6 +251,7 @@ impl Eks {
                     let rec = st.regions.get(&format!("{account}/{region}"))?.clusters.get(cluster)?;
                     identity(rec, caller, partition)
                 });
+                let line = authenticator_line(now, client, identity.as_ref(), caller.as_ref().map(|_| ()));
                 let status = match (identity, caller) {
                     (Some(i), _) => json!({
                         "authenticated": true,
@@ -258,6 +260,14 @@ impl Eks {
                     (None, Ok(_)) => json!({"authenticated": false, "error": "no access entry for this principal"}),
                     (None, Err(e)) => json!({"authenticated": false, "error": e}),
                 };
+                self.write_control_plane_log(
+                    account,
+                    region,
+                    cluster,
+                    "authenticator",
+                    vec![(now.timestamp_millis(), line)],
+                )
+                .await;
                 respond(json!({"apiVersion": api_version, "kind": kind, "status": status}))
             }
             "authorize" => {
@@ -272,6 +282,53 @@ impl Eks {
                 respond(json!({"apiVersion": api_version, "kind": kind, "status": {"allowed": allowed}}))
             }
             _ => respond(json!({"error": "not found"})),
+        }
+    }
+}
+
+/// A logrus text value: quoted unless it is all plain characters.
+fn logrus_value(v: &str) -> String {
+    let plain = !v.is_empty() && v.chars().all(|c| c.is_ascii_alphanumeric() || "-._/@^+".contains(c));
+    if plain {
+        v.to_string()
+    } else {
+        format!("{v:?}")
+    }
+}
+
+/// What aws-iam-authenticator logs for one TokenReview.
+fn authenticator_line(
+    now: DateTime<Utc>,
+    client: Option<&str>,
+    identity: Option<&Identity>,
+    verified: Result<(), &String>,
+) -> String {
+    let time = now.to_rfc3339_opts(chrono::SecondsFormat::Secs, true);
+    let client = logrus_value(client.unwrap_or("127.0.0.1"));
+    match identity {
+        Some(i) => {
+            let extra = |k: &str| i.extra.get(k).and_then(|v| v.first()).cloned().unwrap_or_default();
+            format!(
+                "time=\"{time}\" level=info msg=\"access granted\" accesskeyid={} arn={} client={client} groups={} \
+                 method=POST path=/authenticate session={} uid={} username={}",
+                logrus_value(&extra("accessKeyId")),
+                logrus_value(&extra("arn")),
+                logrus_value(&format!("[{}]", i.groups.join(" "))),
+                logrus_value(&extra("sessionName")),
+                logrus_value(&i.uid),
+                logrus_value(&i.username),
+            )
+        }
+        None => {
+            let error = match verified {
+                Ok(()) => "ARN is not mapped".to_string(),
+                Err(e) => format!("input token was not properly formatted: {e}"),
+            };
+            format!(
+                "time=\"{time}\" level=warning msg=\"access denied\" client={client} error={} method=POST \
+                 path=/authenticate",
+                logrus_value(&error)
+            )
         }
     }
 }
