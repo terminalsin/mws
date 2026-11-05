@@ -7,7 +7,7 @@
 [![CI](https://github.com/terminalsin/mws/actions/workflows/ci.yml/badge.svg?branch=master)](https://github.com/terminalsin/mws/actions/workflows/ci.yml)
 [![License: MIT OR Apache-2.0](https://img.shields.io/badge/license-MIT%20OR%20Apache--2.0-blue.svg)](#license)
 [![Rust 1.85+](https://img.shields.io/badge/rust-1.85%2B-orange.svg)](https://www.rust-lang.org)
-[![Services](https://img.shields.io/badge/AWS%20services-26-success.svg)](docs/services/README.md)
+[![Services](https://img.shields.io/badge/AWS%20services-29-success.svg)](docs/services/README.md)
 
 [Getting started](docs/getting-started.md) ·
 [Services](docs/services/README.md) ·
@@ -118,6 +118,7 @@ SDKs, S3 addressing, host-prefixed endpoints and calling as other identities.
 | [SSM Parameter Store](docs/services/ssm.md) | 19 / 152 | awsJson 1.1 |
 | [SQS](docs/services/sqs.md) | 23 / 23 | awsJson 1.0, awsQuery |
 | [SNS](docs/services/sns.md) | 42 / 42 | awsQuery |
+| [SES v1 and v2](docs/services/ses.md) | 187 / 187 | awsQuery, restJson1 |
 | [EventBridge](docs/services/events.md) | 57 / 57 | awsJson 1.1 |
 | [Kinesis Data Streams](docs/services/kinesis.md) | 45 / 45 | awsJson 1.1 |
 | [Firehose](docs/services/firehose.md) | 12 / 12 | awsJson 1.1 |

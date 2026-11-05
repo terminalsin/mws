@@ -1,6 +1,6 @@
 # Services
 
-MWS emulates 26 AWS services. Each is generated from AWS's official Smithy
+MWS emulates 29 AWS services. Each is generated from AWS's official Smithy
 model, so every operation in the model is routed and validated; operations
 outside the implemented set answer `NotImplemented`. Each service's page lists
 its features in a table: ✅ supported, 🟡 partial, ❌ not supported yet.
@@ -58,6 +58,7 @@ Every service shares the same foundations:
 | --- | --- | --- |
 | [SQS](sqs.md) | 23 / 23 | Standard and FIFO queues, visibility timeouts, long polling, dead-letter queues, redrive, SSE |
 | [SNS](sns.md) | 42 / 42 | Topics, filter policies and signed deliveries to SQS, Lambda, HTTP and more, FIFO topics |
+| [SES v1 and v2](ses.md) | 187 / 187 | Verified identities (Route 53 DKIM), the sandbox, an outbox, templates, event destinations, receipt rules fed by a local SMTP listener |
 | [EventBridge](events.md) | 57 / 57 | Buses, the full event pattern language, schedules, archives and replays, API destinations |
 | [SSM Parameter Store](ssm.md) | 19 / 152 | Versioned and labelled parameters, KMS SecureStrings, parameter policies, public parameters |
 
@@ -119,3 +120,6 @@ with the permissions AWS would use:
 - Image Builder launches EC2 instances, creates and copies AMIs, writes SSM
   parameters, logs to CloudWatch Logs and S3, notifies SNS and emits
   EventBridge events.
+- SES verifies domains through Route 53, publishes events to SNS, EventBridge,
+  Firehose and CloudWatch, and its receipt rules write to S3, invoke Lambda and
+  publish to SNS.

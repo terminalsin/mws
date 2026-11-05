@@ -117,7 +117,7 @@ impl S3 {
         let st = self.read();
         let b = st.buckets.get(put.bucket).ok_or(ServicePutError::NoSuchBucket)?;
         for action in actions {
-            let resource = if matches!(*action, "s3:PutObject" | "s3:PutObjectAcl") {
+            let resource = if matches!(*action, "s3:PutObject" | "s3:PutObjectAcl" | "s3:GetObject") {
                 format!("arn:{}:s3:::{}/{}", put.partition, b.name, put.key)
             } else {
                 format!("arn:{}:s3:::{}", put.partition, b.name)
