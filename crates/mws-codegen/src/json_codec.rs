@@ -66,7 +66,7 @@ impl<'t, 'm> JsonCodec<'t, 'm> {
         let mut out = String::new();
         let _ = writeln!(
             out,
-            "\n#[allow(unused_variables, unused_mut, unused_imports, clippy::all)]\nmod {name} {{\n    use super::*;"
+            "\n#[allow(unused_variables, unused_mut, unused_imports, clippy::all)]\npub(crate) mod {name} {{\n    use super::*;"
         );
         let _ = writeln!(out, "    use {RT}::{{Map, Value}};");
         out.push_str(&ser);
@@ -238,7 +238,7 @@ impl<'t, 'm> JsonCodec<'t, 'm> {
 
     fn emit_ser_aggregate(&self, s: &Shape, w: &mut String) {
         let ty = type_name(s.name());
-        let _ = writeln!(w, "    pub(super) fn {}(v: &types::{ty}) -> Value {{", ser_fn_name(s));
+        let _ = writeln!(w, "    pub(crate) fn {}(v: &types::{ty}) -> Value {{", ser_fn_name(s));
         let _ = writeln!(w, "        let mut m = Map::new();");
         if s.ty == ShapeType::Union {
             let _ = writeln!(w, "        match v {{");
@@ -296,7 +296,7 @@ impl<'t, 'm> JsonCodec<'t, 'm> {
         let elem_ty = qualified_type(self.model, &member.target);
         let _ = writeln!(
             w,
-            "    pub(super) fn {}(v: &[{elem_ty}]) -> Value {{ Value::Array(v.iter().map(|x| {}).collect()) }}",
+            "    pub(crate) fn {}(v: &[{elem_ty}]) -> Value {{ Value::Array(v.iter().map(|x| {}).collect()) }}",
             ser_fn_name(s),
             self.ser_expr(&member.target, "x")
         );
@@ -307,7 +307,7 @@ impl<'t, 'm> JsonCodec<'t, 'm> {
         let value_ty = qualified_type(self.model, &val_m.target);
         let _ = writeln!(
             w,
-            "    pub(super) fn {}(v: &::std::collections::BTreeMap<String, {value_ty}>) -> Value {{ Value::Object(v.iter().map(|(k, x)| (k.clone(), {})).collect()) }}",
+            "    pub(crate) fn {}(v: &::std::collections::BTreeMap<String, {value_ty}>) -> Value {{ Value::Object(v.iter().map(|(k, x)| (k.clone(), {})).collect()) }}",
             ser_fn_name(s),
             self.ser_expr(&val_m.target, "x")
         );
