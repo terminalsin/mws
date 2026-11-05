@@ -303,3 +303,252 @@ async fn scans_generate_templates_that_import_existing_resources() {
     cfn.delete_generated_template().generated_template_name("legacy-app").send().await.unwrap();
     assert!(cfn.list_generated_templates().send().await.unwrap().summaries().is_empty());
 }
+
+async fn settled(cfn: &Client, stack: &str) -> StackStatus {
+    for _ in 0..200 {
+        let s = cfn.describe_stacks().stack_name(stack).send().await.unwrap();
+        let st = s.stacks()[0].stack_status().cloned().unwrap();
+        if !st.as_str().ends_with("_IN_PROGRESS") {
+            return st;
+        }
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    }
+    panic!("stack {stack} did not settle");
+}
+
+async fn refactor_done(
+    cfn: &Client,
+    id: &str,
+) -> aws_sdk_cloudformation::operation::describe_stack_refactor::DescribeStackRefactorOutput {
+    for _ in 0..200 {
+        let d = cfn.describe_stack_refactor().stack_refactor_id(id).send().await.unwrap();
+        let busy = d.status().is_some_and(|s| s.as_str().ends_with("_IN_PROGRESS"))
+            || d.execution_status().is_some_and(|s| s.as_str().ends_with("_IN_PROGRESS"));
+        if !busy {
+            return d;
+        }
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    }
+    panic!("refactor {id} did not finish");
+}
+
+#[tokio::test]
+async fn refactors_move_resources_between_stacks_and_events_group_by_operation() {
+    use aws_sdk_cloudformation::types::{EventFilter, ResourceLocation, ResourceMapping, StackDefinition};
+    let mws = Mws::start().await;
+    let config = mws.root_sdk_config().await;
+    let cfn = Client::new(&config);
+    let sqs = aws_sdk_sqs::Client::new(&config);
+
+    let app = r#"{"Resources":{
+        "Jobs":{"Type":"AWS::SQS::Queue","Properties":{"QueueName":"refactor-jobs"}},
+        "Alerts":{"Type":"AWS::SNS::Topic","Properties":{"TopicName":"refactor-alerts"}}},
+      "Outputs":{"JobsUrl":{"Value":{"Ref":"Jobs"}}}}"#;
+    let created = cfn.create_stack().stack_name("app").template_body(app).send().await.unwrap();
+    assert_eq!(settled(&cfn, "app").await, StackStatus::CreateComplete);
+    let queue_url =
+        sqs.get_queue_url().queue_name("refactor-jobs").send().await.unwrap().queue_url().unwrap().to_string();
+
+    // DescribeEvents groups the stack's events by operation.
+    let events = cfn.describe_events().stack_name("app").send().await.unwrap();
+    let events = events.operation_events();
+    assert!(events.len() >= 6, "{events:?}");
+    assert!(events.iter().all(|e| e.operation_id() == created.operation_id()));
+    assert!(events.iter().all(|e| e.operation_type().unwrap().as_str() == "CREATE_STACK"));
+    assert!(events.iter().all(|e| e.operation_status().unwrap().as_str() == "SUCCEEDED"));
+    let stack_events: Vec<_> = events.iter().filter(|e| e.event_type().unwrap().as_str() == "STACK_EVENT").collect();
+    assert_eq!(stack_events.len(), 2);
+    assert!(stack_events[0].end_time().is_some() && stack_events[0].start_time().is_some());
+    let by_op = cfn.describe_events().operation_id(created.operation_id().unwrap()).send().await.unwrap();
+    assert_eq!(by_op.operation_events().len(), events.len());
+    let none_failed = cfn
+        .describe_events()
+        .stack_name("app")
+        .filters(EventFilter::builder().failed_events(true).build())
+        .send()
+        .await
+        .unwrap();
+    assert!(none_failed.operation_events().is_empty());
+    let neither = cfn.describe_events().send().await.unwrap_err();
+    assert_eq!(code(&neither), "ValidationError");
+
+    // A failed update shows up as a provisioning error under its own operation.
+    let broken = r#"{"Resources":{
+        "Jobs":{"Type":"AWS::SQS::Queue","Properties":{"QueueName":"refactor-jobs"}},
+        "Alerts":{"Type":"AWS::SNS::Topic","Properties":{"TopicName":"refactor-alerts"}},
+        "Bad":{"Type":"AWS::SQS::Queue","Properties":{"QueueName":"bad","VisibilityTimeout":999999}}},
+      "Outputs":{"JobsUrl":{"Value":{"Ref":"Jobs"}}}}"#;
+    let cs =
+        cfn.create_change_set().stack_name("app").change_set_name("break").template_body(broken).send().await.unwrap();
+    for _ in 0..100 {
+        let d = cfn.describe_change_set().change_set_name(cs.id().unwrap()).send().await.unwrap();
+        if d.status() == Some(&ChangeSetStatus::CreateComplete) {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    }
+    let pending = cfn.describe_events().change_set_name(cs.id().unwrap()).send().await.unwrap();
+    assert_eq!(pending.operation_events().len(), 1);
+    assert_eq!(pending.operation_events()[0].operation_type().unwrap().as_str(), "CREATE_CHANGESET");
+    assert_eq!(pending.operation_events()[0].operation_status().unwrap().as_str(), "SUCCEEDED");
+    cfn.execute_change_set().change_set_name(cs.id().unwrap()).send().await.unwrap();
+    assert_eq!(settled(&cfn, "app").await, StackStatus::UpdateRollbackComplete);
+    let executed = cfn.describe_events().change_set_name(cs.id().unwrap()).send().await.unwrap();
+    let update: Vec<_> =
+        executed.operation_events().iter().filter(|e| e.operation_type().unwrap().as_str() == "UPDATE_STACK").collect();
+    assert!(!update.is_empty());
+    assert!(update.iter().all(|e| e.operation_status().unwrap().as_str() == "FAILED"));
+    let failed = cfn
+        .describe_events()
+        .stack_name("app")
+        .operation_id(update[0].operation_id().unwrap())
+        .filters(EventFilter::builder().failed_events(true).build())
+        .send()
+        .await
+        .unwrap();
+    assert!(!failed.operation_events().is_empty());
+    assert!(failed
+        .operation_events()
+        .iter()
+        .any(|e| e.event_type().unwrap().as_str() == "PROVISIONING_ERROR" && e.logical_resource_id() == Some("Bad")));
+
+    // A refactor can't delete or add resources.
+    let def = |name: &str, body: &str| StackDefinition::builder().stack_name(name).template_body(body).build();
+    let lossy = cfn
+        .create_stack_refactor()
+        .stack_definitions(def(
+            "app",
+            r#"{"Resources":{"Alerts":{"Type":"AWS::SNS::Topic","Properties":{"TopicName":"refactor-alerts"}}}}"#,
+        ))
+        .send()
+        .await
+        .unwrap();
+    let d = refactor_done(&cfn, lossy.stack_refactor_id().unwrap()).await;
+    assert_eq!(d.status().unwrap().as_str(), "CREATE_FAILED");
+    assert_eq!(d.execution_status().unwrap().as_str(), "UNAVAILABLE");
+    assert!(d.status_reason().unwrap().contains("app/Jobs"), "{:?}", d.status_reason());
+    let no_stack = cfn
+        .create_stack_refactor()
+        .stack_definitions(def(
+            "app",
+            r#"{"Resources":{"Alerts":{"Type":"AWS::SNS::Topic","Properties":{"TopicName":"refactor-alerts"}}}}"#,
+        ))
+        .stack_definitions(def(
+            "workers",
+            r#"{"Resources":{"Jobs":{"Type":"AWS::SQS::Queue","Properties":{"QueueName":"refactor-jobs"}}}}"#,
+        ))
+        .send()
+        .await
+        .unwrap();
+    let d = refactor_done(&cfn, no_stack.stack_refactor_id().unwrap()).await;
+    assert_eq!(d.status().unwrap().as_str(), "CREATE_FAILED");
+    assert!(d.status_reason().unwrap().contains("EnableStackCreation"));
+
+    // Move Jobs into a new stack (detected) and rename Alerts (mapped).
+    let refactor = cfn
+        .create_stack_refactor()
+        .description("split workers out")
+        .enable_stack_creation(true)
+        .stack_definitions(def("app", r#"{"Resources":{"Notifications":{"Type":"AWS::SNS::Topic","Properties":{"TopicName":"refactor-alerts"}}},"Outputs":{"Topic":{"Value":{"Ref":"Notifications"}}}}"#))
+        .stack_definitions(def("workers", r#"{"Resources":{"Jobs":{"Type":"AWS::SQS::Queue","Properties":{"QueueName":"refactor-jobs"}}},"Outputs":{"JobsUrl":{"Value":{"Ref":"Jobs"},"Export":{"Name":"jobs-url"}}}}"#))
+        .resource_mappings(
+            ResourceMapping::builder()
+                .source(ResourceLocation::builder().stack_name("app").logical_resource_id("Alerts").build())
+                .destination(ResourceLocation::builder().stack_name("app").logical_resource_id("Notifications").build())
+                .build(),
+        )
+        .send()
+        .await
+        .unwrap();
+    let id = refactor.stack_refactor_id().unwrap().to_string();
+    let d = refactor_done(&cfn, &id).await;
+    assert_eq!(d.status().unwrap().as_str(), "CREATE_COMPLETE", "{:?}", d.status_reason());
+    assert_eq!(d.execution_status().unwrap().as_str(), "AVAILABLE");
+    assert_eq!(d.stack_ids().len(), 2);
+    let actions = cfn.list_stack_refactor_actions().stack_refactor_id(&id).send().await.unwrap();
+    let actions = actions.stack_refactor_actions();
+    assert_eq!(actions.len(), 3, "{actions:?}");
+    assert!(actions
+        .iter()
+        .any(|a| a.action().unwrap().as_str() == "CREATE" && a.entity().unwrap().as_str() == "STACK"));
+    let jobs = actions
+        .iter()
+        .find(|a| a.resource_mapping().is_some_and(|m| m.source().unwrap().logical_resource_id() == Some("Jobs")))
+        .unwrap();
+    assert_eq!(jobs.detection().unwrap().as_str(), "AUTO");
+    assert_eq!(jobs.physical_resource_id(), Some(queue_url.as_str()));
+    assert_eq!(jobs.resource_mapping().unwrap().destination().unwrap().stack_name(), Some("workers"));
+    let alerts = actions
+        .iter()
+        .find(|a| a.resource_mapping().is_some_and(|m| m.source().unwrap().logical_resource_id() == Some("Alerts")))
+        .unwrap();
+    assert_eq!(alerts.detection().unwrap().as_str(), "MANUAL");
+
+    let listed = cfn.list_stack_refactors().send().await.unwrap();
+    assert_eq!(listed.stack_refactor_summaries().len(), 3);
+    let available = cfn
+        .list_stack_refactors()
+        .execution_status_filter(aws_sdk_cloudformation::types::StackRefactorExecutionStatus::Available)
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(available.stack_refactor_summaries().len(), 1);
+    assert_eq!(available.stack_refactor_summaries()[0].description(), Some("split workers out"));
+    let cant =
+        cfn.execute_stack_refactor().stack_refactor_id(lossy.stack_refactor_id().unwrap()).send().await.unwrap_err();
+    assert_eq!(code(&cant), "ValidationError");
+    let missing = cfn
+        .describe_stack_refactor()
+        .stack_refactor_id(
+            "arn:aws:cloudformation:us-east-1:123456789012:stackRefactor/00000000-0000-0000-0000-000000000000",
+        )
+        .send()
+        .await
+        .unwrap_err();
+    assert_eq!(code(&missing), "StackRefactorNotFoundException");
+
+    cfn.execute_stack_refactor().stack_refactor_id(&id).send().await.unwrap();
+    let d = refactor_done(&cfn, &id).await;
+    assert_eq!(d.execution_status().unwrap().as_str(), "EXECUTE_COMPLETE", "{:?}", d.execution_status_reason());
+    assert_eq!(settled(&cfn, "app").await, StackStatus::UpdateComplete);
+    assert_eq!(settled(&cfn, "workers").await, StackStatus::CreateComplete);
+    let workers = cfn.describe_stack_resource().stack_name("workers").logical_resource_id("Jobs").send().await.unwrap();
+    assert_eq!(workers.stack_resource_detail().unwrap().physical_resource_id(), Some(queue_url.as_str()));
+    let app_resources = cfn.describe_stack_resources().stack_name("app").send().await.unwrap();
+    let names: Vec<_> = app_resources.stack_resources().iter().map(|r| r.logical_resource_id().unwrap()).collect();
+    assert_eq!(names, ["Notifications"]);
+    let exports = cfn.list_exports().send().await.unwrap();
+    assert!(exports.exports().iter().any(|e| e.name() == Some("jobs-url") && e.value() == Some(queue_url.as_str())));
+    // The resources themselves were never touched.
+    assert!(sqs.get_queue_url().queue_name("refactor-jobs").send().await.is_ok());
+
+    // Executed refactors are done; an update since then makes others obsolete.
+    let again = cfn.execute_stack_refactor().stack_refactor_id(&id).send().await.unwrap_err();
+    assert_eq!(code(&again), "ValidationError");
+    let stale = cfn
+        .create_stack_refactor()
+        .stack_definitions(def("workers", r#"{"Resources":{"Work":{"Type":"AWS::SQS::Queue","Properties":{"QueueName":"refactor-jobs"}}},"Outputs":{"JobsUrl":{"Value":{"Ref":"Work"},"Export":{"Name":"jobs-url"}}}}"#))
+        .resource_mappings(
+            ResourceMapping::builder()
+                .source(ResourceLocation::builder().stack_name("workers").logical_resource_id("Jobs").build())
+                .destination(ResourceLocation::builder().stack_name("workers").logical_resource_id("Work").build())
+                .build(),
+        )
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(
+        refactor_done(&cfn, stale.stack_refactor_id().unwrap()).await.execution_status().unwrap().as_str(),
+        "AVAILABLE"
+    );
+    cfn.update_termination_protection().stack_name("workers").enable_termination_protection(true).send().await.unwrap();
+    cfn.update_stack()
+        .stack_name("workers")
+        .template_body(r#"{"Resources":{"Jobs":{"Type":"AWS::SQS::Queue","Properties":{"QueueName":"refactor-jobs","VisibilityTimeout":60}}},"Outputs":{"JobsUrl":{"Value":{"Ref":"Jobs"},"Export":{"Name":"jobs-url"}}}}"#)
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(settled(&cfn, "workers").await, StackStatus::UpdateComplete);
+    let d = refactor_done(&cfn, stale.stack_refactor_id().unwrap()).await;
+    assert_eq!(d.execution_status().unwrap().as_str(), "OBSOLETE");
+}

@@ -1,6 +1,6 @@
 //! Operation handlers.
 
-mod change_sets;
+pub(crate) mod change_sets;
 mod convert;
 mod drift;
 mod handler;

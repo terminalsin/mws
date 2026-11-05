@@ -1801,7 +1801,7 @@ impl CloudFormation {
             }
             Err(e) => ("FAILED".into(), Some(e.message)),
             Ok(out) => {
-                let payload = out["Payload"].as_str().and_then(|p| base64_decode(p)).unwrap_or_default();
+                let payload = out["Payload"].as_str().and_then(base64_decode).unwrap_or_default();
                 let v: Value = serde_json::from_str(&payload).unwrap_or(Value::Null);
                 if out.get("FunctionError").is_some_and(|e| !e.is_null()) {
                     return ("FAILED".into(), Some("AccountGate function returned an error".into()));

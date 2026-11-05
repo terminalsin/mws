@@ -376,11 +376,12 @@ impl CloudFormation {
             s.status = status.into();
             s.status_reason = Some("User Initiated".into());
             s.last_operation =
-                Some((if creating { "CREATE_STACK".into() } else { "UPDATE_STACK".into() }, operation_id));
+                Some((if creating { "CREATE_STACK".into() } else { "UPDATE_STACK".into() }, operation_id.clone()));
             // Executing a change set removes the stack's other change sets.
             s.change_sets.retain(|id, _| id == &cs.id);
             if let Some(c) = s.change_sets.get_mut(&cs.id) {
                 c.execution_status = "EXECUTE_COMPLETE".into();
+                c.execution_operation_id = Some(operation_id);
             }
         }
         let d = self.deployment(ctx, deploy, &stack.id, input.client_request_token.clone());
@@ -666,10 +667,11 @@ impl CloudFormation {
             s.imports = super::imports(&template, &data);
             s.status = "IMPORT_IN_PROGRESS".into();
             s.status_reason = Some("User Initiated".into());
-            s.last_operation = Some(("IMPORT".into(), operation_id));
+            s.last_operation = Some(("IMPORT".into(), operation_id.clone()));
             s.change_sets.retain(|id, _| id == &cs.id);
             if let Some(c) = s.change_sets.get_mut(&cs.id) {
                 c.execution_status = "EXECUTE_COMPLETE".into();
+                c.execution_operation_id = Some(operation_id);
             }
         }
         let d = self.deployment(ctx, deploy, &stack.id, token);

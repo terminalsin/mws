@@ -684,4 +684,52 @@ impl Handler for CloudFormation {
     ) -> Result<(), ServiceError> {
         self.delete_generated_template_op(ctx, input)
     }
+
+    async fn create_stack_refactor(
+        &self,
+        ctx: &RequestContext,
+        input: types::CreateStackRefactorInput,
+    ) -> Result<types::CreateStackRefactorOutput, ServiceError> {
+        self.create_stack_refactor_op(ctx, input).await
+    }
+
+    async fn describe_stack_refactor(
+        &self,
+        ctx: &RequestContext,
+        input: types::DescribeStackRefactorInput,
+    ) -> Result<types::DescribeStackRefactorOutput, ServiceError> {
+        self.describe_stack_refactor_op(ctx, input)
+    }
+
+    async fn execute_stack_refactor(
+        &self,
+        ctx: &RequestContext,
+        input: types::ExecuteStackRefactorInput,
+    ) -> Result<(), ServiceError> {
+        self.execute_stack_refactor_op(ctx, input).await
+    }
+
+    async fn list_stack_refactor_actions(
+        &self,
+        ctx: &RequestContext,
+        input: types::ListStackRefactorActionsInput,
+    ) -> Result<types::ListStackRefactorActionsOutput, ServiceError> {
+        self.list_stack_refactor_actions_op(ctx, input)
+    }
+
+    async fn list_stack_refactors(
+        &self,
+        ctx: &RequestContext,
+        input: types::ListStackRefactorsInput,
+    ) -> Result<types::ListStackRefactorsOutput, ServiceError> {
+        self.list_stack_refactors_op(ctx, input)
+    }
+
+    async fn describe_events(
+        &self,
+        ctx: &RequestContext,
+        input: types::DescribeEventsInput,
+    ) -> Result<types::DescribeEventsOutput, ServiceError> {
+        self.describe_events_op(ctx, input)
+    }
 }

@@ -261,7 +261,12 @@ impl Deployment {
     }
 
     /// Evaluate a resource's properties against the stack as it is now.
-    async fn properties(&self, template: &Template, data: &EvalData, logical_id: &str) -> Result<Props, String> {
+    pub(crate) async fn properties(
+        &self,
+        template: &Template,
+        data: &EvalData,
+        logical_id: &str,
+    ) -> Result<Props, String> {
         let stack = self.snapshot();
         let def = template.resource(logical_id).cloned().unwrap_or_default();
         let pending = BTreeSet::new();
@@ -609,7 +614,7 @@ impl Deployment {
     }
 
     /// Evaluate the template's outputs.
-    fn outputs(&self, template: &Template, data: &EvalData) -> Result<Vec<StackOutput>, String> {
+    pub(crate) fn outputs(&self, template: &Template, data: &EvalData) -> Result<Vec<StackOutput>, String> {
         let stack = self.snapshot();
         let pending = BTreeSet::new();
         let lookup = StackResources {

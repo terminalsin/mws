@@ -24,6 +24,7 @@ mod ops;
 mod parameters;
 mod policy;
 mod providers;
+mod refactor;
 mod registry;
 mod stacksets;
 mod state;

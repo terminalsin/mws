@@ -19,6 +19,7 @@ pub struct State {
     pub registry: crate::registry::Registry,
     pub scans: BTreeMap<String, crate::iac::ResourceScan>,
     pub generated: BTreeMap<String, crate::iac::GeneratedTemplate>,
+    pub refactors: BTreeMap<String, crate::refactor::StackRefactor>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
@@ -246,6 +247,10 @@ pub struct ChangeSet {
     pub on_stack_failure: Option<String>,
     pub resources_to_import: BTreeMap<String, BTreeMap<String, String>>,
     pub import_existing_resources: bool,
+    /// The operation that created the change set, and the one that
+    /// executed it.
+    pub operation_id: String,
+    pub execution_operation_id: Option<String>,
 }
 
 impl Default for ChangeSet {
@@ -270,6 +275,8 @@ impl Default for ChangeSet {
             on_stack_failure: None,
             resources_to_import: BTreeMap::new(),
             import_existing_resources: false,
+            operation_id: uuid::Uuid::new_v4().to_string(),
+            execution_operation_id: None,
         }
     }
 }
