@@ -416,6 +416,7 @@ fn build_with_store(config: Config, store: Option<Arc<Store>>) -> Mws {
     if let Some(host) = &config.ecr_registry_host {
         ecr.set_registry_host(host.clone());
     }
+    lambda.set_image_source(Arc::new(links::LambdaImages(ecr.clone())));
     let mut gateway = Gateway::builder();
     if let Some(store) = store {
         gateway = gateway.store(store);

@@ -2991,6 +2991,7 @@ version = "0.1.0"
 dependencies = [
  "async-trait",
  "base64 0.22.1",
+ "bytes",
  "chrono",
  "mws-acm",
  "mws-acmpca",
@@ -3018,6 +3019,7 @@ dependencies = [
  "mws-logs",
  "mws-marketplace-entitlement",
  "mws-marketplace-metering",
+ "mws-oci",
  "mws-organizations",
  "mws-pca-connector-scep",
  "mws-ram",

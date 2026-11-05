@@ -54,5 +54,6 @@ Docker talks plain HTTP to `localhost` and `127.0.0.0/8` registries by default. 
 | Creation templates | ✅ | Prefix matching (longest first, then `ROOT`) for `CREATE_ON_PUSH`, `REPLICATION` and `PULL_THROUGH_CACHE`. |
 | Pull-through cache rules | 🟡 | Stored and validated; images are not fetched from the upstream registry. |
 | Events | ✅ | Image push, delete, scan and lifecycle actions go to EventBridge as `aws.ecr`. |
+| Lambda | ✅ | Container image functions resolve and pull their images here, with the caller's pull permissions (see [Lambda](lambda.md#container-images)). |
 
 See also: [ECR Public](ecr-public.md) · [all services](README.md) · [authentication and authorization](../security.md).

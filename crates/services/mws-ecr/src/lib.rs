@@ -33,6 +33,7 @@ mod handler;
 mod images;
 mod lifecycle;
 mod names;
+mod pull;
 mod registry;
 mod registry_config;
 mod replication;
@@ -44,6 +45,7 @@ use std::sync::{Arc, Mutex, MutexGuard, OnceLock};
 use mws_core::{AlternateSignature, HttpRequest, HttpResponse, RequestContext, Service, ServiceError};
 
 pub use names::repository_arn;
+pub use pull::{ImageLocation, PullError, PulledImage};
 use state::State;
 
 /// Where `GetDownloadUrlForLayer` links point.
