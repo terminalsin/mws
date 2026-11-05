@@ -50,6 +50,7 @@ See [State, scenarios and snapshots](state.md) for how the two interact.
 | `MWS_EKS_DOCKER` | `MWS_EC2_DOCKER`, then `docker` | The Docker-compatible CLI the EKS backend drives. |
 | `MWS_EKS_BIND` | `127.0.0.1` | The host address API server ports are published on; cluster endpoints report it. |
 | `MWS_EKS_K3S_IMAGE` | `rancher/k3s:<tag for the version>` | The API server image; `{version}` is replaced by the cluster's Kubernetes minor version. |
+| `MWS_EFS_DIR` | `mws-efs` in the temp directory | Where EFS keeps file system data, one directory per file system. EC2 instances in Docker mount it at `/var/lib/mws-efs`. |
 
 EC2 instances reach the instance metadata service and the AWS endpoint
 through the host, and EKS API servers call MWS's token and authorization

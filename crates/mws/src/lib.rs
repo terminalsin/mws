@@ -16,6 +16,7 @@ use mws_autoscaling::AutoScaling;
 use mws_cloudwatch::CloudWatch;
 use mws_core::Environment;
 use mws_ec2::{BackendChoice, Ec2};
+use mws_efs::Efs;
 use mws_eks::Eks;
 use mws_elb::{Elb, ElbConfig};
 use mws_events::Events;
@@ -87,6 +88,9 @@ pub struct Config {
     /// The host address API servers are published on (`MWS_EKS_BIND`,
     /// default `127.0.0.1`).
     pub eks_bind: Option<String>,
+    /// Where EFS keeps file system data, one directory per file system
+    /// (`MWS_EFS_DIR`). `mws-efs` in the temp directory when unset.
+    pub efs_dir: Option<PathBuf>,
 }
 
 impl Config {
@@ -143,6 +147,7 @@ impl Config {
             eks_backend,
             eks_docker_cli: var("MWS_EKS_DOCKER").or_else(|| var("MWS_EC2_DOCKER")),
             eks_bind: var("MWS_EKS_BIND"),
+            efs_dir: path("MWS_EFS_DIR"),
         }
     }
 }
@@ -180,6 +185,7 @@ pub struct Mws {
     pub ses: Ses,
     pub rds: Rds,
     pub eks: Eks,
+    pub efs: Efs,
 }
 
 /// Build the gateway with every service MWS emulates.
@@ -369,6 +375,8 @@ fn build_with_store(config: Config, store: Option<Arc<Store>>) -> Mws {
         tracing::info!(backend = cp.name(), "EKS Kubernetes control plane backend");
         eks.set_control_plane(cp);
     }
+    let efs = Efs::new(ec2.clone(), kms.clone(), config.efs_dir.clone().unwrap_or_else(Efs::default_root));
+    ec2.add_launch_extension(efs.instance_support());
     let mut gateway = Gateway::builder();
     if let Some(store) = store {
         gateway = gateway.store(store);
@@ -422,6 +430,7 @@ fn build_with_store(config: Config, store: Option<Arc<Store>>) -> Mws {
         .service(Arc::new(ses.v2()))
         .service(Arc::new(ses.clone()))
         .service(Arc::new(eks.clone()))
+        .service(Arc::new(efs.clone()))
         .build();
     Mws {
         gateway,
@@ -454,6 +463,7 @@ fn build_with_store(config: Config, store: Option<Arc<Store>>) -> Mws {
         ses,
         rds,
         eks,
+        efs,
     }
 }
 

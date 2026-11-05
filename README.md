@@ -44,9 +44,9 @@ real Rust, Python and JavaScript SDKs.
   (awsQuery, awsJson, restXml, restJson, Smithy RPC v2 CBOR and ec2Query).
 - **Things actually happen.** KMS keys do real cryptography, Private CA and
   ACM issue real X.509 certificates, Lambda functions run on local runtimes,
-  EC2 instances can run as Docker containers, and events flow between
-  services: S3 notifications reach SNS, SQS and Lambda; alarms page through
-  SNS; Firehose delivers to S3.
+  EC2 instances can run as Docker containers and mount EFS file systems, and
+  events flow between services: S3 notifications reach SNS, SQS and Lambda;
+  alarms page through SNS; Firehose delivers to S3.
 - **Built for test suites.** In memory by default, with optional SQLite
   persistence, declarative seed scenarios, instant resets, named snapshots and
   an emulated clock you can move forward.
@@ -109,6 +109,7 @@ SDKs, S3 addressing, host-prefixed endpoints and calling as other identities.
 | [Elastic Load Balancing](docs/services/elb.md) | 80 / 80 | awsQuery |
 | [RDS and Aurora](docs/services/rds.md) | 168 / 168 | awsQuery |
 | [EKS](docs/services/eks.md) | 70 / 70 | restJson1 |
+| [EFS](docs/services/efs.md) | 31 / 31 | restJson1 |
 | [Route 53](docs/services/route53.md) | 71 / 71 | restXml |
 | [Amplify Hosting](docs/services/amplify.md) | 37 / 37 | restJson1 |
 | [Global Accelerator](docs/services/globalaccelerator.md) | 56 / 56 | awsJson 1.1 |
