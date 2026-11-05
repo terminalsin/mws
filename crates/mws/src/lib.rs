@@ -29,6 +29,7 @@ use mws_elb::{Elb, ElbConfig};
 use mws_events::Events;
 use mws_firehose::Firehose;
 use mws_globalaccelerator::GlobalAccelerator;
+use mws_guardduty::GuardDuty;
 use mws_iam::{Iam, IamConfig};
 use mws_identitystore::IdentityStore;
 use mws_imagebuilder::ImageBuilder;
@@ -226,6 +227,7 @@ pub struct Mws {
     pub firehose: Firehose,
     pub cloudwatch: CloudWatch,
     pub ec2: Ec2,
+    pub guardduty: GuardDuty,
     pub amplify: Amplify,
     pub globalaccelerator: GlobalAccelerator,
     pub marketplace_entitlement: Entitlement,
@@ -377,6 +379,10 @@ fn build_with_store(config: Config, store: Option<Arc<Store>>) -> Mws {
     let ec2 = Ec2::new(config.ec2_backend.resolve(config.ec2_docker_cli.as_deref()));
     tracing::info!(backend = ec2.backend_name(), "EC2 compute backend");
     ec2.set_instance_roles(Arc::new(links::Ec2InstanceRoles { iam: iam.clone(), sts: sts.clone() }));
+    let guardduty = GuardDuty::new();
+    guardduty.set_event_sink(Arc::new(sinks::GuardDutyToEvents(events.clone())));
+    guardduty.set_finding_exporter(Arc::new(links::GuardDutyToS3(s3.clone())));
+    guardduty.set_organizations(Arc::new(links::GuardDutyOrganizations(organizations.clone())));
     let amplify = Amplify::with_services(s3.clone(), route53.clone());
     let globalaccelerator = GlobalAccelerator::new();
     globalaccelerator.add_endpoint_directory(Arc::new(links::GlobalAcceleratorEc2(ec2.clone())));
@@ -404,6 +410,7 @@ fn build_with_store(config: Config, store: Option<Arc<Store>>) -> Mws {
     securityhub.set_organizations(Arc::new(links::SecurityHubOrganizations(organizations.clone())));
     securityhub.set_event_sink(Arc::new(links::SecurityHubToEvents(events.clone())));
     securityhub.set_export_sink(Arc::new(links::SecurityHubExports(s3.clone())));
+    guardduty.set_security_hub(Arc::new(links::GuardDutyToSecurityHub(securityhub.clone())));
     let imagebuilder = ImageBuilder::with_ec2(ec2.clone());
     imagebuilder.set_s3(Arc::new(s3.clone()));
     imagebuilder.set_ssm(Arc::new(ssm.clone()));
@@ -528,6 +535,7 @@ fn build_with_store(config: Config, store: Option<Arc<Store>>) -> Mws {
         .service(Arc::new(firehose.clone()))
         .service(Arc::new(cloudwatch.clone()))
         .service(Arc::new(ec2.clone()))
+        .service(Arc::new(guardduty.clone()))
         .service(Arc::new(amplify.clone()))
         .service(Arc::new(globalaccelerator.clone()))
         .service(Arc::new(rds.clone()))
@@ -582,6 +590,7 @@ fn build_with_store(config: Config, store: Option<Arc<Store>>) -> Mws {
         firehose,
         cloudwatch,
         ec2,
+        guardduty,
         amplify,
         globalaccelerator,
         marketplace_entitlement,

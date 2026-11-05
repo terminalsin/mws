@@ -1080,6 +1080,108 @@ impl mws_securityhub::ExportSink for SecurityHubExports {
     }
 }
 
+/// GuardDuty's view of AWS Organizations: accounts, and delegated
+/// administration registered with the caller's permissions.
+pub(crate) struct GuardDutyOrganizations(pub mws_organizations::Organizations);
+
+impl mws_guardduty::OrganizationLink for GuardDutyOrganizations {
+    fn organization(&self, account: &str) -> Option<mws_guardduty::OrgInfo> {
+        let o = self.0.organization_of(account)?;
+        Some(mws_guardduty::OrgInfo {
+            id: o.id,
+            management_account: o.management_account,
+            accounts: o
+                .accounts
+                .into_iter()
+                .map(|a| mws_guardduty::OrgAccount { id: a.id, email: a.email, joined: a.joined, status: a.status })
+                .collect(),
+        })
+    }
+
+    fn register_admin(&self, ctx: &RequestContext, admin: &str) -> Result<(), mws_core::ServiceError> {
+        // AWS makes these Organizations calls with the caller's credentials.
+        for action in ["organizations:EnableAWSServiceAccess", "organizations:RegisterDelegatedAdministrator"] {
+            ctx.authorize(action, "*", mws_core::ConditionContext::new())?;
+        }
+        self.0
+            .register_delegated_administrator_for_service(
+                &ctx.caller.account_id,
+                admin,
+                mws_guardduty::SERVICE_PRINCIPAL,
+                chrono::Utc::now(),
+            )
+            .map_err(guardduty_delegation_error)
+    }
+
+    fn deregister_admin(&self, ctx: &RequestContext, admin: &str) -> Result<(), mws_core::ServiceError> {
+        ctx.authorize("organizations:DeregisterDelegatedAdministrator", "*", mws_core::ConditionContext::new())?;
+        self.0
+            .deregister_delegated_administrator_for_service(
+                &ctx.caller.account_id,
+                admin,
+                mws_guardduty::SERVICE_PRINCIPAL,
+            )
+            .map_err(guardduty_delegation_error)
+    }
+}
+
+fn guardduty_delegation_error(e: mws_organizations::DelegationError) -> mws_core::ServiceError {
+    use mws_organizations::DelegationError;
+    let message = match e {
+        DelegationError::NotManagementAccount => "the caller is not the management account of an organization",
+        DelegationError::AccountNotInOrganization => "the account is not a member of the organization",
+        DelegationError::ManagementAccount => "the management account cannot be a delegated administrator",
+        DelegationError::NotAllFeatures => "the organization does not have all features enabled",
+    };
+    mws_core::ServiceError::client("BadRequestException", 400, message)
+}
+
+/// GuardDuty publishing destinations: findings exported into S3 as
+/// `guardduty.amazonaws.com`, SSE-KMS under the destination's key.
+pub(crate) struct GuardDutyToS3(pub mws_s3::S3);
+
+impl mws_guardduty::FindingExporter for GuardDutyToS3 {
+    fn export(&self, _ctx: &RequestContext, e: mws_guardduty::FindingExport) -> Result<(), String> {
+        let path = e.destination_arn.rsplit(":::").next().unwrap_or_default();
+        let (bucket, prefix) = path.split_once('/').unwrap_or((path, ""));
+        let key = match prefix.trim_end_matches('/') {
+            "" => e.key.clone(),
+            p => format!("{p}/{}", e.key),
+        };
+        let put = mws_s3::ServicePutObject {
+            bucket,
+            key: &key,
+            body: e.body,
+            content_type: "application/octet-stream",
+            service_principal: mws_guardduty::SERVICE_PRINCIPAL,
+            source_account: &e.account,
+            source_arn: &e.detector_arn,
+            acl: None,
+            partition: &e.partition,
+        };
+        self.0.put_object_as_service_kms(put, &e.kms_key_arn).map(|_| ()).map_err(|err| err.to_string())
+    }
+}
+
+/// GuardDuty findings imported into Security Hub as product `aws/guardduty`.
+pub(crate) struct GuardDutyToSecurityHub(pub mws_securityhub::SecurityHub);
+
+impl mws_guardduty::SecurityHubSink for GuardDutyToSecurityHub {
+    fn import_findings(&self, ctx: &RequestContext, account: &str, region: &str, findings: Vec<serde_json::Value>) {
+        let r = self.0.import_findings_as_service(
+            ctx,
+            account,
+            region,
+            "aws/guardduty",
+            mws_guardduty::SERVICE_PRINCIPAL,
+            findings,
+        );
+        for (id, code, message) in r.failed {
+            tracing::debug!(%id, %code, %message, "Security Hub rejected a GuardDuty finding");
+        }
+    }
+}
+
 /// Route 53 alias records that target an accelerator's DNS name answer with
 /// its static IP addresses.
 pub(crate) struct Route53ToGlobalAccelerator(pub mws_globalaccelerator::GlobalAccelerator);

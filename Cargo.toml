@@ -48,6 +48,7 @@ members = [
     "crates/services/mws-ssoadmin",
     "crates/services/mws-ssooidc",
     "crates/services/mws-ssoportal",
+    "crates/services/mws-guardduty",
     "crates/services/mws-amplify",
     "crates/services/mws-globalaccelerator",
     "crates/services/mws-ram",
@@ -127,6 +128,7 @@ mws-identitystore = { path = "crates/services/mws-identitystore" }
 mws-ssoadmin = { path = "crates/services/mws-ssoadmin" }
 mws-ssooidc = { path = "crates/services/mws-ssooidc" }
 mws-ssoportal = { path = "crates/services/mws-ssoportal" }
+mws-guardduty = { path = "crates/services/mws-guardduty" }
 mws-amplify = { path = "crates/services/mws-amplify" }
 mws-globalaccelerator = { path = "crates/services/mws-globalaccelerator" }
 mws-ram = { path = "crates/services/mws-ram" }

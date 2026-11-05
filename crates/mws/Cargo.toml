@@ -29,6 +29,7 @@ mws-core.workspace = true
 mws-ec2.workspace = true
 mws-servicequotas.workspace = true
 mws-ce.workspace = true
+mws-guardduty.workspace = true
 mws-imagebuilder.workspace = true
 mws-elb.workspace = true
 mws-autoscaling.workspace = true

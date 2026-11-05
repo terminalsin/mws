@@ -123,6 +123,7 @@ SDKs, S3 addressing, host-prefixed endpoints and calling as other identities.
 | [Global Accelerator](docs/services/globalaccelerator.md) | 56 / 56 | awsJson 1.1 |
 | [Private CA](docs/services/acm-pca.md) | 23 / 23 | awsJson 1.1 |
 | [Certificate Manager (ACM)](docs/services/acm.md) | 40 / 40 | awsJson 1.1 |
+| [GuardDuty](docs/services/guardduty.md) | 102 / 102 | restJson1 |
 | [Connector for SCEP](docs/services/pca-connector-scep.md) | 12 / 12 | restJson1 |
 | [Resource Access Manager](docs/services/ram.md) | 35 / 35 | restJson1 |
 | [Security Hub](docs/services/securityhub.md) | 126 / 126 | restJson1 |

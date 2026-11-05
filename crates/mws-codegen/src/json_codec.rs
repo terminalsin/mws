@@ -18,11 +18,25 @@ pub struct JsonCodec<'t, 'm> {
     model: &'m Model,
     types: &'t TypeGen<'m>,
     constraints: Constraints,
+    /// Key members by their `@jsonName` (restJson1) rather than the
+    /// member name (awsJson, which ignores the trait).
+    json_names: bool,
 }
 
 impl<'t, 'm> JsonCodec<'t, 'm> {
     pub fn new(model: &'m Model, types: &'t TypeGen<'m>) -> Self {
-        Self { model, types, constraints: Constraints::default() }
+        Self { model, types, constraints: Constraints::default(), json_names: false }
+    }
+
+    /// Honour `@jsonName` on members, as restJson1 does.
+    pub fn with_json_names(mut self) -> Self {
+        self.json_names = true;
+        self
+    }
+
+    /// The JSON key of member `m`.
+    pub(crate) fn key<'a>(&self, m: &'a Member) -> &'a str {
+        wire_name(m, self.json_names)
     }
 
     /// `mod {name}`: a decoder per structure, union, list and map in
@@ -129,7 +143,7 @@ impl<'t, 'm> JsonCodec<'t, 'm> {
             let _ = writeln!(
                 w,
                 "            let val = {};",
-                self.de_expr(&m.target, &format!("obj.get({})", rust_str(&m.name)))
+                self.de_expr(&m.target, &format!("obj.get({})", rust_str(self.key(m))))
             );
             let checks = self.constraints.checks(Some(m), &target);
             if !checks.is_empty() {
@@ -257,7 +271,7 @@ impl<'t, 'm> JsonCodec<'t, 'm> {
                     w,
                     "            types::{ty}::{}(x) => {{ m.insert({}.into(), {}); }}",
                     type_name(&mem.name),
-                    rust_str(&mem.name),
+                    rust_str(self.key(mem)),
                     self.ser_member_expr(mem, deref)
                 );
             }
@@ -266,7 +280,7 @@ impl<'t, 'm> JsonCodec<'t, 'm> {
             for mem in &s.members {
                 let field = field_name(mem);
                 let boxed = self.types.is_boxed(&s.id, &mem.target);
-                let name = rust_str(&mem.name);
+                let name = rust_str(self.key(mem));
                 if self.is_event_stream(mem) {
                     let _ = writeln!(
                         w,
@@ -321,6 +335,16 @@ impl<'t, 'm> JsonCodec<'t, 'm> {
             self.ser_expr(&val_m.target, "x")
         );
     }
+}
+
+/// The JSON key of member `m`: its `@jsonName` when `json_names` is set.
+pub(crate) fn wire_name(m: &Member, json_names: bool) -> &str {
+    if json_names {
+        if let Some(n) = m.get_trait("jsonName").and_then(serde_json::Value::as_str) {
+            return n;
+        }
+    }
+    &m.name
 }
 
 /// `pub async fn invoke`: run an operation by name with JSON input and get
