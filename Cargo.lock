@@ -476,6 +476,53 @@ dependencies = [
 ]
 
 [[package]]
+name = "aws-sdk-marketplaceentitlement"
+version = "1.126.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "60042f90aa01b8166f35ddb1dea65259443ffb8f7b6f62ba442e3f41cb6ebd97"
+dependencies = [
+ "arc-swap",
+ "aws-credential-types",
+ "aws-runtime",
+ "aws-smithy-async",
+ "aws-smithy-cbor",
+ "aws-smithy-http",
+ "aws-smithy-json",
+ "aws-smithy-observability",
+ "aws-smithy-runtime",
+ "aws-smithy-runtime-api",
+ "aws-smithy-schema",
+ "aws-smithy-types",
+ "aws-types",
+ "fastrand",
+ "regex-lite",
+ "tracing",
+]
+
+[[package]]
+name = "aws-sdk-marketplacemetering"
+version = "1.124.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "c567ac8948f59be55dd75c100ed1127fe395dd96e4a1cf15bc41f71ec719a496"
+dependencies = [
+ "arc-swap",
+ "aws-credential-types",
+ "aws-runtime",
+ "aws-smithy-async",
+ "aws-smithy-http",
+ "aws-smithy-json",
+ "aws-smithy-observability",
+ "aws-smithy-runtime",
+ "aws-smithy-runtime-api",
+ "aws-smithy-schema",
+ "aws-smithy-types",
+ "aws-types",
+ "fastrand",
+ "regex-lite",
+ "tracing",
+]
+
+[[package]]
 name = "aws-sdk-organizations"
 version = "1.137.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2273,6 +2320,8 @@ dependencies = [
  "mws-kms",
  "mws-lambda",
  "mws-logs",
+ "mws-marketplace-entitlement",
+ "mws-marketplace-metering",
  "mws-organizations",
  "mws-route53",
  "mws-s3",
@@ -2421,6 +2470,8 @@ dependencies = [
  "aws-sdk-kinesis",
  "aws-sdk-kms",
  "aws-sdk-lambda",
+ "aws-sdk-marketplaceentitlement",
+ "aws-sdk-marketplacemetering",
  "aws-sdk-organizations",
  "aws-sdk-route53",
  "aws-sdk-s3",
@@ -2679,6 +2730,48 @@ dependencies = [
  "serde",
  "serde_json",
  "tokio",
+ "uuid",
+]
+
+[[package]]
+name = "mws-marketplace-entitlement"
+version = "0.1.0"
+dependencies = [
+ "async-trait",
+ "base64 0.22.1",
+ "bytes",
+ "chrono",
+ "form_urlencoded",
+ "http 1.5.0",
+ "mws-codegen",
+ "mws-core",
+ "mws-proto-cbor",
+ "mws-proto-json",
+ "percent-encoding",
+ "rand",
+ "serde",
+ "serde_json",
+ "uuid",
+]
+
+[[package]]
+name = "mws-marketplace-metering"
+version = "0.1.0"
+dependencies = [
+ "async-trait",
+ "aws-lc-rs",
+ "base64 0.22.1",
+ "bytes",
+ "chrono",
+ "form_urlencoded",
+ "http 1.5.0",
+ "mws-codegen",
+ "mws-core",
+ "mws-marketplace-entitlement",
+ "mws-proto-json",
+ "serde",
+ "serde_json",
+ "sha2 0.10.9",
  "uuid",
 ]
 
