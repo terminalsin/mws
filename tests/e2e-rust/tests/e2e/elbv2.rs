@@ -28,7 +28,7 @@ pub(crate) fn message(e: &impl ProvideErrorMetadata) -> String {
     e.message().unwrap_or_default().to_string()
 }
 
-async fn client(mws: &Mws) -> Client {
+pub(crate) async fn client(mws: &Mws) -> Client {
     Client::new(&mws.root_sdk_config().await)
 }
 
@@ -573,7 +573,7 @@ async fn weighted_target_groups_and_rule_conditions() {
 }
 
 /// A server certificate imported into ACM.
-async fn imported_certificate(mws: &Mws, name: &str) -> (String, Vec<u8>) {
+pub(crate) async fn imported_certificate(mws: &Mws, name: &str) -> (String, Vec<u8>) {
     let key = rcgen::KeyPair::generate().unwrap();
     let mut params = rcgen::CertificateParams::new(vec![name.to_string()]).unwrap();
     params.distinguished_name.push(rcgen::DnType::CommonName, name);
@@ -658,6 +658,15 @@ pub(crate) async fn tls_connect(
     tls.flush().await?;
     let cert = verifier.0.lock().unwrap().clone().unwrap_or_default();
     Ok((tls, cert))
+}
+
+/// An HTTPS request with extra headers on a listener address.
+pub(crate) async fn https_request(addr: &str, host: &str, path: &str, headers: &[(&str, &str)]) -> Reply {
+    let (mut tls, _) = tls_connect(addr, host, None).await.unwrap();
+    tls.write_all(request_text(host, path, headers).as_bytes()).await.unwrap();
+    let mut raw = Vec::new();
+    let _ = tls.read_to_end(&mut raw).await;
+    read_reply(&mut raw.as_slice()).await
 }
 
 pub(crate) async fn https_get(
