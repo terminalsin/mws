@@ -126,6 +126,10 @@ pub struct Config {
     pub elasticache_docker_cli: Option<String>,
     /// The host ElastiCache endpoints name (`MWS_ELASTICACHE_HOST`,
     pub elasticache_host: Option<String>,
+    /// API bases for ECR pull-through cache upstreams
+    /// (`MWS_ECR_UPSTREAM_ENDPOINTS=host=url,...`, e.g.
+    /// `quay.io=http://127.0.0.1:5000/v2`), in place of `https://<host>/v2`.
+    pub ecr_upstream_endpoints: std::collections::BTreeMap<String, String>,
 }
 
 impl Config {
@@ -203,6 +207,12 @@ impl Config {
             elasticache_backend,
             elasticache_docker_cli: var("MWS_ELASTICACHE_DOCKER"),
             elasticache_host: var("MWS_ELASTICACHE_HOST"),
+            ecr_upstream_endpoints: std::env::var("MWS_ECR_UPSTREAM_ENDPOINTS")
+                .unwrap_or_default()
+                .split(',')
+                .filter_map(|pair| pair.split_once('='))
+                .map(|(h, u)| (h.trim().to_string(), u.trim().trim_end_matches('/').to_string()))
+                .collect(),
         }
     }
 }
@@ -500,6 +510,8 @@ fn build_with_store(config: Config, store: Option<Arc<Store>>) -> Mws {
     elasticache.set_snapshot_bucket(Arc::new(links::ElastiCacheSnapshots(s3.clone())));
     elasticache.set_event_notifier(Arc::new(links::ElastiCacheNotifications(sns.clone())));
     elasticache.set_metric_publisher(Arc::new(links::ElastiCacheToCloudWatch(cloudwatch.clone())));
+    ecr.set_upstream_endpoints(config.ecr_upstream_endpoints.clone());
+    ecr.set_upstream_credentials(Arc::new(links::EcrUpstreamCredentials(secretsmanager.clone())));
     let mut gateway = Gateway::builder();
     if let Some(store) = store {
         gateway = gateway.store(store);

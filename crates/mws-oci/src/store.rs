@@ -237,6 +237,28 @@ impl Repository {
         now: i64,
         tag_locked: impl Fn(&str) -> bool,
     ) -> Result<(PutOutcome, Manifest), PutError> {
+        self.store_manifest(put, now, tag_locked, true)
+    }
+
+    /// Store a manifest a pull-through cache fetched from upstream: the
+    /// blobs and child manifests it names arrive later, when clients ask
+    /// for them.
+    pub fn put_cached_manifest(
+        &mut self,
+        put: &PutManifest,
+        now: i64,
+        tag_locked: impl Fn(&str) -> bool,
+    ) -> Result<(PutOutcome, Manifest), PutError> {
+        self.store_manifest(put, now, tag_locked, false)
+    }
+
+    fn store_manifest(
+        &mut self,
+        put: &PutManifest,
+        now: i64,
+        tag_locked: impl Fn(&str) -> bool,
+        check_references: bool,
+    ) -> Result<(PutOutcome, Manifest), PutError> {
         let parsed = manifest::parse(put.manifest.as_bytes(), put.media_type.as_deref()).map_err(PutError::Manifest)?;
         let computed = match &put.digest {
             Some(d) if !digest::is_valid(d) => return Err(PutError::InvalidDigest(d.clone())),
@@ -254,7 +276,7 @@ impl Repository {
             .filter(|b| !self.blobs.contains_key(&b.digest))
             .map(|b| b.digest.clone())
             .collect();
-        if !missing.is_empty() {
+        if check_references && !missing.is_empty() {
             return Err(PutError::MissingBlobs(missing));
         }
         let missing: Vec<String> = parsed
@@ -263,7 +285,7 @@ impl Repository {
             .filter(|m| !self.images.contains_key(&m.digest))
             .map(|m| m.digest.clone())
             .collect();
-        if !missing.is_empty() {
+        if check_references && !missing.is_empty() {
             return Err(PutError::MissingManifests(missing));
         }
         let previous = put.tag.as_ref().and_then(|t| self.tags.get(t)).cloned();
