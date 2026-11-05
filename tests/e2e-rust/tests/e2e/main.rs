@@ -46,6 +46,8 @@ mod parity;
 mod pca_connector_scep;
 mod policies;
 mod ram;
+mod rds;
+mod rds_docker;
 mod route53;
 mod route53_advanced;
 mod route53_parity;
