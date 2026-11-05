@@ -2,7 +2,8 @@
 
 MWS emulates 20 AWS services. Each is generated from AWS's official Smithy
 model, so every operation in the model is routed and validated; operations
-outside the implemented set answer `NotImplemented`.
+outside the implemented set answer `NotImplemented`. Each service's page lists
+its features in a table: ✅ supported, 🟡 partial, ❌ not supported yet.
 
 Every service shares the same foundations:
 

@@ -2,21 +2,50 @@
 
 > Crate: [`mws-iam`](../../crates/services/mws-iam) · Tests: [`tests/e2e-rust/tests/e2e/iam.rs`](../../tests/e2e-rust/tests/e2e/iam.rs)
 
-All 180 operations are implemented, generated from the AWS model and validating
-input like AWS: users, groups, roles, access keys, login profiles, managed and
-inline policies, permissions boundaries, tags, instance profiles, OIDC and SAML
-providers, virtual MFA devices (real TOTP codes, QR PNGs), SSH public keys,
-signing and server certificates (key pair checks), service-specific credentials,
-the password policy and `ChangePassword`, the credential report, access advisor
-(service last accessed, `ListPoliciesGrantingServiceAccess`), service-linked
-roles, delegation requests, outbound web identity federation, account properties
-and summary, authorization details, and the policy simulator.
+All 180 operations are generated from the AWS model (awsQuery) and implemented, validating input like AWS. IAM also hosts the authorizer that every other service calls (see [authentication and authorization](../security.md)).
 
-## Behaviour
+✅ supported · 🟡 partial · ❌ not supported
 
-Centralized root access and Organizations access reports follow the caller's
-organization, and no AWS role templates exist. Access-key last use, access
-advisor and Organizations access reports come from the requests MWS actually
-authorized.
+## Identities
+
+| Feature | Status | Details |
+| --- | :---: | --- |
+| Users, groups and roles | ✅ | Create, update, delete, list and tag, with paths, unique ids, AWS's name rules and limits; deleted principals leave unique ids in policies, as on AWS. |
+| Access keys | ✅ | Real keys that authenticate SigV4 requests at once; ids encode the account; last-used data comes from requests MWS actually authorized. |
+| Login profiles and passwords | ✅ | Console passwords, the account password policy and `ChangePassword`. |
+| Virtual MFA devices | ✅ | Real TOTP seeds and QR code PNGs; codes are checked by `EnableMFADevice`/`ResyncMFADevice` and by STS. |
+| SSH keys, signing and server certificates | ✅ | Key pair and certificate checks as in IAM. |
+| Service-specific credentials | ✅ | Created, reset, listed and deleted. |
+| Instance profiles | ✅ | Roles attached to instance profiles, used by EC2 instances. |
+| Service-linked roles | ✅ | Created with their AWS trust policies; deletion tasks. |
+
+## Policies
+
+| Feature | Status | Details |
+| --- | :---: | --- |
+| Managed and inline policies | ✅ | Versions (up to five, default version), attach/detach to users, groups and roles, policy grammar and size validation. |
+| Permissions boundaries | ✅ | Set and removed on users and roles; enforced by the authorizer. |
+| AWS managed policies | 🟡 | A trimmed subset covering the services MWS emulates. |
+| Policy simulator | ✅ | `SimulatePrincipalPolicy` and `SimulateCustomPolicy` with context keys, resource policies and boundaries. |
+
+## Federation and account
+
+| Feature | Status | Details |
+| --- | :---: | --- |
+| OIDC and SAML providers | ✅ | Thumbprints, client ids, metadata documents and tags; used by STS federation. |
+| Outbound web identity federation | ✅ | Enable/disable and the issuer, for `sts:GetWebIdentityToken`. |
+| Delegation requests | ✅ | The full lifecycle: created, associated, accepted or rejected, finalized, and expired after seven days. |
+| Account aliases, summary and properties | ✅ | `GetAccountSummary` counts real entities. |
+| Authorization details | ✅ | `GetAccountAuthorizationDetails` with every filter. |
+
+## Reports
+
+| Feature | Status | Details |
+| --- | :---: | --- |
+| Credential report | ✅ | Generated from real users, keys, passwords and MFA devices. |
+| Access advisor | ✅ | Service last accessed details and `ListPoliciesGrantingServiceAccess`, from requests MWS actually authorized. |
+| Organizations access reports | ✅ | Follow the caller's organization in Organizations. |
+| Centralized root access | ✅ | Follows the caller's organization (`EnableOrganizationsRootCredentialsManagement` and sessions). |
+| AWS role templates | ❌ | None exist in MWS. |
 
 See also: [all services](README.md) · [authentication and authorization](../security.md).

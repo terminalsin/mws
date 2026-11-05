@@ -2,50 +2,33 @@
 
 > Crate: [`mws-ssm`](../../crates/services/mws-ssm) · Tests: [`tests/e2e-rust/tests/e2e/ssm.rs`](../../tests/e2e-rust/tests/e2e/ssm.rs)
 
-The Parameter Store part of Systems Manager: 19 of the 152 SSM operations,
-generated from the AWS model (awsJson1.1).
+The Parameter Store part of Systems Manager: 19 of the 152 SSM operations are generated from the AWS model (awsJson1.1) and implemented. The rest of Systems Manager answers `NotImplemented`.
 
-## Behaviour
+✅ supported · 🟡 partial · ❌ not supported
 
-`PutParameter`, `GetParameter`, `GetParameters`, `GetParametersByPath`,
-`DescribeParameters`, `GetParameterHistory`, `DeleteParameter(s)`,
-`LabelParameterVersion`, `UnlabelParameterVersion`, tags, service settings, and
-resource policies. Parameters keep up to 100 versions
-(`ParameterMaxVersionLimitExceeded` when the oldest is labelled), are read by
-name, ARN, `name:version` or `name:label`, and follow AWS's naming rules
-(reserved `aws`/`ssm` prefixes, 15 hierarchy levels, `foo` and `/foo` being the
-same parameter).
+## Parameters
 
-`String`, `StringList` and `SecureString` types,
-`text`/`aws:ec2:image`/`aws:ssm:integration` data types, allowed patterns,
-Standard/Advanced/Intelligent-Tiering tiers with their size limits and the
-account's default tier setting, and every `ParameterFilters` key and option.
-SecureStrings are really encrypted with KMS for the caller (`alias/aws/ssm` by
-default, `kms:ViaService`, encryption context `PARAMETER_ARN`; envelope
-encryption for advanced parameters), so `WithDecryption` needs `kms:Decrypt`.
+| Feature | Status | Details |
+| --- | :---: | --- |
+| Parameter operations | ✅ | `PutParameter`, `GetParameter(s)`, `GetParametersByPath`, `DescribeParameters`, `GetParameterHistory`, `DeleteParameter(s)`, labels, tags and service settings. |
+| Versions and labels | ✅ | Up to 100 versions (`ParameterMaxVersionLimitExceeded` when the oldest is labelled); read by name, ARN, `name:version` or `name:label`. |
+| Names | ✅ | AWS's rules: reserved `aws`/`ssm` prefixes, 15 hierarchy levels, `foo` and `/foo` are the same parameter. |
+| Types and tiers | ✅ | `String`, `StringList` and `SecureString`; `text`, `aws:ec2:image` and `aws:ssm:integration` data types; allowed patterns; Standard, Advanced and Intelligent-Tiering with their size limits and the account's default tier. |
+| Filters | ✅ | Every `ParameterFilters` key and option. |
+| SecureStrings | ✅ | Really encrypted with KMS for the caller (`alias/aws/ssm` by default, `kms:ViaService`, `PARAMETER_ARN` context, envelope encryption for advanced parameters); `WithDecryption` needs `kms:Decrypt`. |
+| Parameter policies | ✅ | Validated; `Expiration` deletes on the emulated clock, and each policy sends its "Parameter Store Policy Action" event to EventBridge. |
+| Sharing | ✅ | Advanced parameters shared with other accounts through resource policies (read by ARN, `DescribeParameters --shared`). |
+| Secrets Manager references | ✅ | `/aws/reference/secretsmanager/<id>` reads the secret as the caller. |
+| Public parameters | ✅ | `/aws/service/` Region and service catalogues and the latest Amazon Linux, ECS and EKS AMI parameters, whose ids match EC2's public AMIs. |
+| Change events | ✅ | "Parameter Store Change" events on the default bus. |
 
-Parameter policies are validated, and `Expiration` deletes the parameter when
-the emulated clock passes it. Advanced parameters can be shared with other
-accounts through resource policies (read by ARN, `DescribeParameters --shared`).
-`/aws/reference/secretsmanager/<id>[:version-or-label]` names read the secret
-from Secrets Manager as the caller (`secretsmanager:GetSecretValue` and the
-secret's KMS key apply). Every policy sends its "Parameter Store Policy Action"
-event to EventBridge when the emulated clock reaches it
-(`ExpirationNotification` and `NoChangeNotification` then show `Finished`).
+## Rest of Systems Manager
 
-Public parameters under `/aws/service/` answer `GetParameter(s)` and
-`GetParametersByPath` with account-less ARNs: the Region and service catalogues
-under `global-infrastructure/` and the latest Amazon Linux, ECS- and
-EKS-optimized AMI parameters (stable made-up `ami-` ids per Region, since there
-is no EC2). Creating, updating, deleting and labelling a parameter sends a
-"Parameter Store Change" event to the default bus.
-
-## Known gaps
-
-The rest of Systems Manager, which answers `NotImplemented`: Run Command,
-Automation and runbooks, State Manager associations, documents, managed nodes
-and hybrid activations, inventory, compliance, Patch Manager, maintenance
-windows, Session Manager, OpsCenter and OpsMetadata, Change Calendar, Explorer
-resource data syncs and node/access requests.
+| Feature | Status | Details |
+| --- | :---: | --- |
+| Run Command, Automation, State Manager | ❌ | Not yet. |
+| Documents, managed nodes, hybrid activations | ❌ | Not yet. |
+| Inventory, compliance, Patch Manager, maintenance windows | ❌ | Not yet. |
+| Session Manager, OpsCenter, Change Calendar, Explorer | ❌ | Not yet. |
 
 See also: [all services](README.md) · [authentication and authorization](../security.md).
