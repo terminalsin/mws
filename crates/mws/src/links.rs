@@ -746,6 +746,109 @@ impl mws_ec2::InstanceRoleCredentials for Ec2InstanceRoles {
     }
 }
 
+/// Security Hub's view of AWS Organizations: the caller's organization and
+/// the delegated administrator `EnableOrganizationAdminAccount` registers.
+pub struct SecurityHubOrganizations(pub mws_organizations::Organizations);
+
+const SECURITY_HUB_PRINCIPAL: &str = "securityhub.amazonaws.com";
+
+impl mws_securityhub::OrganizationLink for SecurityHubOrganizations {
+    fn organization(&self, account: &str) -> Option<mws_securityhub::OrgInfo> {
+        let org = self.0.organization_of(account)?;
+        Some(mws_securityhub::OrgInfo {
+            id: org.id,
+            management_account: org.management_account,
+            accounts: org
+                .accounts
+                .into_iter()
+                .map(|a| mws_securityhub::OrgAccount {
+                    active: a.status == "ACTIVE",
+                    id: a.id,
+                    email: a.email,
+                    path: a.path,
+                })
+                .collect(),
+        })
+    }
+
+    fn register_delegated_administrator(&self, management: &str, admin: &str) -> Result<(), String> {
+        use mws_organizations::DelegationError;
+        self.0
+            .register_delegated_administrator_for_service(management, admin, SECURITY_HUB_PRINCIPAL, chrono::Utc::now())
+            .map_err(|e| match e {
+                DelegationError::NotManagementAccount => {
+                    "The request must be made by the management account of an organization.".to_string()
+                }
+                DelegationError::AccountNotInOrganization => {
+                    format!("Account {admin} is not a member of the organization.")
+                }
+                DelegationError::ManagementAccount => {
+                    "The management account cannot be the delegated administrator for Security Hub.".to_string()
+                }
+                DelegationError::NotAllFeatures => "The organization must have all features enabled.".to_string(),
+            })
+    }
+
+    fn deregister_delegated_administrator(&self, management: &str, admin: &str) {
+        let _ = self.0.deregister_delegated_administrator_for_service(management, admin, SECURITY_HUB_PRINCIPAL);
+    }
+}
+
+/// Security Hub finding events, sent to the account's default event bus
+/// with source `aws.securityhub`.
+pub struct SecurityHubToEvents(pub mws_events::Events);
+
+impl mws_securityhub::FindingEventSink for SecurityHubToEvents {
+    fn finding_event(&self, ctx: &RequestContext, e: mws_securityhub::FindingEvent) {
+        self.0.put_service_event(
+            ctx,
+            mws_events::ServiceEvent {
+                partition: e.partition,
+                account: e.account,
+                region: e.region,
+                source: "aws.securityhub".into(),
+                detail_type: e.detail_type,
+                resources: e.resources,
+                detail: e.detail,
+                time: e.time,
+            },
+        );
+    }
+}
+
+/// Security Hub V2 export jobs, written to S3 as
+/// `securityhub.amazonaws.com` (encrypted with the job's KMS key).
+pub struct SecurityHubExports(pub mws_s3::S3);
+
+impl mws_securityhub::ExportSink for SecurityHubExports {
+    fn put_object(
+        &self,
+        ctx: &RequestContext,
+        bucket: &str,
+        key: &str,
+        body: Vec<u8>,
+        kms_key_arn: Option<&str>,
+    ) -> Result<(), String> {
+        let account = &ctx.caller.account_id;
+        let source_arn = format!("arn:{}:securityhub:{}:{account}:hubv2/default", ctx.partition, ctx.region);
+        let put = mws_s3::ServicePutObject {
+            bucket,
+            key,
+            body,
+            content_type: "application/json",
+            service_principal: SECURITY_HUB_PRINCIPAL,
+            source_account: account,
+            source_arn: &source_arn,
+            acl: Some("bucket-owner-full-control"),
+            partition: &ctx.partition,
+        };
+        match kms_key_arn.filter(|k| !k.is_empty()) {
+            Some(k) => self.0.put_object_as_service_kms(put, k).map(|_| ()),
+            None => self.0.put_object_as_service(put).map(|_| ()).map_err(|e| e.to_string()),
+        }
+    }
+}
+
 /// GuardDuty's view of AWS Organizations: accounts, and delegated
 /// administration registered with the caller's permissions.
 pub(crate) struct GuardDutyOrganizations(pub mws_organizations::Organizations);
@@ -765,12 +868,41 @@ impl mws_guardduty::OrganizationLink for GuardDutyOrganizations {
     }
 
     fn register_admin(&self, ctx: &RequestContext, admin: &str) -> Result<(), mws_core::ServiceError> {
-        self.0.register_delegated_administrator_for_service(ctx, admin, mws_guardduty::SERVICE_PRINCIPAL)
+        // AWS makes these Organizations calls with the caller's credentials.
+        for action in ["organizations:EnableAWSServiceAccess", "organizations:RegisterDelegatedAdministrator"] {
+            ctx.authorize(action, "*", mws_core::ConditionContext::new())?;
+        }
+        self.0
+            .register_delegated_administrator_for_service(
+                &ctx.caller.account_id,
+                admin,
+                mws_guardduty::SERVICE_PRINCIPAL,
+                chrono::Utc::now(),
+            )
+            .map_err(guardduty_delegation_error)
     }
 
     fn deregister_admin(&self, ctx: &RequestContext, admin: &str) -> Result<(), mws_core::ServiceError> {
-        self.0.deregister_delegated_administrator_for_service(ctx, admin, mws_guardduty::SERVICE_PRINCIPAL)
+        ctx.authorize("organizations:DeregisterDelegatedAdministrator", "*", mws_core::ConditionContext::new())?;
+        self.0
+            .deregister_delegated_administrator_for_service(
+                &ctx.caller.account_id,
+                admin,
+                mws_guardduty::SERVICE_PRINCIPAL,
+            )
+            .map_err(guardduty_delegation_error)
     }
+}
+
+fn guardduty_delegation_error(e: mws_organizations::DelegationError) -> mws_core::ServiceError {
+    use mws_organizations::DelegationError;
+    let message = match e {
+        DelegationError::NotManagementAccount => "the caller is not the management account of an organization",
+        DelegationError::AccountNotInOrganization => "the account is not a member of the organization",
+        DelegationError::ManagementAccount => "the management account cannot be a delegated administrator",
+        DelegationError::NotAllFeatures => "the organization does not have all features enabled",
+    };
+    mws_core::ServiceError::client("BadRequestException", 400, message)
 }
 
 /// GuardDuty publishing destinations: findings exported into S3 as
@@ -797,5 +929,24 @@ impl mws_guardduty::FindingExporter for GuardDutyToS3 {
             partition: &e.partition,
         };
         self.0.put_object_as_service_kms(put, &e.kms_key_arn).map(|_| ()).map_err(|err| err.to_string())
+    }
+}
+
+/// GuardDuty findings imported into Security Hub as product `aws/guardduty`.
+pub(crate) struct GuardDutyToSecurityHub(pub mws_securityhub::SecurityHub);
+
+impl mws_guardduty::SecurityHubSink for GuardDutyToSecurityHub {
+    fn import_findings(&self, ctx: &RequestContext, account: &str, region: &str, findings: Vec<serde_json::Value>) {
+        let r = self.0.import_findings_as_service(
+            ctx,
+            account,
+            region,
+            "aws/guardduty",
+            mws_guardduty::SERVICE_PRINCIPAL,
+            findings,
+        );
+        for (id, code, message) in r.failed {
+            tracing::debug!(%id, %code, %message, "Security Hub rejected a GuardDuty finding");
+        }
     }
 }

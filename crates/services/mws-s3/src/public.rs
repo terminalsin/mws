@@ -42,9 +42,6 @@ pub enum ServicePutError {
     },
     /// The ACL was refused (ACLs disabled, or public ACLs blocked).
     AclRefused,
-    /// The KMS key is missing, disabled, or its key policy does not let the
-    /// service principal generate data keys.
-    Kms(String),
 }
 
 impl fmt::Display for ServicePutError {
@@ -53,7 +50,6 @@ impl fmt::Display for ServicePutError {
             ServicePutError::NoSuchBucket => write!(f, "The specified bucket does not exist"),
             ServicePutError::AccessDenied { action } => write!(f, "Access Denied for {action}"),
             ServicePutError::AclRefused => write!(f, "The bucket does not allow the requested ACL"),
-            ServicePutError::Kms(m) => write!(f, "{m}"),
         }
     }
 }
@@ -102,41 +98,37 @@ impl S3 {
         self.put_object_as_service_with(put, Sse::default())
     }
 
-    /// [`S3::put_object_as_service`] encrypted with SSE-KMS under
-    /// `kms_key` (a key or alias ARN). The service principal generates the
-    /// data key itself, so the key policy must allow it
-    /// `kms:GenerateDataKey` (judged with the put's `aws:SourceAccount` and
-    /// `aws:SourceArn`), as for AWS services that export into buckets.
-    pub fn put_object_as_service_kms(
-        &self,
-        put: ServicePutObject<'_>,
-        kms_key: &str,
-    ) -> Result<String, ServicePutError> {
+    /// [`S3::put_object_as_service`], encrypted with SSE-KMS under
+    /// `kms_key` (a key id, alias or ARN). The service principal must be
+    /// allowed `kms:GenerateDataKey` on the key, with the put's source
+    /// account and ARN as conditions.
+    pub fn put_object_as_service_kms(&self, put: ServicePutObject<'_>, kms_key: &str) -> Result<String, String> {
+        let sse = self.service_kms_sse(&put, kms_key)?;
+        self.put_object_as_service_with(put, sse).map_err(|e| e.to_string())
+    }
+
+    /// SSE-KMS for an object a service principal writes.
+    pub(crate) fn service_kms_sse(&self, put: &ServicePutObject<'_>, kms_key: &str) -> Result<Sse, String> {
         let Some(kms) = &self.kms else {
-            let sse = Sse { algorithm: Some("aws:kms".into()), kms_key_id: Some(kms_key.into()), ..Sse::default() };
-            return self.put_object_as_service_with(put, sse);
+            return Ok(Sse { algorithm: Some("aws:kms".into()), kms_key_id: Some(kms_key.into()), ..Sse::default() });
         };
-        self.check_service_access(&put, &["s3:PutObject"])?;
         let mut conditions = mws_core::ConditionContext::new();
-        conditions.insert("aws:SourceAccount".into(), vec![put.source_account.to_string()]);
         conditions.insert("aws:SourceArn".into(), vec![put.source_arn.to_string()]);
-        let key = kms
+        conditions.insert("aws:SourceAccount".into(), vec![put.source_account.to_string()]);
+        let k = kms
             .key_for_service(kms_key, put.service_principal, &["kms:GenerateDataKey"], &conditions)
-            .map_err(|e| ServicePutError::Kms(e.message))?;
+            .map_err(|e| e.message)?;
         let context = std::collections::BTreeMap::from([(
             "aws:s3:arn".to_string(),
             format!("arn:{}:s3:::{}/{}", put.partition, put.bucket, put.key),
         )]);
-        let dk =
-            kms.generate_data_key_for_service(&key.arn, &context, 32).map_err(|e| ServicePutError::Kms(e.message))?;
-        use base64::Engine;
-        let sse = Sse {
+        let dk = kms.generate_data_key_for_service(&k.arn, &context, 32).map_err(|e| e.message)?;
+        Ok(Sse {
             algorithm: Some("aws:kms".into()),
             kms_key_id: Some(dk.key_arn),
-            kms_data_key: Some(base64::engine::general_purpose::STANDARD.encode(&dk.ciphertext)),
+            kms_data_key: Some(base64::Engine::encode(&base64::engine::general_purpose::STANDARD, &dk.ciphertext)),
             ..Sse::default()
-        };
-        self.put_object_as_service_with(put, sse)
+        })
     }
 
     /// [`S3::put_object_as_service`] with the object's encryption.

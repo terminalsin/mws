@@ -15,7 +15,8 @@
 //! scans. New and updated findings go to EventBridge as `GuardDuty Finding`
 //! events (source `aws.guardduty`) in the account and in its administrator
 //! account, unless a suppression rule archives them, and to S3 publishing
-//! destinations; see [`EventSink`] and [`FindingExporter`].
+//! destinations and Security Hub; see [`EventSink`], [`FindingExporter`]
+//! and [`SecurityHubSink`].
 //!
 //! Organizations integration goes through [`OrganizationLink`]:
 //! `EnableOrganizationAdminAccount` enables trusted access for
@@ -30,6 +31,7 @@ pub mod generated {
     include!(concat!(env!("OUT_DIR"), "/guardduty_generated.rs"));
 }
 
+mod asff;
 mod common;
 pub use common::SERVICE_PRINCIPAL;
 mod detectors;
@@ -92,6 +94,13 @@ pub trait FindingExporter: Send + Sync {
     fn export(&self, ctx: &RequestContext, export: FindingExport) -> Result<(), String>;
 }
 
+/// Where GuardDuty sends findings for AWS Security Hub (product
+/// `aws/guardduty`).
+pub trait SecurityHubSink: Send + Sync {
+    /// Import ASFF `findings` into `account`'s hub in `region`.
+    fn import_findings(&self, ctx: &RequestContext, account: &str, region: &str, findings: Vec<Value>);
+}
+
 /// An account of an organization, as GuardDuty sees it.
 #[derive(Debug, Clone)]
 pub struct OrgAccount {
@@ -133,6 +142,7 @@ struct Links {
     events: Option<Arc<dyn EventSink>>,
     exporter: Option<Arc<dyn FindingExporter>>,
     organizations: Option<Arc<dyn OrganizationLink>>,
+    security_hub: Option<Arc<dyn SecurityHubSink>>,
 }
 
 impl GuardDuty {
@@ -153,6 +163,15 @@ impl GuardDuty {
     /// Use this AWS Organizations for delegated administration.
     pub fn set_organizations(&self, link: Arc<dyn OrganizationLink>) {
         self.links.write().expect("GuardDuty links lock poisoned").organizations = Some(link);
+    }
+
+    /// Send findings to Security Hub through `sink`.
+    pub fn set_security_hub(&self, sink: Arc<dyn SecurityHubSink>) {
+        self.links.write().expect("GuardDuty links lock poisoned").security_hub = Some(sink);
+    }
+
+    fn security_hub(&self) -> Option<Arc<dyn SecurityHubSink>> {
+        self.links.read().expect("GuardDuty links lock poisoned").security_hub.clone()
     }
 
     fn events(&self) -> Option<Arc<dyn EventSink>> {

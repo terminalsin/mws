@@ -1064,3 +1064,58 @@ async fn iam_is_enforced() {
     assert_eq!(code(&denied), "AccessDeniedException");
     let _ = gd_root.get_organization_statistics().send().await.unwrap_err();
 }
+
+#[tokio::test]
+async fn findings_are_imported_into_security_hub() {
+    use aws_sdk_securityhub::types::{AwsSecurityFindingFilters, StringFilter, StringFilterComparison};
+    let mws = Mws::start().await;
+    let cfg = mws.root_sdk_config().await;
+    let gd = Client::new(&cfg);
+    let sh = aws_sdk_securityhub::Client::new(&cfg);
+    let id = detector(&gd).await;
+    // Nothing is imported before Security Hub is enabled.
+    gd.create_sample_findings()
+        .detector_id(&id)
+        .finding_types("Recon:EC2/PortProbeUnprotectedPort")
+        .send()
+        .await
+        .unwrap();
+    sh.enable_security_hub().send().await.unwrap();
+    gd.create_sample_findings()
+        .detector_id(&id)
+        .finding_types("Backdoor:EC2/C&CActivity.B")
+        .finding_types("UnauthorizedAccess:IAMUser/MaliciousIPCaller")
+        .send()
+        .await
+        .unwrap();
+    let product = StringFilter::builder()
+        .value("arn:aws:securityhub:us-east-1::product/aws/guardduty")
+        .comparison(StringFilterComparison::Equals)
+        .build();
+    let found = sh
+        .get_findings()
+        .filters(AwsSecurityFindingFilters::builder().product_arn(product).build())
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(found.findings().len(), 2);
+    let backdoor = found
+        .findings()
+        .iter()
+        .find(|f| f.types().iter().any(|t| t == "TTPs/Command and Control/Backdoor:EC2-C&CActivity.B"))
+        .unwrap();
+    assert_eq!(backdoor.product_name(), Some("GuardDuty"));
+    assert_eq!(backdoor.company_name(), Some("Amazon"));
+    assert_eq!(backdoor.severity().unwrap().label().unwrap().as_str(), "HIGH");
+    assert!(backdoor.title().unwrap().starts_with("[SAMPLE]"));
+    assert_eq!(
+        backdoor.generator_id(),
+        Some(format!("arn:aws:guardduty:us-east-1:123456789012:detector/{id}").as_str())
+    );
+    let r = &backdoor.resources()[0];
+    assert_eq!(r.r#type(), Some("AwsEc2Instance"));
+    assert_eq!(r.id(), Some("arn:aws:ec2:us-east-1:123456789012:instance/i-99999999"));
+    assert_eq!(backdoor.product_fields().unwrap()["aws/guardduty/service/count"], "1");
+    let key = found.findings().iter().find(|f| f.resources()[0].r#type() == Some("AwsIamAccessKey"));
+    assert!(key.is_some());
+}

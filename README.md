@@ -103,11 +103,12 @@ SDKs, S3 addressing, host-prefixed endpoints and calling as other identities.
 | [S3](docs/services/s3.md) | 111 / 112 | restXml |
 | [S3 Control](docs/services/s3control.md) | 97 / 97 | restXml |
 | [Lambda](docs/services/lambda.md) | 68 / 88 | restJson1 |
-| [EC2 and VPC](docs/services/ec2.md) | 107 / 811 | ec2Query |
+| [EC2 and VPC](docs/services/ec2.md) | 120 / 811 | ec2Query |
 | [Route 53](docs/services/route53.md) | 71 / 71 | restXml |
 | [Private CA](docs/services/acm-pca.md) | 23 / 23 | awsJson 1.1 |
 | [Certificate Manager (ACM)](docs/services/acm.md) | 40 / 40 | awsJson 1.1 |
 | [GuardDuty](docs/services/guardduty.md) | 102 / 102 | restJson1 |
+| [Security Hub](docs/services/securityhub.md) | 126 / 126 | restJson1 |
 | [Secrets Manager](docs/services/secretsmanager.md) | 23 / 23 | awsJson 1.1 |
 | [SSM Parameter Store](docs/services/ssm.md) | 19 / 152 | awsJson 1.1 |
 | [SQS](docs/services/sqs.md) | 23 / 23 | awsJson 1.0, awsQuery |

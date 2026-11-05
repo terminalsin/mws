@@ -521,6 +521,11 @@ impl GuardDuty {
                     }
                 }
             }
+            if let (Some(hub), false) = (self.security_hub(), publish.is_empty()) {
+                // Security Hub aggregates members' findings into its own
+                // administrator, so only the finding's account imports them.
+                hub.import_findings(ctx, account, &ctx.region, publish.iter().map(crate::asff::to_asff).collect());
+            }
             if !publish.is_empty() {
                 for target in std::iter::once(account).chain(admin.as_deref()) {
                     self.export_findings(ctx, target, &publish);

@@ -1,4 +1,5 @@
 pub mod ebs;
+pub mod endpoint;
 pub mod eni;
 pub mod image;
 pub mod instance;
