@@ -962,13 +962,11 @@ pub fn png(text: &str, width: u32, height: u32) -> Vec<u8> {
     use std::io::Write;
     let h = sha2::Sha256::digest(text.as_bytes());
     let (r, g, b) = (h[0], h[1], h[2]);
-    let mut raw = Vec::with_capacity(((width * 3 + 1) * height) as usize);
-    for _ in 0..height {
-        raw.push(0);
-        for _ in 0..width {
-            raw.extend_from_slice(&[r, g, b]);
-        }
+    let mut row = vec![0u8];
+    for _ in 0..width {
+        row.extend_from_slice(&[r, g, b]);
     }
+    let raw = row.repeat(height as usize);
     let mut z = flate2::write::ZlibEncoder::new(Vec::new(), flate2::Compression::fast());
     z.write_all(&raw).expect("in-memory write");
     let idat = z.finish().expect("in-memory write");

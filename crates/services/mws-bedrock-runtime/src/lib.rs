@@ -45,6 +45,9 @@ use prompt::{Completion, OutPart, Prompt, StopReason};
 
 pub const SIDE_CHANNEL: &str = "/_aws/bedrock/";
 
+/// An output object: name, body and content type.
+type OutputFile = (String, Vec<u8>, &'static str);
+
 /// Seconds an asynchronous invocation stays `InProgress`.
 const ASYNC_SECS: i64 = 2;
 
@@ -669,7 +672,7 @@ impl BedrockRuntime {
             format!("arn:{}:bedrock:{}:{}:async-invoke/{id}", ctx.partition, ctx.region, ctx.caller.account_id);
         let model = target.model;
         let key_prefix = join_key(&prefix, &id);
-        let (files, failure): (Vec<(String, Vec<u8>, &str)>, Option<String>) = match model.family {
+        let (files, failure): (Vec<OutputFile>, Option<String>) = match model.family {
             Family::Video => {
                 let task = input.model_input.as_str();
                 let v: Value = serde_json::from_str(task).unwrap_or_default();

@@ -192,7 +192,7 @@ impl Bedrock {
         let summaries: Vec<types::AutomatedReasoningPolicySummary> = self.scope(ctx, |s| {
             let mut out = Vec::new();
             let mut rs: Vec<&Record> = s.kind(kind::REASONING_POLICY).collect();
-            rs.sort_by(|a, b| a.created.cmp(&b.created));
+            rs.sort_by_key(|r| r.created);
             for r in rs {
                 let summary =
                     |arn: String, version: String, created: DateTime<Utc>| types::AutomatedReasoningPolicySummary {
@@ -418,7 +418,7 @@ impl Bedrock {
             w["build_workflow_id"] = json!(id);
             items.push(from_doc::<types::AutomatedReasoningPolicyBuildWorkflowSummary>(w.as_object().expect("object")));
         }
-        items.sort_by(|a, b| b.created_at.cmp(&a.created_at));
+        items.sort_by_key(|i| std::cmp::Reverse(i.created_at));
         let (items, next_token) = page(items, Some(input.max_results), input.next_token.as_deref())?;
         Ok(types::ListAutomatedReasoningPolicyBuildWorkflowsResponse {
             automated_reasoning_policy_build_workflow_summaries: items,
@@ -638,7 +638,7 @@ impl Bedrock {
             .flatten()
             .map(|(_, v)| from_doc(v.as_object().expect("object")))
             .collect();
-        items.sort_by(|a, b| a.created_at.cmp(&b.created_at));
+        items.sort_by_key(|i| i.created_at);
         let (test_cases, next_token) = page(items, Some(input.max_results), input.next_token.as_deref())?;
         Ok(types::ListAutomatedReasoningPolicyTestCasesResponse { test_cases, next_token })
     }

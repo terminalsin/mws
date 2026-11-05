@@ -207,7 +207,7 @@ fn luhn(s: &str) -> bool {
             }
         })
         .sum();
-    sum % 10 == 0
+    sum.is_multiple_of(10)
 }
 
 fn ipv4(s: &str) -> bool {

@@ -114,6 +114,10 @@ impl Script {
         self.0.lock().expect("script lock").clear();
     }
 
+    pub fn is_empty(&self) -> bool {
+        self.len() == 0
+    }
+
     pub fn len(&self) -> usize {
         self.0.lock().expect("script lock").len()
     }

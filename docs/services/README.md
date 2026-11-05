@@ -68,6 +68,12 @@ Every service shares the same foundations:
 | [CloudWatch](cloudwatch.md) | 55 / 55 | Metrics, statistics and percentiles, metric math, alarms that act, dashboards, metric streams |
 | [CloudWatch Logs](logs.md) | 118 / 118 | Log events, filter patterns, Logs Insights, live tail, subscriptions, metric filters, exports |
 
+## Machine learning
+
+| Service | Operations | What's emulated |
+| --- | --- | --- |
+| [Bedrock and Bedrock Runtime](bedrock.md) | 117 / 119 | Model catalog, cross-Region and application inference profiles, InvokeModel and Converse (streaming too) in every provider's format, guardrails, batch and async jobs; a deterministic echo model or passthrough to OpenAI-compatible or Anthropic APIs |
+
 ## Marketplace
 
 | Service | Operations | What's emulated |
@@ -97,3 +103,5 @@ with the permissions AWS would use:
 - EC2 instances and Lambda functions receive role credentials from STS.
 - Marketplace Metering and the Entitlement Service share one Marketplace
   catalog of products, subscriptions and entitlements.
+- Bedrock Runtime resolves models, inference profiles and guardrails through
+  the Bedrock control plane, and batch and asynchronous jobs write to S3.
