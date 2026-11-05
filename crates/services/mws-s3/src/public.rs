@@ -271,20 +271,6 @@ impl S3 {
         self.store_service_object(put, Sse::default())
     }
 
-    /// The keys of the current (not deleted) objects under `prefix`, or
-    /// `None` when the bucket does not exist.
-    pub fn object_keys(&self, bucket: &str, prefix: &str) -> Option<Vec<String>> {
-        let st = self.read();
-        let b = st.buckets.get(bucket)?;
-        Some(
-            b.objects
-                .iter()
-                .filter(|(k, v)| k.starts_with(prefix) && v.last().is_some_and(|o| !o.delete_marker))
-                .map(|(k, _)| k.clone())
-                .collect(),
-        )
-    }
-
     /// Write an object a service is allowed to put.
     fn store_service_object(&self, put: ServicePutObject<'_>, sse: Sse) -> Result<String, ServicePutError> {
         let mut st = self.write();
