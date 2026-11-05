@@ -2,7 +2,7 @@
 
 > Crate: [`mws-ec2`](../../crates/services/mws-ec2) · Tests: [`tests/e2e-rust/tests/e2e/ec2.rs`](../../tests/e2e-rust/tests/e2e/ec2.rs)
 
-120 of the model's 811 operations are generated (ec2Query) and implemented; the rest answer `NotImplemented`. Responses use EC2's filters, pagination, `DryRun`, id formats and `InvalidXxx.Malformed`/`.NotFound` errors.
+164 of the model's 811 operations are generated (ec2Query) and implemented; the rest answer `NotImplemented`. Responses use EC2's filters, pagination, `DryRun`, id formats and `InvalidXxx.Malformed`/`.NotFound` errors.
 
 ✅ supported · 🟡 partial · ❌ not supported
 
@@ -38,8 +38,9 @@
 | Metadata backend | ✅ | `MWS_EC2_BACKEND=metadata` runs nothing; instances only change state. |
 | Instance metadata service | ✅ | `/_aws/ec2/metadata/<instance-id>/` with IMDSv1 and IMDSv2 tokens, network, placement, public keys, tags, user data and the identity document. |
 | Instance profiles | ✅ | Role credentials assumed by `ec2.amazonaws.com`; `RunInstances` checks `iam:PassRole`. |
-| EBS volumes and snapshots | 🟡 | Metadata only; volumes are not mounted. |
-| Launch templates, Spot, Auto Scaling | ❌ | Not yet. |
+| EBS volumes and snapshots | ✅ | Volumes, snapshots and their copies, modifications, attributes, sharing, locks, archive tiers, fast snapshot restores, the Recycle Bin, encryption by default and root volume replacement. With the Docker backend each volume is a Docker volume mounted at its device path in the instance, and snapshots copy its data. |
+| Launch templates | ✅ | Versions (from a source version), `$Latest` and `$Default`, `ModifyLaunchTemplate`, `GetLaunchTemplateData`; `RunInstances` with a launch template merges its data under the call's parameters and tags instances with `aws:ec2launchtemplate:*`. |
+| Spot, Auto Scaling | ❌ | Not yet. |
 
 ## Access control
 

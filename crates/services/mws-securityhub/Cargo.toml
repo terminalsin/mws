@@ -1,0 +1,21 @@
+[package]
+name = "mws-securityhub"
+description = "AWS Security Hub for MWS: ASFF findings import and workflow, standards and controls, insights, automation rules, members and delegated administration through Organizations, and findings events for EventBridge, with IAM enforced."
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+async-trait.workspace = true
+chrono.workspace = true
+http.workspace = true
+mws-core.workspace = true
+mws-proto-json.workspace = true
+mws-proto-restjson.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+tracing.workspace = true
+uuid.workspace = true
+
+[build-dependencies]
+mws-codegen.workspace = true

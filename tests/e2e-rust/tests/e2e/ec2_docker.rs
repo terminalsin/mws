@@ -169,7 +169,9 @@ async fn eventually(instance_id: &str, url: &str, reachable: bool, why: &str) {
     panic!("{url} from {instance_id}: expected reachable={reachable}: {why}\n{rules}");
 }
 
-#[tokio::test]
+// Multi-threaded: the host's web server below keeps answering while the
+// test blocks on `docker exec`.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn security_groups_acls_and_routes_filter_traffic() {
     use aws_sdk_ec2::types::{IpPermission, IpRange, PortRange, RuleAction, UserIdGroupPair};
     if !docker_available() {
@@ -185,9 +187,22 @@ async fn security_groups_acls_and_routes_filter_traffic() {
     let listener = tokio::net::TcpListener::bind("0.0.0.0:0").await.unwrap();
     let outside_port = listener.local_addr().unwrap().port();
     tokio::spawn(async move {
-        use tokio::io::AsyncWriteExt;
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
         while let Ok((mut sock, _)) = listener.accept().await {
-            let _ = sock.write_all(b"HTTP/1.0 200 OK\r\nContent-Length: 2\r\n\r\nok").await;
+            tokio::spawn(async move {
+                // Read the request first: closing with it unread resets the
+                // connection, and the client sees an error, not the reply.
+                let mut buf = Vec::new();
+                let mut chunk = [0u8; 1024];
+                while !buf.windows(4).any(|w| w == b"\r\n\r\n") {
+                    match sock.read(&mut chunk).await {
+                        Ok(0) | Err(_) => return,
+                        Ok(n) => buf.extend_from_slice(&chunk[..n]),
+                    }
+                }
+                let _ = sock.write_all(b"HTTP/1.0 200 OK\r\nContent-Length: 2\r\n\r\nok").await;
+                let _ = sock.shutdown().await;
+            });
         }
     });
     let outside = format!("http://host.docker.internal:{outside_port}/");
@@ -367,6 +382,9 @@ async fn security_groups_acls_and_routes_filter_traffic() {
     eventually(&client, &closed_port, false, "8081 is not in the ACL").await;
 
     if !host_reachable {
+        // CI runners let containers reach the host, so there the routing
+        // checks must run rather than skip.
+        assert!(std::env::var_os("CI").is_none(), "containers cannot reach the Docker host at {outside}");
         eprintln!("skipping the routing checks: containers cannot reach this host");
         for id in [&server, &client] {
             ec2.terminate_instances().instance_ids(id.as_str()).send().await.unwrap();

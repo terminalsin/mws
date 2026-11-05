@@ -71,6 +71,28 @@ pub(crate) struct Inner {
     pub(crate) logs: OnceLock<mws_logs::Logs>,
     pub(crate) kms: OnceLock<mws_kms::Kms>,
     pub(crate) streams: OnceLock<Arc<dyn MetricStreamDelivery>>,
+    /// Alarm action targets of other services, by ARN service name.
+    pub(crate) action_targets: Mutex<std::collections::BTreeMap<String, Arc<dyn AlarmActionTarget>>>,
+}
+
+/// What an alarm action of another service (an EC2 Auto Scaling policy)
+/// is told when it runs.
+#[derive(Debug, Clone)]
+pub struct AlarmAction {
+    pub action_arn: String,
+    pub alarm_name: String,
+    pub alarm_arn: String,
+    pub account: String,
+    pub region: String,
+    pub state: String,
+    pub threshold: Option<f64>,
+    /// The newest datapoint the alarm evaluated.
+    pub metric_value: Option<f64>,
+}
+
+/// A service that alarm actions can name (`arn:aws:autoscaling:...`).
+pub trait AlarmActionTarget: Send + Sync {
+    fn run(&self, ctx: &RequestContext, action: AlarmAction) -> Result<(), String>;
 }
 
 #[derive(Clone)]
@@ -99,6 +121,7 @@ impl CloudWatch {
                 logs: OnceLock::new(),
                 kms: OnceLock::new(),
                 streams: OnceLock::new(),
+                action_targets: Mutex::new(Default::default()),
             }),
         }
     }
@@ -131,6 +154,11 @@ impl CloudWatch {
     pub fn with_kms(self, kms: mws_kms::Kms) -> Self {
         let _ = self.inner.kms.set(kms);
         self
+    }
+
+    /// Let alarm actions name `service`'s resources (`autoscaling`).
+    pub fn register_action_target(&self, service: &str, target: Arc<dyn AlarmActionTarget>) {
+        self.inner.action_targets.lock().expect("action targets lock poisoned").insert(service.to_string(), target);
     }
 
     pub(crate) fn lock(&self) -> MutexGuard<'_, State> {

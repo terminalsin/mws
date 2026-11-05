@@ -26,14 +26,18 @@ mod handler;
 pub mod imds;
 mod keys;
 mod ops;
+mod public;
 mod state;
 mod util;
+mod volumes;
 
 use std::sync::{Arc, Mutex, MutexGuard, OnceLock};
 
 use mws_core::{HttpRequest, HttpResponse, RequestContext, Service, ServiceError};
 
-pub use backend::{BackendChoice, ComputeBackend, DockerBackend, MetadataBackend};
+pub use backend::{BackendChoice, CommandOutput, ComputeBackend, DockerBackend, MetadataBackend, VolumeMount};
+pub use ops::launch_template::ResolvedLaunchTemplate;
+pub use public::{InstanceInfo, SecurityGroupInfo, SubnetInfo, VpcInfo};
 use state::{RegionState, State};
 
 /// Credentials for an instance profile's role, as instance metadata serves
@@ -75,6 +79,7 @@ pub(crate) struct Inner {
     roles: OnceLock<Arc<dyn InstanceRoleCredentials>>,
     imds: imds::ImdsState,
     firewalls: firewall::Applied,
+    volume_jobs: volumes::VolumeQueue,
 }
 
 /// The EC2 service. Cheap to clone; clones share state.
@@ -98,6 +103,7 @@ impl Ec2 {
                 roles: OnceLock::new(),
                 imds: Default::default(),
                 firewalls: Default::default(),
+                volume_jobs: Default::default(),
             }),
         }
     }
@@ -111,8 +117,48 @@ impl Ec2 {
         self.inner.backend.name()
     }
 
+    /// Run a shell script as root inside a running instance, the way the
+    /// SSM agent runs commands for other services (EC2 Image Builder runs
+    /// its build components this way). `Ok(None)` when the compute backend
+    /// runs nothing (metadata only); an error when the instance does not
+    /// exist or is not running.
+    pub async fn run_command_on_instance(
+        &self,
+        account: &str,
+        region: &str,
+        instance_id: &str,
+        script: &str,
+    ) -> Result<Option<CommandOutput>, String> {
+        let handle = {
+            let state = self.lock();
+            let inst = state
+                .regions
+                .get(&State::key(account, region))
+                .and_then(|r| r.instances.get(instance_id))
+                .ok_or_else(|| format!("instance {instance_id} does not exist"))?;
+            let running = inst.instance.state.as_ref().and_then(|s| s.name.as_deref()) == Some("running");
+            if !running {
+                return Err(format!("instance {instance_id} is not running"));
+            }
+            inst.handle.clone().ok_or_else(|| format!("instance {instance_id} has not started"))?
+        };
+        self.backend().exec(&handle, script).await.map_err(|e| e.to_string())
+    }
+
     pub(crate) fn backend(&self) -> Arc<dyn ComputeBackend> {
         self.inner.backend.clone()
+    }
+
+    /// An instance profile in `account` (by name or ARN), as instances
+    /// launched with it would get it. `None` when it does not exist or no
+    /// IAM is wired in.
+    pub fn instance_profile(&self, account: &str, name_or_arn: &str) -> Option<InstanceProfile> {
+        self.roles()?.instance_profile(account, name_or_arn)
+    }
+
+    /// Whether instance profiles can be looked up (IAM is wired in).
+    pub fn knows_instance_profiles(&self) -> bool {
+        self.roles().is_some()
     }
 
     pub(crate) fn roles(&self) -> Option<&Arc<dyn InstanceRoleCredentials>> {
@@ -146,6 +192,86 @@ impl Ec2 {
         ops::instance::expire_terminated(r, ctx.received_at);
         ops::vpc::expire_deleted(r, ctx.received_at);
         f(r)
+    }
+}
+
+/// What other services may read about an instance (Global Accelerator
+/// endpoints, for one).
+#[derive(Debug, Clone)]
+pub struct InstanceSummary {
+    pub instance_id: String,
+    /// `pending`, `running`, `stopping`, `stopped`, `shutting-down`,
+    /// `terminated`.
+    pub state: String,
+    pub private_ip: Option<String>,
+    pub public_ip: Option<String>,
+    pub subnet_id: Option<String>,
+    pub vpc_id: Option<String>,
+}
+
+/// An Elastic IP address allocation.
+#[derive(Debug, Clone)]
+pub struct AddressSummary {
+    pub allocation_id: String,
+    pub public_ip: Option<String>,
+    pub instance_id: Option<String>,
+    pub network_interface_id: Option<String>,
+}
+
+/// A VPC subnet.
+#[derive(Debug, Clone)]
+pub struct SubnetSummary {
+    pub subnet_id: String,
+    pub vpc_id: Option<String>,
+    pub cidr_block: Option<String>,
+    pub availability_zone: Option<String>,
+}
+
+impl Ec2 {
+    fn read_region<R>(&self, account: &str, region: &str, f: impl FnOnce(&RegionState) -> Option<R>) -> Option<R> {
+        let state = self.lock();
+        state.regions.get(&State::key(account, region)).and_then(f)
+    }
+
+    /// Instance `id` in `account` and `region`.
+    pub fn instance_summary(&self, account: &str, region: &str, id: &str) -> Option<InstanceSummary> {
+        self.read_region(account, region, |r| {
+            let i = &r.instances.get(id)?.instance;
+            Some(InstanceSummary {
+                instance_id: id.to_string(),
+                state: i.state.as_ref().and_then(|s| s.name.clone()).unwrap_or_default(),
+                private_ip: i.private_ip_address.clone(),
+                public_ip: i.public_ip_address.clone(),
+                subnet_id: i.subnet_id.clone(),
+                vpc_id: i.vpc_id.clone(),
+            })
+        })
+    }
+
+    /// Elastic IP allocation `allocation_id` in `account` and `region`.
+    pub fn address_summary(&self, account: &str, region: &str, allocation_id: &str) -> Option<AddressSummary> {
+        self.read_region(account, region, |r| {
+            let a = r.addresses.get(allocation_id)?;
+            Some(AddressSummary {
+                allocation_id: allocation_id.to_string(),
+                public_ip: a.public_ip.clone(),
+                instance_id: a.instance_id.clone(),
+                network_interface_id: a.network_interface_id.clone(),
+            })
+        })
+    }
+
+    /// Subnet `id` in `account` and `region`.
+    pub fn subnet_summary(&self, account: &str, region: &str, id: &str) -> Option<SubnetSummary> {
+        self.read_region(account, region, |r| {
+            let s = r.subnets.get(id)?;
+            Some(SubnetSummary {
+                subnet_id: id.to_string(),
+                vpc_id: s.vpc_id.clone(),
+                cidr_block: s.cidr_block.clone(),
+                availability_zone: s.availability_zone.clone(),
+            })
+        })
     }
 }
 
@@ -240,5 +366,27 @@ impl Service for Ec2 {
                 });
             }
         }
+    }
+}
+
+impl Ec2 {
+    /// Set tags on a resource for another AWS service, which may use the
+    /// reserved `aws:` prefix (`aws:autoscaling:groupName`). `None` values
+    /// remove the tag.
+    pub fn set_tags_as_service(&self, ctx: &RequestContext, resource_id: &str, tags: &[(String, Option<String>)]) {
+        self.with_region(ctx, |r| {
+            if let Some(slot) = r.tags_mut(resource_id) {
+                let list = slot.get_or_insert_with(Vec::new);
+                for (k, v) in tags {
+                    list.retain(|t| t.key.as_deref() != Some(k.as_str()));
+                    if let Some(v) = v {
+                        list.push(generated::types::Tag { key: Some(k.clone()), value: Some(v.clone()) });
+                    }
+                }
+                if list.is_empty() {
+                    *slot = None;
+                }
+            }
+        });
     }
 }

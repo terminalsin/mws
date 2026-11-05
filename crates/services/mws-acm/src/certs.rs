@@ -91,7 +91,7 @@ pub(crate) fn detail(c: &Certificate) -> types::CertificateDetail {
         revoked_at: c.revoked_at,
         revocation_reason: c.revocation_reason.clone(),
         key_algorithm: Some(describe_key_algorithm(&c.key_algorithm)),
-        in_use_by: Some(Vec::new()),
+        in_use_by: Some(c.in_use_by.clone()),
         failure_reason: c.failure_reason.clone(),
         r#type: Some(c.ty.clone()),
         certificate_authority_arn: c.ca_arn.clone(),
@@ -161,7 +161,7 @@ fn summary(c: &Certificate, info: Option<&CertInfo>) -> types::CertificateSummar
         key_usages: info.map(|i| i.key_usages.clone()),
         extended_key_usages: info.map(|i| i.extended_key_usages.iter().map(|(n, _)| n.clone()).collect()),
         export_option: Some(c.export_option.clone()),
-        in_use: Some(false),
+        in_use: Some(!c.in_use_by.is_empty()),
         exported: Some(c.exported),
         renewal_eligibility: Some(renewal_eligibility(c).into()),
         not_before: info.map(|i| i.not_before),
@@ -363,6 +363,7 @@ impl Acm {
             acme_account_id: None,
             pca_certificate_arn: None,
             emails_sent: 0,
+            in_use_by: Vec::new(),
             expiry_event_at: None,
             metric_at: None,
         };
@@ -522,6 +523,9 @@ impl Acm {
                 c.arn
             )));
         }
+        if let Some(user) = c.in_use_by.first() {
+            return Err(errors::resource_in_use(format!("Certificate {} in use by {user}", c.arn)));
+        }
         self.lock().certificates.remove(&c.arn);
         Ok(())
     }
@@ -664,6 +668,7 @@ impl Acm {
             acme_account_id: None,
             pca_certificate_arn: None,
             emails_sent: 0,
+            in_use_by: Vec::new(),
             expiry_event_at: None,
             metric_at: None,
         };
