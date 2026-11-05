@@ -97,7 +97,7 @@ Every service shares the same foundations:
 
 | Service | Operations | What's emulated |
 | --- | --- | --- |
-| [Bedrock and Bedrock Runtime](bedrock.md) | 117 / 119 | Model catalog, cross-Region and application inference profiles, InvokeModel and Converse (streaming too) in every provider's format, guardrails, batch and async jobs; a deterministic echo model or passthrough to OpenAI-compatible or Anthropic APIs |
+| [Bedrock and Bedrock Runtime](bedrock.md) | 118 / 119 | Model catalog, cross-Region and application inference profiles, InvokeModel and Converse (streaming too) in every provider's format, guardrails, batch and async jobs, invocation logging, API keys; a deterministic echo model or passthrough to OpenAI-compatible or Anthropic APIs |
 
 ## Marketplace
 
@@ -165,7 +165,10 @@ with the permissions AWS would use:
 - CloudFormation deploys stacks through every other service's API, as the
   caller or the stack's service role.
 - Bedrock Runtime resolves models, inference profiles and guardrails through
-  the Bedrock control plane, and batch and asynchronous jobs write to S3.
+  the Bedrock control plane. Batch jobs read and write S3 as their role
+  (assumed through STS), asynchronous invocations write S3 as the caller,
+  and invocation logs go to CloudWatch Logs and S3. Bedrock API keys are IAM
+  service-specific credentials.
 - Security Hub registers its delegated administrator in Organizations, sends
   findings events to EventBridge and exports findings to S3 with KMS.
 - Auto Scaling groups launch and terminate EC2 instances, register them with

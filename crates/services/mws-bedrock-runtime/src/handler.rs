@@ -15,6 +15,14 @@ impl Handler for BedrockRuntime {
         BedrockRuntime::apply_guardrail(self, ctx, input).await
     }
 
+    async fn invoke_guardrail_checks(
+        &self,
+        ctx: &RequestContext,
+        input: types::InvokeGuardrailChecksRequest,
+    ) -> Result<types::InvokeGuardrailChecksResponse, ServiceError> {
+        BedrockRuntime::invoke_guardrail_checks(self, ctx, input).await
+    }
+
     async fn converse(
         &self,
         ctx: &RequestContext,

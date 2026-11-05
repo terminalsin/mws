@@ -170,9 +170,68 @@ fn content_phrases(kind: &str) -> &'static [&'static str] {
             "jailbreak",
             "do anything now",
             "developer mode",
+            "reveal your system prompt",
+            "repeat your instructions",
+        ],
+        "JAILBREAK" => &[
+            "jailbreak",
+            "do anything now",
+            "developer mode",
+            "you have no restrictions",
+            "pretend you are not an ai",
+            "without any restrictions",
+        ],
+        "PROMPT_INJECTION" => &[
+            "ignore previous instructions",
+            "ignore all previous instructions",
+            "ignore your instructions",
+            "ignore the above",
+            "disregard previous instructions",
+            "disregard your instructions",
+            "new instructions",
+        ],
+        "PROMPT_LEAKAGE" => &[
+            "reveal your system prompt",
+            "what is your system prompt",
+            "print your instructions",
+            "repeat your instructions",
+            "repeat the text above",
+            "show me your prompt",
         ],
         _ => &[],
     }
+}
+
+/// A severity score from 0 to 1 for `text` in a content filter or prompt
+/// attack category (`VIOLENCE`, `JAILBREAK`, ...): 0 when none of the
+/// category's phrases occur, rising with each distinct phrase found.
+pub fn severity(category: &str, text: &str) -> f64 {
+    let mut phrases: Vec<&str> = content_phrases(category).to_vec();
+    if category == "INSULTS" {
+        phrases.extend_from_slice(PROFANITY);
+    }
+    match phrases.iter().filter(|p| contains_phrase(text, p)).count() {
+        0 => 0.0,
+        n => (0.6 + 0.15 * (n - 1) as f64).min(1.0),
+    }
+}
+
+/// The spans of `text`, in characters, that look like PII of `kind`
+/// (`EMAIL`, `US_SOCIAL_SECURITY_NUMBER`, ...), leftmost first.
+pub fn pii_spans(kind: &str, text: &str) -> Vec<(usize, usize)> {
+    let chars = |byte: usize| text[..byte].chars().count();
+    pii_patterns()
+        .iter()
+        .filter(|p| p.kind == kind)
+        .flat_map(|p| {
+            p.re.find_iter(text).filter(|m| (p.check)(m.as_str())).map(|m| (chars(m.start()), chars(m.end())))
+        })
+        .collect()
+}
+
+/// Billed text units (1,000 characters each) for `chars` characters.
+pub fn text_units(chars: i64) -> i64 {
+    units(chars)
 }
 
 struct PiiPattern {

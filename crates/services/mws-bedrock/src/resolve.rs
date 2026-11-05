@@ -49,12 +49,14 @@ struct Arn<'a> {
 
 fn parse_arn(s: &str) -> Option<Arn<'_>> {
     let mut parts = s.splitn(6, ':');
-    let (Some("arn"), Some(_partition), Some("bedrock"), Some(region), Some(account), Some(resource)) =
+    let (Some("arn"), Some(_partition), Some(service), Some(region), Some(account), Some(resource)) =
         (parts.next(), parts.next(), parts.next(), parts.next(), parts.next(), parts.next())
     else {
         return None;
     };
-    Some(Arn { region, account, resource })
+    // Marketplace model endpoints are SageMaker endpoints.
+    let ok = service == "bedrock" || (service == "sagemaker" && resource.starts_with("endpoint/"));
+    ok.then_some(Arn { region, account, resource })
 }
 
 /// The foundation model of a `foundation-model/<id>` ARN.
@@ -235,7 +237,31 @@ fn resolve_owned(s: &Scope, ctx: &RequestContext, rtype: &str, id: &str) -> Resu
                 routed_to: Some(fallback),
             })
         }
-        "marketplace-model-endpoint" | "endpoint" => Err(invalid_model()),
+        "endpoint" => {
+            let arn = format!("arn:{}:sagemaker:{}:{}:endpoint/{id}", ctx.partition, ctx.region, ctx.caller.account_id);
+            let r = s.get(kind::MARKETPLACE_ENDPOINT, &arn).ok_or_else(invalid_model)?;
+            if r.status != "REGISTERED" {
+                return Err(validation(format!(
+                    "The endpoint {arn} is not registered with Amazon Bedrock. Register it and try again."
+                )));
+            }
+            // Answer in the request format of the model family the
+            // Marketplace model's identifier names; OpenAI-style chat
+            // otherwise.
+            let source = r.str("model_source_identifier").unwrap_or_default().to_ascii_lowercase();
+            let spec = if ["llama", "mistral", "mixtral"].iter().any(|f| source.contains(f)) {
+                crate::models::imported_spec(&source)
+            } else {
+                catalog::model("openai.gpt-oss-20b-1:0").expect("built-in model")
+            };
+            Ok(InvocationTarget {
+                kind: TargetKind::MarketplaceEndpoint,
+                model: spec,
+                arn: arn.clone(),
+                resources: vec![arn],
+                routed_to: None,
+            })
+        }
         _ => Err(invalid_model()),
     }
 }
