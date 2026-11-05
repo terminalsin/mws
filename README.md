@@ -107,6 +107,7 @@ SDKs, S3 addressing, host-prefixed endpoints and calling as other identities.
 | [Route 53](docs/services/route53.md) | 71 / 71 | restXml |
 | [Private CA](docs/services/acm-pca.md) | 23 / 23 | awsJson 1.1 |
 | [Certificate Manager (ACM)](docs/services/acm.md) | 40 / 40 | awsJson 1.1 |
+| [Security Hub](docs/services/securityhub.md) | 126 / 126 | restJson1 |
 | [Secrets Manager](docs/services/secretsmanager.md) | 23 / 23 | awsJson 1.1 |
 | [SSM Parameter Store](docs/services/ssm.md) | 19 / 152 | awsJson 1.1 |
 | [SQS](docs/services/sqs.md) | 23 / 23 | awsJson 1.0, awsQuery |

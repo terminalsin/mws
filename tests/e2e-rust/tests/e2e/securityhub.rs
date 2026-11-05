@@ -654,7 +654,7 @@ async fn insights_and_automation_rules_body() {
     let got = sh.batch_get_automation_rules().automation_rules_arns(&rule_arn).send().await.unwrap();
     assert_eq!(got.rules()[0].rule_status(), Some(&RuleStatus::Disabled));
     let deleted = sh.batch_delete_automation_rules().automation_rules_arns(&rule_arn).send().await.unwrap();
-    assert_eq!(deleted.processed_automation_rules(), [rule_arn.clone()]);
+    assert_eq!(deleted.processed_automation_rules(), std::slice::from_ref(&rule_arn));
     assert!(sh.list_automation_rules().send().await.unwrap().automation_rules_metadata().is_empty());
 
     // Insights.
