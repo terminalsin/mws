@@ -375,6 +375,31 @@ dependencies = [
 ]
 
 [[package]]
+name = "aws-sdk-guardduty"
+version = "1.154.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "053bed48d71c23ad400b2e7f31386cdf1065c0316053ad81666961b4f38ac70c"
+dependencies = [
+ "arc-swap",
+ "aws-credential-types",
+ "aws-runtime",
+ "aws-smithy-async",
+ "aws-smithy-http",
+ "aws-smithy-json",
+ "aws-smithy-observability",
+ "aws-smithy-runtime",
+ "aws-smithy-runtime-api",
+ "aws-smithy-schema",
+ "aws-smithy-types",
+ "aws-types",
+ "bytes",
+ "fastrand",
+ "http 1.5.0",
+ "regex-lite",
+ "tracing",
+]
+
+[[package]]
 name = "aws-sdk-iam"
 version = "1.133.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2268,6 +2293,7 @@ dependencies = [
  "mws-ec2",
  "mws-events",
  "mws-firehose",
+ "mws-guardduty",
  "mws-iam",
  "mws-kinesis",
  "mws-kms",
@@ -2417,6 +2443,7 @@ dependencies = [
  "aws-sdk-ec2",
  "aws-sdk-eventbridge",
  "aws-sdk-firehose",
+ "aws-sdk-guardduty",
  "aws-sdk-iam",
  "aws-sdk-kinesis",
  "aws-sdk-kms",
@@ -2547,6 +2574,27 @@ dependencies = [
  "tracing",
  "uuid",
  "zip",
+]
+
+[[package]]
+name = "mws-guardduty"
+version = "0.1.0"
+dependencies = [
+ "async-trait",
+ "chrono",
+ "flate2",
+ "hex",
+ "mws-codegen",
+ "mws-core",
+ "mws-iam-policy",
+ "mws-proto-json",
+ "mws-proto-restjson",
+ "rand",
+ "serde",
+ "serde_json",
+ "sha2 0.10.9",
+ "tracing",
+ "uuid",
 ]
 
 [[package]]

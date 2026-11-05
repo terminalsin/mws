@@ -13,6 +13,7 @@ mod ec2_docker;
 mod events;
 mod firehose;
 mod firehose_monitoring;
+mod guardduty;
 mod iam;
 mod iam_advanced;
 mod iam_parity;

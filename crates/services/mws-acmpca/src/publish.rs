@@ -38,6 +38,7 @@ fn access_error(bucket: &str, e: ServicePutError) -> ServiceError {
         ServicePutError::AclRefused => errors::invalid_args(format!(
             "The S3 bucket {bucket} does not allow the object ACL ACM Private CA uses. Block Public Access or ACLs disabled on the bucket prevent public-read CRLs; set S3ObjectAcl to BUCKET_OWNER_FULL_CONTROL."
         )),
+        ServicePutError::Kms(m) => errors::invalid_args(m),
     }
 }
 

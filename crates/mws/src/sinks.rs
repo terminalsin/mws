@@ -325,3 +325,24 @@ impl mws_events::HealthChecks for Route53HealthChecks {
         self.0.health_check_healthy(health_check_arn)
     }
 }
+
+/// GuardDuty's findings and scan results on the account's default bus.
+pub struct GuardDutyToEvents(pub Events);
+
+impl mws_guardduty::EventSink for GuardDutyToEvents {
+    fn put_event(&self, ctx: &RequestContext, e: mws_guardduty::GuardDutyEvent) {
+        self.0.put_service_event(
+            ctx,
+            ServiceEvent {
+                partition: e.partition,
+                account: e.account,
+                region: e.region,
+                source: "aws.guardduty".into(),
+                detail_type: e.detail_type,
+                resources: Vec::new(),
+                detail: e.detail,
+                time: e.time,
+            },
+        );
+    }
+}
