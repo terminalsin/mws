@@ -2214,7 +2214,6 @@ impl mws_elasticache::LogDelivery for ElastiCacheLogs {
     }
 }
 
-
 /// ECR pull-through cache credentials: the rule's Secrets Manager secret
 /// (`{"username": ..., "accessToken": ...}`), read as the registry's
 /// account (AWS reads it with ECR's service-linked role).
@@ -2251,7 +2250,6 @@ impl mws_ecr::UpstreamCredentials for EcrUpstreamCredentials {
         }
     }
 }
-
 
 /// S3 object events of buckets with EventBridge enabled: to EventBridge,
 /// and new objects to GuardDuty Malware Protection, which scans those its
