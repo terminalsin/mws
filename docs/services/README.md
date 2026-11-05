@@ -51,7 +51,7 @@ Every service shares the same foundations:
 | [EC2 Image Builder](imagebuilder.md) | 77 / 77 | Components, recipes and pipelines whose builds launch EC2 instances, run AWSTOE components and produce real AMIs, distribution, lifecycle policies |
 | [Elastic Load Balancing](elb.md) | 80 / 80 | Application, Network and Classic Load Balancers whose listeners really proxy: rules, stickiness, HTTPS with ACM certificates, mutual TLS, Lambda targets, health checks, metrics |
 | [RDS and Aurora](rds.md) | 103 / 168 | PostgreSQL, MySQL and MariaDB instances and Aurora clusters that really run in Docker, snapshots and restores, read replicas, global databases, managed master passwords |
-| [EKS](eks.md) | 70 / 70 | Clusters in your VPC, managed node groups as EC2 instances, add-ons, access entries, Pod Identity, OIDC providers |
+| [EKS](eks.md) | 70 / 70 | Clusters in your VPC, managed node groups as Auto Scaling groups, add-ons, access entries, Pod Identity, OIDC providers |
 | [Route 53](route53.md) | 71 / 71 | Public and private hosted zones, all routing policies, health checks, DNSSEC key management, an optional real DNS responder |
 | [Amplify Hosting](amplify.md) | 37 / 37 | Apps and branches whose deployments are really served: manual and S3 deploys, Git builds, rewrites, basic auth, custom domains |
 
@@ -133,4 +133,5 @@ with the permissions AWS would use:
   Firehose and CloudWatch, and its receipt rules write to S3, invoke Lambda and
   publish to SNS.
 - EKS creates cluster security groups in EC2 and runs managed node groups as
-  EC2 instances with IAM instance profiles, from AMIs SSM publishes.
+  Auto Scaling groups with EKS launch templates and IAM instance profiles,
+  from AMIs SSM publishes.

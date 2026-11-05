@@ -4,7 +4,7 @@
 
 All 70 operations of the EKS model (restJson1) are implemented. EKS manages
 the control plane's metadata and the AWS resources a cluster owns: the cluster
-security group, managed node groups as real EC2 instances, their IAM instance
+security group, managed node groups as real Auto Scaling groups of EC2 instances, their IAM instance
 profiles and access entries. No Kubernetes API server runs behind the cluster
 endpoint.
 
@@ -39,17 +39,18 @@ service principal.
 
 | Feature | Status | Details |
 | --- | :---: | --- |
-| Node instances | ✅ | `RunInstances` in the node group's subnets (spread across zones), the cluster security group, EKS tags and the `<cluster>-<nodegroup>-Node` name. |
+| Auto Scaling group | ✅ | Each node group is a real EC2 Auto Scaling group `eks-<nodegroup>-<uuid>` over its subnets, with a mixed instances policy (one override per instance type), EKS's tags propagated to the nodes, and the cluster security group. |
+| EKS launch template | ✅ | An `eks-<uuid>` launch template with the EKS AMI, the node instance profile, IMDS hop limit 2 and the `<cluster>-<nodegroup>-Node` name; deleted with the node group. |
 | EKS-optimized AMIs | ✅ | AL2023 and AL2 x86_64/arm64 images per Kubernetes version, matching `/aws/service/eks/optimized-ami/...` SSM parameters; `releaseVersion`. |
 | AMI type defaults and checks | ✅ | AL2023 by default, ARM for Graviton instance types, AL2 refused above 1.32. |
 | Instance profiles | ✅ | One per node group for the node role, deleted with it. |
-| Scaling | ✅ | `UpdateNodegroupConfig` launches or terminates instances to the desired size. |
-| Version updates | ✅ | `UpdateNodegroupVersion` replaces every node from the new AMI. |
+| Scaling | ✅ | `UpdateNodegroupConfig` resizes the Auto Scaling group; sizes changed on the group itself (by the Cluster Autoscaler, say) show in the node group. |
+| Version updates | ✅ | `UpdateNodegroupVersion` writes a new launch template version and replaces every node from it, with `AZRebalance` suspended while it does. |
+| Group health | ✅ | A deleted group (`AutoScalingGroupNotFound`) or suspended processes (`AutoScalingGroupInvalidConfiguration`) degrade the node group, and version updates fail with `NodeCreationFailure` until the processes are resumed. |
 | Labels, taints, update config, node repair | ✅ | Stored and returned, with EKS's validation. |
 | Remote access | ✅ | A `eks-remoteAccess-*` security group opening SSH when no source groups are given. |
-| Launch templates | 🟡 | Validated and stored; nodes still launch from the EKS AMI. |
-| Auto Scaling group | 🟡 | Named in `resources`, but MWS has no Auto Scaling service yet; EKS manages the instances directly. |
-| Spot capacity | 🟡 | Accepted, nodes run on demand. |
+| Customer launch templates | ✅ | Copied into EKS's launch template: their instance type, user data, block devices, security groups and AMI (for `CUSTOM`) are kept, and EKS adds the instance profile. |
+| Spot capacity | 🟡 | The group's instances distribution and capacity rebalancing are set for Spot, but Auto Scaling launches on demand. |
 
 ## Access, identity and add-ons
 

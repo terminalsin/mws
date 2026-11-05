@@ -1,16 +1,18 @@
 //! What EKS creates in the account, done the way EKS's service-linked roles
-//! do it: EC2 security groups and instances, IAM instance profiles.
+//! do it: EC2 security groups and launch templates, Auto Scaling groups for
+//! managed node groups, IAM instance profiles.
 
 use std::collections::BTreeMap;
 use std::sync::Arc;
 
 use mws_core::{Caller, CallerKind, RequestContext, Service, ServiceError};
-use mws_eks::{Infrastructure, InfrastructureError, NodeLaunch, Scope, SubnetFacts};
+use mws_eks::{GroupState, Infrastructure, InfrastructureError, NodeGroupSpec, NodeGroupTemplate, Scope, SubnetFacts};
 use serde_json::{json, Value};
 
 pub(crate) struct EksInfrastructure {
     pub ec2: mws_ec2::Ec2,
     pub iam: mws_iam::Iam,
+    pub autoscaling: mws_autoscaling::AutoScaling,
 }
 
 const CLUSTER_ROLE: &str = "AWSServiceRoleForAmazonEKS";
@@ -56,6 +58,63 @@ fn str_at<'a>(v: &'a Value, key: &str) -> &'a str {
 impl EksInfrastructure {
     async fn ec2(&self, scope: &Scope<'_>, role: &str, op: &str, input: Value) -> Result<Value, InfrastructureError> {
         self.ec2.invoke(service_ctx(scope, role), op, input).await.map_err(|e| error("AmazonEC2", e))
+    }
+
+    async fn autoscaling(&self, scope: &Scope<'_>, op: &str, input: Value) -> Result<Value, InfrastructureError> {
+        self.autoscaling
+            .invoke(service_ctx(scope, NODEGROUP_ROLE), op, input)
+            .await
+            .map_err(|e| error("AmazonAutoScaling", e))
+    }
+
+    /// The EKS-managed launch template's data: the source template's (when
+    /// the node group has one) with what EKS adds, as EKS merges them.
+    async fn template_data(&self, scope: &Scope<'_>, spec: &NodeGroupSpec) -> Result<Value, InfrastructureError> {
+        let mut data = json!({});
+        if let Some(src) = &spec.source_template {
+            let mut req = json!({"Versions": [src.version.clone().unwrap_or_else(|| "$Default".into())]});
+            if let Some(id) = &src.id {
+                req["LaunchTemplateId"] = json!(id);
+            } else if let Some(name) = &src.name {
+                req["LaunchTemplateName"] = json!(name);
+            }
+            let out = self.ec2(scope, NODEGROUP_ROLE, "DescribeLaunchTemplateVersions", req).await?;
+            data = out
+                .pointer("/LaunchTemplateVersions/0/LaunchTemplateData")
+                .cloned()
+                .map(strip_nulls)
+                .unwrap_or_else(|| json!({}));
+        }
+        let obj = data.as_object_mut().expect("object");
+        if let Some(image) = &spec.image_id {
+            obj.insert("ImageId".into(), json!(image));
+        }
+        if !obj.contains_key("SecurityGroupIds") && !obj.contains_key("NetworkInterfaces") {
+            obj.insert("SecurityGroupIds".into(), json!(spec.security_group_ids));
+        }
+        if let Some(p) = &spec.instance_profile_arn {
+            obj.insert("IamInstanceProfile".into(), json!({"Arn": p}));
+        }
+        if let Some(k) = &spec.key_name {
+            obj.insert("KeyName".into(), json!(k));
+        }
+        if let Some(size) = spec.disk_size_gib {
+            obj.entry("BlockDeviceMappings").or_insert_with(|| {
+                json!([{
+                    "DeviceName": "/dev/xvda",
+                    "Ebs": {"VolumeSize": size, "VolumeType": "gp3", "DeleteOnTermination": true},
+                }])
+            });
+        }
+        obj.entry("MetadataOptions").or_insert_with(|| json!({"HttpPutResponseHopLimit": 2, "HttpTokens": "required"}));
+        let mut tag_specs = obj.remove("TagSpecifications").and_then(|v| v.as_array().cloned()).unwrap_or_default();
+        if !tag_specs.iter().any(|t| str_at(t, "ResourceType") == "instance") {
+            let name =
+                BTreeMap::from([("Name".to_string(), format!("{}-{}-Node", spec.cluster_name, spec.nodegroup_name))]);
+            tag_specs.extend(tag_spec("instance", &name).as_array().cloned().unwrap_or_default());
+        }
+        obj.insert("TagSpecifications".into(), json!(tag_specs));
+        Ok(data)
     }
 
     async fn iam(&self, scope: &Scope<'_>, op: &str, input: Value) -> Result<Value, InfrastructureError> {
@@ -209,62 +268,199 @@ impl Infrastructure for EksInfrastructure {
         }
     }
 
-    async fn launch(&self, scope: &Scope<'_>, launch: &NodeLaunch) -> Result<Vec<String>, InfrastructureError> {
-        let mut tags = launch.tags.clone();
-        tags.insert("Name".into(), format!("{}-{}-Node", launch.cluster_name, launch.nodegroup_name));
-        let subnets = if launch.subnets.is_empty() { vec![String::new()] } else { launch.subnets.clone() };
-        let mut ids = Vec::new();
-        // Spread the instances over the subnets, as the Auto Scaling group
-        // balances its Availability Zones.
-        for (i, subnet) in subnets.iter().enumerate() {
-            let count = launch.count / subnets.len() + usize::from(i < launch.count % subnets.len());
-            if count == 0 {
-                continue;
-            }
-            let mut input = json!({
-                "ImageId": launch.image_id,
-                "InstanceType": launch.instance_type,
-                "MinCount": count,
-                "MaxCount": count,
-                "SecurityGroupIds": launch.security_group_ids,
-                "TagSpecifications": tag_spec("instance", &tags),
-            });
-            if !subnet.is_empty() {
-                input["SubnetId"] = json!(subnet);
-            }
-            if let Some(p) = &launch.instance_profile_arn {
-                input["IamInstanceProfile"] = json!({"Arn": p});
-            }
-            if let Some(k) = &launch.key_name {
-                input["KeyName"] = json!(k);
-            }
-            if let Some(size) = launch.disk_size_gib {
-                input["BlockDeviceMappings"] = json!([{
-                    "DeviceName": "/dev/xvda",
-                    "Ebs": {"VolumeSize": size, "VolumeType": "gp3", "DeleteOnTermination": true},
-                }]);
-            }
-            let out = match self.ec2(scope, NODEGROUP_ROLE, "RunInstances", input).await {
-                Ok(out) => out,
-                Err(e) => {
-                    if !ids.is_empty() {
-                        self.terminate(scope, &ids).await;
-                    }
-                    return Err(e);
-                }
-            };
-            for i in out.get("Instances").and_then(Value::as_array).into_iter().flatten() {
-                ids.push(str_at(i, "InstanceId").to_string());
-            }
+    async fn create_node_group(
+        &self,
+        scope: &Scope<'_>,
+        spec: &NodeGroupSpec,
+    ) -> Result<NodeGroupTemplate, InfrastructureError> {
+        let data = self.template_data(scope, spec).await?;
+        let tags = BTreeMap::from([
+            ("eks:cluster-name".to_string(), spec.cluster_name.clone()),
+            ("eks:nodegroup-name".to_string(), spec.nodegroup_name.clone()),
+        ]);
+        let out = self
+            .ec2(
+                scope,
+                NODEGROUP_ROLE,
+                "CreateLaunchTemplate",
+                json!({
+                    "LaunchTemplateName": spec.template_name,
+                    "LaunchTemplateData": data,
+                    "TagSpecifications": tag_spec("launch-template", &tags),
+                }),
+            )
+            .await?;
+        let id =
+            out.pointer("/LaunchTemplate/LaunchTemplateId").and_then(Value::as_str).unwrap_or_default().to_string();
+        let version =
+            out.pointer("/LaunchTemplate/LatestVersionNumber").and_then(Value::as_i64).unwrap_or(1).to_string();
+        let mut input = json!({
+            "AutoScalingGroupName": spec.group_name,
+            "MixedInstancesPolicy": mixed_instances(spec, &id, &version),
+            "MinSize": spec.min_size,
+            "MaxSize": spec.max_size,
+            "DesiredCapacity": spec.desired_size,
+            "VPCZoneIdentifier": spec.subnets.join(","),
+            "CapacityRebalance": spec.capacity_type == "SPOT",
+            "Tags": spec.tags.iter().map(|(k, v)| json!({
+                "ResourceId": spec.group_name,
+                "ResourceType": "auto-scaling-group",
+                "Key": k,
+                "Value": v,
+                "PropagateAtLaunch": true,
+            })).collect::<Vec<_>>(),
+        });
+        if spec.subnets.is_empty() {
+            input.as_object_mut().expect("object").remove("VPCZoneIdentifier");
         }
-        Ok(ids)
+        if let Err(e) = self.autoscaling(scope, "CreateAutoScalingGroup", input).await {
+            let _ = self.ec2(scope, NODEGROUP_ROLE, "DeleteLaunchTemplate", json!({"LaunchTemplateId": id})).await;
+            return Err(e);
+        }
+        self.autoscaling.tick().await;
+        Ok(NodeGroupTemplate { id, version })
     }
 
-    async fn terminate(&self, scope: &Scope<'_>, instance_ids: &[String]) {
-        if let Err(e) =
-            self.ec2(scope, NODEGROUP_ROLE, "TerminateInstances", json!({"InstanceIds": instance_ids})).await
-        {
-            tracing::warn!("EKS could not terminate node instances: {e}");
+    async fn scale_node_group(
+        &self,
+        scope: &Scope<'_>,
+        group: &str,
+        min: i32,
+        max: i32,
+        desired: i32,
+    ) -> Result<(), InfrastructureError> {
+        self.autoscaling(
+            scope,
+            "UpdateAutoScalingGroup",
+            json!({"AutoScalingGroupName": group, "MinSize": min, "MaxSize": max, "DesiredCapacity": desired}),
+        )
+        .await?;
+        self.autoscaling.tick().await;
+        Ok(())
+    }
+
+    async fn roll_node_group(
+        &self,
+        scope: &Scope<'_>,
+        spec: &NodeGroupSpec,
+        template_id: &str,
+    ) -> Result<String, InfrastructureError> {
+        let data = self.template_data(scope, spec).await?;
+        let out = self
+            .ec2(
+                scope,
+                NODEGROUP_ROLE,
+                "CreateLaunchTemplateVersion",
+                json!({"LaunchTemplateId": template_id, "LaunchTemplateData": data}),
+            )
+            .await?;
+        let version =
+            out.pointer("/LaunchTemplateVersion/VersionNumber").and_then(Value::as_i64).unwrap_or_default().to_string();
+        let group = spec.group_name.as_str();
+        let old = self.node_group_state(scope, group).await.map(|s| s.instance_ids).unwrap_or_default();
+        // EKS keeps the group from rebalancing while it replaces nodes.
+        let processes = json!({"AutoScalingGroupName": group, "ScalingProcesses": ["AZRebalance"]});
+        self.autoscaling(scope, "SuspendProcesses", processes.clone()).await?;
+        let result = async {
+            self.autoscaling(
+                scope,
+                "UpdateAutoScalingGroup",
+                json!({
+                    "AutoScalingGroupName": group,
+                    "MixedInstancesPolicy": mixed_instances(spec, template_id, &version),
+                }),
+            )
+            .await?;
+            for id in &old {
+                self.autoscaling(
+                    scope,
+                    "TerminateInstanceInAutoScalingGroup",
+                    json!({"InstanceId": id, "ShouldDecrementDesiredCapacity": false}),
+                )
+                .await?;
+            }
+            self.autoscaling.tick().await;
+            Ok::<_, InfrastructureError>(())
         }
+        .await;
+        self.autoscaling(scope, "ResumeProcesses", processes).await?;
+        result.map(|()| version)
+    }
+
+    async fn node_group_state(&self, scope: &Scope<'_>, group: &str) -> Option<GroupState> {
+        let out = self
+            .autoscaling(scope, "DescribeAutoScalingGroups", json!({"AutoScalingGroupNames": [group]}))
+            .await
+            .ok()?;
+        let g = out.pointer("/AutoScalingGroups/0")?;
+        let int = |k: &str| g.get(k).and_then(Value::as_i64).unwrap_or_default() as i32;
+        let list = |k: &str| g.get(k).and_then(Value::as_array).cloned().unwrap_or_default();
+        Some(GroupState {
+            min_size: int("MinSize"),
+            max_size: int("MaxSize"),
+            desired_capacity: int("DesiredCapacity"),
+            instance_ids: list("Instances")
+                .iter()
+                .filter(|i| {
+                    let s = str_at(i, "LifecycleState");
+                    !s.starts_with("Terminat") && !s.starts_with("Detach") && s != "Standby"
+                })
+                .map(|i| str_at(i, "InstanceId").to_string())
+                .collect(),
+            suspended_processes: list("SuspendedProcesses")
+                .iter()
+                .map(|p| str_at(p, "ProcessName").to_string())
+                .collect(),
+        })
+    }
+
+    async fn delete_node_group(&self, scope: &Scope<'_>, group: &str, template_id: Option<&str>) {
+        if let Err(e) = self
+            .autoscaling(scope, "DeleteAutoScalingGroup", json!({"AutoScalingGroupName": group, "ForceDelete": true}))
+            .await
+        {
+            tracing::warn!(group, "EKS could not delete a node group's Auto Scaling group: {e}");
+        }
+        self.autoscaling.tick().await;
+        if let Some(id) = template_id {
+            if let Err(e) =
+                self.ec2(scope, NODEGROUP_ROLE, "DeleteLaunchTemplate", json!({"LaunchTemplateId": id})).await
+            {
+                tracing::warn!(template = id, "EKS could not delete a node group's launch template: {e}");
+            }
+        }
+    }
+}
+
+/// The group's mixed instances policy: EKS's launch template, one override
+/// per instance type, and the capacity type as the instances distribution.
+fn mixed_instances(spec: &NodeGroupSpec, template_id: &str, version: &str) -> Value {
+    let distribution = if spec.capacity_type == "SPOT" {
+        json!({
+            "OnDemandBaseCapacity": 0,
+            "OnDemandPercentageAboveBaseCapacity": 0,
+            "SpotAllocationStrategy": "capacity-optimized",
+        })
+    } else {
+        json!({
+            "OnDemandAllocationStrategy": "prioritized",
+            "OnDemandBaseCapacity": 0,
+            "OnDemandPercentageAboveBaseCapacity": 100,
+        })
+    };
+    let mut lt = json!({"LaunchTemplateSpecification": {"LaunchTemplateId": template_id, "Version": version}});
+    if !spec.instance_types.is_empty() {
+        lt["Overrides"] = json!(spec.instance_types.iter().map(|t| json!({"InstanceType": t})).collect::<Vec<_>>());
+    }
+    json!({"LaunchTemplate": lt, "InstancesDistribution": distribution})
+}
+
+fn strip_nulls(v: Value) -> Value {
+    match v {
+        Value::Object(m) => {
+            Value::Object(m.into_iter().filter(|(_, v)| !v.is_null()).map(|(k, v)| (k, strip_nulls(v))).collect())
+        }
+        Value::Array(a) => Value::Array(a.into_iter().map(strip_nulls).collect()),
+        v => v,
     }
 }
