@@ -32,8 +32,8 @@ override only) see the same behaviour as real AWS. Fidelity beats breadth.
 1. Put the Smithy model in `crates/services/mws-<svc>/model/`.
 2. Generate in `build.rs` with the protocol's codegen entry point (add a new
    `mws-proto-<protocol>` runtime + codegen module if the protocol is new).
-   Protocols so far: `build_aws_query` (IAM, STS), `build_rest_xml`
-   (Route 53, S3), `build_rest_json` (Lambda, RAM, Connector for SCEP),
+   Protocols so far: `build_aws_query` (IAM, STS, SES v1), `build_rest_xml`
+   (Route 53, S3), `build_rest_json` (Lambda, RAM, Connector for SCEP, SES v2),
    `build_aws_json` (ACM PCA, KMS, CloudWatch Logs, SQS,
    Kinesis, Firehose, CloudWatch, Marketplace) and `build_ec2_query` (EC2; it takes
    the list of operations to generate, because all 811 take minutes to

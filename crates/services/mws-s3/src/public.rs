@@ -117,7 +117,7 @@ impl S3 {
         let st = self.read();
         let b = st.buckets.get(put.bucket).ok_or(ServicePutError::NoSuchBucket)?;
         for action in actions {
-            let resource = if matches!(*action, "s3:PutObject" | "s3:PutObjectAcl") {
+            let resource = if matches!(*action, "s3:PutObject" | "s3:PutObjectAcl" | "s3:GetObject") {
                 format!("arn:{}:s3:::{}/{}", put.partition, b.name, put.key)
             } else {
                 format!("arn:{}:s3:::{}", put.partition, b.name)
@@ -301,7 +301,7 @@ impl S3 {
         let st = self.read();
         let b = st.buckets.get(read.bucket).ok_or(ServicePutError::NoSuchBucket)?;
         let resource = format!("arn:{}:s3:::{}/{key}", read.partition, b.name);
-        if !service_allowed(b, &read.as_put(), "s3:GetObject", &resource) {
+        if !service_allowed(b, &read.as_put(), "s3:GetObject", &resource, None) {
             return Err(ServicePutError::AccessDenied { action: "s3:GetObject".into() });
         }
         Ok(b.latest(key).filter(|v| !v.delete_marker).map(|v| v.data.to_vec()))

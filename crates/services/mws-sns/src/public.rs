@@ -96,9 +96,10 @@ impl Sns {
         context.insert("aws:SourceArn", vec![p.source_arn.to_string()]);
         // CloudWatch alarms publish with the legacy `aws:SourceOwner` key
         // (the alarm's account), which the default topic policy admits, so
-        // alarms reach their owner's topics without a policy change. Other
-        // services (EventBridge, S3) need the topic policy to allow them.
-        if p.service_principal == "cloudwatch.amazonaws.com" {
+        // alarms reach their owner's topics without a policy change. SES
+        // notifications and event destinations do the same. Other services
+        // (EventBridge, S3) need the topic policy to allow them.
+        if matches!(p.service_principal, "cloudwatch.amazonaws.com" | "ses.amazonaws.com") {
             context.insert("aws:SourceOwner", vec![p.source_account.to_string()]);
         }
         context.insert("aws:PrincipalServiceName", vec![p.service_principal.to_string()]);
