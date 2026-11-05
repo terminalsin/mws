@@ -11,7 +11,7 @@ mod docker;
 
 use std::sync::Arc;
 
-pub use docker::DockerBackend;
+pub use docker::{DockerBackend, DEFAULT_NETFILTER_IMAGE};
 
 /// The VPC network an instance joins. Backends that isolate networks give
 /// each VPC its own.
@@ -45,6 +45,83 @@ pub struct LaunchSpec {
     pub ssh_public_key: Option<String>,
     /// Environment for the instance (SDK endpoint, Region, IMDS endpoint).
     pub env: Vec<(String, String)>,
+    /// EBS data volumes attached at launch (the root volume is the
+    /// instance's own disk).
+    pub volumes: Vec<VolumeMount>,
+}
+
+/// An EBS volume attached to an instance, at its device name.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct VolumeMount {
+    pub volume_id: String,
+    pub device: String,
+    /// The snapshot to fill the volume from, if it is new.
+    pub snapshot_id: Option<String>,
+}
+
+/// An IP protocol (and ports) a filter rule matches.
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub enum Protocol {
+    All,
+    /// TCP to a destination port range.
+    Tcp(u16, u16),
+    Udp(u16, u16),
+    /// ICMP of a type (and code); `None` matches any.
+    Icmp(Option<u8>, Option<u8>),
+    /// Any other IP protocol number.
+    Number(u8),
+}
+
+/// A security group rule, flattened: traffic of `protocol` from (ingress)
+/// or to (egress) `cidr` is allowed.
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub struct AllowRule {
+    pub protocol: Protocol,
+    pub cidr: String,
+}
+
+/// A network ACL entry, in rule number order.
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub struct AclRule {
+    pub protocol: Protocol,
+    pub cidr: String,
+    pub allow: bool,
+}
+
+/// Whether traffic leaving the VPC for `cidr` has somewhere to go (a route
+/// to an internet gateway with a public address, a working NAT gateway, a
+/// gateway endpoint), by longest prefix first.
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub struct RouteRule {
+    pub cidr: String,
+    pub reachable: bool,
+}
+
+/// What may reach an instance and what it may reach, as EC2 decides it:
+/// its security groups (stateful), its subnet's network ACL (stateless,
+/// for traffic crossing the subnet boundary) and its subnet's route table
+/// (for traffic leaving the VPC). MWS itself (the AWS APIs and instance
+/// metadata) and DNS stay reachable, as the metadata service and the
+/// Amazon DNS server are in EC2.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Hash)]
+pub struct Firewall {
+    pub subnet_cidr: String,
+    pub vpc_cidrs: Vec<String>,
+    pub ingress: Vec<AllowRule>,
+    pub egress: Vec<AllowRule>,
+    pub acl_ingress: Vec<AclRule>,
+    pub acl_egress: Vec<AclRule>,
+    pub routes: Vec<RouteRule>,
+    /// The TCP port MWS serves on (always reachable on the host).
+    pub service_port: Option<u16>,
+}
+
+/// What a command run inside an instance produced.
+#[derive(Debug, Clone, Default)]
+pub struct CommandOutput {
+    pub exit_code: i32,
+    pub stdout: String,
+    pub stderr: String,
 }
 
 /// A running instance, as the backend knows it.
@@ -100,6 +177,63 @@ pub trait ComputeBackend: Send + Sync {
 
     /// Tear down the network of a deleted VPC, if the backend made one.
     async fn delete_network(&self, vpc_id: &str) -> Result<(), BackendError>;
+
+    /// Whether instances have real network traffic for
+    /// [`ComputeBackend::apply_firewall`] to filter.
+    fn filters_traffic(&self) -> bool {
+        false
+    }
+
+    /// Make an instance's traffic follow `firewall`, replacing what an
+    /// earlier call set.
+    async fn apply_firewall(&self, _handle: &str, _firewall: &Firewall) -> Result<(), BackendError> {
+        Ok(())
+    }
+
+    /// Tell a booting instance its network is set up (it waits for this
+    /// before running user data).
+    async fn network_ready(&self, _handle: &str) -> Result<(), BackendError> {
+        Ok(())
+    }
+
+    /// Run a shell script inside a running instance, as root (what the SSM
+    /// agent does for Run Command and EC2 Image Builder). `None` when the
+    /// backend runs nothing, so there is nowhere to run it.
+    async fn exec(&self, handle: &str, script: &str) -> Result<Option<CommandOutput>, BackendError> {
+        let _ = (handle, script);
+        Ok(None)
+    }
+
+    /// Make storage for an EBS volume, filled from `snapshot_id` when
+    /// given (and the backend holds that snapshot's data).
+    async fn create_volume(&self, _volume_id: &str, _snapshot_id: Option<&str>) -> Result<(), BackendError> {
+        Ok(())
+    }
+
+    /// Destroy an EBS volume's storage.
+    async fn delete_volume(&self, _volume_id: &str) -> Result<(), BackendError> {
+        Ok(())
+    }
+
+    /// Copy a volume's data into a new snapshot.
+    async fn create_snapshot(&self, _volume_id: &str, _snapshot_id: &str) -> Result<(), BackendError> {
+        Ok(())
+    }
+
+    /// Copy a snapshot's data into a new snapshot.
+    async fn copy_snapshot(&self, _source_id: &str, _snapshot_id: &str) -> Result<(), BackendError> {
+        Ok(())
+    }
+
+    async fn delete_snapshot(&self, _snapshot_id: &str) -> Result<(), BackendError> {
+        Ok(())
+    }
+
+    /// Change the data volumes an instance has attached. Returns the
+    /// instance's new handle when the backend had to recreate it.
+    async fn set_volumes(&self, _handle: &str, _volumes: &[VolumeMount]) -> Result<Option<String>, BackendError> {
+        Ok(None)
+    }
 }
 
 /// Runs nothing: instances exist only as EC2 metadata and move through

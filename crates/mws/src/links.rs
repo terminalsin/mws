@@ -746,6 +746,463 @@ impl mws_ec2::InstanceRoleCredentials for Ec2InstanceRoles {
     }
 }
 
+/// Global Accelerator endpoints that live in EC2: instances, Elastic IP
+/// addresses and (for custom routing) VPC subnets.
+pub(crate) struct GlobalAcceleratorEc2(pub mws_ec2::Ec2);
+
+impl GlobalAcceleratorEc2 {
+    fn instance_health(&self, account: &str, region: &str, id: &str) -> mws_globalaccelerator::EndpointHealth {
+        use mws_globalaccelerator::EndpointHealth;
+        match self.0.instance_summary(account, region, id) {
+            Some(i) if i.state == "running" => EndpointHealth::healthy(),
+            Some(i) => EndpointHealth::unhealthy(format!("Instance {id} is {}.", i.state)),
+            None => EndpointHealth::unhealthy(format!("Instance {id} no longer exists.")),
+        }
+    }
+}
+
+impl mws_globalaccelerator::EndpointDirectory for GlobalAcceleratorEc2 {
+    fn endpoint(
+        &self,
+        account: &str,
+        region: &str,
+        id: &str,
+    ) -> mws_globalaccelerator::Lookup<mws_globalaccelerator::EndpointHealth> {
+        use mws_globalaccelerator::{EndpointHealth, Lookup};
+        if id.starts_with("i-") {
+            return match self.0.instance_summary(account, region, id) {
+                None => Lookup::Missing,
+                Some(i) if i.state == "terminated" => Lookup::Missing,
+                Some(_) => Lookup::Found(self.instance_health(account, region, id)),
+            };
+        }
+        if id.starts_with("eipalloc-") {
+            return match self.0.address_summary(account, region, id) {
+                None => Lookup::Missing,
+                Some(a) => Lookup::Found(match (&a.instance_id, &a.network_interface_id) {
+                    (Some(instance), _) => self.instance_health(account, region, instance),
+                    (None, Some(_)) => EndpointHealth::healthy(),
+                    (None, None) => EndpointHealth::unhealthy(format!(
+                        "Elastic IP address {id} isn't associated with an instance or network interface."
+                    )),
+                }),
+            };
+        }
+        Lookup::NotMine
+    }
+
+    fn subnet(&self, account: &str, region: &str, id: &str) -> mws_globalaccelerator::Lookup<String> {
+        use mws_globalaccelerator::Lookup;
+        match self.0.subnet_summary(account, region, id) {
+            Some(s) => s.cidr_block.map(Lookup::Found).unwrap_or(Lookup::Missing),
+            None => Lookup::Missing,
+        }
+    }
+}
+
+/// Private CA certificate authorities, shareable through AWS RAM: RAM's
+/// policy for a shared CA becomes part of the CA's resource policy.
+pub(crate) struct RamCertificateAuthorities(pub mws_acmpca::PrivateCa);
+
+impl mws_ram::ShareableResourceType for RamCertificateAuthorities {
+    fn resource_type(&self) -> &'static str {
+        "acm-pca:CertificateAuthority"
+    }
+
+    fn service_name(&self) -> &'static str {
+        "acm-pca"
+    }
+
+    fn matches(&self, arn: &str) -> bool {
+        arn.split(':').nth(2) == Some("acm-pca") && arn.contains(":certificate-authority/")
+    }
+
+    fn locate(&self, arn: &str) -> Option<mws_ram::ResourceLocation> {
+        let ca = self.0.ca_info(arn)?;
+        Some(mws_ram::ResourceLocation { owner_account: ca.owner, region: arn.split(':').nth(3)?.to_string() })
+    }
+
+    fn set_shared_policy(&self, arn: &str, policy: Option<String>) {
+        self.0.set_shared_policy(arn, policy);
+    }
+
+    fn shareable_actions(&self) -> &'static [&'static str] {
+        &[
+            "acm-pca:DescribeCertificateAuthority",
+            "acm-pca:GetCertificate",
+            "acm-pca:GetCertificateAuthorityCertificate",
+            "acm-pca:IssueCertificate",
+            "acm-pca:ListPermissions",
+            "acm-pca:ListTags",
+            "acm-pca:RevokeCertificate",
+        ]
+    }
+
+    fn share_action(&self) -> &'static str {
+        "acm-pca:PutPolicy"
+    }
+}
+
+/// `PutPolicy` / `DeletePolicy` on a CA, mirrored as a RAM share created
+/// from the policy.
+pub(crate) struct CaPoliciesToRam(pub mws_ram::Ram);
+
+impl mws_acmpca::CaPolicyListener for CaPoliciesToRam {
+    fn policy_changed(
+        &self,
+        ca_arn: &str,
+        owner_account: &str,
+        policy: Option<&str>,
+        now: chrono::DateTime<chrono::Utc>,
+    ) {
+        self.0.resource_policy_changed(ca_arn, owner_account, policy, now);
+    }
+}
+
+/// Security Hub's view of AWS Organizations: the caller's organization and
+/// the delegated administrator `EnableOrganizationAdminAccount` registers.
+pub struct SecurityHubOrganizations(pub mws_organizations::Organizations);
+
+const SECURITY_HUB_PRINCIPAL: &str = "securityhub.amazonaws.com";
+
+impl mws_securityhub::OrganizationLink for SecurityHubOrganizations {
+    fn organization(&self, account: &str) -> Option<mws_securityhub::OrgInfo> {
+        let org = self.0.organization_of(account)?;
+        Some(mws_securityhub::OrgInfo {
+            id: org.id,
+            management_account: org.management_account,
+            accounts: org
+                .accounts
+                .into_iter()
+                .map(|a| mws_securityhub::OrgAccount {
+                    active: a.status == "ACTIVE",
+                    id: a.id,
+                    email: a.email,
+                    path: a.path,
+                })
+                .collect(),
+        })
+    }
+
+    fn register_delegated_administrator(&self, management: &str, admin: &str) -> Result<(), String> {
+        use mws_organizations::DelegationError;
+        self.0
+            .register_delegated_administrator_for_service(management, admin, SECURITY_HUB_PRINCIPAL, chrono::Utc::now())
+            .map_err(|e| match e {
+                DelegationError::NotManagementAccount => {
+                    "The request must be made by the management account of an organization.".to_string()
+                }
+                DelegationError::AccountNotInOrganization => {
+                    format!("Account {admin} is not a member of the organization.")
+                }
+                DelegationError::ManagementAccount => {
+                    "The management account cannot be the delegated administrator for Security Hub.".to_string()
+                }
+                DelegationError::NotAllFeatures => "The organization must have all features enabled.".to_string(),
+            })
+    }
+
+    fn deregister_delegated_administrator(&self, management: &str, admin: &str) {
+        let _ = self.0.deregister_delegated_administrator_for_service(management, admin, SECURITY_HUB_PRINCIPAL);
+    }
+}
+
+/// Security Hub finding events, sent to the account's default event bus
+/// with source `aws.securityhub`.
+pub struct SecurityHubToEvents(pub mws_events::Events);
+
+impl mws_securityhub::FindingEventSink for SecurityHubToEvents {
+    fn finding_event(&self, ctx: &RequestContext, e: mws_securityhub::FindingEvent) {
+        self.0.put_service_event(
+            ctx,
+            mws_events::ServiceEvent {
+                partition: e.partition,
+                account: e.account,
+                region: e.region,
+                source: "aws.securityhub".into(),
+                detail_type: e.detail_type,
+                resources: e.resources,
+                detail: e.detail,
+                time: e.time,
+            },
+        );
+    }
+}
+
+/// RDS placing subnet groups and security groups in EC2's VPCs.
+pub(crate) struct RdsNetwork(pub mws_ec2::Ec2);
+
+impl RdsNetwork {
+    fn subnet(s: mws_ec2::SubnetInfo) -> mws_rds::Subnet {
+        mws_rds::Subnet { subnet_id: s.subnet_id, vpc_id: s.vpc_id, availability_zone: s.availability_zone }
+    }
+}
+
+impl mws_rds::Network for RdsNetwork {
+    fn subnets(&self, ctx: &RequestContext, ids: &[String]) -> Vec<mws_rds::Subnet> {
+        let account = &ctx.caller.account_id;
+        ids.iter().filter_map(|id| self.0.subnet_info(ctx, account, id)).map(Self::subnet).collect()
+    }
+
+    fn default_subnets(&self, ctx: &RequestContext) -> Vec<mws_rds::Subnet> {
+        self.0.subnets_of_vpc(ctx, &ctx.caller.account_id, None).into_iter().map(Self::subnet).collect()
+    }
+
+    fn security_group_vpc(&self, ctx: &RequestContext, group_id: &str) -> Option<String> {
+        self.0.security_group_info(ctx, &ctx.caller.account_id, group_id).map(|g| g.vpc_id)
+    }
+
+    fn default_security_group(&self, ctx: &RequestContext, vpc_id: &str) -> Option<String> {
+        self.0.vpc_info(ctx, &ctx.caller.account_id, Some(vpc_id)).and_then(|v| v.default_security_group)
+    }
+}
+
+/// RDS events on the default event bus, and event subscriptions'
+/// notifications published to SNS as `events.rds.amazonaws.com` (the topic
+/// policy must allow it, with the event's source as `aws:SourceArn`).
+pub(crate) struct RdsEvents {
+    pub events: mws_events::Events,
+    pub sns: mws_sns::Sns,
+}
+
+impl RdsEvents {
+    fn publish<'a>(
+        topic_arn: &'a str,
+        source_arn: &'a str,
+        account: &'a str,
+        subject: &str,
+        message: &str,
+    ) -> mws_sns::ServicePublish<'a> {
+        mws_sns::ServicePublish {
+            topic_arn,
+            service_principal: "events.rds.amazonaws.com",
+            source_arn,
+            source_account: account,
+            message: message.to_string(),
+            subject: Some(subject.to_string()),
+            attributes: Default::default(),
+            message_group_id: None,
+            message_deduplication_id: None,
+        }
+    }
+
+    fn source_arn(ctx: &RequestContext, account: &str) -> String {
+        format!("arn:{}:rds:{}:{account}:es:*", ctx.partition, ctx.region)
+    }
+}
+
+impl mws_rds::EventSink for RdsEvents {
+    fn check_topic(&self, ctx: &RequestContext, topic_arn: &str) -> Result<(), String> {
+        let account = ctx.caller.account_id.clone();
+        let source = Self::source_arn(ctx, &account);
+        // The policy is checked per event (its conditions usually name the
+        // event's source), so only the topic's existence is checked here.
+        match self.sns.check_service_publish(&Self::publish(topic_arn, &source, &account, "", "")) {
+            Ok(()) | Err(mws_sns::ServicePublishError::AccessDenied) => Ok(()),
+            Err(mws_sns::ServicePublishError::NoSuchTopic) => Err("SNSTopicArnNotFound".into()),
+            Err(_) => Err("SNSInvalidTopic".into()),
+        }
+    }
+
+    fn notify_topic(&self, ctx: &RequestContext, topic_arn: &str, source_arn: &str, subject: &str, message: &str) {
+        let account = source_arn.split(':').nth(4).unwrap_or_default().to_string();
+        if let Err(e) =
+            self.sns.publish_as_service(ctx, &Self::publish(topic_arn, source_arn, &account, subject, message))
+        {
+            tracing::debug!(topic = topic_arn, "RDS event notification not delivered: {e:?}");
+        }
+    }
+
+    fn put_event(&self, ctx: &RequestContext, e: &mws_rds::RdsEvent) {
+        let (detail_type, source_type) = match e.source_type.as_str() {
+            "db-cluster" => ("RDS DB Cluster Event", "CLUSTER"),
+            "db-snapshot" => ("RDS DB Snapshot Event", "SNAPSHOT"),
+            "db-cluster-snapshot" => ("RDS DB Cluster Snapshot Event", "CLUSTER_SNAPSHOT"),
+            "db-parameter-group" => ("RDS DB Parameter Group Event", "DB_PARAM"),
+            "db-security-group" => ("RDS DB Security Group Event", "SECURITY_GROUP"),
+            _ => ("RDS DB Instance Event", "DB_INSTANCE"),
+        };
+        let detail = serde_json::json!({
+            "EventCategories": e.categories,
+            "SourceType": source_type,
+            "SourceArn": e.source_arn,
+            "Date": e.time.to_rfc3339_opts(chrono::SecondsFormat::Millis, true),
+            "Message": e.message,
+            "SourceIdentifier": e.source_identifier,
+            "EventID": e.event_id,
+        });
+        self.events.put_service_event(
+            ctx,
+            mws_events::ServiceEvent {
+                partition: ctx.partition.clone(),
+                account: e.account.clone(),
+                region: e.region.clone(),
+                source: "aws.rds".into(),
+                detail_type: detail_type.into(),
+                resources: vec![e.source_arn.clone()],
+                detail,
+                time: e.time,
+            },
+        );
+    }
+}
+
+/// Security Hub V2 export jobs, written to S3 as
+/// `securityhub.amazonaws.com` (encrypted with the job's KMS key).
+pub struct SecurityHubExports(pub mws_s3::S3);
+
+impl mws_securityhub::ExportSink for SecurityHubExports {
+    fn put_object(
+        &self,
+        ctx: &RequestContext,
+        bucket: &str,
+        key: &str,
+        body: Vec<u8>,
+        kms_key_arn: Option<&str>,
+    ) -> Result<(), String> {
+        let account = &ctx.caller.account_id;
+        let source_arn = format!("arn:{}:securityhub:{}:{account}:hubv2/default", ctx.partition, ctx.region);
+        let put = mws_s3::ServicePutObject {
+            bucket,
+            key,
+            body,
+            content_type: "application/json",
+            service_principal: SECURITY_HUB_PRINCIPAL,
+            source_account: account,
+            source_arn: &source_arn,
+            acl: Some("bucket-owner-full-control"),
+            partition: &ctx.partition,
+        };
+        match kms_key_arn.filter(|k| !k.is_empty()) {
+            Some(k) => self.0.put_object_as_service_kms(put, k).map(|_| ()),
+            None => self.0.put_object_as_service(put).map(|_| ()).map_err(|e| e.to_string()),
+        }
+    }
+}
+
+/// Route 53 alias records that target an accelerator's DNS name answer with
+/// its static IP addresses.
+pub(crate) struct Route53ToGlobalAccelerator(pub mws_globalaccelerator::GlobalAccelerator);
+
+/// The hosted zone of every accelerator's DNS names.
+const GLOBAL_ACCELERATOR_ZONE: &str = "Z2BJ6XQ5FK7U4H";
+
+impl mws_route53::AliasTargetResolver for Route53ToGlobalAccelerator {
+    fn resolve(&self, hosted_zone_id: &str, dns_name: &str, record_type: &str) -> Option<Vec<String>> {
+        if hosted_zone_id != GLOBAL_ACCELERATOR_ZONE {
+            return None;
+        }
+        let a = self.0.addresses_for_dns_name(dns_name)?;
+        match record_type {
+            "A" => Some(a.ipv4),
+            "AAAA" => Some(a.ipv6),
+            _ => Some(Vec::new()),
+        }
+    }
+}
+
+/// ELB's `AWS/ApplicationELB`, `AWS/NetworkELB`, `AWS/GatewayELB` and
+/// `AWS/ELB` metrics.
+pub struct ElbToCloudWatch(pub mws_cloudwatch::CloudWatch);
+
+impl mws_elb::MetricSink for ElbToCloudWatch {
+    fn publish(&self, metrics: Vec<mws_elb::ElbMetric>) {
+        for m in metrics {
+            self.0.put_metric_as_service(mws_cloudwatch::ServiceMetric {
+                account: m.account,
+                region: m.region,
+                namespace: m.namespace.into(),
+                metric_name: m.metric_name.into(),
+                dimensions: m.dimensions,
+                unit: Some(m.unit.into()),
+                timestamp: m.timestamp,
+                values: vec![(m.value, 1.0)],
+            });
+        }
+    }
+}
+
+/// Global Accelerator endpoints that are Application or Network Load
+/// Balancers: they must exist, and they are healthy while active with at
+/// least one healthy target, as Global Accelerator judges them.
+pub(crate) struct GlobalAcceleratorElb(pub mws_elb::Elb);
+
+impl mws_globalaccelerator::EndpointDirectory for GlobalAcceleratorElb {
+    fn endpoint(
+        &self,
+        account: &str,
+        region: &str,
+        id: &str,
+    ) -> mws_globalaccelerator::Lookup<mws_globalaccelerator::EndpointHealth> {
+        use mws_globalaccelerator::{EndpointHealth, Lookup};
+        if !id.contains(":elasticloadbalancing:") {
+            return Lookup::NotMine;
+        }
+        let Some(lb) = self.0.load_balancer(account, region, id) else { return Lookup::Missing };
+        Lookup::Found(if !lb.state.starts_with("active") {
+            EndpointHealth::unhealthy(format!("Load balancer {} is {}.", lb.name, lb.state))
+        } else if lb.healthy_targets == 0 {
+            EndpointHealth::unhealthy(format!("Load balancer {} has no healthy targets.", lb.name))
+        } else {
+            EndpointHealth::healthy()
+        })
+    }
+}
+
+/// RDS snapshot exports, written to S3 as the export's role (assumed as
+/// `export.rds.amazonaws.com`) with SSE-KMS.
+pub(crate) struct RdsExports {
+    pub sts: mws_sts::Sts,
+    pub s3: mws_s3::S3,
+}
+
+#[async_trait::async_trait]
+impl mws_rds::ExportStore for RdsExports {
+    fn assume(&self, ctx: &RequestContext, role_arn: &str, source_arn: &str) -> Result<RequestContext, String> {
+        let creds = self
+            .sts
+            .assume_role_as_service(&mws_sts::ServiceAssume {
+                role_arn,
+                service_principal: "export.rds.amazonaws.com",
+                session_name: "rds-export",
+                duration_seconds: 3600,
+                source_account: Some(&ctx.caller.account_id),
+                source_arn: Some(source_arn),
+                now: ctx.received_at,
+            })
+            .map_err(|e| format!("{e:?}"))?;
+        let resolved = self
+            .sts
+            .credential_store()
+            .resolve(&creds.access_key_id, Some(&creds.session_token), ctx.received_at)
+            .map_err(|e| format!("{e:?}"))?
+            .ok_or_else(|| "the role session could not be resolved".to_string())?;
+        Ok(RequestContext { caller: resolved.caller, source_ip: None, ..ctx.clone() })
+    }
+
+    async fn put_object(
+        &self,
+        role: &RequestContext,
+        bucket: &str,
+        key: &str,
+        body: Vec<u8>,
+        kms_key: &str,
+    ) -> Result<(), String> {
+        use base64::Engine as _;
+        let request = serde_json::json!({
+            "Bucket": bucket,
+            "Key": key,
+            "Body": base64::engine::general_purpose::STANDARD.encode(&body),
+            "ServerSideEncryption": "aws:kms",
+            "SSEKMSKeyId": kms_key,
+        });
+        mws_core::Service::invoke(&self.s3, role.clone(), "PutObject", request)
+            .await
+            .map(|_| ())
+            .map_err(|e| format!("{}: {}", e.code, e.message))
+    }
+}
+
 /// Usage of the quotas other services enforce, for Service Quotas.
 pub struct QuotaUsage {
     pub ec2: mws_ec2::Ec2,

@@ -56,10 +56,25 @@ impl fmt::Display for ServicePutError {
 
 impl std::error::Error for ServicePutError {}
 
-fn service_allowed(b: &Bucket, put: &ServicePutObject<'_>, action: &str, resource: &str) -> bool {
+fn service_allowed(
+    b: &Bucket,
+    put: &ServicePutObject<'_>,
+    action: &str,
+    resource: &str,
+    account: Option<&str>,
+) -> bool {
     let Some(doc) = &b.policy else { return false };
     let Ok(policy) = Policy::parse(doc, PolicyKind::Resource) else { return false };
-    let principal = PrincipalInfo { service: Some(put.service_principal.to_string()), ..Default::default() };
+    let principal = match account {
+        // An AWS-owned account delivering for the service: policies name
+        // it as `{"AWS": "arn:aws:iam::<account>:root"}`.
+        Some(a) => PrincipalInfo {
+            account_id: a.to_string(),
+            arns: vec![format!("arn:{}:iam::{a}:root", put.partition)],
+            ..Default::default()
+        },
+        None => PrincipalInfo { service: Some(put.service_principal.to_string()), ..Default::default() },
+    };
     let mut context = ConditionContext::new();
     context.insert("aws:SourceAccount", vec![put.source_account.to_string()]);
     context.insert("aws:SourceArn", vec![put.source_arn.to_string()]);
@@ -78,15 +93,36 @@ impl S3 {
     /// `s3:GetBucketAcl`, `s3:GetBucketLocation` and `s3:PutObjectAcl` when
     /// listed in `actions`).
     pub fn check_service_access(&self, put: &ServicePutObject<'_>, actions: &[&str]) -> Result<(), ServicePutError> {
+        self.check_access_as(put, actions, None)
+    }
+
+    /// [`S3::check_service_access`] for an AWS-owned account that delivers
+    /// on the service's behalf, as the bucket policy names it (Elastic Load
+    /// Balancing's log delivery accounts in older Regions).
+    pub fn check_service_account_access(
+        &self,
+        put: &ServicePutObject<'_>,
+        actions: &[&str],
+        account: &str,
+    ) -> Result<(), ServicePutError> {
+        self.check_access_as(put, actions, Some(account))
+    }
+
+    fn check_access_as(
+        &self,
+        put: &ServicePutObject<'_>,
+        actions: &[&str],
+        account: Option<&str>,
+    ) -> Result<(), ServicePutError> {
         let st = self.read();
         let b = st.buckets.get(put.bucket).ok_or(ServicePutError::NoSuchBucket)?;
         for action in actions {
-            let resource = if matches!(*action, "s3:PutObject" | "s3:PutObjectAcl") {
+            let resource = if matches!(*action, "s3:PutObject" | "s3:PutObjectAcl" | "s3:GetObject") {
                 format!("arn:{}:s3:::{}/{}", put.partition, b.name, put.key)
             } else {
                 format!("arn:{}:s3:::{}", put.partition, b.name)
             };
-            if !service_allowed(b, put, action, &resource) {
+            if !service_allowed(b, put, action, &resource, account) {
                 return Err(ServicePutError::AccessDenied { action: action.to_string() });
             }
         }
@@ -98,6 +134,51 @@ impl S3 {
         self.put_object_as_service_with(put, Sse::default())
     }
 
+    /// [`S3::put_object_as_service`] authorized for an AWS-owned delivery
+    /// account instead of the service principal (see
+    /// [`S3::check_service_account_access`]).
+    pub fn put_object_as_service_account(
+        &self,
+        put: ServicePutObject<'_>,
+        account: &str,
+    ) -> Result<String, ServicePutError> {
+        self.check_service_account_access(&put, &["s3:PutObject"], account)?;
+        self.store_service_object(put, Sse::default())
+    }
+
+    /// [`S3::put_object_as_service`], encrypted with SSE-KMS under
+    /// `kms_key` (a key id, alias or ARN). The service principal must be
+    /// allowed `kms:GenerateDataKey` on the key, with the put's source
+    /// account and ARN as conditions.
+    pub fn put_object_as_service_kms(&self, put: ServicePutObject<'_>, kms_key: &str) -> Result<String, String> {
+        let sse = self.service_kms_sse(&put, kms_key)?;
+        self.put_object_as_service_with(put, sse).map_err(|e| e.to_string())
+    }
+
+    /// SSE-KMS for an object a service principal writes.
+    pub(crate) fn service_kms_sse(&self, put: &ServicePutObject<'_>, kms_key: &str) -> Result<Sse, String> {
+        let Some(kms) = &self.kms else {
+            return Ok(Sse { algorithm: Some("aws:kms".into()), kms_key_id: Some(kms_key.into()), ..Sse::default() });
+        };
+        let mut conditions = mws_core::ConditionContext::new();
+        conditions.insert("aws:SourceArn".into(), vec![put.source_arn.to_string()]);
+        conditions.insert("aws:SourceAccount".into(), vec![put.source_account.to_string()]);
+        let k = kms
+            .key_for_service(kms_key, put.service_principal, &["kms:GenerateDataKey"], &conditions)
+            .map_err(|e| e.message)?;
+        let context = std::collections::BTreeMap::from([(
+            "aws:s3:arn".to_string(),
+            format!("arn:{}:s3:::{}/{}", put.partition, put.bucket, put.key),
+        )]);
+        let dk = kms.generate_data_key_for_service(&k.arn, &context, 32).map_err(|e| e.message)?;
+        Ok(Sse {
+            algorithm: Some("aws:kms".into()),
+            kms_key_id: Some(dk.key_arn),
+            kms_data_key: Some(base64::Engine::encode(&base64::engine::general_purpose::STANDARD, &dk.ciphertext)),
+            ..Sse::default()
+        })
+    }
+
     /// [`S3::put_object_as_service`] with the object's encryption.
     pub(crate) fn put_object_as_service_with(
         &self,
@@ -107,6 +188,11 @@ impl S3 {
         // As for any PutObject, an `x-amz-acl` needs only `s3:PutObject`
         // (policies can test it with the `s3:x-amz-acl` condition key).
         self.check_service_access(&put, &["s3:PutObject"])?;
+        self.store_service_object(put, sse)
+    }
+
+    /// Write an object a service is allowed to put.
+    fn store_service_object(&self, put: ServicePutObject<'_>, sse: Sse) -> Result<String, ServicePutError> {
         let mut st = self.write();
         let b = st.buckets.get_mut(put.bucket).ok_or(ServicePutError::NoSuchBucket)?;
         let grants = match put.acl {
@@ -153,6 +239,17 @@ impl S3 {
 }
 
 impl S3 {
+    /// `GetObject` with the caller's own permissions, for services that
+    /// read an object the caller names (ELB trust store bundles and
+    /// revocation lists): S3 authorizes it as the caller's request.
+    pub fn get_object_as_caller(
+        &self,
+        ctx: &mws_core::RequestContext,
+        input: crate::generated::types::GetObjectRequest,
+    ) -> Result<crate::generated::types::GetObjectOutput, mws_core::ServiceError> {
+        self.call(ctx, None).get_object(ctx, input)
+    }
+
     /// The account that owns `bucket`, if it exists (S3 Control checks
     /// this when creating access points).
     pub fn bucket_owner(&self, bucket: &str) -> Option<String> {
@@ -162,5 +259,91 @@ impl S3 {
     /// The Region `bucket` lives in, if it exists.
     pub fn bucket_region(&self, bucket: &str) -> Option<String> {
         self.read().buckets.get(bucket).map(|b| b.region.clone())
+    }
+}
+
+/// An AWS service principal reading from a customer bucket (Amplify
+/// deploying a site from a bucket). Access is decided by the bucket policy
+/// alone, as for service principals in AWS.
+#[derive(Debug, Clone)]
+pub struct ServiceRead<'a> {
+    pub bucket: &'a str,
+    /// The service principal, e.g. `amplify.amazonaws.com`.
+    pub service_principal: &'a str,
+    /// `aws:SourceAccount` and `aws:SourceArn` for the bucket policy.
+    pub source_account: &'a str,
+    pub source_arn: &'a str,
+    /// Partition for ARNs, normally `aws`.
+    pub partition: &'a str,
+}
+
+impl ServiceRead<'_> {
+    fn as_put(&self) -> ServicePutObject<'_> {
+        ServicePutObject {
+            bucket: self.bucket,
+            key: "",
+            body: Vec::new(),
+            content_type: "",
+            service_principal: self.service_principal,
+            source_account: self.source_account,
+            source_arn: self.source_arn,
+            acl: None,
+            partition: self.partition,
+        }
+    }
+}
+
+impl S3 {
+    /// Read the latest version of `key` as an AWS service principal
+    /// (`s3:GetObject` from the bucket policy). `Ok(None)` when there is no
+    /// such object.
+    pub fn get_object_as_service(&self, read: &ServiceRead<'_>, key: &str) -> Result<Option<Vec<u8>>, ServicePutError> {
+        let st = self.read();
+        let b = st.buckets.get(read.bucket).ok_or(ServicePutError::NoSuchBucket)?;
+        let resource = format!("arn:{}:s3:::{}/{key}", read.partition, b.name);
+        if !service_allowed(b, &read.as_put(), "s3:GetObject", &resource, None) {
+            return Err(ServicePutError::AccessDenied { action: "s3:GetObject".into() });
+        }
+        Ok(b.latest(key).filter(|v| !v.delete_marker).map(|v| v.data.to_vec()))
+    }
+
+    /// The keys under `prefix`, as an AWS service principal
+    /// (`s3:ListBucket` from the bucket policy, with `s3:prefix`).
+    pub fn list_objects_as_service(
+        &self,
+        read: &ServiceRead<'_>,
+        prefix: &str,
+    ) -> Result<Vec<String>, ServicePutError> {
+        let st = self.read();
+        let b = st.buckets.get(read.bucket).ok_or(ServicePutError::NoSuchBucket)?;
+        let Some(doc) = &b.policy else {
+            return Err(ServicePutError::AccessDenied { action: "s3:ListBucket".into() });
+        };
+        let put = read.as_put();
+        let allowed = Policy::parse(doc, PolicyKind::Resource).is_ok_and(|policy| {
+            let principal = PrincipalInfo { service: Some(put.service_principal.to_string()), ..Default::default() };
+            let mut context = ConditionContext::new();
+            context.insert("aws:SourceAccount", vec![put.source_account.to_string()]);
+            context.insert("aws:SourceArn", vec![put.source_arn.to_string()]);
+            context.insert("aws:PrincipalServiceName", vec![put.service_principal.to_string()]);
+            context.insert("aws:PrincipalIsAWSService", vec!["true".to_string()]);
+            context.insert("s3:prefix", vec![prefix.to_string()]);
+            let resource = format!("arn:{}:s3:::{}", put.partition, b.name);
+            let eval = policy.evaluate(&Request {
+                action: "s3:ListBucket",
+                resource: &resource,
+                principal: &principal,
+                context: &context,
+            });
+            eval.allowed() && !eval.denied()
+        });
+        if !allowed {
+            return Err(ServicePutError::AccessDenied { action: "s3:ListBucket".into() });
+        }
+        Ok(b.objects
+            .iter()
+            .filter(|(k, v)| k.starts_with(prefix) && v.last().is_some_and(|v| !v.delete_marker))
+            .map(|(k, _)| k.clone())
+            .collect())
     }
 }

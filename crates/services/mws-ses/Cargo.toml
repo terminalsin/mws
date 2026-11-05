@@ -1,0 +1,30 @@
+[package]
+name = "mws-ses"
+description = "Amazon Simple Email Service (v1 and v2) for MWS: sending into an inspectable outbox, receipt rules fed by a local SMTP listener, and event publishing."
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+async-trait.workspace = true
+base64.workspace = true
+bytes.workspace = true
+chrono.workspace = true
+form_urlencoded.workspace = true
+hmac.workspace = true
+http.workspace = true
+mws-core.workspace = true
+mws-iam-policy.workspace = true
+mws-proto-json.workspace = true
+mws-proto-query.workspace = true
+mws-proto-restjson.workspace = true
+rand.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+sha2.workspace = true
+tokio = { workspace = true, features = ["io-util", "net"] }
+tracing.workspace = true
+uuid.workspace = true
+
+[build-dependencies]
+mws-codegen.workspace = true

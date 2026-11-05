@@ -22,6 +22,7 @@ mod effective;
 mod handler;
 mod handshakes;
 mod policies;
+mod service_api;
 mod state;
 mod structure;
 mod view;
@@ -31,6 +32,7 @@ use std::sync::{Arc, Mutex, MutexGuard};
 use mws_core::{HttpRequest, HttpResponse, RequestContext, Service, ServiceError};
 use mws_iam::Iam;
 
+pub use service_api::{DelegationError, OrganizationAccount, OrganizationSnapshot};
 use state::State;
 
 /// An account's membership of an organization.

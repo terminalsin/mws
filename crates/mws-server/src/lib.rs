@@ -172,6 +172,10 @@ impl Gateway {
         remote: Option<SocketAddr>,
         now: chrono::DateTime<Utc>,
     ) -> HttpResponse {
+        if let Some(service) = self.services.values().flatten().find(|s| s.serves_unauthenticated(&request)).cloned() {
+            let ctx = self.context(request_id, self.env.default_region.clone(), Caller::anonymous(), remote, now);
+            return service.handle(ctx, request).await;
+        }
         for service in self.services.values().flatten() {
             let Some(alternate) = service.alternate_signature(&request) else { continue };
             let service = service.clone();

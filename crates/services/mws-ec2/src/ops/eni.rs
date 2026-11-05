@@ -503,6 +503,7 @@ impl Ec2 {
                 return Err(err("InvalidIPAddress.InUse", "Address is in use."));
             }
             r.addresses.remove(&alloc);
+            r.address_domain_names.remove(&alloc);
             Ok(())
         })
     }
@@ -734,4 +735,114 @@ pub fn resolve_groups(
         out.push(t::GroupIdentifier { group_id: Some(id), group_name: g.group_name.clone() });
     }
     Ok(out)
+}
+
+// ---- Elastic IP attributes (reverse DNS) ---------------------------------------------------
+
+impl Ec2 {
+    fn address_attribute(r: &RegionState, region: &str, alloc: &str) -> t::AddressAttribute {
+        let addr = r.addresses.get(alloc).cloned().unwrap_or_default();
+        let ip = addr.public_ip.clone().unwrap_or_default();
+        let ptr = match r.address_domain_names.get(alloc) {
+            Some(name) => format!("{}.", name.trim_end_matches('.')),
+            None => format!("{}.", public_dns(region, &ip)),
+        };
+        t::AddressAttribute {
+            public_ip: addr.public_ip,
+            allocation_id: Some(alloc.into()),
+            ptr_record: Some(ptr),
+            ptr_record_update: None,
+        }
+    }
+
+    fn address_attr_authorize(
+        &self,
+        ctx: &RequestContext,
+        action: &str,
+        alloc: &str,
+        dry_run: Option<bool>,
+    ) -> Result<(), ServiceError> {
+        Kind::Allocation.check(alloc)?;
+        let account = account_of(ctx);
+        let tags = self.with_region(ctx, |r| r.addresses.get(alloc).map(|a| a.tags.clone()));
+        let tags = tags.ok_or_else(|| Kind::Allocation.not_found(alloc))?;
+        authorize(
+            ctx,
+            action,
+            &[(arn(ctx, &account, &format!("elastic-ip/{alloc}")), resource_tag_context(tags.as_ref()))],
+            dry_run,
+        )
+    }
+
+    pub(crate) fn describe_addresses_attribute_op(
+        &self,
+        ctx: &RequestContext,
+        input: t::DescribeAddressesAttributeRequest,
+    ) -> Result<t::DescribeAddressesAttributeResult, ServiceError> {
+        authorize(ctx, "DescribeAddressesAttribute", &[("*".into(), ConditionContext::new())], input.dry_run)?;
+        if let Some(a) = &input.attribute {
+            if a != "domain-name" {
+                return Err(err("InvalidParameterValue", format!("Value ({a}) for parameter attribute is invalid.")));
+            }
+        }
+        let ids = input.allocation_ids.clone().unwrap_or_default();
+        let region = ctx.region.clone();
+        self.with_region(ctx, |r| {
+            Kind::Allocation.check_all(&ids, |id| r.addresses.contains_key(id))?;
+            let out: Vec<t::AddressAttribute> = r
+                .addresses
+                .keys()
+                .filter(|id| ids.is_empty() || ids.contains(id))
+                .map(|id| Self::address_attribute(r, &region, id))
+                .collect();
+            let (items, next_token) = crate::util::paginate(out, input.max_results, &input.next_token)?;
+            Ok(t::DescribeAddressesAttributeResult { addresses: Some(items), next_token })
+        })
+    }
+
+    pub(crate) fn modify_address_attribute_op(
+        &self,
+        ctx: &RequestContext,
+        input: t::ModifyAddressAttributeRequest,
+    ) -> Result<t::ModifyAddressAttributeResult, ServiceError> {
+        self.address_attr_authorize(ctx, "ModifyAddressAttribute", &input.allocation_id, input.dry_run)?;
+        let region = ctx.region.clone();
+        self.with_region(ctx, |r| {
+            match input.domain_name.as_deref().map(|d| d.trim_end_matches('.')).filter(|d| !d.is_empty()) {
+                Some(d) => {
+                    if !d.contains('.') || d.len() > 253 {
+                        return Err(err("InvalidDomainName", format!("The domain name {d} is not valid.")));
+                    }
+                    r.address_domain_names.insert(input.allocation_id.clone(), d.to_string());
+                }
+                None => {
+                    r.address_domain_names.remove(&input.allocation_id);
+                }
+            }
+            Ok(t::ModifyAddressAttributeResult {
+                address: Some(Self::address_attribute(r, &region, &input.allocation_id)),
+            })
+        })
+    }
+
+    pub(crate) fn reset_address_attribute_op(
+        &self,
+        ctx: &RequestContext,
+        input: t::ResetAddressAttributeRequest,
+    ) -> Result<t::ResetAddressAttributeResult, ServiceError> {
+        self.address_attr_authorize(ctx, "ResetAddressAttribute", &input.allocation_id, input.dry_run)?;
+        if input.attribute != "domain-name" {
+            return Err(err(
+                "InvalidParameterValue",
+                format!("Value ({}) for parameter attribute is invalid.", input.attribute),
+            ));
+        }
+        let region = ctx.region.clone();
+        self.with_region(ctx, |r| {
+            r.address_domain_names.remove(&input.allocation_id);
+            Ok(t::ResetAddressAttributeResult {
+                address: Some(Self::address_attribute(r, &region, &input.allocation_id)),
+            })
+        })
+    }
 }

@@ -714,4 +714,418 @@ impl Handler for Ec2 {
     ) -> Result<types::UpdateSecurityGroupRuleDescriptionsIngressResult, ServiceError> {
         self.update_security_group_rule_descriptions_ingress_op(ctx, input)
     }
+    // VPC endpoints, prefix lists and Elastic IP attributes
+    async fn create_vpc_endpoint(
+        &self,
+        ctx: &RequestContext,
+        input: types::CreateVpcEndpointRequest,
+    ) -> Result<types::CreateVpcEndpointResult, ServiceError> {
+        self.create_vpc_endpoint_op(ctx, input)
+    }
+    async fn delete_vpc_endpoints(
+        &self,
+        ctx: &RequestContext,
+        input: types::DeleteVpcEndpointsRequest,
+    ) -> Result<types::DeleteVpcEndpointsResult, ServiceError> {
+        self.delete_vpc_endpoints_op(ctx, input)
+    }
+    async fn describe_vpc_endpoints(
+        &self,
+        ctx: &RequestContext,
+        input: types::DescribeVpcEndpointsRequest,
+    ) -> Result<types::DescribeVpcEndpointsResult, ServiceError> {
+        self.describe_vpc_endpoints_op(ctx, input)
+    }
+    async fn modify_vpc_endpoint(
+        &self,
+        ctx: &RequestContext,
+        input: types::ModifyVpcEndpointRequest,
+    ) -> Result<types::ModifyVpcEndpointResult, ServiceError> {
+        self.modify_vpc_endpoint_op(ctx, input)
+    }
+    async fn describe_vpc_endpoint_services(
+        &self,
+        ctx: &RequestContext,
+        input: types::DescribeVpcEndpointServicesRequest,
+    ) -> Result<types::DescribeVpcEndpointServicesResult, ServiceError> {
+        self.describe_vpc_endpoint_services_op(ctx, input)
+    }
+    async fn describe_prefix_lists(
+        &self,
+        ctx: &RequestContext,
+        input: types::DescribePrefixListsRequest,
+    ) -> Result<types::DescribePrefixListsResult, ServiceError> {
+        self.describe_prefix_lists_op(ctx, input)
+    }
+    async fn describe_managed_prefix_lists(
+        &self,
+        ctx: &RequestContext,
+        input: types::DescribeManagedPrefixListsRequest,
+    ) -> Result<types::DescribeManagedPrefixListsResult, ServiceError> {
+        self.describe_managed_prefix_lists_op(ctx, input)
+    }
+    async fn get_managed_prefix_list_entries(
+        &self,
+        ctx: &RequestContext,
+        input: types::GetManagedPrefixListEntriesRequest,
+    ) -> Result<types::GetManagedPrefixListEntriesResult, ServiceError> {
+        self.get_managed_prefix_list_entries_op(ctx, input)
+    }
+    async fn create_managed_prefix_list(
+        &self,
+        ctx: &RequestContext,
+        input: types::CreateManagedPrefixListRequest,
+    ) -> Result<types::CreateManagedPrefixListResult, ServiceError> {
+        self.create_managed_prefix_list_op(ctx, input)
+    }
+    async fn modify_managed_prefix_list(
+        &self,
+        ctx: &RequestContext,
+        input: types::ModifyManagedPrefixListRequest,
+    ) -> Result<types::ModifyManagedPrefixListResult, ServiceError> {
+        self.modify_managed_prefix_list_op(ctx, input)
+    }
+    async fn delete_managed_prefix_list(
+        &self,
+        ctx: &RequestContext,
+        input: types::DeleteManagedPrefixListRequest,
+    ) -> Result<types::DeleteManagedPrefixListResult, ServiceError> {
+        self.delete_managed_prefix_list_op(ctx, input)
+    }
+    async fn get_managed_prefix_list_associations(
+        &self,
+        ctx: &RequestContext,
+        input: types::GetManagedPrefixListAssociationsRequest,
+    ) -> Result<types::GetManagedPrefixListAssociationsResult, ServiceError> {
+        self.get_managed_prefix_list_associations_op(ctx, input)
+    }
+    async fn describe_addresses_attribute(
+        &self,
+        ctx: &RequestContext,
+        input: types::DescribeAddressesAttributeRequest,
+    ) -> Result<types::DescribeAddressesAttributeResult, ServiceError> {
+        self.describe_addresses_attribute_op(ctx, input)
+    }
+    async fn modify_address_attribute(
+        &self,
+        ctx: &RequestContext,
+        input: types::ModifyAddressAttributeRequest,
+    ) -> Result<types::ModifyAddressAttributeResult, ServiceError> {
+        self.modify_address_attribute_op(ctx, input)
+    }
+    async fn reset_address_attribute(
+        &self,
+        ctx: &RequestContext,
+        input: types::ResetAddressAttributeRequest,
+    ) -> Result<types::ResetAddressAttributeResult, ServiceError> {
+        self.reset_address_attribute_op(ctx, input)
+    }
+    async fn copy_snapshot(
+        &self,
+        ctx: &RequestContext,
+        input: types::CopySnapshotRequest,
+    ) -> Result<types::CopySnapshotResult, ServiceError> {
+        self.copy_snapshot_op(ctx, input)
+    }
+    async fn copy_volumes(
+        &self,
+        ctx: &RequestContext,
+        input: types::CopyVolumesRequest,
+    ) -> Result<types::CopyVolumesResult, ServiceError> {
+        self.copy_volumes_op(ctx, input)
+    }
+    async fn create_launch_template(
+        &self,
+        ctx: &RequestContext,
+        input: types::CreateLaunchTemplateRequest,
+    ) -> Result<types::CreateLaunchTemplateResult, ServiceError> {
+        self.create_launch_template_op(ctx, input)
+    }
+    async fn create_launch_template_version(
+        &self,
+        ctx: &RequestContext,
+        input: types::CreateLaunchTemplateVersionRequest,
+    ) -> Result<types::CreateLaunchTemplateVersionResult, ServiceError> {
+        self.create_launch_template_version_op(ctx, input)
+    }
+    async fn create_replace_root_volume_task(
+        &self,
+        ctx: &RequestContext,
+        input: types::CreateReplaceRootVolumeTaskRequest,
+    ) -> Result<types::CreateReplaceRootVolumeTaskResult, ServiceError> {
+        self.create_replace_root_volume_task_op(ctx, input)
+    }
+    async fn create_snapshots(
+        &self,
+        ctx: &RequestContext,
+        input: types::CreateSnapshotsRequest,
+    ) -> Result<types::CreateSnapshotsResult, ServiceError> {
+        self.create_snapshots_op(ctx, input)
+    }
+    async fn delete_launch_template(
+        &self,
+        ctx: &RequestContext,
+        input: types::DeleteLaunchTemplateRequest,
+    ) -> Result<types::DeleteLaunchTemplateResult, ServiceError> {
+        self.delete_launch_template_op(ctx, input)
+    }
+    async fn delete_launch_template_versions(
+        &self,
+        ctx: &RequestContext,
+        input: types::DeleteLaunchTemplateVersionsRequest,
+    ) -> Result<types::DeleteLaunchTemplateVersionsResult, ServiceError> {
+        self.delete_launch_template_versions_op(ctx, input)
+    }
+    async fn describe_fast_snapshot_restores(
+        &self,
+        ctx: &RequestContext,
+        input: types::DescribeFastSnapshotRestoresRequest,
+    ) -> Result<types::DescribeFastSnapshotRestoresResult, ServiceError> {
+        self.describe_fast_snapshot_restores_op(ctx, input)
+    }
+    async fn describe_launch_template_versions(
+        &self,
+        ctx: &RequestContext,
+        input: types::DescribeLaunchTemplateVersionsRequest,
+    ) -> Result<types::DescribeLaunchTemplateVersionsResult, ServiceError> {
+        self.describe_launch_template_versions_op(ctx, input)
+    }
+    async fn describe_launch_templates(
+        &self,
+        ctx: &RequestContext,
+        input: types::DescribeLaunchTemplatesRequest,
+    ) -> Result<types::DescribeLaunchTemplatesResult, ServiceError> {
+        self.describe_launch_templates_op(ctx, input)
+    }
+    async fn describe_locked_snapshots(
+        &self,
+        ctx: &RequestContext,
+        input: types::DescribeLockedSnapshotsRequest,
+    ) -> Result<types::DescribeLockedSnapshotsResult, ServiceError> {
+        self.describe_locked_snapshots_op(ctx, input)
+    }
+    async fn describe_replace_root_volume_tasks(
+        &self,
+        ctx: &RequestContext,
+        input: types::DescribeReplaceRootVolumeTasksRequest,
+    ) -> Result<types::DescribeReplaceRootVolumeTasksResult, ServiceError> {
+        self.describe_replace_root_volume_tasks_op(ctx, input)
+    }
+    async fn describe_snapshot_attribute(
+        &self,
+        ctx: &RequestContext,
+        input: types::DescribeSnapshotAttributeRequest,
+    ) -> Result<types::DescribeSnapshotAttributeResult, ServiceError> {
+        self.describe_snapshot_attribute_op(ctx, input)
+    }
+    async fn describe_snapshot_tier_status(
+        &self,
+        ctx: &RequestContext,
+        input: types::DescribeSnapshotTierStatusRequest,
+    ) -> Result<types::DescribeSnapshotTierStatusResult, ServiceError> {
+        self.describe_snapshot_tier_status_op(ctx, input)
+    }
+    async fn describe_volume_attribute(
+        &self,
+        ctx: &RequestContext,
+        input: types::DescribeVolumeAttributeRequest,
+    ) -> Result<types::DescribeVolumeAttributeResult, ServiceError> {
+        self.describe_volume_attribute_op(ctx, input)
+    }
+    async fn describe_volume_status(
+        &self,
+        ctx: &RequestContext,
+        input: types::DescribeVolumeStatusRequest,
+    ) -> Result<types::DescribeVolumeStatusResult, ServiceError> {
+        self.describe_volume_status_op(ctx, input)
+    }
+    async fn describe_volumes_modifications(
+        &self,
+        ctx: &RequestContext,
+        input: types::DescribeVolumesModificationsRequest,
+    ) -> Result<types::DescribeVolumesModificationsResult, ServiceError> {
+        self.describe_volumes_modifications_op(ctx, input)
+    }
+    async fn disable_ebs_encryption_by_default(
+        &self,
+        ctx: &RequestContext,
+        input: types::DisableEbsEncryptionByDefaultRequest,
+    ) -> Result<types::DisableEbsEncryptionByDefaultResult, ServiceError> {
+        self.disable_ebs_encryption_by_default_op(ctx, input)
+    }
+    async fn disable_fast_snapshot_restores(
+        &self,
+        ctx: &RequestContext,
+        input: types::DisableFastSnapshotRestoresRequest,
+    ) -> Result<types::DisableFastSnapshotRestoresResult, ServiceError> {
+        self.disable_fast_snapshot_restores_op(ctx, input)
+    }
+    async fn disable_snapshot_block_public_access(
+        &self,
+        ctx: &RequestContext,
+        input: types::DisableSnapshotBlockPublicAccessRequest,
+    ) -> Result<types::DisableSnapshotBlockPublicAccessResult, ServiceError> {
+        self.disable_snapshot_block_public_access_op(ctx, input)
+    }
+    async fn enable_ebs_encryption_by_default(
+        &self,
+        ctx: &RequestContext,
+        input: types::EnableEbsEncryptionByDefaultRequest,
+    ) -> Result<types::EnableEbsEncryptionByDefaultResult, ServiceError> {
+        self.enable_ebs_encryption_by_default_op(ctx, input)
+    }
+    async fn enable_fast_snapshot_restores(
+        &self,
+        ctx: &RequestContext,
+        input: types::EnableFastSnapshotRestoresRequest,
+    ) -> Result<types::EnableFastSnapshotRestoresResult, ServiceError> {
+        self.enable_fast_snapshot_restores_op(ctx, input)
+    }
+    async fn enable_snapshot_block_public_access(
+        &self,
+        ctx: &RequestContext,
+        input: types::EnableSnapshotBlockPublicAccessRequest,
+    ) -> Result<types::EnableSnapshotBlockPublicAccessResult, ServiceError> {
+        self.enable_snapshot_block_public_access_op(ctx, input)
+    }
+    async fn enable_volume_io(
+        &self,
+        ctx: &RequestContext,
+        input: types::EnableVolumeIORequest,
+    ) -> Result<(), ServiceError> {
+        self.enable_volume_io_op(ctx, input)
+    }
+    async fn get_ebs_default_kms_key_id(
+        &self,
+        ctx: &RequestContext,
+        input: types::GetEbsDefaultKmsKeyIdRequest,
+    ) -> Result<types::GetEbsDefaultKmsKeyIdResult, ServiceError> {
+        self.get_ebs_default_kms_key_id_op(ctx, input)
+    }
+    async fn get_ebs_encryption_by_default(
+        &self,
+        ctx: &RequestContext,
+        input: types::GetEbsEncryptionByDefaultRequest,
+    ) -> Result<types::GetEbsEncryptionByDefaultResult, ServiceError> {
+        self.get_ebs_encryption_by_default_op(ctx, input)
+    }
+    async fn get_launch_template_data(
+        &self,
+        ctx: &RequestContext,
+        input: types::GetLaunchTemplateDataRequest,
+    ) -> Result<types::GetLaunchTemplateDataResult, ServiceError> {
+        self.get_launch_template_data_op(ctx, input)
+    }
+    async fn get_snapshot_block_public_access_state(
+        &self,
+        ctx: &RequestContext,
+        input: types::GetSnapshotBlockPublicAccessStateRequest,
+    ) -> Result<types::GetSnapshotBlockPublicAccessStateResult, ServiceError> {
+        self.get_snapshot_block_public_access_state_op(ctx, input)
+    }
+    async fn list_snapshots_in_recycle_bin(
+        &self,
+        ctx: &RequestContext,
+        input: types::ListSnapshotsInRecycleBinRequest,
+    ) -> Result<types::ListSnapshotsInRecycleBinResult, ServiceError> {
+        self.list_snapshots_in_recycle_bin_op(ctx, input)
+    }
+    async fn list_volumes_in_recycle_bin(
+        &self,
+        ctx: &RequestContext,
+        input: types::ListVolumesInRecycleBinRequest,
+    ) -> Result<types::ListVolumesInRecycleBinResult, ServiceError> {
+        self.list_volumes_in_recycle_bin_op(ctx, input)
+    }
+    async fn lock_snapshot(
+        &self,
+        ctx: &RequestContext,
+        input: types::LockSnapshotRequest,
+    ) -> Result<types::LockSnapshotResult, ServiceError> {
+        self.lock_snapshot_op(ctx, input)
+    }
+    async fn modify_ebs_default_kms_key_id(
+        &self,
+        ctx: &RequestContext,
+        input: types::ModifyEbsDefaultKmsKeyIdRequest,
+    ) -> Result<types::ModifyEbsDefaultKmsKeyIdResult, ServiceError> {
+        self.modify_ebs_default_kms_key_id_op(ctx, input)
+    }
+    async fn modify_launch_template(
+        &self,
+        ctx: &RequestContext,
+        input: types::ModifyLaunchTemplateRequest,
+    ) -> Result<types::ModifyLaunchTemplateResult, ServiceError> {
+        self.modify_launch_template_op(ctx, input)
+    }
+    async fn modify_snapshot_attribute(
+        &self,
+        ctx: &RequestContext,
+        input: types::ModifySnapshotAttributeRequest,
+    ) -> Result<(), ServiceError> {
+        self.modify_snapshot_attribute_op(ctx, input)
+    }
+    async fn modify_snapshot_tier(
+        &self,
+        ctx: &RequestContext,
+        input: types::ModifySnapshotTierRequest,
+    ) -> Result<types::ModifySnapshotTierResult, ServiceError> {
+        self.modify_snapshot_tier_op(ctx, input)
+    }
+    async fn modify_volume(
+        &self,
+        ctx: &RequestContext,
+        input: types::ModifyVolumeRequest,
+    ) -> Result<types::ModifyVolumeResult, ServiceError> {
+        self.modify_volume_op(ctx, input)
+    }
+    async fn modify_volume_attribute(
+        &self,
+        ctx: &RequestContext,
+        input: types::ModifyVolumeAttributeRequest,
+    ) -> Result<(), ServiceError> {
+        self.modify_volume_attribute_op(ctx, input)
+    }
+    async fn reset_ebs_default_kms_key_id(
+        &self,
+        ctx: &RequestContext,
+        input: types::ResetEbsDefaultKmsKeyIdRequest,
+    ) -> Result<types::ResetEbsDefaultKmsKeyIdResult, ServiceError> {
+        self.reset_ebs_default_kms_key_id_op(ctx, input)
+    }
+    async fn reset_snapshot_attribute(
+        &self,
+        ctx: &RequestContext,
+        input: types::ResetSnapshotAttributeRequest,
+    ) -> Result<(), ServiceError> {
+        self.reset_snapshot_attribute_op(ctx, input)
+    }
+    async fn restore_snapshot_from_recycle_bin(
+        &self,
+        ctx: &RequestContext,
+        input: types::RestoreSnapshotFromRecycleBinRequest,
+    ) -> Result<types::RestoreSnapshotFromRecycleBinResult, ServiceError> {
+        self.restore_snapshot_from_recycle_bin_op(ctx, input)
+    }
+    async fn restore_snapshot_tier(
+        &self,
+        ctx: &RequestContext,
+        input: types::RestoreSnapshotTierRequest,
+    ) -> Result<types::RestoreSnapshotTierResult, ServiceError> {
+        self.restore_snapshot_tier_op(ctx, input)
+    }
+    async fn restore_volume_from_recycle_bin(
+        &self,
+        ctx: &RequestContext,
+        input: types::RestoreVolumeFromRecycleBinRequest,
+    ) -> Result<types::RestoreVolumeFromRecycleBinResult, ServiceError> {
+        self.restore_volume_from_recycle_bin_op(ctx, input)
+    }
+    async fn unlock_snapshot(
+        &self,
+        ctx: &RequestContext,
+        input: types::UnlockSnapshotRequest,
+    ) -> Result<types::UnlockSnapshotResult, ServiceError> {
+        self.unlock_snapshot_op(ctx, input)
+    }
 }

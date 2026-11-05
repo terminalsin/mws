@@ -130,6 +130,9 @@ fn rules_from(
             any = true;
         }
         for pl in p.prefix_list_ids.iter().flatten() {
+            if let Some(id) = &pl.prefix_list_id {
+                Kind::PrefixList.check(id)?;
+            }
             out.push(SgRule {
                 prefix_list_id: pl.prefix_list_id.clone(),
                 description: pl.description.clone(),

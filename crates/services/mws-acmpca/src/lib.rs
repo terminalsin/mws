@@ -33,14 +33,17 @@ mod ops;
 mod public;
 mod publish;
 mod revocation;
+mod shared;
 mod state;
 mod x509;
 
-use std::sync::{Arc, Mutex, MutexGuard};
+use std::sync::{Arc, Mutex, MutexGuard, RwLock};
 
 use mws_core::{HttpRequest, HttpResponse, RequestContext, Service, ServiceError};
 
 pub use acm::{AcmCaSummary, AcmIssued, AcmIssuer};
+pub use generated::types::ApiPassthrough;
+pub use shared::{CaInfo, CaPolicyListener, ServiceIssue, ServiceIssueError, ServiceIssued};
 use state::State;
 
 /// The Private CA service. Cheap to clone; clones share state.
@@ -48,6 +51,7 @@ use state::State;
 pub struct PrivateCa {
     state: Arc<Mutex<State>>,
     s3: Option<mws_s3::S3>,
+    policy_listener: Arc<RwLock<Option<Arc<dyn CaPolicyListener>>>>,
 }
 
 impl PrivateCa {

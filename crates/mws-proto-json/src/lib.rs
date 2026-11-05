@@ -213,6 +213,16 @@ pub fn ser_timestamp(t: &DateTime<Utc>) -> Value {
     serde_json::Number::from_f64(secs).map(Value::Number).unwrap_or(Value::Null)
 }
 
+/// A `date-time` timestamp: RFC 3339 in UTC with milliseconds.
+pub fn ser_timestamp_date_time(t: &DateTime<Utc>) -> Value {
+    Value::String(t.to_rfc3339_opts(chrono::SecondsFormat::Millis, true))
+}
+
+/// An `http-date` timestamp (IMF-fixdate).
+pub fn ser_timestamp_http_date(t: &DateTime<Utc>) -> Value {
+    Value::String(t.format("%a, %d %b %Y %H:%M:%S GMT").to_string())
+}
+
 pub fn ser_blob(b: &[u8]) -> Value {
     use base64::Engine;
     Value::String(base64::engine::general_purpose::STANDARD.encode(b))

@@ -41,6 +41,56 @@ pub struct RegionState {
     pub volumes: BTreeMap<String, t::Volume>,
     pub snapshots: BTreeMap<String, t::Snapshot>,
     pub iam_associations: BTreeMap<String, t::IamInstanceProfileAssociation>,
+    pub vpc_endpoints: BTreeMap<String, t::VpcEndpoint>,
+    /// Customer-managed prefix lists (AWS-managed ones are not stored).
+    pub prefix_lists: BTreeMap<String, PrefixListRecord>,
+    /// Reverse DNS (`ModifyAddressAttribute`) by allocation id.
+    pub address_domain_names: BTreeMap<String, String>,
+    pub launch_templates: BTreeMap<String, LaunchTemplateRecord>,
+    /// `CreateVolume` client tokens, to their volumes.
+    pub volume_tokens: BTreeMap<String, String>,
+    /// The latest modification of each volume.
+    pub volume_modifications: BTreeMap<String, t::VolumeModification>,
+    /// Volumes whose `autoEnableIO` attribute is set.
+    pub volume_auto_enable_io: BTreeMap<String, bool>,
+    pub snapshot_permissions: BTreeMap<String, SnapshotPermissions>,
+    pub snapshot_locks: BTreeMap<String, t::LockedSnapshotsInfo>,
+    pub snapshot_tiers: BTreeMap<String, t::SnapshotTierStatus>,
+    /// Keyed by `{snapshot-id}/{zone}`.
+    pub fast_snapshot_restores: BTreeMap<String, t::DescribeFastSnapshotRestoreSuccessItem>,
+    pub replace_root_tasks: BTreeMap<String, t::ReplaceRootVolumeTask>,
+    pub ebs_encryption_by_default: bool,
+    /// `None` is the AWS managed key (`alias/aws/ebs`).
+    pub ebs_default_kms_key_id: Option<String>,
+    /// `block-all-sharing`, `block-new-sharing`, or `None` (unblocked).
+    pub snapshot_block_public_access: Option<String>,
+}
+
+/// A customer-managed prefix list with every version's entries.
+#[derive(Debug, Default, Clone, Serialize, Deserialize)]
+#[serde(default)]
+pub struct PrefixListRecord {
+    pub list: t::ManagedPrefixList,
+    /// Entries of version `n` at index `n - 1`.
+    pub versions: Vec<Vec<t::PrefixListEntry>>,
+}
+
+#[derive(Debug, Default, Clone, Serialize, Deserialize)]
+#[serde(default)]
+pub struct LaunchTemplateRecord {
+    pub template: t::LaunchTemplate,
+    pub versions: BTreeMap<i64, t::LaunchTemplateVersion>,
+    pub client_token: Option<String>,
+    /// Client tokens of `CreateLaunchTemplateVersion`, to version numbers.
+    pub version_tokens: BTreeMap<String, i64>,
+}
+
+/// Who may create volumes from a snapshot besides its owner.
+#[derive(Debug, Default, Clone, Serialize, Deserialize)]
+#[serde(default)]
+pub struct SnapshotPermissions {
+    pub users: Vec<String>,
+    pub public: bool,
 }
 
 #[derive(Debug, Default, Clone, Serialize, Deserialize)]
@@ -152,6 +202,10 @@ impl RegionState {
             "i" => self.instances.get_mut(id).map(|v| &mut v.instance.tags),
             "vol" => self.volumes.get_mut(id).map(|v| &mut v.tags),
             "snap" => self.snapshots.get_mut(id).map(|v| &mut v.tags),
+            "vpce" => self.vpc_endpoints.get_mut(id).map(|v| &mut v.tags),
+            "pl" => self.prefix_lists.get_mut(id).map(|v| &mut v.list.tags),
+            "lt" => self.launch_templates.get_mut(id).map(|v| &mut v.template.tags),
+            "replacevol" => self.replace_root_tasks.get_mut(id).map(|v| &mut v.tags),
             _ => None,
         }
     }
@@ -175,6 +229,10 @@ impl RegionState {
             "i" => "instance",
             "vol" => "volume",
             "snap" => "snapshot",
+            "vpce" => "vpc-endpoint",
+            "pl" => "prefix-list",
+            "lt" => "launch-template",
+            "replacevol" => "replace-root-volume-task",
             _ => return None,
         })
     }
@@ -233,6 +291,18 @@ impl RegionState {
         }
         for v in self.snapshots.values() {
             push(v.snapshot_id.as_ref(), &v.tags);
+        }
+        for v in self.vpc_endpoints.values() {
+            push(v.vpc_endpoint_id.as_ref(), &v.tags);
+        }
+        for v in self.prefix_lists.values() {
+            push(v.list.prefix_list_id.as_ref(), &v.list.tags);
+        }
+        for v in self.launch_templates.values() {
+            push(v.template.launch_template_id.as_ref(), &v.template.tags);
+        }
+        for v in self.replace_root_tasks.values() {
+            push(v.replace_root_volume_task_id.as_ref(), &v.tags);
         }
         out.sort_by(|a, b| a.0.cmp(&b.0));
         out
