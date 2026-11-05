@@ -739,7 +739,7 @@ async fn https_listener_serves_acm_certificates_by_sni() {
 
     // ACM shows the certificate in use, and will not delete it.
     let d = acm.describe_certificate().certificate_arn(&main_cert).send().await.unwrap();
-    assert_eq!(d.certificate().unwrap().in_use_by(), [lb_arn.clone()]);
+    assert_eq!(d.certificate().unwrap().in_use_by(), std::slice::from_ref(&lb_arn));
     let err = acm.delete_certificate().certificate_arn(&main_cert).send().await.unwrap_err().into_service_error();
     assert_eq!(err.meta().code(), Some("ResourceInUseException"));
 

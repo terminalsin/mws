@@ -116,7 +116,7 @@ async fn load_balancer_settings_and_errors() {
     let sg = ec2.create_security_group().group_name("alb").description("alb").vpc_id(&vpc).send().await.unwrap();
     let sg = sg.group_id().unwrap().to_string();
     let out = elb.set_security_groups().load_balancer_arn(&arn).security_groups(&sg).send().await.unwrap();
-    assert_eq!(out.security_group_ids(), [sg.clone()]);
+    assert_eq!(out.security_group_ids(), std::slice::from_ref(&sg));
     let err = elb
         .set_security_groups()
         .load_balancer_arn(&arn)
@@ -321,7 +321,7 @@ async fn listeners_rules_and_target_groups() {
 
     // The target group now reports the load balancer.
     let d = elb.describe_target_groups().load_balancer_arn(&lb_arn).send().await.unwrap();
-    assert_eq!(d.target_groups()[0].load_balancer_arns(), [lb_arn.clone()]);
+    assert_eq!(d.target_groups()[0].load_balancer_arns(), std::slice::from_ref(&lb_arn));
 
     let swapped = elb
         .set_rule_priorities()

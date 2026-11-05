@@ -195,8 +195,8 @@ async fn classic_load_balancers() {
 
     // The HTTP listener answers 503 while no instance is in service.
     let d = elb.describe_load_balancers().load_balancer_names("classic").send().await.unwrap();
-    let listener_key = format!("arn:aws:elasticloadbalancing:us-east-1:123456789012:loadbalancer/classic:80");
-    let addr = listener_address(&mws, &listener_key).await;
+    let listener_key = "arn:aws:elasticloadbalancing:us-east-1:123456789012:loadbalancer/classic:80";
+    let addr = listener_address(&mws, listener_key).await;
     let r = get(&addr, &dns, "/", &[]).await;
     assert_eq!(r.status, 503);
     assert_eq!(d.load_balancer_descriptions()[0].instances().len(), 1);
