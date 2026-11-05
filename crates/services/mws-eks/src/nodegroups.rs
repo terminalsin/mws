@@ -119,6 +119,10 @@ fn group_spec(cluster: &str, rec: &NodegroupRec, template_name: &str) -> Option<
 }
 
 /// Health issues EKS raises from the state of the Auto Scaling group.
+/// Service Quotas: managed node groups per cluster and nodes per group.
+const NODEGROUPS_QUOTA: &str = "L-6D54EA21";
+const NODES_QUOTA: &str = "L-BD136A63";
+
 const GROUP_ISSUES: [&str; 2] = ["AutoScalingGroupNotFound", "AutoScalingGroupInvalidConfiguration"];
 
 /// Processes a managed node group needs. EKS itself suspends
@@ -173,6 +177,8 @@ impl Eks {
             ConditionContext::new(),
         )?;
         util::check_create_tags(input.tags.as_ref())?;
+        let max_nodegroups = self.quota(ctx, NODEGROUPS_QUOTA);
+        let max_nodes = self.quota(ctx, NODES_QUOTA);
         {
             let mut st = self.write();
             let rec = util::cluster(&mut st, ctx, &cluster)?;
@@ -185,6 +191,22 @@ impl Eks {
                 }
                 return Err(errors::resource_in_use(format!(
                     "NodeGroup already exists with name {name} and cluster name {cluster}"
+                ))
+                .with_field("clusterName", text(&cluster))
+                .with_field("nodegroupName", text(&name)));
+            }
+            if rec.nodegroups.len() >= max_nodegroups {
+                return Err(errors::resource_limit_exceeded(format!(
+                    "You have reached the limit of {max_nodegroups} managed node groups for cluster {cluster}."
+                ))
+                .with_field("clusterName", text(&cluster))
+                .with_field("nodegroupName", text(&name)));
+            }
+        }
+        if let Some(max) = input.scaling_config.as_ref().and_then(|c| c.max_size) {
+            if max as usize > max_nodes {
+                return Err(errors::invalid_parameter(format!(
+                    "Maximum size of {max} exceeds the limit of {max_nodes} nodes per managed node group."
                 ))
                 .with_field("clusterName", text(&cluster))
                 .with_field("nodegroupName", text(&name)));

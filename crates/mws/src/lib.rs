@@ -373,6 +373,10 @@ fn build_with_store(config: Config, store: Option<Arc<Store>>) -> Mws {
         iam: iam.clone(),
         autoscaling: autoscaling.clone(),
     }));
+    autoscaling.set_service_quotas(servicequotas.clone());
+    elb.set_service_quotas(servicequotas.clone());
+    rds.set_service_quotas(servicequotas.clone());
+    eks.set_service_quotas(servicequotas.clone());
     let mut gateway = Gateway::builder();
     if let Some(store) = store {
         gateway = gateway.store(store);

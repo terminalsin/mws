@@ -8,6 +8,7 @@ use std::time::Duration;
 
 use aws_sdk_cloudwatch::types::{Dimension, Metric, MetricDataQuery, MetricStat};
 use aws_sdk_ec2::types::{Filter, InstanceType};
+use aws_sdk_eks::client::Waiters;
 use aws_sdk_servicequotas::error::ProvideErrorMetadata;
 use aws_sdk_servicequotas::types::{RequestStatus, Tag};
 use aws_sdk_servicequotas::Client;
@@ -428,4 +429,160 @@ async fn organization_template_applies_to_new_accounts() {
     sq.disassociate_service_quota_template().send().await.unwrap();
     let e = sq.disassociate_service_quota_template().send().await.unwrap_err();
     assert_eq!(code(&e), "ServiceQuotaTemplateNotInUseException");
+}
+
+/// Raise a quota and wait for the increase to apply.
+async fn raise(sq: &Client, service: &str, quota: &str, value: f64) {
+    let r = sq
+        .request_service_quota_increase()
+        .service_code(service)
+        .quota_code(quota)
+        .desired_value(value)
+        .send()
+        .await
+        .unwrap();
+    approved(sq, r.requested_quota().unwrap().id().unwrap()).await;
+}
+
+#[tokio::test]
+async fn auto_scaling_elb_rds_and_eks_limits_follow_quotas() {
+    let mws = Mws::start().await;
+    let config = mws.root_sdk_config().await;
+    let sq = Client::new(&config);
+
+    // Every quota of a service, with applied values.
+    let elb_quotas = sq.list_service_quotas().service_code("elasticloadbalancing").send().await.unwrap();
+    let alb = elb_quotas.quotas().iter().find(|q| q.quota_code() == Some("L-53DA6B97")).unwrap();
+    assert_eq!(alb.value(), Some(50.0));
+    assert_eq!(alb.quota_name(), Some("Application Load Balancers per Region"));
+
+    raise(&sq, "autoscaling", "L-CDE20ADC", 600.0).await;
+    raise(&sq, "autoscaling", "L-6B80B8FA", 250.0).await;
+    raise(&sq, "elasticloadbalancing", "L-53DA6B97", 60.0).await;
+    raise(&sq, "elasticloadbalancing", "L-B22855CB", 3500.0).await;
+    raise(&sq, "rds", "L-7B6409FD", 80.0).await;
+    raise(&sq, "rds", "L-952B80B8", 45.0).await;
+
+    // The services' own account-limit APIs report the applied values.
+    let asg = aws_sdk_autoscaling::Client::new(&config);
+    let limits = asg.describe_account_limits().send().await.unwrap();
+    assert_eq!(limits.max_number_of_auto_scaling_groups(), Some(600));
+    assert_eq!(limits.max_number_of_launch_configurations(), Some(250));
+
+    let elb = aws_sdk_elasticloadbalancingv2::Client::new(&config);
+    let limits = elb.describe_account_limits().send().await.unwrap();
+    let max =
+        |name: &str| limits.limits().iter().find(|l| l.name() == Some(name)).and_then(|l| l.max()).map(str::to_string);
+    assert_eq!(max("application-load-balancers").as_deref(), Some("60"));
+    assert_eq!(max("target-groups").as_deref(), Some("3500"));
+    assert_eq!(max("network-load-balancers").as_deref(), Some("50"));
+
+    let rds = aws_sdk_rds::Client::new(&config);
+    let attrs = rds.describe_account_attributes().send().await.unwrap();
+    let max =
+        |name: &str| attrs.account_quotas().iter().find(|q| q.account_quota_name() == Some(name)).and_then(|q| q.max());
+    assert_eq!(max("DBInstances"), Some(80));
+    assert_eq!(max("DBClusters"), Some(45));
+    assert_eq!(max("ManualSnapshots"), Some(100));
+
+    // EKS refuses node groups larger than the nodes-per-group quota.
+    let iam = aws_sdk_iam::Client::new(&config);
+    let ec2 = aws_sdk_ec2::Client::new(&config);
+    let eks = aws_sdk_eks::Client::new(&config);
+    let trust = |service: &str| {
+        format!(
+            r#"{{"Version":"2012-10-17","Statement":[{{"Effect":"Allow","Principal":{{"Service":"{service}"}},"Action":"sts:AssumeRole"}}]}}"#
+        )
+    };
+    let cluster_role = iam
+        .create_role()
+        .role_name("eks-cluster")
+        .assume_role_policy_document(trust("eks.amazonaws.com"))
+        .send()
+        .await
+        .unwrap();
+    let node_role = iam
+        .create_role()
+        .role_name("eks-node")
+        .assume_role_policy_document(trust("ec2.amazonaws.com"))
+        .send()
+        .await
+        .unwrap();
+    let vpc =
+        ec2.create_vpc().cidr_block("10.30.0.0/16").send().await.unwrap().vpc().unwrap().vpc_id().unwrap().to_string();
+    let mut subnets = Vec::new();
+    for (i, zone) in ["us-east-1a", "us-east-1b"].iter().enumerate() {
+        let s = ec2
+            .create_subnet()
+            .vpc_id(&vpc)
+            .cidr_block(format!("10.30.{i}.0/24"))
+            .availability_zone(*zone)
+            .send()
+            .await
+            .unwrap();
+        subnets.push(s.subnet().unwrap().subnet_id().unwrap().to_string());
+    }
+    eks.create_cluster()
+        .name("quotas")
+        .role_arn(cluster_role.role().unwrap().arn())
+        .resources_vpc_config(
+            aws_sdk_eks::types::VpcConfigRequest::builder().set_subnet_ids(Some(subnets.clone())).build(),
+        )
+        .send()
+        .await
+        .unwrap();
+    eks.wait_until_cluster_active().name("quotas").wait(Duration::from_secs(60)).await.unwrap();
+    let nodegroup = |max: i32| {
+        eks.create_nodegroup()
+            .cluster_name("quotas")
+            .nodegroup_name(format!("ng-{max}"))
+            .node_role(node_role.role().unwrap().arn())
+            .set_subnets(Some(subnets.clone()))
+            .scaling_config(
+                aws_sdk_eks::types::NodegroupScalingConfig::builder().min_size(0).max_size(max).desired_size(0).build(),
+            )
+            .send()
+    };
+    let err = nodegroup(500).await.unwrap_err();
+    assert_eq!(err.code(), Some("InvalidParameterException"), "{err:?}");
+    raise(&sq, "eks", "L-BD136A63", 600.0).await;
+    nodegroup(500).await.unwrap();
+}
+
+#[tokio::test]
+async fn automatic_management_raises_quotas_near_their_limit() {
+    let mws = Mws::start().await;
+    let config = mws.root_sdk_config().await;
+    let sq = Client::new(&config);
+    let ec2 = aws_sdk_ec2::Client::new(&config);
+    sq.start_auto_management()
+        .opt_in_level(aws_sdk_servicequotas::types::OptInLevel::Account)
+        .opt_in_type(aws_sdk_servicequotas::types::OptInType::NotifyAndAdjust)
+        .exclusion_list("vpc", vec!["L-F678F1CE".to_string()])
+        .send()
+        .await
+        .unwrap();
+    // Four of the five Elastic IPs: 80% of the quota.
+    for _ in 0..4 {
+        ec2.allocate_address().domain(aws_sdk_ec2::types::DomainType::Vpc).send().await.unwrap();
+    }
+    // Usage is checked once a minute.
+    let (status, _) = mws.control("POST", "/_mws/clock", Some(r#"{"advanceSeconds":61}"#)).await;
+    assert_eq!(status, 200);
+    let mut raised = None;
+    for _ in 0..100 {
+        let history = sq.list_requested_service_quota_change_history().service_code("ec2").send().await.unwrap();
+        if let Some(r) = history.requested_quotas().iter().find(|r| r.quota_code() == Some("L-0263D0A3")) {
+            raised = Some(r.clone());
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(100)).await;
+    }
+    let raised = raised.expect("automatic management requested an increase");
+    assert_eq!(raised.desired_value(), Some(10.0));
+    assert_eq!(raised.request_type().map(|t| t.as_str()), Some("AutomaticManagement"));
+    approved(&sq, raised.id().unwrap()).await;
+    for _ in 0..6 {
+        ec2.allocate_address().domain(aws_sdk_ec2::types::DomainType::Vpc).send().await.unwrap();
+    }
 }

@@ -42,6 +42,71 @@ pub(crate) fn metrics_map(metrics: &[String], records: &[(&CostRecord, f64)]) ->
     metrics.iter().map(|m| (m.clone(), metric_value(sum(m, records), &unit_of(m, records)))).collect()
 }
 
+/// Redistribute the costs of split charge rules' source values among their
+/// targets, in groups keyed by cost category `c` at position `at`. Usage
+/// metrics stay where they are.
+fn apply_split_charges(
+    c: &crate::state::CostCategory,
+    at: usize,
+    sums: &mut BTreeMap<Vec<String>, BTreeMap<String, (f64, String)>>,
+) {
+    let rules: Vec<t::CostCategorySplitChargeRule> =
+        serde_json::from_value(c.split_charge_rules.clone()).unwrap_or_default();
+    let key = |v: &str| format!("{}${v}", c.name);
+    for rule in rules {
+        let source = key(&rule.source);
+        let targets: Vec<String> = rule.targets.iter().map(|t| key(t)).collect();
+        let sources: Vec<Vec<String>> = sums.keys().filter(|k| k.get(at) == Some(&source)).cloned().collect();
+        for src in sources {
+            let Some(moved) = sums.remove(&src) else { continue };
+            let mut kept = BTreeMap::new();
+            for (metric, (value, unit)) in moved {
+                if !COST_METRICS.contains(&metric.as_str()) {
+                    kept.insert(metric, (value, unit));
+                    continue;
+                }
+                let target_keys: Vec<Vec<String>> = targets
+                    .iter()
+                    .map(|t| {
+                        let mut k = src.clone();
+                        k[at] = t.clone();
+                        k
+                    })
+                    .collect();
+                let weights: Vec<f64> = match rule.method.as_str() {
+                    "FIXED" => rule
+                        .parameters
+                        .iter()
+                        .flatten()
+                        .find(|p| p.r#type == "ALLOCATION_PERCENTAGES")
+                        .map(|p| p.values.iter().map(|v| v.parse::<f64>().unwrap_or(0.0) / 100.0).collect())
+                        .unwrap_or_default(),
+                    "PROPORTIONAL" => {
+                        let own: Vec<f64> = target_keys
+                            .iter()
+                            .map(|k| sums.get(k).and_then(|m| m.get(&metric)).map_or(0.0, |v| v.0))
+                            .collect();
+                        let total: f64 = own.iter().sum();
+                        if total > 0.0 {
+                            own.iter().map(|v| v / total).collect()
+                        } else {
+                            vec![1.0 / targets.len() as f64; targets.len()]
+                        }
+                    }
+                    _ => vec![1.0 / targets.len().max(1) as f64; targets.len()],
+                };
+                for (k, w) in target_keys.into_iter().zip(weights) {
+                    let entry = sums.entry(k).or_default().entry(metric.clone()).or_insert((0.0, unit.clone()));
+                    entry.0 += value * w;
+                }
+            }
+            if !kept.is_empty() {
+                sums.insert(src, kept);
+            }
+        }
+    }
+}
+
 /// Paginate a list with an opaque offset token.
 pub(crate) fn page<T>(
     items: Vec<T>,
@@ -119,13 +184,29 @@ impl CostExplorer {
                     }
                     groups.entry(keys).or_default().push((r, s));
                 }
+                let mut sums: BTreeMap<Vec<String>, BTreeMap<String, (f64, String)>> = groups
+                    .into_iter()
+                    .map(|(keys, rs)| {
+                        let m = metrics.iter().map(|m| (m.clone(), (sum(m, &rs), unit_of(m, &rs)))).collect();
+                        (keys, m)
+                    })
+                    .collect();
+                for (i, g) in group_by.iter().enumerate() {
+                    if g.r#type.as_deref() == Some("COST_CATEGORY") {
+                        if let Some(c) = g.key.as_deref().and_then(|k| view.category(k)) {
+                            apply_split_charges(c, i, &mut sums);
+                        }
+                    }
+                }
                 t::ResultByTime {
                     time_period: Some(p.interval()),
                     total: Some(BTreeMap::new()),
                     groups: Some(
-                        groups
-                            .into_iter()
-                            .map(|(keys, rs)| t::Group { keys: Some(keys), metrics: Some(metrics_map(metrics, &rs)) })
+                        sums.into_iter()
+                            .map(|(keys, m)| t::Group {
+                                keys: Some(keys),
+                                metrics: Some(m.into_iter().map(|(k, (v, u))| (k, metric_value(v, &u))).collect()),
+                            })
                             .collect(),
                     ),
                     estimated,

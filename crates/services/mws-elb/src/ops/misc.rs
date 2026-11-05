@@ -124,7 +124,13 @@ impl Elb {
         names::authorize(ctx, "DescribeAccountLimits", "*", Default::default())?;
         let all: Vec<t::Limit> = catalog::V2_LIMITS
             .iter()
-            .map(|(n, m)| t::Limit { name: Some(n.to_string()), max: Some(m.to_string()) })
+            .map(|(n, m)| {
+                let max = match catalog::quota_code(n) {
+                    Some(_) => self.limit(ctx, n).to_string(),
+                    None => m.to_string(),
+                };
+                t::Limit { name: Some(n.to_string()), max: Some(max) }
+            })
             .collect();
         let (items, next) = names::page(&all, input.marker.as_deref(), input.page_size, 400)?;
         Ok(t::DescribeAccountLimitsOutput { limits: Some(items), next_marker: next })

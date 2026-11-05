@@ -74,6 +74,33 @@ fn check_rules(rules: &[t::CostCategoryRule]) -> Result<(), ServiceError> {
     Ok(())
 }
 
+fn check_split_charge_rules(rules: Option<&[t::CostCategorySplitChargeRule]>) -> Result<(), ServiceError> {
+    let rules = rules.unwrap_or_default();
+    if rules.len() > 10 {
+        return Err(validation("SplitChargeRules must contain at most 10 rules."));
+    }
+    for r in rules {
+        if r.targets.is_empty() || r.targets.contains(&r.source) {
+            return Err(validation("A split charge rule needs targets, and its source can't be one of them."));
+        }
+        if r.method == "FIXED" {
+            let values: Vec<f64> = r
+                .parameters
+                .iter()
+                .flatten()
+                .find(|p| p.r#type == "ALLOCATION_PERCENTAGES")
+                .map(|p| p.values.iter().filter_map(|v| v.parse().ok()).collect())
+                .unwrap_or_default();
+            if values.len() != r.targets.len() || (values.iter().sum::<f64>() - 100.0).abs() > 1e-6 {
+                return Err(validation(
+                    "FIXED split charge rules need one ALLOCATION_PERCENTAGES value per target, adding up to 100.",
+                ));
+            }
+        }
+    }
+    Ok(())
+}
+
 fn reference(c: &CostCategory) -> t::CostCategoryReference {
     let rules: Vec<t::CostCategoryRule> = serde_json::from_value(c.rules.clone()).unwrap_or_default();
     let values: BTreeSet<String> = rules.iter().filter_map(|r| r.value.clone()).collect();
@@ -107,6 +134,7 @@ impl CostExplorer {
     ) -> Result<t::CreateCostCategoryDefinitionResponse, ServiceError> {
         auth(ctx, "CreateCostCategoryDefinition")?;
         check_rules(&input.rules)?;
+        check_split_charge_rules(input.split_charge_rules.as_deref())?;
         let start = effective_start(input.effective_start.as_deref(), ctx.received_at)?;
         let tags = tag_map(input.resource_tags.as_deref())?;
         let arn = arn(ctx, "costcategory");
@@ -150,6 +178,7 @@ impl CostExplorer {
     ) -> Result<t::UpdateCostCategoryDefinitionResponse, ServiceError> {
         auth(ctx, "UpdateCostCategoryDefinition")?;
         check_rules(&input.rules)?;
+        check_split_charge_rules(input.split_charge_rules.as_deref())?;
         let start = effective_start(input.effective_start.as_deref(), ctx.received_at)?;
         self.with_account(ctx, |acct| {
             let c = acct

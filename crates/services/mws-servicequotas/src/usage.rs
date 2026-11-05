@@ -131,6 +131,7 @@ impl ServiceQuotas {
         };
         for (account, region, now) in due {
             self.publish_resource_counts(&account, &region, None, now);
+            self.auto_adjust(&account, &region, now);
         }
     }
 }

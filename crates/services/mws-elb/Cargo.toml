@@ -24,6 +24,7 @@ mws-lambda.workspace = true
 mws-proto-json.workspace = true
 mws-proto-query.workspace = true
 mws-s3.workspace = true
+mws-servicequotas.workspace = true
 rand.workspace = true
 regex.workspace = true
 rustls.workspace = true

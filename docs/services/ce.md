@@ -15,7 +15,7 @@ All 47 operations are generated from the AWS model (awsJson1.1) and implemented 
 | Values | ✅ | `GetDimensionValues` (search, context), `GetTags`, `GetCostCategories`. |
 | Forecasts | ✅ | `GetCostForecast` and `GetUsageForecast` by linear regression on daily history, with prediction intervals. |
 | Comparisons | ✅ | `GetCostAndUsageComparisons` and `GetCostComparisonDrivers` (by usage type). |
-| Cost categories | 🟡 | Rules over dimensions, tags and other categories, inherited values, default value, effective dates. Split charge rules are stored but not applied. |
+| Cost categories | ✅ | Rules over dimensions, tags and other categories, inherited values, default value, effective dates, and split charge rules (`FIXED`, `PROPORTIONAL`, `EVEN`) that share a source value's costs out to its targets when grouping by the category. |
 | Cost allocation tags | ✅ | Tags found in the data, activation (applies from the activation hour), backfills that complete on the emulated clock. |
 | Anomaly detection | 🟡 | Monitors (by service, by account, custom), anomalies found in the ledger with root causes and impact, feedback, subscriptions with thresholds; immediate SNS subscribers get AWS's alert JSON from `costalerts.amazonaws.com`. Detection is a heuristic (a day above the previous 14 days' mean by three standard deviations, 20% and $1), not AWS's model. Daily and weekly emails are not sent. |
 | Coverage | ✅ | Reservation coverage from on-demand instance hours, Savings Plans coverage from eligible on-demand spend (EC2, Fargate, Lambda). |

@@ -128,8 +128,9 @@ with the permissions AWS would use:
   and sends events to EventBridge and SNS.
 - Marketplace Metering and the Entitlement Service share one Marketplace
   catalog of products, subscriptions and entitlements.
-- EC2, S3, IAM and Lambda enforce Service Quotas' applied values, and usage
-  is published to CloudWatch's `AWS/Usage` namespace.
+- EC2, S3, IAM, Lambda, Auto Scaling, ELB, RDS and EKS enforce Service
+  Quotas' applied values, and usage is published to CloudWatch's
+  `AWS/Usage` namespace.
 - Cost Explorer charges API calls at their request prices, follows
   Organizations for consolidated billing and sends anomaly alerts to SNS.
 - Security Hub registers its delegated administrator in Organizations, sends

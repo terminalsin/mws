@@ -9,6 +9,9 @@ use serde::de::DeserializeOwned;
 use serde::Serialize;
 
 use crate::catalog;
+
+/// Service Quotas: clusters per Region.
+const CLUSTERS_QUOTA: &str = "L-1194D53C";
 use crate::generated::{errors, types};
 use crate::infra::SubnetFacts;
 use crate::state::{AccessEntryRec, ClusterRec};
@@ -125,8 +128,10 @@ impl Eks {
         let arn = util::cluster_arn(ctx, &name);
         util::authorize(ctx, "CreateCluster", &arn, None, input.tags.as_ref(), ConditionContext::new())?;
         util::check_create_tags(input.tags.as_ref())?;
+        let max_clusters = self.quota(ctx, CLUSTERS_QUOTA);
         {
             let mut st = self.write();
+            let clusters = util::region(&mut st, ctx).clusters.len();
             if let Some(existing) = util::region(&mut st, ctx).clusters.get(&name) {
                 if input.client_request_token.is_some()
                     && existing.cluster.client_request_token == input.client_request_token
@@ -134,6 +139,12 @@ impl Eks {
                     return Ok(types::CreateClusterResponse { cluster: Some(existing.cluster.clone()) });
                 }
                 return Err(in_use(&name));
+            }
+            if clusters >= max_clusters {
+                return Err(errors::resource_limit_exceeded(format!(
+                    "You have reached the limit of {max_clusters} clusters in this Region. Delete unused clusters or request a quota increase."
+                ))
+                .with_field("clusterName", text(&name)));
             }
         }
         let version = match input.version.as_deref() {

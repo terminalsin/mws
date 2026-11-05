@@ -189,6 +189,61 @@ impl ServiceQuotas {
         }
     }
 
+    /// Automatic management with `NotifyAndAdjust`: request an increase
+    /// (approved like any other) for each adjustable quota whose usage has
+    /// reached 80% of its applied value, unless excluded or already
+    /// requested.
+    pub(crate) fn auto_adjust(&self, account: &str, region: &str, now: DateTime<Utc>) {
+        let Some(am) = self.lock().accounts.get(account).and_then(|a| a.auto_management.clone()) else { return };
+        if am.opt_in_type != "NotifyAndAdjust" {
+            return;
+        }
+        let usage = self.measure(account, region);
+        let mut wanted = Vec::new();
+        for ((service, code), used) in usage {
+            let Some(def) = catalog::quota(service, code).filter(|d| d.adjustable) else { continue };
+            if am.exclusions.get(service).is_some_and(|codes| codes.iter().any(|c| c == code)) {
+                continue;
+            }
+            let applied = self.applied_value(account, region, service, code, now);
+            if applied.is_finite() && applied > 0.0 && used >= 0.8 * applied {
+                wanted.push((def, (applied * 2.0).max((used * 1.25).ceil())));
+            }
+        }
+        if wanted.is_empty() {
+            return;
+        }
+        let at = now.timestamp_millis();
+        let mut st = self.lock();
+        let acct = st.accounts.entry(account.to_string()).or_default();
+        for (def, desired) in wanted {
+            if acct.requests.values().any(|r| {
+                r.open() && r.service == def.service && r.code == def.code && (def.global || r.region == region)
+            }) {
+                continue;
+            }
+            let id = ops::new_request_id();
+            acct.requests.insert(
+                id.clone(),
+                state::Request {
+                    id,
+                    service: def.service.into(),
+                    code: def.code.into(),
+                    region: region.into(),
+                    global: def.global,
+                    desired,
+                    status: "PENDING".into(),
+                    created: at,
+                    updated: at,
+                    case_id: None,
+                    requester: format!("{{\"accountId\":\"{account}\",\"callerArn\":\"arn:aws:iam::{account}:root\"}}"),
+                    request_type: Some("AutomaticManagement".into()),
+                    settles_at: at + state::APPROVAL_MS,
+                },
+            );
+        }
+    }
+
     /// Usage of every quota the usage source measures, for `account` in
     /// `region`.
     fn measure(&self, account: &str, region: &str) -> BTreeMap<(&'static str, &'static str), f64> {
@@ -243,5 +298,35 @@ impl Service for ServiceQuotas {
 
     fn reset_state(&self) {
         *self.lock() = State::default();
+    }
+}
+
+/// A service's link to Service Quotas: the applied value of a quota, or
+/// AWS's default while the service runs on its own.
+#[derive(Default)]
+pub struct QuotaLink(OnceLock<ServiceQuotas>);
+
+impl QuotaLink {
+    pub fn set(&self, quotas: ServiceQuotas) {
+        let _ = self.0.set(quotas);
+    }
+
+    /// The applied value. Never call while holding a lock Service Quotas'
+    /// usage source may take (the calling service's state lock).
+    pub fn value(&self, account: &str, region: &str, service: &str, code: &str, now: DateTime<Utc>) -> f64 {
+        match self.0.get() {
+            Some(q) => q.applied_value(account, region, service, code, now),
+            None => catalog::quota(service, code).map(|d| d.default_in(region)).unwrap_or(f64::INFINITY),
+        }
+    }
+
+    /// The applied value as a count.
+    pub fn limit(&self, account: &str, region: &str, service: &str, code: &str, now: DateTime<Utc>) -> usize {
+        let v = self.value(account, region, service, code, now);
+        if v.is_finite() {
+            v.max(0.0) as usize
+        } else {
+            usize::MAX
+        }
     }
 }

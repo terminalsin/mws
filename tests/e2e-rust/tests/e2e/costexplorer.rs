@@ -305,6 +305,57 @@ async fn cost_categories_and_forecasts() {
     }
     assert!((compute - 240.0).abs() < 1e-6, "{compute}");
 
+    // Split charges: storage costs are shared out to compute.
+    let split = |method: aws_sdk_costexplorer::types::CostCategorySplitChargeMethod, percentages: Option<&[&str]>| {
+        let mut r = aws_sdk_costexplorer::types::CostCategorySplitChargeRule::builder()
+            .source("Storage")
+            .targets("Compute")
+            .method(method);
+        if let Some(p) = percentages {
+            r = r.parameters(
+                aws_sdk_costexplorer::types::CostCategorySplitChargeRuleParameter::builder()
+                    .r#type(
+                        aws_sdk_costexplorer::types::CostCategorySplitChargeRuleParameterType::AllocationPercentages,
+                    )
+                    .set_values(Some(p.iter().map(|v| v.to_string()).collect()))
+                    .build()
+                    .unwrap(),
+            );
+        }
+        r.build().unwrap()
+    };
+    let update = |split_rule: aws_sdk_costexplorer::types::CostCategorySplitChargeRule| {
+        ce.update_cost_category_definition()
+            .cost_category_arn(&arn)
+            .rule_version(CostCategoryRuleVersion::CostCategoryExpressionV1)
+            .rules(rule("Compute", EC2))
+            .rules(rule("Storage", S3))
+            .default_value("Other")
+            .effective_start(format!("{}-{:02}-01T00:00:00Z", day(-40).year(), day(-40).month()))
+            .split_charge_rules(split_rule)
+            .send()
+    };
+    let err = update(split(aws_sdk_costexplorer::types::CostCategorySplitChargeMethod::Fixed, Some(&["60"])))
+        .await
+        .unwrap_err();
+    assert_eq!(err.code(), Some("ValidationException"));
+    update(split(aws_sdk_costexplorer::types::CostCategorySplitChargeMethod::Even, None)).await.unwrap();
+    let out = ce
+        .get_cost_and_usage()
+        .time_period(interval(day(-10), day(0)))
+        .granularity(Granularity::Monthly)
+        .metrics("UnblendedCost")
+        .group_by(group(GroupDefinitionType::CostCategory, "Platform"))
+        .send()
+        .await
+        .unwrap();
+    let mut by_value = std::collections::BTreeMap::new();
+    for g in out.results_by_time().iter().flat_map(|r| r.groups()) {
+        *by_value.entry(g.keys()[0].clone()).or_insert(0.0) += amount(g.metrics().unwrap().get("UnblendedCost"));
+    }
+    assert!((by_value["Platform$Compute"] - 264.0).abs() < 1e-6, "{by_value:?}");
+    assert!(!by_value.contains_key("Platform$Storage"), "{by_value:?}");
+
     // Tags on the category.
     ce.tag_resource()
         .resource_arn(&arn)
@@ -604,4 +655,168 @@ async fn savings_plans_and_reservations() {
         .await
         .unwrap_err();
     assert_eq!(err.code(), Some("AnalysisNotFoundException"));
+}
+
+#[tokio::test]
+async fn resources_settings_and_recommendations() {
+    let mws = Mws::start().await;
+    let ce = Client::new(&mws.root_sdk_config().await);
+    let mut records = Vec::new();
+    for d in -5..0 {
+        for (id, cost) in [("i-0aaa", 3.0), ("i-0bbb", 1.0)] {
+            records.push(json!({"account": ACCOUNT, "start": day(d).to_string(), "end": day(d + 1).to_string(),
+                "service": EC2, "usageType": "BoxUsage:t3.medium", "resourceId": id, "unit": "Hrs",
+                "usageQuantity": 24.0, "cost": cost}));
+        }
+    }
+    seed(&mws, json!(records)).await;
+
+    // Resource-level costs for the last 14 days only.
+    let out = ce
+        .get_cost_and_usage_with_resources()
+        .time_period(interval(day(-5), day(0)))
+        .granularity(Granularity::Monthly)
+        .metrics("UnblendedCost")
+        .filter(dims(Dimension::Service, &[EC2]))
+        .group_by(group(GroupDefinitionType::Dimension, "RESOURCE_ID"))
+        .send()
+        .await
+        .unwrap();
+    let mut by_resource = std::collections::BTreeMap::new();
+    for g in out.results_by_time().iter().flat_map(|r| r.groups()) {
+        *by_resource.entry(g.keys()[0].clone()).or_insert(0.0) += amount(g.metrics().unwrap().get("UnblendedCost"));
+    }
+    assert_eq!(by_resource.get("i-0aaa"), Some(&15.0));
+    assert_eq!(by_resource.get("i-0bbb"), Some(&5.0));
+    let err = ce
+        .get_cost_and_usage_with_resources()
+        .time_period(interval(day(-30), day(0)))
+        .granularity(Granularity::Daily)
+        .metrics("UnblendedCost")
+        .filter(dims(Dimension::Service, &[EC2]))
+        .send()
+        .await
+        .unwrap_err();
+    assert_eq!(err.code(), Some("ValidationException"));
+
+    let approx = ce
+        .get_approximate_usage_records()
+        .granularity(Granularity::Daily)
+        .approximation_dimension(aws_sdk_costexplorer::types::ApproximationDimension::Resource)
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(approx.services().unwrap().get("AmazonEC2"), Some(&10));
+
+    // Cost category updates, associations and tag removal.
+    let rule = |value: &str, service: &str| {
+        CostCategoryRule::builder().value(value).rule(dims(Dimension::Service, &[service])).build()
+    };
+    let arn = ce
+        .create_cost_category_definition()
+        .name("Teams")
+        .rule_version(CostCategoryRuleVersion::CostCategoryExpressionV1)
+        .rules(rule("Compute", EC2))
+        .resource_tags(
+            aws_sdk_costexplorer::types::ResourceTag::builder().key("owner").value("finops").build().unwrap(),
+        )
+        .send()
+        .await
+        .unwrap()
+        .cost_category_arn()
+        .unwrap()
+        .to_string();
+    let updated = ce
+        .update_cost_category_definition()
+        .cost_category_arn(&arn)
+        .rule_version(CostCategoryRuleVersion::CostCategoryExpressionV1)
+        .rules(rule("Servers", EC2))
+        .rules(rule("Storage", S3))
+        .default_value("Other")
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(updated.cost_category_arn(), Some(arn.as_str()));
+    let described = ce.describe_cost_category_definition().cost_category_arn(&arn).send().await.unwrap();
+    assert_eq!(described.cost_category().unwrap().rules().len(), 2);
+    assert_eq!(described.cost_category().unwrap().default_value(), Some("Other"));
+    let assoc = ce.list_cost_category_resource_associations().cost_category_arn(&arn).send().await.unwrap();
+    assert!(assoc.cost_category_resource_associations().is_empty());
+    ce.untag_resource().resource_arn(&arn).resource_tag_keys("owner").send().await.unwrap();
+    let tags = ce.list_tags_for_resource().resource_arn(&arn).send().await.unwrap();
+    assert!(tags.resource_tags().is_empty());
+
+    // Monitor and subscription updates.
+    let monitor = ce
+        .create_anomaly_monitor()
+        .anomaly_monitor(
+            AnomalyMonitor::builder()
+                .monitor_name("accounts")
+                .monitor_type(MonitorType::Dimensional)
+                .monitor_dimension(MonitorDimension::LinkedAccount)
+                .build()
+                .unwrap(),
+        )
+        .send()
+        .await
+        .unwrap()
+        .monitor_arn()
+        .to_string();
+    ce.update_anomaly_monitor().monitor_arn(&monitor).monitor_name("by-account").send().await.unwrap();
+    let monitors = ce.get_anomaly_monitors().monitor_arn_list(&monitor).send().await.unwrap();
+    assert_eq!(monitors.anomaly_monitors()[0].monitor_name(), "by-account");
+    let sub = ce
+        .create_anomaly_subscription()
+        .anomaly_subscription(
+            AnomalySubscription::builder()
+                .monitor_arn_list(&monitor)
+                .subscribers(Subscriber::builder().r#type(SubscriberType::Email).address("finops@example.com").build())
+                .frequency(AnomalySubscriptionFrequency::Daily)
+                .subscription_name("daily")
+                .threshold_expression(impact_at_least(100))
+                .build()
+                .unwrap(),
+        )
+        .send()
+        .await
+        .unwrap()
+        .subscription_arn()
+        .to_string();
+    ce.update_anomaly_subscription()
+        .subscription_arn(&sub)
+        .frequency(AnomalySubscriptionFrequency::Weekly)
+        .subscription_name("weekly")
+        .send()
+        .await
+        .unwrap();
+    let subs = ce.get_anomaly_subscriptions().monitor_arn(&monitor).send().await.unwrap();
+    assert_eq!(subs.anomaly_subscriptions()[0].subscription_name(), "weekly");
+    assert_eq!(subs.anomaly_subscriptions()[0].frequency(), &AnomalySubscriptionFrequency::Weekly);
+    ce.delete_anomaly_subscription().subscription_arn(&sub).send().await.unwrap();
+    let err = ce.get_anomaly_subscriptions().subscription_arn_list(&sub).send().await.unwrap_err();
+    assert_eq!(err.code(), Some("UnknownSubscriptionException"));
+
+    // Recommendations: metadata, no commitments to recommend.
+    let ri = ce
+        .get_reservation_purchase_recommendation()
+        .service("Amazon Elastic Compute Cloud - Compute")
+        .send()
+        .await
+        .unwrap();
+    assert!(ri.metadata().unwrap().recommendation_id().is_some());
+    assert!(ri.recommendations().is_empty());
+    let rs = ce.get_rightsizing_recommendation().service("AmazonEC2").send().await.unwrap();
+    assert_eq!(rs.summary().unwrap().total_recommendation_count(), Some("0"));
+    let err = ce
+        .get_savings_plan_purchase_recommendation_details()
+        .recommendation_detail_id("00000000-0000-0000-0000-000000000000")
+        .send()
+        .await
+        .unwrap_err();
+    assert_eq!(err.code(), Some("DataUnavailableException"));
+    let err =
+        ce.get_savings_plans_utilization_details().time_period(interval(day(-5), day(0))).send().await.unwrap_err();
+    assert_eq!(err.code(), Some("DataUnavailableException"));
+    let analyses = ce.list_commitment_purchase_analyses().send().await.unwrap();
+    assert!(analyses.analysis_summary_list().is_empty());
 }

@@ -10,7 +10,8 @@ use crate::util::{
 };
 use crate::{account_of, AutoScaling};
 
-pub(crate) const MAX_LAUNCH_CONFIGURATIONS: usize = 200;
+/// Service Quotas: launch configurations per Region.
+pub(crate) const LAUNCH_CONFIGURATIONS_QUOTA: &str = "L-6B80B8FA";
 
 fn resource(ctx: &RequestContext, name: &str) -> String {
     format!(
@@ -29,6 +30,7 @@ impl AutoScaling {
     ) -> Result<(), ServiceError> {
         let name = input.launch_configuration_name.clone();
         authorize(ctx, "CreateLaunchConfiguration", &resource(ctx, &name), None, ConditionContext::new())?;
+        let max = self.quota(ctx, LAUNCH_CONFIGURATIONS_QUOTA);
         let (exists, count) =
             self.with_region(ctx, |r| (r.launch_configurations.contains_key(&name), r.launch_configurations.len()));
         if exists {
@@ -36,9 +38,9 @@ impl AutoScaling {
                 "Launch Configuration by this name already exists - A launch configuration already exists with the name {name}"
             )));
         }
-        if count >= MAX_LAUNCH_CONFIGURATIONS {
+        if count >= max {
             return Err(limit_exceeded(format!(
-                "You have reached your limit of {MAX_LAUNCH_CONFIGURATIONS} launch configurations. Delete unused launch configurations or request a limit increase."
+                "You have reached your limit of {max} launch configurations. Delete unused launch configurations or request a limit increase."
             )));
         }
         let mut lc = match &input.instance_id {

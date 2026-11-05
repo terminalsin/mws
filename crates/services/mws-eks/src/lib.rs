@@ -57,6 +57,8 @@ pub(crate) struct Inner {
     state: RwLock<State>,
     sts: Option<mws_sts::Sts>,
     infra: OnceLock<Arc<dyn Infrastructure>>,
+    /// Service Quotas: clusters, node groups and Fargate profiles.
+    quotas: mws_servicequotas::QuotaLink,
 }
 
 /// The EKS service. Cheap to clone; clones share state.
@@ -75,13 +77,39 @@ impl Eks {
     /// EKS on its own: roles are not checked and clusters own nothing in
     /// EC2.
     pub fn new() -> Self {
-        Self { inner: Arc::new(Inner { state: RwLock::new(State::default()), sts: None, infra: OnceLock::new() }) }
+        Self {
+            inner: Arc::new(Inner {
+                state: RwLock::new(State::default()),
+                sts: None,
+                infra: OnceLock::new(),
+                quotas: Default::default(),
+            }),
+        }
     }
 
     /// EKS that checks roles the way AWS does: they must exist and trust
     /// the service that will assume them.
     pub fn with_sts(sts: mws_sts::Sts) -> Self {
-        Self { inner: Arc::new(Inner { state: RwLock::new(State::default()), sts: Some(sts), infra: OnceLock::new() }) }
+        Self {
+            inner: Arc::new(Inner {
+                state: RwLock::new(State::default()),
+                sts: Some(sts),
+                infra: OnceLock::new(),
+                quotas: Default::default(),
+            }),
+        }
+    }
+
+    /// Service Quotas, whose applied values limit clusters, node groups
+    /// and Fargate profiles.
+    pub fn set_service_quotas(&self, quotas: mws_servicequotas::ServiceQuotas) {
+        self.inner.quotas.set(quotas);
+    }
+
+    /// The applied value of an EKS quota for the caller. Never call with
+    /// the state lock held.
+    pub(crate) fn quota(&self, ctx: &RequestContext, code: &str) -> usize {
+        self.inner.quotas.limit(util::account(ctx), &ctx.region, "eks", code, ctx.received_at)
     }
 
     /// Where clusters and node groups get their VPC facts, security groups,
