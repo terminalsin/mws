@@ -1,0 +1,40 @@
+[package]
+name = "mws-amplify"
+description = "AWS Amplify Hosting for MWS: apps, branches, builds and deployments that are really served."
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+async-trait.workspace = true
+base64.workspace = true
+bytes.workspace = true
+chrono.workspace = true
+fancy-regex.workspace = true
+form_urlencoded.workspace = true
+hex.workspace = true
+http.workspace = true
+md-5.workspace = true
+mws-core.workspace = true
+mws-proto-json.workspace = true
+mws-proto-restjson.workspace = true
+mws-route53.workspace = true
+mws-s3.workspace = true
+percent-encoding.workspace = true
+rand.workspace = true
+regex.workspace = true
+rustls.workspace = true
+rustls-native-certs.workspace = true
+rustls-pki-types.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+serde_yaml.workspace = true
+sha2.workspace = true
+tokio = { workspace = true, features = ["process", "io-util"] }
+tokio-rustls.workspace = true
+tracing.workspace = true
+uuid.workspace = true
+zip.workspace = true
+
+[build-dependencies]
+mws-codegen.workspace = true

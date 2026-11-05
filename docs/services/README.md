@@ -1,6 +1,6 @@
 # Services
 
-MWS emulates 25 AWS services. Each is generated from AWS's official Smithy
+MWS emulates 26 AWS services. Each is generated from AWS's official Smithy
 model, so every operation in the model is routed and validated; operations
 outside the implemented set answer `NotImplemented`. Each service's page lists
 its features in a table: ✅ supported, 🟡 partial, ❌ not supported yet.
@@ -50,6 +50,7 @@ Every service shares the same foundations:
 | [EC2 Image Builder](imagebuilder.md) | 77 / 77 | Components, recipes and pipelines whose builds launch EC2 instances, run AWSTOE components and produce real AMIs, distribution, lifecycle policies |
 | [Elastic Load Balancing](elb.md) | 80 / 80 | Application, Network and Classic Load Balancers whose listeners really proxy: rules, stickiness, HTTPS with ACM certificates, mutual TLS, Lambda targets, health checks, metrics |
 | [Route 53](route53.md) | 71 / 71 | Public and private hosted zones, all routing policies, health checks, DNSSEC key management, an optional real DNS responder |
+| [Amplify Hosting](amplify.md) | 37 / 37 | Apps and branches whose deployments are really served: manual and S3 deploys, Git builds, rewrites, basic auth, custom domains |
 
 ## Application integration
 
@@ -103,6 +104,8 @@ with the permissions AWS would use:
 - Secrets Manager rotation runs your Lambda function; SSM resolves Secrets
   Manager references.
 - EC2 instances and Lambda functions receive role credentials from STS.
+- Amplify deploys sites from S3 buckets (as `amplify.amazonaws.com`) and
+  verifies custom domains through Route 53.
 - Global Accelerator endpoints and custom routing subnets are checked against
   EC2 and Elastic Load Balancing, and endpoint health follows the instances'
   state and the load balancers' target health.

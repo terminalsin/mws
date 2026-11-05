@@ -6,6 +6,7 @@
 mod acm;
 mod acmpca;
 mod acmpca_parity;
+mod amplify;
 mod cloudwatch;
 mod cloudwatch_parity;
 mod ec2;

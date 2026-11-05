@@ -8,6 +8,7 @@ use std::sync::Arc;
 
 use mws_acm::Acm;
 use mws_acmpca::PrivateCa;
+use mws_amplify::Amplify;
 use mws_cloudwatch::CloudWatch;
 use mws_core::Environment;
 use mws_ec2::{BackendChoice, Ec2};
@@ -112,6 +113,7 @@ pub struct Mws {
     pub firehose: Firehose,
     pub cloudwatch: CloudWatch,
     pub ec2: Ec2,
+    pub amplify: Amplify,
     pub globalaccelerator: GlobalAccelerator,
     pub marketplace_entitlement: Entitlement,
     pub marketplace_metering: Metering,
@@ -249,6 +251,7 @@ fn build_with_store(config: Config, store: Option<Arc<Store>>) -> Mws {
     let ec2 = Ec2::new(config.ec2_backend.resolve(config.ec2_docker_cli.as_deref()));
     tracing::info!(backend = ec2.backend_name(), "EC2 compute backend");
     ec2.set_instance_roles(Arc::new(links::Ec2InstanceRoles { iam: iam.clone(), sts: sts.clone() }));
+    let amplify = Amplify::with_services(s3.clone(), route53.clone());
     let globalaccelerator = GlobalAccelerator::new();
     globalaccelerator.add_endpoint_directory(Arc::new(links::GlobalAcceleratorEc2(ec2.clone())));
     route53.add_alias_resolver(Arc::new(links::Route53ToGlobalAccelerator(globalaccelerator.clone())));
@@ -304,6 +307,7 @@ fn build_with_store(config: Config, store: Option<Arc<Store>>) -> Mws {
         .service(Arc::new(firehose.clone()))
         .service(Arc::new(cloudwatch.clone()))
         .service(Arc::new(ec2.clone()))
+        .service(Arc::new(amplify.clone()))
         .service(Arc::new(globalaccelerator.clone()))
         // Both Marketplace services sign as `aws-marketplace`; each claims
         // its own `X-Amz-Target`.
@@ -336,6 +340,7 @@ fn build_with_store(config: Config, store: Option<Arc<Store>>) -> Mws {
         firehose,
         cloudwatch,
         ec2,
+        amplify,
         globalaccelerator,
         marketplace_entitlement,
         marketplace_metering,
