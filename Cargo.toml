@@ -40,6 +40,7 @@ members = [
     "crates/services/mws-firehose",
     "crates/services/mws-cloudwatch",
     "crates/services/mws-ec2",
+    "crates/services/mws-globalaccelerator",
     "crates/services/mws-ram",
     "crates/services/mws-pca-connector-scep",
     "crates/services/mws-securityhub",
@@ -94,6 +95,7 @@ mws-kinesis = { path = "crates/services/mws-kinesis" }
 mws-firehose = { path = "crates/services/mws-firehose" }
 mws-cloudwatch = { path = "crates/services/mws-cloudwatch" }
 mws-ec2 = { path = "crates/services/mws-ec2" }
+mws-globalaccelerator = { path = "crates/services/mws-globalaccelerator" }
 mws-ram = { path = "crates/services/mws-ram" }
 mws-pca-connector-scep = { path = "crates/services/mws-pca-connector-scep" }
 mws-securityhub = { path = "crates/services/mws-securityhub" }

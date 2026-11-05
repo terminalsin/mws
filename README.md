@@ -106,6 +106,7 @@ SDKs, S3 addressing, host-prefixed endpoints and calling as other identities.
 | [EC2 and VPC](docs/services/ec2.md) | 120 / 811 | ec2Query |
 | [Elastic Load Balancing](docs/services/elb.md) | 80 / 80 | awsQuery |
 | [Route 53](docs/services/route53.md) | 71 / 71 | restXml |
+| [Global Accelerator](docs/services/globalaccelerator.md) | 56 / 56 | awsJson 1.1 |
 | [Private CA](docs/services/acm-pca.md) | 23 / 23 | awsJson 1.1 |
 | [Certificate Manager (ACM)](docs/services/acm.md) | 40 / 40 | awsJson 1.1 |
 | [Connector for SCEP](docs/services/pca-connector-scep.md) | 12 / 12 | restJson1 |

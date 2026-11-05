@@ -181,7 +181,7 @@ pub(crate) async fn listener_address(mws: &Mws, listener_arn: &str) -> String {
         .to_string()
 }
 
-async fn wait_for_health(elb: &Client, tg: &str, want: &[(i32, TargetHealthStateEnum)]) {
+pub(crate) async fn wait_for_health(elb: &Client, tg: &str, want: &[(i32, TargetHealthStateEnum)]) {
     for _ in 0..200 {
         let h = elb.describe_target_health().target_group_arn(tg).send().await.unwrap();
         let states: Vec<(i32, TargetHealthStateEnum)> = h
@@ -198,11 +198,11 @@ async fn wait_for_health(elb: &Client, tg: &str, want: &[(i32, TargetHealthState
     panic!("targets never reached {want:?}: {:?}", h.target_health_descriptions());
 }
 
-fn forward(tg: &str) -> Action {
+pub(crate) fn forward(tg: &str) -> Action {
     Action::builder().r#type(ActionTypeEnum::Forward).target_group_arn(tg).build()
 }
 
-async fn ip_target_group(elb: &Client, name: &str, vpc: &str, protocol: ProtocolEnum) -> String {
+pub(crate) async fn ip_target_group(elb: &Client, name: &str, vpc: &str, protocol: ProtocolEnum) -> String {
     let mut req = elb
         .create_target_group()
         .name(name)

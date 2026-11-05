@@ -51,6 +51,10 @@ pub(crate) struct Answer {
 }
 
 /// What resolution needs besides the zone.
+/// Resolves an alias target outside Route 53: (hosted zone id, DNS name,
+/// record type) to values.
+pub(crate) type ExternalAliases<'a> = dyn Fn(&str, &str, &str) -> Option<Vec<String>> + 'a;
+
 pub(crate) struct Context<'a> {
     /// The zone owner's CIDR collections, by id.
     pub cidr_collections: &'a std::collections::BTreeMap<String, CidrCollection>,
@@ -58,6 +62,9 @@ pub(crate) struct Context<'a> {
     pub healthy: &'a dyn Fn(&str) -> bool,
     /// The resolver's address or EDNS client subnet, for IP-based routing.
     pub client: Option<IpAddr>,
+    /// Alias targets outside Route 53 (hosted zone id, DNS name, record
+    /// type) to their values; `None` when nothing knows the target.
+    pub external: &'a ExternalAliases<'a>,
 }
 
 fn ttl_of(r: &ResourceRecordSet) -> u32 {
@@ -210,12 +217,22 @@ fn usable(zone: &Zone, r: &ResourceRecordSet, cx: &Context<'_>, depth: usize) ->
 }
 
 /// The records an alias resolves to: the target record sets of the same
-/// type in the zone, routed in turn. Targets outside MWS (load balancers,
-/// CloudFront, S3 websites) resolve to nothing.
+/// type in the zone, routed in turn, or the values of a target outside
+/// Route 53 that another service resolves (such as an accelerator's
+/// static IPs). Other targets resolve to nothing.
 fn alias_records(zone: &Zone, r: &ResourceRecordSet, cx: &Context<'_>, depth: usize) -> Vec<Record> {
     let Some(alias) = &r.alias_target else { return Vec::new() };
-    if depth > 8 || crate::strip_id(&alias.hosted_zone_id) != zone.id {
+    if depth > 8 {
         return Vec::new();
+    }
+    let target_zone = crate::strip_id(&alias.hosted_zone_id);
+    if target_zone != zone.id {
+        let values = (cx.external)(target_zone, &alias.dns_name, &r.r#type).unwrap_or_default();
+        // Alias records take the target's TTL; AWS resource targets use 60.
+        return values
+            .into_iter()
+            .map(|value| Record { name: r.name.clone(), ty: r.r#type.clone(), ttl: 60, value })
+            .collect();
     }
     let Some(target) = names::normalize(&alias.dns_name) else { return Vec::new() };
     let group: Vec<&ResourceRecordSet> =

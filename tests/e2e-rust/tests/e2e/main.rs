@@ -17,6 +17,7 @@ mod elbv2_api;
 mod events;
 mod firehose;
 mod firehose_monitoring;
+mod globalaccelerator;
 mod iam;
 mod iam_advanced;
 mod iam_parity;
