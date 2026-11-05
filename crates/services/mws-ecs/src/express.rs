@@ -18,6 +18,49 @@ const DEFAULT_CPU: &str = "1024";
 const DEFAULT_MEMORY: &str = "2048";
 const DEFAULT_HEALTH_CHECK: &str = "/ping";
 
+/// What ECS manages for an Express service's ingress, as service revisions
+/// report it.
+fn managed_resources(
+    i: &crate::platform::ExpressIngress,
+    endpoint: &str,
+    port: i32,
+    health_check_path: &str,
+    now: chrono::DateTime<chrono::Utc>,
+) -> t::ECSManagedResources {
+    t::ECSManagedResources {
+        ingress_paths: Some(vec![t::ManagedIngressPath {
+            access_type: "PUBLIC".into(),
+            endpoint: endpoint.to_string(),
+            load_balancer: Some(t::ManagedLoadBalancer {
+                arn: Some(i.load_balancer_arn.clone()),
+                status: "ACTIVE".into(),
+                status_reason: None,
+                updated_at: now,
+                scheme: "internet-facing".into(),
+                subnet_ids: Some(i.subnets.clone()),
+                security_group_ids: Some(i.security_groups.clone()),
+            }),
+            listener: Some(t::ManagedListener {
+                arn: Some(i.listener_arn.clone()),
+                status: "ACTIVE".into(),
+                status_reason: None,
+                updated_at: now,
+            }),
+            target_groups: Some(vec![t::ManagedTargetGroup {
+                arn: Some(i.target_group_arn.clone()),
+                status: "ACTIVE".into(),
+                status_reason: None,
+                updated_at: now,
+                health_check_path: health_check_path.to_string(),
+                health_check_port: port,
+                port,
+            }]),
+            ..Default::default()
+        }]),
+        ..Default::default()
+    }
+}
+
 fn not_found() -> ServiceError {
     crate::names::service_not_found()
 }
@@ -193,7 +236,7 @@ impl Ecs {
         })
     }
 
-    pub(crate) fn create_express_gateway_service_op(
+    pub(crate) async fn create_express_gateway_service_op(
         &self,
         ctx: &RequestContext,
         input: t::CreateExpressGatewayServiceRequest,
@@ -266,6 +309,29 @@ impl Ecs {
             return Err(invalid("Creation of service was not idempotent."));
         }
         let td = self.express_task_definition(ctx, &name, &cluster, &config)?;
+        let port = config.primary_container.as_ref().and_then(|p| p.container_port).unwrap_or(DEFAULT_PORT);
+        let ingress = match self.platform() {
+            Some(p) => {
+                p.create_express_ingress(
+                    ctx,
+                    &name,
+                    config.network.subnets.as_deref().unwrap_or_default(),
+                    config.network.security_groups.as_deref().unwrap_or_default(),
+                    port,
+                    &config.health_check_path,
+                )
+                .await?
+            }
+            None => None,
+        };
+        let load_balancers = ingress.as_ref().map(|i| {
+            vec![t::LoadBalancer {
+                target_group_arn: Some(i.target_group_arn.clone()),
+                container_name: Some("Main".into()),
+                container_port: Some(port),
+                ..Default::default()
+            }]
+        });
         self.create_service_op(
             &behalf,
             t::CreateServiceRequest {
@@ -282,6 +348,7 @@ impl Ecs {
                     }),
                 }),
                 health_check_grace_period_seconds: Some(60),
+                load_balancers,
                 tags: input.tags.clone(),
                 enable_ecs_managed_tags: true,
                 propagate_tags: Some("SERVICE".into()),
@@ -307,6 +374,13 @@ impl Ecs {
         };
         self.with_region(ctx, |r, _| {
             r.express_services.insert(arn.clone(), svc.clone());
+            if let Some(i) = ingress {
+                let managed = managed_resources(&i, &endpoint, port, &config.health_check_path, now);
+                for rev in r.service_revisions.values_mut().filter(|v| v.service_arn.as_deref() == Some(arn.as_str())) {
+                    rev.ecs_managed_resources = Some(managed.clone());
+                }
+                r.express_ingress.insert(arn.clone(), i);
+            }
         });
         self.kick();
         Ok(t::CreateExpressGatewayServiceResponse { service: Some(svc) })
@@ -448,7 +522,7 @@ impl Ecs {
         })
     }
 
-    pub(crate) fn delete_express_gateway_service_op(
+    pub(crate) async fn delete_express_gateway_service_op(
         &self,
         ctx: &RequestContext,
         input: t::DeleteExpressGatewayServiceRequest,
@@ -467,6 +541,10 @@ impl Ecs {
                     force: Some(true),
                 },
             )?;
+        }
+        let ingress = self.with_region(ctx, |r, _| r.express_ingress.remove(&input.service_arn));
+        if let (Some(p), Some(i)) = (self.platform(), ingress) {
+            p.delete_express_ingress(ctx, &i).await;
         }
         let now = ctx.received_at;
         let svc = self.with_region(ctx, |r, _| {

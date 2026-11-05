@@ -38,6 +38,36 @@ pub struct LogEvent {
     pub message: String,
 }
 
+/// The load balancer an Express service is reached through.
+#[derive(Debug, Clone, Default, serde::Serialize, serde::Deserialize)]
+#[serde(default)]
+pub struct ExpressIngress {
+    pub load_balancer_arn: String,
+    pub listener_arn: String,
+    pub target_group_arn: String,
+    pub dns_name: String,
+    pub subnets: Vec<String>,
+    pub security_groups: Vec<String>,
+}
+
+/// An Auto Scaling group as ECS sees it through a capacity provider.
+#[derive(Debug, Clone, Default)]
+pub struct ScalingGroup {
+    pub desired_capacity: i32,
+    pub min_size: i32,
+    pub max_size: i32,
+    pub instances: Vec<ScalingGroupInstance>,
+}
+
+#[derive(Debug, Clone, Default)]
+pub struct ScalingGroupInstance {
+    pub instance_id: String,
+    /// `Pending`, `InService`, `Terminating`, ...
+    pub lifecycle_state: String,
+    pub instance_type: String,
+    pub availability_zone: String,
+}
+
 #[async_trait::async_trait]
 pub trait TaskPlatform: Send + Sync {
     /// Create a requester-managed network interface for a task in one of
@@ -92,4 +122,67 @@ pub trait TaskPlatform: Send + Sync {
     fn default_subnets(&self, _ctx: &RequestContext, _account: &str) -> Vec<String> {
         Vec::new()
     }
+
+    /// Register (or deregister) a task's targets with an Elastic Load
+    /// Balancing target group, as ECS's service-linked role does.
+    async fn update_targets(
+        &self,
+        _ctx: &RequestContext,
+        _target_group_arn: &str,
+        _targets: &[(String, i32)],
+        _register: bool,
+    ) -> Result<(), ServiceError> {
+        Ok(())
+    }
+
+    /// A target's health in its target group (`healthy`, `unhealthy`,
+    /// `initial`, ...), if Elastic Load Balancing knows it.
+    async fn target_health(
+        &self,
+        _ctx: &RequestContext,
+        _target_group_arn: &str,
+        _id: &str,
+        _port: i32,
+    ) -> Option<String> {
+        None
+    }
+
+    /// The Auto Scaling group (by name) behind a capacity provider.
+    async fn scaling_group(&self, _ctx: &RequestContext, _name: &str) -> Option<ScalingGroup> {
+        None
+    }
+
+    /// Change a group's desired capacity (managed scaling).
+    async fn set_desired_capacity(
+        &self,
+        _ctx: &RequestContext,
+        _name: &str,
+        _desired: i32,
+    ) -> Result<(), ServiceError> {
+        Ok(())
+    }
+
+    /// An instance type's vCPUs and memory (MiB).
+    async fn instance_type_resources(&self, _ctx: &RequestContext, _instance_type: &str) -> Option<(i32, i32)> {
+        None
+    }
+
+    /// Create the Application Load Balancer, target group and listener an
+    /// Express service is reached through. `None` when no load balancing
+    /// service is wired in.
+    #[allow(clippy::too_many_arguments)]
+    async fn create_express_ingress(
+        &self,
+        _ctx: &RequestContext,
+        _name: &str,
+        _subnets: &[String],
+        _security_groups: &[String],
+        _port: i32,
+        _health_check_path: &str,
+    ) -> Result<Option<ExpressIngress>, ServiceError> {
+        Ok(None)
+    }
+
+    /// Delete what [`TaskPlatform::create_express_ingress`] made.
+    async fn delete_express_ingress(&self, _ctx: &RequestContext, _ingress: &ExpressIngress) {}
 }

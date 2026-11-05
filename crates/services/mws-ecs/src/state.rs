@@ -57,6 +57,8 @@ pub struct Region {
     pub gateway_routes: BTreeMap<String, GatewayRouteRecord>,
     /// Express gateway services by service ARN.
     pub express_services: BTreeMap<String, t::ECSExpressGatewayService>,
+    /// The load balancers Express services are reached through, by service ARN.
+    pub express_ingress: BTreeMap<String, crate::platform::ExpressIngress>,
     /// Idempotency tokens: token -> (what it created, ARN).
     pub client_tokens: BTreeMap<String, (String, String)>,
 }
@@ -91,6 +93,20 @@ pub struct TaskRecord {
     pub credentials: Option<TaskCredentials>,
     /// When a stopped task disappears from `DescribeTasks`.
     pub expires_at: Option<DateTime<Utc>>,
+    /// Load balancer targets ECS registered the task as.
+    pub lb_targets: Vec<LbTarget>,
+    /// Whether ECS has deregistered those targets.
+    pub lb_deregistered: bool,
+}
+
+/// One target group registration of a service task.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct LbTarget {
+    pub target_group_arn: String,
+    /// The task's private IP (`awsvpc`) or its EC2 instance id.
+    pub id: String,
+    pub port: i32,
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]

@@ -368,6 +368,8 @@ fn build_with_store(config: Config, store: Option<Arc<Store>>) -> Mws {
         secretsmanager: secretsmanager.clone(),
         ssm: ssm.clone(),
         logs: logs.clone(),
+        elb: elb.clone(),
+        autoscaling: autoscaling.clone(),
     }));
     let mut gateway = Gateway::builder();
     if let Some(store) = store {

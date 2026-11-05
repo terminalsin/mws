@@ -24,6 +24,7 @@ pub mod generated {
     include!(concat!(env!("OUT_DIR"), "/ecs_generated.rs"));
 }
 
+mod asg;
 pub mod backend;
 mod capacity;
 mod clusters;
@@ -32,6 +33,7 @@ mod express;
 mod gateways;
 mod handler;
 mod instances;
+mod loadbalancing;
 pub mod metadata;
 mod names;
 pub mod platform;
@@ -66,6 +68,9 @@ pub(crate) struct Inner {
     scheduler_started: AtomicBool,
     /// Wakes the scheduler early.
     kick: tokio::sync::Notify,
+    /// Since when each Auto Scaling capacity provider (`account/region/name`)
+    /// has wanted fewer instances, for managed scale-in.
+    low_reservation: Mutex<HashMap<String, chrono::DateTime<chrono::Utc>>>,
 }
 
 /// The ECS service. Cheap to clone; clones share state.
@@ -91,6 +96,7 @@ impl Ecs {
                 template: Mutex::new(None),
                 scheduler_started: AtomicBool::new(false),
                 kick: tokio::sync::Notify::new(),
+                low_reservation: Mutex::new(HashMap::new()),
             }),
         }
     }

@@ -47,7 +47,7 @@ impl Handler for Ecs {
         ctx: &RequestContext,
         input: types::CreateExpressGatewayServiceRequest,
     ) -> Result<types::CreateExpressGatewayServiceResponse, ServiceError> {
-        self.create_express_gateway_service_op(ctx, input)
+        self.create_express_gateway_service_op(ctx, input).await
     }
     async fn create_gateway(
         &self,
@@ -117,7 +117,7 @@ impl Handler for Ecs {
         ctx: &RequestContext,
         input: types::DeleteExpressGatewayServiceRequest,
     ) -> Result<types::DeleteExpressGatewayServiceResponse, ServiceError> {
-        self.delete_express_gateway_service_op(ctx, input)
+        self.delete_express_gateway_service_op(ctx, input).await
     }
     async fn delete_gateway(
         &self,

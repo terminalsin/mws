@@ -12,7 +12,7 @@ All 88 operations of the model are generated (awsJson 1.1) and implemented.
 | --- | :---: | --- |
 | Clusters | ✅ | Settings (Container Insights defaults from the account setting), configuration, capacity providers and default strategies, Service Connect defaults, counts and statistics, `INACTIVE` after delete, the `ClusterContains*` errors. |
 | Task definitions | ✅ | Revisions per family, ECS's defaults (`essential`, host ports for `awsvpc`), validation with ECS's `ClientException` messages, Fargate CPU and memory combinations, `requiresAttributes`, compatibilities, deregistration and `DeleteTaskDefinitions`. |
-| Capacity providers | ✅ | `FARGATE` and `FARGATE_SPOT`, Auto Scaling group and Managed Instances providers (metadata), strategies with base and weight. |
+| Capacity providers | ✅ | `FARGATE` and `FARGATE_SPOT`, Auto Scaling group providers backed by real EC2 Auto Scaling groups, Managed Instances providers (metadata), strategies with base and weight. |
 | Account settings, attributes, tags | ✅ | Every setting with account and principal scope and defaults; custom attributes; tags with the `ecs:CreateAction` check. |
 
 ## Tasks
@@ -39,8 +39,9 @@ All 88 operations of the model are generated (awsJson 1.1) and implemented.
 | Circuit breaker | ✅ | Failed launches past ECS's threshold fail the rollout, with rollback when enabled. |
 | Service deployments and revisions | ✅ | `ListServiceDeployments`, `DescribeServiceDeployments`, `DescribeServiceRevisions`, `StopServiceDeployment` (rollback), `ContinueServiceDeployment`. |
 | Task sets | ✅ | `EXTERNAL` and `CODE_DEPLOY` controllers, scale, primary task set, stability status. |
-| Load balancers, Service Connect, Cloud Map | 🟡 | Recorded on services and revisions; no traffic is routed and nothing is registered. |
-| Service auto scaling | ❌ | Not applied. |
+| Load balancers | ✅ | Running service tasks register with their Elastic Load Balancing target groups (the task ENI IP for `awsvpc`, the instance and host port otherwise) and deregister when they stop; after the health check grace period, tasks the target group reports unhealthy are stopped and replaced, with ECS's service event. |
+| Service Connect, Cloud Map | 🟡 | Recorded on services and revisions; nothing is registered in Cloud Map and no proxy runs. |
+| Service auto scaling | ❌ | Application Auto Scaling is not emulated. |
 
 ## Container instances
 
@@ -48,7 +49,7 @@ All 88 operations of the model are generated (awsJson 1.1) and implemented.
 | --- | :---: | --- |
 | Registration | ✅ | Registered resources (CPU, memory, ports) and attributes, draining, deregistration with `force`. |
 | Placement | ✅ | binpack, spread and random strategies, `distinctInstance` and `memberOf` with the cluster query language, `RESOURCE:CPU`, `RESOURCE:MEMORY` and `RESOURCE:PORTS` failures. |
-| Instances from capacity providers | ❌ | Auto Scaling group providers launch no instances; register them with `RegisterContainerInstance`. |
+| Instances from capacity providers | ✅ | Instances an Auto Scaling group provider's group launches join the cluster, sized by their instance type, and leave it when they terminate. With managed scaling, ECS sets the group's desired capacity from its target capacity: it grows when tasks have no room and shrinks after fifteen minutes of lower need. |
 
 ## Daemons, gateways and Express services
 
@@ -56,7 +57,7 @@ All 88 operations of the model are generated (awsJson 1.1) and implemented.
 | --- | :---: | --- |
 | Daemons | 🟡 | Daemon task definitions, daemons, revisions and deployments; deployments complete at once and no daemon tasks run. |
 | Gateways | 🟡 | Gateways, cluster associations and routes for services with gateway connectors; no load balancer receives traffic. |
-| Express services | 🟡 | Creates the cluster when missing, registers the task definition and runs a real Fargate service; the endpoint URL is reported but no load balancer, certificate or auto scaling is created. |
+| Express services | 🟡 | Creates the cluster when missing, registers the task definition and runs a real Fargate service; a real Application Load Balancer, target group (with the health check path) and HTTP listener are created and deleted with the service. No ACM certificate or HTTPS listener and no auto scaling policy is created. |
 
 ## Access control
 

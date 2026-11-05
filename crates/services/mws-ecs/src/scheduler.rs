@@ -52,14 +52,23 @@ impl Ecs {
                 _ = tokio::time::sleep(StdDuration::from_secs(1)) => {}
                 _ = self.inner.kick.notified() => {}
             }
-            self.reconcile_all();
+            for (ctx, key, plan, providers) in self.reconcile_all() {
+                self.apply_load_balancing(&ctx, &key, plan).await;
+                for view in providers {
+                    self.sync_provider(&ctx, view).await;
+                }
+            }
         }
     }
 
-    fn reconcile_all(&self) {
+    #[allow(clippy::type_complexity)]
+    fn reconcile_all(
+        &self,
+    ) -> Vec<(RequestContext, String, crate::loadbalancing::LbPlan, Vec<crate::asg::ProviderView>)> {
+        let mut plans = Vec::new();
         let partition = match self.inner.template.lock().expect("ECS template lock poisoned").as_ref() {
             Some((ctx, _)) => ctx.partition.clone(),
-            None => return,
+            None => return plans,
         };
         let keys: Vec<String> = self.lock().regions.keys().cloned().collect();
         for key in keys {
@@ -82,7 +91,13 @@ impl Ecs {
                 self.reconcile_service(&ctx, r, &scope, &arn, now);
             }
             crate::services::settle(r, now);
+            let plan = Self::plan_load_balancing(r, now);
+            let providers = Self::provider_views(r);
+            if !plan.changes.is_empty() || !plan.probes.is_empty() || !providers.is_empty() {
+                plans.push((ctx, key.clone(), plan, providers));
+            }
         }
+        plans
     }
 
     fn live_tasks(r: &Region, service: &str) -> Vec<Live> {

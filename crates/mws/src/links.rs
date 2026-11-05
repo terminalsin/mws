@@ -1213,6 +1213,15 @@ pub(crate) struct EcsPlatform {
     pub secretsmanager: mws_secretsmanager::SecretsManager,
     pub ssm: mws_ssm::Ssm,
     pub logs: mws_logs::Logs,
+    pub elb: mws_elb::Elb,
+    pub autoscaling: mws_autoscaling::AutoScaling,
+}
+
+impl EcsPlatform {
+    /// ECS acting through its service-linked role: no caller policy applies.
+    fn service_linked(ctx: &RequestContext) -> RequestContext {
+        RequestContext { authorizer: std::sync::Arc::new(mws_core::AllowAll), ..ctx.clone() }
+    }
 }
 
 #[async_trait::async_trait]
@@ -1368,5 +1377,210 @@ impl mws_ecs::TaskPlatform for EcsPlatform {
 
     fn default_subnets(&self, ctx: &RequestContext, account: &str) -> Vec<String> {
         self.ec2.default_subnets(ctx, account)
+    }
+
+    async fn update_targets(
+        &self,
+        ctx: &RequestContext,
+        target_group_arn: &str,
+        targets: &[(String, i32)],
+        register: bool,
+    ) -> Result<(), mws_core::ServiceError> {
+        let op = if register { "RegisterTargets" } else { "DeregisterTargets" };
+        let request = serde_json::json!({
+            "TargetGroupArn": target_group_arn,
+            "Targets": targets.iter().map(|(id, port)| serde_json::json!({"Id": id, "Port": port})).collect::<Vec<_>>(),
+        });
+        mws_core::Service::invoke(&self.elb, Self::service_linked(ctx), op, request).await.map(|_| ())
+    }
+
+    async fn target_health(&self, ctx: &RequestContext, target_group_arn: &str, id: &str, port: i32) -> Option<String> {
+        let request = serde_json::json!({
+            "TargetGroupArn": target_group_arn,
+            "Targets": [{"Id": id, "Port": port}],
+        });
+        let out = mws_core::Service::invoke(&self.elb, Self::service_linked(ctx), "DescribeTargetHealth", request)
+            .await
+            .ok()?;
+        out["TargetHealthDescriptions"][0]["TargetHealth"]["State"].as_str().map(String::from)
+    }
+
+    async fn scaling_group(&self, ctx: &RequestContext, name: &str) -> Option<mws_ecs::platform::ScalingGroup> {
+        let out = mws_core::Service::invoke(
+            &self.autoscaling,
+            Self::service_linked(ctx),
+            "DescribeAutoScalingGroups",
+            serde_json::json!({"AutoScalingGroupNames": [name]}),
+        )
+        .await
+        .ok()?;
+        let g = out.pointer("/AutoScalingGroups/0")?;
+        let int = |k: &str| g.get(k).and_then(serde_json::Value::as_i64).unwrap_or_default() as i32;
+        let text = |v: &serde_json::Value, k: &str| {
+            v.get(k).and_then(serde_json::Value::as_str).unwrap_or_default().to_string()
+        };
+        Some(mws_ecs::platform::ScalingGroup {
+            desired_capacity: int("DesiredCapacity"),
+            min_size: int("MinSize"),
+            max_size: int("MaxSize"),
+            instances: g
+                .get("Instances")
+                .and_then(serde_json::Value::as_array)
+                .into_iter()
+                .flatten()
+                .map(|i| mws_ecs::platform::ScalingGroupInstance {
+                    instance_id: text(i, "InstanceId"),
+                    lifecycle_state: text(i, "LifecycleState"),
+                    instance_type: text(i, "InstanceType"),
+                    availability_zone: text(i, "AvailabilityZone"),
+                })
+                .collect(),
+        })
+    }
+
+    async fn set_desired_capacity(
+        &self,
+        ctx: &RequestContext,
+        name: &str,
+        desired: i32,
+    ) -> Result<(), mws_core::ServiceError> {
+        mws_core::Service::invoke(
+            &self.autoscaling,
+            Self::service_linked(ctx),
+            "SetDesiredCapacity",
+            serde_json::json!({"AutoScalingGroupName": name, "DesiredCapacity": desired, "HonorCooldown": false}),
+        )
+        .await?;
+        self.autoscaling.tick().await;
+        Ok(())
+    }
+
+    async fn instance_type_resources(&self, ctx: &RequestContext, instance_type: &str) -> Option<(i32, i32)> {
+        let out = mws_core::Service::invoke(
+            &self.ec2,
+            Self::service_linked(ctx),
+            "DescribeInstanceTypes",
+            serde_json::json!({"InstanceTypes": [instance_type]}),
+        )
+        .await
+        .ok()?;
+        let t = out.pointer("/InstanceTypes/0")?;
+        let vcpus = t.pointer("/VCpuInfo/DefaultVCpus")?.as_i64()? as i32;
+        let mem = t.pointer("/MemoryInfo/SizeInMiB")?.as_i64()? as i32;
+        Some((vcpus, mem))
+    }
+
+    async fn create_express_ingress(
+        &self,
+        ctx: &RequestContext,
+        name: &str,
+        subnets: &[String],
+        security_groups: &[String],
+        port: i32,
+        health_check_path: &str,
+    ) -> Result<Option<mws_ecs::platform::ExpressIngress>, mws_core::ServiceError> {
+        use mws_core::Service;
+        let account = ctx.caller.account_id.clone();
+        let behalf = Self::service_linked(ctx);
+        let Some(first) = subnets.first().and_then(|s| self.ec2.subnet_info(ctx, &account, s)) else {
+            return Ok(None);
+        };
+        // An Application Load Balancer needs subnets in two zones.
+        let mut lb_subnets: Vec<String> = subnets.to_vec();
+        let mut zones: Vec<String> = subnets
+            .iter()
+            .filter_map(|s| self.ec2.subnet_info(ctx, &account, s))
+            .map(|s| s.availability_zone)
+            .collect();
+        for s in self.ec2.subnets_of_vpc(ctx, &account, Some(&first.vpc_id)) {
+            if zones.len() >= 2 {
+                break;
+            }
+            if !zones.contains(&s.availability_zone) {
+                zones.push(s.availability_zone.clone());
+                lb_subnets.push(s.subnet_id);
+            }
+        }
+        let base: String = format!("ecs-express-{name}").chars().take(32).collect();
+        let base = base.trim_end_matches('-').to_string();
+        let lb = self
+            .elb
+            .invoke(
+                behalf.clone(),
+                "CreateLoadBalancer",
+                serde_json::json!({
+                    "Name": base,
+                    "Subnets": lb_subnets,
+                    "SecurityGroups": security_groups,
+                    "Scheme": "internet-facing",
+                    "Type": "application",
+                }),
+            )
+            .await?;
+        let lb_arn =
+            lb.pointer("/LoadBalancers/0/LoadBalancerArn").and_then(|v| v.as_str()).unwrap_or_default().to_string();
+        let dns = lb.pointer("/LoadBalancers/0/DNSName").and_then(|v| v.as_str()).unwrap_or_default().to_string();
+        let lb_groups: Vec<String> = lb
+            .pointer("/LoadBalancers/0/SecurityGroups")
+            .and_then(|v| v.as_array())
+            .into_iter()
+            .flatten()
+            .filter_map(|v| v.as_str().map(String::from))
+            .collect();
+        let tg = self
+            .elb
+            .invoke(
+                behalf.clone(),
+                "CreateTargetGroup",
+                serde_json::json!({
+                    "Name": base,
+                    "Protocol": "HTTP",
+                    "Port": port,
+                    "VpcId": first.vpc_id,
+                    "TargetType": "ip",
+                    "HealthCheckPath": health_check_path,
+                }),
+            )
+            .await?;
+        let tg_arn =
+            tg.pointer("/TargetGroups/0/TargetGroupArn").and_then(|v| v.as_str()).unwrap_or_default().to_string();
+        let listener = self
+            .elb
+            .invoke(
+                behalf,
+                "CreateListener",
+                serde_json::json!({
+                    "LoadBalancerArn": lb_arn,
+                    "Protocol": "HTTP",
+                    "Port": 80,
+                    "DefaultActions": [{"Type": "forward", "TargetGroupArn": tg_arn}],
+                }),
+            )
+            .await?;
+        let listener_arn =
+            listener.pointer("/Listeners/0/ListenerArn").and_then(|v| v.as_str()).unwrap_or_default().to_string();
+        Ok(Some(mws_ecs::platform::ExpressIngress {
+            load_balancer_arn: lb_arn,
+            listener_arn,
+            target_group_arn: tg_arn,
+            dns_name: dns,
+            subnets: lb_subnets,
+            security_groups: lb_groups,
+        }))
+    }
+
+    async fn delete_express_ingress(&self, ctx: &RequestContext, ingress: &mws_ecs::platform::ExpressIngress) {
+        use mws_core::Service;
+        let behalf = Self::service_linked(ctx);
+        let calls = [
+            ("DeleteListener", serde_json::json!({"ListenerArn": ingress.listener_arn})),
+            ("DeleteLoadBalancer", serde_json::json!({"LoadBalancerArn": ingress.load_balancer_arn})),
+            ("DeleteTargetGroup", serde_json::json!({"TargetGroupArn": ingress.target_group_arn})),
+        ];
+        for (op, input) in calls {
+            if let Err(e) = self.elb.invoke(behalf.clone(), op, input).await {
+                tracing::warn!("ECS Express clean-up {op} failed: {} {}", e.code, e.message);
+            }
+        }
     }
 }
