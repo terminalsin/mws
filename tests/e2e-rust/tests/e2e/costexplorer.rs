@@ -46,6 +46,19 @@ fn dims(key: Dimension, values: &[&str]) -> Expression {
         .build()
 }
 
+/// Alert when an anomaly's total impact reaches `dollars`.
+fn impact_at_least(dollars: u32) -> Expression {
+    Expression::builder()
+        .dimensions(
+            DimensionValues::builder()
+                .key(Dimension::AnomalyTotalImpactAbsolute)
+                .values(dollars.to_string())
+                .match_options(aws_sdk_costexplorer::types::MatchOption::GreaterThanOrEqual)
+                .build(),
+        )
+        .build()
+}
+
 async fn seed(mws: &Mws, records: serde_json::Value) {
     let body = json!({ "records": records }).to_string();
     let (status, _, out) =
@@ -403,7 +416,7 @@ async fn anomalies_are_detected_and_alerted() {
                 .subscribers(Subscriber::builder().r#type(SubscriberType::Sns).address(&topic).build())
                 .frequency(AnomalySubscriptionFrequency::Daily)
                 .subscription_name("bad")
-                .threshold(10.0)
+                .threshold_expression(impact_at_least(10))
                 .build()
                 .unwrap(),
         )
@@ -418,7 +431,7 @@ async fn anomalies_are_detected_and_alerted() {
                 .subscribers(Subscriber::builder().r#type(SubscriberType::Sns).address(&topic).build())
                 .frequency(AnomalySubscriptionFrequency::Immediate)
                 .subscription_name("immediate")
-                .threshold(50.0)
+                .threshold_expression(impact_at_least(50))
                 .build()
                 .unwrap(),
         )

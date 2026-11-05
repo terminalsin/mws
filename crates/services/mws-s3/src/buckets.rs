@@ -738,6 +738,9 @@ fn request_tag_context(tags: &[types::Tag]) -> ConditionContext {
     c
 }
 
+/// Service Quotas' "General purpose buckets" quota.
+const BUCKETS_QUOTA: &str = "L-DC2B2D3D";
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -753,6 +756,3 @@ mod tests {
         }
     }
 }
-
-/// Service Quotas' "General purpose buckets" quota.
-const BUCKETS_QUOTA: &str = "L-DC2B2D3D";
