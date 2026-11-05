@@ -19,6 +19,7 @@ pub mod generated {
 
 pub mod backend;
 mod catalog;
+mod forward;
 mod handler;
 mod ops;
 mod state;
@@ -54,6 +55,24 @@ pub trait Network: Send + Sync {
     fn security_group_vpc(&self, ctx: &RequestContext, group_id: &str) -> Option<String>;
     /// A VPC's `default` security group.
     fn default_security_group(&self, ctx: &RequestContext, vpc_id: &str) -> Option<String>;
+}
+
+/// Where snapshot exports go: S3, written as the export's IAM role.
+/// MWS wires this to STS and S3.
+#[async_trait::async_trait]
+pub trait ExportStore: Send + Sync {
+    /// The identity RDS gets by assuming `role_arn` as
+    /// `export.rds.amazonaws.com` for the export of `source_arn`.
+    fn assume(&self, ctx: &RequestContext, role_arn: &str, source_arn: &str) -> Result<RequestContext, String>;
+    /// Write an object as `role`, encrypted with `kms_key` (SSE-KMS).
+    async fn put_object(
+        &self,
+        role: &RequestContext,
+        bucket: &str,
+        key: &str,
+        body: Vec<u8>,
+        kms_key: &str,
+    ) -> Result<(), String>;
 }
 
 /// An RDS event, as RDS sends it to EventBridge and to event
@@ -93,8 +112,15 @@ pub(crate) struct Inner {
     secrets: SecretsManager,
     network: OnceLock<Arc<dyn Network>>,
     events: OnceLock<Arc<dyn EventSink>>,
+    exports: OnceLock<Arc<dyn ExportStore>>,
     /// Emulated clock minus wall clock, as last seen in a request.
     clock_offset: Mutex<chrono::Duration>,
+    /// Each change of that offset: (emulated time, new offset).
+    clock_history: Mutex<Vec<(DateTime<Utc>, chrono::Duration)>>,
+    schedule: Mutex<ops::pitr::Schedule>,
+    forwarders: forward::Forwarders,
+    /// CA overrides for new DB instances, by (account, Region).
+    certificate_overrides: Mutex<std::collections::HashMap<(String, String), String>>,
 }
 
 /// The RDS service. Cheap to clone; clones share state.
@@ -113,7 +139,12 @@ impl Rds {
                 secrets: secrets.clone(),
                 network: OnceLock::new(),
                 events: OnceLock::new(),
+                exports: OnceLock::new(),
                 clock_offset: Mutex::new(chrono::Duration::zero()),
+                clock_history: Mutex::new(Vec::new()),
+                schedule: Mutex::new(ops::pitr::Schedule::default()),
+                forwarders: forward::Forwarders::default(),
+                certificate_overrides: Mutex::new(Default::default()),
             }),
         };
         secrets.set_managed_rotation("rds", Arc::new(ops::secret::Rotator(rds.clone())));
@@ -128,6 +159,15 @@ impl Rds {
     /// Send events to EventBridge and SNS.
     pub fn set_event_sink(&self, sink: Arc<dyn EventSink>) {
         let _ = self.inner.events.set(sink);
+    }
+
+    /// Write snapshot exports to S3.
+    pub fn set_export_store(&self, store: Arc<dyn ExportStore>) {
+        let _ = self.inner.exports.set(store);
+    }
+
+    pub(crate) fn export_store(&self) -> Option<&Arc<dyn ExportStore>> {
+        self.inner.exports.get()
     }
 
     pub fn backend_name(&self) -> &'static str {
@@ -160,7 +200,13 @@ impl Rds {
 
     /// Remember how far the emulated clock is from the wall clock.
     fn observe(&self, ctx: &RequestContext) {
-        *self.inner.clock_offset.lock().expect("clock lock") = ctx.received_at - Utc::now();
+        let offset = ctx.received_at - Utc::now();
+        *self.inner.clock_offset.lock().expect("clock lock") = offset;
+        let mut history = self.inner.clock_history.lock().expect("clock lock");
+        let moved = history.last().is_none_or(|(_, last)| (offset - *last).num_milliseconds().abs() > 2000);
+        if moved {
+            history.push((ctx.received_at, offset));
+        }
     }
 
     /// Now on the emulated clock (for background tasks).
@@ -182,6 +228,29 @@ impl Rds {
     }
 }
 
+/// Where MWS lists what RDS runs: `GET /_aws/rds/proxy-endpoints` gives
+/// the address each RDS Proxy endpoint listens on.
+pub const CONTROL_PREFIX: &str = "/_aws/rds/";
+
+impl Rds {
+    fn control(&self, request: &HttpRequest) -> HttpResponse {
+        let body = match request.uri().path() {
+            "/_aws/rds/proxy-endpoints" => self.proxy_listeners(),
+            _ => {
+                return http::Response::builder()
+                    .status(404)
+                    .body(bytes::Bytes::from_static(b"not found"))
+                    .expect("valid response")
+            }
+        };
+        http::Response::builder()
+            .status(200)
+            .header("content-type", "application/json")
+            .body(bytes::Bytes::from(body.to_string()))
+            .expect("valid response")
+    }
+}
+
 #[async_trait::async_trait]
 impl Service for Rds {
     fn signing_name(&self) -> &'static str {
@@ -189,9 +258,18 @@ impl Service for Rds {
     }
 
     async fn handle(&self, ctx: RequestContext, request: HttpRequest) -> HttpResponse {
+        if request.uri().path().starts_with(CONTROL_PREFIX) {
+            return self.control(&request);
+        }
         self.observe(&ctx);
+        self.tick(&ctx).await;
         let params = mws_proto_query::read_params(&request);
         generated::dispatch(self, &ctx, &params).await
+    }
+
+    /// MWS's own pages (`/_aws/rds/...`) need no signature.
+    fn accepts_unsigned(&self, request: &HttpRequest) -> bool {
+        request.uri().path().starts_with(CONTROL_PREFIX)
     }
 
     fn render_error(&self, request_id: &str, error: &ServiceError) -> HttpResponse {
@@ -205,6 +283,7 @@ impl Service for Rds {
         input: serde_json::Value,
     ) -> Result<serde_json::Value, ServiceError> {
         self.observe(&ctx);
+        self.tick(&ctx).await;
         generated::invoke(self, &ctx, operation, input).await
     }
 
@@ -219,6 +298,7 @@ impl Service for Rds {
     }
 
     fn reset_state(&self) {
+        self.inner.forwarders.stop_all();
         *self.lock() = State::default();
     }
 }

@@ -57,6 +57,17 @@ pub(crate) fn cluster_filter(c: &t::DBCluster, name: &str) -> Vec<String> {
     }
 }
 
+/// How a new cluster's data starts.
+#[derive(Default)]
+pub(crate) struct Launch {
+    /// A copy of this backend snapshot.
+    pub from_snapshot: Option<String>,
+    /// Built by rolling a backup forward first.
+    pub recovery: Option<super::pitr::Recovery>,
+    /// `from_snapshot` is a temporary copy, dropped once restored.
+    pub drop_snapshot: bool,
+}
+
 impl Rds {
     pub(crate) fn cluster(&self, ctx: &RequestContext, id: &str) -> Result<ClusterRecord, ServiceError> {
         let id = name_of(id).to_ascii_lowercase();
@@ -74,6 +85,20 @@ impl Rds {
         c.reader_endpoint = reader.address;
         c.port = writer.port;
         c.hosted_zone_id = Some(hosted_zone_id(&ctx.region).into());
+        if c.status.as_deref() == Some("available") {
+            c.latest_restorable_time = Some(ctx.received_at);
+        }
+        if let Some(w) = c.backtrack_window.filter(|w| *w > 0) {
+            let created = c.cluster_create_time.unwrap_or(ctx.received_at);
+            c.earliest_backtrack_time = Some(created.max(ctx.received_at - chrono::Duration::seconds(w)));
+            c.backtrack_consumed_change_records = Some(c.backtrack_consumed_change_records.unwrap_or(0));
+        }
+        c.earliest_restorable_time = self.earliest_restorable(
+            ctx,
+            c.db_cluster_resource_id.as_deref().unwrap_or_default(),
+            true,
+            c.earliest_restorable_time,
+        );
         c.custom_endpoints = Some(self.with_region(ctx, |r| {
             r.cluster_endpoints
                 .values()
@@ -148,8 +173,9 @@ impl Rds {
         &self,
         ctx: &RequestContext,
         rec: ClusterRecord,
-        from_snapshot: Option<String>,
+        launch: Launch,
     ) -> Result<t::DBCluster, ServiceError> {
+        let Launch { from_snapshot, recovery, drop_snapshot } = launch;
         let id = rec.cluster.db_cluster_identifier.clone().unwrap_or_default();
         self.with_region(ctx, |r| {
             if r.clusters.len() >= 40 {
@@ -169,10 +195,42 @@ impl Rds {
         self.run_task(async move {
             let spec = this.with_region(&ctx2, |r| r.clusters.get(&id).map(|c| this.cluster_spec(r, c, &ctx2)));
             let Some(spec) = spec else { return };
-            match this.backend().create(&spec, from_snapshot.as_deref()).await {
+            if let (Some(rc), Some(target)) = (&recovery, &from_snapshot) {
+                if let Err(e) = this.recover_into(rc, target).await {
+                    tracing::warn!(cluster = %id, "point-in-time recovery failed: {e}");
+                    let gen = this.with_region(&ctx2, |r| r.clusters.get(&id).map(|c| c.generation)).unwrap_or(0);
+                    this.set_cluster_status(&ctx2, &id, gen, "inaccessible-encryption-credentials-recoverable", None);
+                    this.emit(
+                        &ctx2,
+                        "db-cluster",
+                        &id,
+                        &cluster_arn(&ctx2, &id),
+                        &["failure"],
+                        &format!("Point-in-time recovery failed: {e}"),
+                        "RDS-EVENT-0081",
+                    );
+                    return;
+                }
+            }
+            let created = this.backend().create(&spec, from_snapshot.as_deref()).await;
+            if drop_snapshot {
+                if let Some(f) = &from_snapshot {
+                    let _ = this.backend().delete_snapshot(f).await;
+                }
+            }
+            match created {
                 Ok(l) => {
                     let gen = this.with_region(&ctx2, |r| r.clusters.get(&id).map(|c| c.generation)).unwrap_or(0);
-                    this.set_cluster_status(&ctx2, &id, gen, "available", Some(Listen { host: l.host, port: l.port }));
+                    let first = this.set_cluster_status(
+                        &ctx2,
+                        &id,
+                        gen,
+                        "available",
+                        Some(Listen { host: l.host, port: l.port }),
+                    );
+                    if first {
+                        this.automated_cluster_snapshot(&ctx2, &id).await;
+                    }
                 }
                 Err(e) => {
                     tracing::warn!(cluster = %id, "creating the database failed: {e}");
@@ -274,6 +332,18 @@ impl Rds {
         if let Some(class) = &input.db_cluster_instance_class {
             check_class(engine, version, class)?;
         }
+        let backtrack_window = super::backtrack::window(engine.name, input.backtrack_window)?;
+        let scalability = match input.cluster_scalability_type.as_deref() {
+            None | Some("standard") => None,
+            Some("limitless") if engine.name == "aurora-postgresql" => Some("limitless".to_string()),
+            Some("limitless") => {
+                return Err(invalid_combination(format!(
+                    "Aurora Limitless Database isn't supported for engine {}.",
+                    engine.name
+                )))
+            }
+            Some(other) => return Err(invalid_parameter(format!("Invalid ClusterScalabilityType: {other}"))),
+        };
         let global = match &input.global_cluster_identifier {
             Some(g) => Some(self.global(ctx, g)?),
             None => None,
@@ -449,6 +519,11 @@ impl Rds {
             deletion_protection: Some(input.deletion_protection.unwrap_or(false)),
             http_endpoint_enabled: Some(input.enable_http_endpoint.unwrap_or(false)),
             activity_stream_status: Some("stopped".into()),
+            backtrack_window,
+            limitless_database: scalability
+                .as_ref()
+                .map(|_| t::LimitlessDatabase { status: Some("not-in-use".into()), min_required_acu: Some(16.0) }),
+            cluster_scalability_type: scalability,
             copy_tags_to_snapshot: Some(input.copy_tags_to_snapshot.unwrap_or(false)),
             cross_account_clone: Some(false),
             domain_memberships: Some(Vec::new()),
@@ -480,7 +555,7 @@ impl Rds {
             image: version.image.into(),
             pending_reboot: false,
         };
-        let mut view = self.launch_cluster(ctx, rec, None).await?;
+        let mut view = self.launch_cluster(ctx, rec, Launch::default()).await?;
         if let Some(g) = &global {
             self.join_global(ctx, g.global_cluster_identifier.as_deref().unwrap_or_default(), &arn, !secondary);
         }
@@ -547,8 +622,8 @@ impl Rds {
             storage_encrypted: cc.storage_encrypted,
             kms_key_id: cc.kms_key_id.clone(),
             dbi_resource_id: Some(resource),
-            ca_certificate_identifier: Some(catalog::DEFAULT_CERTIFICATE.into()),
-            certificate_details: certificate(None),
+            ca_certificate_identifier: Some(self.default_certificate(ctx)),
+            certificate_details: certificate(Some(&self.default_certificate(ctx))),
             db_instance_arn: Some(db_arn(ctx, id)),
             promotion_tier: Some(1),
             deletion_protection: Some(false),
@@ -566,6 +641,8 @@ impl Rds {
                 image: rec.image.clone(),
                 from_snapshot: None,
                 first_backup: false,
+                recovery: None,
+                drop_snapshot: false,
             },
         )
         .await?;
@@ -792,6 +869,14 @@ impl Rds {
             }
             c.certificate_details = certificate(Some(ca));
         }
+        if input.backtrack_window.is_some() {
+            if c.backtrack_window.unwrap_or(0) == 0 && input.backtrack_window != Some(0) {
+                return Err(invalid_combination(
+                    "Backtrack can only be turned on when the DB cluster is created or restored.",
+                ));
+            }
+            c.backtrack_window = super::backtrack::window(engine.name, input.backtrack_window)?;
+        }
         if let Some(v) = &input.engine_version {
             let target = engine
                 .version(v)
@@ -905,7 +990,7 @@ impl Rds {
         Ok(t::ModifyDBClusterResult { db_cluster: Some(view) })
     }
 
-    fn rename_cluster(&self, ctx: &RequestContext, old: &str, new: &str) {
+    pub(crate) fn rename_cluster(&self, ctx: &RequestContext, old: &str, new: &str) {
         let arn = cluster_arn(ctx, new);
         self.with_region(ctx, |r| {
             if let Some(mut rec) = r.clusters.remove(old) {
@@ -962,6 +1047,13 @@ impl Rds {
         if status == "deleting" {
             return Err(invalid_cluster_state(&id, &status));
         }
+        if self.with_region(ctx, |r| {
+            r.shard_groups.values().any(|g| g.db_cluster_identifier.as_deref() == Some(id.as_str()))
+        }) {
+            return Err(errors::invalid_db_cluster_state_fault(format!(
+                "The DB cluster {id} has a DB shard group. Delete the DB shard group first."
+            )));
+        }
         let skip = input.skip_final_snapshot.unwrap_or(false);
         let final_snapshot = match (&input.final_db_snapshot_identifier, skip) {
             (Some(_), true) => {
@@ -997,6 +1089,7 @@ impl Rds {
             this.delete_master_secret(&rec.cluster.master_user_secret);
             let snaps: Vec<String> = this.with_region(&ctx2, |r| {
                 r.clusters.remove(&id);
+                Rds::forget_proxy_targets(r, None, Some(&id));
                 for m in &members {
                     r.instances.remove(m);
                 }

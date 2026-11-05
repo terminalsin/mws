@@ -103,6 +103,7 @@ crates/
   mws-xml            XML writer and reader shared by the XML protocols
   mws-store          SQLite persistence of opaque per-service state documents
   mws-schedule       schedule expressions (rate(...), six-field cron(...))
+  mws-parquet        a small Apache Parquet writer (S3 Inventory, RDS exports)
   mws-event-pattern  the AWS event pattern language (EventBridge, Lambda filters)
   services/
     mws-iam            IAM, multi-account, and the authorizer every service calls

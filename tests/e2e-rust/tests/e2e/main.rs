@@ -47,6 +47,7 @@ mod policies;
 mod ram;
 mod rds;
 mod rds_docker;
+mod rds_more;
 mod route53;
 mod route53_advanced;
 mod route53_parity;

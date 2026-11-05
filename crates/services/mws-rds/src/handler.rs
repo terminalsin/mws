@@ -44,6 +44,34 @@ impl Handler for Rds {
     ) -> Result<types::ApplyPendingMaintenanceActionResult, ServiceError> {
         self.apply_pending_maintenance_action_op(ctx, input)
     }
+    async fn authorize_db_security_group_ingress(
+        &self,
+        ctx: &RequestContext,
+        input: types::AuthorizeDBSecurityGroupIngressMessage,
+    ) -> Result<types::AuthorizeDBSecurityGroupIngressResult, ServiceError> {
+        self.authorize_db_security_group_ingress_op(ctx, input)
+    }
+    async fn backtrack_db_cluster(
+        &self,
+        ctx: &RequestContext,
+        input: types::BacktrackDBClusterMessage,
+    ) -> Result<types::DBClusterBacktrack, ServiceError> {
+        self.backtrack_db_cluster_op(ctx, input).await
+    }
+    async fn cancel_db_capacity_reservation(
+        &self,
+        ctx: &RequestContext,
+        input: types::CancelDBCapacityReservationRequest,
+    ) -> Result<types::CancelDBCapacityReservationResponse, ServiceError> {
+        self.cancel_db_capacity_reservation_op(ctx, input)
+    }
+    async fn cancel_export_task(
+        &self,
+        ctx: &RequestContext,
+        input: types::CancelExportTaskMessage,
+    ) -> Result<types::ExportTask, ServiceError> {
+        self.cancel_export_task_op(ctx, input)
+    }
     async fn copy_db_cluster_parameter_group(
         &self,
         ctx: &RequestContext,
@@ -78,6 +106,27 @@ impl Handler for Rds {
         input: types::CopyOptionGroupMessage,
     ) -> Result<types::CopyOptionGroupResult, ServiceError> {
         self.copy_option_group_op(ctx, input)
+    }
+    async fn create_blue_green_deployment(
+        &self,
+        ctx: &RequestContext,
+        input: types::CreateBlueGreenDeploymentRequest,
+    ) -> Result<types::CreateBlueGreenDeploymentResponse, ServiceError> {
+        self.create_blue_green_deployment_op(ctx, input).await
+    }
+    async fn create_custom_db_engine_version(
+        &self,
+        ctx: &RequestContext,
+        input: types::CreateCustomDBEngineVersionMessage,
+    ) -> Result<types::DBEngineVersion, ServiceError> {
+        self.create_custom_db_engine_version_op(ctx, input).await
+    }
+    async fn create_db_capacity_reservation(
+        &self,
+        ctx: &RequestContext,
+        input: types::CreateDBCapacityReservationRequest,
+    ) -> Result<types::CreateDBCapacityReservationResponse, ServiceError> {
+        self.create_db_capacity_reservation_op(ctx, input)
     }
     async fn create_db_cluster(
         &self,
@@ -128,6 +177,34 @@ impl Handler for Rds {
     ) -> Result<types::CreateDBParameterGroupResult, ServiceError> {
         self.create_db_parameter_group_op(ctx, input)
     }
+    async fn create_db_proxy(
+        &self,
+        ctx: &RequestContext,
+        input: types::CreateDBProxyRequest,
+    ) -> Result<types::CreateDBProxyResponse, ServiceError> {
+        self.create_db_proxy_op(ctx, input).await
+    }
+    async fn create_db_proxy_endpoint(
+        &self,
+        ctx: &RequestContext,
+        input: types::CreateDBProxyEndpointRequest,
+    ) -> Result<types::CreateDBProxyEndpointResponse, ServiceError> {
+        self.create_db_proxy_endpoint_op(ctx, input).await
+    }
+    async fn create_db_security_group(
+        &self,
+        ctx: &RequestContext,
+        input: types::CreateDBSecurityGroupMessage,
+    ) -> Result<types::CreateDBSecurityGroupResult, ServiceError> {
+        self.create_db_security_group_op(ctx, input)
+    }
+    async fn create_db_shard_group(
+        &self,
+        ctx: &RequestContext,
+        input: types::CreateDBShardGroupMessage,
+    ) -> Result<types::DBShardGroup, ServiceError> {
+        self.create_db_shard_group_op(ctx, input).await
+    }
     async fn create_db_snapshot(
         &self,
         ctx: &RequestContext,
@@ -156,12 +233,40 @@ impl Handler for Rds {
     ) -> Result<types::CreateGlobalClusterResult, ServiceError> {
         self.create_global_cluster_op(ctx, input)
     }
+    async fn create_integration(
+        &self,
+        ctx: &RequestContext,
+        input: types::CreateIntegrationMessage,
+    ) -> Result<types::Integration, ServiceError> {
+        self.create_integration_op(ctx, input).await
+    }
     async fn create_option_group(
         &self,
         ctx: &RequestContext,
         input: types::CreateOptionGroupMessage,
     ) -> Result<types::CreateOptionGroupResult, ServiceError> {
         self.create_option_group_op(ctx, input)
+    }
+    async fn create_tenant_database(
+        &self,
+        ctx: &RequestContext,
+        input: types::CreateTenantDatabaseMessage,
+    ) -> Result<types::CreateTenantDatabaseResult, ServiceError> {
+        self.create_tenant_database_op(ctx, input)
+    }
+    async fn delete_blue_green_deployment(
+        &self,
+        ctx: &RequestContext,
+        input: types::DeleteBlueGreenDeploymentRequest,
+    ) -> Result<types::DeleteBlueGreenDeploymentResponse, ServiceError> {
+        self.delete_blue_green_deployment_op(ctx, input).await
+    }
+    async fn delete_custom_db_engine_version(
+        &self,
+        ctx: &RequestContext,
+        input: types::DeleteCustomDBEngineVersionMessage,
+    ) -> Result<types::DBEngineVersion, ServiceError> {
+        self.delete_custom_db_engine_version_op(ctx, input)
     }
     async fn delete_db_cluster(
         &self,
@@ -219,6 +324,34 @@ impl Handler for Rds {
     ) -> Result<(), ServiceError> {
         self.delete_db_parameter_group_op(ctx, input)
     }
+    async fn delete_db_proxy(
+        &self,
+        ctx: &RequestContext,
+        input: types::DeleteDBProxyRequest,
+    ) -> Result<types::DeleteDBProxyResponse, ServiceError> {
+        self.delete_db_proxy_op(ctx, input)
+    }
+    async fn delete_db_proxy_endpoint(
+        &self,
+        ctx: &RequestContext,
+        input: types::DeleteDBProxyEndpointRequest,
+    ) -> Result<types::DeleteDBProxyEndpointResponse, ServiceError> {
+        self.delete_db_proxy_endpoint_op(ctx, input)
+    }
+    async fn delete_db_security_group(
+        &self,
+        ctx: &RequestContext,
+        input: types::DeleteDBSecurityGroupMessage,
+    ) -> Result<(), ServiceError> {
+        self.delete_db_security_group_op(ctx, input)
+    }
+    async fn delete_db_shard_group(
+        &self,
+        ctx: &RequestContext,
+        input: types::DeleteDBShardGroupMessage,
+    ) -> Result<types::DBShardGroup, ServiceError> {
+        self.delete_db_shard_group_op(ctx, input).await
+    }
     async fn delete_db_snapshot(
         &self,
         ctx: &RequestContext,
@@ -247,12 +380,33 @@ impl Handler for Rds {
     ) -> Result<types::DeleteGlobalClusterResult, ServiceError> {
         self.delete_global_cluster_op(ctx, input)
     }
+    async fn delete_integration(
+        &self,
+        ctx: &RequestContext,
+        input: types::DeleteIntegrationMessage,
+    ) -> Result<types::Integration, ServiceError> {
+        self.delete_integration_op(ctx, input).await
+    }
     async fn delete_option_group(
         &self,
         ctx: &RequestContext,
         input: types::DeleteOptionGroupMessage,
     ) -> Result<(), ServiceError> {
         self.delete_option_group_op(ctx, input)
+    }
+    async fn delete_tenant_database(
+        &self,
+        ctx: &RequestContext,
+        input: types::DeleteTenantDatabaseMessage,
+    ) -> Result<types::DeleteTenantDatabaseResult, ServiceError> {
+        self.delete_tenant_database_op(ctx, input)
+    }
+    async fn deregister_db_proxy_targets(
+        &self,
+        ctx: &RequestContext,
+        input: types::DeregisterDBProxyTargetsRequest,
+    ) -> Result<types::DeregisterDBProxyTargetsResponse, ServiceError> {
+        self.deregister_db_proxy_targets_op(ctx, input)
     }
     async fn describe_account_attributes(
         &self,
@@ -261,6 +415,13 @@ impl Handler for Rds {
     ) -> Result<types::AccountAttributesMessage, ServiceError> {
         self.describe_account_attributes_op(ctx, input)
     }
+    async fn describe_blue_green_deployments(
+        &self,
+        ctx: &RequestContext,
+        input: types::DescribeBlueGreenDeploymentsRequest,
+    ) -> Result<types::DescribeBlueGreenDeploymentsResponse, ServiceError> {
+        self.describe_blue_green_deployments_op(ctx, input)
+    }
     async fn describe_certificates(
         &self,
         ctx: &RequestContext,
@@ -268,12 +429,26 @@ impl Handler for Rds {
     ) -> Result<types::CertificateMessage, ServiceError> {
         self.describe_certificates_op(ctx, input)
     }
+    async fn describe_db_capacity_reservations(
+        &self,
+        ctx: &RequestContext,
+        input: types::DescribeDBCapacityReservationsRequest,
+    ) -> Result<types::DescribeDBCapacityReservationsResponse, ServiceError> {
+        self.describe_db_capacity_reservations_op(ctx, input)
+    }
     async fn describe_db_cluster_automated_backups(
         &self,
         ctx: &RequestContext,
         input: types::DescribeDBClusterAutomatedBackupsMessage,
     ) -> Result<types::DBClusterAutomatedBackupMessage, ServiceError> {
         self.describe_db_cluster_automated_backups_op(ctx, input)
+    }
+    async fn describe_db_cluster_backtracks(
+        &self,
+        ctx: &RequestContext,
+        input: types::DescribeDBClusterBacktracksMessage,
+    ) -> Result<types::DBClusterBacktrackMessage, ServiceError> {
+        self.describe_db_cluster_backtracks_op(ctx, input)
     }
     async fn describe_db_cluster_endpoints(
         &self,
@@ -366,12 +541,68 @@ impl Handler for Rds {
     ) -> Result<types::DBParameterGroupDetails, ServiceError> {
         self.describe_db_parameters_op(ctx, input)
     }
+    async fn describe_db_proxies(
+        &self,
+        ctx: &RequestContext,
+        input: types::DescribeDBProxiesRequest,
+    ) -> Result<types::DescribeDBProxiesResponse, ServiceError> {
+        self.describe_db_proxies_op(ctx, input)
+    }
+    async fn describe_db_proxy_endpoints(
+        &self,
+        ctx: &RequestContext,
+        input: types::DescribeDBProxyEndpointsRequest,
+    ) -> Result<types::DescribeDBProxyEndpointsResponse, ServiceError> {
+        self.describe_db_proxy_endpoints_op(ctx, input)
+    }
+    async fn describe_db_proxy_target_groups(
+        &self,
+        ctx: &RequestContext,
+        input: types::DescribeDBProxyTargetGroupsRequest,
+    ) -> Result<types::DescribeDBProxyTargetGroupsResponse, ServiceError> {
+        self.describe_db_proxy_target_groups_op(ctx, input)
+    }
+    async fn describe_db_proxy_targets(
+        &self,
+        ctx: &RequestContext,
+        input: types::DescribeDBProxyTargetsRequest,
+    ) -> Result<types::DescribeDBProxyTargetsResponse, ServiceError> {
+        self.describe_db_proxy_targets_op(ctx, input)
+    }
+    async fn describe_db_recommendations(
+        &self,
+        ctx: &RequestContext,
+        input: types::DescribeDBRecommendationsMessage,
+    ) -> Result<types::DBRecommendationsMessage, ServiceError> {
+        self.describe_db_recommendations_op(ctx, input)
+    }
+    async fn describe_db_security_groups(
+        &self,
+        ctx: &RequestContext,
+        input: types::DescribeDBSecurityGroupsMessage,
+    ) -> Result<types::DBSecurityGroupMessage, ServiceError> {
+        self.describe_db_security_groups_op(ctx, input)
+    }
+    async fn describe_db_shard_groups(
+        &self,
+        ctx: &RequestContext,
+        input: types::DescribeDBShardGroupsMessage,
+    ) -> Result<types::DescribeDBShardGroupsResponse, ServiceError> {
+        self.describe_db_shard_groups_op(ctx, input)
+    }
     async fn describe_db_snapshot_attributes(
         &self,
         ctx: &RequestContext,
         input: types::DescribeDBSnapshotAttributesMessage,
     ) -> Result<types::DescribeDBSnapshotAttributesResult, ServiceError> {
         self.describe_db_snapshot_attributes_op(ctx, input)
+    }
+    async fn describe_db_snapshot_tenant_databases(
+        &self,
+        ctx: &RequestContext,
+        input: types::DescribeDBSnapshotTenantDatabasesMessage,
+    ) -> Result<types::DBSnapshotTenantDatabasesMessage, ServiceError> {
+        self.describe_db_snapshot_tenant_databases_op(ctx, input)
     }
     async fn describe_db_snapshots(
         &self,
@@ -422,12 +653,26 @@ impl Handler for Rds {
     ) -> Result<types::EventsMessage, ServiceError> {
         self.describe_events_op(ctx, input)
     }
+    async fn describe_export_tasks(
+        &self,
+        ctx: &RequestContext,
+        input: types::DescribeExportTasksMessage,
+    ) -> Result<types::ExportTasksMessage, ServiceError> {
+        self.describe_export_tasks_op(ctx, input)
+    }
     async fn describe_global_clusters(
         &self,
         ctx: &RequestContext,
         input: types::DescribeGlobalClustersMessage,
     ) -> Result<types::GlobalClustersMessage, ServiceError> {
         self.describe_global_clusters_op(ctx, input)
+    }
+    async fn describe_integrations(
+        &self,
+        ctx: &RequestContext,
+        input: types::DescribeIntegrationsMessage,
+    ) -> Result<types::DescribeIntegrationsResponse, ServiceError> {
+        self.describe_integrations_op(ctx, input)
     }
     async fn describe_option_group_options(
         &self,
@@ -457,12 +702,40 @@ impl Handler for Rds {
     ) -> Result<types::PendingMaintenanceActionsMessage, ServiceError> {
         self.describe_pending_maintenance_actions_op(ctx, input)
     }
+    async fn describe_reserved_db_instances(
+        &self,
+        ctx: &RequestContext,
+        input: types::DescribeReservedDBInstancesMessage,
+    ) -> Result<types::ReservedDBInstanceMessage, ServiceError> {
+        self.describe_reserved_db_instances_op(ctx, input)
+    }
+    async fn describe_reserved_db_instances_offerings(
+        &self,
+        ctx: &RequestContext,
+        input: types::DescribeReservedDBInstancesOfferingsMessage,
+    ) -> Result<types::ReservedDBInstancesOfferingMessage, ServiceError> {
+        self.describe_reserved_db_instances_offerings_op(ctx, input)
+    }
+    async fn describe_serverless_v2_platform_versions(
+        &self,
+        ctx: &RequestContext,
+        input: types::DescribeServerlessV2PlatformVersionsMessage,
+    ) -> Result<types::ServerlessV2PlatformVersionsMessage, ServiceError> {
+        self.describe_serverless_v2_platform_versions_op(ctx, input)
+    }
     async fn describe_source_regions(
         &self,
         ctx: &RequestContext,
         input: types::DescribeSourceRegionsMessage,
     ) -> Result<types::SourceRegionMessage, ServiceError> {
         self.describe_source_regions_op(ctx, input)
+    }
+    async fn describe_tenant_databases(
+        &self,
+        ctx: &RequestContext,
+        input: types::DescribeTenantDatabasesMessage,
+    ) -> Result<types::TenantDatabasesMessage, ServiceError> {
+        self.describe_tenant_databases_op(ctx, input)
     }
     async fn describe_valid_db_instance_modifications(
         &self,
@@ -513,6 +786,41 @@ impl Handler for Rds {
     ) -> Result<types::TagListMessage, ServiceError> {
         self.list_tags_for_resource_op(ctx, input)
     }
+    async fn modify_activity_stream(
+        &self,
+        ctx: &RequestContext,
+        input: types::ModifyActivityStreamRequest,
+    ) -> Result<types::ModifyActivityStreamResponse, ServiceError> {
+        self.modify_activity_stream_op(ctx, input)
+    }
+    async fn modify_certificates(
+        &self,
+        ctx: &RequestContext,
+        input: types::ModifyCertificatesMessage,
+    ) -> Result<types::ModifyCertificatesResult, ServiceError> {
+        self.modify_certificates_op(ctx, input)
+    }
+    async fn modify_current_db_cluster_capacity(
+        &self,
+        ctx: &RequestContext,
+        input: types::ModifyCurrentDBClusterCapacityMessage,
+    ) -> Result<types::DBClusterCapacityInfo, ServiceError> {
+        self.modify_current_db_cluster_capacity_op(ctx, input)
+    }
+    async fn modify_custom_db_engine_version(
+        &self,
+        ctx: &RequestContext,
+        input: types::ModifyCustomDBEngineVersionMessage,
+    ) -> Result<types::DBEngineVersion, ServiceError> {
+        self.modify_custom_db_engine_version_op(ctx, input)
+    }
+    async fn modify_db_capacity_reservation(
+        &self,
+        ctx: &RequestContext,
+        input: types::ModifyDBCapacityReservationRequest,
+    ) -> Result<types::ModifyDBCapacityReservationResponse, ServiceError> {
+        self.modify_db_capacity_reservation_op(ctx, input)
+    }
     async fn modify_db_cluster(
         &self,
         ctx: &RequestContext,
@@ -555,6 +863,41 @@ impl Handler for Rds {
     ) -> Result<types::DBParameterGroupNameMessage, ServiceError> {
         self.modify_db_parameter_group_op(ctx, input)
     }
+    async fn modify_db_proxy(
+        &self,
+        ctx: &RequestContext,
+        input: types::ModifyDBProxyRequest,
+    ) -> Result<types::ModifyDBProxyResponse, ServiceError> {
+        self.modify_db_proxy_op(ctx, input)
+    }
+    async fn modify_db_proxy_endpoint(
+        &self,
+        ctx: &RequestContext,
+        input: types::ModifyDBProxyEndpointRequest,
+    ) -> Result<types::ModifyDBProxyEndpointResponse, ServiceError> {
+        self.modify_db_proxy_endpoint_op(ctx, input)
+    }
+    async fn modify_db_proxy_target_group(
+        &self,
+        ctx: &RequestContext,
+        input: types::ModifyDBProxyTargetGroupRequest,
+    ) -> Result<types::ModifyDBProxyTargetGroupResponse, ServiceError> {
+        self.modify_db_proxy_target_group_op(ctx, input)
+    }
+    async fn modify_db_recommendation(
+        &self,
+        ctx: &RequestContext,
+        input: types::ModifyDBRecommendationMessage,
+    ) -> Result<types::DBRecommendationMessage, ServiceError> {
+        self.modify_db_recommendation_op(ctx, input)
+    }
+    async fn modify_db_shard_group(
+        &self,
+        ctx: &RequestContext,
+        input: types::ModifyDBShardGroupMessage,
+    ) -> Result<types::DBShardGroup, ServiceError> {
+        self.modify_db_shard_group_op(ctx, input).await
+    }
     async fn modify_db_snapshot(
         &self,
         ctx: &RequestContext,
@@ -590,6 +933,13 @@ impl Handler for Rds {
     ) -> Result<types::ModifyGlobalClusterResult, ServiceError> {
         self.modify_global_cluster_op(ctx, input)
     }
+    async fn modify_integration(
+        &self,
+        ctx: &RequestContext,
+        input: types::ModifyIntegrationMessage,
+    ) -> Result<types::Integration, ServiceError> {
+        self.modify_integration_op(ctx, input).await
+    }
     async fn modify_option_group(
         &self,
         ctx: &RequestContext,
@@ -597,12 +947,33 @@ impl Handler for Rds {
     ) -> Result<types::ModifyOptionGroupResult, ServiceError> {
         self.modify_option_group_op(ctx, input)
     }
+    async fn modify_tenant_database(
+        &self,
+        ctx: &RequestContext,
+        input: types::ModifyTenantDatabaseMessage,
+    ) -> Result<types::ModifyTenantDatabaseResult, ServiceError> {
+        self.modify_tenant_database_op(ctx, input)
+    }
     async fn promote_read_replica(
         &self,
         ctx: &RequestContext,
         input: types::PromoteReadReplicaMessage,
     ) -> Result<types::PromoteReadReplicaResult, ServiceError> {
         self.promote_read_replica_op(ctx, input).await
+    }
+    async fn promote_read_replica_db_cluster(
+        &self,
+        ctx: &RequestContext,
+        input: types::PromoteReadReplicaDBClusterMessage,
+    ) -> Result<types::PromoteReadReplicaDBClusterResult, ServiceError> {
+        self.promote_read_replica_db_cluster_op(ctx, input)
+    }
+    async fn purchase_reserved_db_instances_offering(
+        &self,
+        ctx: &RequestContext,
+        input: types::PurchaseReservedDBInstancesOfferingMessage,
+    ) -> Result<types::PurchaseReservedDBInstancesOfferingResult, ServiceError> {
+        self.purchase_reserved_db_instances_offering_op(ctx, input)
     }
     async fn reboot_db_cluster(
         &self,
@@ -617,6 +988,20 @@ impl Handler for Rds {
         input: types::RebootDBInstanceMessage,
     ) -> Result<types::RebootDBInstanceResult, ServiceError> {
         self.reboot_db_instance_op(ctx, input).await
+    }
+    async fn reboot_db_shard_group(
+        &self,
+        ctx: &RequestContext,
+        input: types::RebootDBShardGroupMessage,
+    ) -> Result<types::DBShardGroup, ServiceError> {
+        self.reboot_db_shard_group_op(ctx, input).await
+    }
+    async fn register_db_proxy_targets(
+        &self,
+        ctx: &RequestContext,
+        input: types::RegisterDBProxyTargetsRequest,
+    ) -> Result<types::RegisterDBProxyTargetsResponse, ServiceError> {
+        self.register_db_proxy_targets_op(ctx, input)
     }
     async fn remove_from_global_cluster(
         &self,
@@ -667,6 +1052,13 @@ impl Handler for Rds {
     ) -> Result<types::DBParameterGroupNameMessage, ServiceError> {
         self.reset_db_parameter_group_op(ctx, input)
     }
+    async fn restore_db_cluster_from_s3(
+        &self,
+        ctx: &RequestContext,
+        input: types::RestoreDBClusterFromS3Message,
+    ) -> Result<types::RestoreDBClusterFromS3Result, ServiceError> {
+        self.restore_db_cluster_from_s3_op(ctx, input).await
+    }
     async fn restore_db_cluster_from_snapshot(
         &self,
         ctx: &RequestContext,
@@ -688,12 +1080,33 @@ impl Handler for Rds {
     ) -> Result<types::RestoreDBInstanceFromDBSnapshotResult, ServiceError> {
         self.restore_db_instance_from_db_snapshot_op(ctx, input).await
     }
+    async fn restore_db_instance_from_s3(
+        &self,
+        ctx: &RequestContext,
+        input: types::RestoreDBInstanceFromS3Message,
+    ) -> Result<types::RestoreDBInstanceFromS3Result, ServiceError> {
+        self.restore_db_instance_from_s3_op(ctx, input).await
+    }
     async fn restore_db_instance_to_point_in_time(
         &self,
         ctx: &RequestContext,
         input: types::RestoreDBInstanceToPointInTimeMessage,
     ) -> Result<types::RestoreDBInstanceToPointInTimeResult, ServiceError> {
         self.restore_db_instance_to_point_in_time_op(ctx, input).await
+    }
+    async fn revoke_db_security_group_ingress(
+        &self,
+        ctx: &RequestContext,
+        input: types::RevokeDBSecurityGroupIngressMessage,
+    ) -> Result<types::RevokeDBSecurityGroupIngressResult, ServiceError> {
+        self.revoke_db_security_group_ingress_op(ctx, input)
+    }
+    async fn start_activity_stream(
+        &self,
+        ctx: &RequestContext,
+        input: types::StartActivityStreamRequest,
+    ) -> Result<types::StartActivityStreamResponse, ServiceError> {
+        self.start_activity_stream_op(ctx, input).await
     }
     async fn start_db_cluster(
         &self,
@@ -709,6 +1122,27 @@ impl Handler for Rds {
     ) -> Result<types::StartDBInstanceResult, ServiceError> {
         self.start_db_instance_op(ctx, input).await
     }
+    async fn start_db_instance_automated_backups_replication(
+        &self,
+        ctx: &RequestContext,
+        input: types::StartDBInstanceAutomatedBackupsReplicationMessage,
+    ) -> Result<types::StartDBInstanceAutomatedBackupsReplicationResult, ServiceError> {
+        self.start_db_instance_automated_backups_replication_op(ctx, input)
+    }
+    async fn start_export_task(
+        &self,
+        ctx: &RequestContext,
+        input: types::StartExportTaskMessage,
+    ) -> Result<types::ExportTask, ServiceError> {
+        self.start_export_task_op(ctx, input).await
+    }
+    async fn stop_activity_stream(
+        &self,
+        ctx: &RequestContext,
+        input: types::StopActivityStreamRequest,
+    ) -> Result<types::StopActivityStreamResponse, ServiceError> {
+        self.stop_activity_stream_op(ctx, input).await
+    }
     async fn stop_db_cluster(
         &self,
         ctx: &RequestContext,
@@ -723,11 +1157,32 @@ impl Handler for Rds {
     ) -> Result<types::StopDBInstanceResult, ServiceError> {
         self.stop_db_instance_op(ctx, input).await
     }
+    async fn stop_db_instance_automated_backups_replication(
+        &self,
+        ctx: &RequestContext,
+        input: types::StopDBInstanceAutomatedBackupsReplicationMessage,
+    ) -> Result<types::StopDBInstanceAutomatedBackupsReplicationResult, ServiceError> {
+        self.stop_db_instance_automated_backups_replication_op(ctx, input)
+    }
+    async fn switchover_blue_green_deployment(
+        &self,
+        ctx: &RequestContext,
+        input: types::SwitchoverBlueGreenDeploymentRequest,
+    ) -> Result<types::SwitchoverBlueGreenDeploymentResponse, ServiceError> {
+        self.switchover_blue_green_deployment_op(ctx, input).await
+    }
     async fn switchover_global_cluster(
         &self,
         ctx: &RequestContext,
         input: types::SwitchoverGlobalClusterMessage,
     ) -> Result<types::SwitchoverGlobalClusterResult, ServiceError> {
         self.switchover_global_cluster_op(ctx, input)
+    }
+    async fn switchover_read_replica(
+        &self,
+        ctx: &RequestContext,
+        input: types::SwitchoverReadReplicaMessage,
+    ) -> Result<types::SwitchoverReadReplicaResult, ServiceError> {
+        self.switchover_read_replica_op(ctx, input)
     }
 }

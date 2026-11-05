@@ -10,6 +10,7 @@ async-trait.workspace = true
 chrono.workspace = true
 hex.workspace = true
 mws-core.workspace = true
+mws-parquet.workspace = true
 mws-kms.workspace = true
 mws-proto-json.workspace = true
 mws-proto-query.workspace = true
@@ -18,7 +19,9 @@ rand.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 sha2.workspace = true
-tokio = { workspace = true, features = ["process", "io-util"] }
+tokio = { workspace = true, features = ["process", "io-util", "net"] }
+http.workspace = true
+bytes.workspace = true
 tracing.workspace = true
 uuid.workspace = true
 

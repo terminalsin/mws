@@ -78,6 +78,23 @@ impl Rds {
                 }
             }
         }
+        all.extend(
+            self.custom_engine_versions(ctx, input.engine.as_deref(), input.engine_version.as_deref())
+                .into_iter()
+                .filter(|c| {
+                    input
+                        .db_parameter_group_family
+                        .as_ref()
+                        .is_none_or(|f| c.db_parameter_group_family.as_ref() == Some(f))
+                        && f.matches(|n| match n {
+                            "db-parameter-group-family" => opt(&c.db_parameter_group_family),
+                            "engine" => opt(&c.engine),
+                            "engine-version" => opt(&c.engine_version),
+                            "status" => opt(&c.status),
+                            _ => Vec::new(),
+                        })
+                }),
+        );
         let (page, marker) = paginate(all, &input.marker, input.max_records)?;
         Ok(t::DBEngineVersionMessage { marker, db_engine_versions: Some(page) })
     }
@@ -274,6 +291,7 @@ impl Rds {
     ) -> Result<t::CertificateMessage, ServiceError> {
         authorize(ctx, "DescribeCertificates", "*", ConditionContext::new())?;
         Filters::new(&input.filters, &[])?;
+        let over = self.certificate_override(ctx);
         let all: Vec<t::Certificate> = catalog::CERTIFICATES
             .iter()
             .filter(|c| input.certificate_identifier.as_ref().is_none_or(|w| w == c.0))
@@ -284,8 +302,8 @@ impl Rds {
                 valid_from: c.2.parse().ok(),
                 valid_till: c.3.parse().ok(),
                 certificate_arn: Some(format!("arn:{}:rds:{}::cert:{}", ctx.partition, ctx.region, c.0)),
-                customer_override: Some(false),
-                customer_override_valid_till: None,
+                customer_override: Some(over.as_deref() == Some(c.0)),
+                customer_override_valid_till: (over.as_deref() == Some(c.0)).then(|| c.3.parse().ok()).flatten(),
             })
             .collect();
         if let Some(w) = &input.certificate_identifier {
@@ -295,9 +313,70 @@ impl Rds {
         }
         let (page, marker) = paginate(all, &input.marker, input.max_records)?;
         Ok(t::CertificateMessage {
-            default_certificate_for_new_launches: Some(catalog::DEFAULT_CERTIFICATE.into()),
+            default_certificate_for_new_launches: Some(self.default_certificate(ctx)),
             certificates: Some(page),
             marker,
+        })
+    }
+
+    /// The account's CA override for new DB instances, if any.
+    pub(crate) fn certificate_override(&self, ctx: &RequestContext) -> Option<String> {
+        let key = (crate::util::account_of(ctx), ctx.region.clone());
+        self.inner.certificate_overrides.lock().expect("certificate lock").get(&key).cloned()
+    }
+
+    /// The CA new DB instances get when they name none.
+    pub(crate) fn default_certificate(&self, ctx: &RequestContext) -> String {
+        self.certificate_override(ctx).unwrap_or_else(|| catalog::DEFAULT_CERTIFICATE.into())
+    }
+
+    pub(crate) fn modify_certificates_op(
+        &self,
+        ctx: &RequestContext,
+        input: t::ModifyCertificatesMessage,
+    ) -> Result<t::ModifyCertificatesResult, ServiceError> {
+        authorize(ctx, "ModifyCertificates", "*", ConditionContext::new())?;
+        let key = (crate::util::account_of(ctx), ctx.region.clone());
+        let remove = input.remove_customer_override == Some(true);
+        let id = match (&input.certificate_identifier, remove) {
+            (Some(_), true) => {
+                return Err(crate::util::invalid_combination(
+                    "You can't specify both CertificateIdentifier and RemoveCustomerOverride.",
+                ))
+            }
+            (None, false) => {
+                return Err(crate::util::invalid_parameter(
+                    "Specify either CertificateIdentifier or RemoveCustomerOverride.",
+                ))
+            }
+            (Some(id), false) => Some(id.clone()),
+            (None, true) => None,
+        };
+        let shown = match &id {
+            Some(id) => {
+                if !catalog::CERTIFICATES.iter().any(|c| c.0 == id) {
+                    return Err(errors::certificate_not_found_fault(format!("Certificate {id} not found.")));
+                }
+                self.inner.certificate_overrides.lock().expect("certificate lock").insert(key, id.clone());
+                id.clone()
+            }
+            None => {
+                let old = self.inner.certificate_overrides.lock().expect("certificate lock").remove(&key);
+                old.unwrap_or_else(|| catalog::DEFAULT_CERTIFICATE.into())
+            }
+        };
+        let c = catalog::CERTIFICATES.iter().find(|c| c.0 == shown).copied();
+        Ok(t::ModifyCertificatesResult {
+            certificate: c.map(|c| t::Certificate {
+                certificate_identifier: Some(c.0.into()),
+                certificate_type: Some(c.1.into()),
+                thumbprint: Some(crate::util::stable_token(c.0, 40)),
+                valid_from: c.2.parse().ok(),
+                valid_till: c.3.parse().ok(),
+                certificate_arn: Some(format!("arn:{}:rds:{}::cert:{}", ctx.partition, ctx.region, c.0)),
+                customer_override: Some(id.is_some()),
+                customer_override_valid_till: id.is_some().then(|| c.3.parse().ok()).flatten(),
+            }),
         })
     }
 

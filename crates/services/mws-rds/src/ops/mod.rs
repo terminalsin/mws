@@ -1,14 +1,22 @@
 //! The RDS operations, by resource, and what they share: lookups, the
 //! background lifecycle of databases, and events.
 
+pub mod backtrack;
+pub mod bluegreen;
 pub mod catalog_ops;
 pub mod cluster;
 pub mod endpoint;
 pub mod events;
+pub mod export;
 pub mod global;
 pub mod groups;
 pub mod instance;
+pub mod limitless;
+pub mod misc;
 pub mod params;
+pub mod pitr;
+pub mod proxy;
+pub mod reserved;
 pub mod secret;
 pub mod snapshot;
 pub mod tags;
