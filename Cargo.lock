@@ -2583,6 +2583,22 @@ dependencies = [
 ]
 
 [[package]]
+name = "mws-identitystore"
+version = "0.1.0"
+dependencies = [
+ "async-trait",
+ "chrono",
+ "mws-codegen",
+ "mws-core",
+ "mws-iam",
+ "mws-proto-json",
+ "regex",
+ "serde",
+ "serde_json",
+ "uuid",
+]
+
+[[package]]
 name = "mws-kinesis"
 version = "0.1.0"
 dependencies = [
@@ -3026,6 +3042,55 @@ dependencies = [
  "mws-core",
  "mws-kms",
  "mws-proto-json",
+ "regex",
+ "serde",
+ "serde_json",
+ "uuid",
+]
+
+[[package]]
+name = "mws-ssoadmin"
+version = "0.1.0"
+dependencies = [
+ "async-trait",
+ "chrono",
+ "mws-codegen",
+ "mws-core",
+ "mws-iam",
+ "mws-identitystore",
+ "mws-organizations",
+ "mws-proto-json",
+ "serde",
+ "serde_json",
+ "uuid",
+]
+
+[[package]]
+name = "mws-ssooidc"
+version = "0.1.0"
+dependencies = [
+ "async-trait",
+ "chrono",
+ "mws-codegen",
+ "mws-core",
+ "mws-proto-json",
+ "mws-proto-restjson",
+ "regex",
+ "serde",
+ "serde_json",
+ "uuid",
+]
+
+[[package]]
+name = "mws-ssoportal"
+version = "0.1.0"
+dependencies = [
+ "async-trait",
+ "chrono",
+ "mws-codegen",
+ "mws-core",
+ "mws-proto-json",
+ "mws-proto-restjson",
  "regex",
  "serde",
  "serde_json",

@@ -21,6 +21,7 @@ mod ids;
 mod managed;
 mod ops;
 pub mod org;
+mod reserved;
 mod state;
 mod wire;
 
@@ -33,6 +34,7 @@ use mws_core::{HttpRequest, HttpResponse, RequestContext, Service, ServiceError,
 
 pub use api::{arn_account, DelegationGrant, InstanceProfileView, OidcProviderView, OutboundKey, RoleView, UserView};
 pub use org::{AccountOrganization, OrganizationView};
+pub use reserved::ReservedRoleSpec;
 pub use state::State;
 
 tokio::task_local! {

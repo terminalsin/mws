@@ -149,6 +149,9 @@ impl Iam {
         self.authorize_with(ctx, "UpdateRole", &arn, cond)?;
         let mut state = self.write();
         let role = state.role_mut(&input.role_name).ok_or_else(|| no_such_role(&input.role_name))?;
+        if is_reserved(role) {
+            return Err(crate::ops::service_roles::protected(&role.name));
+        }
         if let Some(d) = input.description {
             role.description = Some(d);
         }
@@ -167,6 +170,9 @@ impl Iam {
         self.authorize_with(ctx, "UpdateRoleDescription", &arn, cond)?;
         let mut state = self.write();
         let role = state.role_mut(&input.role_name).ok_or_else(|| no_such_role(&input.role_name))?;
+        if is_reserved(role) {
+            return Err(crate::ops::service_roles::protected(&role.name));
+        }
         role.description = Some(input.description);
         Ok(types::UpdateRoleDescriptionResponse { role: Some(wire::role(role)) })
     }
@@ -181,6 +187,9 @@ impl Iam {
         self.validate_trust_policy(&input.policy_document)?;
         let mut state = self.write();
         let role = state.role_mut(&input.role_name).ok_or_else(|| no_such_role(&input.role_name))?;
+        if is_reserved(role) {
+            return Err(crate::ops::service_roles::protected(&role.name));
+        }
         role.trust_policy = input.policy_document;
         Ok(())
     }
@@ -191,7 +200,7 @@ impl Iam {
         let mut state = self.write();
         let key = input.role_name.to_lowercase();
         let role = state.role(&input.role_name).ok_or_else(|| no_such_role(&input.role_name))?;
-        if role.path.starts_with("/aws-service-role/") {
+        if role.path.starts_with("/aws-service-role/") || is_reserved(role) {
             return Err(crate::ops::service_roles::protected(&role.name));
         }
         if state.instance_profiles.values().any(|ip| ip.roles.contains(&key)) {
@@ -218,6 +227,9 @@ impl Iam {
         self.authorize_with(ctx, "TagRole", &arn, cond)?;
         let mut state = self.write();
         let role = state.role_mut(&input.role_name).ok_or_else(|| no_such_role(&input.role_name))?;
+        if is_reserved(role) {
+            return Err(crate::ops::service_roles::protected(&role.name));
+        }
         merge_tags(&mut role.tags, tags, "TagsPerRole")
     }
 
@@ -227,6 +239,9 @@ impl Iam {
         self.authorize_with(ctx, "UntagRole", &arn, cond)?;
         let mut state = self.write();
         let role = state.role_mut(&input.role_name).ok_or_else(|| no_such_role(&input.role_name))?;
+        if is_reserved(role) {
+            return Err(crate::ops::service_roles::protected(&role.name));
+        }
         remove_tags(&mut role.tags, &input.tag_keys);
         Ok(())
     }
@@ -255,6 +270,9 @@ impl Iam {
         self.check_boundary_exists(&input.permissions_boundary)?;
         let mut state = self.write();
         let role = state.role_mut(&input.role_name).ok_or_else(|| no_such_role(&input.role_name))?;
+        if is_reserved(role) {
+            return Err(crate::ops::service_roles::protected(&role.name));
+        }
         role.permissions_boundary = Some(input.permissions_boundary);
         Ok(())
     }
@@ -268,6 +286,9 @@ impl Iam {
         self.authorize_with(ctx, "DeleteRolePermissionsBoundary", &arn, cond)?;
         let mut state = self.write();
         let role = state.role_mut(&input.role_name).ok_or_else(|| no_such_role(&input.role_name))?;
+        if is_reserved(role) {
+            return Err(crate::ops::service_roles::protected(&role.name));
+        }
         role.permissions_boundary = None;
         Ok(())
     }
@@ -493,4 +514,10 @@ impl Iam {
             paginate(&tags, |(k, _)| k.clone(), input.marker.as_deref(), input.max_items)?;
         Ok(types::ListInstanceProfileTagsResponse { tags: tags_list(&page), is_truncated, marker })
     }
+}
+
+/// A role IAM Identity Center provisioned (`AWSReservedSSO_*`): only AWS may
+/// change it.
+pub(crate) fn is_reserved(role: &crate::state::Role) -> bool {
+    role.path.starts_with("/aws-reserved/")
 }

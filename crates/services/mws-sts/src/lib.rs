@@ -25,7 +25,7 @@ use std::sync::{Arc, Mutex};
 use chrono::{DateTime, Utc};
 use mws_core::{Caller, HttpRequest, HttpResponse, RequestContext, Service, ServiceError};
 use mws_iam::Iam;
-pub use service::{ServiceAssume, ServiceAssumeError, ServiceCredentials};
+pub use service::{SamlFederation, ServiceAssume, ServiceAssumeError, ServiceCredentials};
 
 /// An issued set of temporary credentials.
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]

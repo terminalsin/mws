@@ -38,6 +38,10 @@ members = [
     "crates/services/mws-firehose",
     "crates/services/mws-cloudwatch",
     "crates/services/mws-ec2",
+    "crates/services/mws-identitystore",
+    "crates/services/mws-ssoadmin",
+    "crates/services/mws-ssooidc",
+    "crates/services/mws-ssoportal",
     "tests/e2e-rust",
 ]
 
@@ -86,6 +90,10 @@ mws-kinesis = { path = "crates/services/mws-kinesis" }
 mws-firehose = { path = "crates/services/mws-firehose" }
 mws-cloudwatch = { path = "crates/services/mws-cloudwatch" }
 mws-ec2 = { path = "crates/services/mws-ec2" }
+mws-identitystore = { path = "crates/services/mws-identitystore" }
+mws-ssoadmin = { path = "crates/services/mws-ssoadmin" }
+mws-ssooidc = { path = "crates/services/mws-ssooidc" }
+mws-ssoportal = { path = "crates/services/mws-ssoportal" }
 
 # external
 async-trait = "0.1"

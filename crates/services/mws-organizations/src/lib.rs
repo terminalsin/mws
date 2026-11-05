@@ -22,6 +22,7 @@ mod effective;
 mod handler;
 mod handshakes;
 mod policies;
+mod public;
 mod state;
 mod structure;
 mod view;
@@ -31,6 +32,7 @@ use std::sync::{Arc, Mutex, MutexGuard};
 use mws_core::{HttpRequest, HttpResponse, RequestContext, Service, ServiceError};
 use mws_iam::Iam;
 
+pub use public::AccountSummary;
 use state::State;
 
 /// The Organizations service. Cheap to clone; clones share state.

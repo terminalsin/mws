@@ -54,7 +54,7 @@ impl Sts {
 
     /// Check a web identity token's signature: against MWS's own keys when
     /// MWS issued it, else against the provider's published JWKS.
-    async fn verify_web_identity_signature(
+    pub(crate) async fn verify_web_identity_signature(
         &self,
         token: &str,
         issuer: &str,
