@@ -27,6 +27,7 @@ mod lambda_urls;
 mod logs;
 mod logs_queries;
 mod logs_subscriptions;
+mod marketplace;
 mod object_lambda;
 mod organizations;
 mod parity;
