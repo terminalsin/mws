@@ -876,6 +876,57 @@ dependencies = [
 ]
 
 [[package]]
+name = "aws-sdk-ses"
+version = "1.123.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "a80d31c458c1a3344cb5e239cce5949da8faa719b9365f19b54ed693873a2075"
+dependencies = [
+ "arc-swap",
+ "aws-credential-types",
+ "aws-runtime",
+ "aws-smithy-async",
+ "aws-smithy-http",
+ "aws-smithy-json",
+ "aws-smithy-observability",
+ "aws-smithy-query",
+ "aws-smithy-runtime",
+ "aws-smithy-runtime-api",
+ "aws-smithy-schema",
+ "aws-smithy-types",
+ "aws-smithy-xml",
+ "aws-types",
+ "fastrand",
+ "http 1.5.0",
+ "regex-lite",
+ "tracing",
+]
+
+[[package]]
+name = "aws-sdk-sesv2"
+version = "1.145.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "69519c9ded94b5779ad42a3745ee8a0ffb6b095da51b90c612914490f90126da"
+dependencies = [
+ "arc-swap",
+ "aws-credential-types",
+ "aws-runtime",
+ "aws-smithy-async",
+ "aws-smithy-http",
+ "aws-smithy-json",
+ "aws-smithy-observability",
+ "aws-smithy-runtime",
+ "aws-smithy-runtime-api",
+ "aws-smithy-schema",
+ "aws-smithy-types",
+ "aws-types",
+ "bytes",
+ "fastrand",
+ "http 1.5.0",
+ "regex-lite",
+ "tracing",
+]
+
+[[package]]
 name = "aws-sdk-sns"
 version = "1.121.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2659,6 +2710,7 @@ name = "mws"
 version = "0.1.0"
 dependencies = [
  "async-trait",
+ "base64 0.22.1",
  "chrono",
  "mws-acm",
  "mws-acmpca",
@@ -2687,6 +2739,7 @@ dependencies = [
  "mws-secretsmanager",
  "mws-securityhub",
  "mws-server",
+ "mws-ses",
  "mws-sns",
  "mws-sqs",
  "mws-ssm",
@@ -2881,6 +2934,8 @@ dependencies = [
  "aws-sdk-s3control",
  "aws-sdk-secretsmanager",
  "aws-sdk-securityhub",
+ "aws-sdk-ses",
+ "aws-sdk-sesv2",
  "aws-sdk-sns",
  "aws-sdk-sqs",
  "aws-sdk-ssm",
@@ -2899,6 +2954,7 @@ dependencies = [
  "mws-route53",
  "mws-s3",
  "mws-server",
+ "mws-ses",
  "mws-sigv4",
  "rand_core 0.6.4",
  "rcgen",
@@ -3561,6 +3617,32 @@ dependencies = [
  "mws-store",
  "serde",
  "serde_json",
+ "tokio",
+ "tracing",
+ "uuid",
+]
+
+[[package]]
+name = "mws-ses"
+version = "0.1.0"
+dependencies = [
+ "async-trait",
+ "base64 0.22.1",
+ "bytes",
+ "chrono",
+ "form_urlencoded",
+ "hmac 0.12.1",
+ "http 1.5.0",
+ "mws-codegen",
+ "mws-core",
+ "mws-iam-policy",
+ "mws-proto-json",
+ "mws-proto-query",
+ "mws-proto-restjson",
+ "rand",
+ "serde",
+ "serde_json",
+ "sha2 0.10.9",
  "tokio",
  "tracing",
  "uuid",

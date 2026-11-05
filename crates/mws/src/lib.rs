@@ -1,6 +1,7 @@
 //! Composition root. This is the only crate that knows which services exist.
 
 mod links;
+mod ses;
 mod sinks;
 
 use std::path::PathBuf;
@@ -33,6 +34,7 @@ use mws_s3control::S3Control;
 use mws_secretsmanager::SecretsManager;
 use mws_securityhub::SecurityHub;
 use mws_server::{Gateway, Scenario, Store};
+use mws_ses::Ses;
 use mws_sns::Sns;
 use mws_sqs::Sqs;
 use mws_ssm::Ssm;
@@ -56,6 +58,10 @@ pub struct Config {
     pub ec2_backend: BackendChoice,
     /// The Docker-compatible CLI (`MWS_EC2_DOCKER`, e.g. `podman`).
     pub ec2_docker_cli: Option<String>,
+    /// Treat SES identities as verified as soon as they are created
+    /// (`MWS_SES_AUTO_VERIFY=1`), instead of waiting for the verification
+    /// link to be followed or the DNS records to appear. AWS never does.
+    pub ses_auto_verify: bool,
 }
 
 impl Config {
@@ -89,6 +95,8 @@ impl Config {
             skip_federation_signature_verification: skip,
             ec2_backend,
             ec2_docker_cli: std::env::var("MWS_EC2_DOCKER").ok().filter(|v| !v.is_empty()),
+            ses_auto_verify: std::env::var("MWS_SES_AUTO_VERIFY")
+                .is_ok_and(|v| matches!(v.as_str(), "1" | "true" | "yes")),
         }
     }
 }
@@ -122,6 +130,7 @@ pub struct Mws {
     pub securityhub: SecurityHub,
     pub imagebuilder: ImageBuilder,
     pub elb: Elb,
+    pub ses: Ses,
 }
 
 /// Build the gateway with every service MWS emulates.
@@ -274,6 +283,20 @@ fn build_with_store(config: Config, store: Option<Arc<Store>>) -> Mws {
         .with_s3(s3.clone());
     elb.set_metric_sink(Arc::new(links::ElbToCloudWatch(cloudwatch.clone())));
     globalaccelerator.add_endpoint_directory(Arc::new(links::GlobalAcceleratorElb(elb.clone())));
+    let ses = if config.ses_auto_verify { Ses::with_auto_verify() } else { Ses::new() };
+    ses.set_links(Arc::new(ses::SesLinks {
+        route53: route53.clone(),
+        s3: s3.clone(),
+        sns: sns.clone(),
+        lambda: lambda.clone(),
+        events: events.clone(),
+        firehose: firehose.clone(),
+        cloudwatch: cloudwatch.clone(),
+        sts: sts.clone(),
+        partition: config.iam.partition.clone(),
+    }));
+    ses.set_credentials(vec![iam.credential_store(), sts.credential_store()]);
+    ses.set_authorizer(iam.authorizer());
     let mut gateway = Gateway::builder();
     if let Some(store) = store {
         gateway = gateway.store(store);
@@ -321,6 +344,9 @@ fn build_with_store(config: Config, store: Option<Arc<Store>>) -> Mws {
         // claims requests with its `2012-06-01` Version.
         .service(Arc::new(elb.clone()))
         .service(Arc::new(elb.classic()))
+        // SES v2 signs as `ses` too; it claims its `/v2/email/` paths.
+        .service(Arc::new(ses.v2()))
+        .service(Arc::new(ses.clone()))
         .build();
     Mws {
         gateway,
@@ -349,6 +375,7 @@ fn build_with_store(config: Config, store: Option<Arc<Store>>) -> Mws {
         securityhub,
         imagebuilder,
         elb,
+        ses,
     }
 }
 

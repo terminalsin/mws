@@ -39,6 +39,8 @@ aws-smithy-types = "1"
 aws-sdk-imagebuilder = "1"
 aws-sdk-elasticloadbalancingv2 = "1"
 aws-sdk-elasticloadbalancing = "1"
+aws-sdk-ses = "1"
+aws-sdk-sesv2 = "1"
 aws-smithy-http-client = { version = "1", features = ["rustls-aws-lc"] }
 aws-smithy-runtime-api = { version = "1", features = ["client"] }
 zip.workspace = true
@@ -70,6 +72,7 @@ mws.workspace = true
 mws-ec2.workspace = true
 mws-route53.workspace = true
 mws-server.workspace = true
+mws-ses.workspace = true
 mws-sigv4.workspace = true
 tokio = { workspace = true, features = ["io-util"] }
 
