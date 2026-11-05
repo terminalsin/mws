@@ -213,6 +213,11 @@ pub fn ser_timestamp(t: &DateTime<Utc>) -> Value {
     serde_json::Number::from_f64(secs).map(Value::Number).unwrap_or(Value::Null)
 }
 
+/// An ISO 8601 timestamp, for shapes with `timestampFormat: date-time`.
+pub fn ser_timestamp_date_time(t: &DateTime<Utc>) -> Value {
+    Value::String(t.to_rfc3339_opts(chrono::SecondsFormat::Millis, true))
+}
+
 pub fn ser_blob(b: &[u8]) -> Value {
     use base64::Engine;
     Value::String(base64::engine::general_purpose::STANDARD.encode(b))

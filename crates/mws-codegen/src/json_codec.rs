@@ -230,7 +230,12 @@ impl<'t, 'm> JsonCodec<'t, 'm> {
                 format!("Value::from(*{x})")
             }
             ShapeType::Float | ShapeType::Double => format!("{RT}::ser_float(*{x} as f64)"),
-            ShapeType::Timestamp => format!("{RT}::ser_timestamp({x})"),
+            // Body timestamps are epoch seconds unless the shape says
+            // otherwise (Bedrock's `Timestamp` is `date-time`).
+            ShapeType::Timestamp => match s.get_trait("timestampFormat").and_then(|v| v.as_str()) {
+                Some("date-time") => format!("{RT}::ser_timestamp_date_time({x})"),
+                _ => format!("{RT}::ser_timestamp({x})"),
+            },
             ShapeType::Blob => format!("{RT}::ser_blob({x})"),
             _ => format!("{module}{}({x})", ser_fn_name(s)),
         }

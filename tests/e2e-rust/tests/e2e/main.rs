@@ -6,6 +6,8 @@
 mod acm;
 mod acmpca;
 mod acmpca_parity;
+mod bedrock;
+mod bedrock_runtime;
 mod cloudwatch;
 mod cloudwatch_parity;
 mod ec2;

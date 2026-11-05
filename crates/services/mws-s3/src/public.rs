@@ -107,6 +107,49 @@ impl S3 {
         // As for any PutObject, an `x-amz-acl` needs only `s3:PutObject`
         // (policies can test it with the `s3:x-amz-acl` condition key).
         self.check_service_access(&put, &["s3:PutObject"])?;
+        self.store_service_object(put, sse)
+    }
+
+    /// Write an object for a service acting with a role the caller passed
+    /// it (Bedrock batch inference and asynchronous invocation write their
+    /// output this way). MWS checks that the bucket exists but does not
+    /// evaluate the role's S3 permissions.
+    pub fn put_object_with_role(
+        &self,
+        bucket: &str,
+        key: &str,
+        body: Vec<u8>,
+        content_type: &str,
+    ) -> Result<String, ServicePutError> {
+        let put = ServicePutObject {
+            bucket,
+            key,
+            body,
+            content_type,
+            service_principal: "",
+            source_account: "",
+            source_arn: "",
+            acl: None,
+            partition: "aws",
+        };
+        self.store_service_object(put, Sse::default())
+    }
+
+    /// The keys of the current (not deleted) objects under `prefix`, or
+    /// `None` when the bucket does not exist.
+    pub fn object_keys(&self, bucket: &str, prefix: &str) -> Option<Vec<String>> {
+        let st = self.read();
+        let b = st.buckets.get(bucket)?;
+        Some(
+            b.objects
+                .iter()
+                .filter(|(k, v)| k.starts_with(prefix) && v.last().is_some_and(|o| !o.delete_marker))
+                .map(|(k, _)| k.clone())
+                .collect(),
+        )
+    }
+
+    fn store_service_object(&self, put: ServicePutObject<'_>, sse: Sse) -> Result<String, ServicePutError> {
         let mut st = self.write();
         let b = st.buckets.get_mut(put.bucket).ok_or(ServicePutError::NoSuchBucket)?;
         let grants = match put.acl {

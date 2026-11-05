@@ -1,0 +1,32 @@
+[package]
+name = "mws-bedrock-runtime"
+description = "Amazon Bedrock runtime (InvokeModel, Converse, streaming, guardrails, async invoke) for MWS"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+async-trait.workspace = true
+base64.workspace = true
+bytes.workspace = true
+chrono.workspace = true
+flate2.workspace = true
+http.workspace = true
+mws-bedrock.workspace = true
+mws-core.workspace = true
+mws-proto-json.workspace = true
+mws-proto-restjson.workspace = true
+mws-s3.workspace = true
+rustls.workspace = true
+rustls-native-certs.workspace = true
+rustls-pki-types.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+sha2.workspace = true
+tokio = { workspace = true, features = ["io-util"] }
+tokio-rustls.workspace = true
+tracing.workspace = true
+uuid.workspace = true
+
+[build-dependencies]
+mws-codegen.workspace = true

@@ -8,6 +8,8 @@ use std::sync::Arc;
 
 use mws_acm::Acm;
 use mws_acmpca::PrivateCa;
+use mws_bedrock::Bedrock;
+use mws_bedrock_runtime::BedrockRuntime;
 use mws_cloudwatch::CloudWatch;
 use mws_core::Environment;
 use mws_ec2::{BackendChoice, Ec2};
@@ -49,6 +51,10 @@ pub struct Config {
     pub ec2_backend: BackendChoice,
     /// The Docker-compatible CLI (`MWS_EC2_DOCKER`, e.g. `podman`).
     pub ec2_docker_cli: Option<String>,
+    /// What answers Bedrock model invocations (`MWS_BEDROCK_BACKEND`:
+    /// `echo`, `openai` or `anthropic`, with `MWS_BEDROCK_BACKEND_URL`,
+    /// `_API_KEY` and `_MODEL`). Defaults to the deterministic echo.
+    pub bedrock_backend: mws_bedrock_runtime::BackendConfig,
 }
 
 impl Config {
@@ -82,6 +88,7 @@ impl Config {
             skip_federation_signature_verification: skip,
             ec2_backend,
             ec2_docker_cli: std::env::var("MWS_EC2_DOCKER").ok().filter(|v| !v.is_empty()),
+            bedrock_backend: mws_bedrock_runtime::BackendConfig::from_env(),
         }
     }
 }
@@ -108,6 +115,8 @@ pub struct Mws {
     pub ec2: Ec2,
     pub marketplace_entitlement: Entitlement,
     pub marketplace_metering: Metering,
+    pub bedrock: Bedrock,
+    pub bedrock_runtime: BedrockRuntime,
 }
 
 /// Build the gateway with every service MWS emulates.
@@ -235,6 +244,9 @@ fn build_with_store(config: Config, store: Option<Arc<Store>>) -> Mws {
     ec2.set_instance_roles(Arc::new(links::Ec2InstanceRoles { iam: iam.clone(), sts: sts.clone() }));
     let marketplace_entitlement = Entitlement::new(config.iam.account_id.clone());
     let marketplace_metering = Metering::new(marketplace_entitlement.clone());
+    let bedrock = Bedrock::new();
+    let bedrock_runtime = BedrockRuntime::new(bedrock.clone(), s3.clone(), &config.bedrock_backend);
+    tracing::info!(backend = bedrock_runtime.backend_name(), "Bedrock model backend");
     let mut gateway = Gateway::builder();
     if let Some(store) = store {
         gateway = gateway.store(store);
@@ -272,6 +284,9 @@ fn build_with_store(config: Config, store: Option<Arc<Store>>) -> Mws {
         // its own `X-Amz-Target`.
         .service(Arc::new(marketplace_metering.clone()))
         .service(Arc::new(marketplace_entitlement.clone()))
+        // bedrock-runtime signs as `bedrock` too; each claims its paths.
+        .service(Arc::new(bedrock_runtime.clone()))
+        .service(Arc::new(bedrock.clone()))
         .build();
     Mws {
         gateway,
@@ -293,6 +308,8 @@ fn build_with_store(config: Config, store: Option<Arc<Store>>) -> Mws {
         ec2,
         marketplace_entitlement,
         marketplace_metering,
+        bedrock,
+        bedrock_runtime,
     }
 }
 
