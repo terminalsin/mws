@@ -15,6 +15,7 @@ use mws_ec2::{BackendChoice, Ec2};
 use mws_elb::{Elb, ElbConfig};
 use mws_events::Events;
 use mws_firehose::Firehose;
+use mws_globalaccelerator::GlobalAccelerator;
 use mws_iam::{Iam, IamConfig};
 use mws_kinesis::Kinesis;
 use mws_kms::Kms;
@@ -112,6 +113,7 @@ pub struct Mws {
     pub cloudwatch: CloudWatch,
     pub ec2: Ec2,
     pub amplify: Amplify,
+    pub globalaccelerator: GlobalAccelerator,
     pub marketplace_entitlement: Entitlement,
     pub marketplace_metering: Metering,
     pub ram: Ram,
@@ -248,6 +250,9 @@ fn build_with_store(config: Config, store: Option<Arc<Store>>) -> Mws {
     tracing::info!(backend = ec2.backend_name(), "EC2 compute backend");
     ec2.set_instance_roles(Arc::new(links::Ec2InstanceRoles { iam: iam.clone(), sts: sts.clone() }));
     let amplify = Amplify::with_services(s3.clone(), route53.clone());
+    let globalaccelerator = GlobalAccelerator::new();
+    globalaccelerator.add_endpoint_directory(Arc::new(links::GlobalAcceleratorEc2(ec2.clone())));
+    route53.add_alias_resolver(Arc::new(links::Route53ToGlobalAccelerator(globalaccelerator.clone())));
     let marketplace_entitlement = Entitlement::new(config.iam.account_id.clone());
     let marketplace_metering = Metering::new(marketplace_entitlement.clone());
     let securityhub = SecurityHub::new();
@@ -260,6 +265,7 @@ fn build_with_store(config: Config, store: Option<Arc<Store>>) -> Mws {
         .with_lambda(lambda.clone())
         .with_s3(s3.clone());
     elb.set_metric_sink(Arc::new(links::ElbToCloudWatch(cloudwatch.clone())));
+    globalaccelerator.add_endpoint_directory(Arc::new(links::GlobalAcceleratorElb(elb.clone())));
     let mut gateway = Gateway::builder();
     if let Some(store) = store {
         gateway = gateway.store(store);
@@ -294,6 +300,7 @@ fn build_with_store(config: Config, store: Option<Arc<Store>>) -> Mws {
         .service(Arc::new(cloudwatch.clone()))
         .service(Arc::new(ec2.clone()))
         .service(Arc::new(amplify.clone()))
+        .service(Arc::new(globalaccelerator.clone()))
         // Both Marketplace services sign as `aws-marketplace`; each claims
         // its own `X-Amz-Target`.
         .service(Arc::new(marketplace_metering.clone()))
@@ -325,6 +332,7 @@ fn build_with_store(config: Config, store: Option<Arc<Store>>) -> Mws {
         cloudwatch,
         ec2,
         amplify,
+        globalaccelerator,
         marketplace_entitlement,
         marketplace_metering,
         ram,

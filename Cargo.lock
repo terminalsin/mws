@@ -463,6 +463,29 @@ dependencies = [
 ]
 
 [[package]]
+name = "aws-sdk-globalaccelerator"
+version = "1.122.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "b8edd2f848016425a86b7d69a1d4ee430c075c22be97291315096f06ec4497af"
+dependencies = [
+ "arc-swap",
+ "aws-credential-types",
+ "aws-runtime",
+ "aws-smithy-async",
+ "aws-smithy-http",
+ "aws-smithy-json",
+ "aws-smithy-observability",
+ "aws-smithy-runtime",
+ "aws-smithy-runtime-api",
+ "aws-smithy-schema",
+ "aws-smithy-types",
+ "aws-types",
+ "fastrand",
+ "regex-lite",
+ "tracing",
+]
+
+[[package]]
 name = "aws-sdk-iam"
 version = "1.133.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2589,6 +2612,7 @@ dependencies = [
  "mws-elb",
  "mws-events",
  "mws-firehose",
+ "mws-globalaccelerator",
  "mws-iam",
  "mws-kinesis",
  "mws-kms",
@@ -2783,6 +2807,7 @@ dependencies = [
  "aws-sdk-elasticloadbalancingv2",
  "aws-sdk-eventbridge",
  "aws-sdk-firehose",
+ "aws-sdk-globalaccelerator",
  "aws-sdk-iam",
  "aws-sdk-kinesis",
  "aws-sdk-kms",
@@ -2960,6 +2985,22 @@ dependencies = [
  "tracing",
  "uuid",
  "zip",
+]
+
+[[package]]
+name = "mws-globalaccelerator"
+version = "0.1.0"
+dependencies = [
+ "async-trait",
+ "chrono",
+ "mws-codegen",
+ "mws-core",
+ "mws-proto-json",
+ "rand",
+ "serde",
+ "serde_json",
+ "tracing",
+ "uuid",
 ]
 
 [[package]]
