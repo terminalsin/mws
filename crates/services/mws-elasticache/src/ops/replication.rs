@@ -807,7 +807,7 @@ pub(crate) async fn modify(
     let id = input.replication_group_id.to_ascii_lowercase();
     let key = region_key(ctx);
     let mut tls_change = None;
-    let (shown, commands, failover_to, users_changed) = svc.with_region(ctx, |r| {
+    let (shown, commands, failover_to, users_changed, upgrade) = svc.with_region(ctx, |r| {
         let g = r.replication_groups.get(&id).cloned().ok_or_else(|| not_found(&id))?;
         let resource = g.info.arn.clone().unwrap_or_default();
         authorize(
@@ -1120,10 +1120,26 @@ pub(crate) async fn modify(
             }
         }
         r.event(&id, "replication-group", format!("Replication group {id} modified"), now(ctx));
+        if new_version.is_some() && svc.runs_engines() {
+            // The nodes are replaced with ones running the new version.
+            if let Some(g) = r.replication_groups.get_mut(&id) {
+                g.info.status = Some("modifying".into());
+            }
+            for m in &member_ids {
+                if let Some(c) = r.clusters.get_mut(m) {
+                    c.set_status("modifying");
+                }
+            }
+        }
         refresh(svc, r, &id);
         let shown = r.replication_groups.get(&id).map(|g| g.info.clone()).unwrap_or_default();
-        Ok((shown, commands, failover_to, users_changed))
+        Ok((shown, commands, failover_to, users_changed, new_version.is_some()))
     })?;
+    if upgrade {
+        // New containers start with every new setting.
+        engine::upgrade(svc, ctx, &key, Some(&id), None);
+        return Ok(t::ModifyReplicationGroupResult { replication_group: Some(shown) });
+    }
     let nodes = svc.with_key(&key, ctx, |r| engine::nodes_of(r, Some(&id), None));
     match tls_change {
         // The nodes still speak the old protocol: run the other changes,

@@ -23,12 +23,15 @@ pub mod generated {
 
 pub mod backend;
 mod catalog;
+mod discovery;
 mod engine;
 mod handler;
+pub mod logdelivery;
 pub mod metrics;
 mod ops;
 pub mod proxy;
 pub mod resp;
+mod schedule;
 mod state;
 pub mod tls;
 
@@ -37,6 +40,7 @@ use std::sync::{Arc, Mutex, MutexGuard, OnceLock};
 use mws_core::{HttpRequest, HttpResponse, RequestContext, Service, ServiceError};
 
 pub use backend::{BackendChoice, DockerBackend, EngineBackend, EngineKind, MetadataBackend};
+pub use logdelivery::{LogBatch, LogDelivery};
 pub use metrics::{CacheMetric, MetricPublisher};
 use state::{RegionState, State};
 
@@ -60,6 +64,11 @@ pub trait NetworkView: Send + Sync {
     fn security_group_vpc(&self, account: &str, region: &str, group_id: &str) -> Option<String>;
     /// A VPC's default security group.
     fn default_security_group(&self, account: &str, region: &str, vpc_id: &str) -> Option<String>;
+    /// The Docker network a VPC's EC2 instances run on, which nodes join
+    /// so that instances in the VPC reach them.
+    fn docker_network(&self, _vpc_id: &str) -> Option<String> {
+        None
+    }
 }
 
 /// Where snapshots are exported to and seeded from (S3), as the
@@ -114,6 +123,8 @@ pub(crate) struct Inner {
     /// A TLS client trusting `pki`'s CA, for that CA's certificate.
     tls_client: Mutex<Option<(String, Arc<rustls::ClientConfig>)>>,
     meter: metrics::Meter,
+    log_delivery: OnceLock<Arc<dyn logdelivery::LogDelivery>>,
+    log_cursors: logdelivery::Cursors,
 }
 
 /// The ElastiCache service. Cheap to clone; clones share state.
@@ -146,6 +157,8 @@ impl ElastiCache {
                 pki: Mutex::new(tls::Pki::default()),
                 tls_client: Mutex::new(None),
                 meter: Default::default(),
+                log_delivery: OnceLock::new(),
+                log_cursors: Default::default(),
             }),
         }
     }
@@ -197,10 +210,10 @@ impl ElastiCache {
     /// The CA and server certificate of nodes with encryption in transit.
     pub(crate) fn pki(&self) -> tls::Pki {
         let mut pki = self.inner.pki.lock().expect("ElastiCache PKI lock poisoned");
-        if pki.is_empty() {
+        if pki.ca_cert_pem.is_empty() {
             let names = tls::server_names(&self.options().advertise_host, &engine::connect_host(self));
             match tls::Pki::generate(&names) {
-                Ok(p) => *pki = p,
+                Ok(p) => *pki = tls::Pki { command_suffix: std::mem::take(&mut pki.command_suffix), ..p },
                 Err(e) => tracing::error!("ElastiCache: generating the TLS CA failed: {e}"),
             }
         }
@@ -261,6 +274,15 @@ impl ElastiCache {
         self.with_key(&key, ctx, f)
     }
 
+    /// The suffix of renamed restricted commands, generated on first use.
+    pub(crate) fn command_suffix(&self) -> String {
+        let mut pki = self.inner.pki.lock().expect("ElastiCache PKI lock poisoned");
+        if pki.command_suffix.is_empty() {
+            pki.command_suffix = format!("{:016x}", rand::random::<u64>());
+        }
+        pki.command_suffix.clone()
+    }
+
     /// Run `f` on a Region's state if it exists (for background tasks,
     /// which have no request to initialize a Region from).
     pub(crate) fn with_existing<R>(&self, key: &str, f: impl FnOnce(&mut RegionState) -> R) -> Option<R> {
@@ -301,7 +323,7 @@ impl Service for ElastiCache {
                 .body(bytes::Bytes::from(self.ca_certificate_pem()))
                 .expect("static response parts are valid");
         }
-        self.observe_clock(ctx.received_at);
+        self.observe_clock(&ctx);
         let params = mws_proto_query::read_params(&request);
         generated::dispatch(self, &ctx, &params).await
     }

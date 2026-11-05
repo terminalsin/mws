@@ -1131,3 +1131,100 @@ async fn cloudwatch_metrics() {
     // One series per node.
     assert_eq!(mc.metrics().len(), 2);
 }
+
+#[tokio::test]
+async fn automatic_snapshots() {
+    let mws = Mws::start().await;
+    let ec = client(&mws).await;
+    ec.create_replication_group()
+        .replication_group_id("nightly")
+        .replication_group_description("nightly")
+        .engine("valkey")
+        .cache_node_type("cache.t4g.micro")
+        .num_cache_clusters(2)
+        .snapshot_retention_limit(2)
+        .snapshot_window("03:00-04:00")
+        .send()
+        .await
+        .unwrap();
+    ec.create_cache_cluster()
+        .cache_cluster_id("nightly-solo")
+        .engine("redis")
+        .cache_node_type("cache.t4g.micro")
+        .num_cache_nodes(1)
+        .snapshot_retention_limit(1)
+        .snapshot_window("05:00-06:00")
+        .send()
+        .await
+        .unwrap();
+    ec.create_serverless_cache()
+        .serverless_cache_name("nightly-sl")
+        .engine("valkey")
+        .snapshot_retention_limit(1)
+        .daily_snapshot_time("02:00")
+        .send()
+        .await
+        .unwrap();
+    let automated = |ec: Client| async move {
+        let mut names: Vec<String> = ec
+            .describe_snapshots()
+            .snapshot_source("automated")
+            .send()
+            .await
+            .unwrap()
+            .snapshots()
+            .iter()
+            .filter_map(|s| s.snapshot_name().map(str::to_string))
+            .collect();
+        names.sort();
+        names
+    };
+    // Nothing before the first window.
+    assert!(automated(ec.clone()).await.is_empty());
+
+    // A day later each window has passed once.
+    let (status, _) = mws.control("POST", "/_mws/clock", Some(r#"{"advanceSeconds":90000}"#)).await;
+    assert_eq!(status, 200);
+    ec.describe_cache_clusters().send().await.unwrap();
+    let names = automated(ec.clone()).await;
+    assert_eq!(names.len(), 2, "{names:?}");
+    assert!(names[0].starts_with("automatic.nightly-20"), "{names:?}");
+    assert!(names[1].starts_with("automatic.nightly-solo-"), "{names:?}");
+    let s = ec.describe_snapshots().snapshot_name(&names[0]).send().await.unwrap();
+    let s = &s.snapshots()[0];
+    assert_eq!(s.snapshot_source(), Some("automated"));
+    assert_eq!(s.snapshot_status(), Some("available"));
+    assert_eq!(s.replication_group_id(), Some("nightly"));
+    assert_eq!(s.snapshot_window(), Some("03:00-04:00"));
+    let sl = ec.describe_serverless_cache_snapshots().snapshot_type("automated").send().await.unwrap();
+    assert_eq!(sl.serverless_cache_snapshots().len(), 1);
+    let sl = &sl.serverless_cache_snapshots()[0];
+    assert!(sl.serverless_cache_snapshot_name().unwrap().starts_with("automatic.nightly-sl-"));
+    assert!(sl.expiry_time().is_some());
+
+    // Automatic snapshots can be copied into manual ones.
+    ec.copy_snapshot().source_snapshot_name(&names[0]).target_snapshot_name("kept-copy").send().await.unwrap();
+
+    // Retention keeps the newest ones.
+    for _ in 0..3 {
+        let (status, _) = mws.control("POST", "/_mws/clock", Some(r#"{"advanceSeconds":86400}"#)).await;
+        assert_eq!(status, 200);
+        ec.describe_cache_clusters().send().await.unwrap();
+    }
+    ec.describe_cache_clusters().send().await.unwrap();
+    let names = automated(ec.clone()).await;
+    let group: Vec<&String> = names.iter().filter(|n| !n.starts_with("automatic.nightly-solo")).collect();
+    let solo: Vec<&String> = names.iter().filter(|n| n.starts_with("automatic.nightly-solo")).collect();
+    assert_eq!(group.len(), 2, "{names:?}");
+    assert_eq!(solo.len(), 1, "{names:?}");
+    let sl = ec.describe_serverless_cache_snapshots().snapshot_type("automated").send().await.unwrap();
+    assert_eq!(sl.serverless_cache_snapshots().len(), 1);
+
+    // Deleting a cluster deletes its automatic snapshots, not manual ones.
+    ec.delete_cache_cluster().cache_cluster_id("nightly-solo").send().await.unwrap();
+    ec.describe_cache_clusters().send().await.unwrap();
+    let names = automated(ec.clone()).await;
+    assert!(names.iter().all(|n| !n.starts_with("automatic.nightly-solo")), "{names:?}");
+    ec.describe_snapshots().snapshot_name("kept-copy").send().await.unwrap();
+    mws.stop().await;
+}

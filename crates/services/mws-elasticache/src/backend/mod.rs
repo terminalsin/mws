@@ -74,6 +74,9 @@ pub struct NodeSpec {
     /// Files to place in the node before it starts (absolute paths), such
     /// as an RDB file to load or TLS certificates.
     pub files: Vec<(String, Vec<u8>)>,
+    /// The Docker network of the node's VPC (where EC2 instances run), and
+    /// the names the node answers to there.
+    pub vpc_network: Option<(String, Vec<String>)>,
 }
 
 /// A running node, as the backend knows it.

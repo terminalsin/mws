@@ -10,7 +10,10 @@ use std::time::{Duration, Instant};
 #[test]
 fn binary_serves_health_check() {
     let port = TcpListener::bind("127.0.0.1:0").unwrap().local_addr().unwrap().port();
-    let mut child = Command::new(env!("CARGO_BIN_EXE_mws"))
+    // nextest runs tests from an archive on another machine, where the
+    // compile-time path does not exist; it passes the binary's new path.
+    let binary = std::env::var("NEXTEST_BIN_EXE_mws").unwrap_or_else(|_| env!("CARGO_BIN_EXE_mws").to_string());
+    let mut child = Command::new(binary)
         .env("MWS_LISTEN", format!("127.0.0.1:{port}"))
         .env("RUST_LOG", "warn")
         .stdout(Stdio::null())
