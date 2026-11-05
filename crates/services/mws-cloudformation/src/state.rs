@@ -17,6 +17,8 @@ pub struct State {
     pub drift_detections: BTreeMap<String, DriftDetection>,
     pub stack_sets: BTreeMap<String, crate::stacksets::StackSet>,
     pub registry: crate::registry::Registry,
+    pub scans: BTreeMap<String, crate::iac::ResourceScan>,
+    pub generated: BTreeMap<String, crate::iac::GeneratedTemplate>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]

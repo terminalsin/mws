@@ -733,6 +733,66 @@ impl Deployment {
         self.cfn.finished(&self.stack_id);
     }
 
+    /// Bring existing resources under the stack (an IMPORT change set).
+    pub async fn import(self, template: Template, data: EvalData, imports: Vec<(String, providers::scan::Scanned)>) {
+        let mut done: Vec<String> = Vec::new();
+        let mut failure: Option<String> = None;
+        for (logical, found) in &imports {
+            let def = template.resource(logical).cloned().unwrap_or_default();
+            let ty = def.get("Type").and_then(Value::as_str).unwrap_or_default().to_string();
+            self.event(logical, &ty, Some(&found.physical_id), "IMPORT_IN_PROGRESS", None, None).await;
+            let props = match self.properties(&template, &data, logical).await {
+                Ok(p) => p,
+                Err(reason) => {
+                    self.event(logical, &ty, Some(&found.physical_id), "IMPORT_FAILED", Some(&reason), None).await;
+                    failure = Some(logical.clone());
+                    break;
+                }
+            };
+            self.set_resource(Resource {
+                logical_id: logical.clone(),
+                resource_type: ty.clone(),
+                physical_id: Some(found.physical_id.clone()),
+                status: "IMPORT_COMPLETE".into(),
+                updated: self.now(),
+                properties: props,
+                attributes: found.attributes.clone(),
+                metadata: def.get("Metadata").cloned(),
+                description: def.get("Description").and_then(Value::as_str).map(str::to_string),
+                ..Default::default()
+            });
+            self.event(logical, &ty, Some(&found.physical_id), "IMPORT_COMPLETE", None, None).await;
+            done.push(logical.clone());
+        }
+        let result = match failure {
+            Some(l) => Err(format!("The following resource(s) failed to import: [{l}]. ")),
+            None => self.outputs(&template, &data),
+        };
+        match result {
+            Ok(outputs) => {
+                self.with(|s| {
+                    s.outputs = outputs;
+                    s.previous = None;
+                });
+                self.stack_status("IMPORT_COMPLETE", None).await;
+            }
+            Err(reason) => {
+                self.stack_status("IMPORT_ROLLBACK_IN_PROGRESS", Some(&reason)).await;
+                // Imported resources are released, never deleted.
+                self.with(|s| {
+                    s.resources.retain(|r| !done.contains(&r.logical_id));
+                    if let Some(p) = s.previous.take() {
+                        s.template_body = p.template_body;
+                        s.parameters = p.parameters;
+                        s.outputs = p.outputs;
+                    }
+                });
+                self.stack_status("IMPORT_ROLLBACK_COMPLETE", None).await;
+            }
+        }
+        self.cfn.finished(&self.stack_id);
+    }
+
     async fn create_resources(&self, template: &Template, data: &EvalData) -> Result<(), Failure> {
         let order = template
             .creation_order(&|l| data.included(template, l))

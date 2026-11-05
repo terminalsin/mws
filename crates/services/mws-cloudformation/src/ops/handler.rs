@@ -596,4 +596,92 @@ impl Handler for CloudFormation {
     ) -> Result<types::ListHookResultsOutput, ServiceError> {
         self.list_hook_results_op(ctx, input)
     }
+
+    async fn start_resource_scan(
+        &self,
+        ctx: &RequestContext,
+        input: types::StartResourceScanInput,
+    ) -> Result<types::StartResourceScanOutput, ServiceError> {
+        self.start_resource_scan_op(ctx, input).await
+    }
+
+    async fn describe_resource_scan(
+        &self,
+        ctx: &RequestContext,
+        input: types::DescribeResourceScanInput,
+    ) -> Result<types::DescribeResourceScanOutput, ServiceError> {
+        self.describe_resource_scan_op(ctx, input)
+    }
+
+    async fn list_resource_scans(
+        &self,
+        ctx: &RequestContext,
+        input: types::ListResourceScansInput,
+    ) -> Result<types::ListResourceScansOutput, ServiceError> {
+        self.list_resource_scans_op(ctx, input)
+    }
+
+    async fn list_resource_scan_resources(
+        &self,
+        ctx: &RequestContext,
+        input: types::ListResourceScanResourcesInput,
+    ) -> Result<types::ListResourceScanResourcesOutput, ServiceError> {
+        self.list_resource_scan_resources_op(ctx, input)
+    }
+
+    async fn list_resource_scan_related_resources(
+        &self,
+        ctx: &RequestContext,
+        input: types::ListResourceScanRelatedResourcesInput,
+    ) -> Result<types::ListResourceScanRelatedResourcesOutput, ServiceError> {
+        self.list_resource_scan_related_resources_op(ctx, input)
+    }
+
+    async fn create_generated_template(
+        &self,
+        ctx: &RequestContext,
+        input: types::CreateGeneratedTemplateInput,
+    ) -> Result<types::CreateGeneratedTemplateOutput, ServiceError> {
+        self.create_generated_template_op(ctx, input).await
+    }
+
+    async fn describe_generated_template(
+        &self,
+        ctx: &RequestContext,
+        input: types::DescribeGeneratedTemplateInput,
+    ) -> Result<types::DescribeGeneratedTemplateOutput, ServiceError> {
+        self.describe_generated_template_op(ctx, input)
+    }
+
+    async fn get_generated_template(
+        &self,
+        ctx: &RequestContext,
+        input: types::GetGeneratedTemplateInput,
+    ) -> Result<types::GetGeneratedTemplateOutput, ServiceError> {
+        self.get_generated_template_op(ctx, input)
+    }
+
+    async fn list_generated_templates(
+        &self,
+        ctx: &RequestContext,
+        input: types::ListGeneratedTemplatesInput,
+    ) -> Result<types::ListGeneratedTemplatesOutput, ServiceError> {
+        self.list_generated_templates_op(ctx, input)
+    }
+
+    async fn update_generated_template(
+        &self,
+        ctx: &RequestContext,
+        input: types::UpdateGeneratedTemplateInput,
+    ) -> Result<types::UpdateGeneratedTemplateOutput, ServiceError> {
+        self.update_generated_template_op(ctx, input)
+    }
+
+    async fn delete_generated_template(
+        &self,
+        ctx: &RequestContext,
+        input: types::DeleteGeneratedTemplateInput,
+    ) -> Result<(), ServiceError> {
+        self.delete_generated_template_op(ctx, input)
+    }
 }
