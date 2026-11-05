@@ -94,6 +94,10 @@ Every service shares the same foundations:
 | Service | Operations | What's emulated |
 | --- | --- | --- |
 | [CodeArtifact](codeartifact.md) | 48 / 48 | Domains, repositories with upstreams and external connections, package groups, and npm, PyPI, Maven, Cargo, RubyGems, NuGet and Swift endpoints real clients use |
+## Cost and usage management
+
+| [Service Quotas](servicequotas.md) | 26 / 26 | AWS's quota codes and defaults, increase requests that services enforce, `AWS/Usage` metrics for quota alarms |
+| [Cost Explorer](ce.md) | 47 / 47 | Seeded and derived cost data, grouping and filters, forecasts, cost categories, allocation tags, anomaly alerts |
 
 ## How services connect
 
@@ -131,6 +135,11 @@ with the permissions AWS would use:
   and sends events to EventBridge and SNS.
 - Marketplace Metering and the Entitlement Service share one Marketplace
   catalog of products, subscriptions and entitlements.
+- EC2, S3, IAM, Lambda, Auto Scaling, ELB, RDS and EKS enforce Service
+  Quotas' applied values, and usage is published to CloudWatch's
+  `AWS/Usage` namespace.
+- Cost Explorer charges API calls at their request prices, follows
+  Organizations for consolidated billing and sends anomaly alerts to SNS.
 - Security Hub registers its delegated administrator in Organizations, sends
   findings events to EventBridge and exports findings to S3 with KMS.
 - Auto Scaling groups launch and terminate EC2 instances, register them with

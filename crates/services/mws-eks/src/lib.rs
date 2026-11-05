@@ -61,6 +61,8 @@ pub(crate) struct Inner {
     state: RwLock<State>,
     sts: Option<mws_sts::Sts>,
     infra: OnceLock<Arc<dyn Infrastructure>>,
+    /// Service Quotas: clusters, node groups and Fargate profiles.
+    quotas: mws_servicequotas::QuotaLink,
     control_plane: OnceLock<Arc<dyn ControlPlane>>,
     credentials: OnceLock<Vec<Arc<dyn CredentialStore>>>,
     /// Control plane log followers, by control plane id.
@@ -73,6 +75,7 @@ impl Inner {
             state: RwLock::new(State::default()),
             sts,
             infra: OnceLock::new(),
+            quotas: Default::default(),
             control_plane: OnceLock::new(),
             credentials: OnceLock::new(),
             log_followers: Default::default(),
@@ -103,6 +106,18 @@ impl Eks {
     /// the service that will assume them.
     pub fn with_sts(sts: mws_sts::Sts) -> Self {
         Self { inner: Arc::new(Inner::new(Some(sts))) }
+    }
+
+    /// Service Quotas, whose applied values limit clusters, node groups
+    /// and Fargate profiles.
+    pub fn set_service_quotas(&self, quotas: mws_servicequotas::ServiceQuotas) {
+        self.inner.quotas.set(quotas);
+    }
+
+    /// The applied value of an EKS quota for the caller. Never call with
+    /// the state lock held.
+    pub(crate) fn quota(&self, ctx: &RequestContext, code: &str) -> usize {
+        self.inner.quotas.limit(util::account(ctx), &ctx.region, "eks", code, ctx.received_at)
     }
 
     /// Where clusters and node groups get their VPC facts, security groups,

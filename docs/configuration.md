@@ -37,6 +37,7 @@ See [State, scenarios and snapshots](state.md) for how the two interact.
 | `MWS_LAMBDA_DOCKER` | `docker` | The Docker-compatible CLI that runs container image Lambda functions (for example `podman`). |
 | `MWS_EC2_BACKEND` | `auto` | How EC2 instances run. `docker` runs each instance as a container, `metadata` runs nothing (instances only change state), and `auto` uses Docker when a daemon answers and `metadata` otherwise. |
 | `MWS_EC2_DOCKER` | `docker` | The Docker-compatible CLI the EC2 backend drives (for example `podman`). |
+| `MWS_QUOTA_PROFILE` | `established` | Which [Service Quotas](services/servicequotas.md) values accounts start with. `established` uses AWS's defaults except EC2 vCPU quotas of 1152 per instance class, so many instances can run without increases; `new-account` uses AWS's exact new-account defaults (5 standard vCPUs). |
 | `MWS_EC2_FIREWALL` | `on` | With the Docker backend, whether security groups, network ACLs and route tables filter instances' traffic (`off` leaves it unfiltered). |
 | `MWS_EC2_NETFILTER_IMAGE` | `rancher/klipper-lb:v0.4.13` | The helper image (any image with `/bin/sh` and `iptables-restore`) that writes instances' firewall rules into their network namespaces. |
 | `MWS_EC2_HELPER_IMAGE` | `alpine:3.20` | With the Docker backend, the small image that copies EBS volume data when snapshots are taken and volumes are restored or copied. |

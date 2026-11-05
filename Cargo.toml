@@ -42,6 +42,8 @@ members = [
     "crates/services/mws-firehose",
     "crates/services/mws-cloudwatch",
     "crates/services/mws-ec2",
+    "crates/services/mws-ce",
+    "crates/services/mws-servicequotas",
     "crates/services/mws-amplify",
     "crates/services/mws-globalaccelerator",
     "crates/services/mws-ram",
@@ -112,6 +114,8 @@ mws-marketplace-entitlement = { path = "crates/services/mws-marketplace-entitlem
 mws-marketplace-metering = { path = "crates/services/mws-marketplace-metering" }
 mws-kinesis = { path = "crates/services/mws-kinesis" }
 mws-firehose = { path = "crates/services/mws-firehose" }
+mws-ce = { path = "crates/services/mws-ce" }
+mws-servicequotas = { path = "crates/services/mws-servicequotas" }
 mws-cloudwatch = { path = "crates/services/mws-cloudwatch" }
 mws-ec2 = { path = "crates/services/mws-ec2" }
 mws-amplify = { path = "crates/services/mws-amplify" }

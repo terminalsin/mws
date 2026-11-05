@@ -13,6 +13,7 @@ use mws_acm::Acm;
 use mws_acmpca::PrivateCa;
 use mws_amplify::Amplify;
 use mws_autoscaling::AutoScaling;
+use mws_ce::CostExplorer;
 use mws_cloudtrail::CloudTrail;
 use mws_cloudtrail_data::CloudTrailData;
 use mws_cloudwatch::CloudWatch;
@@ -45,6 +46,8 @@ use mws_s3control::S3Control;
 use mws_secretsmanager::SecretsManager;
 use mws_securityhub::SecurityHub;
 use mws_server::{Gateway, Scenario, Store};
+pub use mws_servicequotas::catalog::Profile as QuotaProfile;
+use mws_servicequotas::ServiceQuotas;
 use mws_ses::Ses;
 use mws_sns::Sns;
 use mws_sqs::Sqs;
@@ -69,6 +72,10 @@ pub struct Config {
     pub ec2_backend: BackendChoice,
     /// The Docker-compatible CLI (`MWS_EC2_DOCKER`, e.g. `podman`).
     pub ec2_docker_cli: Option<String>,
+    /// Which quota values accounts start with (`MWS_QUOTA_PROFILE`:
+    /// `established`, the default, or `new-account` for AWS's exact
+    /// new-account defaults such as 5 standard EC2 vCPUs).
+    pub quota_profile: QuotaProfile,
     /// Treat SES identities as verified as soon as they are created
     /// (`MWS_SES_AUTO_VERIFY=1`), instead of waiting for the verification
     /// link to be followed or the DNS records to appear. AWS never does.
@@ -131,6 +138,13 @@ impl Config {
             }),
             Err(_) => BackendChoice::Auto,
         };
+        let quota_profile = match std::env::var("MWS_QUOTA_PROFILE") {
+            Ok(v) if !v.is_empty() => QuotaProfile::parse(&v).unwrap_or_else(|| {
+                tracing::warn!("unknown MWS_QUOTA_PROFILE {v:?}; using established");
+                Default::default()
+            }),
+            _ => Default::default(),
+        };
         let rds_backend = match std::env::var("MWS_RDS_BACKEND") {
             Ok(v) => mws_rds::BackendChoice::parse(&v).unwrap_or_else(|| {
                 tracing::warn!("unknown MWS_RDS_BACKEND {v:?}; using auto");
@@ -153,6 +167,7 @@ impl Config {
             skip_federation_signature_verification: skip,
             ec2_backend,
             ec2_docker_cli: std::env::var("MWS_EC2_DOCKER").ok().filter(|v| !v.is_empty()),
+            quota_profile,
             ses_auto_verify: std::env::var("MWS_SES_AUTO_VERIFY")
                 .is_ok_and(|v| matches!(v.as_str(), "1" | "true" | "yes")),
             rds_backend,
@@ -192,6 +207,8 @@ pub struct Mws {
     pub globalaccelerator: GlobalAccelerator,
     pub marketplace_entitlement: Entitlement,
     pub marketplace_metering: Metering,
+    pub servicequotas: ServiceQuotas,
+    pub ce: CostExplorer,
     pub ram: Ram,
     pub scep: ScepConnector,
     pub securityhub: SecurityHub,
@@ -342,6 +359,19 @@ fn build_with_store(config: Config, store: Option<Arc<Store>>) -> Mws {
     route53.add_alias_resolver(Arc::new(links::Route53ToGlobalAccelerator(globalaccelerator.clone())));
     let marketplace_entitlement = Entitlement::new(config.iam.account_id.clone());
     let marketplace_metering = Metering::new(marketplace_entitlement.clone());
+    let servicequotas = ServiceQuotas::new();
+    servicequotas.set_profile(config.quota_profile);
+    servicequotas.set_organizations(Arc::new(links::QuotaOrganizations(organizations.clone())));
+    servicequotas.set_usage_source(Arc::new(links::QuotaUsage { ec2: ec2.clone(), s3: s3.clone(), iam: iam.clone() }));
+    servicequotas.set_metric_publisher(Arc::new(links::UsageToCloudWatch(cloudwatch.clone())));
+    ec2.set_service_quotas(servicequotas.clone());
+    s3.set_service_quotas(servicequotas.clone());
+    iam.set_service_quotas(servicequotas.clone());
+    lambda.set_service_quotas(servicequotas.clone());
+    cloudwatch.set_service_quotas(servicequotas.clone());
+    let ce = CostExplorer::new();
+    ce.set_account_directory(Arc::new(links::CostAccounts(organizations.clone())));
+    ce.set_anomaly_notifier(Arc::new(links::AnomalyAlerts(sns.clone())));
     let securityhub = SecurityHub::new();
     securityhub.set_organizations(Arc::new(links::SecurityHubOrganizations(organizations.clone())));
     securityhub.set_event_sink(Arc::new(links::SecurityHubToEvents(events.clone())));
@@ -417,6 +447,10 @@ fn build_with_store(config: Config, store: Option<Arc<Store>>) -> Mws {
         ecr.set_registry_host(host.clone());
     }
     lambda.set_image_source(Arc::new(links::LambdaImages(ecr.clone())));
+    autoscaling.set_service_quotas(servicequotas.clone());
+    elb.set_service_quotas(servicequotas.clone());
+    rds.set_service_quotas(servicequotas.clone());
+    eks.set_service_quotas(servicequotas.clone());
     let mut gateway = Gateway::builder();
     if let Some(store) = store {
         gateway = gateway.store(store);
@@ -425,6 +459,8 @@ fn build_with_store(config: Config, store: Option<Arc<Store>>) -> Mws {
         .scenario_principal(config.iam.root_access_key_id.clone())
         .environment(Environment { partition: config.iam.partition.clone(), ..Environment::default() })
         .authorizer(iam.authorizer())
+        .request_observer(Arc::new(servicequotas.clone()))
+        .request_observer(Arc::new(ce.clone()))
         .credentials(iam.credential_store())
         .credentials(sts.credential_store())
         .credentials(s3.credential_store())
@@ -457,6 +493,8 @@ fn build_with_store(config: Config, store: Option<Arc<Store>>) -> Mws {
         // its own `X-Amz-Target`.
         .service(Arc::new(marketplace_metering.clone()))
         .service(Arc::new(marketplace_entitlement.clone()))
+        .service(Arc::new(servicequotas.clone()))
+        .service(Arc::new(ce.clone()))
         .service(Arc::new(ram.clone()))
         .service(Arc::new(scep.clone()))
         .service(Arc::new(securityhub.clone()))
@@ -501,6 +539,8 @@ fn build_with_store(config: Config, store: Option<Arc<Store>>) -> Mws {
         globalaccelerator,
         marketplace_entitlement,
         marketplace_metering,
+        servicequotas,
+        ce,
         ram,
         scep,
         securityhub,

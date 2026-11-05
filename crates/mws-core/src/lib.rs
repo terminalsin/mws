@@ -9,6 +9,7 @@ mod auth;
 mod error;
 pub mod eventstream;
 pub mod ids;
+mod observe;
 mod service;
 pub mod trail;
 mod validate;
@@ -18,8 +19,9 @@ pub use auth::{
     CredentialStore, ResolvedCredential, ResourcePolicyMode, SessionInfo, SessionKind,
 };
 pub use error::{ErrorFault, ErrorField, ErrorValue, ServiceError};
+pub use observe::{ApiCall, RecordingAuthorizer, RequestObserver};
 pub use service::{AlternateSignature, HttpRequest, HttpResponse, RequestContext, Service, StreamingBody};
-pub use trail::{ApiCall, ApiCallObserver};
+pub use trail::ApiCallObserver;
 pub use validate::{render_list, Validator};
 
 /// Re-exports used by generated code.

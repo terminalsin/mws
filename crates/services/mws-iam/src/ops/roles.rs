@@ -89,10 +89,14 @@ impl Iam {
         if let Some(b) = &input.permissions_boundary {
             self.check_boundary_exists(b)?;
         }
+        let limit = self.quota(ctx, ROLES_QUOTA);
         let mut state = self.write();
         let key = input.role_name.to_lowercase();
         if state.roles.contains_key(&key) {
             return Err(errors::entity_already_exists(format!("Role with name {} already exists.", input.role_name)));
+        }
+        if state.roles.len() >= limit {
+            return Err(errors::limit_exceeded(format!("Cannot exceed quota for RolesPerAccount: {limit}")));
         }
         let role = Role {
             name: input.role_name,
@@ -494,3 +498,6 @@ impl Iam {
         Ok(types::ListInstanceProfileTagsResponse { tags: tags_list(&page), is_truncated, marker })
     }
 }
+
+/// Service Quotas' "Roles per account".
+const ROLES_QUOTA: &str = "L-FE177D64";

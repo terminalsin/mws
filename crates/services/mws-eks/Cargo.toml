@@ -15,6 +15,7 @@ http.workspace = true
 mws-core.workspace = true
 mws-proto-json.workspace = true
 mws-proto-restjson.workspace = true
+mws-servicequotas.workspace = true
 mws-sigv4.workspace = true
 mws-sts.workspace = true
 percent-encoding.workspace = true
