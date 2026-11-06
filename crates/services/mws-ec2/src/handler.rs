@@ -1128,4 +1128,564 @@ impl Handler for Ec2 {
     ) -> Result<types::UnlockSnapshotResult, ServiceError> {
         self.unlock_snapshot_op(ctx, input)
     }
+    async fn create_egress_only_internet_gateway(
+        &self,
+        ctx: &RequestContext,
+        input: types::CreateEgressOnlyInternetGatewayRequest,
+    ) -> Result<types::CreateEgressOnlyInternetGatewayResult, ServiceError> {
+        self.create_egress_only_internet_gateway_op(ctx, input)
+    }
+    async fn delete_egress_only_internet_gateway(
+        &self,
+        ctx: &RequestContext,
+        input: types::DeleteEgressOnlyInternetGatewayRequest,
+    ) -> Result<types::DeleteEgressOnlyInternetGatewayResult, ServiceError> {
+        self.delete_egress_only_internet_gateway_op(ctx, input)
+    }
+    async fn describe_egress_only_internet_gateways(
+        &self,
+        ctx: &RequestContext,
+        input: types::DescribeEgressOnlyInternetGatewaysRequest,
+    ) -> Result<types::DescribeEgressOnlyInternetGatewaysResult, ServiceError> {
+        self.describe_egress_only_internet_gateways_op(ctx, input)
+    }
+    async fn create_carrier_gateway(
+        &self,
+        ctx: &RequestContext,
+        input: types::CreateCarrierGatewayRequest,
+    ) -> Result<types::CreateCarrierGatewayResult, ServiceError> {
+        self.create_carrier_gateway_op(ctx, input)
+    }
+    async fn delete_carrier_gateway(
+        &self,
+        ctx: &RequestContext,
+        input: types::DeleteCarrierGatewayRequest,
+    ) -> Result<types::DeleteCarrierGatewayResult, ServiceError> {
+        self.delete_carrier_gateway_op(ctx, input)
+    }
+    async fn describe_carrier_gateways(
+        &self,
+        ctx: &RequestContext,
+        input: types::DescribeCarrierGatewaysRequest,
+    ) -> Result<types::DescribeCarrierGatewaysResult, ServiceError> {
+        self.describe_carrier_gateways_op(ctx, input)
+    }
+    async fn create_customer_gateway(
+        &self,
+        ctx: &RequestContext,
+        input: types::CreateCustomerGatewayRequest,
+    ) -> Result<types::CreateCustomerGatewayResult, ServiceError> {
+        self.create_customer_gateway_op(ctx, input)
+    }
+    async fn delete_customer_gateway(
+        &self,
+        ctx: &RequestContext,
+        input: types::DeleteCustomerGatewayRequest,
+    ) -> Result<(), ServiceError> {
+        self.delete_customer_gateway_op(ctx, input)
+    }
+    async fn describe_customer_gateways(
+        &self,
+        ctx: &RequestContext,
+        input: types::DescribeCustomerGatewaysRequest,
+    ) -> Result<types::DescribeCustomerGatewaysResult, ServiceError> {
+        self.describe_customer_gateways_op(ctx, input)
+    }
+    async fn create_vpn_gateway(
+        &self,
+        ctx: &RequestContext,
+        input: types::CreateVpnGatewayRequest,
+    ) -> Result<types::CreateVpnGatewayResult, ServiceError> {
+        self.create_vpn_gateway_op(ctx, input)
+    }
+    async fn delete_vpn_gateway(
+        &self,
+        ctx: &RequestContext,
+        input: types::DeleteVpnGatewayRequest,
+    ) -> Result<(), ServiceError> {
+        self.delete_vpn_gateway_op(ctx, input)
+    }
+    async fn describe_vpn_gateways(
+        &self,
+        ctx: &RequestContext,
+        input: types::DescribeVpnGatewaysRequest,
+    ) -> Result<types::DescribeVpnGatewaysResult, ServiceError> {
+        self.describe_vpn_gateways_op(ctx, input)
+    }
+    async fn attach_vpn_gateway(
+        &self,
+        ctx: &RequestContext,
+        input: types::AttachVpnGatewayRequest,
+    ) -> Result<types::AttachVpnGatewayResult, ServiceError> {
+        self.attach_vpn_gateway_op(ctx, input)
+    }
+    async fn detach_vpn_gateway(
+        &self,
+        ctx: &RequestContext,
+        input: types::DetachVpnGatewayRequest,
+    ) -> Result<(), ServiceError> {
+        self.detach_vpn_gateway_op(ctx, input)
+    }
+    async fn enable_vgw_route_propagation(
+        &self,
+        ctx: &RequestContext,
+        input: types::EnableVgwRoutePropagationRequest,
+    ) -> Result<(), ServiceError> {
+        self.enable_vgw_route_propagation_op(ctx, input)
+    }
+    async fn disable_vgw_route_propagation(
+        &self,
+        ctx: &RequestContext,
+        input: types::DisableVgwRoutePropagationRequest,
+    ) -> Result<(), ServiceError> {
+        self.disable_vgw_route_propagation_op(ctx, input)
+    }
+    async fn create_vpn_connection(
+        &self,
+        ctx: &RequestContext,
+        input: types::CreateVpnConnectionRequest,
+    ) -> Result<types::CreateVpnConnectionResult, ServiceError> {
+        self.create_vpn_connection_op(ctx, input)
+    }
+    async fn delete_vpn_connection(
+        &self,
+        ctx: &RequestContext,
+        input: types::DeleteVpnConnectionRequest,
+    ) -> Result<(), ServiceError> {
+        self.delete_vpn_connection_op(ctx, input)
+    }
+    async fn describe_vpn_connections(
+        &self,
+        ctx: &RequestContext,
+        input: types::DescribeVpnConnectionsRequest,
+    ) -> Result<types::DescribeVpnConnectionsResult, ServiceError> {
+        self.describe_vpn_connections_op(ctx, input)
+    }
+    async fn create_vpn_connection_route(
+        &self,
+        ctx: &RequestContext,
+        input: types::CreateVpnConnectionRouteRequest,
+    ) -> Result<(), ServiceError> {
+        self.create_vpn_connection_route_op(ctx, input)
+    }
+    async fn delete_vpn_connection_route(
+        &self,
+        ctx: &RequestContext,
+        input: types::DeleteVpnConnectionRouteRequest,
+    ) -> Result<(), ServiceError> {
+        self.delete_vpn_connection_route_op(ctx, input)
+    }
+    async fn create_vpc_peering_connection(
+        &self,
+        ctx: &RequestContext,
+        input: types::CreateVpcPeeringConnectionRequest,
+    ) -> Result<types::CreateVpcPeeringConnectionResult, ServiceError> {
+        self.create_vpc_peering_connection_op(ctx, input)
+    }
+    async fn accept_vpc_peering_connection(
+        &self,
+        ctx: &RequestContext,
+        input: types::AcceptVpcPeeringConnectionRequest,
+    ) -> Result<types::AcceptVpcPeeringConnectionResult, ServiceError> {
+        self.accept_vpc_peering_connection_op(ctx, input)
+    }
+    async fn reject_vpc_peering_connection(
+        &self,
+        ctx: &RequestContext,
+        input: types::RejectVpcPeeringConnectionRequest,
+    ) -> Result<types::RejectVpcPeeringConnectionResult, ServiceError> {
+        self.reject_vpc_peering_connection_op(ctx, input)
+    }
+    async fn delete_vpc_peering_connection(
+        &self,
+        ctx: &RequestContext,
+        input: types::DeleteVpcPeeringConnectionRequest,
+    ) -> Result<types::DeleteVpcPeeringConnectionResult, ServiceError> {
+        self.delete_vpc_peering_connection_op(ctx, input)
+    }
+    async fn describe_vpc_peering_connections(
+        &self,
+        ctx: &RequestContext,
+        input: types::DescribeVpcPeeringConnectionsRequest,
+    ) -> Result<types::DescribeVpcPeeringConnectionsResult, ServiceError> {
+        self.describe_vpc_peering_connections_op(ctx, input)
+    }
+    async fn modify_vpc_peering_connection_options(
+        &self,
+        ctx: &RequestContext,
+        input: types::ModifyVpcPeeringConnectionOptionsRequest,
+    ) -> Result<types::ModifyVpcPeeringConnectionOptionsResult, ServiceError> {
+        self.modify_vpc_peering_connection_options_op(ctx, input)
+    }
+    async fn create_transit_gateway(
+        &self,
+        ctx: &RequestContext,
+        input: types::CreateTransitGatewayRequest,
+    ) -> Result<types::CreateTransitGatewayResult, ServiceError> {
+        self.create_transit_gateway_op(ctx, input)
+    }
+    async fn delete_transit_gateway(
+        &self,
+        ctx: &RequestContext,
+        input: types::DeleteTransitGatewayRequest,
+    ) -> Result<types::DeleteTransitGatewayResult, ServiceError> {
+        self.delete_transit_gateway_op(ctx, input)
+    }
+    async fn describe_transit_gateways(
+        &self,
+        ctx: &RequestContext,
+        input: types::DescribeTransitGatewaysRequest,
+    ) -> Result<types::DescribeTransitGatewaysResult, ServiceError> {
+        self.describe_transit_gateways_op(ctx, input)
+    }
+    async fn modify_transit_gateway(
+        &self,
+        ctx: &RequestContext,
+        input: types::ModifyTransitGatewayRequest,
+    ) -> Result<types::ModifyTransitGatewayResult, ServiceError> {
+        self.modify_transit_gateway_op(ctx, input)
+    }
+    async fn create_transit_gateway_vpc_attachment(
+        &self,
+        ctx: &RequestContext,
+        input: types::CreateTransitGatewayVpcAttachmentRequest,
+    ) -> Result<types::CreateTransitGatewayVpcAttachmentResult, ServiceError> {
+        self.create_transit_gateway_vpc_attachment_op(ctx, input)
+    }
+    async fn delete_transit_gateway_vpc_attachment(
+        &self,
+        ctx: &RequestContext,
+        input: types::DeleteTransitGatewayVpcAttachmentRequest,
+    ) -> Result<types::DeleteTransitGatewayVpcAttachmentResult, ServiceError> {
+        self.delete_transit_gateway_vpc_attachment_op(ctx, input)
+    }
+    async fn describe_transit_gateway_vpc_attachments(
+        &self,
+        ctx: &RequestContext,
+        input: types::DescribeTransitGatewayVpcAttachmentsRequest,
+    ) -> Result<types::DescribeTransitGatewayVpcAttachmentsResult, ServiceError> {
+        self.describe_transit_gateway_vpc_attachments_op(ctx, input)
+    }
+    async fn modify_transit_gateway_vpc_attachment(
+        &self,
+        ctx: &RequestContext,
+        input: types::ModifyTransitGatewayVpcAttachmentRequest,
+    ) -> Result<types::ModifyTransitGatewayVpcAttachmentResult, ServiceError> {
+        self.modify_transit_gateway_vpc_attachment_op(ctx, input)
+    }
+    async fn accept_transit_gateway_vpc_attachment(
+        &self,
+        ctx: &RequestContext,
+        input: types::AcceptTransitGatewayVpcAttachmentRequest,
+    ) -> Result<types::AcceptTransitGatewayVpcAttachmentResult, ServiceError> {
+        self.accept_transit_gateway_vpc_attachment_op(ctx, input)
+    }
+    async fn reject_transit_gateway_vpc_attachment(
+        &self,
+        ctx: &RequestContext,
+        input: types::RejectTransitGatewayVpcAttachmentRequest,
+    ) -> Result<types::RejectTransitGatewayVpcAttachmentResult, ServiceError> {
+        self.reject_transit_gateway_vpc_attachment_op(ctx, input)
+    }
+    async fn create_transit_gateway_peering_attachment(
+        &self,
+        ctx: &RequestContext,
+        input: types::CreateTransitGatewayPeeringAttachmentRequest,
+    ) -> Result<types::CreateTransitGatewayPeeringAttachmentResult, ServiceError> {
+        self.create_transit_gateway_peering_attachment_op(ctx, input)
+    }
+    async fn accept_transit_gateway_peering_attachment(
+        &self,
+        ctx: &RequestContext,
+        input: types::AcceptTransitGatewayPeeringAttachmentRequest,
+    ) -> Result<types::AcceptTransitGatewayPeeringAttachmentResult, ServiceError> {
+        self.accept_transit_gateway_peering_attachment_op(ctx, input)
+    }
+    async fn reject_transit_gateway_peering_attachment(
+        &self,
+        ctx: &RequestContext,
+        input: types::RejectTransitGatewayPeeringAttachmentRequest,
+    ) -> Result<types::RejectTransitGatewayPeeringAttachmentResult, ServiceError> {
+        self.reject_transit_gateway_peering_attachment_op(ctx, input)
+    }
+    async fn delete_transit_gateway_peering_attachment(
+        &self,
+        ctx: &RequestContext,
+        input: types::DeleteTransitGatewayPeeringAttachmentRequest,
+    ) -> Result<types::DeleteTransitGatewayPeeringAttachmentResult, ServiceError> {
+        self.delete_transit_gateway_peering_attachment_op(ctx, input)
+    }
+    async fn describe_transit_gateway_peering_attachments(
+        &self,
+        ctx: &RequestContext,
+        input: types::DescribeTransitGatewayPeeringAttachmentsRequest,
+    ) -> Result<types::DescribeTransitGatewayPeeringAttachmentsResult, ServiceError> {
+        self.describe_transit_gateway_peering_attachments_op(ctx, input)
+    }
+    async fn describe_transit_gateway_attachments(
+        &self,
+        ctx: &RequestContext,
+        input: types::DescribeTransitGatewayAttachmentsRequest,
+    ) -> Result<types::DescribeTransitGatewayAttachmentsResult, ServiceError> {
+        self.describe_transit_gateway_attachments_op(ctx, input)
+    }
+    async fn create_transit_gateway_route_table(
+        &self,
+        ctx: &RequestContext,
+        input: types::CreateTransitGatewayRouteTableRequest,
+    ) -> Result<types::CreateTransitGatewayRouteTableResult, ServiceError> {
+        self.create_transit_gateway_route_table_op(ctx, input)
+    }
+    async fn delete_transit_gateway_route_table(
+        &self,
+        ctx: &RequestContext,
+        input: types::DeleteTransitGatewayRouteTableRequest,
+    ) -> Result<types::DeleteTransitGatewayRouteTableResult, ServiceError> {
+        self.delete_transit_gateway_route_table_op(ctx, input)
+    }
+    async fn describe_transit_gateway_route_tables(
+        &self,
+        ctx: &RequestContext,
+        input: types::DescribeTransitGatewayRouteTablesRequest,
+    ) -> Result<types::DescribeTransitGatewayRouteTablesResult, ServiceError> {
+        self.describe_transit_gateway_route_tables_op(ctx, input)
+    }
+    async fn associate_transit_gateway_route_table(
+        &self,
+        ctx: &RequestContext,
+        input: types::AssociateTransitGatewayRouteTableRequest,
+    ) -> Result<types::AssociateTransitGatewayRouteTableResult, ServiceError> {
+        self.associate_transit_gateway_route_table_op(ctx, input)
+    }
+    async fn disassociate_transit_gateway_route_table(
+        &self,
+        ctx: &RequestContext,
+        input: types::DisassociateTransitGatewayRouteTableRequest,
+    ) -> Result<types::DisassociateTransitGatewayRouteTableResult, ServiceError> {
+        self.disassociate_transit_gateway_route_table_op(ctx, input)
+    }
+    async fn enable_transit_gateway_route_table_propagation(
+        &self,
+        ctx: &RequestContext,
+        input: types::EnableTransitGatewayRouteTablePropagationRequest,
+    ) -> Result<types::EnableTransitGatewayRouteTablePropagationResult, ServiceError> {
+        self.enable_transit_gateway_route_table_propagation_op(ctx, input)
+    }
+    async fn disable_transit_gateway_route_table_propagation(
+        &self,
+        ctx: &RequestContext,
+        input: types::DisableTransitGatewayRouteTablePropagationRequest,
+    ) -> Result<types::DisableTransitGatewayRouteTablePropagationResult, ServiceError> {
+        self.disable_transit_gateway_route_table_propagation_op(ctx, input)
+    }
+    async fn get_transit_gateway_route_table_associations(
+        &self,
+        ctx: &RequestContext,
+        input: types::GetTransitGatewayRouteTableAssociationsRequest,
+    ) -> Result<types::GetTransitGatewayRouteTableAssociationsResult, ServiceError> {
+        self.get_transit_gateway_route_table_associations_op(ctx, input)
+    }
+    async fn get_transit_gateway_route_table_propagations(
+        &self,
+        ctx: &RequestContext,
+        input: types::GetTransitGatewayRouteTablePropagationsRequest,
+    ) -> Result<types::GetTransitGatewayRouteTablePropagationsResult, ServiceError> {
+        self.get_transit_gateway_route_table_propagations_op(ctx, input)
+    }
+    async fn get_transit_gateway_attachment_propagations(
+        &self,
+        ctx: &RequestContext,
+        input: types::GetTransitGatewayAttachmentPropagationsRequest,
+    ) -> Result<types::GetTransitGatewayAttachmentPropagationsResult, ServiceError> {
+        self.get_transit_gateway_attachment_propagations_op(ctx, input)
+    }
+    async fn create_transit_gateway_route(
+        &self,
+        ctx: &RequestContext,
+        input: types::CreateTransitGatewayRouteRequest,
+    ) -> Result<types::CreateTransitGatewayRouteResult, ServiceError> {
+        self.create_transit_gateway_route_op(ctx, input)
+    }
+    async fn delete_transit_gateway_route(
+        &self,
+        ctx: &RequestContext,
+        input: types::DeleteTransitGatewayRouteRequest,
+    ) -> Result<types::DeleteTransitGatewayRouteResult, ServiceError> {
+        self.delete_transit_gateway_route_op(ctx, input)
+    }
+    async fn replace_transit_gateway_route(
+        &self,
+        ctx: &RequestContext,
+        input: types::ReplaceTransitGatewayRouteRequest,
+    ) -> Result<types::ReplaceTransitGatewayRouteResult, ServiceError> {
+        self.replace_transit_gateway_route_op(ctx, input)
+    }
+    async fn search_transit_gateway_routes(
+        &self,
+        ctx: &RequestContext,
+        input: types::SearchTransitGatewayRoutesRequest,
+    ) -> Result<types::SearchTransitGatewayRoutesResult, ServiceError> {
+        self.search_transit_gateway_routes_op(ctx, input)
+    }
+    async fn create_flow_logs(
+        &self,
+        ctx: &RequestContext,
+        input: types::CreateFlowLogsRequest,
+    ) -> Result<types::CreateFlowLogsResult, ServiceError> {
+        self.create_flow_logs_op(ctx, input)
+    }
+    async fn delete_flow_logs(
+        &self,
+        ctx: &RequestContext,
+        input: types::DeleteFlowLogsRequest,
+    ) -> Result<types::DeleteFlowLogsResult, ServiceError> {
+        self.delete_flow_logs_op(ctx, input)
+    }
+    async fn describe_flow_logs(
+        &self,
+        ctx: &RequestContext,
+        input: types::DescribeFlowLogsRequest,
+    ) -> Result<types::DescribeFlowLogsResult, ServiceError> {
+        self.describe_flow_logs_op(ctx, input)
+    }
+    async fn associate_subnet_cidr_block(
+        &self,
+        ctx: &RequestContext,
+        input: types::AssociateSubnetCidrBlockRequest,
+    ) -> Result<types::AssociateSubnetCidrBlockResult, ServiceError> {
+        self.associate_subnet_cidr_block_op(ctx, input)
+    }
+    async fn disassociate_subnet_cidr_block(
+        &self,
+        ctx: &RequestContext,
+        input: types::DisassociateSubnetCidrBlockRequest,
+    ) -> Result<types::DisassociateSubnetCidrBlockResult, ServiceError> {
+        self.disassociate_subnet_cidr_block_op(ctx, input)
+    }
+    async fn create_subnet_cidr_reservation(
+        &self,
+        ctx: &RequestContext,
+        input: types::CreateSubnetCidrReservationRequest,
+    ) -> Result<types::CreateSubnetCidrReservationResult, ServiceError> {
+        self.create_subnet_cidr_reservation_op(ctx, input)
+    }
+    async fn delete_subnet_cidr_reservation(
+        &self,
+        ctx: &RequestContext,
+        input: types::DeleteSubnetCidrReservationRequest,
+    ) -> Result<types::DeleteSubnetCidrReservationResult, ServiceError> {
+        self.delete_subnet_cidr_reservation_op(ctx, input)
+    }
+    async fn get_subnet_cidr_reservations(
+        &self,
+        ctx: &RequestContext,
+        input: types::GetSubnetCidrReservationsRequest,
+    ) -> Result<types::GetSubnetCidrReservationsResult, ServiceError> {
+        self.get_subnet_cidr_reservations_op(ctx, input)
+    }
+    async fn assign_private_ip_addresses(
+        &self,
+        ctx: &RequestContext,
+        input: types::AssignPrivateIpAddressesRequest,
+    ) -> Result<types::AssignPrivateIpAddressesResult, ServiceError> {
+        self.assign_private_ip_addresses_op(ctx, input)
+    }
+    async fn unassign_private_ip_addresses(
+        &self,
+        ctx: &RequestContext,
+        input: types::UnassignPrivateIpAddressesRequest,
+    ) -> Result<(), ServiceError> {
+        self.unassign_private_ip_addresses_op(ctx, input)
+    }
+    async fn assign_ipv6_addresses(
+        &self,
+        ctx: &RequestContext,
+        input: types::AssignIpv6AddressesRequest,
+    ) -> Result<types::AssignIpv6AddressesResult, ServiceError> {
+        self.assign_ipv6_addresses_op(ctx, input)
+    }
+    async fn unassign_ipv6_addresses(
+        &self,
+        ctx: &RequestContext,
+        input: types::UnassignIpv6AddressesRequest,
+    ) -> Result<types::UnassignIpv6AddressesResult, ServiceError> {
+        self.unassign_ipv6_addresses_op(ctx, input)
+    }
+    async fn describe_network_interface_attribute(
+        &self,
+        ctx: &RequestContext,
+        input: types::DescribeNetworkInterfaceAttributeRequest,
+    ) -> Result<types::DescribeNetworkInterfaceAttributeResult, ServiceError> {
+        self.describe_network_interface_attribute_op(ctx, input)
+    }
+    async fn modify_vpc_tenancy(
+        &self,
+        ctx: &RequestContext,
+        input: types::ModifyVpcTenancyRequest,
+    ) -> Result<types::ModifyVpcTenancyResult, ServiceError> {
+        self.modify_vpc_tenancy_op(ctx, input)
+    }
+    async fn get_security_groups_for_vpc(
+        &self,
+        ctx: &RequestContext,
+        input: types::GetSecurityGroupsForVpcRequest,
+    ) -> Result<types::GetSecurityGroupsForVpcResult, ServiceError> {
+        self.get_security_groups_for_vpc_op(ctx, input)
+    }
+    async fn describe_vpc_classic_link(
+        &self,
+        ctx: &RequestContext,
+        input: types::DescribeVpcClassicLinkRequest,
+    ) -> Result<types::DescribeVpcClassicLinkResult, ServiceError> {
+        self.describe_vpc_classic_link_op(ctx, input)
+    }
+    async fn describe_vpc_classic_link_dns_support(
+        &self,
+        ctx: &RequestContext,
+        input: types::DescribeVpcClassicLinkDnsSupportRequest,
+    ) -> Result<types::DescribeVpcClassicLinkDnsSupportResult, ServiceError> {
+        self.describe_vpc_classic_link_dns_support_op(ctx, input)
+    }
+    async fn enable_vpc_classic_link(
+        &self,
+        ctx: &RequestContext,
+        input: types::EnableVpcClassicLinkRequest,
+    ) -> Result<types::EnableVpcClassicLinkResult, ServiceError> {
+        self.enable_vpc_classic_link_op(ctx, input)
+    }
+    async fn disable_vpc_classic_link(
+        &self,
+        ctx: &RequestContext,
+        input: types::DisableVpcClassicLinkRequest,
+    ) -> Result<types::DisableVpcClassicLinkResult, ServiceError> {
+        self.disable_vpc_classic_link_op(ctx, input)
+    }
+    async fn describe_instance_credit_specifications(
+        &self,
+        ctx: &RequestContext,
+        input: types::DescribeInstanceCreditSpecificationsRequest,
+    ) -> Result<types::DescribeInstanceCreditSpecificationsResult, ServiceError> {
+        self.describe_instance_credit_specifications_op(ctx, input)
+    }
+    async fn modify_instance_credit_specification(
+        &self,
+        ctx: &RequestContext,
+        input: types::ModifyInstanceCreditSpecificationRequest,
+    ) -> Result<types::ModifyInstanceCreditSpecificationResult, ServiceError> {
+        self.modify_instance_credit_specification_op(ctx, input)
+    }
+    async fn get_password_data(
+        &self,
+        ctx: &RequestContext,
+        input: types::GetPasswordDataRequest,
+    ) -> Result<types::GetPasswordDataResult, ServiceError> {
+        self.get_password_data_op(ctx, input)
+    }
+    async fn get_instance_uefi_data(
+        &self,
+        ctx: &RequestContext,
+        input: types::GetInstanceUefiDataRequest,
+    ) -> Result<types::GetInstanceUefiDataResult, ServiceError> {
+        self.get_instance_uefi_data_op(ctx, input)
+    }
 }

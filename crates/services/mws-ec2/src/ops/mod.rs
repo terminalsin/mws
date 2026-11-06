@@ -1,10 +1,15 @@
+pub mod addressing;
 pub mod ebs;
 pub mod endpoint;
 pub mod eni;
+pub mod flow_logs;
+pub mod gateways;
 pub mod image;
 pub mod instance;
 pub mod launch_template;
 pub mod misc;
+pub mod peering;
 pub mod sg;
 pub mod snapshot;
+pub mod tgw;
 pub mod vpc;

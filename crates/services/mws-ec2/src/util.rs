@@ -57,6 +57,17 @@ pub enum Kind {
     SecurityGroupRule,
     VpcEndpoint,
     PrefixList,
+    EgressOnlyInternetGateway,
+    CarrierGateway,
+    CustomerGateway,
+    VpnGateway,
+    VpnConnection,
+    VpcPeeringConnection,
+    TransitGateway,
+    TransitGatewayAttachment,
+    TransitGatewayRouteTable,
+    FlowLog,
+    SubnetCidrReservation,
 }
 
 impl Kind {
@@ -80,6 +91,17 @@ impl Kind {
             Kind::SecurityGroupRule => "sgr",
             Kind::VpcEndpoint => "vpce",
             Kind::PrefixList => "pl",
+            Kind::EgressOnlyInternetGateway => "eigw",
+            Kind::CarrierGateway => "cagw",
+            Kind::CustomerGateway => "cgw",
+            Kind::VpnGateway => "vgw",
+            Kind::VpnConnection => "vpn",
+            Kind::VpcPeeringConnection => "pcx",
+            Kind::TransitGateway => "tgw",
+            Kind::TransitGatewayAttachment => "tgw-attach",
+            Kind::TransitGatewayRouteTable => "tgw-rtb",
+            Kind::FlowLog => "fl",
+            Kind::SubnetCidrReservation => "scr",
         }
     }
 
@@ -103,6 +125,17 @@ impl Kind {
             Kind::SecurityGroupRule => "InvalidSecurityGroupRuleId.Malformed",
             Kind::VpcEndpoint => "InvalidVpcEndpointId.Malformed",
             Kind::PrefixList => "InvalidPrefixListId.Malformed",
+            Kind::EgressOnlyInternetGateway => "InvalidEgressOnlyInternetGatewayId.Malformed",
+            Kind::CarrierGateway => "InvalidCarrierGatewayID.Malformed",
+            Kind::CustomerGateway => "InvalidCustomerGatewayId.Malformed",
+            Kind::VpnGateway => "InvalidVpnGatewayID.Malformed",
+            Kind::VpnConnection => "InvalidVpnConnectionID.Malformed",
+            Kind::VpcPeeringConnection => "InvalidVpcPeeringConnectionId.Malformed",
+            Kind::TransitGateway => "InvalidTransitGatewayID.Malformed",
+            Kind::TransitGatewayAttachment => "InvalidTransitGatewayAttachmentID.Malformed",
+            Kind::TransitGatewayRouteTable => "InvalidRouteTableID.Malformed",
+            Kind::FlowLog => "InvalidFlowLogId.Malformed",
+            Kind::SubnetCidrReservation => "InvalidSubnetCidrReservationID.Malformed",
         }
     }
 
@@ -133,6 +166,41 @@ impl Kind {
             }
             Kind::VpcEndpoint => ("InvalidVpcEndpoint.NotFound", format!("The Vpc Endpoint Id '{id}' does not exist")),
             Kind::PrefixList => ("InvalidPrefixListID.NotFound", format!("The prefix list ID '{id}' does not exist")),
+            Kind::EgressOnlyInternetGateway => {
+                ("InvalidGatewayID.NotFound", format!("The eigw ID '{id}' does not exist"))
+            }
+            Kind::CarrierGateway => {
+                ("InvalidCarrierGatewayID.NotFound", format!("The CarrierGateway ID '{id}' does not exist"))
+            }
+            Kind::CustomerGateway => {
+                ("InvalidCustomerGatewayID.NotFound", format!("The customerGateway ID '{id}' does not exist"))
+            }
+            Kind::VpnGateway => ("InvalidVpnGatewayID.NotFound", format!("The vpnGateway ID '{id}' does not exist")),
+            Kind::VpnConnection => {
+                ("InvalidVpnConnectionID.NotFound", format!("The vpnConnection ID '{id}' does not exist"))
+            }
+            Kind::VpcPeeringConnection => {
+                ("InvalidVpcPeeringConnectionID.NotFound", format!("The vpcPeeringConnection ID '{id}' does not exist"))
+            }
+            Kind::TransitGateway => {
+                ("InvalidTransitGatewayID.NotFound", format!("Transit Gateway {id} was deleted or does not exist."))
+            }
+            Kind::TransitGatewayAttachment => (
+                "InvalidTransitGatewayAttachmentID.NotFound",
+                format!("Transit Gateway Attachment {id} was deleted or does not exist."),
+            ),
+            Kind::TransitGatewayRouteTable => (
+                "InvalidRouteTableID.NotFound",
+                format!("Transit Gateway Route Table {id} was deleted or does not exist."),
+            ),
+            Kind::FlowLog => (
+                "InvalidFlowLogId.NotFound",
+                format!("These flow log ids in the input list are not found: [TotalCount: 1] {id}"),
+            ),
+            Kind::SubnetCidrReservation => (
+                "InvalidSubnetCidrReservationID.NotFound",
+                format!("The subnetCidrReservation ID '{id}' does not exist"),
+            ),
         };
         err(code, msg)
     }

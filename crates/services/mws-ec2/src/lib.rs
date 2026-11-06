@@ -243,6 +243,7 @@ impl Ec2 {
         }
         ops::instance::expire_terminated(r, ctx.received_at);
         ops::vpc::expire_deleted(r, ctx.received_at);
+        ops::gateways::expire_deleted(r, ctx.received_at);
         f(r)
     }
 }
