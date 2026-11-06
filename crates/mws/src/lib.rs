@@ -5,6 +5,7 @@ mod eks;
 mod links;
 mod ses;
 mod sinks;
+mod ssm;
 
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -420,6 +421,12 @@ fn build_with_store(config: Config, store: Option<Arc<Store>>) -> Mws {
         sts: sts.clone(),
     }));
     let ec2 = Ec2::new(config.ec2_backend.resolve(config.ec2_docker_cli.as_deref()));
+    ssm.set_managed_nodes(Arc::new(ssm::SsmNodes(ec2.clone())));
+    ssm.set_task_invoker(Arc::new(ssm::SsmTasks { lambda: lambda.clone(), sts: sts.clone() }));
+    events.register_clock_source(Arc::new(ssm::SsmWindowEvents {
+        ssm: ssm.clone(),
+        partition: config.iam.partition.clone(),
+    }));
     tracing::info!(backend = ec2.backend_name(), "EC2 compute backend");
     ec2.set_instance_roles(Arc::new(links::Ec2InstanceRoles { iam: iam.clone(), sts: sts.clone() }));
     guardduty.set_event_sink(Arc::new(sinks::GuardDutyToEvents(events.clone())));

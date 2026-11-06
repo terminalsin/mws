@@ -1,6 +1,6 @@
 [package]
 name = "mws-ssm"
-description = "AWS Systems Manager Parameter Store for MWS: versioned, labelled and tagged parameters, SecureStrings encrypted with KMS, parameter policies and Secrets Manager references, with IAM enforced."
+description = "AWS Systems Manager for MWS: Run Command, documents, maintenance windows, patch baselines, and Parameter Store with versioned, labelled and tagged parameters, SecureStrings encrypted with KMS, parameter policies and Secrets Manager references, with IAM enforced."
 version.workspace = true
 edition.workspace = true
 license.workspace = true
@@ -10,12 +10,16 @@ async-trait.workspace = true
 aws-lc-rs.workspace = true
 base64.workspace = true
 chrono.workspace = true
+chrono-tz.workspace = true
 mws-core.workspace = true
 mws-kms.workspace = true
+mws-schedule.workspace = true
 mws-proto-json.workspace = true
 regex.workspace = true
 serde.workspace = true
 serde_json.workspace = true
+serde_yaml.workspace = true
+tokio.workspace = true
 uuid.workspace = true
 
 [build-dependencies]
