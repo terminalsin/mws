@@ -262,6 +262,23 @@ pub struct InstanceSummary {
     pub vpc_id: Option<String>,
 }
 
+/// What Systems Manager reads about an instance to manage it.
+#[derive(Debug, Clone, Default)]
+pub struct InstanceDetails {
+    pub instance_id: String,
+    pub state: String,
+    pub private_ip: Option<String>,
+    pub private_dns_name: Option<String>,
+    pub image_id: Option<String>,
+    /// The AMI's name, when it is still known.
+    pub image_name: Option<String>,
+    /// `Linux/UNIX`, `Windows`, ...
+    pub platform_details: Option<String>,
+    pub iam_instance_profile_arn: Option<String>,
+    pub launch_time: Option<chrono::DateTime<chrono::Utc>>,
+    pub tags: std::collections::BTreeMap<String, String>,
+}
+
 /// An Elastic IP address allocation.
 #[derive(Debug, Clone)]
 pub struct AddressSummary {
@@ -299,6 +316,53 @@ impl Ec2 {
                 vpc_id: i.vpc_id.clone(),
             })
         })
+    }
+
+    /// Every instance in `account` and `region` that is not terminated.
+    pub fn instances(&self, account: &str, region: &str) -> Vec<InstanceDetails> {
+        let state = self.lock();
+        let Some(r) = state.regions.get(&State::key(account, region)) else { return Vec::new() };
+        r.instances
+            .iter()
+            .filter_map(|(id, rec)| {
+                let i = &rec.instance;
+                let st = i.state.as_ref().and_then(|s| s.name.clone()).unwrap_or_default();
+                if st == "terminated" {
+                    return None;
+                }
+                let image_id = i.image_id.clone();
+                let image_name = image_id.as_deref().and_then(|ami| {
+                    catalog::public_image(region, ami)
+                        .map(|p| p.name.to_string())
+                        .or_else(|| r.images.get(ami).and_then(|x| x.image.name.clone()))
+                });
+                Some(InstanceDetails {
+                    instance_id: id.clone(),
+                    state: st,
+                    private_ip: i.private_ip_address.clone(),
+                    private_dns_name: i.private_dns_name.clone(),
+                    image_id,
+                    image_name,
+                    platform_details: i.platform_details.clone(),
+                    iam_instance_profile_arn: r
+                        .iam_associations
+                        .values()
+                        .find(|a| {
+                            a.instance_id.as_deref() == Some(id.as_str()) && a.state.as_deref() == Some("associated")
+                        })
+                        .and_then(|a| a.iam_instance_profile.as_ref())
+                        .and_then(|p| p.arn.clone())
+                        .or_else(|| i.iam_instance_profile.as_ref().and_then(|p| p.arn.clone())),
+                    launch_time: i.launch_time,
+                    tags: i
+                        .tags
+                        .iter()
+                        .flatten()
+                        .filter_map(|t| Some((t.key.clone()?, t.value.clone().unwrap_or_default())))
+                        .collect(),
+                })
+            })
+            .collect()
     }
 
     /// Elastic IP allocation `allocation_id` in `account` and `region`.

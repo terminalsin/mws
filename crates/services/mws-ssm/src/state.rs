@@ -107,6 +107,19 @@ pub struct Region {
     pub parameters: BTreeMap<String, Parameter>,
     /// Customized service settings, by setting id.
     pub settings: BTreeMap<String, Setting>,
+    /// Documents the account owns, by name.
+    pub documents: BTreeMap<String, crate::documents::Document>,
+    /// Patch baselines, defaults and patch groups.
+    pub patch: crate::patch::PatchState,
+    /// Hybrid activations, by id.
+    pub activations: BTreeMap<String, crate::activations::ActivationRecord>,
+    /// Maintenance windows, by id.
+    pub windows: BTreeMap<String, crate::maintenance::Window>,
+    /// Window execution state changes not yet handed out.
+    #[serde(skip)]
+    pub window_events: Vec<crate::maintenance::WindowEvent>,
+    /// Run Command commands, newest first.
+    pub commands: Vec<crate::commands::CommandRecord>,
     /// `Expiration` events of parameters deleted since they were last
     /// handed out.
     #[serde(skip)]

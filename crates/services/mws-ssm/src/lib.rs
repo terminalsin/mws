@@ -1,4 +1,5 @@
-//! AWS Systems Manager Parameter Store for MWS.
+//! AWS Systems Manager for MWS: Parameter Store, documents, Run Command,
+//! maintenance windows and patch baselines.
 //!
 //! Parameters keep up to 100 versions with labels, tags, descriptions and
 //! allowed patterns, in the standard or advanced tier (or chosen by
@@ -14,18 +15,27 @@
 //! updating, deleting and labelling parameters reports "Parameter Store
 //! Change" events through a [`ParameterChangeSink`].
 //!
-//! Only the Parameter Store part of the SSM API is implemented; the other
-//! operations of the model answer `NotImplemented`.
+//! Documents and Run Command run
+//! `aws:runShellScript` steps on managed nodes, the EC2 instances with an
+//! instance profile that a [`ManagedNodes`] reports. Maintenance windows
+//! run on the emulated clock. Patch Manager keeps
+//! baselines and patch groups. Automation, associations,
+//! inventory, sessions and OpsCenter answer `NotImplemented`.
 
 #[allow(clippy::all, dead_code, unused_imports, non_snake_case, non_camel_case_types)]
 pub mod generated {
     include!(concat!(env!("OUT_DIR"), "/ssm_generated.rs"));
 }
 
+mod activations;
 mod changes;
+mod commands;
+mod documents;
 mod handler;
+mod maintenance;
 mod names;
 mod params;
+mod patch;
 pub mod policies;
 mod public;
 mod query;
@@ -42,6 +52,8 @@ use mws_core::{ConditionContext, HttpRequest, HttpResponse, RequestContext, Serv
 use mws_kms::Kms;
 
 pub use changes::{ParameterChange, ParameterChangeSink};
+pub use commands::{ManagedNode, ManagedNodes, ShellOutput};
+pub use maintenance::{TaskInvoker, WindowEvent};
 pub use references::{ReferencedSecret, SecretsManagerReferences};
 
 use names::{now, resource_tag_conditions, ParamRef};
@@ -54,17 +66,46 @@ pub struct Ssm {
     kms: Kms,
     secrets: Arc<RwLock<Option<Arc<dyn SecretsManagerReferences>>>>,
     changes: Arc<RwLock<Option<Arc<dyn ParameterChangeSink>>>>,
+    nodes: Arc<RwLock<Option<Arc<dyn ManagedNodes>>>>,
+    invoker: Arc<RwLock<Option<Arc<dyn TaskInvoker>>>>,
+    /// The most recent request, as a template for work the clock starts
+    /// (maintenance window Lambda tasks).
+    template: Arc<RwLock<Option<RequestContext>>>,
+    /// How far the emulated clock ran ahead at the last request.
+    clock_offset_ms: Arc<std::sync::atomic::AtomicI64>,
+    /// Whether the maintenance window ticker runs.
+    ticking: Arc<std::sync::atomic::AtomicBool>,
 }
 
 impl Ssm {
     /// SecureString parameters are encrypted with keys from `kms`.
     pub fn new(kms: Kms) -> Self {
-        Self { state: Arc::default(), kms, secrets: Arc::default(), changes: Arc::default() }
+        Self {
+            state: Arc::default(),
+            kms,
+            secrets: Arc::default(),
+            changes: Arc::default(),
+            nodes: Arc::default(),
+            invoker: Arc::default(),
+            template: Arc::default(),
+            clock_offset_ms: Arc::default(),
+            ticking: Arc::default(),
+        }
     }
 
     /// Resolve `/aws/reference/secretsmanager/...` names through `secrets`.
     pub fn set_secrets_manager(&self, secrets: Arc<dyn SecretsManagerReferences>) {
         *self.secrets.write().expect("SSM secrets lock poisoned") = Some(secrets);
+    }
+
+    /// Manage these nodes (EC2 instances with an instance profile) and run
+    /// commands on them.
+    pub fn set_managed_nodes(&self, nodes: Arc<dyn ManagedNodes>) {
+        *self.nodes.write().expect("SSM nodes lock poisoned") = Some(nodes);
+    }
+
+    pub(crate) fn template(&self) -> Option<RequestContext> {
+        self.template.read().expect("SSM template lock poisoned").clone()
     }
 
     fn lock(&self) -> MutexGuard<'_, State> {
@@ -173,6 +214,20 @@ impl Service for Ssm {
     }
 
     async fn handle(&self, ctx: RequestContext, request: HttpRequest) -> HttpResponse {
+        *self.template.write().expect("SSM template lock poisoned") = Some(ctx.clone());
+        let offset = (ctx.received_at - chrono::Utc::now()).num_milliseconds().max(0);
+        self.clock_offset_ms.store(offset, std::sync::atomic::Ordering::Relaxed);
+        if !self.ticking.swap(true, std::sync::atomic::Ordering::SeqCst) {
+            // Maintenance windows come due on the emulated clock.
+            let ssm = self.clone();
+            tokio::spawn(async move {
+                loop {
+                    tokio::time::sleep(std::time::Duration::from_secs(1)).await;
+                    let offset = ssm.clock_offset_ms.load(std::sync::atomic::Ordering::Relaxed);
+                    ssm.run_windows(chrono::Utc::now() + chrono::Duration::milliseconds(offset), false);
+                }
+            });
+        }
         generated::dispatch(self, &ctx, &request).await
     }
 

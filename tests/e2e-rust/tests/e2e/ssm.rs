@@ -708,8 +708,8 @@ async fn secrets_manager_references_and_other_operations() {
     let e =
         ssm.get_parameter().name("/aws/reference/secretsmanager/db").with_decryption(true).send().await.unwrap_err();
     assert_eq!(code(e.into_service_error()), "ParameterNotFound");
-    // Outside Parameter Store, SSM operations aren't emulated yet.
-    let e = ssm.describe_instance_information().send().await.unwrap_err();
+    // Automation isn't emulated yet.
+    let e = ssm.describe_automation_executions().send().await.unwrap_err();
     assert_eq!(code(e.into_service_error()), "NotImplemented");
 }
 

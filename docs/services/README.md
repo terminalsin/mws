@@ -76,7 +76,7 @@ Every service shares the same foundations:
 | [SNS](sns.md) | 42 / 42 | Topics, filter policies and signed deliveries to SQS, Lambda, HTTP and more, FIFO topics |
 | [SES v1 and v2](ses.md) | 187 / 187 | Verified identities (Route 53 DKIM), the sandbox, an outbox, templates, event destinations, receipt rules fed by a local SMTP listener |
 | [EventBridge](events.md) | 57 / 57 | Buses, the full event pattern language, schedules, archives and replays, API destinations |
-| [SSM Parameter Store](ssm.md) | 19 / 152 | Versioned and labelled parameters, KMS SecureStrings, parameter policies, public parameters |
+| [Systems Manager](ssm.md) | 76 / 152 | Versioned and labelled parameters, KMS SecureStrings, parameter policies, public parameters, documents, Run Command on EC2 instances, maintenance windows on the emulated clock, patch baselines |
 
 ## Streaming
 

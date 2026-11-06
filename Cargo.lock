@@ -4799,13 +4799,17 @@ dependencies = [
  "aws-lc-rs",
  "base64 0.22.1",
  "chrono",
+ "chrono-tz",
  "mws-codegen",
  "mws-core",
  "mws-kms",
  "mws-proto-json",
+ "mws-schedule",
  "regex",
  "serde",
  "serde_json",
+ "serde_yaml",
+ "tokio",
  "uuid",
 ]
 

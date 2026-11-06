@@ -96,5 +96,6 @@ mod sns_parity;
 mod sns_status_logs;
 mod sqs;
 mod ssm;
+mod ssm_run_command;
 mod state;
 mod sts;
