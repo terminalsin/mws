@@ -81,6 +81,7 @@ operation of every service is exercised by at least one SDK test.
 | Rust | [`tests/e2e-rust`](../tests/e2e-rust) | The official AWS SDK for Rust against an in-process MWS |
 | Python | [`tests/e2e-python`](../tests/e2e-python) | boto3 against the `mws` binary |
 | TypeScript | [`tests/e2e-ts`](../tests/e2e-ts) | Example apps on the AWS SDK for JavaScript v3 against a running MWS |
+| Parity | [`tests/parity`](../tests/parity) | boto3 calls sent to MWS and LocalStack side by side, with a diff report |
 
 ### Rust
 
@@ -112,6 +113,28 @@ pytest tests/e2e-python               # uses target/debug/mws, or MWS_BIN
 cargo run -p mws &
 cd tests/e2e-ts && npm ci && npm test
 ```
+
+### Parity with LocalStack
+
+[`tests/parity`](../tests/parity) sends identical boto3 calls to a running
+MWS and a running LocalStack, for every MWS service LocalStack also offers,
+and writes a report of every difference (status, error code and message,
+response fields, headers) with the full raw HTTP of both sides and a verdict
+on which side is likely wrong. LocalStack is a reference, not ground truth:
+the verdicts lean on documented AWS behaviour and the official service
+models. Both emulators default to port 4566, so run MWS on another port:
+
+```sh
+pip install -r tests/parity/requirements.txt
+localstack start                                   # LocalStack on 4566
+MWS_LISTEN=127.0.0.1:4567 cargo run -p mws &       # MWS on 4567
+cd tests/parity && python -m parity                # report in tests/parity/reports/
+```
+
+See its [README](../tests/parity/README.md) for options, the report format
+and how to add scenarios. CI runs only the suite's own checks (scenario
+validation and a self-test that compares two MWS instances); LocalStack runs
+stay on your machine.
 
 ### Continuous integration
 

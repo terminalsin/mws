@@ -178,7 +178,9 @@ jobs:
           name: mws-binary
           path: target/debug
       - run: chmod +x target/debug/mws
-      - run: pytest -q tests/e2e-python
+      # The boto3 suite, plus the LocalStack parity suite's own checks
+      # (scenario validation, and a self-test comparing two MWS instances).
+      - run: pytest -q tests/e2e-python tests/parity/tests
         env:
           MWS_LAMBDA_PYTHON: ${{ steps.python.outputs.python-path }}
 

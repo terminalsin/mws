@@ -248,7 +248,7 @@ def plan(full: bool, base: str | None) -> dict:
                 full = True
                 reasons.append(f"{f} changed")
                 continue
-            if f.startswith("tests/e2e-python/"):
+            if f.startswith(("tests/e2e-python/", "tests/parity/")):
                 python = True
                 continue
             if f.startswith("tests/e2e-ts/"):
