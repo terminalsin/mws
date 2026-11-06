@@ -23,6 +23,7 @@ mod costexplorer;
 mod ec2;
 mod ec2_docker;
 mod ec2_ebs;
+mod ec2_gateways;
 mod ec2_networking;
 mod ecr;
 mod ecr_public;

@@ -573,7 +573,7 @@ fn resource_arn(ctx: &RequestContext, account: &str, id: &str) -> String {
 }
 
 fn not_found_for(id: &str) -> ServiceError {
-    let kind = match id.split('-').next().unwrap_or_default() {
+    let kind = match id.rsplit_once('-').map(|(p, _)| p).unwrap_or_default() {
         "vpc" => Some(Kind::Vpc),
         "subnet" => Some(Kind::Subnet),
         "sg" => Some(Kind::Group),
@@ -591,6 +591,17 @@ fn not_found_for(id: &str) -> ServiceError {
         "key" => Some(Kind::KeyPairId),
         "vpce" => Some(Kind::VpcEndpoint),
         "pl" => Some(Kind::PrefixList),
+        "eigw" => Some(Kind::EgressOnlyInternetGateway),
+        "cagw" => Some(Kind::CarrierGateway),
+        "cgw" => Some(Kind::CustomerGateway),
+        "vgw" => Some(Kind::VpnGateway),
+        "vpn" => Some(Kind::VpnConnection),
+        "pcx" => Some(Kind::VpcPeeringConnection),
+        "tgw" => Some(Kind::TransitGateway),
+        "tgw-attach" => Some(Kind::TransitGatewayAttachment),
+        "tgw-rtb" => Some(Kind::TransitGatewayRouteTable),
+        "fl" => Some(Kind::FlowLog),
+        "scr" => Some(Kind::SubnetCidrReservation),
         _ => None,
     };
     match kind {

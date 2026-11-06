@@ -344,6 +344,14 @@ impl Ec2 {
                 return Err(err("VpcLimitExceeded", "The maximum number of VPCs has been reached."));
             }
             let id = new_vpc(r, &account, &cidr, false, tags, None, &tenancy);
+            if input.amazon_provided_ipv6_cidr_block == Some(true) {
+                crate::ops::addressing::add_vpc_ipv6(
+                    r,
+                    &id,
+                    &ctx.region,
+                    input.ipv6_cidr_block_network_border_group.clone(),
+                )?;
+            }
             let mut vpc = r.vpcs[&id].vpc.clone();
             vpc.state = Some("pending".into());
             Ok(t::CreateVpcResult { vpc: Some(vpc) })
@@ -555,6 +563,32 @@ impl Ec2 {
             &[(arn(ctx, &account, &format!("vpc/{}", input.vpc_id)), ConditionContext::new())],
             None,
         )?;
+        if input.amazon_provided_ipv6_cidr_block == Some(true) {
+            if input.cidr_block.is_some() {
+                return Err(err(
+                    "InvalidParameterCombination",
+                    "The parameters CidrBlock and AmazonProvidedIpv6CidrBlock are mutually exclusive.",
+                ));
+            }
+            return self.with_region(ctx, |r| {
+                if !r.vpcs.contains_key(&input.vpc_id) {
+                    return Err(Kind::Vpc.not_found(&input.vpc_id));
+                }
+                let mut assoc = crate::ops::addressing::add_vpc_ipv6(
+                    r,
+                    &input.vpc_id,
+                    &ctx.region,
+                    input.ipv6_cidr_block_network_border_group.clone(),
+                )?;
+                assoc.ipv6_cidr_block_state =
+                    Some(t::VpcCidrBlockState { state: Some("associating".into()), status_message: None });
+                Ok(t::AssociateVpcCidrBlockResult {
+                    vpc_id: Some(input.vpc_id.clone()),
+                    ipv6_cidr_block_association: Some(assoc),
+                    ..Default::default()
+                })
+            });
+        }
         let cidr = input.cidr_block.clone().ok_or_else(|| missing_parameter("CidrBlock"))?;
         let parsed = parse_vpc_cidr(&cidr)?;
         self.with_region(ctx, |r| {
@@ -597,6 +631,14 @@ impl Ec2 {
     ) -> Result<t::DisassociateVpcCidrBlockResult, ServiceError> {
         authorize(ctx, "DisassociateVpcCidrBlock", &[("*".into(), ConditionContext::new())], None)?;
         self.with_region(ctx, |r| {
+            if let Some(v6) = crate::ops::addressing::remove_vpc_ipv6(r, &input.association_id) {
+                let (vpc_id, assoc) = v6?;
+                return Ok(t::DisassociateVpcCidrBlockResult {
+                    vpc_id: Some(vpc_id),
+                    ipv6_cidr_block_association: Some(assoc),
+                    ..Default::default()
+                });
+            }
             let (vpc_id, cidr) = r
                 .vpcs
                 .values()
@@ -1332,7 +1374,7 @@ impl Ec2 {
         })
     }
 
-    fn rtb_authorize(
+    pub(crate) fn rtb_authorize(
         &self,
         ctx: &RequestContext,
         action: &str,
@@ -1477,10 +1519,29 @@ impl Ec2 {
                         "route table and network gateway belong to different networks".to_string(),
                     ));
                 }
-            } else if g != "local" && !g.starts_with("vgw-") {
+            } else if g.starts_with("vgw-") {
+                let attached = r.vpn_gateways.get(g).is_some_and(|v| {
+                    v.vpc_attachments
+                        .iter()
+                        .flatten()
+                        .any(|a| a.vpc_id.as_deref() == Some(vpc_id) && a.state.as_deref() == Some("attached"))
+                });
+                if !r.vpn_gateways.get(g).is_some_and(|v| v.state.as_deref() == Some("available")) {
+                    return Err(Kind::VpnGateway.not_found(g));
+                }
+                if !attached {
+                    return Err(err(
+                        "InvalidParameterValue",
+                        "route table and network gateway belong to different networks".to_string(),
+                    ));
+                }
+            } else if g != "local" && !g.starts_with("vpce-") {
                 return Err(err("InvalidGatewayID.NotFound", format!("The gateway ID '{g}' does not exist")));
             }
             route.gateway_id = Some(g.clone());
+        }
+        for target in others.iter().filter_map(|o| o.as_deref()) {
+            check_route_target(r, vpc_id, target)?;
         }
         if let Some(n) = nat_gateway_id {
             if !r.nat_gateways.contains_key(n) {
@@ -2233,4 +2294,56 @@ impl Ec2 {
             Ok(t::DescribeDhcpOptionsResult { dhcp_options: Some(items), next_token })
         })
     }
+}
+
+/// Check a route's peering, transit, egress-only or carrier gateway target.
+fn check_route_target(r: &RegionState, vpc_id: &str, target: &str) -> Result<(), ServiceError> {
+    let different = || err("InvalidParameterValue", "route table and network gateway belong to different networks");
+    match target.rsplit_once('-').map(|(p, _)| p).unwrap_or_default() {
+        "pcx" => {
+            let p =
+                r.vpc_peering_connections.get(target).ok_or_else(|| Kind::VpcPeeringConnection.not_found(target))?;
+            let active = p.status.as_ref().and_then(|s| s.code.as_deref()) == Some("active");
+            let ours = [&p.requester_vpc_info, &p.accepter_vpc_info]
+                .iter()
+                .any(|i| i.as_ref().and_then(|i| i.vpc_id.as_deref()) == Some(vpc_id));
+            if !active {
+                return Err(err(
+                    "InvalidVpcPeeringConnectionID.NotFound",
+                    format!("The vpcPeeringConnection ID '{target}' does not exist"),
+                ));
+            }
+            if !ours {
+                return Err(different());
+            }
+        }
+        "tgw" => {
+            if !r.transit_gateways.get(target).is_some_and(|g| g.state.as_deref() == Some("available")) {
+                return Err(Kind::TransitGateway.not_found(target));
+            }
+            if !crate::state::State::tgw_attached_to(r, target, vpc_id) {
+                return Err(err(
+                    "InvalidTransitGatewayID.NotFound",
+                    format!("The transit gateway ID '{target}' does not exist or is not attached to {vpc_id}."),
+                ));
+            }
+        }
+        "eigw" => {
+            let g = r
+                .egress_only_internet_gateways
+                .get(target)
+                .ok_or_else(|| Kind::EgressOnlyInternetGateway.not_found(target))?;
+            if !g.attachments.iter().flatten().any(|a| a.vpc_id.as_deref() == Some(vpc_id)) {
+                return Err(different());
+            }
+        }
+        "cagw" => {
+            let g = r.carrier_gateways.get(target).ok_or_else(|| Kind::CarrierGateway.not_found(target))?;
+            if g.vpc_id.as_deref() != Some(vpc_id) {
+                return Err(different());
+            }
+        }
+        _ => {}
+    }
+    Ok(())
 }

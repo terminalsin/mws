@@ -64,6 +64,48 @@ pub struct RegionState {
     pub ebs_default_kms_key_id: Option<String>,
     /// `block-all-sharing`, `block-new-sharing`, or `None` (unblocked).
     pub snapshot_block_public_access: Option<String>,
+    pub egress_only_internet_gateways: BTreeMap<String, t::EgressOnlyInternetGateway>,
+    pub carrier_gateways: BTreeMap<String, t::CarrierGateway>,
+    pub customer_gateways: BTreeMap<String, t::CustomerGateway>,
+    pub vpn_gateways: BTreeMap<String, t::VpnGateway>,
+    pub vpn_connections: BTreeMap<String, t::VpnConnection>,
+    /// Peering connections this account requested or was asked to accept;
+    /// both sides keep a copy, kept in step by the operations.
+    pub vpc_peering_connections: BTreeMap<String, t::VpcPeeringConnection>,
+    pub transit_gateways: BTreeMap<String, t::TransitGateway>,
+    /// VPC, VPN and peering attachments, by attachment id.
+    pub transit_gateway_attachments: BTreeMap<String, TgwAttachmentRecord>,
+    pub transit_gateway_route_tables: BTreeMap<String, TgwRouteTableRecord>,
+    pub flow_logs: BTreeMap<String, t::FlowLog>,
+    pub subnet_cidr_reservations: BTreeMap<String, t::SubnetCidrReservation>,
+    /// Instances' credit option (`standard` / `unlimited`) when changed.
+    pub instance_credit_specifications: BTreeMap<String, String>,
+    /// When a resource kept visible after deletion (customer and VPN
+    /// gateways, VPN and peering connections, transit gateway resources)
+    /// was deleted; it disappears an hour later.
+    pub deleted_at: BTreeMap<String, DateTime<Utc>>,
+}
+
+/// A transit gateway attachment: its `DescribeTransitGatewayAttachments`
+/// view plus the type-specific detail.
+#[derive(Debug, Default, Clone, Serialize, Deserialize)]
+#[serde(default)]
+pub struct TgwAttachmentRecord {
+    pub attachment: t::TransitGatewayAttachment,
+    pub vpc: Option<t::TransitGatewayVpcAttachment>,
+    pub peering: Option<t::TransitGatewayPeeringAttachment>,
+}
+
+#[derive(Debug, Default, Clone, Serialize, Deserialize)]
+#[serde(default)]
+pub struct TgwRouteTableRecord {
+    pub table: t::TransitGatewayRouteTable,
+    /// Attachment ids associated with this table.
+    pub associations: Vec<String>,
+    /// Attachment ids propagating into this table.
+    pub propagations: Vec<String>,
+    /// Static routes (propagated ones are computed).
+    pub routes: Vec<t::TransitGatewayRoute>,
 }
 
 /// A customer-managed prefix list with every version's entries.
@@ -181,7 +223,7 @@ impl State {
 impl RegionState {
     /// The tag list of any taggable resource, by id.
     pub fn tags_mut(&mut self, id: &str) -> Option<&mut Option<Vec<t::Tag>>> {
-        let prefix = id.split('-').next().unwrap_or_default();
+        let prefix = id.rsplit_once('-').map(|(p, _)| p).unwrap_or_default();
         match prefix {
             "vpc" => self.vpcs.get_mut(id).map(|v| &mut v.vpc.tags),
             "subnet" => self.subnets.get_mut(id).map(|v| &mut v.tags),
@@ -206,13 +248,24 @@ impl RegionState {
             "pl" => self.prefix_lists.get_mut(id).map(|v| &mut v.list.tags),
             "lt" => self.launch_templates.get_mut(id).map(|v| &mut v.template.tags),
             "replacevol" => self.replace_root_tasks.get_mut(id).map(|v| &mut v.tags),
+            "eigw" => self.egress_only_internet_gateways.get_mut(id).map(|v| &mut v.tags),
+            "cagw" => self.carrier_gateways.get_mut(id).map(|v| &mut v.tags),
+            "cgw" => self.customer_gateways.get_mut(id).map(|v| &mut v.tags),
+            "vgw" => self.vpn_gateways.get_mut(id).map(|v| &mut v.tags),
+            "vpn" => self.vpn_connections.get_mut(id).map(|v| &mut v.tags),
+            "pcx" => self.vpc_peering_connections.get_mut(id).map(|v| &mut v.tags),
+            "tgw" => self.transit_gateways.get_mut(id).map(|v| &mut v.tags),
+            "tgw-attach" => self.transit_gateway_attachments.get_mut(id).map(|v| &mut v.attachment.tags),
+            "tgw-rtb" => self.transit_gateway_route_tables.get_mut(id).map(|v| &mut v.table.tags),
+            "fl" => self.flow_logs.get_mut(id).map(|v| &mut v.tags),
+            "scr" => self.subnet_cidr_reservations.get_mut(id).map(|v| &mut v.tags),
             _ => None,
         }
     }
 
     /// The `DescribeTags` resource type of an id.
     pub fn resource_type(id: &str) -> Option<&'static str> {
-        Some(match id.split('-').next().unwrap_or_default() {
+        Some(match id.rsplit_once('-').map(|(p, _)| p).unwrap_or_default() {
             "vpc" => "vpc",
             "subnet" => "subnet",
             "sg" => "security-group",
@@ -233,6 +286,17 @@ impl RegionState {
             "pl" => "prefix-list",
             "lt" => "launch-template",
             "replacevol" => "replace-root-volume-task",
+            "eigw" => "egress-only-internet-gateway",
+            "cagw" => "carrier-gateway",
+            "cgw" => "customer-gateway",
+            "vgw" => "vpn-gateway",
+            "vpn" => "vpn-connection",
+            "pcx" => "vpc-peering-connection",
+            "tgw" => "transit-gateway",
+            "tgw-attach" => "transit-gateway-attachment",
+            "tgw-rtb" => "transit-gateway-route-table",
+            "fl" => "vpc-flow-log",
+            "scr" => "subnet-cidr-reservation",
             _ => return None,
         })
     }
@@ -303,6 +367,39 @@ impl RegionState {
         }
         for v in self.replace_root_tasks.values() {
             push(v.replace_root_volume_task_id.as_ref(), &v.tags);
+        }
+        for v in self.egress_only_internet_gateways.values() {
+            push(v.egress_only_internet_gateway_id.as_ref(), &v.tags);
+        }
+        for v in self.carrier_gateways.values() {
+            push(v.carrier_gateway_id.as_ref(), &v.tags);
+        }
+        for v in self.customer_gateways.values() {
+            push(v.customer_gateway_id.as_ref(), &v.tags);
+        }
+        for v in self.vpn_gateways.values() {
+            push(v.vpn_gateway_id.as_ref(), &v.tags);
+        }
+        for v in self.vpn_connections.values() {
+            push(v.vpn_connection_id.as_ref(), &v.tags);
+        }
+        for v in self.vpc_peering_connections.values() {
+            push(v.vpc_peering_connection_id.as_ref(), &v.tags);
+        }
+        for v in self.transit_gateways.values() {
+            push(v.transit_gateway_id.as_ref(), &v.tags);
+        }
+        for v in self.transit_gateway_attachments.values() {
+            push(v.attachment.transit_gateway_attachment_id.as_ref(), &v.attachment.tags);
+        }
+        for v in self.transit_gateway_route_tables.values() {
+            push(v.table.transit_gateway_route_table_id.as_ref(), &v.table.tags);
+        }
+        for v in self.flow_logs.values() {
+            push(v.flow_log_id.as_ref(), &v.tags);
+        }
+        for v in self.subnet_cidr_reservations.values() {
+            push(v.subnet_cidr_reservation_id.as_ref(), &v.tags);
         }
         out.sort_by(|a, b| a.0.cmp(&b.0));
         out

@@ -1,8 +1,8 @@
 # Amazon EC2 and Amazon VPC
 
-> Crate: [`mws-ec2`](../../crates/services/mws-ec2) · Tests: [`tests/e2e-rust/tests/e2e/ec2.rs`](../../tests/e2e-rust/tests/e2e/ec2.rs)
+> Crate: [`mws-ec2`](../../crates/services/mws-ec2) · Tests: [`tests/e2e-rust/tests/e2e/ec2.rs`](../../tests/e2e-rust/tests/e2e/ec2.rs), [`ec2_gateways.rs`](../../tests/e2e-rust/tests/e2e/ec2_gateways.rs)
 
-164 of the model's 811 operations are generated (ec2Query) and implemented; the rest answer `NotImplemented`. Responses use EC2's filters, pagination, `DryRun`, id formats and `InvalidXxx.Malformed`/`.NotFound` errors.
+244 of the model's 811 operations are generated (ec2Query) and implemented; the rest answer `NotImplemented`. Responses use EC2's filters, pagination, `DryRun`, id formats and `InvalidXxx.Malformed`/`.NotFound` errors.
 
 ✅ supported · 🟡 partial · ❌ not supported
 
@@ -25,7 +25,14 @@
 | Network ACLs filter traffic | ✅ | Stateless, by rule number, for traffic crossing the subnet's boundary, replies included (return traffic needs ephemeral ports, as in AWS). |
 | Routes decide traffic leaving the VPC | ✅ | Longest prefix first: an internet gateway route works for instances with a public address, a NAT gateway route while the gateway is available and its subnet routes to an attached internet gateway, gateway endpoint routes work, blackhole and missing routes drop. |
 | Unfiltered traffic | 🟡 | MWS itself (APIs and instance metadata) and DNS are always reachable, as metadata and the Amazon DNS server are in AWS; so a private subnet reaches the AWS APIs without a NAT gateway or endpoint. IPv6 is not filtered (Docker networks are IPv4). |
-| Peering, transit gateways, private NAT gateways | ❌ | Not yet; routes to them carry no traffic. |
+| IPv6 | 🟡 | Amazon-provided /56 blocks on VPCs, /64 blocks on subnets, IPv6 addresses on interfaces and egress-only internet gateways. Docker networks are IPv4, so IPv6 carries no traffic. |
+| Interface addressing | ✅ | Secondary private IPs and /28 prefixes (`AssignPrivateIpAddresses`), IPv6 addresses, subnet CIDR reservations, `DescribeNetworkInterfaceAttribute`. |
+| VPC peering | 🟡 | Requests, accept, reject, delete, expiry and the failed state for overlapping CIDRs, across accounts and Regions, with options; routes need an active connection. Control plane only: peered VPCs carry no traffic between Docker instances. |
+| Transit gateways | 🟡 | Gateways with default association and propagation route tables, VPC, VPN and peering attachments, associations, propagations (VPC CIDRs and VPN static routes), static and blackhole routes, `SearchTransitGatewayRoutes`. Control plane only: no traffic. Connect, multicast and policy tables are not implemented. |
+| Site-to-Site VPN | 🟡 | Customer gateways, virtual private gateways (attach, detach, route propagation), VPN connections with tunnel options, the customer gateway configuration and static routes. No tunnels come up. |
+| Carrier gateways | 🟡 | Created, described and deleted, and usable as route targets. |
+| Flow logs | 🟡 | Configuration for VPCs, subnets, interfaces and transit gateways is stored and validated; no flow log records are written. |
+| Private NAT gateways, VPC endpoint services | ❌ | Not yet. |
 
 ## Compute
 
@@ -43,6 +50,8 @@
 | EBS volumes and snapshots | ✅ | Volumes, snapshots and their copies, modifications, attributes, sharing, locks, archive tiers, fast snapshot restores, the Recycle Bin, encryption by default and root volume replacement. With the Docker backend each volume is a Docker volume mounted at its device path in the instance, and snapshots copy its data. |
 | Launch templates | ✅ | Versions (from a source version), `$Latest` and `$Default`, `ModifyLaunchTemplate`, `GetLaunchTemplateData`; `RunInstances` with a launch template merges its data under the call's parameters and tags instances with `aws:ec2launchtemplate:*`. |
 | Spot instances | 🟡 | `RunInstances` with `InstanceMarketOptions` (or a launch template's) of market type `spot` launches Spot instances: `InstanceLifecycle: spot`, a `SpotInstanceRequestId`, and the `instance-lifecycle` and `spot-instance-request-id` filters. Spot requests, fleets, prices and interruptions are not emulated. |
+| Instance extras | ✅ | Credit specifications for burstable types, `GetPasswordData` (empty without a Windows password), `GetInstanceUefiData` for UEFI instances. |
+| Fleets, Dedicated Hosts, Reserved Instances | ❌ | Not implemented. |
 
 ## Access control
 
