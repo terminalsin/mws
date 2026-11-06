@@ -103,6 +103,12 @@ async fn set_alarm_state_holds_until_the_next_evaluation() {
 async fn low_sample_count_percentiles_can_be_ignored() {
     let mws = Mws::start().await;
     let cw = Client::new(&mws.root_sdk_config().await);
+    // The alarms evaluate the current minute: put the data and create them
+    // in the same one, clear of the next boundary.
+    let ms = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_millis() % 60_000;
+    if ms > 50_000 {
+        tokio::time::sleep(Duration::from_millis((61_000 - ms) as u64)).await;
+    }
     // Five samples: p90 needs 10 / (1 - 0.9) = 100 to be significant.
     cw.put_metric_data()
         .namespace("Parity")
