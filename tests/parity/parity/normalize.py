@@ -43,7 +43,8 @@ ISO_TS = re.compile(
 HTTP_DATE = re.compile(r"\b(Mon|Tue|Wed|Thu|Fri|Sat|Sun), \d{2} \w{3} \d{4} \d{2}:\d{2}:\d{2} GMT\b")
 URL_HOST = re.compile(r"\bhttps?://[A-Za-z0-9.\-]+(:\d+)?")
 LOCALSTACK_HOST = re.compile(r"\b[a-z0-9.\-]*localhost\.localstack\.cloud(:\d+)?")
-ACCOUNT = re.compile(r"(?<![0-9])\d{12}(?![0-9])")
+# Twelve-digit account ids; not a digit run inside a longer hex string.
+ACCOUNT = re.compile(r"(?<![0-9a-fA-F])\d{12}(?![0-9a-fA-F])")
 # AWS-style resource ids: vpc-0abc..., i-..., ami-..., sg-..., etc.
 RESOURCE_ID = re.compile(r"\b([a-z][a-z0-9]{0,24})-([0-9a-f]{8}|[0-9a-f]{17})\b")
 # IAM unique ids (AIDA..., AROA..., ANPA..., access key ids, ...).
