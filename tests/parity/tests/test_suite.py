@@ -148,6 +148,12 @@ def test_normalizer_masks_generated_values():
     assert v["ETag"] == "<ETag>"
 
 
+def test_normalizer_keeps_hex_with_digit_runs_whole():
+    # A random hex id can hold twelve digits in a row; that is not an account.
+    n = Normalizer("abc123")
+    assert n.value({"CurrentKeyMaterialId": "ab12f0c1a4836215790436e1d7f0"})["CurrentKeyMaterialId"] == "<hex>"
+
+
 def test_diff_kinds():
     out = []
     diff_values(

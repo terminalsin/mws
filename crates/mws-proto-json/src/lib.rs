@@ -52,7 +52,16 @@ pub fn operation<'a>(info: &ServiceInfo, request: &'a HttpRequest) -> Result<&'a
         .get("x-amz-target")
         .and_then(|v| v.to_str().ok())
         .ok_or_else(|| ServiceError::client("UnknownOperationException", 400, "Missing X-Amz-Target header"))?;
-    target.strip_prefix(info.target_prefix).and_then(|t| t.strip_prefix('.')).ok_or_else(|| unknown_operation(target))
+    // Some SDKs (botocore for CloudTrail) qualify the prefix with the
+    // service's namespace, e.g. `com.amazonaws.cloudtrail.v20131101.
+    // CloudTrail_20131101.GetTrail`; AWS accepts both spellings.
+    let (prefix, op) = target.rsplit_once('.').ok_or_else(|| unknown_operation(target))?;
+    let qualified = prefix.strip_suffix(info.target_prefix).is_some_and(|ns| ns.ends_with('.'));
+    if prefix == info.target_prefix || qualified {
+        Ok(op)
+    } else {
+        Err(unknown_operation(target))
+    }
 }
 
 pub fn unknown_operation(target: &str) -> ServiceError {

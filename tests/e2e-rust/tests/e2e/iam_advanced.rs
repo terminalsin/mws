@@ -96,6 +96,8 @@ async fn virtual_mfa_gates_session_tokens() {
     let summary = iam.get_account_summary().send().await.unwrap();
     let map = summary.summary_map().unwrap();
     assert_eq!(map[&aws_sdk_iam::types::SummaryKeyType::MfaDevicesInUse], 1);
+    assert_eq!(map[&aws_sdk_iam::types::SummaryKeyType::RolePolicySizeQuota], 10240);
+    assert_eq!(map[&aws_sdk_iam::types::SummaryKeyType::AssumeRolePolicySizeQuota], 2048);
 
     let err = iam.delete_user().user_name("mfa-user").send().await.unwrap_err();
     assert_eq!(err.code(), Some("DeleteConflict"));

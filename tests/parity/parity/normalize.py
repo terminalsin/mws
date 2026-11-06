@@ -43,7 +43,8 @@ ISO_TS = re.compile(
 HTTP_DATE = re.compile(r"\b(Mon|Tue|Wed|Thu|Fri|Sat|Sun), \d{2} \w{3} \d{4} \d{2}:\d{2}:\d{2} GMT\b")
 URL_HOST = re.compile(r"\bhttps?://[A-Za-z0-9.\-]+(:\d+)?")
 LOCALSTACK_HOST = re.compile(r"\b[a-z0-9.\-]*localhost\.localstack\.cloud(:\d+)?")
-ACCOUNT = re.compile(r"(?<![0-9])\d{12}(?![0-9])")
+# Twelve-digit account ids; not a digit run inside a longer hex string.
+ACCOUNT = re.compile(r"(?<![0-9a-fA-F])\d{12}(?![0-9a-fA-F])")
 # AWS-style resource ids: vpc-0abc..., i-..., ami-..., sg-..., etc.
 RESOURCE_ID = re.compile(r"\b([a-z][a-z0-9]{0,24})-([0-9a-f]{8}|[0-9a-f]{17})\b")
 # IAM unique ids (AIDA..., AROA..., ANPA..., access key ids, ...).
@@ -54,6 +55,8 @@ R53_BARE_ID = re.compile(r"\b[ZC][A-Z0-9]{12,32}\b")
 NAMESERVER = re.compile(r"\bns-\d+\.awsdns-\d+\.(com|net|org|co\.uk)\.?")
 # Secrets Manager appends six random characters to secret ARNs.
 SECRET_SUFFIX = re.compile(r"(:secret:[^:\s\"]+)-[A-Za-z0-9]{6}\b")
+# S3 access point aliases: `<name>-<random suffix>-s3alias`.
+AP_ALIAS = re.compile(r"-[a-z0-9]{20,}-s3alias\b")
 LONG_HEX = re.compile(r"\b[0-9a-fA-F]{16,}\b")
 # Opaque tokens: long runs of base64/base64url that mix letters and digits.
 TOKEN = re.compile(r"[A-Za-z0-9+/_\-]{40,}={0,2}")
@@ -88,6 +91,7 @@ class Normalizer:
         s = ACCOUNT.sub("<account>", s)
         if DIGEST_KEYS.search(key):
             return s
+        s = AP_ALIAS.sub("-<rand>-s3alias", s)
         s = RESOURCE_ID.sub(lambda m: f"{m.group(1)}-<id>", s)
         s = R53_BARE_ID.sub(lambda m: "<id>" if any(c.isdigit() for c in m.group(0)) else m.group(0), s)
         s = LONG_HEX.sub("<hex>", s)

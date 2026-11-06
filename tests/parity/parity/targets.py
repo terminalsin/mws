@@ -13,6 +13,7 @@ import shutil
 import subprocess
 import threading
 import time
+import urllib.parse
 import urllib.request
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -130,11 +131,29 @@ class Target:
             region_name=self.region,
         )
         client = session.client(service, endpoint_url=self.endpoint, config=config)
+        # Endpoint rules (S3 Control) put `{AccountId}.` in front of the host
+        # even with inject_host_prefix off; that name needs wildcard DNS.
+        # Connect to the configured host instead, before the request is signed.
+        client.meta.events.register("before-sign", _strip_host_prefix(self.endpoint))
         recorder = Recorder()
         client.meta.events.register("before-send", recorder.before_send)
         client.meta.events.register("response-received", recorder.response_received)
         client._parity_recorder = recorder  # noqa: SLF001
         return client
+
+
+def _strip_host_prefix(endpoint: str):
+    want = urllib.parse.urlsplit(endpoint).netloc
+
+    def handler(request, **_):
+        parts = urllib.parse.urlsplit(request.url)
+        if parts.netloc != want and parts.netloc.endswith("." + want):
+            # Keep the prefixed name in Host (signed, and read by both
+            # emulators) but connect to the configured address.
+            request.headers["Host"] = parts.netloc
+            request.url = urllib.parse.urlunsplit(parts._replace(netloc=want))
+
+    return handler
 
 
 def _get_json(url: str, timeout: float = 2.0):

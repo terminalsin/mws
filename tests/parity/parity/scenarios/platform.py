@@ -119,9 +119,12 @@ def _(s):
 
 @scenario("autoscaling", "launch configurations")
 def _(s):
-    s.call("create_launch_configuration", LaunchConfigurationName="${name}", ImageId="ami-12345678", InstanceType="t3.micro")
+    # AWS checks that the image exists, so use a real public AMI.
+    s.call("get_parameter", "ssm", Name="/aws/service/ami-amazon-linux-latest/al2023-ami-kernel-default-x86_64",
+           save={"ami": "Parameter.Value"}, _shape_only=True)
+    s.call("create_launch_configuration", LaunchConfigurationName="${name}", ImageId="${ami}", InstanceType="t3.micro")
     s.call("describe_launch_configurations", LaunchConfigurationNames=["${name}"])
-    s.call("create_launch_configuration", LaunchConfigurationName="${name}", ImageId="ami-12345678", InstanceType="t3.micro", expect=aws_error("AlreadyExists", 400))
+    s.call("create_launch_configuration", LaunchConfigurationName="${name}", ImageId="${ami}", InstanceType="t3.micro", expect=aws_error("AlreadyExists", 400))
     s.call("describe_auto_scaling_groups", AutoScalingGroupNames=["${name}-none"])
     s.call("describe_account_limits", _shape_only=True)
     s.cleanup("delete_launch_configuration", LaunchConfigurationName="${name}")
