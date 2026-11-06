@@ -54,6 +54,8 @@ R53_BARE_ID = re.compile(r"\b[ZC][A-Z0-9]{12,32}\b")
 NAMESERVER = re.compile(r"\bns-\d+\.awsdns-\d+\.(com|net|org|co\.uk)\.?")
 # Secrets Manager appends six random characters to secret ARNs.
 SECRET_SUFFIX = re.compile(r"(:secret:[^:\s\"]+)-[A-Za-z0-9]{6}\b")
+# S3 access point aliases: `<name>-<random suffix>-s3alias`.
+AP_ALIAS = re.compile(r"-[a-z0-9]{20,}-s3alias\b")
 LONG_HEX = re.compile(r"\b[0-9a-fA-F]{16,}\b")
 # Opaque tokens: long runs of base64/base64url that mix letters and digits.
 TOKEN = re.compile(r"[A-Za-z0-9+/_\-]{40,}={0,2}")
@@ -88,6 +90,7 @@ class Normalizer:
         s = ACCOUNT.sub("<account>", s)
         if DIGEST_KEYS.search(key):
             return s
+        s = AP_ALIAS.sub("-<rand>-s3alias", s)
         s = RESOURCE_ID.sub(lambda m: f"{m.group(1)}-<id>", s)
         s = R53_BARE_ID.sub(lambda m: "<id>" if any(c.isdigit() for c in m.group(0)) else m.group(0), s)
         s = LONG_HEX.sub("<hex>", s)

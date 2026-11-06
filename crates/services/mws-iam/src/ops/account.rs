@@ -267,6 +267,8 @@ impl Iam {
         put("PolicySizeQuota", MANAGED_POLICY_MAX_SIZE);
         put("UserPolicySizeQuota", 2048);
         put("GroupPolicySizeQuota", 5120);
+        put("RolePolicySizeQuota", 10240);
+        put("AssumeRolePolicySizeQuota", 2048);
         put("VersionsPerPolicyQuota", MAX_POLICY_VERSIONS);
         put(
             "GlobalEndpointTokenVersion",
