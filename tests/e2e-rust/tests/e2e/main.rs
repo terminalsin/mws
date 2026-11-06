@@ -21,6 +21,7 @@ mod cloudwatch_parity;
 mod codeartifact;
 mod costexplorer;
 mod ec2;
+mod ec2_capacity;
 mod ec2_docker;
 mod ec2_ebs;
 mod ec2_gateways;

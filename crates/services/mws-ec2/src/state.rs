@@ -84,6 +84,63 @@ pub struct RegionState {
     /// gateways, VPN and peering connections, transit gateway resources)
     /// was deleted; it disappears an hour later.
     pub deleted_at: BTreeMap<String, DateTime<Utc>>,
+    /// Spot Instance requests, from `RequestSpotInstances`, Spot `RunInstances`
+    /// and Spot Fleet.
+    pub spot_requests: BTreeMap<String, SpotRequestRecord>,
+    pub spot_fleets: BTreeMap<String, SpotFleetRecord>,
+    /// EC2 Fleets (`CreateFleet`).
+    pub fleets: BTreeMap<String, FleetRecord>,
+    /// Dedicated Hosts; their instances are the instances placed on them.
+    pub hosts: BTreeMap<String, t::Host>,
+    pub reserved_instances: BTreeMap<String, t::ReservedInstances>,
+}
+
+/// A Spot Instance request, and what it launches with.
+#[derive(Debug, Default, Clone, Serialize, Deserialize)]
+#[serde(default)]
+pub struct SpotRequestRecord {
+    pub request: t::SpotInstanceRequest,
+    /// `RequestSpotInstances` requests: the launch specification, so a
+    /// persistent request can launch again.
+    pub launch: Option<t::RequestSpotLaunchSpecification>,
+    /// The Spot Fleet or EC2 Fleet that made the request.
+    pub fleet_id: Option<String>,
+    pub client_token: Option<String>,
+}
+
+/// An instance a Spot Fleet or EC2 Fleet launched.
+#[derive(Debug, Default, Clone, Serialize, Deserialize)]
+#[serde(default)]
+pub struct FleetMember {
+    pub instance_id: String,
+    pub instance_type: String,
+    /// `spot` or `on-demand`.
+    pub lifecycle: String,
+    pub spot_request_id: Option<String>,
+    pub weight: f64,
+    /// Which launch specification / template override it came from.
+    pub pool: usize,
+}
+
+#[derive(Debug, Default, Clone, Serialize, Deserialize)]
+#[serde(default)]
+pub struct SpotFleetRecord {
+    pub config: t::SpotFleetRequestConfig,
+    pub members: Vec<FleetMember>,
+    pub history: Vec<t::HistoryRecord>,
+}
+
+#[derive(Debug, Default, Clone, Serialize, Deserialize)]
+#[serde(default)]
+pub struct FleetRecord {
+    /// The fleet as `DescribeFleets` shows it, minus its instances.
+    pub fleet: t::FleetData,
+    /// `instant`, `request` or `maintain`.
+    pub kind: String,
+    pub members: Vec<FleetMember>,
+    pub history: Vec<t::HistoryRecordEntry>,
+    /// What `CreateFleet` was asked for, to launch more later.
+    pub request: t::CreateFleetRequest,
 }
 
 /// A transit gateway attachment: its `DescribeTransitGatewayAttachments`
