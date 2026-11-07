@@ -73,6 +73,9 @@ const TYPE_ICONS: Record<string, string> = {
   "File system": "resource/AmazonElasticFileSystemFileSystem",
   "Data stream": "service/AmazonKinesisDataStreams",
   "Firehose stream": "service/AmazonDataFirehose",
+  Stack: "resource/AWSCloudFormationStack",
+  Account: "resource/AWSOrganizationsAccount",
+  "Resource share": "service/AWSResourceAccessManager",
 };
 
 /** The icon of a resource's type, or else its service's. */

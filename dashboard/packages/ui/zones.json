@@ -38,5 +38,10 @@
     "id": "data",
     "basePath": "/data",
     "port": 3007
+  },
+  {
+    "id": "governance",
+    "basePath": "/governance",
+    "port": 3008
   }
 ]

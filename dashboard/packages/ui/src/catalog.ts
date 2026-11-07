@@ -68,6 +68,34 @@ export interface NavItem {
 }
 
 const NAV: Record<string, NavItem[]> = {
+  organizations: [
+    { label: "AWS accounts", path: "/organizations", icon: "resource/AWSOrganizationsAccount" },
+    { label: "Policies", path: "/organizations?tab=policies", icon: "resource/AWSIdentityAccessManagementPermissions" },
+  ],
+  cloudformation: [{ label: "Stacks", path: "/cloudformation", icon: "resource/AWSCloudFormationStack" }],
+  cloudtrail: [
+    { label: "Event history", path: "/cloudtrail", icon: "service/AWSCloudTrail" },
+    { label: "Trails", path: "/cloudtrail?tab=trails", icon: "resource/AWSCloudTrailCloudTrailLake" },
+  ],
+  servicequotas: [
+    { label: "AWS services", path: "/servicequotas", icon: "service/AWSTrustedAdvisor" },
+    { label: "Quota request history", path: "/servicequotas?tab=requests", icon: "resource/AWSIdentityAccessManagementPermissions" },
+  ],
+  ce: [{ label: "Cost and usage", path: "/ce", icon: "service/AWSCostExplorer" }],
+  securityhub: [
+    { label: "Findings", path: "/securityhub", icon: "resource/AWSSecurityHubFinding" },
+    { label: "Security standards", path: "/securityhub?tab=standards", icon: "service/AWSSecurityHub" },
+  ],
+  guardduty: [{ label: "Findings", path: "/guardduty", icon: "service/AmazonGuardDuty" }],
+  identitycenter: [
+    { label: "Users", path: "/identitycenter", icon: "resource/User" },
+    { label: "Groups", path: "/identitycenter?tab=groups", icon: "resource/Users" },
+    { label: "Permission sets", path: "/identitycenter?tab=permissionsets", icon: "resource/AWSIdentityAccessManagementPermissions" },
+  ],
+  ram: [
+    { label: "Shared by me", path: "/ram", icon: "service/AWSResourceAccessManager" },
+    { label: "Shared with me", path: "/ram?tab=others", icon: "resource/AWSOrganizationsAccount" },
+  ],
   ecr: [{ label: "Private repositories", path: "/ecr", icon: "resource/AmazonElasticContainerRegistryRegistry" }],
   ecs: [
     { label: "Clusters", path: "/ecs", icon: "service/AmazonElasticContainerService" },
@@ -177,17 +205,17 @@ export const SERVICES: Service[] = [
   svc({ id: "secretsmanager", name: "AWS Secrets Manager", short: "Secrets Manager", category: "security", icon: "service/AWSSecretsManager", zone: "security", path: "/secrets", endpoints: ["secretsmanager"] }),
   svc({ id: "acm", name: "AWS Certificate Manager", short: "Certificates", category: "security", icon: "service/AWSCertificateManager", zone: "networking", path: "/acm", endpoints: ["acm"] }),
   svc({ id: "acmpca", name: "AWS Private CA", short: "Private CA", category: "security", icon: "service/AWSPrivateCertificateAuthority", zone: "networking", path: "/pca", endpoints: ["acm-pca", "pca-connector-scep"] }),
-  svc({ id: "identitycenter", name: "IAM Identity Center", short: "Identity Center", category: "security", icon: "service/AWSIAMIdentityCenter", endpoints: ["sso", "identitystore", "awsssoportal", "sso-oauth"] }),
-  svc({ id: "guardduty", name: "Amazon GuardDuty", short: "GuardDuty", category: "security", icon: "service/AmazonGuardDuty", endpoints: ["guardduty"] }),
-  svc({ id: "securityhub", name: "AWS Security Hub", short: "Security Hub", category: "security", icon: "service/AWSSecurityHub", endpoints: ["securityhub"] }),
-  svc({ id: "ram", name: "AWS Resource Access Manager", short: "RAM", category: "security", icon: "service/AWSResourceAccessManager", endpoints: ["ram"] }),
+  svc({ id: "identitycenter", name: "IAM Identity Center", short: "Identity Center", category: "security", icon: "service/AWSIAMIdentityCenter", zone: "governance", path: "/identitycenter", endpoints: ["sso", "identitystore", "awsssoportal", "sso-oauth"] }),
+  svc({ id: "guardduty", name: "Amazon GuardDuty", short: "GuardDuty", category: "security", icon: "service/AmazonGuardDuty", zone: "governance", path: "/guardduty", endpoints: ["guardduty"] }),
+  svc({ id: "securityhub", name: "AWS Security Hub", short: "Security Hub", category: "security", icon: "service/AWSSecurityHub", zone: "governance", path: "/securityhub", endpoints: ["securityhub"] }),
+  svc({ id: "ram", name: "AWS Resource Access Manager", short: "RAM", category: "security", icon: "service/AWSResourceAccessManager", zone: "governance", path: "/ram", endpoints: ["ram"] }),
   // Management
   svc({ id: "cloudwatch", name: "Amazon CloudWatch", short: "CloudWatch", category: "management", icon: "service/AmazonCloudWatch", zone: "observability", path: "/logs", endpoints: ["logs", "monitoring"] }),
   svc({ id: "ssm", name: "AWS Systems Manager", short: "Systems Manager", category: "management", icon: "service/AWSSystemsManager", zone: "security", path: "/ssm", endpoints: ["ssm"] }),
-  svc({ id: "cloudformation", name: "AWS CloudFormation", short: "CloudFormation", category: "management", icon: "service/AWSCloudFormation", endpoints: ["cloudformation"] }),
-  svc({ id: "cloudtrail", name: "AWS CloudTrail", short: "CloudTrail", category: "management", icon: "service/AWSCloudTrail", endpoints: ["cloudtrail", "cloudtrail-data"] }),
-  svc({ id: "organizations", name: "AWS Organizations", short: "Organizations", category: "management", icon: "service/AWSOrganizations", endpoints: ["organizations"] }),
-  svc({ id: "servicequotas", name: "Service Quotas", short: "Service Quotas", category: "management", icon: "service/AWSTrustedAdvisor", endpoints: ["servicequotas"] }),
+  svc({ id: "cloudformation", name: "AWS CloudFormation", short: "CloudFormation", category: "management", icon: "service/AWSCloudFormation", zone: "governance", path: "/cloudformation", endpoints: ["cloudformation"] }),
+  svc({ id: "cloudtrail", name: "AWS CloudTrail", short: "CloudTrail", category: "management", icon: "service/AWSCloudTrail", zone: "governance", path: "/cloudtrail", endpoints: ["cloudtrail", "cloudtrail-data"] }),
+  svc({ id: "organizations", name: "AWS Organizations", short: "Organizations", category: "management", icon: "service/AWSOrganizations", zone: "governance", path: "/organizations", endpoints: ["organizations"] }),
+  svc({ id: "servicequotas", name: "Service Quotas", short: "Service Quotas", category: "management", icon: "service/AWSTrustedAdvisor", zone: "governance", path: "/servicequotas", endpoints: ["servicequotas"] }),
   // Developer tools
   svc({ id: "codeartifact", name: "AWS CodeArtifact", short: "CodeArtifact", category: "developer", icon: "service/AWSCodeArtifact", endpoints: ["codeartifact"] }),
   // AI
@@ -195,7 +223,7 @@ export const SERVICES: Service[] = [
   // Web & mobile
   svc({ id: "amplify", name: "AWS Amplify", short: "Amplify", category: "frontend", icon: "service/AWSAmplify", endpoints: ["amplify"] }),
   // Cost
-  svc({ id: "ce", name: "AWS Cost Explorer", short: "Cost Explorer", category: "cost", icon: "service/AWSCostExplorer", endpoints: ["ce"] }),
+  svc({ id: "ce", name: "AWS Cost Explorer", short: "Cost Explorer", category: "cost", icon: "service/AWSCostExplorer", zone: "governance", path: "/ce", endpoints: ["ce"] }),
   svc({ id: "marketplace", name: "AWS Marketplace", short: "Marketplace", category: "cost", icon: "service/AWSMarketplace", endpoints: ["marketplace-metering", "marketplace-entitlement"] }),
 ];
 
