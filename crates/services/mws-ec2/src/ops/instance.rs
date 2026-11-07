@@ -323,7 +323,7 @@ impl Ec2 {
         ctx: &RequestContext,
         input: t::RunInstancesRequest,
     ) -> Result<t::Reservation, ServiceError> {
-        self.run_instances_with(ctx, input, Vec::new()).await
+        self.run_instances_with(ctx, input, Vec::new(), None).await
     }
 
     /// `RunInstances` for another AWS service (EC2 Auto Scaling), which may
@@ -336,14 +336,18 @@ impl Ec2 {
         input: t::RunInstancesRequest,
         system_tags: Vec<t::Tag>,
     ) -> Result<t::Reservation, ServiceError> {
-        self.run_instances_with(ctx, input, system_tags).await
+        self.run_instances_with(ctx, input, system_tags, None).await
     }
 
-    async fn run_instances_with(
+    /// `RunInstances` with `aws:` system tags, and for Spot requests that
+    /// already exist (`RequestSpotInstances`, fleets), the request the
+    /// instance fulfils.
+    pub(crate) async fn run_instances_with(
         &self,
         ctx: &RequestContext,
         input: t::RunInstancesRequest,
         mut system_tags: Vec<t::Tag>,
+        spot_request_id: Option<String>,
     ) -> Result<t::Reservation, ServiceError> {
         let account = account_of(ctx);
         let mut template_resource = None;
@@ -521,6 +525,50 @@ impl Ec2 {
         })?;
         let subnet_id = subnet.subnet_id.clone().unwrap_or_default();
         let vpc_id = subnet.vpc_id.clone().unwrap_or_default();
+        let zone = subnet.availability_zone.clone().unwrap_or_default();
+        let spot_options =
+            input.instance_market_options.as_ref().and_then(|m| m.spot_options.clone()).unwrap_or_default();
+        let spot_price = if spot {
+            let price =
+                crate::pricing::spot_price(&instance_type, &zone, "Linux/UNIX", ctx.received_at).ok_or_else(|| {
+                    err(
+                        "Unsupported",
+                        format!("The instance type {instance_type} is not supported for Spot Instances."),
+                    )
+                })?;
+            if spot_options.block_duration_minutes.is_some() {
+                return Err(err(
+                    "Unsupported",
+                    "Spot Instances with a defined duration (Spot blocks) are no longer available.",
+                ));
+            }
+            if let Some(max) = &spot_options.max_price {
+                let m: f64 =
+                    max.parse().map_err(|_| invalid_parameter(format!("Invalid value '{max}' for maxPrice.")))?;
+                if m < price {
+                    return Err(err(
+                        "SpotMaxPriceTooLow",
+                        format!("Your Spot request price of {m} is lower than the minimum required Spot request fulfillment price of {}.", crate::pricing::fmt_price(price)),
+                    ));
+                }
+            }
+            let persistent = spot_options.spot_instance_type.as_deref() == Some("persistent");
+            if persistent
+                && spot_options.instance_interruption_behavior.as_deref().unwrap_or("terminate") == "terminate"
+            {
+                return Err(invalid_parameter(
+                    "The instance interruption behavior 'terminate' is not supported for persistent Spot requests launched with RunInstances. Specify 'stop' or 'hibernate'.",
+                ));
+            }
+            Some(price)
+        } else {
+            None
+        };
+        let wants_host =
+            input.placement.as_ref().is_some_and(|p| p.host_id.is_some() || p.tenancy.as_deref() == Some("host"));
+        if wants_host && spot {
+            return Err(err("InvalidParameterCombination", "Spot Instances cannot be launched on Dedicated Hosts."));
+        }
 
         // Authorize every resource RunInstances touches.
         let mut instance_cond = request_tag_context(&tags);
@@ -603,6 +651,18 @@ impl Ec2 {
                 return Err(err("InsufficientFreeAddressesInSubnet", "There are not enough free addresses in subnet '{subnet_id}' to satisfy the requested number of instances."));
             }
             let count = count.min(free);
+            let count = if wants_host {
+                let room = super::hosts::room(r, input.placement.as_ref().expect("host placement"), &instance_type, &zone)?;
+                if room < input.min_count as usize {
+                    return Err(err(
+                        "InsufficientHostCapacity",
+                        format!("There is not enough capacity on the Dedicated Hosts to launch {} instances of type {instance_type}.", input.min_count),
+                    ));
+                }
+                count.min(room)
+            } else {
+                count
+            };
             let plans = super::ebs::plan_block_devices(
                 ctx,
                 &account,
@@ -613,6 +673,11 @@ impl Ec2 {
             let mut out = Vec::new();
             for index in 0..count {
                 let instance_id = new_id("i");
+                let host_id = if wants_host {
+                    Some(super::hosts::place(r, input.placement.as_ref().expect("host placement"), &instance_type, &zone)?)
+                } else {
+                    None
+                };
                 let ip = match primary_spec.as_ref().and_then(|p| p.private_ip_address.clone()).or_else(|| input.private_ip_address.clone()) {
                     Some(ip) => ip,
                     None => super::vpc::allocate_ip(r, &subnet_id).expect("counted free addresses"),
@@ -676,7 +741,9 @@ impl Ec2 {
                         availability_zone: subnet.availability_zone.clone(),
                         availability_zone_id: subnet.availability_zone_id.clone(),
                         group_name: Some(input.placement.as_ref().and_then(|p| p.group_name.clone()).unwrap_or_default()),
-                        tenancy: Some(input.placement.as_ref().and_then(|p| p.tenancy.clone()).unwrap_or_else(|| "default".into())),
+                        tenancy: Some(if host_id.is_some() { "host".into() } else { input.placement.as_ref().and_then(|p| p.tenancy.clone()).unwrap_or_else(|| "default".into()) }),
+                        host_id: host_id.clone(),
+                        affinity: host_id.as_ref().map(|_| input.placement.as_ref().and_then(|p| p.affinity.clone()).unwrap_or_else(|| "default".into())),
                         ..Default::default()
                     }),
                     monitoring: Some(t::Monitoring {
@@ -729,7 +796,7 @@ impl Ec2 {
                     maintenance_options: Some(t::InstanceMaintenanceOptions { auto_recovery: Some("default".into()), ..Default::default() }),
                     network_performance_options: Some(t::InstanceNetworkPerformanceOptions { bandwidth_weighting: Some("default".into()) }),
                     instance_lifecycle: spot.then(|| "spot".to_string()),
-                    spot_instance_request_id: spot.then(|| new_id("sir")[..12].to_string()),
+                    spot_instance_request_id: spot.then(|| spot_request_id.clone().unwrap_or_else(|| new_id("sir")[..12].to_string())),
                     ..Default::default()
                 };
                 let role_arn = profile.as_ref().and_then(|p| p.role_arn.clone());
@@ -797,6 +864,13 @@ impl Ec2 {
                     extras: Default::default(),
                 };
                 launched.push((instance_id.clone(), 1, spec));
+                if let (Some(price), None) = (spot_price, &spot_request_id) {
+                    // Spot RunInstances makes a one-time (or persistent)
+                    // Spot request too.
+                    let sir = rec.instance.spot_instance_request_id.clone().unwrap_or_default();
+                    super::spot::record_run_instances_request(r, &rec, &spot_options, price, now);
+                    debug_assert!(r.spot_requests.contains_key(&sir));
+                }
                 r.instances.insert(instance_id.clone(), rec);
                 out.push(render(r, &r.instances[&instance_id]));
             }

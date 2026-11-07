@@ -68,6 +68,8 @@ pub enum Kind {
     TransitGatewayRouteTable,
     FlowLog,
     SubnetCidrReservation,
+    Host,
+    SpotInstanceRequest,
 }
 
 impl Kind {
@@ -102,6 +104,8 @@ impl Kind {
             Kind::TransitGatewayRouteTable => "tgw-rtb",
             Kind::FlowLog => "fl",
             Kind::SubnetCidrReservation => "scr",
+            Kind::Host => "h",
+            Kind::SpotInstanceRequest => "sir",
         }
     }
 
@@ -136,6 +140,8 @@ impl Kind {
             Kind::TransitGatewayRouteTable => "InvalidRouteTableID.Malformed",
             Kind::FlowLog => "InvalidFlowLogId.Malformed",
             Kind::SubnetCidrReservation => "InvalidSubnetCidrReservationID.Malformed",
+            Kind::Host => "InvalidHostID.Malformed",
+            Kind::SpotInstanceRequest => "InvalidSpotInstanceRequestID.Malformed",
         }
     }
 
@@ -201,6 +207,10 @@ impl Kind {
                 "InvalidSubnetCidrReservationID.NotFound",
                 format!("The subnetCidrReservation ID '{id}' does not exist"),
             ),
+            Kind::Host => ("InvalidHostID.NotFound", format!("The host ID '{id}' does not exist")),
+            Kind::SpotInstanceRequest => {
+                ("InvalidSpotInstanceRequestID.NotFound", format!("The spot instance request ID '{id}' does not exist"))
+            }
         };
         err(code, msg)
     }

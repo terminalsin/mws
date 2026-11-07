@@ -1688,4 +1688,173 @@ impl Handler for Ec2 {
     ) -> Result<types::GetInstanceUefiDataResult, ServiceError> {
         self.get_instance_uefi_data_op(ctx, input)
     }
+    // Spot Instances, Spot Fleet, EC2 Fleet, Dedicated Hosts and Reserved Instances
+    async fn request_spot_instances(
+        &self,
+        ctx: &RequestContext,
+        input: types::RequestSpotInstancesRequest,
+    ) -> Result<types::RequestSpotInstancesResult, ServiceError> {
+        self.request_spot_instances_op(ctx, input).await
+    }
+    async fn describe_spot_instance_requests(
+        &self,
+        ctx: &RequestContext,
+        input: types::DescribeSpotInstanceRequestsRequest,
+    ) -> Result<types::DescribeSpotInstanceRequestsResult, ServiceError> {
+        self.describe_spot_instance_requests_op(ctx, input).await
+    }
+    async fn cancel_spot_instance_requests(
+        &self,
+        ctx: &RequestContext,
+        input: types::CancelSpotInstanceRequestsRequest,
+    ) -> Result<types::CancelSpotInstanceRequestsResult, ServiceError> {
+        self.cancel_spot_instance_requests_op(ctx, input).await
+    }
+    async fn describe_spot_price_history(
+        &self,
+        ctx: &RequestContext,
+        input: types::DescribeSpotPriceHistoryRequest,
+    ) -> Result<types::DescribeSpotPriceHistoryResult, ServiceError> {
+        self.describe_spot_price_history_op(ctx, input)
+    }
+    async fn request_spot_fleet(
+        &self,
+        ctx: &RequestContext,
+        input: types::RequestSpotFleetRequest,
+    ) -> Result<types::RequestSpotFleetResponse, ServiceError> {
+        self.request_spot_fleet_op(ctx, input).await
+    }
+    async fn describe_spot_fleet_requests(
+        &self,
+        ctx: &RequestContext,
+        input: types::DescribeSpotFleetRequestsRequest,
+    ) -> Result<types::DescribeSpotFleetRequestsResponse, ServiceError> {
+        self.describe_spot_fleet_requests_op(ctx, input).await
+    }
+    async fn describe_spot_fleet_instances(
+        &self,
+        ctx: &RequestContext,
+        input: types::DescribeSpotFleetInstancesRequest,
+    ) -> Result<types::DescribeSpotFleetInstancesResponse, ServiceError> {
+        self.describe_spot_fleet_instances_op(ctx, input).await
+    }
+    async fn describe_spot_fleet_request_history(
+        &self,
+        ctx: &RequestContext,
+        input: types::DescribeSpotFleetRequestHistoryRequest,
+    ) -> Result<types::DescribeSpotFleetRequestHistoryResponse, ServiceError> {
+        self.describe_spot_fleet_request_history_op(ctx, input).await
+    }
+    async fn modify_spot_fleet_request(
+        &self,
+        ctx: &RequestContext,
+        input: types::ModifySpotFleetRequestRequest,
+    ) -> Result<types::ModifySpotFleetRequestResponse, ServiceError> {
+        self.modify_spot_fleet_request_op(ctx, input).await
+    }
+    async fn cancel_spot_fleet_requests(
+        &self,
+        ctx: &RequestContext,
+        input: types::CancelSpotFleetRequestsRequest,
+    ) -> Result<types::CancelSpotFleetRequestsResponse, ServiceError> {
+        self.cancel_spot_fleet_requests_op(ctx, input).await
+    }
+    async fn create_fleet(
+        &self,
+        ctx: &RequestContext,
+        input: types::CreateFleetRequest,
+    ) -> Result<types::CreateFleetResult, ServiceError> {
+        self.create_fleet_op(ctx, input).await
+    }
+    async fn describe_fleets(
+        &self,
+        ctx: &RequestContext,
+        input: types::DescribeFleetsRequest,
+    ) -> Result<types::DescribeFleetsResult, ServiceError> {
+        self.describe_fleets_op(ctx, input).await
+    }
+    async fn describe_fleet_instances(
+        &self,
+        ctx: &RequestContext,
+        input: types::DescribeFleetInstancesRequest,
+    ) -> Result<types::DescribeFleetInstancesResult, ServiceError> {
+        self.describe_fleet_instances_op(ctx, input).await
+    }
+    async fn describe_fleet_history(
+        &self,
+        ctx: &RequestContext,
+        input: types::DescribeFleetHistoryRequest,
+    ) -> Result<types::DescribeFleetHistoryResult, ServiceError> {
+        self.describe_fleet_history_op(ctx, input).await
+    }
+    async fn modify_fleet(
+        &self,
+        ctx: &RequestContext,
+        input: types::ModifyFleetRequest,
+    ) -> Result<types::ModifyFleetResult, ServiceError> {
+        self.modify_fleet_op(ctx, input).await
+    }
+    async fn delete_fleets(
+        &self,
+        ctx: &RequestContext,
+        input: types::DeleteFleetsRequest,
+    ) -> Result<types::DeleteFleetsResult, ServiceError> {
+        self.delete_fleets_op(ctx, input).await
+    }
+    async fn allocate_hosts(
+        &self,
+        ctx: &RequestContext,
+        input: types::AllocateHostsRequest,
+    ) -> Result<types::AllocateHostsResult, ServiceError> {
+        self.allocate_hosts_op(ctx, input)
+    }
+    async fn describe_hosts(
+        &self,
+        ctx: &RequestContext,
+        input: types::DescribeHostsRequest,
+    ) -> Result<types::DescribeHostsResult, ServiceError> {
+        self.describe_hosts_op(ctx, input)
+    }
+    async fn modify_hosts(
+        &self,
+        ctx: &RequestContext,
+        input: types::ModifyHostsRequest,
+    ) -> Result<types::ModifyHostsResult, ServiceError> {
+        self.modify_hosts_op(ctx, input)
+    }
+    async fn release_hosts(
+        &self,
+        ctx: &RequestContext,
+        input: types::ReleaseHostsRequest,
+    ) -> Result<types::ReleaseHostsResult, ServiceError> {
+        self.release_hosts_op(ctx, input)
+    }
+    async fn modify_instance_placement(
+        &self,
+        ctx: &RequestContext,
+        input: types::ModifyInstancePlacementRequest,
+    ) -> Result<types::ModifyInstancePlacementResult, ServiceError> {
+        self.modify_instance_placement_op(ctx, input)
+    }
+    async fn describe_reserved_instances_offerings(
+        &self,
+        ctx: &RequestContext,
+        input: types::DescribeReservedInstancesOfferingsRequest,
+    ) -> Result<types::DescribeReservedInstancesOfferingsResult, ServiceError> {
+        self.describe_reserved_instances_offerings_op(ctx, input)
+    }
+    async fn purchase_reserved_instances_offering(
+        &self,
+        ctx: &RequestContext,
+        input: types::PurchaseReservedInstancesOfferingRequest,
+    ) -> Result<types::PurchaseReservedInstancesOfferingResult, ServiceError> {
+        self.purchase_reserved_instances_offering_op(ctx, input)
+    }
+    async fn describe_reserved_instances(
+        &self,
+        ctx: &RequestContext,
+        input: types::DescribeReservedInstancesRequest,
+    ) -> Result<types::DescribeReservedInstancesResult, ServiceError> {
+        self.describe_reserved_instances_op(ctx, input)
+    }
 }

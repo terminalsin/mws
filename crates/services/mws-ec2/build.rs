@@ -272,6 +272,32 @@ const OPERATIONS: &[&str] = &[
     "ModifyInstanceCreditSpecification",
     "GetPasswordData",
     "GetInstanceUefiData",
+    // Spot Instances, Spot Fleet and EC2 Fleet
+    "RequestSpotInstances",
+    "DescribeSpotInstanceRequests",
+    "CancelSpotInstanceRequests",
+    "DescribeSpotPriceHistory",
+    "RequestSpotFleet",
+    "DescribeSpotFleetRequests",
+    "DescribeSpotFleetInstances",
+    "DescribeSpotFleetRequestHistory",
+    "ModifySpotFleetRequest",
+    "CancelSpotFleetRequests",
+    "CreateFleet",
+    "DescribeFleets",
+    "DescribeFleetInstances",
+    "DescribeFleetHistory",
+    "ModifyFleet",
+    "DeleteFleets",
+    // Dedicated Hosts and Reserved Instances
+    "AllocateHosts",
+    "DescribeHosts",
+    "ModifyHosts",
+    "ReleaseHosts",
+    "ModifyInstancePlacement",
+    "DescribeReservedInstancesOfferings",
+    "PurchaseReservedInstancesOffering",
+    "DescribeReservedInstances",
 ];
 
 fn main() {

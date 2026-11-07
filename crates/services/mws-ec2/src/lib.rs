@@ -27,6 +27,7 @@ pub mod imds;
 mod keys;
 pub mod network;
 mod ops;
+mod pricing;
 mod public;
 mod quotas;
 mod service_eni;
