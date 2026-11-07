@@ -1,6 +1,7 @@
 pub mod addressing;
 pub mod ebs;
 pub mod endpoint;
+pub mod endpoint_service;
 pub mod eni;
 pub mod fleet;
 pub mod flow_logs;

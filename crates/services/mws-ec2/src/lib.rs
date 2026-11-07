@@ -93,6 +93,15 @@ pub(crate) struct Inner {
     firewalls: firewall::Applied,
     volume_jobs: volumes::VolumeQueue,
     extensions: RwLock<Vec<Arc<dyn LaunchExtension>>>,
+    load_balancers: OnceLock<Arc<dyn LoadBalancers>>,
+}
+
+/// The load balancers VPC endpoint services front: MWS wires this to
+/// Elastic Load Balancing.
+pub trait LoadBalancers: Send + Sync {
+    /// A load balancer's type (`network`, `gateway`, ...) and the
+    /// Availability Zones it is enabled in.
+    fn load_balancer(&self, account: &str, region: &str, arn: &str) -> Option<(String, Vec<String>)>;
 }
 
 /// The EC2 service. Cheap to clone; clones share state.
@@ -119,8 +128,18 @@ impl Ec2 {
                 firewalls: Default::default(),
                 volume_jobs: Default::default(),
                 extensions: RwLock::default(),
+                load_balancers: OnceLock::new(),
             }),
         }
+    }
+
+    /// Look up the load balancers endpoint services are created for.
+    pub fn set_load_balancers(&self, lbs: Arc<dyn LoadBalancers>) {
+        let _ = self.inner.load_balancers.set(lbs);
+    }
+
+    pub(crate) fn load_balancers(&self) -> Option<&Arc<dyn LoadBalancers>> {
+        self.inner.load_balancers.get()
     }
 
     /// Hand instance profile credentials out through instance metadata.

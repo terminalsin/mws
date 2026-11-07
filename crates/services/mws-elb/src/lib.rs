@@ -62,6 +62,8 @@ pub struct LoadBalancerInfo {
     /// their health checks.
     pub healthy_targets: usize,
     pub unhealthy_targets: usize,
+    /// The Availability Zones it is enabled in.
+    pub availability_zones: Vec<String>,
 }
 pub use metrics::{ElbMetric, MetricSink};
 use state::State;
@@ -245,6 +247,7 @@ impl Elb {
                 canonical_hosted_zone_id: lb.lb.canonical_hosted_zone_id.clone(),
                 healthy_targets: healthy,
                 unhealthy_targets: unhealthy,
+                availability_zones: lb.zones(),
             });
         }
         let name = arn.rsplit_once(":loadbalancer/")?.1;
@@ -267,6 +270,7 @@ impl Elb {
             canonical_hosted_zone_id: c.description.canonical_hosted_zone_name_id.clone(),
             healthy_targets: healthy,
             unhealthy_targets: unhealthy,
+            availability_zones: c.description.availability_zones.clone().unwrap_or_default(),
         })
     }
 

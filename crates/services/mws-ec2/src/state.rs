@@ -93,6 +93,19 @@ pub struct RegionState {
     /// Dedicated Hosts; their instances are the instances placed on them.
     pub hosts: BTreeMap<String, t::Host>,
     pub reserved_instances: BTreeMap<String, t::ReservedInstances>,
+    /// VPC endpoint services this account provides, by service id.
+    pub endpoint_services: BTreeMap<String, EndpointServiceRecord>,
+}
+
+/// A PrivateLink endpoint service: its configuration, who may connect, and
+/// the endpoints connected to it (from any account).
+#[derive(Debug, Default, Clone, Serialize, Deserialize)]
+#[serde(default)]
+pub struct EndpointServiceRecord {
+    pub config: t::ServiceConfiguration,
+    pub permissions: Vec<t::AllowedPrincipal>,
+    /// By endpoint id.
+    pub connections: BTreeMap<String, t::VpcEndpointConnection>,
 }
 
 /// A Spot Instance request, and what it launches with.
@@ -316,6 +329,9 @@ impl RegionState {
             "tgw-rtb" => self.transit_gateway_route_tables.get_mut(id).map(|v| &mut v.table.tags),
             "fl" => self.flow_logs.get_mut(id).map(|v| &mut v.tags),
             "scr" => self.subnet_cidr_reservations.get_mut(id).map(|v| &mut v.tags),
+            "h" => self.hosts.get_mut(id).map(|v| &mut v.tags),
+            "sir" => self.spot_requests.get_mut(id).map(|v| &mut v.request.tags),
+            "vpce-svc" => self.endpoint_services.get_mut(id).map(|v| &mut v.config.tags),
             _ => None,
         }
     }
@@ -354,6 +370,9 @@ impl RegionState {
             "tgw-rtb" => "transit-gateway-route-table",
             "fl" => "vpc-flow-log",
             "scr" => "subnet-cidr-reservation",
+            "h" => "dedicated-host",
+            "sir" => "spot-instances-request",
+            "vpce-svc" => "vpc-endpoint-service",
             _ => return None,
         })
     }
@@ -457,6 +476,15 @@ impl RegionState {
         }
         for v in self.subnet_cidr_reservations.values() {
             push(v.subnet_cidr_reservation_id.as_ref(), &v.tags);
+        }
+        for v in self.hosts.values() {
+            push(v.host_id.as_ref(), &v.tags);
+        }
+        for v in self.spot_requests.values() {
+            push(v.request.spot_instance_request_id.as_ref(), &v.request.tags);
+        }
+        for v in self.endpoint_services.values() {
+            push(v.config.service_id.as_ref(), &v.config.tags);
         }
         out.sort_by(|a, b| a.0.cmp(&b.0));
         out
