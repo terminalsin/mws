@@ -750,6 +750,83 @@ impl Handler for Ec2 {
     ) -> Result<types::DescribeVpcEndpointServicesResult, ServiceError> {
         self.describe_vpc_endpoint_services_op(ctx, input)
     }
+    async fn create_vpc_endpoint_service_configuration(
+        &self,
+        ctx: &RequestContext,
+        input: types::CreateVpcEndpointServiceConfigurationRequest,
+    ) -> Result<types::CreateVpcEndpointServiceConfigurationResult, ServiceError> {
+        self.create_vpc_endpoint_service_configuration_op(ctx, input)
+    }
+    async fn describe_vpc_endpoint_service_configurations(
+        &self,
+        ctx: &RequestContext,
+        input: types::DescribeVpcEndpointServiceConfigurationsRequest,
+    ) -> Result<types::DescribeVpcEndpointServiceConfigurationsResult, ServiceError> {
+        self.describe_vpc_endpoint_service_configurations_op(ctx, input)
+    }
+    async fn modify_vpc_endpoint_service_configuration(
+        &self,
+        ctx: &RequestContext,
+        input: types::ModifyVpcEndpointServiceConfigurationRequest,
+    ) -> Result<types::ModifyVpcEndpointServiceConfigurationResult, ServiceError> {
+        self.modify_vpc_endpoint_service_configuration_op(ctx, input)
+    }
+    async fn delete_vpc_endpoint_service_configurations(
+        &self,
+        ctx: &RequestContext,
+        input: types::DeleteVpcEndpointServiceConfigurationsRequest,
+    ) -> Result<types::DeleteVpcEndpointServiceConfigurationsResult, ServiceError> {
+        self.delete_vpc_endpoint_service_configurations_op(ctx, input)
+    }
+    async fn describe_vpc_endpoint_service_permissions(
+        &self,
+        ctx: &RequestContext,
+        input: types::DescribeVpcEndpointServicePermissionsRequest,
+    ) -> Result<types::DescribeVpcEndpointServicePermissionsResult, ServiceError> {
+        self.describe_vpc_endpoint_service_permissions_op(ctx, input)
+    }
+    async fn modify_vpc_endpoint_service_permissions(
+        &self,
+        ctx: &RequestContext,
+        input: types::ModifyVpcEndpointServicePermissionsRequest,
+    ) -> Result<types::ModifyVpcEndpointServicePermissionsResult, ServiceError> {
+        self.modify_vpc_endpoint_service_permissions_op(ctx, input)
+    }
+    async fn describe_vpc_endpoint_connections(
+        &self,
+        ctx: &RequestContext,
+        input: types::DescribeVpcEndpointConnectionsRequest,
+    ) -> Result<types::DescribeVpcEndpointConnectionsResult, ServiceError> {
+        self.describe_vpc_endpoint_connections_op(ctx, input)
+    }
+    async fn accept_vpc_endpoint_connections(
+        &self,
+        ctx: &RequestContext,
+        input: types::AcceptVpcEndpointConnectionsRequest,
+    ) -> Result<types::AcceptVpcEndpointConnectionsResult, ServiceError> {
+        self.accept_vpc_endpoint_connections_op(ctx, input)
+    }
+    async fn reject_vpc_endpoint_connections(
+        &self,
+        ctx: &RequestContext,
+        input: types::RejectVpcEndpointConnectionsRequest,
+    ) -> Result<types::RejectVpcEndpointConnectionsResult, ServiceError> {
+        self.reject_vpc_endpoint_connections_op(ctx, input)
+    }
+    async fn start_vpc_endpoint_service_private_dns_verification(
+        &self,
+        ctx: &RequestContext,
+        input: types::StartVpcEndpointServicePrivateDnsVerificationRequest,
+    ) -> Result<types::StartVpcEndpointServicePrivateDnsVerificationResult, ServiceError> {
+        self.start_vpc_endpoint_service_private_dns_verification_op(ctx, input)
+    }
+    async fn modify_vpc_endpoint_service_payer_responsibility(
+        &self,
+        ctx: &RequestContext,
+        input: types::ModifyVpcEndpointServicePayerResponsibilityRequest,
+    ) -> Result<types::ModifyVpcEndpointServicePayerResponsibilityResult, ServiceError> {
+        self.modify_vpc_endpoint_service_payer_responsibility_op(ctx, input)
+    }
     async fn describe_prefix_lists(
         &self,
         ctx: &RequestContext,

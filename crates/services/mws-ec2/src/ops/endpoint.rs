@@ -149,7 +149,7 @@ fn find_service<'a>(region: &str, name: &str) -> Option<&'a EndpointService> {
 }
 
 /// The hosted zone id of a Region's `vpce.amazonaws.com` zone.
-fn vpce_zone(region: &str) -> String {
+pub(crate) fn vpce_zone(region: &str) -> String {
     match region {
         "us-east-1" => "Z7HUB22UULQXV".into(),
         "us-east-2" => "ZC8PG0KIFKBRI".into(),
@@ -255,6 +255,17 @@ impl Ec2 {
             resources.push((arn(ctx, &account, &format!("security-group/{id}")), ConditionContext::new()));
         }
         authorize(ctx, "CreateVpcEndpoint", &resources, input.dry_run)?;
+        if super::endpoint_service::custom_service_id(&name).is_some() {
+            let service = self
+                .visible_endpoint_services(ctx)
+                .into_iter()
+                .find(|v| v.config.service_name.as_deref() == Some(name.as_str()))
+                .filter(|v| v.config.service_state.as_deref() == Some("Available"))
+                .ok_or_else(|| {
+                    err("InvalidServiceName", format!("The Vpc Endpoint Service '{name}' does not exist"))
+                })?;
+            return self.create_custom_vpc_endpoint(ctx, &input, tags, service);
+        }
         if let Some(p) = &input.policy_document {
             check_policy(p)?;
         }
@@ -562,7 +573,8 @@ impl Ec2 {
             .map(|id| (arn(ctx, &account, &format!("vpc-endpoint/{id}")), ConditionContext::new()))
             .collect();
         authorize(ctx, "DeleteVpcEndpoints", &resources, input.dry_run)?;
-        self.with_region(ctx, |r| {
+        let mut deleted = Vec::new();
+        let result = self.with_region(ctx, |r| {
             let mut unsuccessful = Vec::new();
             for id in &input.vpc_endpoint_ids {
                 let failure = match Kind::VpcEndpoint.check(id) {
@@ -581,6 +593,7 @@ impl Ec2 {
                     continue;
                 }
                 let ep = r.vpc_endpoints.remove(id).expect("checked");
+                deleted.push((id.clone(), ep.service_name.clone().unwrap_or_default()));
                 for rtb in ep.route_table_ids.iter().flatten() {
                     remove_endpoint_route(r, rtb, id);
                 }
@@ -589,7 +602,9 @@ impl Ec2 {
                 }
             }
             Ok(t::DeleteVpcEndpointsResult { unsuccessful: Some(unsuccessful) })
-        })
+        });
+        self.drop_endpoint_connections(ctx, &deleted);
+        result
     }
 
     pub(crate) fn describe_vpc_endpoints_op(
@@ -626,8 +641,11 @@ impl Ec2 {
         let zones: Vec<String> = crate::catalog::zones(&region).into_iter().map(|z| z.0).collect();
         let filters = Filters::new(&input.filters);
         let names = input.service_names.clone().unwrap_or_default();
+        let custom = self.custom_service_details(ctx);
         for n in &names {
-            if find_service(&region, n).is_none() {
+            if find_service(&region, n).is_none()
+                && !custom.iter().any(|d| d.service_name.as_deref() == Some(n.as_str()))
+            {
                 return Err(err("InvalidServiceName", format!("The Vpc Endpoint Service '{n}' does not exist")));
             }
         }
@@ -656,6 +674,25 @@ impl Ec2 {
                 if ok {
                     details.push(d);
                 }
+            }
+        }
+        for d in custom {
+            let name = d.service_name.clone().unwrap_or_default();
+            if !names.is_empty() && !names.contains(&name) {
+                continue;
+            }
+            let ok = filters.matches(d.tags.as_ref(), |f| {
+                Some(match f {
+                    "service-name" => vec![name.clone()],
+                    "service-type" => d.service_type.iter().flatten().filter_map(|t| t.service_type.clone()).collect(),
+                    "service-region" => vec![region.clone()],
+                    "owner" => s(&d.owner),
+                    "supported-ip-address-types" => d.supported_ip_address_types.clone().unwrap_or_default(),
+                    _ => return None,
+                })
+            })?;
+            if ok {
+                details.push(d);
             }
         }
         let (items, next_token) = paginate(details, input.max_results, &input.next_token)?;
@@ -1099,7 +1136,7 @@ fn remove_endpoint_route(r: &mut RegionState, rtb: &str, endpoint_id: &str) {
 
 /// Give an interface endpoint a network interface in `subnet` (one subnet
 /// per Availability Zone).
-fn add_endpoint_subnet(
+pub(crate) fn add_endpoint_subnet(
     r: &mut RegionState,
     account: &str,
     region: &str,

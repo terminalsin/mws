@@ -298,6 +298,18 @@ const OPERATIONS: &[&str] = &[
     "DescribeReservedInstancesOfferings",
     "PurchaseReservedInstancesOffering",
     "DescribeReservedInstances",
+    // VPC endpoint services (PrivateLink)
+    "CreateVpcEndpointServiceConfiguration",
+    "DescribeVpcEndpointServiceConfigurations",
+    "ModifyVpcEndpointServiceConfiguration",
+    "DeleteVpcEndpointServiceConfigurations",
+    "DescribeVpcEndpointServicePermissions",
+    "ModifyVpcEndpointServicePermissions",
+    "DescribeVpcEndpointConnections",
+    "AcceptVpcEndpointConnections",
+    "RejectVpcEndpointConnections",
+    "StartVpcEndpointServicePrivateDnsVerification",
+    "ModifyVpcEndpointServicePayerResponsibility",
 ];
 
 fn main() {

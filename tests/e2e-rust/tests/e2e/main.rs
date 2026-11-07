@@ -26,6 +26,7 @@ mod ec2_docker;
 mod ec2_ebs;
 mod ec2_gateways;
 mod ec2_networking;
+mod ec2_privatelink;
 mod ecr;
 mod ecr_public;
 mod ecs;

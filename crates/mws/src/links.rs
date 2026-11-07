@@ -2377,3 +2377,13 @@ impl mws_guardduty::MalwareObjectStore for GuardDutyMalwareObjects {
         self.call(role, "PutObjectTagging", input).await.map(|_| ())
     }
 }
+
+/// EC2 endpoint services check the Network and Gateway Load Balancers they
+/// are offered behind, and take their Availability Zones.
+pub(crate) struct Ec2LoadBalancers(pub mws_elb::Elb);
+
+impl mws_ec2::LoadBalancers for Ec2LoadBalancers {
+    fn load_balancer(&self, account: &str, region: &str, arn: &str) -> Option<(String, Vec<String>)> {
+        self.0.load_balancer(account, region, arn).map(|lb| (lb.lb_type, lb.availability_zones))
+    }
+}

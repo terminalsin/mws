@@ -2,7 +2,7 @@
 
 > Crate: [`mws-ec2`](../../crates/services/mws-ec2) · Tests: [`tests/e2e-rust/tests/e2e/ec2.rs`](../../tests/e2e-rust/tests/e2e/ec2.rs), [`ec2_gateways.rs`](../../tests/e2e-rust/tests/e2e/ec2_gateways.rs), [`ec2_capacity.rs`](../../tests/e2e-rust/tests/e2e/ec2_capacity.rs)
 
-268 of the model's 811 operations are generated (ec2Query) and implemented; the rest answer `NotImplemented`. Responses use EC2's filters, pagination, `DryRun`, id formats and `InvalidXxx.Malformed`/`.NotFound` errors.
+279 of the model's 811 operations are generated (ec2Query) and implemented; the rest answer `NotImplemented`. Responses use EC2's filters, pagination, `DryRun`, id formats and `InvalidXxx.Malformed`/`.NotFound` errors.
 
 ✅ supported · 🟡 partial · ❌ not supported
 
@@ -32,7 +32,8 @@
 | Site-to-Site VPN | 🟡 | Customer gateways, virtual private gateways (attach, detach, route propagation), VPN connections with tunnel options, the customer gateway configuration and static routes. No tunnels come up. |
 | Carrier gateways | 🟡 | Created, described and deleted, and usable as route targets. |
 | Flow logs | 🟡 | Configuration for VPCs, subnets, interfaces and transit gateways is stored and validated; no flow log records are written. |
-| Private NAT gateways, VPC endpoint services | ❌ | Not yet. |
+| VPC endpoint services (PrivateLink) | ✅ | Services behind Network or Gateway Load Balancers (checked against ELB, zones taken from them), allowed principals, cross-account interface and Gateway Load Balancer endpoints that wait in `pendingAcceptance`, accept/reject, private DNS names (verification always succeeds: MWS does not look the TXT record up). Endpoints get interfaces and DNS names; traffic is not carried through them. |
+| Private NAT gateways | ❌ | Not yet. |
 
 ## Compute
 
