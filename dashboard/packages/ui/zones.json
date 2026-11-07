@@ -33,5 +33,10 @@
     "id": "networking",
     "basePath": "/networking",
     "port": 3006
+  },
+  {
+    "id": "data",
+    "basePath": "/data",
+    "port": 3007
   }
 ]

@@ -63,6 +63,16 @@ const TYPE_ICONS: Record<string, string> = {
   Accelerator: "service/AWSGlobalAccelerator",
   Certificate: "service/AWSCertificateManager",
   "Certificate authority": "resource/AWSCertificateManagerCertificateAuthority",
+  "DB cluster": "service/AmazonAurora",
+  "DB instance": "service/AmazonRDS",
+  Cache: "resource/AmazonElastiCacheCacheNode",
+  "Serverless cache": "service/AmazonElastiCache",
+  Repository: "resource/AmazonElasticContainerRegistryRegistry",
+  "ECS cluster": "service/AmazonElasticContainerService",
+  "EKS cluster": "service/AmazonElasticKubernetesService",
+  "File system": "resource/AmazonElasticFileSystemFileSystem",
+  "Data stream": "service/AmazonKinesisDataStreams",
+  "Firehose stream": "service/AmazonDataFirehose",
 };
 
 /** The icon of a resource's type, or else its service's. */

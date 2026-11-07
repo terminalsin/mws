@@ -68,6 +68,20 @@ export interface NavItem {
 }
 
 const NAV: Record<string, NavItem[]> = {
+  ecr: [{ label: "Private repositories", path: "/ecr", icon: "resource/AmazonElasticContainerRegistryRegistry" }],
+  ecs: [
+    { label: "Clusters", path: "/ecs", icon: "service/AmazonElasticContainerService" },
+    { label: "Task definitions", path: "/ecs?tab=taskdefs", icon: "resource/AmazonElasticContainerServiceTask" },
+  ],
+  eks: [{ label: "Clusters", path: "/eks", icon: "brand/kubernetes" }],
+  rds: [
+    { label: "Databases", path: "/rds", icon: "service/AmazonRDS" },
+    { label: "Snapshots", path: "/rds?tab=snapshots", icon: "resource/AmazonRDSMultiAZ" },
+  ],
+  elasticache: [{ label: "Caches", path: "/elasticache", icon: "resource/AmazonElastiCacheCacheNode" }],
+  efs: [{ label: "File systems", path: "/efs", icon: "resource/AmazonElasticFileSystemFileSystem" }],
+  kinesis: [{ label: "Data streams", path: "/kinesis", icon: "service/AmazonKinesisDataStreams" }],
+  firehose: [{ label: "Firehose streams", path: "/firehose", icon: "service/AmazonDataFirehose" }],
   vpc: [
     { label: "Your VPCs", path: "/vpc", icon: "resource/AmazonVPCVirtualprivatecloudVPC" },
     { label: "Subnets", path: "/vpc?tab=subnets", icon: "group/Privatesubnet" },
@@ -135,15 +149,15 @@ export const SERVICES: Service[] = [
   svc({ id: "autoscaling", name: "EC2 Auto Scaling", short: "Auto Scaling", category: "compute", icon: "service/AmazonEC2AutoScaling", endpoints: ["autoscaling"] }),
   svc({ id: "imagebuilder", name: "EC2 Image Builder", short: "Image Builder", category: "compute", icon: "service/AmazonEC2ImageBuilder", endpoints: ["imagebuilder"] }),
   // Containers
-  svc({ id: "ecr", name: "Amazon ECR", short: "ECR", category: "containers", icon: "service/AmazonElasticContainerRegistry", endpoints: ["ecr", "ecr-public"] }),
-  svc({ id: "ecs", name: "Amazon ECS", short: "ECS", category: "containers", icon: "service/AmazonElasticContainerService", endpoints: ["ecs"] }),
-  svc({ id: "eks", name: "Amazon EKS", short: "EKS", category: "containers", icon: "service/AmazonElasticKubernetesService", endpoints: ["eks"] }),
+  svc({ id: "ecr", name: "Amazon ECR", short: "ECR", category: "containers", icon: "service/AmazonElasticContainerRegistry", zone: "data", path: "/ecr", endpoints: ["ecr", "ecr-public"] }),
+  svc({ id: "ecs", name: "Amazon ECS", short: "ECS", category: "containers", icon: "service/AmazonElasticContainerService", zone: "data", path: "/ecs", endpoints: ["ecs"] }),
+  svc({ id: "eks", name: "Amazon EKS", short: "EKS", category: "containers", icon: "service/AmazonElasticKubernetesService", zone: "data", path: "/eks", endpoints: ["eks"] }),
   // Storage
   svc({ id: "s3", name: "Amazon S3", short: "S3", category: "storage", icon: "service/AmazonSimpleStorageService", zone: "storage", path: "/s3", endpoints: ["s3", "s3control"] }),
-  svc({ id: "efs", name: "Amazon EFS", short: "EFS", category: "storage", icon: "service/AmazonEFS", endpoints: ["elasticfilesystem"] }),
+  svc({ id: "efs", name: "Amazon EFS", short: "EFS", category: "storage", icon: "service/AmazonEFS", zone: "data", path: "/efs", endpoints: ["elasticfilesystem"] }),
   // Database
-  svc({ id: "rds", name: "Amazon RDS", short: "RDS", category: "database", icon: "service/AmazonRDS", endpoints: ["rds"] }),
-  svc({ id: "elasticache", name: "Amazon ElastiCache", short: "ElastiCache", category: "database", icon: "service/AmazonElastiCache", endpoints: ["elasticache"] }),
+  svc({ id: "rds", name: "Amazon RDS", short: "RDS", category: "database", icon: "service/AmazonRDS", zone: "data", path: "/rds", endpoints: ["rds"] }),
+  svc({ id: "elasticache", name: "Amazon ElastiCache", short: "ElastiCache", category: "database", icon: "service/AmazonElastiCache", zone: "data", path: "/elasticache", endpoints: ["elasticache"] }),
   // Networking
   svc({ id: "vpc", name: "Amazon VPC", short: "VPC", category: "networking", icon: "service/AmazonVirtualPrivateCloud", zone: "networking", path: "/vpc", endpoints: ["ec2"] }),
   svc({ id: "route53", name: "Amazon Route 53", short: "Route 53", category: "networking", icon: "service/AmazonRoute53", zone: "networking", path: "/route53", endpoints: ["route53"] }),
@@ -155,8 +169,8 @@ export const SERVICES: Service[] = [
   svc({ id: "events", name: "Amazon EventBridge", short: "EventBridge", category: "integration", icon: "service/AmazonEventBridge", zone: "messaging", path: "/events", endpoints: ["events"] }),
   svc({ id: "ses", name: "Amazon SES", short: "SES", category: "integration", icon: "service/AmazonSimpleEmailService", zone: "messaging", path: "/ses", endpoints: ["ses", "sesv2"] }),
   // Analytics
-  svc({ id: "kinesis", name: "Amazon Kinesis Data Streams", short: "Kinesis", category: "analytics", icon: "service/AmazonKinesisDataStreams", endpoints: ["kinesis"] }),
-  svc({ id: "firehose", name: "Amazon Data Firehose", short: "Firehose", category: "analytics", icon: "service/AmazonDataFirehose", endpoints: ["firehose"] }),
+  svc({ id: "kinesis", name: "Amazon Kinesis Data Streams", short: "Kinesis", category: "analytics", icon: "service/AmazonKinesisDataStreams", zone: "data", path: "/kinesis", endpoints: ["kinesis"] }),
+  svc({ id: "firehose", name: "Amazon Data Firehose", short: "Firehose", category: "analytics", icon: "service/AmazonDataFirehose", zone: "data", path: "/firehose", endpoints: ["firehose"] }),
   // Security & identity
   svc({ id: "iam", name: "AWS IAM", short: "IAM", category: "security", icon: "service/AWSIdentityandAccessManagement", zone: "security", path: "/iam", endpoints: ["iam", "sts"] }),
   svc({ id: "kms", name: "AWS KMS", short: "KMS", category: "security", icon: "service/AWSKeyManagementService", zone: "security", path: "/kms", endpoints: ["kms"] }),
