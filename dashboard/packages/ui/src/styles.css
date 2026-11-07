@@ -3,54 +3,54 @@
    services and resources, and SF-style typography. */
 
 :root {
-  --bg: #f5f5f7;
+  --bg: #f2f3f3;
   --surface: #ffffff;
   --surface-2: #f2f2f4;
-  --hover: rgba(0, 0, 0, 0.04);
-  --separator: rgba(60, 60, 67, 0.12);
-  --text: #1d1d1f;
-  --secondary: #6e6e73;
-  --tertiary: #a1a1a6;
-  --accent: #0071e3;
-  --accent-soft: rgba(0, 113, 227, 0.1);
-  --sidebar: rgba(236, 236, 240, 0.78);
+  --hover: #f2f8fd;
+  --separator: #e9ebed;
+  --text: #16191f;
+  --secondary: #545b64;
+  --tertiary: #879596;
+  --accent: #0972d3;
+  --accent-soft: #f2f8fd;
+  --sidebar: #ffffff;
   --ink: #232f3e;
-  --good: #248a3d;
-  --warn: #b25000;
-  --bad: #d70015;
-  --info: #0071e3;
-  --good-soft: rgba(52, 199, 89, 0.14);
-  --warn-soft: rgba(255, 149, 0, 0.15);
-  --bad-soft: rgba(255, 59, 48, 0.12);
-  --info-soft: rgba(0, 122, 255, 0.1);
-  --radius: 12px;
-  --shadow: 0 1px 2px rgba(0, 0, 0, 0.04), 0 2px 10px rgba(0, 0, 0, 0.04);
-  --font: -apple-system, BlinkMacSystemFont, "SF Pro Text", "Inter", "Segoe UI", Roboto, "Helvetica Neue", sans-serif;
+  --good: #037f0c;
+  --warn: #8d6605;
+  --bad: #d91515;
+  --info: #0972d3;
+  --good-soft: #f2fcf3;
+  --warn-soft: #fffce9;
+  --bad-soft: #fff7f7;
+  --info-soft: #f2f8fd;
+  --radius: 2px;
+  --shadow: none;
+  --font: "Amazon Ember", "Helvetica Neue", Roboto, Arial, sans-serif;
   --mono: ui-monospace, "SF Mono", "JetBrains Mono", Menlo, Consolas, monospace;
   color-scheme: light;
 }
 
 @media (prefers-color-scheme: dark) {
   :root {
-    --bg: #000000;
-    --surface: #1c1c1e;
+    --bg: #0f1b2a;
+    --surface: #192534;
     --surface-2: #2c2c2e;
-    --hover: rgba(255, 255, 255, 0.06);
-    --separator: rgba(84, 84, 88, 0.55);
-    --text: #f5f5f7;
-    --secondary: #98989d;
-    --tertiary: #636366;
-    --accent: #0a84ff;
-    --accent-soft: rgba(10, 132, 255, 0.18);
-    --sidebar: rgba(28, 28, 30, 0.82);
-    --good: #30d158;
-    --warn: #ff9f0a;
-    --bad: #ff453a;
-    --info: #64d2ff;
-    --good-soft: rgba(48, 209, 88, 0.16);
-    --warn-soft: rgba(255, 159, 10, 0.16);
-    --bad-soft: rgba(255, 69, 58, 0.16);
-    --info-soft: rgba(100, 210, 255, 0.14);
+    --hover: #1f2f42;
+    --separator: #414d5c;
+    --text: #d1d5db;
+    --secondary: #9ba7b6;
+    --tertiary: #7d8998;
+    --accent: #539fe5;
+    --accent-soft: #0f2a45;
+    --sidebar: #16191f;
+    --good: #29ad32;
+    --warn: #e0ca57;
+    --bad: #eb6f6f;
+    --info: #89bdee;
+    --good-soft: #001a02;
+    --warn-soft: #191100;
+    --bad-soft: #270a11;
+    --info-soft: #001129;
     --shadow: none;
     color-scheme: dark;
   }
@@ -118,7 +118,7 @@ h2 {
   }
 }
 .aws-icon {
-  border-radius: 6px;
+  border-radius: 2px;
   flex: none;
   display: block;
 }
@@ -157,7 +157,7 @@ h2 {
   place-items: center;
   width: 32px;
   height: 32px;
-  border-radius: 8px;
+  border-radius: 2px;
   border: 0;
   background: transparent;
   color: inherit;
@@ -202,7 +202,7 @@ h2 {
   place-items: center;
   width: 24px;
   height: 24px;
-  border-radius: 6px;
+  border-radius: 2px;
   color: #fff;
   font-size: 13px;
   background: linear-gradient(135deg, #ff9900, #e7157b 55%, #8c4fff);
@@ -217,7 +217,7 @@ h2 {
   color: var(--text);
 }
 .service-head .aws-icon {
-  border-radius: 7px;
+  border-radius: 2px;
 }
 .nav-group {
   margin-bottom: 12px;
@@ -238,7 +238,7 @@ h2 {
   align-items: center;
   gap: 9px;
   padding: 4px 9px;
-  border-radius: 8px;
+  border-radius: 2px;
   color: var(--text);
   min-height: 30px;
 }
@@ -255,7 +255,7 @@ h2 {
   font-weight: 500;
 }
 .nav-link .aws-icon {
-  border-radius: 5px;
+  border-radius: 2px;
 }
 .nav-foot {
   border-top: 1px solid var(--separator);
@@ -275,7 +275,7 @@ h2 {
   grid-template-columns: repeat(auto-fill, minmax(170px, 1fr));
   gap: 8px 12px;
   padding: 14px;
-  border-radius: 14px;
+  border-radius: 2px;
   background: var(--surface);
   color: var(--text);
   box-shadow: 0 12px 40px rgba(0, 0, 0, 0.25), 0 0 0 1px var(--separator);
@@ -326,7 +326,7 @@ h2 {
   gap: 8px;
   width: min(460px, 40vw);
   padding: 5px 10px;
-  border-radius: 9px;
+  border-radius: 2px;
   border: 0;
   background: rgba(255, 255, 255, 0.12);
   color: rgba(242, 243, 243, 0.6);
@@ -351,7 +351,7 @@ kbd {
   font-size: 11px;
   color: var(--secondary);
   border: 1px solid var(--separator);
-  border-radius: 5px;
+  border-radius: 2px;
   padding: 0 5px;
 }
 .content {
@@ -360,7 +360,7 @@ kbd {
 }
 .banner {
   padding: 10px 14px;
-  border-radius: 10px;
+  border-radius: 2px;
   margin: 12px 32px 0;
 }
 .content .banner {
@@ -388,7 +388,7 @@ kbd {
   gap: 14px;
 }
 .page-title .aws-icon {
-  border-radius: 8px;
+  border-radius: 2px;
 }
 .page-title-text {
   flex: 1;
@@ -570,7 +570,7 @@ td.wrap {
 }
 .empty .aws-icon {
   opacity: 0.85;
-  border-radius: 10px;
+  border-radius: 2px;
 }
 .section:not(.plain) .empty {
   box-shadow: none;
@@ -581,7 +581,7 @@ td.wrap {
   align-items: center;
   gap: 4px;
   padding: 1px 8px;
-  border-radius: 999px;
+  border-radius: 2px;
   font-size: 12px;
   font-weight: 500;
   background: var(--surface-2);
@@ -636,7 +636,7 @@ td.wrap {
 }
 .tag {
   display: inline-flex;
-  border-radius: 6px;
+  border-radius: 2px;
   overflow: hidden;
   font-size: 11.5px;
   border: 1px solid var(--separator);
@@ -667,7 +667,7 @@ td.wrap {
 pre.code,
 .result pre {
   background: var(--surface-2);
-  border-radius: 8px;
+  border-radius: 2px;
   padding: 10px 12px;
   margin: 0;
   overflow: auto;
@@ -719,13 +719,13 @@ a.metric:hover {
   flex-wrap: wrap;
   gap: 2px;
   padding: 2px;
-  border-radius: 9px;
+  border-radius: 2px;
   background: var(--surface-2);
   margin-bottom: 22px;
 }
 .segment {
   padding: 4px 14px;
-  border-radius: 7px;
+  border-radius: 2px;
   color: var(--text);
   font-size: 13px;
 }
@@ -790,7 +790,7 @@ textarea {
   color: inherit;
   background: var(--surface);
   border: 1px solid var(--separator);
-  border-radius: 8px;
+  border-radius: 2px;
   padding: 7px 10px;
   min-width: 0;
 }
@@ -812,7 +812,7 @@ textarea:focus {
   gap: 6px;
   font: inherit;
   font-weight: 500;
-  border-radius: 980px;
+  border-radius: 2px;
   padding: 6px 16px;
   border: 0;
   cursor: pointer;
@@ -880,7 +880,7 @@ dialog {
   padding: 0;
   color: inherit;
   background: var(--surface);
-  border-radius: 14px;
+  border-radius: 2px;
   box-shadow: 0 24px 80px rgba(0, 0, 0, 0.28);
 }
 dialog::backdrop {
@@ -939,7 +939,7 @@ dialog::backdrop {
   align-items: center;
   gap: 10px;
   padding: 7px 10px;
-  border-radius: 8px;
+  border-radius: 2px;
   color: var(--text);
 }
 .palette-hit.active {
@@ -981,7 +981,7 @@ dialog::backdrop {
   align-items: center;
   gap: 8px;
   padding: 10px 14px;
-  border-radius: 10px;
+  border-radius: 2px;
   background: var(--surface);
   box-shadow: 0 8px 30px rgba(0, 0, 0, 0.18);
   max-width: 420px;
@@ -1081,7 +1081,7 @@ svg.chart {
   width: 100%;
   font-size: 16px !important;
   padding: 10px 14px !important;
-  border-radius: 10px !important;
+  border-radius: 2px !important;
 }
 .tiles.apps .tile {
   gap: 8px;
@@ -1130,7 +1130,7 @@ textarea.code-editor {
   align-items: center;
   gap: 2px;
   padding: 1px 2px 1px 7px;
-  border-radius: 6px;
+  border-radius: 2px;
   font-size: 11.5px;
   font-family: var(--mono);
   background: var(--surface-2);
@@ -1269,7 +1269,7 @@ textarea.code-editor {
   align-items: center;
   gap: 7px;
   padding: 6px 12px 6px 10px;
-  border-radius: 999px;
+  border-radius: 2px;
   background: var(--surface);
   box-shadow: var(--shadow), 0 0 0 1px var(--separator);
   font-size: 13px;
@@ -1277,4 +1277,219 @@ textarea.code-editor {
 .spec-icon {
   display: inline-flex;
   color: var(--secondary);
+}
+
+/* Enterprise: the AWS console's density, borders and tabs. Containers are
+   bordered rather than floating, type is tighter, the primary action is
+   the console's solid button, and segmented controls read as tabs. */
+h1 {
+  font-size: 22px;
+  font-weight: 700;
+  letter-spacing: 0;
+}
+h2 {
+  font-size: 18px;
+  font-weight: 700;
+  color: var(--text);
+  text-transform: none;
+  letter-spacing: 0;
+}
+.section-head {
+  margin: 0 0 8px;
+}
+.section-head .count {
+  color: var(--secondary);
+  font-weight: 400;
+}
+.section-head .count::before {
+  content: "(";
+}
+.section-head .count::after {
+  content: ")";
+}
+.section-head .count {
+  margin-left: 4px;
+}
+.section:not(.plain) > .section-body,
+.list,
+.empty,
+.metric,
+.tile,
+.table-wrap,
+.specs li {
+  border: 1px solid var(--separator);
+  box-shadow: 0 1px 1px 0 rgba(0, 28, 36, 0.12);
+}
+.section:not(.plain) .list,
+.section:not(.plain) .empty,
+.section:not(.plain) .table-wrap {
+  border: 0;
+  box-shadow: none;
+}
+.row + .row::before {
+  left: 0;
+}
+.row-main {
+  min-height: 44px;
+  padding: 8px 16px;
+}
+.row-title {
+  font-weight: 700;
+}
+a.row-main .row-title {
+  color: var(--accent);
+}
+a.row-main:hover .row-title {
+  text-decoration: underline;
+}
+th {
+  background: var(--bg);
+  font-weight: 700;
+  color: var(--text);
+}
+.pill {
+  border: 1px solid currentColor;
+  background: transparent;
+  padding: 0 6px;
+}
+.pill:not(.good):not(.warn):not(.bad):not(.info) {
+  border-color: var(--separator);
+}
+.status .dot {
+  border-radius: 50%;
+}
+.metric-value,
+.tile-value {
+  font-weight: 300;
+  letter-spacing: 0;
+}
+.metric-label {
+  font-weight: 700;
+  color: var(--text);
+}
+/* Tabs, as the console draws them: an underline under the active one. */
+.segments {
+  display: flex;
+  gap: 0;
+  padding: 0;
+  background: transparent;
+  border-bottom: 1px solid var(--separator);
+  border-radius: 0;
+  margin-bottom: 20px;
+}
+.segment {
+  padding: 8px 16px;
+  border-radius: 0;
+  font-weight: 700;
+  color: var(--secondary);
+  border-bottom: 3px solid transparent;
+  margin-bottom: -1px;
+}
+.segment:hover {
+  color: var(--accent);
+}
+.segment.active {
+  background: transparent;
+  box-shadow: none;
+  color: var(--accent);
+  border-bottom-color: var(--accent);
+}
+.button {
+  border-radius: 2px;
+  padding: 5px 18px;
+  font-weight: 700;
+  border: 1px solid transparent;
+}
+.button.primary {
+  background: #ec7211;
+  border-color: #ec7211;
+}
+.button.primary:hover {
+  background: #eb5f07;
+}
+.button.plain {
+  background: var(--surface);
+  border-color: var(--secondary);
+  color: var(--secondary);
+}
+.button.danger {
+  background: var(--surface);
+  border-color: var(--bad);
+}
+.icon-button {
+  border-radius: 2px;
+  border: 1px solid var(--separator);
+  background: var(--surface);
+}
+.icon-button.primary {
+  background: #ec7211;
+  border-color: #ec7211;
+}
+.icon-button.danger:hover {
+  border-color: var(--bad);
+}
+.main input:not([type="checkbox"]):not([type="radio"]),
+.main select,
+.main textarea,
+dialog input:not([type="checkbox"]):not([type="radio"]),
+dialog select,
+dialog textarea {
+  border-radius: 2px !important;
+  border-color: #aab7b8 !important;
+}
+dialog {
+  box-shadow: 0 4px 20px 1px rgba(0, 7, 22, 0.28);
+}
+.sheet-head {
+  margin: -18px -20px 16px;
+  padding: 14px 20px;
+  border-bottom: 1px solid var(--separator);
+}
+.sheet-head h2 {
+  font-size: 18px;
+}
+/* Navigation: flat white, the active page in bold accent. */
+.sidebar {
+  backdrop-filter: none;
+  -webkit-backdrop-filter: none;
+}
+.service-head {
+  font-size: 18px;
+  font-weight: 700;
+  border-bottom: 1px solid var(--separator);
+  margin: 0 -10px 10px;
+  padding: 4px 19px 14px;
+}
+.nav-link {
+  color: var(--secondary);
+  min-height: 28px;
+}
+.nav-link:hover {
+  background: transparent;
+  color: var(--accent);
+}
+.nav-link.active {
+  background: transparent;
+  color: var(--accent);
+  font-weight: 700;
+}
+.topbar {
+  background: var(--ink);
+  backdrop-filter: none;
+  -webkit-backdrop-filter: none;
+  height: 40px;
+}
+.sidebar {
+  top: 40px;
+  height: calc(100vh - 40px);
+}
+.content {
+  padding-top: 20px;
+  max-width: 1440px;
+}
+.page-head {
+  margin-bottom: 16px;
+}
+.back {
+  font-size: 14px;
 }
