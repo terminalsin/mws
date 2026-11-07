@@ -1,11 +1,28 @@
+import {
+  ChevronLeft,
+  ChevronRight,
+  File,
+  FileArchive,
+  FileCode,
+  FileImage,
+  FileJson,
+  FileSpreadsheet,
+  FileText,
+  FileVideo,
+  Folder,
+  House,
+  SlidersHorizontal,
+} from "lucide-react";
 import Link from "next/link";
 import type { ReactNode } from "react";
 
-import { NavLink, RegionPicker } from "./client";
-import { ZONES, zoneHref, type ZoneId } from "./zones";
+import { navigation, iconUrl } from "./catalog";
+import { CommandPalette, NavLink, RegionPicker, Toasts } from "./client";
+import { zoneHref, type ZoneId } from "./zones";
 
-export { ActionForm, NavLink, RegionPicker, type ActionResult, type FormAction } from "./client";
-export { ZONES, zone, zoneHref, REGION_COOKIE, type Zone, type ZoneId, type NavItem } from "./zones";
+export { ActionForm, CommandPalette, NavLink, RegionPicker, Sheet, Toasts, type ActionResult, type FormAction, type SearchHit } from "./client";
+export { CATEGORIES, SERVICES, iconUrl, navigation, runtimeIcon, service, type Category, type CategoryId, type Service } from "./catalog";
+export { ZONES, zone, zoneHref, REGION_COOKIE, type Zone, type ZoneId } from "./zones";
 
 export interface FrameInfo {
   endpoint: string;
@@ -16,108 +33,210 @@ export interface FrameInfo {
   error: string | null;
 }
 
-/** The page chrome every zone renders around its content: one sidebar that
- * spans all zones, and a top bar with the endpoint, account and region. */
-export function Frame({ zone: current, info, children }: { zone: ZoneId; info: FrameInfo; children: ReactNode }) {
+/** An icon from the official AWS set ("service/AWSLambda", "resource/..."). */
+export function AwsIcon({ icon, size = 20, label }: { icon: string; size?: number; label?: string }) {
   return (
-    <div className="frame">
-      <aside className="sidebar">
-        <a className="brand" href="/">
-          <span className="brand-mark" aria-hidden>
-            M
-          </span>
-          <span>
-            <strong>MWS</strong>
-            <small>console</small>
-          </span>
-        </a>
-        <nav aria-label="Services">
-          {ZONES.map((z) => (
-            <div key={z.id} className={z.id === current ? "nav-group current" : "nav-group"}>
-              {z.id !== "shell" && <div className="nav-title">{z.title}</div>}
-              {z.nav.map((item) => (
-                <NavLink
-                  key={item.path}
-                  sameZone={z.id === current}
-                  href={z.id === current ? item.path : zoneHref(z.id, item.path)}
-                >
-                  {item.label}
-                </NavLink>
-              ))}
-            </div>
-          ))}
-        </nav>
-      </aside>
-      <div className="main">
-        <header className="topbar">
-          <div className="endpoint" title="Where the console sends its AWS SDK calls">
-            <span className={info.error ? "dot down" : "dot up"} aria-hidden />
-            <code>{info.endpoint}</code>
-          </div>
-          <div className="identity">
-            {info.account && (
-              <span title={info.principal ?? undefined}>
-                Account <code>{info.account}</code>
-              </span>
-            )}
-            <RegionPicker region={info.region} />
-          </div>
-        </header>
-        {info.error && (
-          <div className="banner error">
-            MWS is not reachable at <code>{info.endpoint}</code>: {info.error}. Start it with{" "}
-            <code>cargo run -p mws</code>.
-          </div>
-        )}
-        <main className="content">{children}</main>
-      </div>
-    </div>
+    <img
+      className="aws-icon"
+      src={iconUrl(icon)}
+      alt={label ?? ""}
+      width={size}
+      height={size}
+      style={{ width: size, height: size }}
+      loading="lazy"
+    />
   );
 }
 
-export function PageHeader({
+/** The page chrome every zone renders around its content: one sidebar that
+ * spans all zones and a toolbar with search, region and account. */
+export function Frame({ zone: current, info, children }: { zone: ZoneId; info: FrameInfo; children: ReactNode }) {
+  const link = (zone: ZoneId, path: string) =>
+    zone === current ? { href: path, zonePath: path, sameZone: true } : { href: zoneHref(zone, path), sameZone: false };
+  return (
+    <Toasts>
+      <div className="frame">
+        <aside className="sidebar">
+          <a className="brand" href="/" aria-label="MWS home">
+            <span className="brand-mark" aria-hidden>
+              M
+            </span>
+            <span className="brand-name">MWS</span>
+          </a>
+          <nav aria-label="Services">
+            <div className="nav-group">
+              <NavLink {...link("shell", "/")} icon={<House size={17} aria-hidden />}>
+                Home
+              </NavLink>
+            </div>
+            {navigation().map(({ category, services }) => (
+              <div key={category.id} className="nav-group">
+                <div className="nav-title">{category.name}</div>
+                {services.map((s) => (
+                  <NavLink key={s.id} {...link(s.zone!, s.path!)} icon={<AwsIcon icon={s.icon} size={20} />}>
+                    {s.short}
+                  </NavLink>
+                ))}
+              </div>
+            ))}
+          </nav>
+          <div className="nav-foot">
+            <NavLink {...link("shell", "/control")} icon={<SlidersHorizontal size={17} aria-hidden />}>
+              Control plane
+            </NavLink>
+          </div>
+        </aside>
+        <div className="main">
+          <header className="toolbar">
+            <CommandPalette />
+            <div className="toolbar-end">
+              <span className={info.error ? "health down" : "health up"} title={info.error ? `MWS unreachable at ${info.endpoint}` : `MWS at ${info.endpoint}`} />
+              {info.account && (
+                <span className="account" title={info.principal ?? undefined}>
+                  {info.account}
+                </span>
+              )}
+              <RegionPicker region={info.region} />
+            </div>
+          </header>
+          {info.error && (
+            <div className="banner error" role="alert">
+              MWS is not reachable at <code>{info.endpoint}</code>. Start it with <code>cargo run -p mws</code>.
+            </div>
+          )}
+          <main className="content">{children}</main>
+        </div>
+      </div>
+    </Toasts>
+  );
+}
+
+/** A page's title row: the service or resource icon, the title, and its
+ * actions as icon buttons. */
+export function Page({
   title,
-  description,
-  crumbs,
+  icon,
+  back,
+  subtitle,
   actions,
+  children,
 }: {
   title: ReactNode;
-  description?: ReactNode;
-  crumbs?: { label: string; href: string }[];
+  icon?: string;
+  back?: { href: string; label: string };
+  /** One line that identifies the resource (an ARN, a URL), never a description. */
+  subtitle?: ReactNode;
   actions?: ReactNode;
+  children?: ReactNode;
 }) {
   return (
-    <div className="page-header">
-      {crumbs && crumbs.length > 0 && (
-        <nav className="crumbs" aria-label="Breadcrumb">
-          {crumbs.map((c) => (
-            <span key={c.href}>
-              <Link href={c.href}>{c.label}</Link>
-              <span aria-hidden> / </span>
-            </span>
-          ))}
-        </nav>
-      )}
-      <div className="page-title">
-        <h1>{title}</h1>
-        {actions && <div className="page-actions">{actions}</div>}
+    <>
+      <div className="page-head">
+        {back && (
+          <Link className="back" href={back.href}>
+            <ChevronLeft size={15} aria-hidden />
+            {back.label}
+          </Link>
+        )}
+        <div className="page-title">
+          {icon && <AwsIcon icon={icon} size={34} />}
+          <div className="page-title-text">
+            <h1>{title}</h1>
+            {subtitle && <div className="subtitle">{subtitle}</div>}
+          </div>
+          {actions && <div className="page-actions">{actions}</div>}
+        </div>
       </div>
-      {description && <p className="muted">{description}</p>}
-    </div>
+      {children}
+    </>
   );
 }
 
-export function Section({ title, actions, children }: { title?: ReactNode; actions?: ReactNode; children: ReactNode }) {
+/** A titled block of content. */
+export function Section({
+  title,
+  count,
+  icon,
+  actions,
+  children,
+  plain,
+}: {
+  title?: ReactNode;
+  count?: number;
+  icon?: ReactNode;
+  actions?: ReactNode;
+  children: ReactNode;
+  /** No card around the children (for lists, which draw their own). */
+  plain?: boolean;
+}) {
   return (
-    <section className="section">
+    <section className={plain ? "section plain" : "section"}>
       {(title || actions) && (
         <div className="section-head">
-          {title && <h2>{title}</h2>}
-          {actions}
+          <h2>
+            {icon}
+            {title}
+            {count !== undefined && <span className="count">{count}</span>}
+          </h2>
+          {actions && <div className="section-actions">{actions}</div>}
         </div>
       )}
-      {children}
+      <div className="section-body">{children}</div>
     </section>
+  );
+}
+
+export interface Row {
+  key: string;
+  icon?: ReactNode;
+  title: ReactNode;
+  subtitle?: ReactNode;
+  href?: string;
+  /** Rendered on the right: pills, numbers. */
+  meta?: ReactNode;
+  /** Row actions: icon buttons. */
+  actions?: ReactNode;
+  /** Link across zones (full document load). */
+  external?: boolean;
+}
+
+/** An inset grouped list, the console's main way to show resources. */
+export function List({ rows, label, empty }: { rows: Row[]; label?: string; empty?: ReactNode }) {
+  if (rows.length === 0) return empty ? <>{empty}</> : null;
+  return (
+    <ul className="list" aria-label={label}>
+      {rows.map((r) => {
+        const body = (
+          <>
+            {r.icon && <span className="row-icon">{r.icon}</span>}
+            <span className="row-text">
+              <span className="row-title">{r.title}</span>
+              {r.subtitle && <span className="row-subtitle">{r.subtitle}</span>}
+            </span>
+            {r.meta && <span className="row-meta">{r.meta}</span>}
+            {r.href && <ChevronRight className="row-chevron" size={16} aria-hidden />}
+          </>
+        );
+        return (
+          <li key={r.key} className="row">
+            {r.href ? (
+              r.external ? (
+                <a className="row-main" href={r.href}>
+                  {body}
+                </a>
+              ) : (
+                <Link className="row-main" href={r.href}>
+                  {body}
+                </Link>
+              )
+            ) : (
+              <div className="row-main">{body}</div>
+            )}
+            {r.actions && <span className="row-actions">{r.actions}</span>}
+          </li>
+        );
+      })}
+    </ul>
   );
 }
 
@@ -127,6 +246,7 @@ export interface Column<T> {
   className?: string;
 }
 
+/** A dense table, for data that is naturally tabular (log events, datapoints). */
 export function Table<T>({
   columns,
   rows,
@@ -140,7 +260,7 @@ export function Table<T>({
   rowKey: (row: T) => string;
   label?: string;
 }) {
-  if (rows.length === 0) return <Empty>{empty ?? "Nothing here yet."}</Empty>;
+  if (rows.length === 0) return empty ? <>{empty}</> : null;
   return (
     <div className="table-wrap">
       <table aria-label={label}>
@@ -169,25 +289,50 @@ export function Table<T>({
   );
 }
 
-export function Empty({ children }: { children: ReactNode }) {
-  return <div className="empty">{children}</div>;
+/** What a page shows when it has nothing: the service icon and, at most, the
+ * one action that changes that. */
+export function Empty({ icon, children, action }: { icon?: string; children?: ReactNode; action?: ReactNode }) {
+  return (
+    <div className="empty">
+      {icon && <AwsIcon icon={icon} size={44} />}
+      {children && <div>{children}</div>}
+      {action}
+    </div>
+  );
 }
 
 export type Tone = "neutral" | "good" | "warn" | "bad" | "info";
 
-export function Badge({ tone = "neutral", children }: { tone?: Tone; children: ReactNode }) {
-  return <span className={`badge ${tone}`}>{children}</span>;
+export function Pill({ tone = "neutral", icon, children, title }: { tone?: Tone; icon?: ReactNode; children?: ReactNode; title?: string }) {
+  return (
+    <span className={`pill ${tone}`} title={title}>
+      {icon}
+      {children}
+    </span>
+  );
 }
 
-export function KeyValue({ items }: { items: [ReactNode, ReactNode][] }) {
+/** A status as a colored dot with its word. */
+export function Status({ tone, children }: { tone: Tone; children: ReactNode }) {
   return (
-    <dl className="kv">
-      {items.map(([k, v], i) => (
-        <div key={i}>
-          <dt>{k}</dt>
-          <dd>{v ?? <span className="muted">—</span>}</dd>
-        </div>
-      ))}
+    <span className={`status ${tone}`}>
+      <span className="dot" aria-hidden />
+      {children}
+    </span>
+  );
+}
+
+export function Facts({ items }: { items: ([ReactNode, ReactNode] | null | false | undefined | "" | 0)[] }) {
+  return (
+    <dl className="facts">
+      {items
+        .filter((x): x is [ReactNode, ReactNode] => !!x)
+        .map(([k, v], i) => (
+          <div key={i}>
+            <dt>{k}</dt>
+            <dd>{v ?? <span className="muted">—</span>}</dd>
+          </div>
+        ))}
     </dl>
   );
 }
@@ -216,21 +361,36 @@ export function ErrorNotice({ error }: { error: string }) {
   );
 }
 
-export function Stat({ label, value, hint }: { label: string; value: ReactNode; hint?: ReactNode }) {
-  return (
-    <div className="stat">
-      <div className="stat-label">{label}</div>
-      <div className="stat-value">{value}</div>
-      {hint && <div className="stat-hint muted">{hint}</div>}
-    </div>
+/** A big number with a small label. */
+export function Metric({ label, value, tone, icon, href }: { label: string; value: ReactNode; tone?: Tone; icon?: ReactNode; href?: string }) {
+  const body = (
+    <>
+      <div className="metric-label">
+        {icon}
+        {label}
+      </div>
+      <div className={`metric-value ${tone ?? ""}`}>{value}</div>
+    </>
+  );
+  return href ? (
+    <a className="metric link" href={href}>
+      {body}
+    </a>
+  ) : (
+    <div className="metric">{body}</div>
   );
 }
 
-export function Tabs({ items }: { items: { label: string; href: string; active: boolean; count?: number }[] }) {
+export function Metrics({ children }: { children: ReactNode }) {
+  return <div className="metrics">{children}</div>;
+}
+
+/** A segmented control of links (Apple-style tabs). */
+export function Segments({ items, label }: { items: { label: ReactNode; href: string; active: boolean; count?: number }[]; label?: string }) {
   return (
-    <nav className="tabs">
+    <nav className="segments" aria-label={label}>
       {items.map((t) => (
-        <Link key={t.href} href={t.href} className={t.active ? "tab active" : "tab"}>
+        <Link key={t.href} href={t.href} className={t.active ? "segment active" : "segment"} aria-current={t.active ? "page" : undefined}>
           {t.label}
           {t.count !== undefined && <span className="count">{t.count}</span>}
         </Link>
@@ -239,40 +399,79 @@ export function Tabs({ items }: { items: { label: string; href: string; active: 
   );
 }
 
-export function Field({
-  label,
-  hint,
-  children,
-}: {
-  label: string;
-  hint?: ReactNode;
-  children: ReactNode;
-}) {
+export function Field({ label, hint, children }: { label: string; hint?: ReactNode; children: ReactNode }) {
   return (
     <label className="field">
       <span className="field-label">{label}</span>
       {children}
-      {hint && <span className="field-hint muted">{hint}</span>}
+      {hint && <span className="field-hint">{hint}</span>}
     </label>
   );
 }
 
-export function Grid({ children }: { children: ReactNode }) {
-  return <div className="grid">{children}</div>;
+export function Tags({ tags }: { tags: { Key?: string; Value?: string }[] | Record<string, string> | undefined }) {
+  const list = Array.isArray(tags) ? tags.map((t) => [t.Key ?? "", t.Value ?? ""]) : Object.entries(tags ?? {});
+  if (list.length === 0) return null;
+  return (
+    <span className="chips">
+      {list.map(([k, v]) => (
+        <span key={k} className="tag">
+          <span>{k}</span>
+          {v && <b>{v}</b>}
+        </span>
+      ))}
+    </span>
+  );
 }
 
-export function Card({ title, href, children }: { title: ReactNode; href?: string; children?: ReactNode }) {
-  const body = (
+/** Sections a page's resources were sorted into (by `@mws-dashboard/ai`),
+ * shown as one list when sectioning would not help: few items, or all in one
+ * section. */
+export function Curated<T>({
+  sections,
+  row,
+  label,
+  empty,
+}: {
+  sections: { id: string; title: string; items: T[] }[];
+  row: (item: T) => Row;
+  label?: string;
+  empty?: ReactNode;
+}) {
+  const filled = sections.filter((s) => s.items.length > 0);
+  const all = filled.flatMap((s) => s.items);
+  if (all.length === 0) return empty ? <>{empty}</> : null;
+  if (filled.length <= 1 || all.length < 6) return <List label={label} rows={all.map(row)} />;
+  return (
     <>
-      <div className="card-title">{title}</div>
-      {children && <div className="card-body">{children}</div>}
+      {filled.map((s) => (
+        <Section key={s.id} title={s.title} count={s.items.length} plain>
+          <List label={`${label ?? ""} ${s.title}`.trim()} rows={s.items.map(row)} />
+        </Section>
+      ))}
     </>
   );
-  return href ? (
-    <a className="card link" href={href}>
-      {body}
-    </a>
-  ) : (
-    <div className="card">{body}</div>
-  );
+}
+
+/** A file-type glyph for an object key. */
+export function FileIcon({ name, folder, size = 18 }: { name: string; folder?: boolean; size?: number }) {
+  if (folder) return <Folder size={size} aria-hidden fill="currentColor" fillOpacity={0.15} />;
+  const ext = name.split(".").pop()?.toLowerCase() ?? "";
+  const Icon =
+    ext === "json"
+      ? FileJson
+      : ["png", "jpg", "jpeg", "gif", "svg", "webp", "ico", "avif"].includes(ext)
+        ? FileImage
+        : ["mp4", "mov", "webm", "mkv"].includes(ext)
+          ? FileVideo
+          : ["zip", "gz", "tgz", "tar", "bz2", "7z", "jar"].includes(ext)
+            ? FileArchive
+            : ["csv", "tsv", "parquet", "xlsx", "orc", "avro"].includes(ext)
+              ? FileSpreadsheet
+              : ["js", "ts", "py", "rs", "go", "java", "html", "css", "sh", "yaml", "yml", "xml", "toml"].includes(ext)
+                ? FileCode
+                : ["txt", "md", "log", "pdf"].includes(ext)
+                  ? FileText
+                  : File;
+  return <Icon size={size} aria-hidden />;
 }

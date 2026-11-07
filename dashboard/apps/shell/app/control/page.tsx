@@ -1,5 +1,6 @@
-import { load, mws, when } from "@mws-dashboard/aws";
-import { ActionForm, Badge, ErrorNotice, Field, KeyValue, PageHeader, Section, Table } from "@mws-dashboard/ui";
+import { ago, load, mws, when } from "@mws-dashboard/aws";
+import { ActionForm, ErrorNotice, Field, List, Metric, Metrics, Page, Section, Sheet } from "@mws-dashboard/ui";
+import { Camera, Clock, Download, FastForward, History, RotateCcw, Trash2, Upload } from "lucide-react";
 import type { Metadata } from "next";
 
 import { advanceClock, deleteSnapshot, importState, reset, resetClock, restoreSnapshot, saveSnapshot } from "./actions";
@@ -11,42 +12,62 @@ interface Snapshot {
   createdAt: string;
 }
 
+function duration(seconds: number) {
+  const d = Math.floor(seconds / 86400);
+  const h = Math.floor((seconds % 86400) / 3600);
+  const m = Math.floor((seconds % 3600) / 60);
+  return [d && `${d}d`, h && `${h}h`, m && `${m}m`, !d && !h && !m && `${seconds}s`].filter(Boolean).join(" ");
+}
+
 export default async function ControlPlane() {
-  const [clock, snapshots] = await Promise.all([
+  const [clock, snapshots, health] = await Promise.all([
     load(() => mws<{ now: string; offsetSeconds: number }>("/_mws/clock")),
     load(() => mws<{ snapshots: Snapshot[] }>("/_mws/snapshots")),
+    load(() => mws<{ services: string[] }>("/_mws/health")),
   ]);
+  const offset = clock.ok ? clock.value.offsetSeconds : 0;
   return (
-    <>
-      <PageHeader
-        title="Control plane"
-        description="MWS's own control API (/_mws): move the emulated clock, save and restore snapshots, reset, and move state between machines."
-      />
-      <Section title="Emulated clock">
-        {clock.ok ? (
-          <KeyValue
-            items={[
-              ["Now", <span data-testid="clock-now">{when(clock.value.now)}</span>],
-              [
-                "Offset",
-                clock.value.offsetSeconds === 0 ? (
-                  <Badge>real time</Badge>
-                ) : (
-                  <Badge tone="info">+{clock.value.offsetSeconds}s</Badge>
-                ),
-              ],
-            ]}
-          />
-        ) : (
-          <ErrorNotice error={clock.error} />
-        )}
-        <p className="muted">
-          Lifecycle rules, alarms, certificate expiry, Firehose buffers and other timers follow this clock. It only moves
-          forward.
-        </p>
+    <Page
+      title="Control plane"
+      actions={
+        <>
+          <a className="icon-button" href="/control/state" download aria-label="Export state" title="Export state">
+            <Download size={16} aria-hidden />
+          </a>
+          <Sheet title="Import state" label="Import state" icon={<Upload size={15} aria-hidden />}>
+            <ActionForm action={importState} submit="Replace state" tone="danger" confirm="Replace all current state?">
+              <input type="file" name="state" accept="application/json,.json" required />
+            </ActionForm>
+          </Sheet>
+          <Sheet title="Reset" label="Reset" icon={<RotateCcw size={15} aria-hidden />}>
+            <ActionForm action={reset} submit="Reset" tone="danger" confirm="Reset the emulator? Current state is lost.">
+              <Field label="Back to">
+                <select name="to" defaultValue="baseline">
+                  <option value="baseline">Baseline (startup scenario)</option>
+                  <option value="empty">Empty</option>
+                </select>
+              </Field>
+            </ActionForm>
+          </Sheet>
+        </>
+      }
+    >
+      <Metrics>
+        <Metric
+          icon={<Clock size={14} aria-hidden />}
+          label={offset ? `+${duration(offset)}` : "Real time"}
+          value={<span data-testid="clock-now">{clock.ok ? when(clock.value.now).slice(0, 16) : "—"}</span>}
+          tone={offset ? "warn" : undefined}
+        />
+        <Metric label="Services" value={health.ok ? health.value.services.length : "—"} />
+        <Metric label="Snapshots" value={snapshots.ok ? snapshots.value.snapshots.length : "—"} />
+      </Metrics>
+      {!clock.ok && <ErrorNotice error={clock.error} />}
+
+      <Section title="Clock">
         <div className="form-row">
-          <ActionForm action={advanceClock} submit="Advance clock" inline testId="advance-clock">
-            <Field label="Amount">
+          <ActionForm action={advanceClock} submit="Advance" inline testId="advance-clock">
+            <Field label="By">
               <input name="amount" type="number" min="1" step="any" defaultValue="1" required />
             </Field>
             <Field label="Unit">
@@ -58,74 +79,56 @@ export default async function ControlPlane() {
               </select>
             </Field>
           </ActionForm>
-          <ActionForm action={resetClock} submit="Back to real time" tone="danger" inline />
-        </div>
-      </Section>
-
-      <Section title="Snapshots">
-        <ActionForm action={saveSnapshot} submit="Save snapshot" inline testId="save-snapshot">
-          <Field label="Name" hint="Letters, digits, - _ and .">
-            <input name="name" pattern="[A-Za-z0-9._\-]{1,128}" required />
-          </Field>
-        </ActionForm>
-        <div style={{ marginTop: 12 }}>
-          {snapshots.ok ? (
-            <Table
-              label="Snapshots"
-              rows={snapshots.value.snapshots}
-              rowKey={(s) => s.name}
-              empty="No snapshots. Save one to come back to this exact state later."
-              columns={[
-                { header: "Name", cell: (s) => <code>{s.name}</code> },
-                { header: "Saved", cell: (s) => when(s.createdAt) },
-                {
-                  header: "",
-                  className: "actions-cell",
-                  cell: (s) => (
-                    <div className="actions-cell">
-                      <ActionForm action={restoreSnapshot.bind(null, s.name)} submit="Restore" inline />
-                      <ActionForm
-                        action={deleteSnapshot.bind(null, s.name)}
-                        submit="Delete"
-                        tone="danger"
-                        confirm={`Delete snapshot ${s.name}?`}
-                        inline
-                      />
-                    </div>
-                  ),
-                },
-              ]}
-            />
-          ) : (
-            <ErrorNotice error={snapshots.error} />
+          {offset !== 0 && (
+            <ActionForm action={resetClock} submit="Back to real time" icon={<History size={16} aria-hidden />} tone="plain" />
           )}
         </div>
       </Section>
 
-      <Section title="State">
-        <p className="muted">
-          Export every service&apos;s state as one JSON document, or replace the current state with one.
-        </p>
-        <div className="form-row">
-          <a className="button primary" href="/control/state" download>
-            Export state
-          </a>
-          <ActionForm action={importState} submit="Import state" inline confirm="Replace all current state?">
-            <input type="file" name="state" accept="application/json,.json" required />
-          </ActionForm>
-        </div>
+      <Section
+        title="Snapshots"
+        plain
+        actions={
+          <Sheet title="Save snapshot" label="Save snapshot" icon={<Camera size={15} aria-hidden />} testId="save-snapshot">
+            <ActionForm action={saveSnapshot} submit="Save" testId="save-snapshot">
+              <Field label="Name">
+                <input name="name" pattern="[A-Za-z0-9._\-]{1,128}" required />
+              </Field>
+            </ActionForm>
+          </Sheet>
+        }
+      >
+        {snapshots.ok ? (
+          <List
+            label="Snapshots"
+            rows={snapshots.value.snapshots.map((s) => ({
+              key: s.name,
+              icon: <Camera size={18} aria-hidden />,
+              title: s.name,
+              meta: ago(s.createdAt),
+              actions: (
+                <>
+                  <ActionForm
+                    action={restoreSnapshot.bind(null, s.name)}
+                    submit={`Restore ${s.name}`}
+                    icon={<FastForward size={16} aria-hidden />}
+                    confirm={`Replace the current state with ${s.name}?`}
+                  />
+                  <ActionForm
+                    action={deleteSnapshot.bind(null, s.name)}
+                    submit={`Delete ${s.name}`}
+                    icon={<Trash2 size={16} aria-hidden />}
+                    tone="danger"
+                    confirm={`Delete snapshot ${s.name}?`}
+                  />
+                </>
+              ),
+            }))}
+          />
+        ) : (
+          <ErrorNotice error={snapshots.error} />
+        )}
       </Section>
-
-      <Section title="Reset">
-        <ActionForm action={reset} submit="Reset" tone="danger" confirm="Reset the emulator? Current state is lost." inline>
-          <Field label="Back to">
-            <select name="to" defaultValue="baseline">
-              <option value="baseline">the baseline (startup scenario)</option>
-              <option value="empty">a fresh, empty emulator</option>
-            </select>
-          </Field>
-        </ActionForm>
-      </Section>
-    </>
+    </Page>
   );
 }

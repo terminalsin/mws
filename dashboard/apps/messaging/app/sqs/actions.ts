@@ -8,6 +8,8 @@ import {
   PurgeQueueCommand,
   ReceiveMessageCommand,
   SendMessageCommand,
+  SetQueueAttributesCommand,
+  StartMessageMoveTaskCommand,
 } from "@aws-sdk/client-sqs";
 import { act, required, text, type ActionResult } from "@mws-dashboard/aws";
 import { redirect } from "next/navigation";
@@ -24,6 +26,10 @@ export async function createQueue(_: ActionResult | null, form: FormData) {
     const fifo = text(form, "fifo") === "on";
     if (fifo && !name.endsWith(".fifo")) name += ".fifo";
     const attributes: Record<string, string> = {};
+    const dlq = text(form, "dlq");
+    if (dlq) {
+      attributes.RedrivePolicy = JSON.stringify({ deadLetterTargetArn: dlq, maxReceiveCount: Number(text(form, "maxReceiveCount") || "5") });
+    }
     if (fifo) {
       attributes.FifoQueue = "true";
       if (text(form, "dedup") === "on") attributes.ContentBasedDeduplication = "true";
@@ -103,4 +109,27 @@ export async function deleteQueue(name: string) {
     await (await sqs()).send(new DeleteQueueCommand({ QueueUrl: await url(name) }));
     redirect("/sqs");
   });
+}
+
+const ATTRIBUTES = ["VisibilityTimeout", "MessageRetentionPeriod", "DelaySeconds", "MaximumMessageSize", "ReceiveMessageWaitTimeSeconds", "Policy"];
+
+export async function saveAttributes(name: string, _: ActionResult | null, form: FormData) {
+  return act(async () => {
+    const Attributes: Record<string, string> = {};
+    for (const a of ATTRIBUTES) {
+      const v = form.get(a);
+      if (typeof v === "string") Attributes[a] = v.trim();
+    }
+    if (Attributes.Policy) JSON.parse(Attributes.Policy);
+    await (await sqs()).send(new SetQueueAttributesCommand({ QueueUrl: await url(name), Attributes }));
+    return "Saved";
+  }, `/sqs/${encodeURIComponent(name)}`);
+}
+
+/** Move a dead-letter queue's messages back to where they came from. */
+export async function redrive(dlqArn: string) {
+  return act(async () => {
+    const out = await (await sqs()).send(new StartMessageMoveTaskCommand({ SourceArn: dlqArn }));
+    return `Redrive started (${out.TaskHandle?.slice(0, 8) ?? "task"})`;
+  }, "/sqs");
 }

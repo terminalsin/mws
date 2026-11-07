@@ -17,7 +17,7 @@ export async function GET(request: NextRequest) {
       headers: {
         "content-type": out.ContentType ?? "application/octet-stream",
         ...(out.ContentLength != null ? { "content-length": String(out.ContentLength) } : {}),
-        "content-disposition": `attachment; filename*=UTF-8''${encodeURIComponent(name)}`,
+        "content-disposition": `${request.nextUrl.searchParams.has("inline") ? "inline" : "attachment"}; filename*=UTF-8''${encodeURIComponent(name)}`,
       },
     });
   } catch (e) {

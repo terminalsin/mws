@@ -1,9 +1,25 @@
 "use server";
 
-import { InvokeCommand } from "@aws-sdk/client-lambda";
-import { act, text, type ActionResult } from "@mws-dashboard/aws";
+import {
+  CreateFunctionCommand,
+  CreateFunctionUrlConfigCommand,
+  DeleteEventSourceMappingCommand,
+  DeleteFunctionCommand,
+  GetFunctionCommand,
+  InvokeCommand,
+  PublishVersionCommand,
+  UpdateEventSourceMappingCommand,
+  UpdateFunctionCodeCommand,
+  UpdateFunctionConfigurationCommand,
+  type Runtime,
+} from "@aws-sdk/client-lambda";
+import { act, required, text, type ActionResult } from "@mws-dashboard/aws";
+import { strToU8, unzipSync, zipSync } from "fflate";
+import { redirect } from "next/navigation";
 
-import { lambda } from "../../lib/clients";
+import { STARTERS, family, lambda } from "../../lib/clients";
+
+const page = (name: string) => `/lambda/${encodeURIComponent(name)}`;
 
 /** Invoke the function synchronously and show its response and log tail. */
 export async function invoke(name: string, _: ActionResult | null, form: FormData) {
@@ -14,9 +30,7 @@ export async function invoke(name: string, _: ActionResult | null, form: FormDat
     } catch {
       throw new Error("The payload must be JSON");
     }
-    const out = await (await lambda()).send(
-      new InvokeCommand({ FunctionName: name, Payload: new TextEncoder().encode(payload), LogType: "Tail" }),
-    );
+    const out = await (await lambda()).send(new InvokeCommand({ FunctionName: name, Payload: new TextEncoder().encode(payload), LogType: "Tail" }));
     const response = out.Payload ? new TextDecoder().decode(out.Payload) : "";
     let pretty = response;
     try {
@@ -27,10 +41,101 @@ export async function invoke(name: string, _: ActionResult | null, form: FormDat
     const logs = out.LogResult ? Buffer.from(out.LogResult, "base64").toString("utf8") : "";
     return {
       ok: !out.FunctionError,
-      message: out.FunctionError
-        ? `Function error (${out.FunctionError}), status ${out.StatusCode}`
-        : `Status ${out.StatusCode}, version ${out.ExecutedVersion ?? "$LATEST"}`,
-      detail: `${pretty}${logs ? `\n\n--- log tail ---\n${logs}` : ""}`,
+      message: out.FunctionError ? `${out.FunctionError} · ${out.StatusCode}` : `${out.StatusCode} · ${out.ExecutedVersion ?? "$LATEST"}`,
+      detail: `${pretty}${logs ? `\n\n${logs}` : ""}`,
     };
+  });
+}
+
+export async function createFunction(_: ActionResult | null, form: FormData) {
+  return act(async () => {
+    const name = required(form, "name", "Function name");
+    const runtime = required(form, "runtime", "Runtime");
+    const starter = STARTERS[family(runtime)] ?? STARTERS.nodejs;
+    await (await lambda()).send(
+      new CreateFunctionCommand({
+        FunctionName: name,
+        Runtime: runtime as Runtime,
+        Role: required(form, "role", "Execution role"),
+        Handler: starter.handler,
+        Code: { ZipFile: zipSync({ [starter.file]: strToU8(starter.code) }) },
+        Architectures: [text(form, "arch") === "x86_64" ? "x86_64" : "arm64"],
+      }),
+    );
+    redirect(page(name));
+  });
+}
+
+/** Replace one file of the deployment package and redeploy. */
+export async function saveCode(name: string, file: string, _: ActionResult | null, form: FormData) {
+  return act(async () => {
+    const client = await lambda();
+    const fn = await client.send(new GetFunctionCommand({ FunctionName: name }));
+    const zip = new Uint8Array(await (await fetch(fn.Code!.Location!)).arrayBuffer());
+    const files = unzipSync(zip);
+    files[file] = strToU8(text(form, "code").replace(/\r\n/g, "\n") + "\n");
+    await client.send(new UpdateFunctionCodeCommand({ FunctionName: name, ZipFile: zipSync(files) }));
+    return "Deployed";
+  }, page(name));
+}
+
+export async function saveConfiguration(name: string, _: ActionResult | null, form: FormData) {
+  return act(async () => {
+    const Variables = Object.fromEntries(
+      text(form, "env")
+        .split("\n")
+        .map((l) => l.trim())
+        .filter(Boolean)
+        .map((l) => {
+          const [k, ...v] = l.split("=");
+          return [k.trim(), v.join("=").trim()];
+        }),
+    );
+    await (await lambda()).send(
+      new UpdateFunctionConfigurationCommand({
+        FunctionName: name,
+        MemorySize: Number(text(form, "memory")) || undefined,
+        Timeout: Number(text(form, "timeout")) || undefined,
+        Handler: text(form, "handler") || undefined,
+        Role: text(form, "role") || undefined,
+        Environment: { Variables },
+      }),
+    );
+    return "Saved";
+  }, page(name));
+}
+
+export async function publishVersion(name: string) {
+  return act(async () => {
+    const out = await (await lambda()).send(new PublishVersionCommand({ FunctionName: name }));
+    return `Published version ${out.Version}`;
+  }, page(name));
+}
+
+export async function createUrl(name: string) {
+  return act(async () => {
+    const out = await (await lambda()).send(new CreateFunctionUrlConfigCommand({ FunctionName: name, AuthType: "NONE" }));
+    return { ok: true, message: "Function URL created", detail: out.FunctionUrl };
+  }, page(name));
+}
+
+export async function setMapping(name: string, uuid: string, enabled: boolean) {
+  return act(async () => {
+    await (await lambda()).send(new UpdateEventSourceMappingCommand({ UUID: uuid, Enabled: enabled }));
+    return enabled ? "Enabled" : "Disabled";
+  }, page(name));
+}
+
+export async function deleteMapping(name: string, uuid: string) {
+  return act(async () => {
+    await (await lambda()).send(new DeleteEventSourceMappingCommand({ UUID: uuid }));
+    return "Removed";
+  }, page(name));
+}
+
+export async function deleteFunction(name: string) {
+  return act(async () => {
+    await (await lambda()).send(new DeleteFunctionCommand({ FunctionName: name }));
+    redirect("/lambda");
   });
 }

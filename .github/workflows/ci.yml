@@ -245,6 +245,13 @@ jobs:
         working-directory: dashboard
       - run: npm run typecheck
         working-directory: dashboard
+      - run: npm test -w @mws-dashboard/ai
+        working-directory: dashboard
+      # The icons in the shell's public folder are generated: fail when they are stale.
+      - run: |
+          node scripts/icons.mjs
+          test -z "$(git status --porcelain -- apps/shell/public/icons)" || { git status --short -- apps/shell/public/icons; exit 1; }
+        working-directory: dashboard
       - run: npx playwright install --with-deps chromium
         working-directory: dashboard
       # The Lambda test runs its function on this job's `node`.

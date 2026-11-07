@@ -176,3 +176,52 @@ export async function collect<T, R>(
   } while (token && out.length < limit);
   return out.slice(0, limit);
 }
+
+/** "3m ago", "2d ago", "in 4h": for timestamps where the gist is enough. */
+export function ago(d: Date | string | number | undefined | null): string {
+  if (d == null || d === "") return "—";
+  const date = d instanceof Date ? d : new Date(typeof d === "number" && d < 1e12 ? d * 1000 : d);
+  const t = date.getTime();
+  if (Number.isNaN(t)) return String(d);
+  const s = Math.round((Date.now() - t) / 1000);
+  const abs = Math.abs(s);
+  const [n, unit] =
+    abs < 60 ? [abs, "s"] : abs < 3600 ? [Math.round(abs / 60), "m"] : abs < 86400 ? [Math.round(abs / 3600), "h"] : abs < 86400 * 365 ? [Math.round(abs / 86400), "d"] : [Math.round(abs / (86400 * 365)), "y"];
+  if (abs < 5) return "now";
+  return s >= 0 ? `${n}${unit} ago` : `in ${n}${unit}`;
+}
+
+/** A resource as the shell's search and home page see it. Every zone serves
+ * its resources at `<basePath>/api/inventory` (see `inventoryResponse`). */
+export interface InventoryItem {
+  /** Catalog service id ("s3", "sqs", ...). */
+  service: string;
+  /** The resource type, in AWS's words ("Bucket", "Queue"). */
+  type: string;
+  /** Unique across the console: usually the ARN. */
+  id: string;
+  name: string;
+  /** Absolute path of the resource's page (including the zone's base path). */
+  href: string;
+  /** A short fact worth showing next to the name. */
+  detail?: string;
+  tags?: Record<string, string>;
+  /** Something that needs attention: an alarm firing, a backlog, a deletion. */
+  signal?: { tone: "bad" | "warn"; text: string };
+}
+
+/** Gather a zone's inventory: each source runs independently, so one
+ * failing service (or permission) does not hide the rest. */
+export async function inventoryResponse(sources: (() => Promise<InventoryItem[]>)[]): Promise<Response> {
+  const settled = await Promise.allSettled(sources.map((s) => s()));
+  const items = settled.flatMap((r) => (r.status === "fulfilled" ? r.value : []));
+  const errors = settled.flatMap((r) => (r.status === "rejected" ? [describeError(r.reason)] : []));
+  return Response.json({ items, errors }, { headers: { "cache-control": "no-store" } });
+}
+
+/** AWS tag lists ([{Key, Value}]) as a plain object. */
+export function tagMap(tags: { Key?: string; Value?: string }[] | Record<string, string> | undefined | null): Record<string, string> {
+  if (!tags) return {};
+  if (!Array.isArray(tags)) return tags;
+  return Object.fromEntries(tags.filter((t) => t.Key).map((t) => [t.Key!, t.Value ?? ""]));
+}

@@ -2,7 +2,7 @@
 // app's next.config.ts can import it without transpiling the package.
 import { readFileSync } from "node:fs";
 
-/** @type {{ id: string, title: string, basePath: string, port: number }[]} */
+/** @type {{ id: string, basePath: string, port: number }[]} */
 export const zones = JSON.parse(readFileSync(new URL("./zones.json", import.meta.url), "utf8"));
 
 /** Where the shell finds a zone's server (MWS_DASHBOARD_<ZONE>_URL). */
@@ -28,7 +28,7 @@ export function zoneConfig(id, extra = {}) {
   if (!z) throw new Error(`unknown zone ${id}`);
   return {
     ...(z.basePath ? { basePath: z.basePath } : {}),
-    transpilePackages: ["@mws-dashboard/ui", "@mws-dashboard/aws"],
+    transpilePackages: ["@mws-dashboard/ui", "@mws-dashboard/aws", "@mws-dashboard/ai"],
     poweredByHeader: false,
     experimental: {
       serverActions: { allowedOrigins: allowedOrigins(), bodySizeLimit: "64mb" },

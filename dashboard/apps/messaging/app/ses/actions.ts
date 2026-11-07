@@ -1,6 +1,6 @@
 "use server";
 
-import { CreateEmailIdentityCommand, SendEmailCommand } from "@aws-sdk/client-sesv2";
+import { CreateEmailIdentityCommand, DeleteEmailIdentityCommand, SendEmailCommand } from "@aws-sdk/client-sesv2";
 import { act, frameInfo, mws, region, required, text, type ActionResult } from "@mws-dashboard/aws";
 
 import { ses } from "../../lib/clients";
@@ -45,5 +45,12 @@ export async function clearOutbox() {
   return act(async () => {
     await mws("/_aws/ses", { method: "DELETE" });
     return "Cleared";
+  }, "/ses");
+}
+
+export async function deleteIdentity(identity: string) {
+  return act(async () => {
+    await (await ses()).send(new DeleteEmailIdentityCommand({ EmailIdentity: identity }));
+    return `Deleted ${identity}`;
   }, "/ses");
 }

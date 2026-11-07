@@ -1,0 +1,18 @@
+{
+  "name": "@mws-dashboard/ai",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Curation for the console: embeddings (MWS's own Bedrock by default), semantic search, zero-shot classification and grouping",
+  "type": "module",
+  "exports": {
+    ".": "./src/index.ts"
+  },
+  "scripts": {
+    "typecheck": "tsc --noEmit",
+    "test": "node --test --experimental-strip-types src/*.test.ts"
+  },
+  "dependencies": {
+    "@aws-sdk/client-bedrock-runtime": "^3.1164.0",
+    "@mws-dashboard/aws": "*"
+  }
+}

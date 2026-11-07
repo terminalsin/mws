@@ -1,122 +1,134 @@
-import { GetParametersCommand, DescribeParametersCommand } from "@aws-sdk/client-ssm";
-import { collect, load, when } from "@mws-dashboard/aws";
-import { ActionForm, Badge, ErrorNotice, Field, PageHeader, Section, Table } from "@mws-dashboard/ui";
+import { ago, load } from "@mws-dashboard/aws";
+import { ActionForm, AwsIcon, Empty, ErrorNotice, Field, FileIcon, List, Page, Pill, Sheet, type Row } from "@mws-dashboard/ui";
+import { Eye, EyeOff, Lock, Pencil, Trash2 } from "lucide-react";
 import type { Metadata } from "next";
 import Link from "next/link";
 
-import { ssm } from "../../lib/clients";
+import { ICONS } from "../../lib/clients";
+import { listParameters } from "../../lib/ssm";
 import { deleteParameter, putParameter } from "./actions";
 
 export const metadata: Metadata = { title: "Parameter Store" };
 
 type Props = { searchParams: Promise<{ path?: string; reveal?: string }> };
 
+function form(defaults: { name?: string; value?: string; type?: string; overwrite?: boolean }, testId?: string) {
+  return (
+    <ActionForm action={putParameter} submit="Save" testId={testId}>
+      <Field label="Name">
+        <input name="name" required defaultValue={defaults.name} readOnly={defaults.overwrite} placeholder="/app/prod/db-host" />
+      </Field>
+      <textarea name="value" rows={4} aria-label="Value" required defaultValue={defaults.value} />
+      <Field label="Type">
+        <select name="type" defaultValue={defaults.type ?? "String"}>
+          <option>String</option>
+          <option>StringList</option>
+          <option>SecureString</option>
+        </select>
+      </Field>
+      {defaults.overwrite && <input type="hidden" name="overwrite" value="on" />}
+    </ActionForm>
+  );
+}
+
 export default async function Parameters({ searchParams }: Props) {
   const { path = "", reveal } = await searchParams;
-  const client = await ssm();
-  const params = await load(async () => {
-    const list = await collect(
-      (NextToken) =>
-        client.send(
-          new DescribeParametersCommand({
-            NextToken,
-            MaxResults: 50,
-            ...(path ? { ParameterFilters: [{ Key: "Name", Option: "BeginsWith", Values: [path] }] } : {}),
-          }),
-        ),
-      (r) => r.Parameters,
-      (r) => r.NextToken,
-    );
-    const values = new Map<string, string>();
-    for (let i = 0; i < list.length; i += 10) {
-      const out = await client.send(new GetParametersCommand({ Names: list.slice(i, i + 10).map((p) => p.Name!), WithDecryption: !!reveal }));
-      for (const p of out.Parameters ?? []) values.set(p.Name!, p.Value ?? "");
-    }
-    return list.map((p) => ({ meta: p, value: values.get(p.Name!) }));
-  });
-  const query = (extra: Record<string, string>) => {
+  const params = await load(() => listParameters(path, !!reveal));
+  const href = (extra: Record<string, string>) => {
     const q = new URLSearchParams({ ...(path ? { path } : {}), ...extra });
     return `/ssm${q.size ? `?${q}` : ""}`;
   };
+  const create = (
+    <Sheet title="New parameter" label="Create parameter" testId="put-parameter">
+      {form({ name: path && path.endsWith("/") ? path : undefined }, "put-parameter")}
+    </Sheet>
+  );
+  const crumbs = path
+    .split("/")
+    .filter(Boolean)
+    .map((part, i, all) => ({ label: part, path: `/${all.slice(0, i + 1).join("/")}/` }));
+  if (!params.ok) {
+    return (
+      <Page title="Parameter Store" icon={ICONS.ssm} actions={create}>
+        <ErrorNotice error={params.error} />
+      </Page>
+    );
+  }
+  // One level of the hierarchy at a time: folders for deeper paths, rows for parameters here.
+  const folders = new Map<string, number>();
+  const here: typeof params.value = [];
+  for (const p of params.value) {
+    const rest = p.meta.Name!.slice(path.length);
+    const slash = rest.indexOf("/", rest.startsWith("/") ? 1 : 0);
+    if (path === "" && !p.meta.Name!.startsWith("/")) here.push(p);
+    else if (slash > 0) {
+      const folder = path + rest.slice(0, slash + 1);
+      folders.set(folder, (folders.get(folder) ?? 0) + 1);
+    } else here.push(p);
+  }
+  const flatten = params.value.length <= 8;
+  const rows: Row[] = [
+    ...(flatten
+      ? []
+      : [...folders].map(([folder, count]) => ({
+          key: `f:${folder}`,
+          icon: <FileIcon name={folder} folder size={22} />,
+          title: folder.slice(path.length).replace(/^\/|\/$/g, ""),
+          href: `/ssm?path=${encodeURIComponent(folder)}`,
+          meta: <span>{count}</span>,
+        }))),
+    ...(flatten ? params.value : here).map(({ meta, value }) => {
+      const secure = meta.Type === "SecureString";
+      return {
+        key: meta.Name!,
+        icon: secure ? <Lock size={18} aria-label="SecureString" /> : <AwsIcon icon={ICONS.parameter} size={22} />,
+        title: flatten ? meta.Name : meta.Name!.slice(path.length),
+        subtitle: secure && !reveal ? "••••••" : <code className="clip">{value}</code>,
+        meta: (
+          <>
+            {(meta.Version ?? 1) > 1 && <Pill>v{meta.Version}</Pill>}
+            {meta.Tier === "Advanced" && <Pill tone="info">advanced</Pill>}
+            <span>{ago(meta.LastModifiedDate)}</span>
+          </>
+        ),
+        actions: (
+          <>
+            <Sheet title={meta.Name!} label={`Edit ${meta.Name}`} icon={<Pencil size={15} />}>
+              {form({ name: meta.Name, value: secure && !reveal ? "" : value, type: meta.Type, overwrite: true })}
+            </Sheet>
+            <ActionForm action={deleteParameter.bind(null, meta.Name!)} submit={`Delete ${meta.Name}`} icon={<Trash2 size={15} />} tone="danger" confirm={`Delete ${meta.Name}?`} />
+          </>
+        ),
+      };
+    }),
+  ];
+  const anySecure = params.value.some((p) => p.meta.Type === "SecureString");
   return (
-    <>
-      <PageHeader
-        title="Parameter Store"
-        description="SSM parameters in the selected region."
-        actions={
-          reveal ? (
-            <Link className="button primary" href={query({})}>
-              Hide SecureStrings
+    <Page
+      title="Parameter Store"
+      icon={ICONS.ssm}
+      actions={
+        <>
+          {anySecure && (
+            <Link className="icon-button plain" href={reveal ? href({}) : href({ reveal: "1" })} aria-label={reveal ? "Hide values" : "Reveal values"} title={reveal ? "Hide" : "Reveal"}>
+              {reveal ? <EyeOff size={16} /> : <Eye size={16} />}
             </Link>
-          ) : (
-            <Link className="button primary" href={query({ reveal: "1" })}>
-              Decrypt SecureStrings
+          )}
+          {create}
+        </>
+      }
+    >
+      {crumbs.length > 0 && (
+        <nav className="crumbs path" aria-label="Path">
+          <Link href="/ssm">/</Link>
+          {crumbs.map((c) => (
+            <Link key={c.path} href={`/ssm?path=${encodeURIComponent(c.path)}`}>
+              {c.label}
             </Link>
-          )
-        }
-      />
-      <Section title="Put parameter">
-        <ActionForm action={putParameter} submit="Put parameter" testId="put-parameter">
-          <div className="form-row">
-            <Field label="Name">
-              <input name="name" required placeholder="/app/prod/db/host" size={32} />
-            </Field>
-            <Field label="Type">
-              <select name="type" defaultValue="String">
-                <option>String</option>
-                <option>StringList</option>
-                <option>SecureString</option>
-              </select>
-            </Field>
-            <Field label="Value">
-              <input name="value" required size={32} />
-            </Field>
-            <label className="check">
-              <input type="checkbox" name="overwrite" /> Overwrite
-            </label>
-          </div>
-        </ActionForm>
-      </Section>
-      <Section
-        title={params.ok ? `Parameters (${params.value.length})` : "Parameters"}
-        actions={
-          <form className="form-row" action="/security/ssm">
-            <input name="path" defaultValue={path} placeholder="Filter by prefix, e.g. /app/" aria-label="Name prefix" />
-            {reveal && <input type="hidden" name="reveal" value="1" />}
-            <button className="button primary" type="submit">
-              Filter
-            </button>
-          </form>
-        }
-      >
-        {params.ok ? (
-          <Table
-            label="Parameters"
-            rows={params.value}
-            rowKey={(p) => p.meta.Name!}
-            empty="No parameters."
-            columns={[
-              { header: "Name", className: "wrap", cell: (p) => <code>{p.meta.Name}</code> },
-              { header: "Type", cell: (p) => <Badge tone={p.meta.Type === "SecureString" ? "warn" : "neutral"}>{p.meta.Type}</Badge> },
-              {
-                header: "Value",
-                className: "wrap",
-                cell: (p) => (p.meta.Type === "SecureString" && !reveal ? <span className="muted">encrypted</span> : <code>{p.value}</code>),
-              },
-              { header: "Version", className: "num", cell: (p) => p.meta.Version },
-              { header: "Modified", cell: (p) => when(p.meta.LastModifiedDate) },
-              {
-                header: "",
-                cell: (p) => (
-                  <ActionForm action={deleteParameter.bind(null, p.meta.Name!)} submit="Delete" tone="danger" confirm={`Delete ${p.meta.Name}?`} inline />
-                ),
-              },
-            ]}
-          />
-        ) : (
-          <ErrorNotice error={params.error} />
-        )}
-      </Section>
-    </>
+          ))}
+        </nav>
+      )}
+      <List label="Parameters" rows={rows} empty={<Empty icon={ICONS.parameter} />} />
+    </Page>
   );
 }
