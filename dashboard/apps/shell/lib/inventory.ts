@@ -76,6 +76,12 @@ const TYPE_ICONS: Record<string, string> = {
   Stack: "resource/AWSCloudFormationStack",
   Account: "resource/AWSOrganizationsAccount",
   "Resource share": "service/AWSResourceAccessManager",
+  Guardrail: "resource/AWSIdentityAccessManagementPermissions",
+  App: "service/AWSAmplify",
+  "Package repository": "service/AWSCodeArtifact",
+  "Image pipeline": "service/AmazonEC2ImageBuilder",
+  "Auto Scaling group": "resource/AmazonEC2AutoScaling",
+  Product: "service/AWSMarketplace",
 };
 
 /** The icon of a resource's type, or else its service's. */

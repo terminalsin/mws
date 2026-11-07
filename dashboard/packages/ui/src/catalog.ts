@@ -68,6 +68,30 @@ export interface NavItem {
 }
 
 const NAV: Record<string, NavItem[]> = {
+  bedrock: [
+    { label: "Model catalog", path: "/bedrock", icon: "service/AmazonBedrock" },
+    { label: "Chat playground", path: "/bedrock/playground", icon: "resource/AmazonSageMakerAIModel" },
+    { label: "Guardrails", path: "/bedrock/guardrails", icon: "resource/AWSIdentityAccessManagementPermissions" },
+    { label: "Inference profiles", path: "/bedrock/profiles", icon: "group/Region" },
+    { label: "Settings", path: "/bedrock/settings", icon: "service/AmazonCloudWatch" },
+  ],
+  amplify: [{ label: "All apps", path: "/amplify", icon: "service/AWSAmplify" }],
+  codeartifact: [
+    { label: "Repositories", path: "/codeartifact", icon: "service/AWSCodeArtifact" },
+    { label: "Domains", path: "/codeartifact?tab=domains", icon: "group/AWSAccount" },
+  ],
+  imagebuilder: [
+    { label: "Image pipelines", path: "/imagebuilder", icon: "service/AmazonEC2ImageBuilder" },
+    { label: "Images", path: "/imagebuilder?tab=images", icon: "resource/AmazonEC2AMI" },
+    { label: "Image recipes", path: "/imagebuilder?tab=recipes", icon: "resource/AWSCloudFormationTemplate" },
+    { label: "Components", path: "/imagebuilder?tab=components", icon: "resource/AmazonSimpleStorageServiceObject" },
+    { label: "Infrastructure configurations", path: "/imagebuilder?tab=infrastructure", icon: "resource/AmazonEC2Instance" },
+  ],
+  autoscaling: [{ label: "Auto Scaling groups", path: "/autoscaling", icon: "resource/AmazonEC2AutoScaling" }],
+  marketplace: [
+    { label: "Products", path: "/marketplace", icon: "service/AWSMarketplace" },
+    { label: "Metering records", path: "/marketplace?tab=records", icon: "service/AmazonCloudWatch" },
+  ],
   organizations: [
     { label: "AWS accounts", path: "/organizations", icon: "resource/AWSOrganizationsAccount" },
     { label: "Policies", path: "/organizations?tab=policies", icon: "resource/AWSIdentityAccessManagementPermissions" },
@@ -174,8 +198,8 @@ export const SERVICES: Service[] = [
   // Compute
   svc({ id: "ec2", name: "Amazon EC2", short: "EC2", category: "compute", icon: "service/AmazonEC2", zone: "compute", path: "/ec2", endpoints: ["ec2"] }),
   svc({ id: "lambda", name: "AWS Lambda", short: "Lambda", category: "compute", icon: "service/AWSLambda", zone: "compute", path: "/lambda", endpoints: ["lambda"] }),
-  svc({ id: "autoscaling", name: "EC2 Auto Scaling", short: "Auto Scaling", category: "compute", icon: "service/AmazonEC2AutoScaling", endpoints: ["autoscaling"] }),
-  svc({ id: "imagebuilder", name: "EC2 Image Builder", short: "Image Builder", category: "compute", icon: "service/AmazonEC2ImageBuilder", endpoints: ["imagebuilder"] }),
+  svc({ id: "autoscaling", name: "EC2 Auto Scaling", short: "Auto Scaling", category: "compute", icon: "service/AmazonEC2AutoScaling", zone: "platform", path: "/autoscaling", endpoints: ["autoscaling"] }),
+  svc({ id: "imagebuilder", name: "EC2 Image Builder", short: "Image Builder", category: "compute", icon: "service/AmazonEC2ImageBuilder", zone: "platform", path: "/imagebuilder", endpoints: ["imagebuilder"] }),
   // Containers
   svc({ id: "ecr", name: "Amazon ECR", short: "ECR", category: "containers", icon: "service/AmazonElasticContainerRegistry", zone: "data", path: "/ecr", endpoints: ["ecr", "ecr-public"] }),
   svc({ id: "ecs", name: "Amazon ECS", short: "ECS", category: "containers", icon: "service/AmazonElasticContainerService", zone: "data", path: "/ecs", endpoints: ["ecs"] }),
@@ -217,14 +241,14 @@ export const SERVICES: Service[] = [
   svc({ id: "organizations", name: "AWS Organizations", short: "Organizations", category: "management", icon: "service/AWSOrganizations", zone: "governance", path: "/organizations", endpoints: ["organizations"] }),
   svc({ id: "servicequotas", name: "Service Quotas", short: "Service Quotas", category: "management", icon: "service/AWSTrustedAdvisor", zone: "governance", path: "/servicequotas", endpoints: ["servicequotas"] }),
   // Developer tools
-  svc({ id: "codeartifact", name: "AWS CodeArtifact", short: "CodeArtifact", category: "developer", icon: "service/AWSCodeArtifact", endpoints: ["codeartifact"] }),
+  svc({ id: "codeartifact", name: "AWS CodeArtifact", short: "CodeArtifact", category: "developer", icon: "service/AWSCodeArtifact", zone: "platform", path: "/codeartifact", endpoints: ["codeartifact"] }),
   // AI
-  svc({ id: "bedrock", name: "Amazon Bedrock", short: "Bedrock", category: "ai", icon: "service/AmazonBedrock", endpoints: ["bedrock", "bedrock-runtime"] }),
+  svc({ id: "bedrock", name: "Amazon Bedrock", short: "Bedrock", category: "ai", icon: "service/AmazonBedrock", zone: "platform", path: "/bedrock", endpoints: ["bedrock", "bedrock-runtime"] }),
   // Web & mobile
-  svc({ id: "amplify", name: "AWS Amplify", short: "Amplify", category: "frontend", icon: "service/AWSAmplify", endpoints: ["amplify"] }),
+  svc({ id: "amplify", name: "AWS Amplify", short: "Amplify", category: "frontend", icon: "service/AWSAmplify", zone: "platform", path: "/amplify", endpoints: ["amplify"] }),
   // Cost
   svc({ id: "ce", name: "AWS Cost Explorer", short: "Cost Explorer", category: "cost", icon: "service/AWSCostExplorer", zone: "governance", path: "/ce", endpoints: ["ce"] }),
-  svc({ id: "marketplace", name: "AWS Marketplace", short: "Marketplace", category: "cost", icon: "service/AWSMarketplace", endpoints: ["marketplace-metering", "marketplace-entitlement"] }),
+  svc({ id: "marketplace", name: "AWS Marketplace", short: "Marketplace", category: "cost", icon: "service/AWSMarketplace", zone: "platform", path: "/marketplace", endpoints: ["marketplace-metering", "marketplace-entitlement"] }),
 ];
 
 export function service(id: string): Service {

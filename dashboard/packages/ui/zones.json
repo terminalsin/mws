@@ -43,5 +43,10 @@
     "id": "governance",
     "basePath": "/governance",
     "port": 3008
+  },
+  {
+    "id": "platform",
+    "basePath": "/platform",
+    "port": 3009
   }
 ]

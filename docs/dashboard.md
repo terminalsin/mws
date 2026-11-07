@@ -17,7 +17,7 @@ For a production build, `npm run build && npm start`.
 
 ## Architecture: Next.js multi-zones
 
-The console is six [Next.js](https://nextjs.org) apps, each owning part of the
+The console is ten [Next.js](https://nextjs.org) apps, each owning part of the
 URL space. The **shell** serves `/` and `/control` and forwards every other
 zone's base path to that zone's own server with rewrites, so the browser sees
 one site while each zone builds, deploys and fails on its own.
@@ -30,6 +30,10 @@ one site while each zone builds, deploys and fails on its own.
 | `security` | `/security` | 3003 | IAM (users, roles, groups, policies, access keys), KMS, Secrets Manager, Parameter Store |
 | `compute` | `/compute` | 3004 | Lambda (create, invoke, edit code, configuration, triggers), EC2 (instances, images, key pairs, security groups) |
 | `observability` | `/observability` | 3005 | CloudWatch Logs, alarms, metrics |
+| `networking` | `/networking` | 3006 | VPC (resource map), Route 53, load balancers, Global Accelerator, ACM, Private CA |
+| `data` | `/data` | 3007 | RDS, ElastiCache, ECR, ECS, EKS, EFS, Kinesis, Firehose |
+| `governance` | `/governance` | 3008 | Organizations, CloudFormation, CloudTrail, Service Quotas, Cost Explorer, Security Hub, GuardDuty, Identity Center, RAM |
+| `platform` | `/platform` | 3009 | Bedrock (model catalog, chat playground, guardrails, inference profiles, invocation logging), Amplify (apps, branches, deploys), CodeArtifact (repositories, packages, connection instructions), Image Builder, Auto Scaling, Marketplace (catalog, subscriptions, metering) |
 
 The zones share two workspace packages and nothing else:
 

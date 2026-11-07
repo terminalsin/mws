@@ -1701,3 +1701,50 @@ a.flow-node:hover span {
   text-align: right;
   font-variant-numeric: tabular-nums;
 }
+
+/* Auto Scaling capacity slots: running, wanted, allowed. */
+.capacity {
+  display: inline-flex;
+  align-items: center;
+  gap: 2px;
+}
+.capacity i {
+  width: 7px;
+  height: 12px;
+  border: 1px solid var(--tertiary);
+  background: transparent;
+}
+.capacity i.on {
+  background: var(--good);
+  border-color: var(--good);
+}
+.capacity i.want {
+  border-style: dashed;
+  border-color: var(--warn);
+}
+.capacity i.min {
+  border-color: var(--secondary);
+}
+.capacity b {
+  margin-left: 6px;
+  font-weight: 600;
+  font-variant-numeric: tabular-nums;
+}
+
+/* A group of checkboxes inside a form. */
+fieldset.checks {
+  border: 1px solid var(--separator);
+  padding: 8px 12px 10px;
+  margin: 0;
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(180px, 1fr));
+  gap: 4px 12px;
+  max-height: 240px;
+  overflow: auto;
+}
+fieldset.checks legend {
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--secondary);
+  padding: 0 4px;
+}

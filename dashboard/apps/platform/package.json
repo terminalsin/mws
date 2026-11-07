@@ -1,0 +1,35 @@
+{
+  "name": "@mws-dashboard/platform",
+  "version": "1.0.0",
+  "private": true,
+  "description": "AI and developer platform zone: Bedrock, Amplify, CodeArtifact, Image Builder, Auto Scaling, Marketplace",
+  "scripts": {
+    "dev": "next dev -p 3009",
+    "build": "next build",
+    "start": "next start -p 3009",
+    "typecheck": "tsc --noEmit"
+  },
+  "dependencies": {
+    "@aws-sdk/client-amplify": "^3.1164.0",
+    "@aws-sdk/client-auto-scaling": "^3.1164.0",
+    "@aws-sdk/client-bedrock": "^3.1164.0",
+    "@aws-sdk/client-bedrock-runtime": "^3.1164.0",
+    "@aws-sdk/client-codeartifact": "^3.1164.0",
+    "@aws-sdk/client-ec2": "^3.1164.0",
+    "@aws-sdk/client-iam": "^3.1164.0",
+    "@aws-sdk/client-imagebuilder": "^3.1164.0",
+    "@aws-sdk/client-marketplace-metering": "^3.1164.0",
+    "@mws-dashboard/ai": "*",
+    "@mws-dashboard/aws": "*",
+    "@mws-dashboard/ui": "*",
+    "fflate": "^0.8.2",
+    "lucide-react": "^1.70.0",
+    "next": "16.4.5",
+    "react": "^19.3.1",
+    "react-dom": "^19.3.1"
+  },
+  "devDependencies": {
+    "@types/react": "^19.3.0",
+    "@types/react-dom": "^19.3.0"
+  }
+}

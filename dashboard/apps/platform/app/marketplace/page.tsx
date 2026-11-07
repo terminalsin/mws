@@ -1,0 +1,106 @@
+import { ago, load } from "@mws-dashboard/aws";
+import { ActionForm, AwsIcon, Empty, ErrorNotice, Field, List, Page, Pill, Section, Sheet } from "@mws-dashboard/ui";
+import { Eraser, Gauge, Users } from "lucide-react";
+import type { Metadata } from "next";
+
+import { ICONS } from "../../lib/clients";
+import { products, PRODUCT_ICONS, records, subscriptions } from "../../lib/marketplace";
+import { clearRecords, createProduct } from "./actions";
+import { Usage } from "./usage";
+
+export const metadata: Metadata = { title: "Marketplace" };
+
+type Props = { searchParams: Promise<{ tab?: string }> };
+
+async function Records() {
+  const [list, catalog] = await Promise.all([load(() => records()), load(products)]);
+  if (!list.ok) return <ErrorNotice error={list.error} />;
+  const title = (code: string) => (catalog.ok && catalog.value.find((p) => p.productCode === code)?.title) || code;
+  return (
+    <>
+      {list.value.length > 0 && (
+        <Section title="Usage">
+          <Usage records={list.value} />
+        </Section>
+      )}
+      <Section title="Records" count={list.value.length} plain actions={list.value.length > 0 ? <ActionForm action={clearRecords} submit="Clear records" icon={<Eraser size={15} />} tone="danger" confirm="Forget every metering record?" /> : undefined}>
+        <List
+          label="Metering records"
+          empty={<Empty icon={ICONS.marketplace} />}
+          rows={[...list.value].reverse().map((r) => ({
+            key: r.meteringRecordId,
+            icon: <Gauge size={18} />,
+            title: `${r.quantity.toLocaleString()} × ${r.dimension}`,
+            subtitle: `${title(r.productCode)} · ${r.customerIdentifier ?? r.customerAWSAccountId}`,
+            meta: (
+              <>
+                <Pill>{r.operation}</Pill>
+                <span>{ago(r.timestamp)}</span>
+              </>
+            ),
+          }))}
+        />
+      </Section>
+    </>
+  );
+}
+
+export default async function Marketplace({ searchParams }: Props) {
+  const { tab = "products" } = await searchParams;
+  if (tab === "records") {
+    return (
+      <Page title="Metering records">
+        <Records />
+      </Page>
+    );
+  }
+  const [catalog, subs] = await Promise.all([load(products), load(() => subscriptions())]);
+  const create = (
+    <Sheet title="Create product" label="Create product" testId="create-product">
+      <ActionForm action={createProduct} submit="Create product" testId="create-product">
+        <Field label="Title">
+          <input name="title" required autoFocus />
+        </Field>
+        <Field label="Type">
+          <select name="type" defaultValue="SaaS">
+            <option value="SaaS">SaaS</option>
+            <option value="AMI">AMI</option>
+            <option value="Container">Container</option>
+          </select>
+        </Field>
+        <Field label="Pricing dimensions">
+          <input name="dimensions" required placeholder="users, requests" />
+        </Field>
+      </ActionForm>
+    </Sheet>
+  );
+  return (
+    <Page title="Products" actions={create}>
+      {catalog.ok ? (
+        <List
+          label="Products"
+          empty={<Empty icon={ICONS.marketplace} action={create} />}
+          rows={catalog.value.map((p) => {
+            const buyers = subs.ok ? subs.value.filter((s) => s.productCode === p.productCode && s.status === "Active").length : 0;
+            return {
+              key: p.productCode,
+              icon: <AwsIcon icon={PRODUCT_ICONS[p.productType] ?? ICONS.marketplace} size={22} />,
+              title: p.title || p.productCode,
+              subtitle: <code>{p.productCode}</code>,
+              href: `/marketplace/product?code=${p.productCode}`,
+              meta: (
+                <>
+                  <Pill>{p.productType}</Pill>
+                  {buyers > 0 && <Pill icon={<Users size={11} />}>{buyers}</Pill>}
+                  {p.createdAt && <span>{ago(p.createdAt)}</span>}
+                </>
+              ),
+            };
+          })}
+        />
+      ) : (
+        <ErrorNotice error={catalog.error} />
+      )}
+    </Page>
+  );
+}
