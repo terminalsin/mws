@@ -105,7 +105,7 @@ export default async function Alarms() {
   );
   if (!alarms.ok) {
     return (
-      <Page title="Alarms" icon={ICONS.alarm} actions={create}>
+      <Page title="Alarms" actions={create}>
         <ErrorNotice error={alarms.error} />
       </Page>
     );
@@ -113,7 +113,7 @@ export default async function Alarms() {
   const all = [...alarms.value.metric, ...alarms.value.composite.map((c) => ({ ...c, composite: true as const }))];
   const count = (s: string) => all.filter((a) => a.StateValue === s).length;
   return (
-    <Page title="Alarms" icon={ICONS.alarm} actions={create}>
+    <Page title="Alarms" actions={create}>
       {all.length > 0 && (
         <Metrics>
           <Metric label="In alarm" value={count("ALARM")} tone={count("ALARM") ? "bad" : undefined} icon={<Siren size={14} />} />

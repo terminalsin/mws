@@ -47,14 +47,15 @@ test("Lambda: invoke, edit code and follow logs into another zone", async ({ pag
 
   await page.goto("/compute/lambda");
   await page.getByRole("link", { name }).click();
+  await page.getByRole("link", { name: "Test", exact: true }).click();
   const result = await submit(page, "invoke", { payload: '{"name": "console"}' });
   await expect(result).toContainText('"greeting": "hello console"');
 
-  await page.getByRole("link", { name: "Code" }).click();
+  await page.getByRole("link", { name: "Code", exact: true }).click();
   await expect(page.getByLabel("Code")).toHaveValue(/hello " \+ event.name/);
   await submit(page, "save-code", { code: CODE.replace('"hello "', '"hi "') });
   await waitUntilFunctionActiveV2({ client: lambda, maxWaitTime: 60 }, { FunctionName: name });
-  await page.getByRole("link", { name: "Test" }).click();
+  await page.getByRole("link", { name: "Test", exact: true }).click();
   await expect(await submit(page, "invoke", { payload: '{"name": "again"}' })).toContainText('"greeting": "hi again"');
 
   await page.getByRole("link", { name: "View logs" }).click();

@@ -67,9 +67,13 @@ and the home page, so it never calls another zone's services itself.
 
 ## Design
 
-The console follows Apple's interface conventions: inset grouped lists,
-segmented controls, sheets for creation and editing, icon buttons for row
-actions, a translucent sidebar. Rules the pages keep to:
+The layout is the AWS console's: a dark top bar (Services menu, search,
+account, region), a per-service sidebar with the same sections AWS has
+(`nav` in `packages/ui/src/catalog.ts`, e.g. IAM: Users, Roles, Groups,
+Policies), the zone's other services below it, and AWS's tab names on detail
+pages. The surfaces follow Apple's conventions: inset grouped lists, sheets
+for creation and editing, icon buttons for row actions, and icon chips
+(`Specs`) instead of label/value tables. Rules the pages keep to:
 
 - **Show, don't label.** If something can be an icon, it is one; self-evident
   things are not described; facts nobody acts on are left out (an empty

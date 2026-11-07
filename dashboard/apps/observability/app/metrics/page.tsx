@@ -10,6 +10,9 @@ import { LineChart } from "./chart";
 
 export const metadata: Metadata = { title: "Metrics" };
 
+/** "AWS/SQS" reads as "SQS" next to the SQS icon; custom namespaces stay whole. */
+const nsLabel = (ns: string) => ns.replace(/^AWS\//, "");
+
 type Props = { searchParams: Promise<{ ns?: string; metric?: string; dims?: string; q?: string }> };
 
 async function Series({ ns, metric, dims }: { ns: string; metric: string; dims: Dimension[] }) {
@@ -38,16 +41,16 @@ async function Series({ ns, metric, dims }: { ns: string; metric: string; dims: 
   const max = series("maximum");
   const total = sum.reduce((n, p) => n + p.v, 0);
   return (
-    <Section title={metric} icon={<AwsIcon icon={sourceIcon(ns) ?? ICONS.metrics} size={18} />} actions={dims.length ? <code className="muted">{dimsText(dims)}</code> : undefined}>
+    <Section>
       {sum.length === 0 ? (
         <Empty icon={ICONS.metrics} />
       ) : (
         <>
-          <Metrics>
+          {sum.some((p) => p.v !== 0) && <Metrics>
             <Metric label="Sum · 3 h" value={+total.toFixed(2)} />
             <Metric label="Peak minute" value={Math.max(...max.map((p) => p.v))} />
             <Metric label="Average" value={+(avg.reduce((n, p) => n + p.v, 0) / Math.max(avg.length, 1)).toFixed(2)} />
-          </Metrics>
+          </Metrics>}
           <LineChart points={sum} label="Metric chart" />
           <details>
             <summary className="muted">Datapoints</summary>
@@ -75,7 +78,7 @@ export default async function MetricsPage({ searchParams }: Props) {
   const metrics = await load(() => collect((NextToken) => client.send(new ListMetricsCommand({ NextToken })), (r) => r.Metrics, (r) => r.NextToken, 5000));
   if (!metrics.ok) {
     return (
-      <Page title="Metrics" icon={ICONS.cloudwatch}>
+      <Page title="Metrics">
         <ErrorNotice error={metrics.error} />
       </Page>
     );
@@ -88,10 +91,17 @@ export default async function MetricsPage({ searchParams }: Props) {
   } catch {
     // ignore a malformed link
   }
+  if (metric && current) {
+    return (
+      <Page title={metric} icon={sourceIcon(current) ?? ICONS.metrics} back={{ href: `/metrics?ns=${encodeURIComponent(current)}`, label: nsLabel(current) }} subtitle={dimsText(selectedDims) || undefined}>
+        <Series ns={current} metric={metric} dims={selectedDims} />
+      </Page>
+    );
+  }
   const docs = metrics.value.map((m) => ({ ...m, text: `${m.Namespace} ${m.MetricName} ${dimsText(m.Dimensions)}` }));
   const rows = q ? await search(q, docs, 40) : docs.filter((m) => m.Namespace === current);
   return (
-    <Page title="Metrics" icon={ICONS.cloudwatch}>
+    <Page title="Metrics">
       {namespaces.length === 0 ? (
         <Empty icon={ICONS.metrics} />
       ) : (
@@ -103,13 +113,12 @@ export default async function MetricsPage({ searchParams }: Props) {
             {namespaces.map((n) => (
               <Link key={n} href={`/metrics?ns=${encodeURIComponent(n)}`} className={n === current ? "tile active" : "tile"} aria-current={n === current ? "page" : undefined}>
                 <AwsIcon icon={sourceIcon(n) ?? ICONS.metrics} size={28} />
-                <span className="tile-name">{n}</span>
+                <span className="tile-name">{nsLabel(n)}</span>
                 <span className="muted">{metrics.value.filter((m) => m.Namespace === n).length}</span>
               </Link>
             ))}
           </nav>
-          {metric && (current ?? ns) && <Series ns={(current ?? ns)!} metric={metric} dims={selectedDims} />}
-          <Section title={q ? undefined : current} count={rows.length} plain>
+          <Section title={q ? undefined : current && nsLabel(current)} count={rows.length} plain>
             <List
               label="Metrics"
               rows={rows.map((m) => ({

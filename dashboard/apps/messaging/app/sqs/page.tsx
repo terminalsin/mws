@@ -49,7 +49,7 @@ export default async function Queues() {
   const list = await load(queues);
   if (!list.ok) {
     return (
-      <Page title="SQS" icon={ICONS.sqs}>
+      <Page title="Queues">
         <ErrorNotice error={list.error} />
       </Page>
     );
@@ -61,7 +61,7 @@ export default async function Queues() {
     { id: "dlq", title: "Dead-letter queues", items: dlqs },
   ].filter((s) => s.items.length);
   return (
-    <Page title="SQS" icon={ICONS.sqs} actions={<CreateQueue dlqs={all} />}>
+    <Page title="Queues" actions={<CreateQueue dlqs={all} />}>
       <Curated
         label="Queues"
         sections={sections}

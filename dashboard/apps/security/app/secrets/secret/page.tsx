@@ -14,7 +14,7 @@ export const metadata: Metadata = { title: "Secret" };
 
 export default async function Secret({ searchParams }: Props) {
   const { id = "", reveal } = await searchParams;
-  const back = { href: "/secrets", label: "Secrets Manager" };
+  const back = { href: "/secrets", label: "Secrets" };
   const client = await secrets();
   const meta = await load(() => client.send(new DescribeSecretCommand({ SecretId: id })));
   if (!meta.ok) {

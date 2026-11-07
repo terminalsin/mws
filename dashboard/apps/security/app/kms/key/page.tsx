@@ -14,7 +14,7 @@ export const metadata: Metadata = { title: "Key" };
 
 export default async function Key({ searchParams }: Props) {
   const { id = "" } = await searchParams;
-  const back = { href: "/kms", label: "KMS" };
+  const back = { href: "/kms", label: "Keys" };
   const data = await load(async () => {
     const client = await kms();
     const meta = (await client.send(new DescribeKeyCommand({ KeyId: id }))).KeyMetadata!;

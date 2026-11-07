@@ -1,8 +1,8 @@
 "use client";
 
-import { Check, ChevronDown, Command, CornerDownLeft, Globe, LoaderCircle, Plus, Search, X } from "lucide-react";
+import { Check, ChevronDown, Command, CornerDownLeft, Globe, LayoutGrid, LoaderCircle, Plus, Search, X } from "lucide-react";
 import Link from "next/link";
-import { usePathname, useRouter } from "next/navigation";
+import { usePathname, useRouter, useSearchParams } from "next/navigation";
 import {
   createContext,
   useActionState,
@@ -16,7 +16,164 @@ import {
 } from "react";
 import { useFormStatus } from "react-dom";
 
-import { REGION_COOKIE } from "./zones";
+import { iconUrl } from "./catalog";
+import { REGION_COOKIE, type ZoneId } from "./zones";
+
+/** A service as the navigation needs it (serializable, built on the server). */
+export interface NavService {
+  id: string;
+  short: string;
+  icon: string;
+  zone: ZoneId;
+  /** Landing path inside its zone. */
+  path: string;
+  /** Absolute URL of the landing page (for other zones). */
+  href: string;
+  nav: { label: string; path: string; icon: string; href: string }[];
+}
+
+export interface NavGroup {
+  id: string;
+  name: string;
+  services: NavService[];
+}
+
+function Icon({ icon, size = 20 }: { icon: string; size?: number }) {
+  return <img className="aws-icon" src={iconUrl(icon)} alt="" width={size} height={size} style={{ width: size, height: size }} />;
+}
+
+/** Where a nav path ("/iam?tab=roles") points: its pathname and tab. */
+function splitPath(path: string) {
+  const [pathname, query = ""] = path.split("?");
+  return { pathname, tab: new URLSearchParams(query).get("tab") };
+}
+
+/** The service a pathname belongs to in this zone: the longest matching path. */
+function activeService(services: NavService[], zone: ZoneId, pathname: string) {
+  let best: NavService | undefined;
+  let length = 0;
+  for (const s of services) {
+    if (s.zone !== zone) continue;
+    for (const p of [s.path, ...s.nav.map((n) => splitPath(n.path).pathname)]) {
+      if ((pathname === p || pathname.startsWith(p + "/")) && p.length > length) {
+        best = s;
+        length = p.length;
+      }
+    }
+  }
+  return best;
+}
+
+function activeItem(service: NavService, pathname: string, tab: string | null) {
+  const items = service.nav.map((n) => ({ ...n, ...splitPath(n.path) }));
+  const exact = items.find((n) => n.pathname === pathname && n.tab === tab);
+  if (exact) return exact.path;
+  // A resource page: the section whose name its path mentions ("/iam/roles/x" → Roles).
+  const segments = pathname.split("/").filter(Boolean);
+  const named = items.find((n) => segments.slice(1).some((seg) => n.label.toLowerCase().startsWith(seg.slice(0, 4).toLowerCase())));
+  if (named) return named.path;
+  return items.find((n) => pathname.startsWith(n.pathname))?.path;
+}
+
+/** The sidebar. Inside a service it is that service's own navigation, as in
+ * the AWS console; elsewhere (home, control plane) it lists every service. */
+export function SideNav({ zone, groups }: { zone: ZoneId; groups: NavGroup[] }) {
+  const pathname = usePathname() || "/";
+  const tab = useSearchParams().get("tab");
+  const services = groups.flatMap((g) => g.services);
+  const current = zone === "shell" ? undefined : activeService(services, zone, pathname);
+  if (current) {
+    const active = activeItem(current, pathname, tab);
+    return (
+      <nav aria-label={current.short} className="service-nav">
+        <Link className="service-head" href={current.path}>
+          <Icon icon={current.icon} size={28} />
+          <span>{current.short}</span>
+        </Link>
+        {current.nav.map((n) => (
+          <Link key={n.path} className={n.path === active ? "nav-link active" : "nav-link"} href={n.path} aria-current={n.path === active ? "page" : undefined}>
+            <Icon icon={n.icon} size={20} />
+            <span>{n.label}</span>
+          </Link>
+        ))}
+        {services.some((s) => s.zone === zone && s.id !== current.id) && (
+          <div className="nav-group related">
+            {services
+              .filter((s) => s.zone === zone && s.id !== current.id)
+              .map((s) => (
+                <Link key={s.id} className="nav-link" href={s.path}>
+                  <Icon icon={s.icon} size={20} />
+                  <span>{s.short}</span>
+                </Link>
+              ))}
+          </div>
+        )}
+      </nav>
+    );
+  }
+  return (
+    <nav aria-label="Services">
+      {groups.map((g) => (
+        <div key={g.id} className="nav-group">
+          <div className="nav-title">{g.name}</div>
+          {g.services.map((s) =>
+            s.zone === zone ? (
+              <Link key={s.id} className="nav-link" href={s.path}>
+                <Icon icon={s.icon} />
+                <span>{s.short}</span>
+              </Link>
+            ) : (
+              <a key={s.id} className="nav-link" href={s.href}>
+                <Icon icon={s.icon} />
+                <span>{s.short}</span>
+              </a>
+            ),
+          )}
+        </div>
+      ))}
+    </nav>
+  );
+}
+
+/** The top bar's Services menu: every service by category, as in AWS. */
+export function ServicesMenu({ groups }: { groups: NavGroup[] }) {
+  const [open, setOpen] = useState(false);
+  const panel = useRef<HTMLDivElement>(null);
+  useEffect(() => {
+    if (!open) return;
+    const close = (e: MouseEvent | KeyboardEvent) => {
+      if (e instanceof KeyboardEvent ? e.key === "Escape" : !panel.current?.contains(e.target as Node)) setOpen(false);
+    };
+    document.addEventListener("mousedown", close);
+    document.addEventListener("keydown", close);
+    return () => {
+      document.removeEventListener("mousedown", close);
+      document.removeEventListener("keydown", close);
+    };
+  }, [open]);
+  return (
+    <div className="services-menu" ref={panel}>
+      <button type="button" className="topbar-button" aria-label="Services" aria-expanded={open} onClick={() => setOpen(!open)}>
+        <LayoutGrid size={16} aria-hidden />
+      </button>
+      {open && (
+        <div className="services-panel" role="menu">
+          {groups.map((g) => (
+            <div key={g.id} className="services-group">
+              <div className="nav-title">{g.name}</div>
+              {g.services.map((s) => (
+                <a key={s.id} role="menuitem" className="nav-link" href={s.href}>
+                  <Icon icon={s.icon} size={24} />
+                  <span>{s.short}</span>
+                </a>
+              ))}
+            </div>
+          ))}
+        </div>
+      )}
+    </div>
+  );
+}
 
 /** A sidebar entry. Links inside the current zone navigate on the client;
  * links to another zone are plain anchors, because that page belongs to a
@@ -417,9 +574,9 @@ export function CommandPalette() {
                     className={index === cursor ? "palette-hit active" : "palette-hit"}
                     onMouseEnter={() => setCursor(index)}
                   >
-                    <img src={`/icons/aws/${h.icon}.svg`} alt="" width={22} height={22} />
+                    <Icon icon={h.icon} size={22} />
                     <span className="palette-hit-name">{h.name}</span>
-                    <span className="palette-hit-type">{h.detail ?? h.type}</span>
+                    {h.detail && <span className="palette-hit-type">{h.detail}</span>}
                     {index === cursor && <CornerDownLeft size={14} aria-hidden />}
                   </a>
                 );

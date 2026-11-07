@@ -1,6 +1,6 @@
 import { DescribeImagesCommand, DescribeKeyPairsCommand, DescribeSecurityGroupRulesCommand, DescribeSecurityGroupsCommand, DescribeVpcsCommand, type Instance } from "@aws-sdk/client-ec2";
 import { ago, load } from "@mws-dashboard/aws";
-import { ActionForm, AwsIcon, Curated, Empty, ErrorNotice, Field, List, Metric, Metrics, Page, Pill, Segments, Sheet, Status, runtimeIcon } from "@mws-dashboard/ui";
+import { ActionForm, AwsIcon, Curated, Empty, ErrorNotice, Field, List, Metric, Metrics, Page, Pill, Sheet, Status, runtimeIcon } from "@mws-dashboard/ui";
 import { KeyRound, Play, Plus, RotateCcw, ShieldAlert, Square, Trash2, X } from "lucide-react";
 import type { Metadata } from "next";
 
@@ -268,7 +268,7 @@ export default async function Ec2({ searchParams }: Props) {
 
   const all = instances.ok ? instances.value : [];
   return (
-    <Page title="EC2" icon={ICONS.ec2} actions={actions}>
+    <Page title={{ instances: "Instances", images: "Images", keys: "Key pairs", groups: "Security groups" }[tab] ?? "Instances"} actions={actions}>
       {all.length > 0 && (
         <Metrics>
           <Metric label="Running" value={all.filter((i) => i.State?.Name === "running").length} tone="good" />
@@ -276,14 +276,6 @@ export default async function Ec2({ searchParams }: Props) {
           <Metric label="vCPUs" value={all.filter((i) => i.State?.Name === "running").reduce((n, i) => n + (i.CpuOptions?.CoreCount ?? 1) * (i.CpuOptions?.ThreadsPerCore ?? 2), 0)} />
         </Metrics>
       )}
-      <Segments
-        items={[
-          { label: "Instances", href: "/ec2", active: tab === "instances" },
-          { label: "Images", href: "/ec2?tab=images", active: tab === "images" },
-          { label: "Key pairs", href: "/ec2?tab=keys", active: tab === "keys" },
-          { label: "Security groups", href: "/ec2?tab=groups", active: tab === "groups" },
-        ]}
-      />
       {body}
     </Page>
   );

@@ -1,6 +1,6 @@
 import type { KeyMetadata } from "@aws-sdk/client-kms";
 import { ago, load } from "@mws-dashboard/aws";
-import { ActionForm, AwsIcon, Curated, Empty, ErrorNotice, Field, Metric, Metrics, Page, Pill, Segments, Sheet, Status } from "@mws-dashboard/ui";
+import { ActionForm, AwsIcon, Curated, Empty, ErrorNotice, Field, Metric, Metrics, Page, Pill, Sheet, Status } from "@mws-dashboard/ui";
 import type { Metadata } from "next";
 
 import { ICONS } from "../../lib/clients";
@@ -52,7 +52,7 @@ export default async function Keys({ searchParams }: Props) {
   );
   if (!keys.ok) {
     return (
-      <Page title="KMS" icon={ICONS.kms} actions={create}>
+      <Page title={tab === "aws" ? "AWS managed keys" : "Customer managed keys"} actions={create}>
         <ErrorNotice error={keys.error} />
       </Page>
     );
@@ -79,21 +79,13 @@ export default async function Keys({ searchParams }: Props) {
       ),
   });
   return (
-    <Page title="KMS" icon={ICONS.kms} actions={create}>
+    <Page title={tab === "aws" ? "AWS managed keys" : "Customer managed keys"} actions={create}>
       {(customer.length > 0 || pending > 0) && (
         <Metrics>
           <Metric label="Customer keys" value={customer.length} />
           <Metric label="Disabled" value={customer.filter((k) => k.meta.KeyState === "Disabled").length} />
           {pending > 0 && <Metric label="Pending deletion" value={pending} tone="bad" />}
         </Metrics>
-      )}
-      {aws.length > 0 && (
-        <Segments
-          items={[
-            { label: "Customer managed", href: "/kms", active: tab !== "aws", count: customer.length },
-            { label: "AWS managed", href: "/kms?tab=aws", active: tab === "aws", count: aws.length },
-          ]}
-        />
       )}
       <Curated
         label="Keys"

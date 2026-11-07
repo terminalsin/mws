@@ -1,7 +1,7 @@
 import { DescribeInstancesCommand, DescribeVolumesCommand, GetConsoleOutputCommand } from "@aws-sdk/client-ec2";
 import { ago, load } from "@mws-dashboard/aws";
-import { ActionForm, AwsIcon, CodeBlock, ErrorNotice, Facts, Field, List, Page, Section, Sheet, Status, Tags } from "@mws-dashboard/ui";
-import { HardDrive, Pencil, Play, RotateCcw, Square, Trash2 } from "lucide-react";
+import { ActionForm, AwsIcon, CodeBlock, ErrorNotice, Field, List, Page, Section, Sheet, Specs, Status, Tags } from "@mws-dashboard/ui";
+import { Clock, Cpu, Globe, HardDrive, KeyRound, Network, Pencil, Play, Power, RotateCcw, Shield, Square, Trash2 } from "lucide-react";
 import type { Metadata } from "next";
 
 import { ICONS, ec2, nameTag } from "../../../lib/clients";
@@ -14,7 +14,7 @@ export const metadata: Metadata = { title: "Instance" };
 
 export default async function InstancePage({ searchParams }: Props) {
   const { id = "" } = await searchParams;
-  const back = { href: "/ec2", label: "EC2" };
+  const back = { href: "/ec2", label: "Instances" };
   const data = await load(async () => {
     const client = await ec2();
     const instance = (await client.send(new DescribeInstancesCommand({ InstanceIds: [id] }))).Reservations?.[0]?.Instances?.[0];
@@ -60,26 +60,24 @@ export default async function InstancePage({ searchParams }: Props) {
         )
       }
     >
-      <Facts
+      <Specs
         items={[
-          ["State", <Status key="s" tone={STATE_TONE[state] ?? "neutral"}>{state}</Status>],
-          ["Type", i.InstanceType],
-          ["Private IP", i.PrivateIpAddress],
-          i.PublicIpAddress && ["Public IP", i.PublicIpAddress],
-          ["Image", i.ImageId],
-          i.KeyName && ["Key pair", i.KeyName],
-          i.IamInstanceProfile?.Arn && [
-            "Instance profile",
-            <a key="p" href={`/security/iam/roles/${encodeURIComponent(i.IamInstanceProfile.Arn.split("/").pop() ?? "")}`}>
-              {i.IamInstanceProfile.Arn.split("/").pop()}
-            </a>,
-          ],
-          ["Subnet", i.SubnetId],
-          ["Security groups", i.SecurityGroups?.map((g) => g.GroupName).join(", ")],
-          ["Launched", ago(i.LaunchTime)],
-          i.Tags?.some((t) => t.Key !== "Name") && ["Tags", <Tags key="t" tags={i.Tags.filter((t) => t.Key !== "Name")} />],
+          { label: "State", icon: <Power size={15} />, value: <Status tone={STATE_TONE[state] ?? "neutral"}>{state}</Status> },
+          { label: "Instance type", icon: <Cpu size={15} />, value: i.InstanceType },
+          i.PrivateIpAddress && { label: "Private IP", icon: <Network size={15} />, value: i.PrivateIpAddress },
+          i.PublicIpAddress && { label: "Public IP", icon: <Globe size={15} />, value: i.PublicIpAddress },
+          { label: "Image", icon: <AwsIcon icon="resource/AmazonEC2AMI" size={16} />, value: i.ImageId },
+          i.KeyName && { label: "Key pair", icon: <KeyRound size={15} />, value: i.KeyName },
+          i.IamInstanceProfile?.Arn && {
+            label: "Instance profile",
+            icon: <AwsIcon icon="resource/AWSIdentityAccessManagementRole" size={16} />,
+            value: <a href={`/security/iam/roles/${encodeURIComponent(i.IamInstanceProfile.Arn.split("/").pop() ?? "")}`}>{i.IamInstanceProfile.Arn.split("/").pop()}</a>,
+          },
+          i.SecurityGroups?.length && { label: "Security groups", icon: <Shield size={15} />, value: i.SecurityGroups.map((g) => g.GroupName).join(", ") },
+          { label: "Launched", icon: <Clock size={15} />, value: ago(i.LaunchTime) },
         ]}
       />
+      {i.Tags?.some((t) => t.Key !== "Name") && <Tags tags={i.Tags.filter((t) => t.Key !== "Name")} />}
       {volumes.length > 0 && (
         <Section title="Volumes" count={volumes.length} plain>
           <List

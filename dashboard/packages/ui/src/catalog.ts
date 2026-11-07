@@ -56,9 +56,56 @@ export interface Service {
   path?: string;
   /** The names MWS's /_mws/health reports for this service. */
   endpoints: string[];
+  /** The service's own navigation, as in the AWS console's service sidebar:
+   * paths inside its zone, each with a resource icon. */
+  nav?: NavItem[];
 }
 
-const svc = (s: Service) => s;
+export interface NavItem {
+  label: string;
+  path: string;
+  icon: string;
+}
+
+const NAV: Record<string, NavItem[]> = {
+  ec2: [
+    { label: "Instances", path: "/ec2", icon: "resource/AmazonEC2Instances" },
+    { label: "Images", path: "/ec2?tab=images", icon: "resource/AmazonEC2AMI" },
+    { label: "Key pairs", path: "/ec2?tab=keys", icon: "resource/AWSIdentityAccessManagementLongTermSecurityCredential" },
+    { label: "Security groups", path: "/ec2?tab=groups", icon: "resource/AmazonVPCNetworkAccessControlList" },
+  ],
+  lambda: [{ label: "Functions", path: "/lambda", icon: "resource/AWSLambdaLambdaFunction" }],
+  s3: [{ label: "Buckets", path: "/s3", icon: "resource/AmazonSimpleStorageServiceBucket" }],
+  sqs: [{ label: "Queues", path: "/sqs", icon: "resource/AmazonSimpleQueueServiceQueue" }],
+  sns: [
+    { label: "Topics", path: "/sns", icon: "resource/AmazonSimpleNotificationServiceTopic" },
+    { label: "Deliveries", path: "/sns?tab=outbox", icon: "resource/AmazonSimpleNotificationServiceEmailNotification" },
+  ],
+  events: [{ label: "Buses and rules", path: "/events", icon: "resource/AmazonEventBridgeRule" }],
+  ses: [
+    { label: "Identities", path: "/ses", icon: "resource/AmazonSimpleEmailServiceEmail" },
+    { label: "Sent mail", path: "/ses?tab=outbox", icon: "resource/AmazonSimpleNotificationServiceEmailNotification" },
+  ],
+  iam: [
+    { label: "Users", path: "/iam", icon: "resource/User" },
+    { label: "Roles", path: "/iam?tab=roles", icon: "resource/AWSIdentityAccessManagementRole" },
+    { label: "Groups", path: "/iam?tab=groups", icon: "resource/Users" },
+    { label: "Policies", path: "/iam?tab=policies", icon: "resource/AWSIdentityAccessManagementPermissions" },
+  ],
+  kms: [
+    { label: "Customer managed keys", path: "/kms", icon: "resource/AWSIdentityAccessManagementDataEncryptionKey" },
+    { label: "AWS managed keys", path: "/kms?tab=aws", icon: "resource/AWSIdentityAccessManagementEncryptedData" },
+  ],
+  secretsmanager: [{ label: "Secrets", path: "/secrets", icon: "service/AWSSecretsManager" }],
+  ssm: [{ label: "Parameter Store", path: "/ssm", icon: "resource/AWSSystemsManagerParameterStore" }],
+  cloudwatch: [
+    { label: "Alarms", path: "/alarms", icon: "resource/AmazonCloudWatchAlarm" },
+    { label: "Log groups", path: "/logs", icon: "resource/AmazonCloudWatchLogs" },
+    { label: "Metrics", path: "/metrics", icon: "resource/AmazonCloudWatchMetricsInsights" },
+  ],
+};
+
+const svc = (s: Service): Service => ({ ...s, nav: s.nav ?? NAV[s.id] });
 
 export const SERVICES: Service[] = [
   // Compute

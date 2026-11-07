@@ -1,7 +1,7 @@
 import { ListGroupsCommand, ListPoliciesCommand, ListRolesCommand, ListUsersCommand } from "@aws-sdk/client-iam";
 import { search } from "@mws-dashboard/ai";
 import { ago, collect, frameInfo, load } from "@mws-dashboard/aws";
-import { ActionForm, AwsIcon, Curated, Empty, ErrorNotice, Field, List, Metric, Metrics, Page, Pill, Section, Segments, Sheet } from "@mws-dashboard/ui";
+import { ActionForm, AwsIcon, Curated, Empty, ErrorNotice, Field, List, Page, Pill, Section, Sheet } from "@mws-dashboard/ui";
 import type { Metadata } from "next";
 
 import { ICONS, iam, policyDocument, principalIcon, trust } from "../../lib/clients";
@@ -34,7 +34,7 @@ export default async function Iam({ searchParams }: Props) {
   const [data, info] = await Promise.all([load(everything), frameInfo()]);
   if (!data.ok) {
     return (
-      <Page title="IAM" icon={ICONS.iam}>
+      <Page title={{ users: "Users", roles: "Roles", groups: "Groups", policies: "Policies" }[tab] ?? "Users"}>
         <ErrorNotice error={data.error} />
       </Page>
     );
@@ -187,21 +187,7 @@ export default async function Iam({ searchParams }: Props) {
   }
 
   return (
-    <Page title="IAM" icon={ICONS.iam} actions={create[tab as keyof typeof create] ?? create.users}>
-      <Metrics>
-        <Metric label="Users" value={users.length} href="/security/iam" />
-        <Metric label="Roles" value={roles.length} href="/security/iam?tab=roles" />
-        <Metric label="Groups" value={groups.length} href="/security/iam?tab=groups" />
-        <Metric label="Policies" value={policies.length} href="/security/iam?tab=policies" />
-      </Metrics>
-      <Segments
-        items={[
-          { label: "Users", href: "/iam", active: tab === "users" },
-          { label: "Roles", href: "/iam?tab=roles", active: tab === "roles" },
-          { label: "Groups", href: "/iam?tab=groups", active: tab === "groups" },
-          { label: "Policies", href: "/iam?tab=policies", active: tab === "policies" },
-        ]}
-      />
+    <Page title={{ users: "Users", roles: "Roles", groups: "Groups", policies: "Policies" }[tab] ?? "Users"} actions={create[tab as keyof typeof create] ?? create.users}>
       {body}
     </Page>
   );

@@ -27,7 +27,7 @@ export default async function Secrets() {
   );
   if (!list.ok) {
     return (
-      <Page title="Secrets Manager" icon={ICONS.secrets} actions={create}>
+      <Page title="Secrets" actions={create}>
         <ErrorNotice error={list.error} />
       </Page>
     );
@@ -35,7 +35,7 @@ export default async function Secrets() {
   const items = list.value.map((s) => ({ ...s, name: s.Name!, text: `${s.Name} ${s.Description ?? ""} ${(s.Tags ?? []).map((t) => `${t.Key} ${t.Value}`).join(" ")}` }));
   const grouped = await sections(items, SECRET_KINDS, "Other");
   return (
-    <Page title="Secrets Manager" icon={ICONS.secrets} actions={create}>
+    <Page title="Secrets" actions={create}>
       <Curated
         label="Secrets"
         sections={grouped}

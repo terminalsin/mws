@@ -1,8 +1,8 @@
 import { search } from "@mws-dashboard/ai";
-import { AwsIcon, Empty, List, Page } from "@mws-dashboard/ui";
+import { AwsIcon, Empty, List, Page, Status } from "@mws-dashboard/ui";
 import type { Metadata } from "next";
 
-import { inventory, searchText, serviceOf } from "../../lib/inventory";
+import { iconOf, inventory, searchText } from "../../lib/inventory";
 
 export const metadata: Metadata = { title: "Search" };
 
@@ -22,10 +22,10 @@ export default async function Search({ searchParams }: Props) {
         empty={q ? <Empty>No matches</Empty> : null}
         rows={hits.map((h) => ({
           key: h.id,
-          icon: <AwsIcon icon={serviceOf(h)?.icon ?? "category/ManagementTools"} size={24} />,
+          icon: <AwsIcon icon={iconOf(h)} size={24} label={h.type} />,
           title: h.name,
-          subtitle: `${serviceOf(h)?.short ?? h.service} · ${h.type}`,
-          meta: h.detail,
+          subtitle: h.detail,
+          meta: h.signal && <Status tone={h.signal.tone}>{h.signal.text}</Status>,
           href: h.href,
           external: true,
         }))}

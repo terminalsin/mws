@@ -2,7 +2,7 @@ import { search } from "@mws-dashboard/ai";
 import type { SearchHit } from "@mws-dashboard/ui";
 import type { NextRequest } from "next/server";
 
-import { inventory, searchText, serviceOf } from "../../../lib/inventory";
+import { iconOf, inventory, searchText, serviceOf } from "../../../lib/inventory";
 
 export const dynamic = "force-dynamic";
 
@@ -20,7 +20,7 @@ export async function GET(request: NextRequest) {
       id: i.id,
       service: i.service,
       serviceName: s?.short ?? i.service,
-      icon: s?.icon ?? "category/ManagementTools",
+      icon: iconOf(i),
       type: i.type,
       name: i.name,
       detail: i.signal?.text ?? i.detail,

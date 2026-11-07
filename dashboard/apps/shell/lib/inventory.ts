@@ -40,6 +40,30 @@ export async function inventory(): Promise<InventoryItem[]> {
   return items;
 }
 
+const TYPE_ICONS: Record<string, string> = {
+  Alarm: "resource/AmazonCloudWatchAlarm",
+  Bucket: "resource/AmazonSimpleStorageServiceBucket",
+  "Event bus": "resource/AmazonEventBridgeCustomEventBus",
+  Function: "resource/AWSLambdaLambdaFunction",
+  Instance: "resource/AmazonEC2Instance",
+  Key: "resource/AWSIdentityAccessManagementDataEncryptionKey",
+  "Log group": "resource/AmazonCloudWatchLogs",
+  Parameter: "resource/AWSSystemsManagerParameterStore",
+  Role: "resource/AWSIdentityAccessManagementRole",
+  Rule: "resource/AmazonEventBridgeRule",
+  User: "resource/User",
+  Topic: "resource/AmazonSimpleNotificationServiceTopic",
+  Queue: "resource/AmazonSimpleQueueServiceQueue",
+  "Dead-letter queue": "resource/AmazonSimpleQueueServiceQueue",
+  "Email identity": "resource/AmazonSimpleEmailServiceEmail",
+  "Domain identity": "resource/AmazonSimpleEmailServiceEmail",
+};
+
+/** The icon of a resource's type, or else its service's. */
+export function iconOf(item: InventoryItem) {
+  return TYPE_ICONS[item.type] ?? serviceOf(item)?.icon ?? "category/ManagementTools";
+}
+
 export function serviceOf(item: InventoryItem) {
   return SERVICES.find((s) => s.id === item.service);
 }

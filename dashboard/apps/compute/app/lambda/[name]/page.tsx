@@ -14,13 +14,14 @@ import {
   Section,
   Segments,
   Sheet,
+  Specs,
   Status,
   SERVICES,
   runtimeIcon,
   zoneHref,
 } from "@mws-dashboard/ui";
 import { unzipSync, strFromU8 } from "fflate";
-import { GitCommitVertical, Globe, Pause, Play, Settings2, Trash2 } from "lucide-react";
+import { CircleAlert, Clock, Cpu, GitCommitVertical, Globe, MemoryStick, Pause, Play, Settings2, Timer, Trash2 } from "lucide-react";
 import type { Metadata } from "next";
 
 import { ICONS, lambda } from "../../../lib/clients";
@@ -50,9 +51,9 @@ async function packageFiles(location: string | undefined) {
 
 export default async function LambdaFunction({ params, searchParams }: Props) {
   const name = decodeURIComponent((await params).name);
-  const { tab = "test", file } = await searchParams;
+  const { tab = "code", file } = await searchParams;
   const base = `/lambda/${encodeURIComponent(name)}`;
-  const back = { href: "/lambda", label: "Lambda" };
+  const back = { href: "/lambda", label: "Functions" };
   const data = await load(async () => {
     const client = await lambda();
     const [fn, mappings, url, versions] = await Promise.all([
@@ -78,7 +79,7 @@ export default async function LambdaFunction({ params, searchParams }: Props) {
   const roleName = c.Role?.split("/").pop();
 
   let body;
-  if (tab === "code") {
+  if (tab === "code" || (tab !== "test" && tab !== "config" && tab !== "triggers")) {
     const files = c.PackageType === "Zip" ? await packageFiles(fn.Code?.Location) : null;
     const names = Object.keys(files ?? {}).filter((f) => !f.endsWith("/")).sort();
     const handlerFile = names.find((n) => n.replace(/\.[^.]+$/, "") === c.Handler?.split(".").slice(0, -1).join(".")) ?? names[0];
@@ -96,7 +97,7 @@ export default async function LambdaFunction({ params, searchParams }: Props) {
               key: n,
               icon: <FileIcon name={n} size={18} />,
               title: n === current ? <strong>{n}</strong> : n,
-              href: `${base}?tab=code&file=${encodeURIComponent(n)}`,
+              href: `${base}?file=${encodeURIComponent(n)}`,
               meta: <span>{bytes(files[n].length)}</span>,
             }))}
           />
@@ -222,21 +223,22 @@ export default async function LambdaFunction({ params, searchParams }: Props) {
         </>
       }
     >
-      <Facts
+      <Specs
         items={[
-          ["Runtime", <span key="r" className="inline-icon">{logo && <AwsIcon icon={logo} size={16} />}{c.Runtime ?? c.PackageType}</span>],
-          c.State && c.State !== "Active" && ["State", <Status key="s" tone={c.State === "Failed" ? "bad" : "warn"}>{c.StateReason ?? c.State}</Status>],
-          ["Memory", `${c.MemorySize} MB`],
-          ["Timeout", `${c.Timeout} s`],
-          url && ["URL", <a key="u" href={url}>{url}</a>],
-          ["Role", <a key="role" href={zoneHref("security", `/iam/roles/${encodeURIComponent(roleName ?? "")}`)}>{roleName}</a>],
-          ["Modified", ago(c.LastModified)],
+          { label: "Runtime", icon: <AwsIcon icon={logo ?? ICONS.fn} size={16} />, value: c.Runtime ?? c.PackageType },
+          c.State && c.State !== "Active" && { label: "State", icon: <CircleAlert size={15} />, value: <Status tone={c.State === "Failed" ? "bad" : "warn"}>{c.StateReason ?? c.State}</Status> },
+          { label: "Memory", icon: <MemoryStick size={15} />, value: `${c.MemorySize} MB` },
+          { label: "Timeout", icon: <Timer size={15} />, value: `${c.Timeout} s` },
+          { label: "Architecture", icon: <Cpu size={15} />, value: c.Architectures?.[0] ?? "x86_64" },
+          url && { label: "Function URL", icon: <Globe size={15} />, value: <a href={url}>{new URL(url).host}</a> },
+          { label: "Execution role", icon: <AwsIcon icon="resource/AWSIdentityAccessManagementRole" size={16} />, value: <a href={zoneHref("security", `/iam/roles/${encodeURIComponent(roleName ?? "")}`)}>{roleName}</a> },
+          { label: "Last modified", icon: <Clock size={15} />, value: ago(c.LastModified) },
         ]}
       />
       <Segments
         items={[
-          { label: "Test", href: base, active: tab === "test" },
-          { label: "Code", href: `${base}?tab=code`, active: tab === "code" },
+          { label: "Code", href: base, active: tab === "code" },
+          { label: "Test", href: `${base}?tab=test`, active: tab === "test" },
           { label: "Configuration", href: `${base}?tab=config`, active: tab === "config" },
           { label: "Triggers", href: `${base}?tab=triggers`, active: tab === "triggers", count: mappings.length || undefined },
         ]}

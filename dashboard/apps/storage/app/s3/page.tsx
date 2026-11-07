@@ -33,7 +33,7 @@ export default async function Buckets() {
     );
   });
   return (
-    <Page title="S3" icon={ICON} actions={<CreateBucket />}>
+    <Page title="Buckets" actions={<CreateBucket />}>
       {buckets.ok ? (
         <Curated
           label="Buckets"

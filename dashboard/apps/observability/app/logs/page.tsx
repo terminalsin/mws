@@ -37,7 +37,7 @@ export default async function LogGroups({ searchParams }: Props) {
   );
   if (!groups.ok) {
     return (
-      <Page title="Logs" icon={ICONS.cloudwatch} actions={create}>
+      <Page title="Log groups" actions={create}>
         <ErrorNotice error={groups.error} />
       </Page>
     );
@@ -47,7 +47,7 @@ export default async function LogGroups({ searchParams }: Props) {
   const stored = groups.value.reduce((n, g) => n + (g.storedBytes ?? 0), 0);
   const forever = groups.value.filter((g) => !g.retentionInDays).length;
   return (
-    <Page title="Logs" icon={ICONS.cloudwatch} actions={create}>
+    <Page title="Log groups" actions={create}>
       {groups.value.length > 0 && (
         <Metrics>
           <Metric label="Log groups" value={groups.value.length} />

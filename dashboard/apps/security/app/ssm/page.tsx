@@ -49,7 +49,7 @@ export default async function Parameters({ searchParams }: Props) {
     .map((part, i, all) => ({ label: part, path: `/${all.slice(0, i + 1).join("/")}/` }));
   if (!params.ok) {
     return (
-      <Page title="Parameter Store" icon={ICONS.ssm} actions={create}>
+      <Page title="Parameter Store" actions={create}>
         <ErrorNotice error={params.error} />
       </Page>
     );

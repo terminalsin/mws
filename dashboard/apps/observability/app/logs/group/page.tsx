@@ -19,7 +19,7 @@ const LEVEL = /\b(ERROR|FATAL|CRITICAL|Exception|Traceback|WARN(ING)?)\b/;
 
 export default async function LogGroup({ searchParams }: Props) {
   const { name = "", stream, pattern } = await searchParams;
-  const back = { href: "/logs", label: "Logs" };
+  const back = { href: "/logs", label: "Log groups" };
   const client = await logs();
   const [group, streams, events] = await Promise.all([
     load(async () => (await client.send(new DescribeLogGroupsCommand({ logGroupNamePrefix: name }))).logGroups?.find((g) => g.logGroupName === name)),

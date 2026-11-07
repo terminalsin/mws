@@ -102,7 +102,7 @@ const BACK: Record<Kind, string> = { role: "/iam?tab=roles", user: "/iam", group
 /** The detail page of a role, user or group: who may use it and what it may do. */
 export async function Principal({ kind, name }: { kind: Kind; name: string }) {
   const [data, info] = await Promise.all([load(() => details(kind, name)), frameInfo()]);
-  const back = { href: BACK[kind], label: "IAM" };
+  const back = { href: BACK[kind], label: { role: "Roles", user: "Users", group: "Groups" }[kind] };
   if (!data.ok) {
     return (
       <Page title={name} icon={ICON[kind]} back={back}>

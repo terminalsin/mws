@@ -22,7 +22,7 @@ export default async function Queue({ params }: Props) {
   const name = decodeURIComponent((await params).name);
   const all = await load(queues);
   const queue = all.ok ? all.value.find((q) => q.name === name) : undefined;
-  const back = { href: "/sqs", label: "SQS" };
+  const back = { href: "/sqs", label: "Queues" };
   if (!queue) {
     return (
       <Page title={name} back={back}>

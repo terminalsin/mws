@@ -8,19 +8,30 @@ test("home shows resources by service and the sidebar reaches every zone", async
   await expect(page.getByRole("heading", { level: 1, name: "Home" })).toBeVisible();
   await expect(page.locator(".account")).toHaveText(/^\d{12}$/);
 
-  // Each sidebar entry outside the shell is a different Next.js app behind
-  // the shell's rewrites.
+  // Each service outside the shell is a different Next.js app behind the
+  // shell's rewrites; inside one, the sidebar is that service's own navigation.
   for (const [link, heading] of [
-    ["S3", "S3"],
-    ["SQS", "SQS"],
-    ["IAM", "IAM"],
-    ["Lambda", "Lambda"],
-    ["CloudWatch", "Logs"],
-    ["Control plane", "Control plane"],
+    ["S3", "Buckets"],
+    ["SQS", "Queues"],
+    ["IAM", "Users"],
+    ["Lambda", "Functions"],
+    ["CloudWatch", "Log groups"],
   ]) {
+    await page.goto("/");
     await page.locator(".sidebar").getByRole("link", { name: link, exact: true }).click();
     await expect(page.getByRole("heading", { level: 1, name: heading })).toBeVisible();
   }
+  await page.goto("/security/iam");
+  await page.locator(".sidebar").getByRole("link", { name: "Roles", exact: true }).click();
+  await expect(page.getByRole("heading", { level: 1, name: "Roles" })).toBeVisible();
+  await expect(page.locator(".sidebar .nav-link.active")).toHaveText("Roles");
+
+  // The Services menu reaches every service from anywhere.
+  await page.getByRole("button", { name: "Services" }).click();
+  await page.getByRole("menuitem", { name: "Lambda" }).click();
+  await expect(page.getByRole("heading", { level: 1, name: "Functions" })).toBeVisible();
+  await page.locator(".sidebar").getByRole("link", { name: "Control plane" }).click();
+  await expect(page.getByRole("heading", { level: 1, name: "Control plane" })).toBeVisible();
 });
 
 test("an alarm firing anywhere shows on the home page", async ({ page }) => {

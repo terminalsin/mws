@@ -1,6 +1,6 @@
 import { GetAccountCommand, ListEmailIdentitiesCommand } from "@aws-sdk/client-sesv2";
 import { ago, collect, load } from "@mws-dashboard/aws";
-import { ActionForm, AwsIcon, Empty, ErrorNotice, Field, List, Metric, Metrics, Page, Pill, Section, Segments, Sheet, Status } from "@mws-dashboard/ui";
+import { ActionForm, AwsIcon, Empty, ErrorNotice, Field, List, Metric, Metrics, Page, Pill, Section, Sheet, Status } from "@mws-dashboard/ui";
 import { BadgeCheck, Eraser, Globe, Mail, Send, Trash2 } from "lucide-react";
 import type { Metadata } from "next";
 
@@ -127,8 +127,7 @@ export default async function Ses({ searchParams }: Props) {
   const tab = (await searchParams).tab ?? "identities";
   return (
     <Page
-      title="SES"
-      icon={ICONS.ses}
+      title={tab === "outbox" ? "Sent mail" : "Identities"}
       actions={
         <Sheet title="Send email" label="Send email" icon={<Send size={15} aria-hidden />} testId="send-email">
           <ActionForm action={sendEmail} submit="Send" testId="send-email">
@@ -148,12 +147,6 @@ export default async function Ses({ searchParams }: Props) {
         </Sheet>
       }
     >
-      <Segments
-        items={[
-          { label: "Identities", href: "/ses", active: tab === "identities" },
-          { label: "Sent", href: "/ses?tab=outbox", active: tab === "outbox" },
-        ]}
-      />
       {tab === "outbox" ? <Outbox /> : <Identities />}
     </Page>
   );

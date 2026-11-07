@@ -46,8 +46,7 @@ export default async function EventBridge({ searchParams }: Props) {
   ]);
   return (
     <Page
-      title="EventBridge"
-      icon={ICONS.events}
+      title="Rules"
       actions={
         <>
           <Sheet title={`Send event to ${bus}`} label="Send event" icon={<Send size={15} aria-hidden />} testId="put-event">

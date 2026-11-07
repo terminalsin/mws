@@ -46,7 +46,7 @@ export default async function Functions() {
   );
   if (!functions.ok) {
     return (
-      <Page title="Lambda" icon={ICONS.lambda} actions={create}>
+      <Page title="Functions" actions={create}>
         <ErrorNotice error={functions.error} />
       </Page>
     );
@@ -59,7 +59,7 @@ export default async function Functions() {
     { id: "rest", title: apps.length ? "Other" : "Functions", items: items.filter((f) => !grouped.has(f.FunctionArn)) },
   ];
   return (
-    <Page title="Lambda" icon={ICONS.lambda} actions={create}>
+    <Page title="Functions" actions={create}>
       <Curated
         label="Functions"
         sections={sections}

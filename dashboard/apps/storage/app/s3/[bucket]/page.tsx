@@ -205,7 +205,7 @@ export default async function Bucket({ params, searchParams }: Props) {
     <Page
       title={bucket}
       icon={BUCKET_ICON}
-      back={{ href: "/s3", label: "S3" }}
+      back={{ href: "/s3", label: "Buckets" }}
       actions={
         <>
           {tab !== "properties" && (

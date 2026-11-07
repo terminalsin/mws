@@ -50,7 +50,7 @@ export default async function Topic({ searchParams }: Props) {
     ]);
     return { attrs: attrs.Attributes ?? {}, subs };
   });
-  const back = { href: "/sns", label: "SNS" };
+  const back = { href: "/sns", label: "Topics" };
   if (!data.ok) {
     return (
       <Page title={shortName(arn)} back={back}>

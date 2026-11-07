@@ -1,7 +1,7 @@
 import { applications } from "@mws-dashboard/ai";
 import { AwsIcon, Empty, List, Page, Section, SERVICES, Status, zoneHref } from "@mws-dashboard/ui";
 
-import { inventory, searchText, serviceOf } from "../lib/inventory";
+import { iconOf, inventory, searchText, serviceOf } from "../lib/inventory";
 
 export default async function Home() {
   const items = await inventory();
@@ -10,7 +10,9 @@ export default async function Home() {
   for (const i of items) counts.set(i.service, (counts.get(i.service) ?? 0) + 1);
   const services = SERVICES.filter((s) => counts.has(s.id)).sort((a, b) => counts.get(b.id)! - counts.get(a.id)!);
   const apps = (await applications(items.map((i) => ({ ...i, text: searchText(i) })))).filter(
-    (a) => new Set(a.members.map((m) => m.service)).size > 1 || a.members.length >= 3,
+    // An application spans services (a function, its role, its logs); a run of
+    // similarly named resources of one kind is not one.
+    (a) => new Set(a.members.map((m) => m.service)).size > 1,
   );
 
   return (
@@ -21,9 +23,8 @@ export default async function Home() {
             label="Needs attention"
             rows={attention.map((i) => ({
               key: i.id,
-              icon: <AwsIcon icon={serviceOf(i)?.icon ?? "category/ManagementTools"} size={24} />,
+              icon: <AwsIcon icon={iconOf(i)} size={24} label={i.type} />,
               title: i.name,
-              subtitle: i.type,
               href: i.href,
               external: true,
               meta: <Status tone={i.signal!.tone}>{i.signal!.text}</Status>,

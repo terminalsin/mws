@@ -10,18 +10,17 @@ import {
   FileText,
   FileVideo,
   Folder,
-  House,
   SlidersHorizontal,
 } from "lucide-react";
 import Link from "next/link";
-import type { ReactNode } from "react";
+import { Suspense, type ReactNode } from "react";
 
 import { navigation, iconUrl } from "./catalog";
-import { CommandPalette, NavLink, RegionPicker, Toasts } from "./client";
+import { CommandPalette, NavLink, RegionPicker, ServicesMenu, SideNav, Toasts, type NavGroup } from "./client";
 import { zoneHref, type ZoneId } from "./zones";
 
 export { ActionForm, CommandPalette, NavLink, RegionPicker, Sheet, Toasts, type ActionResult, type FormAction, type SearchHit } from "./client";
-export { CATEGORIES, SERVICES, iconUrl, navigation, runtimeIcon, service, type Category, type CategoryId, type Service } from "./catalog";
+export { CATEGORIES, SERVICES, iconUrl, navigation, runtimeIcon, service, type Category, type CategoryId, type NavItem, type Service } from "./catalog";
 export { ZONES, zone, zoneHref, REGION_COOKIE, type Zone, type ZoneId } from "./zones";
 
 export interface FrameInfo {
@@ -51,65 +50,70 @@ export function AwsIcon({ icon, size = 20, label }: { icon: string; size?: numbe
 /** The page chrome every zone renders around its content: one sidebar that
  * spans all zones and a toolbar with search, region and account. */
 export function Frame({ zone: current, info, children }: { zone: ZoneId; info: FrameInfo; children: ReactNode }) {
-  const link = (zone: ZoneId, path: string) =>
-    zone === current ? { href: path, zonePath: path, sameZone: true } : { href: zoneHref(zone, path), sameZone: false };
+  const groups: NavGroup[] = navigation().map(({ category, services }) => ({
+    id: category.id,
+    name: category.name,
+    services: services.map((s) => ({
+      id: s.id,
+      short: s.short,
+      icon: s.icon,
+      zone: s.zone!,
+      path: s.path!,
+      href: zoneHref(s.zone!, s.path!),
+      nav: (s.nav ?? []).map((n) => ({ ...n, href: zoneHref(s.zone!, n.path) })),
+    })),
+  }));
+  const home = current === "shell" ? <Link className="brand" href="/" aria-label="MWS home">{brand}</Link> : <a className="brand" href="/" aria-label="MWS home">{brand}</a>;
   return (
     <Toasts>
       <div className="frame">
-        <aside className="sidebar">
-          <a className="brand" href="/" aria-label="MWS home">
-            <span className="brand-mark" aria-hidden>
-              M
-            </span>
-            <span className="brand-name">MWS</span>
-          </a>
-          <nav aria-label="Services">
-            <div className="nav-group">
-              <NavLink {...link("shell", "/")} icon={<House size={17} aria-hidden />}>
-                Home
+        <header className="topbar">
+          {home}
+          <ServicesMenu groups={groups} />
+          <CommandPalette />
+          <div className="topbar-end">
+            <span className={info.error ? "health down" : "health up"} title={info.error ? `MWS unreachable at ${info.endpoint}` : `MWS at ${info.endpoint}`} />
+            {info.account && (
+              <span className="account" title={info.principal ?? undefined}>
+                {info.account}
+              </span>
+            )}
+            <RegionPicker region={info.region} />
+          </div>
+        </header>
+        <div className="frame-body">
+          <aside className="sidebar">
+            <Suspense>
+              <SideNav zone={current} groups={groups} />
+            </Suspense>
+            <div className="nav-foot">
+              <NavLink {...(current === "shell" ? { href: "/control", zonePath: "/control", sameZone: true } : { href: "/control", sameZone: false })} icon={<SlidersHorizontal size={17} aria-hidden />}>
+                Control plane
               </NavLink>
             </div>
-            {navigation().map(({ category, services }) => (
-              <div key={category.id} className="nav-group">
-                <div className="nav-title">{category.name}</div>
-                {services.map((s) => (
-                  <NavLink key={s.id} {...link(s.zone!, s.path!)} icon={<AwsIcon icon={s.icon} size={20} />}>
-                    {s.short}
-                  </NavLink>
-                ))}
+          </aside>
+          <div className="main">
+            {info.error && (
+              <div className="banner error" role="alert">
+                MWS is not reachable at <code>{info.endpoint}</code>. Start it with <code>cargo run -p mws</code>.
               </div>
-            ))}
-          </nav>
-          <div className="nav-foot">
-            <NavLink {...link("shell", "/control")} icon={<SlidersHorizontal size={17} aria-hidden />}>
-              Control plane
-            </NavLink>
+            )}
+            <main className="content">{children}</main>
           </div>
-        </aside>
-        <div className="main">
-          <header className="toolbar">
-            <CommandPalette />
-            <div className="toolbar-end">
-              <span className={info.error ? "health down" : "health up"} title={info.error ? `MWS unreachable at ${info.endpoint}` : `MWS at ${info.endpoint}`} />
-              {info.account && (
-                <span className="account" title={info.principal ?? undefined}>
-                  {info.account}
-                </span>
-              )}
-              <RegionPicker region={info.region} />
-            </div>
-          </header>
-          {info.error && (
-            <div className="banner error" role="alert">
-              MWS is not reachable at <code>{info.endpoint}</code>. Start it with <code>cargo run -p mws</code>.
-            </div>
-          )}
-          <main className="content">{children}</main>
         </div>
       </div>
     </Toasts>
   );
 }
+
+const brand = (
+  <>
+    <span className="brand-mark" aria-hidden>
+      M
+    </span>
+    <span className="brand-name">MWS</span>
+  </>
+);
 
 /** A page's title row: the service or resource icon, the title, and its
  * actions as icon buttons. */
@@ -319,6 +323,28 @@ export function Status({ tone, children }: { tone: Tone; children: ReactNode }) 
       <span className="dot" aria-hidden />
       {children}
     </span>
+  );
+}
+
+type Spec = { icon: ReactNode; value: ReactNode; label: string };
+
+/** A resource's vital signs as icon + value chips, the label kept for
+ * tooltips and screen readers: what Facts says in words, said visually. */
+export function Specs({ items }: { items: (Spec | null | false | undefined | "" | 0)[] }) {
+  return (
+    <ul className="specs">
+      {items
+        .filter((x): x is Spec => !!x)
+        .map((x) => (
+          <li key={x.label} title={x.label}>
+            <span className="spec-icon" aria-hidden>
+              {x.icon}
+            </span>
+            <span className="sr-only">{x.label}</span>
+            <span>{x.value}</span>
+          </li>
+        ))}
+    </ul>
   );
 }
 

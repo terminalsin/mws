@@ -1,7 +1,7 @@
 import { GetTopicAttributesCommand, ListTopicsCommand } from "@aws-sdk/client-sns";
 import { sections } from "@mws-dashboard/ai";
 import { ago, collect, load, shortName } from "@mws-dashboard/aws";
-import { ActionForm, AwsIcon, Curated, Empty, ErrorNotice, Field, List, Page, Pill, Section, Segments, Sheet } from "@mws-dashboard/ui";
+import { ActionForm, AwsIcon, Curated, Empty, ErrorNotice, Field, List, Page, Pill, Section, Sheet } from "@mws-dashboard/ui";
 import { Eraser, Mail, MessageSquare } from "lucide-react";
 import type { Metadata } from "next";
 
@@ -136,13 +136,7 @@ async function Outbox() {
 export default async function Sns({ searchParams }: Props) {
   const tab = (await searchParams).tab ?? "topics";
   return (
-    <Page title="SNS" icon={ICONS.sns} actions={tab === "topics" ? <CreateTopic /> : undefined}>
-      <Segments
-        items={[
-          { label: "Topics", href: "/sns", active: tab === "topics" },
-          { label: "Delivered", href: "/sns?tab=outbox", active: tab === "outbox" },
-        ]}
-      />
+    <Page title={tab === "outbox" ? "Deliveries" : "Topics"} actions={tab === "topics" ? <CreateTopic /> : undefined}>
       {tab === "outbox" ? <Outbox /> : <Topics />}
     </Page>
   );
