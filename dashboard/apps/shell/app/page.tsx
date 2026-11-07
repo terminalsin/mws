@@ -1,60 +1,74 @@
-import { load, mws, when } from "@mws-dashboard/aws";
-import { Badge, Card, ErrorNotice, Grid, PageHeader, Section, Stat, ZONES, zoneHref } from "@mws-dashboard/ui";
+import { applications } from "@mws-dashboard/ai";
+import { AwsIcon, Empty, List, Page, Section, SERVICES, Status, zoneHref } from "@mws-dashboard/ui";
 
-interface Health {
-  status: string;
-  services: string[];
-}
+import { iconOf, inventory, searchText, serviceOf } from "../lib/inventory";
 
-interface Clock {
-  now: string;
-  offsetSeconds: number;
-}
+export default async function Home() {
+  const items = await inventory();
+  const attention = items.filter((i) => i.signal);
+  const counts = new Map<string, number>();
+  for (const i of items) counts.set(i.service, (counts.get(i.service) ?? 0) + 1);
+  const services = SERVICES.filter((s) => counts.has(s.id)).sort((a, b) => counts.get(b.id)! - counts.get(a.id)!);
+  const apps = (await applications(items.map((i) => ({ ...i, text: searchText(i) })))).filter(
+    // An application spans services (a function, its role, its logs); a run of
+    // similarly named resources of one kind is not one.
+    (a) => new Set(a.members.map((m) => m.service)).size > 1,
+  );
 
-const ZONE_BLURBS: Record<string, string> = {
-  storage: "Buckets, objects, uploads and downloads.",
-  messaging: "Queues, topics, event buses and the mail SES and SNS sent.",
-  security: "IAM principals and policies, KMS keys, secrets and parameters.",
-  compute: "Lambda functions you can invoke, EC2 instances you can start and stop.",
-  observability: "Log groups and events, alarms and metrics.",
-};
-
-export default async function Overview() {
-  const [health, clock] = await Promise.all([load(() => mws<Health>("/_mws/health")), load(() => mws<Clock>("/_mws/clock"))]);
   return (
-    <>
-      <PageHeader
-        title="Overview"
-        description="A console for the local AWS emulator. Every page reads live state through the AWS SDK, so what you see is what your code sees."
-      />
-      {!health.ok && <ErrorNotice error={health.error} />}
-      <Grid>
-        <Stat label="Status" value={health.ok ? <Badge tone="good">{health.value.status}</Badge> : <Badge tone="bad">down</Badge>} />
-        <Stat label="Emulated services" value={health.ok ? health.value.services.length : "—"} />
-        <Stat
-          label="Emulated clock"
-          value={clock.ok ? when(clock.value.now) : "—"}
-          hint={clock.ok && clock.value.offsetSeconds !== 0 ? `${clock.value.offsetSeconds}s ahead of real time` : "real time"}
-        />
-      </Grid>
-      <Section title="Consoles">
-        <Grid>
-          {ZONES.filter((z) => z.id !== "shell").map((z) => (
-            <Card key={z.id} title={z.title} href={zoneHref(z.id, z.nav[0]?.path ?? "/")}>
-              {ZONE_BLURBS[z.id]}
-            </Card>
-          ))}
-        </Grid>
-      </Section>
-      {health.ok && (
-        <Section title={`Services (${health.value.services.length})`}>
-          <div className="chips" data-testid="services">
-            {[...health.value.services].sort().map((s) => (
-              <Badge key={s}>{s}</Badge>
-            ))}
+    <Page title="Home">
+      {attention.length > 0 && (
+        <Section title="Needs attention" count={attention.length} plain>
+          <List
+            label="Needs attention"
+            rows={attention.map((i) => ({
+              key: i.id,
+              icon: <AwsIcon icon={iconOf(i)} size={24} label={i.type} />,
+              title: i.name,
+              href: i.href,
+              external: true,
+              meta: <Status tone={i.signal!.tone}>{i.signal!.text}</Status>,
+            }))}
+          />
+        </Section>
+      )}
+
+      {apps.length > 0 && (
+        <Section title="Applications" count={apps.length} plain>
+          <div className="tiles apps">
+            {apps.slice(0, 12).map((a) => {
+              const icons = [...new Set(a.members.map((m) => serviceOf(m)?.icon).filter(Boolean))] as string[];
+              return (
+                <a key={a.name} className="tile" href={`/search?q=${encodeURIComponent(a.name)}`}>
+                  <span className="icon-stack">
+                    {icons.slice(0, 5).map((icon) => (
+                      <AwsIcon key={icon} icon={icon} size={26} />
+                    ))}
+                  </span>
+                  <span className="tile-name">{a.name}</span>
+                  <span className="muted">{a.members.length}</span>
+                </a>
+              );
+            })}
           </div>
         </Section>
       )}
-    </>
+
+      <Section title="Resources" count={items.length} plain>
+        {services.length > 0 ? (
+          <div className="tiles" data-testid="services">
+            {services.map((s) => (
+              <a key={s.id} className="tile" href={s.zone ? zoneHref(s.zone, s.path) : undefined}>
+                <AwsIcon icon={s.icon} size={32} />
+                <span className="tile-name">{s.short}</span>
+                <span className="tile-value">{counts.get(s.id)}</span>
+              </a>
+            ))}
+          </div>
+        ) : (
+          <Empty icon="service/AWSManagementConsole" />
+        )}
+      </Section>
+    </Page>
   );
 }

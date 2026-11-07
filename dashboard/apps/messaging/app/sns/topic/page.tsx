@@ -1,9 +1,11 @@
 import { GetTopicAttributesCommand, ListSubscriptionsByTopicCommand } from "@aws-sdk/client-sns";
 import { collect, load, shortName } from "@mws-dashboard/aws";
-import { ActionForm, Badge, CodeBlock, ErrorNotice, Field, KeyValue, PageHeader, Section, Table } from "@mws-dashboard/ui";
+import { ActionForm, AwsIcon, CodeBlock, Empty, ErrorNotice, Facts, Field, List, Page, Section, Sheet, Status } from "@mws-dashboard/ui";
+import { Globe, Mail, MessageSquare, Send, Smartphone, Trash2, Unlink } from "lucide-react";
 import type { Metadata } from "next";
+import type { ReactNode } from "react";
 
-import { sns } from "../../../lib/clients";
+import { ICONS, sns } from "../../../lib/clients";
 import { deleteTopic, publish, subscribe, unsubscribe } from "../actions";
 
 type Props = { searchParams: Promise<{ arn?: string }> };
@@ -13,6 +15,26 @@ export async function generateMetadata({ searchParams }: Props): Promise<Metadat
 }
 
 const PROTOCOLS = ["sqs", "lambda", "email", "email-json", "sms", "http", "https", "firehose", "application"];
+
+function protocolIcon(protocol?: string): ReactNode {
+  switch (protocol) {
+    case "sqs":
+      return <AwsIcon icon="service/AmazonSimpleQueueService" size={24} />;
+    case "lambda":
+      return <AwsIcon icon="service/AWSLambda" size={24} />;
+    case "firehose":
+      return <AwsIcon icon="service/AmazonDataFirehose" size={24} />;
+    case "email":
+    case "email-json":
+      return <Mail size={18} aria-hidden />;
+    case "sms":
+      return <MessageSquare size={18} aria-hidden />;
+    case "application":
+      return <Smartphone size={18} aria-hidden />;
+    default:
+      return <Globe size={18} aria-hidden />;
+  }
+}
 
 export default async function Topic({ searchParams }: Props) {
   const arn = (await searchParams).arn ?? "";
@@ -28,97 +50,111 @@ export default async function Topic({ searchParams }: Props) {
     ]);
     return { attrs: attrs.Attributes ?? {}, subs };
   });
-  const crumbs = [{ label: "SNS topics", href: "/sns" }];
+  const back = { href: "/sns", label: "Topics" };
   if (!data.ok) {
     return (
-      <>
-        <PageHeader title={shortName(arn)} crumbs={crumbs} />
+      <Page title={shortName(arn)} back={back}>
         <ErrorNotice error={data.error} />
-      </>
+      </Page>
     );
   }
   const { attrs, subs } = data.value;
   const fifo = attrs.FifoTopic === "true";
   return (
-    <>
-      <PageHeader title={shortName(arn)} crumbs={crumbs} description={<code>{arn}</code>} />
-      <Section title="Publish">
-        <ActionForm action={publish.bind(null, arn)} submit="Publish" testId="publish">
-          <div className="form-row">
-            <Field label="Subject">
-              <input name="subject" />
-            </Field>
-            {fifo && (
-              <Field label="Message group ID">
-                <input name="group" defaultValue="default" required />
-              </Field>
-            )}
-          </div>
-          <Field label="Message">
-            <textarea name="message" required />
-          </Field>
-        </ActionForm>
-      </Section>
-      <Section title={`Subscriptions (${subs.length})`}>
-        <Table
+    <Page
+      title={shortName(arn)}
+      icon={ICONS.topic}
+      back={back}
+      subtitle={arn}
+      actions={
+        <>
+          <Sheet title="Publish" label="Publish" icon={<Send size={15} aria-hidden />} testId="publish">
+            <ActionForm action={publish.bind(null, arn)} submit="Publish" testId="publish">
+              <div className="form-row">
+                <Field label="Subject">
+                  <input name="subject" />
+                </Field>
+                {fifo && (
+                  <Field label="Group ID">
+                    <input name="group" defaultValue="default" required />
+                  </Field>
+                )}
+              </div>
+              <textarea name="message" required aria-label="Message" />
+            </ActionForm>
+          </Sheet>
+          <ActionForm
+            action={deleteTopic.bind(null, arn)}
+            submit="Delete topic"
+            icon={<Trash2 size={16} aria-hidden />}
+            tone="danger"
+            confirm="Delete this topic?"
+          />
+        </>
+      }
+    >
+      <Section
+        title="Subscriptions"
+        count={subs.length}
+        plain
+        actions={
+          <Sheet title="Subscribe" label="Subscribe" testId="subscribe">
+            <ActionForm action={subscribe.bind(null, arn)} submit="Subscribe" testId="subscribe">
+              <div className="form-row">
+                <Field label="Protocol">
+                  <select name="protocol" defaultValue="sqs">
+                    {PROTOCOLS.map((p) => (
+                      <option key={p}>{p}</option>
+                    ))}
+                  </select>
+                </Field>
+                <Field label="Endpoint">
+                  <input name="endpoint" required />
+                </Field>
+              </div>
+              <label className="check">
+                <input type="checkbox" name="grant" defaultChecked /> Allow the topic in the queue policy (SQS)
+              </label>
+            </ActionForm>
+          </Sheet>
+        }
+      >
+        <List
           label="Subscriptions"
-          rows={subs}
-          rowKey={(s) => s.SubscriptionArn!}
-          empty="No subscriptions."
-          columns={[
-            { header: "Protocol", cell: (s) => <Badge>{s.Protocol}</Badge> },
-            { header: "Endpoint", className: "wrap", cell: (s) => <code>{s.Endpoint}</code> },
-            {
-              header: "Status",
-              cell: (s) =>
-                s.SubscriptionArn === "PendingConfirmation" ? <Badge tone="warn">pending</Badge> : <Badge tone="good">confirmed</Badge>,
-            },
-            {
-              header: "",
-              cell: (s) =>
-                s.SubscriptionArn !== "PendingConfirmation" && (
-                  <ActionForm action={unsubscribe.bind(null, s.SubscriptionArn!)} submit="Unsubscribe" tone="danger" inline />
-                ),
-            },
-          ]}
+          empty={<Empty icon={ICONS.topic} />}
+          rows={subs.map((s) => ({
+            key: s.SubscriptionArn! + s.Endpoint,
+            icon: protocolIcon(s.Protocol),
+            title: s.Endpoint,
+            subtitle: s.Protocol,
+            meta: s.SubscriptionArn === "PendingConfirmation" ? <Status tone="warn">pending</Status> : <Status tone="good">confirmed</Status>,
+            actions:
+              s.SubscriptionArn !== "PendingConfirmation" ? (
+                <ActionForm
+                  action={unsubscribe.bind(null, s.SubscriptionArn!)}
+                  submit={`Unsubscribe ${s.Endpoint}`}
+                  icon={<Unlink size={16} aria-hidden />}
+                  tone="danger"
+                />
+              ) : undefined,
+          }))}
         />
-        <div style={{ marginTop: 12 }}>
-          <ActionForm action={subscribe.bind(null, arn)} submit="Subscribe" inline testId="subscribe">
-            <Field label="Protocol">
-              <select name="protocol" defaultValue="sqs">
-                {PROTOCOLS.map((p) => (
-                  <option key={p}>{p}</option>
-                ))}
-              </select>
-            </Field>
-            <Field label="Endpoint" hint="A queue or function ARN, an address, a number or a URL">
-              <input name="endpoint" required size={48} />
-            </Field>
-            <label className="check">
-              <input type="checkbox" name="grant" defaultChecked /> For SQS, allow the topic in the queue policy
-            </label>
-          </ActionForm>
-        </div>
       </Section>
-      <Section title="Attributes">
-        <KeyValue
+      <Section>
+        <Facts
           items={[
-            ["Display name", attrs.DisplayName || "—"],
-            ["Owner", attrs.Owner],
-            ["Encryption", attrs.KmsMasterKeyId ?? "none"],
-            ["Content-based dedup", attrs.ContentBasedDeduplication ?? "—"],
+            attrs.DisplayName && ["Display name", attrs.DisplayName],
+            ["Encryption", attrs.KmsMasterKeyId ?? "None"],
+            fifo && ["Content-based dedup", attrs.ContentBasedDeduplication],
+            attrs.DeliveryPolicy && ["Delivery policy", "custom"],
           ]}
         />
-        {attrs.Policy && (
-          <>
-            <h2 style={{ margin: "16px 0 8px" }}>Access policy</h2>
-            <CodeBlock value={attrs.Policy} />
-          </>
-        )}
       </Section>
-      <Section title="Delete">
-        <ActionForm action={deleteTopic.bind(null, arn)} submit="Delete topic" tone="danger" confirm="Delete this topic?" inline />
-      </Section>
-    </>
+      {attrs.Policy && (
+        <Section title="Access policy">
+          <CodeBlock value={attrs.Policy} />
+        </Section>
+      )}
+    </Page>
   );
 }

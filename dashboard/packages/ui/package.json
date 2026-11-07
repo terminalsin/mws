@@ -8,9 +8,9 @@
     ".": "./src/index.tsx",
     "./client": "./src/client.tsx",
     "./zones": "./src/zones.ts",
-    "./zones.json": "./zones.json",
     "./styles.css": "./src/styles.css",
-    "./next-config": "./next-config.mjs"
+    "./next-config": "./next-config.mjs",
+    "./catalog": "./src/catalog.ts"
   },
   "scripts": {
     "typecheck": "tsc --noEmit"
@@ -18,5 +18,8 @@
   "peerDependencies": {
     "next": "^16.0.0",
     "react": "^19.0.0"
+  },
+  "dependencies": {
+    "lucide-react": "^1.70.0"
   }
 }

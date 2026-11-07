@@ -1,46 +1,64 @@
 import { ListBucketsCommand } from "@aws-sdk/client-s3";
-import { load, when } from "@mws-dashboard/aws";
-import { ActionForm, ErrorNotice, Field, PageHeader, Section, Table } from "@mws-dashboard/ui";
+import { stage, sections } from "@mws-dashboard/ai";
+import { ago, load } from "@mws-dashboard/aws";
+import { ActionForm, AwsIcon, Curated, Empty, ErrorNotice, Field, Page, Pill, Sheet } from "@mws-dashboard/ui";
 import type { Metadata } from "next";
-import Link from "next/link";
 
-import { folderHref, s3 } from "../../lib/s3";
+import { BUCKET_ICON, BUCKET_PURPOSES, ICON, bucketHref, s3 } from "../../lib/s3";
 import { createBucket } from "./actions";
 
-export const metadata: Metadata = { title: "S3 buckets" };
+export const metadata: Metadata = { title: "S3" };
+
+function CreateBucket() {
+  return (
+    <Sheet title="New bucket" label="Create bucket" testId="create-bucket">
+      <ActionForm action={createBucket} submit="Create" testId="create-bucket">
+        <Field label="Name">
+          <input name="name" required minLength={3} maxLength={63} pattern="[a-z0-9][a-z0-9.\-]*[a-z0-9]" autoFocus />
+        </Field>
+        <label className="check">
+          <input type="checkbox" name="versioning" /> Versioning
+        </label>
+      </ActionForm>
+    </Sheet>
+  );
+}
 
 export default async function Buckets() {
   const buckets = await load(async () => {
-    const out = await (await s3()).send(new ListBucketsCommand({}));
-    return out.Buckets ?? [];
+    const list = (await (await s3()).send(new ListBucketsCommand({}))).Buckets ?? [];
+    return sections(
+      list.map((b) => ({ ...b, text: b.Name! })),
+      BUCKET_PURPOSES,
+    );
   });
   return (
-    <>
-      <PageHeader title="S3 buckets" description="Every bucket the current account owns, in all regions." />
-      <Section title="Create bucket">
-        <ActionForm action={createBucket} submit="Create bucket" inline testId="create-bucket">
-          <Field label="Bucket name" hint="Created in the region picked in the top bar.">
-            <input name="name" required minLength={3} maxLength={63} pattern="[a-z0-9][a-z0-9.\-]*[a-z0-9]" />
-          </Field>
-        </ActionForm>
-      </Section>
-      <Section title={buckets.ok ? `Buckets (${buckets.value.length})` : "Buckets"}>
-        {buckets.ok ? (
-          <Table
-            label="Buckets"
-            rows={buckets.value}
-            rowKey={(b) => b.Name!}
-            empty="No buckets yet."
-            columns={[
-              { header: "Name", cell: (b) => <Link href={folderHref(b.Name!, "")}>{b.Name}</Link> },
-              { header: "Region", cell: (b) => b.BucketRegion ?? "—" },
-              { header: "Created", cell: (b) => when(b.CreationDate) },
-            ]}
-          />
-        ) : (
-          <ErrorNotice error={buckets.error} />
-        )}
-      </Section>
-    </>
+    <Page title="Buckets" actions={<CreateBucket />}>
+      {buckets.ok ? (
+        <Curated
+          label="Buckets"
+          sections={buckets.value}
+          empty={<Empty icon={BUCKET_ICON} action={<CreateBucket />} />}
+          row={(b) => {
+            const env = stage(b.Name!);
+            return {
+              key: b.Name!,
+              icon: <AwsIcon icon={BUCKET_ICON} size={24} />,
+              title: b.Name,
+              subtitle: b.BucketRegion,
+              href: bucketHref(b.Name!),
+              meta: (
+                <>
+                  {env && <Pill tone={env === "production" ? "warn" : "neutral"}>{env}</Pill>}
+                  <span title={b.CreationDate?.toISOString()}>{ago(b.CreationDate)}</span>
+                </>
+              ),
+            };
+          }}
+        />
+      ) : (
+        <ErrorNotice error={buckets.error} />
+      )}
+    </Page>
   );
 }

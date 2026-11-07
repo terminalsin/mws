@@ -1,127 +1,98 @@
-import { DescribeKeyCommand, ListAliasesCommand, ListKeysCommand } from "@aws-sdk/client-kms";
-import { collect, load, when } from "@mws-dashboard/aws";
-import { ActionForm, Badge, ErrorNotice, Field, PageHeader, Section, Table, type Tone } from "@mws-dashboard/ui";
+import type { KeyMetadata } from "@aws-sdk/client-kms";
+import { ago, load } from "@mws-dashboard/aws";
+import { ActionForm, AwsIcon, Curated, Empty, ErrorNotice, Field, Metric, Metrics, Page, Pill, Sheet, Status } from "@mws-dashboard/ui";
 import type { Metadata } from "next";
 
-import { kms } from "../../lib/clients";
-import { createKey, scheduleDeletion, setEnabled, tryEncrypt } from "./actions";
+import { ICONS } from "../../lib/clients";
+import { STATE_TONE, listKeys } from "../../lib/kms";
+import { createKey } from "./actions";
 
-export const metadata: Metadata = { title: "KMS keys" };
+export const metadata: Metadata = { title: "KMS" };
 
-const STATE_TONE: Record<string, Tone> = { Enabled: "good", Disabled: "neutral", PendingDeletion: "bad", PendingImport: "warn" };
 
-export default async function Keys() {
-  const keys = await load(async () => {
-    const client = await kms();
-    const [list, aliases] = await Promise.all([
-      collect(
-        (Marker) => client.send(new ListKeysCommand({ Marker })),
-        (r) => r.Keys,
-        (r) => (r.Truncated ? r.NextMarker : undefined),
+const USAGE = [
+  { id: "ENCRYPT_DECRYPT", title: "Encryption" },
+  { id: "SIGN_VERIFY", title: "Signing" },
+  { id: "GENERATE_VERIFY_MAC", title: "MAC" },
+  { id: "KEY_AGREEMENT", title: "Key agreement" },
+];
+
+type Props = { searchParams: Promise<{ tab?: string }> };
+
+export default async function Keys({ searchParams }: Props) {
+  const { tab = "customer" } = await searchParams;
+  const keys = await load(listKeys);
+  const create = (
+    <Sheet title="New key" label="Create key" testId="create-key">
+      <ActionForm action={createKey} submit="Create" testId="create-key">
+        <Field label="Alias">
+          <input name="alias" placeholder="alias/app-data" autoFocus />
+        </Field>
+        <Field label="Key spec">
+          <select name="spec" defaultValue="SYMMETRIC_DEFAULT">
+            {["SYMMETRIC_DEFAULT", "RSA_2048", "RSA_3072", "RSA_4096", "ECC_NIST_P256", "ECC_NIST_P384", "ECC_NIST_P521", "ECC_SECG_P256K1", "HMAC_224", "HMAC_256", "HMAC_384", "HMAC_512"].map((s) => (
+              <option key={s}>{s}</option>
+            ))}
+          </select>
+        </Field>
+        <Field label="RSA usage">
+          <select name="usage" defaultValue="encrypt">
+            <option value="encrypt">Encrypt and decrypt</option>
+            <option value="sign">Sign and verify</option>
+          </select>
+        </Field>
+        <label className="check">
+          <input type="checkbox" name="rotation" defaultChecked /> Automatic rotation
+        </label>
+        <label className="check">
+          <input type="checkbox" name="multiRegion" /> Multi-Region
+        </label>
+      </ActionForm>
+    </Sheet>
+  );
+  if (!keys.ok) {
+    return (
+      <Page title={tab === "aws" ? "AWS managed keys" : "Customer managed keys"} actions={create}>
+        <ErrorNotice error={keys.error} />
+      </Page>
+    );
+  }
+  const customer = keys.value.filter((k) => k.meta.KeyManager === "CUSTOMER");
+  const aws = keys.value.filter((k) => k.meta.KeyManager !== "CUSTOMER");
+  const pending = customer.filter((k) => k.meta.KeyState === "PendingDeletion").length;
+  const shown = tab === "aws" ? aws : customer;
+  const row = ({ meta, aliases }: { meta: KeyMetadata; aliases: string[] }) => ({
+    key: meta.KeyId!,
+    icon: <AwsIcon icon={ICONS.key} size={24} />,
+    title: aliases[0]?.replace(/^alias\//, "") ?? <code>{meta.KeyId}</code>,
+    subtitle: [aliases.length > 1 ? `+${aliases.length - 1}` : null, meta.KeySpec !== "SYMMETRIC_DEFAULT" ? meta.KeySpec : null, meta.MultiRegion ? "multi-Region" : null]
+      .filter(Boolean)
+      .join(" · "),
+    href: `/kms/key?id=${meta.KeyId}`,
+    meta:
+      meta.KeyState === "PendingDeletion" ? (
+        <Pill tone="bad">{ago(meta.DeletionDate)}</Pill>
+      ) : meta.KeyState !== "Enabled" ? (
+        <Status tone={STATE_TONE[meta.KeyState!] ?? "neutral"}>{meta.KeyState}</Status>
+      ) : (
+        <span>{ago(meta.CreationDate)}</span>
       ),
-      collect(
-        (Marker) => client.send(new ListAliasesCommand({ Marker })),
-        (r) => r.Aliases,
-        (r) => (r.Truncated ? r.NextMarker : undefined),
-      ),
-    ]);
-    const described = await Promise.all(list.map(async (k) => (await client.send(new DescribeKeyCommand({ KeyId: k.KeyId! }))).KeyMetadata!));
-    return described.map((meta) => ({ meta, aliases: aliases.filter((a) => a.TargetKeyId === meta.KeyId).map((a) => a.AliasName!) }));
   });
-  const customer = keys.ok ? keys.value.filter((k) => k.meta.KeyManager === "CUSTOMER") : [];
   return (
-    <>
-      <PageHeader title="KMS keys" description="Keys in the selected region. MWS performs real cryptography with them." />
-      <Section title="Create key">
-        <ActionForm action={createKey} submit="Create key" inline testId="create-key">
-          <Field label="Alias">
-            <input name="alias" placeholder="alias/my-key" />
-          </Field>
-          <Field label="Key spec">
-            <select name="spec" defaultValue="SYMMETRIC_DEFAULT">
-              {["SYMMETRIC_DEFAULT", "RSA_2048", "RSA_4096", "ECC_NIST_P256", "ECC_SECG_P256K1", "HMAC_256"].map((s) => (
-                <option key={s}>{s}</option>
-              ))}
-            </select>
-          </Field>
-          <Field label="Description">
-            <input name="description" />
-          </Field>
-        </ActionForm>
-      </Section>
-      <Section title={keys.ok ? `Keys (${keys.value.length})` : "Keys"}>
-        {keys.ok ? (
-          <Table
-            label="Keys"
-            rows={keys.value}
-            rowKey={(k) => k.meta.KeyId!}
-            empty="No keys in this region."
-            columns={[
-              {
-                header: "Key",
-                className: "wrap",
-                cell: (k) => (
-                  <>
-                    <div>{k.aliases.join(", ") || <span className="muted">no alias</span>}</div>
-                    <code className="muted">{k.meta.KeyId}</code>
-                  </>
-                ),
-              },
-              { header: "Spec", cell: (k) => k.meta.KeySpec },
-              { header: "Usage", cell: (k) => k.meta.KeyUsage },
-              { header: "Manager", cell: (k) => <Badge>{k.meta.KeyManager?.toLowerCase()}</Badge> },
-              { header: "State", cell: (k) => <Badge tone={STATE_TONE[k.meta.KeyState ?? ""] ?? "neutral"}>{k.meta.KeyState}</Badge> },
-              { header: "Created", cell: (k) => when(k.meta.CreationDate) },
-              {
-                header: "",
-                cell: (k) =>
-                  k.meta.KeyManager === "CUSTOMER" &&
-                  k.meta.KeyState !== "PendingDeletion" && (
-                    <div className="actions-cell">
-                      <ActionForm
-                        action={setEnabled.bind(null, k.meta.KeyId!, k.meta.KeyState !== "Enabled")}
-                        submit={k.meta.KeyState === "Enabled" ? "Disable" : "Enable"}
-                        tone={k.meta.KeyState === "Enabled" ? "danger" : "primary"}
-                        inline
-                      />
-                      <ActionForm
-                        action={scheduleDeletion.bind(null, k.meta.KeyId!)}
-                        submit="Schedule deletion"
-                        tone="danger"
-                        confirm="Schedule this key for deletion in 7 days?"
-                        inline
-                      />
-                    </div>
-                  ),
-              },
-            ]}
-          />
-        ) : (
-          <ErrorNotice error={keys.error} />
-        )}
-      </Section>
-      {customer.some((k) => k.meta.KeyState === "Enabled" && k.meta.KeyUsage === "ENCRYPT_DECRYPT") && (
-        <Section title="Try a key">
-          <ActionForm action={tryEncrypt} submit="Encrypt and decrypt" testId="try-key">
-            <div className="form-row">
-              <Field label="Key">
-                <select name="keyId">
-                  {customer
-                    .filter((k) => k.meta.KeyState === "Enabled" && k.meta.KeyUsage === "ENCRYPT_DECRYPT")
-                    .map((k) => (
-                      <option key={k.meta.KeyId} value={k.meta.KeyId}>
-                        {k.aliases[0] ?? k.meta.KeyId}
-                      </option>
-                    ))}
-                </select>
-              </Field>
-              <Field label="Plaintext">
-                <input name="plaintext" required defaultValue="hello from the MWS console" size={40} />
-              </Field>
-            </div>
-          </ActionForm>
-        </Section>
+    <Page title={tab === "aws" ? "AWS managed keys" : "Customer managed keys"} actions={create}>
+      {(customer.length > 0 || pending > 0) && (
+        <Metrics>
+          <Metric label="Customer keys" value={customer.length} />
+          <Metric label="Disabled" value={customer.filter((k) => k.meta.KeyState === "Disabled").length} />
+          {pending > 0 && <Metric label="Pending deletion" value={pending} tone="bad" />}
+        </Metrics>
       )}
-    </>
+      <Curated
+        label="Keys"
+        sections={USAGE.map((u) => ({ ...u, items: shown.filter((k) => k.meta.KeyUsage === u.id) }))}
+        row={row}
+        empty={<Empty icon={ICONS.key} />}
+      />
+    </Page>
   );
 }

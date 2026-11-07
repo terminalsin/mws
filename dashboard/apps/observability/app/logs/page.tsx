@@ -1,65 +1,82 @@
-import { DescribeLogGroupsCommand } from "@aws-sdk/client-cloudwatch-logs";
-import { bytes, collect, load, when } from "@mws-dashboard/aws";
-import { ActionForm, ErrorNotice, Field, PageHeader, Section, Table } from "@mws-dashboard/ui";
+import { sections } from "@mws-dashboard/ai";
+import { ago, bytes, load } from "@mws-dashboard/aws";
+import { ActionForm, AwsIcon, Curated, Empty, ErrorNotice, Field, Metric, Metrics, Page, Pill, Sheet } from "@mws-dashboard/ui";
 import type { Metadata } from "next";
-import Link from "next/link";
 
-import { groupHref, logs } from "../../lib/clients";
+import { GROUP_KINDS, ICONS, groupHref, listGroups, sourceIcon } from "../../lib/clients";
+import { RETENTION, retentionLabel } from "../../lib/retention";
 import { createGroup } from "./actions";
 
-export const metadata: Metadata = { title: "Log groups" };
+export const metadata: Metadata = { title: "Logs" };
 
 type Props = { searchParams: Promise<{ prefix?: string }> };
 
 export default async function LogGroups({ searchParams }: Props) {
   const prefix = (await searchParams).prefix ?? "";
-  const groups = await load(async () => {
-    const client = await logs();
-    return collect(
-      (nextToken) => client.send(new DescribeLogGroupsCommand({ nextToken, ...(prefix ? { logGroupNamePrefix: prefix } : {}) })),
-      (r) => r.logGroups,
-      (r) => r.nextToken,
+  const groups = await load(() => listGroups(prefix));
+  const create = (
+    <Sheet title="New log group" label="Create log group" testId="create-log-group">
+      <ActionForm action={createGroup} submit="Create" testId="create-log-group">
+        <Field label="Name">
+          <input name="name" required placeholder="/app/api" autoFocus />
+        </Field>
+        <Field label="Retention">
+          <select name="retention" defaultValue="0">
+            {RETENTION.map((d) => (
+              <option key={d} value={d}>
+                {retentionLabel(d)}
+              </option>
+            ))}
+          </select>
+        </Field>
+        <label className="check">
+          <input type="checkbox" name="infrequent" /> Infrequent Access
+        </label>
+      </ActionForm>
+    </Sheet>
+  );
+  if (!groups.ok) {
+    return (
+      <Page title="Log groups" actions={create}>
+        <ErrorNotice error={groups.error} />
+      </Page>
     );
-  });
+  }
+  const items = groups.value.map((g) => ({ ...g, text: g.logGroupName! }));
+  const grouped = await sections(items, GROUP_KINDS, "Applications");
+  const stored = groups.value.reduce((n, g) => n + (g.storedBytes ?? 0), 0);
+  const forever = groups.value.filter((g) => !g.retentionInDays).length;
   return (
-    <>
-      <PageHeader title="Log groups" description="CloudWatch Logs groups in the selected region. Lambda functions log to /aws/lambda/<name>." />
-      <Section
-        title={groups.ok ? `Log groups (${groups.value.length})` : "Log groups"}
-        actions={
-          <form className="form-row" action="/observability/logs">
-            <input name="prefix" defaultValue={prefix} placeholder="Name prefix" aria-label="Name prefix" />
-            <button className="button primary" type="submit">
-              Filter
-            </button>
-          </form>
-        }
-      >
-        {groups.ok ? (
-          <Table
-            label="Log groups"
-            rows={groups.value}
-            rowKey={(g) => g.logGroupName!}
-            empty="No log groups."
-            columns={[
-              { header: "Name", className: "wrap", cell: (g) => <Link href={groupHref(g.logGroupName!)}>{g.logGroupName}</Link> },
-              { header: "Retention", cell: (g) => (g.retentionInDays ? `${g.retentionInDays} days` : "never expire") },
-              { header: "Stored", className: "num", cell: (g) => bytes(g.storedBytes) },
-              { header: "Metric filters", className: "num", cell: (g) => g.metricFilterCount ?? 0 },
-              { header: "Created", cell: (g) => when(g.creationTime) },
-            ]}
-          />
-        ) : (
-          <ErrorNotice error={groups.error} />
-        )}
-      </Section>
-      <Section title="Create log group">
-        <ActionForm action={createGroup} submit="Create" inline testId="create-log-group">
-          <Field label="Name">
-            <input name="name" required size={40} />
-          </Field>
-        </ActionForm>
-      </Section>
-    </>
+    <Page title="Log groups" actions={create}>
+      {groups.value.length > 0 && (
+        <Metrics>
+          <Metric label="Log groups" value={groups.value.length} />
+          <Metric label="Stored" value={bytes(stored)} />
+          {forever > 0 && <Metric label="Kept forever" value={forever} tone="warn" />}
+        </Metrics>
+      )}
+      <form className="search-page-form" action="/observability/logs">
+        <input name="prefix" defaultValue={prefix} placeholder="Prefix" aria-label="Log group prefix" />
+      </form>
+      <Curated
+        label="Log groups"
+        sections={grouped}
+        empty={<Empty icon={ICONS.logs} />}
+        row={(g) => ({
+          key: g.logGroupArn ?? g.logGroupName!,
+          icon: <AwsIcon icon={sourceIcon(g.logGroupName!) ?? ICONS.logs} size={22} />,
+          title: g.logGroupName,
+          href: groupHref(g.logGroupName!),
+          meta: (
+            <>
+              {g.storedBytes ? <span>{bytes(g.storedBytes)}</span> : null}
+              {g.retentionInDays ? <Pill>{retentionLabel(g.retentionInDays)}</Pill> : null}
+              {g.logGroupClass === "INFREQUENT_ACCESS" && <Pill tone="info">IA</Pill>}
+              <span>{ago(g.creationTime)}</span>
+            </>
+          ),
+        })}
+      />
+    </Page>
   );
 }

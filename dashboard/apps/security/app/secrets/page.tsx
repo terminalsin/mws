@@ -1,63 +1,61 @@
-import { ListSecretsCommand } from "@aws-sdk/client-secrets-manager";
-import { collect, load, when } from "@mws-dashboard/aws";
-import { ActionForm, Badge, ErrorNotice, Field, PageHeader, Section, Table } from "@mws-dashboard/ui";
+import { sections } from "@mws-dashboard/ai";
+import { ago, load } from "@mws-dashboard/aws";
+import { ActionForm, AwsIcon, Curated, Empty, ErrorNotice, Field, Page, Pill, Sheet } from "@mws-dashboard/ui";
+import { RotateCw } from "lucide-react";
 import type { Metadata } from "next";
-import Link from "next/link";
 
-import { secrets } from "../../lib/clients";
+import { ICONS } from "../../lib/clients";
+import { SECRET_KINDS, listSecrets } from "../../lib/secrets";
 import { createSecret } from "./actions";
 
 export const metadata: Metadata = { title: "Secrets Manager" };
 
 export default async function Secrets() {
-  const list = await load(async () => {
-    const client = await secrets();
-    return collect(
-      (NextToken) => client.send(new ListSecretsCommand({ NextToken, IncludePlannedDeletion: true })),
-      (r) => r.SecretList,
-      (r) => r.NextToken,
+  const list = await load(listSecrets);
+  const create = (
+    <Sheet title="New secret" label="Create secret" testId="create-secret">
+      <ActionForm action={createSecret} submit="Create" testId="create-secret">
+        <Field label="Name">
+          <input name="name" required placeholder="prod/app/db" autoFocus />
+        </Field>
+        <textarea name="value" rows={6} aria-label="Secret value" placeholder='{"username": "app", "password": "…"}' />
+        <Field label="KMS key">
+          <input name="kmsKeyId" placeholder="aws/secretsmanager" />
+        </Field>
+      </ActionForm>
+    </Sheet>
+  );
+  if (!list.ok) {
+    return (
+      <Page title="Secrets" actions={create}>
+        <ErrorNotice error={list.error} />
+      </Page>
     );
-  });
+  }
+  const items = list.value.map((s) => ({ ...s, name: s.Name!, text: `${s.Name} ${s.Description ?? ""} ${(s.Tags ?? []).map((t) => `${t.Key} ${t.Value}`).join(" ")}` }));
+  const grouped = await sections(items, SECRET_KINDS, "Other");
   return (
-    <>
-      <PageHeader title="Secrets Manager" description="Secrets in the selected region. Values are sealed with KMS and only read when you open one." />
-      <Section title="Create secret">
-        <ActionForm action={createSecret} submit="Create secret" testId="create-secret">
-          <div className="form-row">
-            <Field label="Name">
-              <input name="name" required pattern="[\w/+=.@\-]+" />
-            </Field>
-            <Field label="Description">
-              <input name="description" />
-            </Field>
-          </div>
-          <Field label="Secret value">
-            <textarea name="value" placeholder='{"username": "app", "password": "..."}' />
-          </Field>
-        </ActionForm>
-      </Section>
-      <Section title={list.ok ? `Secrets (${list.value.length})` : "Secrets"}>
-        {list.ok ? (
-          <Table
-            label="Secrets"
-            rows={list.value}
-            rowKey={(s) => s.ARN!}
-            empty="No secrets in this region."
-            columns={[
-              { header: "Name", cell: (s) => <Link href={`/secrets/secret?id=${encodeURIComponent(s.ARN!)}`}>{s.Name}</Link> },
-              { header: "Description", cell: (s) => s.Description ?? "" },
-              {
-                header: "Rotation",
-                cell: (s) => (s.RotationEnabled ? <Badge tone="info">every {s.RotationRules?.AutomaticallyAfterDays ?? "?"} days</Badge> : <Badge>off</Badge>),
-              },
-              { header: "Last changed", cell: (s) => when(s.LastChangedDate) },
-              { header: "", cell: (s) => s.DeletedDate && <Badge tone="bad">deletion scheduled</Badge> },
-            ]}
-          />
-        ) : (
-          <ErrorNotice error={list.error} />
-        )}
-      </Section>
-    </>
+    <Page title="Secrets" actions={create}>
+      <Curated
+        label="Secrets"
+        sections={grouped}
+        empty={<Empty icon={ICONS.secrets} />}
+        row={(s) => ({
+          key: s.ARN!,
+          icon: <AwsIcon icon={ICONS.secrets} size={24} />,
+          title: s.Name,
+          subtitle: s.Description,
+          href: `/secrets/secret?id=${encodeURIComponent(s.ARN!)}`,
+          meta: s.DeletedDate ? (
+            <Pill tone="bad">deleted {ago(s.DeletedDate)}</Pill>
+          ) : (
+            <>
+              {s.RotationEnabled && <RotateCw size={14} aria-label="Rotates" />}
+              <span>{ago(s.LastChangedDate ?? s.CreatedDate)}</span>
+            </>
+          ),
+        })}
+      />
+    </Page>
   );
 }
