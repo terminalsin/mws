@@ -1,0 +1,64 @@
+[
+  {
+    "id": "shell",
+    "title": "MWS",
+    "basePath": "",
+    "port": 3000,
+    "nav": [
+      { "label": "Overview", "path": "/" },
+      { "label": "Control plane", "path": "/control" }
+    ]
+  },
+  {
+    "id": "storage",
+    "title": "Storage",
+    "basePath": "/storage",
+    "port": 3001,
+    "nav": [{ "label": "S3 buckets", "path": "/s3" }]
+  },
+  {
+    "id": "messaging",
+    "title": "Messaging",
+    "basePath": "/messaging",
+    "port": 3002,
+    "nav": [
+      { "label": "SQS queues", "path": "/sqs" },
+      { "label": "SNS topics", "path": "/sns" },
+      { "label": "EventBridge", "path": "/events" },
+      { "label": "SES mail", "path": "/ses" }
+    ]
+  },
+  {
+    "id": "security",
+    "title": "Security & config",
+    "basePath": "/security",
+    "port": 3003,
+    "nav": [
+      { "label": "IAM", "path": "/iam" },
+      { "label": "KMS keys", "path": "/kms" },
+      { "label": "Secrets Manager", "path": "/secrets" },
+      { "label": "Parameter Store", "path": "/ssm" }
+    ]
+  },
+  {
+    "id": "compute",
+    "title": "Compute",
+    "basePath": "/compute",
+    "port": 3004,
+    "nav": [
+      { "label": "Lambda functions", "path": "/lambda" },
+      { "label": "EC2 instances", "path": "/ec2" }
+    ]
+  },
+  {
+    "id": "observability",
+    "title": "Observability",
+    "basePath": "/observability",
+    "port": 3005,
+    "nav": [
+      { "label": "Log groups", "path": "/logs" },
+      { "label": "Alarms", "path": "/alarms" },
+      { "label": "Metrics", "path": "/metrics" }
+    ]
+  }
+]

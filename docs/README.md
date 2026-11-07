@@ -8,6 +8,8 @@
   the control API and the emulated clock.
 - [Testing](testing.md): using MWS in your test suite, and running MWS's own
   tests.
+- [Web console](dashboard.md): the Next.js dashboard for browsing and changing
+  resources and driving the control plane.
 
 ## Reference
 

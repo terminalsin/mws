@@ -97,6 +97,11 @@ print(sqs.receive_message(QueueUrl=queue)["Messages"][0]["Body"])  # order-1
 See [Getting started](docs/getting-started.md) for the Rust and JavaScript
 SDKs, S3 addressing, host-prefixed endpoints and calling as other identities.
 
+To look around in a browser, run the [web console](docs/dashboard.md)
+(`cd dashboard && npm ci && npm run dev`, then open http://localhost:3000):
+buckets, queues, topics, IAM, keys, secrets, functions, logs and metrics, plus
+the clock, snapshots and reset.
+
 ## Supported services
 
 | Service | Operations | Protocol |

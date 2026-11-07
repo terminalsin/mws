@@ -1,0 +1,22 @@
+{
+  "name": "@mws-dashboard/ui",
+  "version": "1.0.0",
+  "private": true,
+  "description": "The dashboard's frame, navigation contract and shared components",
+  "type": "module",
+  "exports": {
+    ".": "./src/index.tsx",
+    "./client": "./src/client.tsx",
+    "./zones": "./src/zones.ts",
+    "./zones.json": "./zones.json",
+    "./styles.css": "./src/styles.css",
+    "./next-config": "./next-config.mjs"
+  },
+  "scripts": {
+    "typecheck": "tsc --noEmit"
+  },
+  "peerDependencies": {
+    "next": "^16.0.0",
+    "react": "^19.0.0"
+  }
+}
