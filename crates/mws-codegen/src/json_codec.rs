@@ -352,6 +352,18 @@ pub(crate) fn wire_name(m: &Member, json_names: bool) -> &str {
 /// Input is validated exactly like a wire request; constraint violations
 /// use `validation_error`.
 pub fn emit_invoke(model: &Model, ops: &[&Shape], de_mod: &str, ser_mod: &str, validation_error: &str, w: &mut String) {
+    emit_invoke_with(model, ops, de_mod, ser_mod, &|_| validation_error, w)
+}
+
+/// [`emit_invoke`] with a constraint-violation code per operation.
+pub fn emit_invoke_with<'a>(
+    model: &Model,
+    ops: &[&Shape],
+    de_mod: &str,
+    ser_mod: &str,
+    validation_error: &dyn Fn(&Shape) -> &'a str,
+    w: &mut String,
+) {
     let _ = writeln!(
         w,
         "\n/// Run `operation` with input given as JSON (Smithy member names) and return its output as JSON.\n#[allow(unused_mut, clippy::all)]\npub async fn invoke<H: Handler + ?Sized>(handler: &H, ctx: &RequestContext, operation: &str, input: {RT}::Value) -> Result<{RT}::Value, ServiceError> {{"
@@ -367,7 +379,7 @@ pub fn emit_invoke(model: &Model, ops: &[&Shape], de_mod: &str, ser_mod: &str, v
                     "            let input = {de_mod}::{}(&mut d, Some(&input), \"\").unwrap_or_default();",
                     de_fn_name(model.expect(i))
                 );
-                let _ = writeln!(w, "            d.finish({})?;", rust_str(validation_error));
+                let _ = writeln!(w, "            d.finish({})?;", rust_str(validation_error(op)));
                 let _ = writeln!(w, "            let out = {}?;", crate::common::handler_call(op, "input"));
             }
             None => {

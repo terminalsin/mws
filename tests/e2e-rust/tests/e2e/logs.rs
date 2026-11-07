@@ -1415,3 +1415,19 @@ async fn transformers_apply_at_ingestion() {
     let tier = res.results()[0].iter().find(|f| f.field() == Some("tier")).and_then(|f| f.value());
     assert_eq!(tier, Some("gold"));
 }
+
+/// The vended-delivery operations declare `ValidationException` rather
+/// than Logs' usual `InvalidParameterException`, and validate with it.
+#[tokio::test]
+async fn delivery_operations_validate_with_validation_exception() {
+    let mws = Mws::start().await;
+    let logs = client(&mws).await;
+    let e = logs.get_delivery().id("not-an-id!").send().await.unwrap_err();
+    assert_eq!(code(e.into_service_error()), "ValidationException");
+    let e = logs.delete_delivery_source().name("").send().await.unwrap_err();
+    assert_eq!(code(e.into_service_error()), "ValidationException");
+    // Older operations keep InvalidParameterException.
+    let e = logs.describe_log_groups().limit(0).send().await.unwrap_err();
+    assert_eq!(code(e.into_service_error()), "InvalidParameterException");
+    mws.stop().await;
+}

@@ -16,11 +16,27 @@ use crate::rust_types::TypeGen;
 pub struct JsonOptions {
     /// Error code for constraint violations.
     pub validation_error: &'static str,
+    /// Codes that operations declaring one of them (and not
+    /// `validation_error`) use for constraint violations instead, first
+    /// match wins: newer operations of a service sometimes validate with a
+    /// different code than its older ones.
+    pub declared_validation_errors: &'static [&'static str],
 }
 
 impl Default for JsonOptions {
     fn default() -> Self {
-        Self { validation_error: "ValidationException" }
+        Self { validation_error: "ValidationException", declared_validation_errors: &[] }
+    }
+}
+
+impl JsonOptions {
+    /// The constraint-violation code of `op`.
+    pub fn validation_error_of(&self, op: &Shape) -> &'static str {
+        let declared = |code: &str| op.errors.iter().any(|e| e.rsplit('#').next() == Some(code));
+        if declared(self.validation_error) {
+            return self.validation_error;
+        }
+        self.declared_validation_errors.iter().copied().find(|c| declared(c)).unwrap_or(self.validation_error)
     }
 }
 
@@ -41,6 +57,16 @@ struct Gen<'m, 'o> {
 }
 
 impl Gen<'_, '_> {
+    /// The code expression constraint violations of `op` use.
+    fn validation_expr(&self, op: &Shape) -> String {
+        let code = self.options.validation_error_of(op);
+        if code == self.options.validation_error {
+            "SERVICE_INFO.validation_error".into()
+        } else {
+            rust_str(code)
+        }
+    }
+
     fn run(self) -> String {
         let model = self.model;
         let service = model.service().expect("model has a service");
@@ -108,7 +134,7 @@ impl Gen<'_, '_> {
         common::emit_handler(model, &ops, w);
         self.emit_dispatch(&ops, w);
 
-        json_codec::emit_invoke(model, &ops, "de", "ser", self.options.validation_error, &mut out);
+        json_codec::emit_invoke_with(model, &ops, "de", "ser", &|op| self.options.validation_error_of(op), &mut out);
         if service.has_trait("smithy.protocols#rpcv2Cbor") {
             emit_cbor(model, service, &ops, &output_closure, &mut out);
         }
@@ -148,7 +174,7 @@ impl Gen<'_, '_> {
                         "            let input = de::{}(&mut d, Some(&body), \"\").unwrap_or_default();",
                         de_fn_name(self.model.expect(i))
                     );
-                    let _ = writeln!(w, "            d.finish(SERVICE_INFO.validation_error)?;");
+                    let _ = writeln!(w, "            d.finish({})?;", self.validation_expr(op));
                     let _ = writeln!(w, "            let out = {}?;", crate::common::handler_call(op, "input"));
                 }
                 None => {
@@ -251,11 +277,12 @@ impl Gen<'_, '_> {
                 let input = model.expect(i);
                 let _ = writeln!(
                     w,
-                    "\n/// Decode and validate a `{}` request.\npub fn decode_input_{}(req: &HttpRequest) -> Result<types::{}, ServiceError> {{\n    let body = {RT}::parse_body(req.body())?;\n    let mut d = Decoder::new();\n    let input = de::{}(&mut d, Some(&body), \"\").unwrap_or_default();\n    d.finish(SERVICE_INFO.validation_error)?;\n    Ok(input)\n}}",
+                    "\n/// Decode and validate a `{}` request.\npub fn decode_input_{}(req: &HttpRequest) -> Result<types::{}, ServiceError> {{\n    let body = {RT}::parse_body(req.body())?;\n    let mut d = Decoder::new();\n    let input = de::{}(&mut d, Some(&body), \"\").unwrap_or_default();\n    d.finish({})?;\n    Ok(input)\n}}",
                     op.name(),
                     snake_case(op.name()),
                     crate::naming::type_name(input.name()),
-                    de_fn_name(input)
+                    de_fn_name(input),
+                    self.validation_expr(op)
                 );
             }
         }
