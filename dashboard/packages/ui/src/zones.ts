@@ -7,7 +7,7 @@ import zones from "../zones.json";
 /** The cookie every zone reads the selected region from. */
 export const REGION_COOKIE = "mws-region";
 
-export type ZoneId = "shell" | "storage" | "messaging" | "security" | "compute" | "observability";
+export type ZoneId = "shell" | "storage" | "messaging" | "security" | "compute" | "observability" | "networking";
 
 export interface Zone {
   id: ZoneId;

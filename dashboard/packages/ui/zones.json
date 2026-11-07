@@ -28,5 +28,10 @@
     "id": "observability",
     "basePath": "/observability",
     "port": 3005
+  },
+  {
+    "id": "networking",
+    "basePath": "/networking",
+    "port": 3006
   }
 ]

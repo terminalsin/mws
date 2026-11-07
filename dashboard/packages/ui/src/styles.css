@@ -1493,3 +1493,75 @@ dialog {
 .back {
   font-size: 14px;
 }
+
+/* VPC resource map: subnets, route tables and connections side by side. */
+.resource-map {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 20px;
+}
+.map-column h3 {
+  font-size: 14px;
+  font-weight: 700;
+  margin-bottom: 10px;
+}
+.map-group + .map-group {
+  margin-top: 10px;
+}
+.map-group-title {
+  font-size: 12px;
+  color: var(--secondary);
+  margin-bottom: 4px;
+}
+.map-node {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 6px 8px;
+  margin-bottom: 6px;
+  border: 1px solid var(--separator);
+  border-radius: 2px;
+  color: inherit;
+  font-size: 13px;
+  overflow: hidden;
+}
+.map-node span {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.map-node.public {
+  border-left: 3px solid var(--good);
+}
+.map-node.private {
+  border-left: 3px solid var(--info);
+}
+a.map-node:hover {
+  border-color: var(--accent);
+}
+.route-subnets {
+  font-size: 12.5px;
+  margin: 6px 2px 0;
+}
+@media (max-width: 760px) {
+  .resource-map {
+    grid-template-columns: 1fr;
+  }
+}
+.tone-good {
+  color: var(--good);
+}
+.tone-warn {
+  color: var(--warn);
+}
+.tone-bad {
+  color: var(--bad);
+}
+.row-icon {
+  width: auto;
+  min-width: 26px;
+}
+.content > pre.code,
+.content > details {
+  margin-bottom: 24px;
+}

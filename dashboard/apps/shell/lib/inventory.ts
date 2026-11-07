@@ -57,6 +57,12 @@ const TYPE_ICONS: Record<string, string> = {
   "Dead-letter queue": "resource/AmazonSimpleQueueServiceQueue",
   "Email identity": "resource/AmazonSimpleEmailServiceEmail",
   "Domain identity": "resource/AmazonSimpleEmailServiceEmail",
+  VPC: "resource/AmazonVPCVirtualprivatecloudVPC",
+  "Hosted zone": "resource/AmazonRoute53HostedZone",
+  "Load balancer": "resource/ElasticLoadBalancingApplicationLoadBalancer",
+  Accelerator: "service/AWSGlobalAccelerator",
+  Certificate: "service/AWSCertificateManager",
+  "Certificate authority": "resource/AWSCertificateManagerCertificateAuthority",
 };
 
 /** The icon of a resource's type, or else its service's. */

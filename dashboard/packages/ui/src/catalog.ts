@@ -68,6 +68,27 @@ export interface NavItem {
 }
 
 const NAV: Record<string, NavItem[]> = {
+  vpc: [
+    { label: "Your VPCs", path: "/vpc", icon: "resource/AmazonVPCVirtualprivatecloudVPC" },
+    { label: "Subnets", path: "/vpc?tab=subnets", icon: "group/Privatesubnet" },
+    { label: "Route tables", path: "/vpc?tab=routes", icon: "resource/AmazonVPCRouter" },
+    { label: "Internet gateways", path: "/vpc?tab=igw", icon: "resource/AmazonVPCInternetGateway" },
+    { label: "NAT gateways", path: "/vpc?tab=nat", icon: "resource/AmazonVPCNATGateway" },
+    { label: "Endpoints", path: "/vpc?tab=endpoints", icon: "resource/AmazonVPCEndpoints" },
+    { label: "Peering connections", path: "/vpc?tab=peering", icon: "resource/AmazonVPCPeeringConnection" },
+    { label: "Network ACLs", path: "/vpc?tab=acls", icon: "resource/AmazonVPCNetworkAccessControlList" },
+  ],
+  route53: [
+    { label: "Hosted zones", path: "/route53", icon: "resource/AmazonRoute53HostedZone" },
+    { label: "Health checks", path: "/route53?tab=health", icon: "resource/AmazonRoute53ReadinessChecks" },
+  ],
+  elb: [
+    { label: "Load balancers", path: "/elb", icon: "resource/ElasticLoadBalancingApplicationLoadBalancer" },
+    { label: "Target groups", path: "/elb?tab=targets", icon: "resource/ElasticLoadBalancingNetworkLoadBalancer" },
+  ],
+  globalaccelerator: [{ label: "Accelerators", path: "/ga", icon: "service/AWSGlobalAccelerator" }],
+  acm: [{ label: "Certificates", path: "/acm", icon: "service/AWSCertificateManager" }],
+  acmpca: [{ label: "Private CAs", path: "/pca", icon: "resource/AWSCertificateManagerCertificateAuthority" }],
   ec2: [
     { label: "Instances", path: "/ec2", icon: "resource/AmazonEC2Instances" },
     { label: "Images", path: "/ec2?tab=images", icon: "resource/AmazonEC2AMI" },
@@ -124,10 +145,10 @@ export const SERVICES: Service[] = [
   svc({ id: "rds", name: "Amazon RDS", short: "RDS", category: "database", icon: "service/AmazonRDS", endpoints: ["rds"] }),
   svc({ id: "elasticache", name: "Amazon ElastiCache", short: "ElastiCache", category: "database", icon: "service/AmazonElastiCache", endpoints: ["elasticache"] }),
   // Networking
-  svc({ id: "vpc", name: "Amazon VPC", short: "VPC", category: "networking", icon: "service/AmazonVirtualPrivateCloud", endpoints: ["ec2"] }),
-  svc({ id: "route53", name: "Amazon Route 53", short: "Route 53", category: "networking", icon: "service/AmazonRoute53", endpoints: ["route53"] }),
-  svc({ id: "elb", name: "Elastic Load Balancing", short: "Load Balancers", category: "networking", icon: "service/ElasticLoadBalancing", endpoints: ["elb", "elbv2"] }),
-  svc({ id: "globalaccelerator", name: "AWS Global Accelerator", short: "Global Accelerator", category: "networking", icon: "service/AWSGlobalAccelerator", endpoints: ["globalaccelerator"] }),
+  svc({ id: "vpc", name: "Amazon VPC", short: "VPC", category: "networking", icon: "service/AmazonVirtualPrivateCloud", zone: "networking", path: "/vpc", endpoints: ["ec2"] }),
+  svc({ id: "route53", name: "Amazon Route 53", short: "Route 53", category: "networking", icon: "service/AmazonRoute53", zone: "networking", path: "/route53", endpoints: ["route53"] }),
+  svc({ id: "elb", name: "Elastic Load Balancing", short: "Load Balancers", category: "networking", icon: "service/ElasticLoadBalancing", zone: "networking", path: "/elb", endpoints: ["elb", "elbv2"] }),
+  svc({ id: "globalaccelerator", name: "AWS Global Accelerator", short: "Global Accelerator", category: "networking", icon: "service/AWSGlobalAccelerator", zone: "networking", path: "/ga", endpoints: ["globalaccelerator"] }),
   // Integration
   svc({ id: "sqs", name: "Amazon SQS", short: "SQS", category: "integration", icon: "service/AmazonSimpleQueueService", zone: "messaging", path: "/sqs", endpoints: ["sqs"] }),
   svc({ id: "sns", name: "Amazon SNS", short: "SNS", category: "integration", icon: "service/AmazonSimpleNotificationService", zone: "messaging", path: "/sns", endpoints: ["sns"] }),
@@ -140,8 +161,8 @@ export const SERVICES: Service[] = [
   svc({ id: "iam", name: "AWS IAM", short: "IAM", category: "security", icon: "service/AWSIdentityandAccessManagement", zone: "security", path: "/iam", endpoints: ["iam", "sts"] }),
   svc({ id: "kms", name: "AWS KMS", short: "KMS", category: "security", icon: "service/AWSKeyManagementService", zone: "security", path: "/kms", endpoints: ["kms"] }),
   svc({ id: "secretsmanager", name: "AWS Secrets Manager", short: "Secrets Manager", category: "security", icon: "service/AWSSecretsManager", zone: "security", path: "/secrets", endpoints: ["secretsmanager"] }),
-  svc({ id: "acm", name: "AWS Certificate Manager", short: "Certificates", category: "security", icon: "service/AWSCertificateManager", endpoints: ["acm"] }),
-  svc({ id: "acmpca", name: "AWS Private CA", short: "Private CA", category: "security", icon: "service/AWSPrivateCertificateAuthority", endpoints: ["acm-pca", "pca-connector-scep"] }),
+  svc({ id: "acm", name: "AWS Certificate Manager", short: "Certificates", category: "security", icon: "service/AWSCertificateManager", zone: "networking", path: "/acm", endpoints: ["acm"] }),
+  svc({ id: "acmpca", name: "AWS Private CA", short: "Private CA", category: "security", icon: "service/AWSPrivateCertificateAuthority", zone: "networking", path: "/pca", endpoints: ["acm-pca", "pca-connector-scep"] }),
   svc({ id: "identitycenter", name: "IAM Identity Center", short: "Identity Center", category: "security", icon: "service/AWSIAMIdentityCenter", endpoints: ["sso", "identitystore", "awsssoportal", "sso-oauth"] }),
   svc({ id: "guardduty", name: "Amazon GuardDuty", short: "GuardDuty", category: "security", icon: "service/AmazonGuardDuty", endpoints: ["guardduty"] }),
   svc({ id: "securityhub", name: "AWS Security Hub", short: "Security Hub", category: "security", icon: "service/AWSSecurityHub", endpoints: ["securityhub"] }),

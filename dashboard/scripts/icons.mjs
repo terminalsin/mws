@@ -11,7 +11,7 @@ import { fileURLToPath } from "node:url";
 const root = join(dirname(fileURLToPath(import.meta.url)), "..");
 const source = join(root, "node_modules/aws-icons/icons");
 const target = join(root, "apps/shell/public/icons/aws");
-const kinds = { service: "architecture-service", category: "category", resource: "resource" };
+const kinds = { service: "architecture-service", category: "category", resource: "resource", group: "architecture-group" };
 
 // Every "kind/Name" string literal in the UI package and the zones.
 const used = new Set();
@@ -21,7 +21,7 @@ function scan(dir) {
     const path = join(dir, entry.name);
     if (entry.isDirectory()) scan(path);
     else if (/\.(tsx?|json)$/.test(entry.name)) {
-      for (const m of readFileSync(path, "utf8").matchAll(/["'`](service|category|resource|brand)\/([A-Za-z0-9-]+)["'`]/g)) used.add(`${m[1]}/${m[2]}`);
+      for (const m of readFileSync(path, "utf8").matchAll(/["'`](service|category|resource|group|brand)\/([A-Za-z0-9-]+)["'`]/g)) used.add(`${m[1]}/${m[2]}`);
     }
   }
 }
