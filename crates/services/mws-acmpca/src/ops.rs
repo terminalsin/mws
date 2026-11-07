@@ -69,7 +69,14 @@ impl Ca {
             not_after: self.not_after,
             failure_reason: None,
             certificate_authority_configuration: Some(self.config.clone()),
-            revocation_configuration: self.revocation.clone(),
+            // AWS shows a disabled CRL and OCSP when they are not configured.
+            revocation_configuration: {
+                let rc = self.revocation.clone().unwrap_or_default();
+                Some(types::RevocationConfiguration {
+                    crl_configuration: Some(rc.crl_configuration.unwrap_or_default()),
+                    ocsp_configuration: Some(rc.ocsp_configuration.unwrap_or_default()),
+                })
+            },
             restorable_until: self.restorable_until,
             key_storage_security_standard: self.key_storage.clone(),
             usage_mode: self.usage_mode.clone(),

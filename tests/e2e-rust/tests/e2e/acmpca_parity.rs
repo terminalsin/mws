@@ -508,3 +508,17 @@ async fn cas_belong_to_their_account_and_region() {
     let own = pca.list_certificate_authorities().send().await.unwrap();
     assert_eq!(own.certificate_authorities().len(), 1);
 }
+
+/// A CA created without revocation settings shows CRL and OCSP disabled,
+/// as AWS does.
+#[tokio::test]
+async fn unconfigured_revocation_is_shown_disabled() {
+    let mws = Mws::start().await;
+    let pca = Client::new(&mws.root_sdk_config().await);
+    let (arn, _) = root(&pca, config("revocation.example.test"), 365).await;
+    let ca = pca.describe_certificate_authority().certificate_authority_arn(&arn).send().await.unwrap();
+    let rc = ca.certificate_authority().unwrap().revocation_configuration().unwrap();
+    assert!(!rc.crl_configuration().unwrap().enabled());
+    assert!(!rc.ocsp_configuration().unwrap().enabled());
+    mws.stop().await;
+}

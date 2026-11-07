@@ -2,7 +2,7 @@ fn main() {
     mws_codegen::build_aws_json(
         "model/sqs.json",
         "sqs_generated.rs",
-        mws_codegen::JsonOptions { validation_error: "InvalidParameterValue" },
+        mws_codegen::JsonOptions { validation_error: "InvalidParameterValue", ..Default::default() },
     );
     // Older SDKs still speak awsQuery to SQS.
     mws_codegen::build_aws_query_compatible(
