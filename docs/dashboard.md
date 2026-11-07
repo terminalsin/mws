@@ -71,13 +71,18 @@ and the home page, so it never calls another zone's services itself.
 
 ## Design
 
-The layout is the AWS console's: a dark top bar (Services menu, search,
+The layout is the AWS console's: a top bar (Services menu, search,
 account, region), a per-service sidebar with the same sections AWS has
 (`nav` in `packages/ui/src/catalog.ts`, e.g. IAM: Users, Roles, Groups,
 Policies), the zone's other services below it, and AWS's tab names on detail
-pages. The surfaces follow Apple's conventions: inset grouped lists, sheets
-for creation and editing, icon buttons for row actions, and icon chips
-(`Specs`) instead of label/value tables. Rules the pages keep to:
+pages. The look follows IBM's [Carbon](https://carbondesignsystem.com): IBM
+Plex type, the Gray 10 / Gray 100 themes with Blue 60 for interaction, square
+corners, flat layers separated by 1px rules, line tabs, bottom-border fields
+and left-aligned buttons. Styles are [Tailwind CSS](https://tailwindcss.com)
+v4 (`packages/ui/src/styles.css`): the Carbon tokens are theme variables, so
+zones can use utilities such as `bg-layer` or `text-secondary`, and the shared
+components are classes composed with `@apply`. Each zone has a
+`postcss.config.mjs` that runs Tailwind. Rules the pages keep to:
 
 - **Show, don't label.** If something can be an icon, it is one; self-evident
   things are not described; facts nobody acts on are left out (an empty
