@@ -10,7 +10,8 @@ name: CI
 #         └─ build (one test build, archived with nextest) ─┬─ unit tests
 #                                                           ├─ e2e shards (per service group)
 #                                                           ├─ python (boto3)
-#                                                           └─ typescript (SDK v3)
+#                                                           ├─ typescript (SDK v3)
+#                                                           └─ dashboard (Next.js console, Playwright)
 
 on:
   push:
@@ -42,7 +43,8 @@ jobs:
       matrix: ${{ steps.plan.outputs.matrix }}
       python: ${{ steps.plan.outputs.python }}
       ts: ${{ steps.plan.outputs.ts }}
-      binary: ${{ steps.plan.outputs.rust == 'true' || steps.plan.outputs.python == 'true' || steps.plan.outputs.ts == 'true' }}
+      dashboard: ${{ steps.plan.outputs.dashboard }}
+      binary: ${{ steps.plan.outputs.rust == 'true' || steps.plan.outputs.python == 'true' || steps.plan.outputs.ts == 'true' || steps.plan.outputs.dashboard == 'true' }}
     steps:
       - uses: actions/checkout@v4
         with:
@@ -216,9 +218,54 @@ jobs:
       - if: failure()
         run: cat mws.log
 
+  # The web console (dashboard/): every zone built for production and driven
+  # with Playwright against the MWS binary.
+  dashboard:
+    needs: [plan, build]
+    if: needs.plan.outputs.dashboard == 'true'
+    runs-on: ubuntu-latest
+    env:
+      CI: "true"
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          name: mws-binary
+          path: target/debug
+      - run: chmod +x target/debug/mws
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: npm
+          cache-dependency-path: dashboard/package-lock.json
+      - run: npm ci
+        working-directory: dashboard
+      # Building first generates the route types the type check reads.
+      - run: npm run build
+        working-directory: dashboard
+      - run: npm run typecheck
+        working-directory: dashboard
+      - run: npx playwright install --with-deps chromium
+        working-directory: dashboard
+      # The Lambda test runs its function on this job's `node`.
+      - run: |
+          RUST_LOG=warn MWS_LISTEN=127.0.0.1:4566 nohup target/debug/mws > mws.log 2>&1 &
+          for _ in $(seq 100); do curl -sf http://127.0.0.1:4566/_mws/health > /dev/null && exit 0; sleep 0.1; done
+          cat mws.log; exit 1
+      - run: npm test
+        working-directory: dashboard
+      - if: failure()
+        run: cat mws.log
+      - if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: dashboard-playwright-report
+          path: dashboard/playwright-report
+          retention-days: 7
+
   # One check that sums up the run, whichever jobs the plan skipped.
   ci:
-    needs: [plan, lint, build, test, python, typescript]
+    needs: [plan, lint, build, test, python, typescript, dashboard]
     if: always()
     runs-on: ubuntu-latest
     steps:

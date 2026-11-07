@@ -81,6 +81,7 @@ operation of every service is exercised by at least one SDK test.
 | Rust | [`tests/e2e-rust`](../tests/e2e-rust) | The official AWS SDK for Rust against an in-process MWS |
 | Python | [`tests/e2e-python`](../tests/e2e-python) | boto3 against the `mws` binary |
 | TypeScript | [`tests/e2e-ts`](../tests/e2e-ts) | Example apps on the AWS SDK for JavaScript v3 against a running MWS |
+| Dashboard | [`dashboard/e2e`](../dashboard/e2e) | Playwright against the web console and a running MWS ([details](dashboard.md#tests)) |
 | Parity | [`tests/parity`](../tests/parity) | boto3 calls sent to MWS and LocalStack side by side, with a diff report |
 
 ### Rust
@@ -139,8 +140,8 @@ stay on your machine.
 ### Continuous integration
 
 [CI](../.github/workflows/ci.yml) runs formatting, Clippy with warnings
-denied, the Rust and Python suites, and the TypeScript suite against the
-built binary.
+denied, the Rust and Python suites, and the TypeScript and web console
+(Playwright) suites against the built binary.
 
 On a pull request, [`plan.py`](../.github/scripts/plan.py) reads the
 workspace graph and the changed files and runs only what the change can
@@ -165,5 +166,6 @@ One job builds every test binary once (sccache keeps unchanged crates,
 workspace crates included, out of the compile) and archives them with
 [cargo-nextest](https://nexte.st); a matrix of jobs then runs the unit tests
 and the end-to-end modules in shards grouped by service, while the boto3 and
-TypeScript suites run against the same `mws` binary. To run tests the way CI
+TypeScript suites and the web console's Playwright tests run against the same
+`mws` binary. To run tests the way CI
 does: `cargo nextest run --profile ci -E 'test(/^sqs::/)'`.

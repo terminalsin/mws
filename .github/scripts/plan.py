@@ -13,6 +13,7 @@ Reads the workspace graph from `cargo metadata` and the changed files from
   matrix        the test matrix, JSON: {"include": [{"name", "filter"}]},
                 one entry for unit tests and one per shard of e2e services
   python, ts    "true" when the boto3 / SDK for JavaScript suites must run
+  dashboard     "true" when the web console (dashboard/) must be built and tested
 
 Usage: plan.py [--full] [--base REV]   (or --explain-modules to show how
 end-to-end test modules map to service crates).
@@ -228,7 +229,7 @@ def plan(full: bool, base: str | None) -> dict:
 
     direct: set[str] = set()
     changed_modules: set[str] = set()
-    python = ts = fmt = False
+    python = ts = dashboard = fmt = False
     if full:
         reasons.append("full run requested")
     else:
@@ -253,6 +254,9 @@ def plan(full: bool, base: str | None) -> dict:
                 continue
             if f.startswith("tests/e2e-ts/"):
                 ts = True
+                continue
+            if f.startswith("dashboard/"):
+                dashboard = True
                 continue
             crate = owner(packages, f)
             if crate is not None:
@@ -287,7 +291,7 @@ def plan(full: bool, base: str | None) -> dict:
         testable = sorted(c for c in names if c != E2E_PACKAGE and has_tests(packages[c]["dir"]))
         test_args = " ".join(f"-p {c}" for c in [*testable, E2E_PACKAGE])
         selected = dict(services_of)
-        python = ts = fmt = True
+        python = ts = dashboard = fmt = True
     else:
         affected = reverse_closure(packages, direct)
         clippy = " ".join(f"-p {c}" for c in sorted(direct))
@@ -317,6 +321,7 @@ def plan(full: bool, base: str | None) -> dict:
         "matrix": {"include": matrix},
         "python": python or rust,
         "ts": ts or rust,
+        "dashboard": dashboard or rust,
         "reasons": reasons,
         "direct": sorted(direct),
         "affected": sorted(affected),
@@ -342,7 +347,7 @@ def main() -> None:
     result = plan(args.full, args.base)
     out = os.environ.get("GITHUB_OUTPUT")
     lines = []
-    for key in ["full", "rust", "fmt", "clippy", "test_packages", "matrix", "python", "ts"]:
+    for key in ["full", "rust", "fmt", "clippy", "test_packages", "matrix", "python", "ts", "dashboard"]:
         value = result[key]
         if isinstance(value, bool):
             value = "true" if value else "false"
