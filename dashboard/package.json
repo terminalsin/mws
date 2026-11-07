@@ -18,10 +18,13 @@
     "@aws-sdk/client-iam": "^3.1164.0",
     "@aws-sdk/client-lambda": "^3.1164.0",
     "@playwright/test": "1.63.0",
+    "@tailwindcss/postcss": "^4.3.5",
     "@types/node": "^24.0.0",
     "aws-icons": "^3.3.0",
     "fflate": "^0.8.2",
+    "postcss": "^8.5.32",
     "simple-icons": "^16.36.0",
+    "tailwindcss": "^4.3.5",
     "typescript": "^7.0.2"
   },
   "engines": {

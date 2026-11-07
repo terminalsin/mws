@@ -68,8 +68,8 @@ export function Frame({ zone: current, info, children }: { zone: ZoneId; info: F
     <Toasts>
       <div className="frame">
         <header className="topbar">
-          {home}
           <ServicesMenu groups={groups} />
+          {home}
           <CommandPalette />
           <div className="topbar-end">
             <span className={info.error ? "health down" : "health up"} title={info.error ? `MWS unreachable at ${info.endpoint}` : `MWS at ${info.endpoint}`} />
@@ -108,10 +108,8 @@ export function Frame({ zone: current, info, children }: { zone: ZoneId; info: F
 
 const brand = (
   <>
-    <span className="brand-mark" aria-hidden>
-      M
-    </span>
-    <span className="brand-name">MWS</span>
+    <span className="brand-mark">MWS</span>
+    <span className="brand-name">Console</span>
   </>
 );
 
