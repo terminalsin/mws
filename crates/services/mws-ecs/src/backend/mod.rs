@@ -179,6 +179,18 @@ pub trait ContainerBackend: Send + Sync {
     /// Run a command in a container (`ExecuteCommand`).
     async fn exec(&self, runtime_id: &str, command: &str) -> Result<String, BackendError>;
 
+    /// Run a shell script in a container as root with `stdin`, for the
+    /// console's terminal and file browser. `None` when nothing runs.
+    async fn shell(
+        &self,
+        runtime_id: &str,
+        script: &str,
+        stdin: Option<&[u8]>,
+    ) -> Result<Option<mws_core::shell::Output>, BackendError> {
+        let _ = (runtime_id, script, stdin);
+        Ok(None)
+    }
+
     /// Remove the task's containers and what [`ContainerBackend::prepare`]
     /// made.
     async fn cleanup(&self, task: &TaskSpec, handle: &str, runtime_ids: &[String]);

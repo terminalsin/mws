@@ -58,6 +58,21 @@
 | Dedicated Hosts | ✅ | `AllocateHosts` for an instance type or a whole family (sockets, cores and vCPUs of AWS's host sizes), auto-placement, `RunInstances` with `Placement.HostId` or `Tenancy: host`, capacity per instance type from the instances on the host, `ModifyHosts`, `ReleaseHosts` (refused while occupied; released hosts stay listed for an hour) and `ModifyInstancePlacement` for stopped instances. Host reservations and host resource groups are not supported. |
 | Reserved Instances | 🟡 | `DescribeReservedInstancesOfferings` from a catalogue priced off the On-Demand rates (Standard and Convertible, one and three years, No/Partial/All Upfront, Region or zone scope, default or dedicated tenancy), `PurchaseReservedInstancesOffering` (queued until `PurchaseTime`), `DescribeReservedInstances` (retired when the term ends on the emulated clock). Purchases skip `payment-pending`; no billing discount is applied and the Marketplace, modifications and exchanges are not supported. |
 
+## Terminal and files
+
+The console's Terminal and Files tabs for a running instance use `/_aws/ec2/instances/<instance-id>/...`. This endpoint is MWS's own, not an AWS API. It needs `ssm:StartSession` on the instance ARN, the permission Session Manager asks for. Only the Docker backend has a machine to connect to; the metadata backend answers 409. The Logs tab shows `GetConsoleOutput`.
+
+Requests are SigV4 signed like any AWS call. Each one runs a short `sh` script in the container with `docker exec` as root; it is not an interactive PTY. The routes, relative to the resource:
+
+| Request | Effect |
+| --- | --- |
+| `POST exec` `{"command", "cwd"?}` | Runs a command. Returns `{"stdout", "stderr", "exitCode", "cwd"}`; `cwd` is the directory after the command, so `cd` carries over. |
+| `GET files?path=` | Lists a directory: name, `file`/`dir`/`link`, size, modified time, mode. |
+| `GET file?path=` | Returns the file's bytes, up to 8 MiB. `x-mws-truncated` is set when the file is longer. |
+| `PUT file?path=` | Writes the body to the file, creating its directory. |
+| `DELETE file?path=` | Removes the file or directory. |
+| `POST dir?path=` | Creates a directory. |
+
 ## Access control
 
 | Feature | Status | Details |

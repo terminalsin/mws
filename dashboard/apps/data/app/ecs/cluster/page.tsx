@@ -107,6 +107,7 @@ export default async function Cluster({ searchParams }: Props) {
             key: t.taskArn!,
             icon: <AwsIcon icon={ICONS.task} size={22} />,
             title: t.taskArn!.split("/").pop(),
+            href: `/ecs/task?cluster=${encodeURIComponent(name)}&id=${t.taskArn!.split("/").pop()}`,
             subtitle: `${t.taskDefinitionArn?.split("/").pop()}${t.group?.startsWith("service:") ? ` · ${t.group.slice(8)}` : ""}`,
             meta: (
               <>

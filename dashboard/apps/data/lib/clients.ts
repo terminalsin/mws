@@ -1,5 +1,6 @@
 import "server-only";
 
+import { CloudWatchLogsClient } from "@aws-sdk/client-cloudwatch-logs";
 import { EC2Client } from "@aws-sdk/client-ec2";
 import { ECRClient } from "@aws-sdk/client-ecr";
 import { ECSClient } from "@aws-sdk/client-ecs";
@@ -22,6 +23,7 @@ export const kinesis = () => client(KinesisClient);
 export const firehose = () => client(FirehoseClient);
 export const ec2 = () => client(EC2Client);
 export const iam = () => client(IAMClient);
+export const logs = () => client(CloudWatchLogsClient);
 
 export const ICONS = {
   ecr: "service/AmazonElasticContainerRegistry",

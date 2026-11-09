@@ -409,6 +409,63 @@
     @apply pr-2;
   }
 
+  /* Terminal and file explorer. */
+  .terminal {
+    @apply h-[60vh] min-h-80 cursor-text overflow-auto bg-[#161616] p-4 font-mono text-[13px] leading-5 text-[#f4f4f4];
+  }
+  .terminal-line {
+    @apply m-0 break-words whitespace-pre-wrap;
+  }
+  .terminal-line.in {
+    @apply text-[#78a9ff];
+  }
+  .terminal-line.err {
+    @apply text-[#ff8389];
+  }
+  .terminal-input {
+    @apply flex items-center gap-2;
+  }
+  .terminal-prompt {
+    @apply whitespace-nowrap text-[#42be65];
+  }
+  .terminal-input input {
+    @apply h-auto flex-1 border-0 bg-transparent p-0 font-mono text-[13px] text-[#f4f4f4] outline-none focus:outline-none;
+  }
+  .explorer-bar {
+    @apply flex items-center gap-px bg-layer px-2 py-1;
+  }
+  .crumbs {
+    @apply flex min-w-0 flex-1 flex-wrap items-center overflow-hidden font-mono text-[13px];
+  }
+  .crumbs button {
+    @apply cursor-pointer border-0 bg-transparent px-1.5 py-1 text-link hover:bg-hover;
+  }
+  .crumbs button + button::before {
+    @apply mr-1.5 text-helper content-['/'];
+  }
+  .crumbs button:first-child + button::before {
+    @apply content-none;
+  }
+  .explorer-item {
+    @apply cursor-pointer border-0 bg-transparent text-left hover:bg-hover;
+    font: inherit;
+  }
+  .explorer-item .folder {
+    @apply text-[#f1c21b];
+  }
+  .explorer-empty {
+    @apply px-4 py-3;
+  }
+  .file-preview {
+    @apply mt-4 grid gap-2 bg-layer p-2 outline outline-subtle;
+  }
+  .file-text {
+    @apply max-h-[60vh];
+  }
+  .file-image {
+    @apply max-h-[60vh] max-w-full object-contain;
+  }
+
   /* Data tables. */
   .table-wrap {
     @apply overflow-x-auto bg-layer;

@@ -11,6 +11,7 @@ pub mod eventstream;
 pub mod ids;
 mod observe;
 mod service;
+pub mod shell;
 pub mod trail;
 mod validate;
 

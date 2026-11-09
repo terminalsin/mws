@@ -7,6 +7,7 @@
   "exports": {
     ".": "./src/index.tsx",
     "./client": "./src/client.tsx",
+    "./console": "./src/console.tsx",
     "./zones": "./src/zones.ts",
     "./styles.css": "./src/styles.css",
     "./next-config": "./next-config.mjs",

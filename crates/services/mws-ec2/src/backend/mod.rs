@@ -272,6 +272,20 @@ pub trait ComputeBackend: Send + Sync {
         Ok(None)
     }
 
+    /// [`ComputeBackend::exec`] with `stdin` fed to the script (the
+    /// console's file uploads).
+    async fn exec_input(
+        &self,
+        handle: &str,
+        script: &str,
+        stdin: Option<&[u8]>,
+    ) -> Result<Option<CommandOutput>, BackendError> {
+        match stdin {
+            None => self.exec(handle, script).await,
+            Some(_) => Ok(None),
+        }
+    }
+
     /// Make storage for an EBS volume, filled from `snapshot_id` when
     /// given (and the backend holds that snapshot's data).
     async fn create_volume(&self, _volume_id: &str, _snapshot_id: Option<&str>) -> Result<(), BackendError> {

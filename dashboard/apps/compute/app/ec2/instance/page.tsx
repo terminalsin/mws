@@ -1,19 +1,21 @@
 import { DescribeInstancesCommand, DescribeVolumesCommand, GetConsoleOutputCommand } from "@aws-sdk/client-ec2";
 import { ago, load } from "@mws-dashboard/aws";
-import { ActionForm, AwsIcon, CodeBlock, ErrorNotice, Field, List, Page, Section, Sheet, Specs, Status, Tags } from "@mws-dashboard/ui";
-import { Clock, Cpu, Globe, HardDrive, KeyRound, Network, Pencil, Play, Power, RotateCcw, Shield, Square, Trash2 } from "lucide-react";
+import { SHELL_ACTIONS } from "@mws-dashboard/aws/shell";
+import { ActionForm, AwsIcon, CodeBlock, ErrorNotice, Field, List, Page, Section, Segments, Sheet, Specs, Status, Tags } from "@mws-dashboard/ui";
+import { FileExplorer, Terminal } from "@mws-dashboard/ui/console";
+import { Clock, Cpu, FolderTree, Globe, HardDrive, KeyRound, LayoutDashboard, Network, Pencil, Play, Power, RotateCcw, ScrollText, Shield, Square, SquareTerminal, Trash2 } from "lucide-react";
 import type { Metadata } from "next";
 
 import { ICONS, ec2, nameTag } from "../../../lib/clients";
 import { STATE_TONE } from "../../../lib/ec2";
 import { changeState, rename } from "../actions";
 
-type Props = { searchParams: Promise<{ id?: string }> };
+type Props = { searchParams: Promise<{ id?: string; tab?: string }> };
 
 export const metadata: Metadata = { title: "Instance" };
 
 export default async function InstancePage({ searchParams }: Props) {
-  const { id = "" } = await searchParams;
+  const { id = "", tab = "overview" } = await searchParams;
   const back = { href: "/ec2", label: "Instances" };
   const data = await load(async () => {
     const client = await ec2();
@@ -36,6 +38,19 @@ export default async function InstancePage({ searchParams }: Props) {
   const state = i.State?.Name ?? "";
   const name = nameTag(i);
   const gone = state === "terminated" || state === "shutting-down";
+  const running = state === "running";
+  const here = `/ec2/instance?id=${encodeURIComponent(id)}`;
+  const target = { service: "ec2" as const, base: `/_aws/ec2/instances/${id}` };
+  const tabs = [
+    { label: <><LayoutDashboard size={15} aria-hidden /> Overview</>, href: here, active: tab === "overview" },
+    ...(running
+      ? [
+          { label: <><SquareTerminal size={15} aria-hidden /> Terminal</>, href: `${here}&tab=terminal`, active: tab === "terminal" },
+          { label: <><FolderTree size={15} aria-hidden /> Files</>, href: `${here}&tab=files`, active: tab === "files" },
+        ]
+      : []),
+    { label: <><ScrollText size={15} aria-hidden /> Logs</>, href: `${here}&tab=logs`, active: tab === "logs" },
+  ];
   return (
     <Page
       title={name ?? id}
@@ -60,6 +75,12 @@ export default async function InstancePage({ searchParams }: Props) {
         )
       }
     >
+      <Segments label="Instance" items={tabs} />
+      {tab === "terminal" && running && <Terminal target={target} actions={SHELL_ACTIONS} host={i.PrivateDnsName?.split(".")[0] || id} />}
+      {tab === "files" && running && <FileExplorer target={target} actions={SHELL_ACTIONS} start="/root" />}
+      {tab === "logs" && (console ? <CodeBlock value={console.split("\n").slice(-1000).join("\n")} label="Console output" /> : <span className="muted">No output yet</span>)}
+      {tab === "overview" && (
+        <>
       <Specs
         items={[
           { label: "State", icon: <Power size={15} />, value: <Status tone={STATE_TONE[state] ?? "neutral"}>{state}</Status> },
@@ -97,10 +118,7 @@ export default async function InstancePage({ searchParams }: Props) {
           />
         </Section>
       )}
-      {console && (
-        <Section title="Console" icon={<AwsIcon icon={ICONS.instance} size={16} />}>
-          <CodeBlock value={console.split("\n").slice(-200).join("\n")} label="Console output" />
-        </Section>
+        </>
       )}
     </Page>
   );
