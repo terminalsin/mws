@@ -334,15 +334,58 @@ impl DockerBackend {
             .map(|(name, _)| name.to_string())
     }
 
-    /// Whether a daemon answers (blocking; used once at startup).
+    /// The CLI this backend drives.
+    pub fn cli(&self) -> &str {
+        &self.cli
+    }
+
+    /// Whether a daemon answers (blocking).
     pub fn daemon_available(&self) -> bool {
-        std::process::Command::new(&self.cli)
+        self.daemon_probe().is_ok()
+    }
+
+    /// Ask the daemon for its version (blocking, at most a few seconds: a
+    /// daemon that is still starting can hold the CLI). The error says why
+    /// none answered.
+    pub fn daemon_probe(&self) -> Result<String, String> {
+        use std::io::Read;
+        let mut child = std::process::Command::new(&self.cli)
             .args(["version", "--format", "{{.Server.Version}}"])
             .stdin(Stdio::null())
-            .stdout(Stdio::null())
-            .stderr(Stdio::null())
-            .status()
-            .is_ok_and(|s| s.success())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .spawn()
+            .map_err(|e| format!("cannot run `{}`: {e}", self.cli))?;
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+        let status = loop {
+            match child.try_wait() {
+                Ok(Some(status)) => break status,
+                Ok(None) if std::time::Instant::now() < deadline => {
+                    std::thread::sleep(std::time::Duration::from_millis(20))
+                }
+                Ok(None) => {
+                    let _ = child.kill();
+                    let _ = child.wait();
+                    return Err(format!("`{} version` did not answer within 10 s", self.cli));
+                }
+                Err(e) => return Err(format!("waiting for `{} version`: {e}", self.cli)),
+            }
+        };
+        let read = |r: Option<&mut dyn Read>| {
+            let mut s = String::new();
+            if let Some(r) = r {
+                let _ = r.read_to_string(&mut s);
+            }
+            s.trim().to_string()
+        };
+        let out = read(child.stdout.as_mut().map(|r| r as &mut dyn Read));
+        let err = read(child.stderr.as_mut().map(|r| r as &mut dyn Read));
+        if status.success() && !out.is_empty() {
+            Ok(out)
+        } else {
+            let why = err.lines().last().unwrap_or("no server version").to_string();
+            Err(format!("`{} version`: {why}", self.cli))
+        }
     }
 
     async fn run(&self, args: &[String]) -> Result<String, BackendError> {

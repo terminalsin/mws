@@ -7,10 +7,12 @@
 //! too); [`MetadataBackend`] runs nothing and keeps EC2 a pure control plane,
 //! for machines without a container runtime.
 
+mod auto;
 mod docker;
 
 use std::sync::Arc;
 
+pub use auto::AutoBackend;
 pub use docker::{DockerBackend, DEFAULT_NETFILTER_IMAGE};
 
 /// The VPC network an instance joins. Backends that isolate networks give
@@ -344,7 +346,8 @@ impl ComputeBackend for MetadataBackend {
 /// Which backend to use (`MWS_EC2_BACKEND`).
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub enum BackendChoice {
-    /// Docker when a daemon answers at startup, metadata only otherwise.
+    /// Docker once a daemon answers (probed at startup and then in the
+    /// background until one does), metadata only until then.
     Auto,
     Docker,
     #[default]
@@ -362,20 +365,14 @@ impl BackendChoice {
     }
 
     /// The backend this choice resolves to. `Auto` probes the Docker CLI
-    /// (`docker_cli`, default `docker`) once.
+    /// (`docker_cli`, default `docker`) now and, until a daemon answers, in
+    /// the background, so Docker started after MWS is still picked up.
     pub fn resolve(&self, docker_cli: Option<&str>) -> Arc<dyn ComputeBackend> {
         let docker = || DockerBackend::new(docker_cli.unwrap_or("docker"));
         match self {
             Self::Metadata => Arc::new(MetadataBackend),
-            Self::Docker => Arc::new(docker()),
-            Self::Auto => {
-                let d = docker();
-                if d.daemon_available() {
-                    Arc::new(d)
-                } else {
-                    Arc::new(MetadataBackend)
-                }
-            }
+            Self::Docker => Arc::new(AutoBackend::docker(docker())),
+            Self::Auto => Arc::new(AutoBackend::auto(docker())),
         }
     }
 }
