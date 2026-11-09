@@ -6,7 +6,9 @@
   "type": "module",
   "exports": {
     ".": "./src/index.ts",
-    "./auto": "./src/auto.ts"
+    "./auto": "./src/auto.ts",
+    "./shell": "./src/shell.ts",
+    "./shell-actions": "./src/shell-actions.ts"
   },
   "scripts": {
     "typecheck": "tsc --noEmit"

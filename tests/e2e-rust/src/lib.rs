@@ -141,6 +141,59 @@ impl Mws {
         self.sdk_config(&iam.root_access_key_id, &iam.root_secret_access_key, None).await
     }
 
+    /// Send a SigV4-signed request for `service` with the root keys (MWS's
+    /// own signed endpoints): `(status, headers, body)`.
+    pub async fn signed(
+        &self,
+        service: &str,
+        method: &str,
+        target: &str,
+        body: &[u8],
+    ) -> (u16, Vec<(String, String)>, Vec<u8>) {
+        let iam = &self.config.iam;
+        self.signed_as(&iam.root_access_key_id, &iam.root_secret_access_key, service, method, target, body).await
+    }
+
+    /// [`Mws::signed`] with other keys.
+    pub async fn signed_as(
+        &self,
+        akid: &str,
+        secret: &str,
+        service: &str,
+        method: &str,
+        target: &str,
+        body: &[u8],
+    ) -> (u16, Vec<(String, String)>, Vec<u8>) {
+        use aws_sigv4::http_request::{sign, SignableBody, SignableRequest, SigningSettings};
+        let identity = Credentials::new(akid, secret, None, None, "mws-e2e").into();
+        let params = aws_sigv4::sign::v4::SigningParams::builder()
+            .identity(&identity)
+            .region("us-east-1")
+            .name(service)
+            .time(std::time::SystemTime::now())
+            .settings(SigningSettings::default())
+            .build()
+            .unwrap()
+            .into();
+        let host = self.endpoint.trim_start_matches("http://").to_string();
+        let url = format!("{}{target}", self.endpoint);
+        let signable =
+            SignableRequest::new(method, &url, [("host", host.as_str())].into_iter(), SignableBody::Bytes(body))
+                .unwrap();
+        let (instructions, _) = sign(signable, &params).unwrap().into_parts();
+        let mut request = http::Request::builder().method(method).uri(&url).body(()).unwrap();
+        instructions.apply_to_request_http1x(&mut request);
+        let headers: Vec<(String, String)> = request
+            .headers()
+            .iter()
+            .map(|(k, v)| (k.to_string(), v.to_str().unwrap().to_string()))
+            .chain([("host".to_string(), host.clone())])
+            .collect();
+        let refs: Vec<(&str, &str)> = headers.iter().map(|(k, v)| (k.as_str(), v.as_str())).collect();
+        let path = request.uri().path_and_query().map(|p| p.to_string()).unwrap_or_default();
+        self.raw(method, &path, &refs, body).await
+    }
+
     pub async fn sdk_config(&self, akid: &str, secret: &str, token: Option<&str>) -> SdkConfig {
         aws_config::defaults(BehaviorVersion::latest())
             .region(Region::new("us-east-1"))

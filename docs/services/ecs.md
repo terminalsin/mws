@@ -59,6 +59,21 @@ All 88 operations of the model are generated (awsJson 1.1) and implemented.
 | Gateways | 🟡 | Gateways, cluster associations and routes for services with gateway connectors; no load balancer receives traffic. |
 | Express services | 🟡 | Creates the cluster when missing, registers the task definition and runs a real Fargate service; a real Application Load Balancer, target group (with the health check path) and HTTP listener are created and deleted with the service. No ACM certificate or HTTPS listener and no auto scaling policy is created. |
 
+## Terminal and files
+
+The console's task page has Terminal and Files tabs for each container, using `/_aws/ecs/tasks/<cluster>/<task-id>/<container>/...`. This endpoint is MWS's own, not an AWS API. As with ECS Exec, it needs `ecs:ExecuteCommand` on the task, and the task must have been run with `enableExecuteCommand`. Tasks and services the console starts turn that on. The Logs tab reads the container's `awslogs` stream from CloudWatch Logs.
+
+Requests are SigV4 signed like any AWS call. Each one runs a short `sh` script in the container with `docker exec` as root; it is not an interactive PTY. The routes, relative to the resource:
+
+| Request | Effect |
+| --- | --- |
+| `POST exec` `{"command", "cwd"?}` | Runs a command. Returns `{"stdout", "stderr", "exitCode", "cwd"}`; `cwd` is the directory after the command, so `cd` carries over. |
+| `GET files?path=` | Lists a directory: name, `file`/`dir`/`link`, size, modified time, mode. |
+| `GET file?path=` | Returns the file's bytes, up to 8 MiB. `x-mws-truncated` is set when the file is longer. |
+| `PUT file?path=` | Writes the body to the file, creating its directory. |
+| `DELETE file?path=` | Removes the file or directory. |
+| `POST dir?path=` | Creates a directory. |
+
 ## Access control
 
 | Feature | Status | Details |

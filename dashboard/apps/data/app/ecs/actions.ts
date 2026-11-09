@@ -78,6 +78,7 @@ export async function createService(cluster: string, _: ActionResult | null, for
         desiredCount: Number(text(form, "desired") || 1),
         launchType: (text(form, "launchType") || "FARGATE") as "FARGATE" | "EC2",
         networkConfiguration: await defaultNetwork(),
+        enableExecuteCommand: true,
       }),
     );
     return `Created ${name}`;
@@ -102,7 +103,7 @@ export async function deleteService(cluster: string, service: string) {
 export async function runTask(cluster: string, _: ActionResult | null, form: FormData) {
   return act(async () => {
     const out = await (await ecs()).send(
-      new RunTaskCommand({ cluster, taskDefinition: required(form, "taskDefinition", "Task definition"), count: Number(text(form, "count") || 1), launchType: (text(form, "launchType") || "FARGATE") as "FARGATE" | "EC2", networkConfiguration: await defaultNetwork() }),
+      new RunTaskCommand({ cluster, taskDefinition: required(form, "taskDefinition", "Task definition"), count: Number(text(form, "count") || 1), launchType: (text(form, "launchType") || "FARGATE") as "FARGATE" | "EC2", networkConfiguration: await defaultNetwork(), enableExecuteCommand: true }),
     );
     if (out.failures?.length) throw new Error(out.failures.map((f) => f.reason).join(", "));
     return `Started ${out.tasks?.length ?? 0} task(s)`;

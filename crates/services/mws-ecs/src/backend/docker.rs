@@ -489,6 +489,37 @@ impl ContainerBackend for DockerBackend {
         self.run_str(&["exec", runtime_id, "/bin/sh", "-c", command]).await
     }
 
+    async fn shell(
+        &self,
+        runtime_id: &str,
+        script: &str,
+        stdin: Option<&[u8]>,
+    ) -> Result<Option<mws_core::shell::Output>, BackendError> {
+        use tokio::io::AsyncWriteExt;
+        let mut args = vec!["exec"];
+        if stdin.is_some() {
+            args.push("-i");
+        }
+        args.extend(["-u", "0", runtime_id, "/bin/sh", "-c", script]);
+        let mut child = tokio::process::Command::new(&self.cli)
+            .args(&args)
+            .stdin(if stdin.is_some() { Stdio::piped() } else { Stdio::null() })
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .spawn()
+            .map_err(|e| BackendError(format!("running {}: {e}", self.cli)))?;
+        if let (Some(data), Some(mut pipe)) = (stdin, child.stdin.take()) {
+            pipe.write_all(data).await.map_err(|e| BackendError(format!("writing to {runtime_id}: {e}")))?;
+            drop(pipe);
+        }
+        let out = child.wait_with_output().await.map_err(|e| BackendError(format!("running {}: {e}", self.cli)))?;
+        Ok(Some(mws_core::shell::Output {
+            exit_code: out.status.code().unwrap_or(-1),
+            stdout: String::from_utf8_lossy(&out.stdout).into_owned(),
+            stderr: String::from_utf8_lossy(&out.stderr).into_owned(),
+        }))
+    }
+
     async fn cleanup(&self, task: &TaskSpec, handle: &str, runtime_ids: &[String]) {
         for id in runtime_ids {
             let _ = self.run_str(&["rm", "-f", "-v", id]).await;

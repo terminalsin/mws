@@ -28,6 +28,7 @@ mod asg;
 pub mod backend;
 mod capacity;
 mod clusters;
+mod console;
 mod daemons;
 mod express;
 mod gateways;
@@ -190,6 +191,9 @@ impl Service for Ecs {
     async fn handle(&self, ctx: RequestContext, request: HttpRequest) -> HttpResponse {
         if request.uri().path().starts_with(metadata::PREFIX) {
             return metadata::serve(self, &request);
+        }
+        if request.uri().path().starts_with(console::PREFIX) {
+            return console::serve(self, &ctx, &request).await;
         }
         self.observe(&ctx);
         generated::dispatch(self, &ctx, &request).await

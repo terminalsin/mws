@@ -70,6 +70,13 @@ and the home page, so it never calls another zone's services itself.
   zone's resources are searchable.
 
 
+Running EC2 instances and ECS task containers have Terminal, Files and Logs
+tabs. The terminal runs one command at a time; `cd` carries over, and ↑/↓
+walk the history. The file explorer can browse, preview text and images,
+download, upload, create folders and delete. These tabs need the Docker
+backends (see [EC2](services/ec2.md#terminal-and-files) and
+[ECS](services/ecs.md#terminal-and-files)).
+
 Create forms offer to make what a resource needs. A prerequisite field
 (a service role, a destination bucket, a launch template, an infrastructure
 configuration) has two modes: pick an existing one, or "create

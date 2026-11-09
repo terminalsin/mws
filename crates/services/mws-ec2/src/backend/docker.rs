@@ -549,22 +549,42 @@ impl ComputeBackend for DockerBackend {
     }
 
     async fn exec(&self, handle: &str, script: &str) -> Result<Option<CommandOutput>, BackendError> {
+        self.exec_input(handle, script, None).await
+    }
+
+    async fn exec_input(
+        &self,
+        handle: &str,
+        script: &str,
+        stdin: Option<&[u8]>,
+    ) -> Result<Option<CommandOutput>, BackendError> {
+        use tokio::io::AsyncWriteExt;
         // Prefer bash, as the SSM agent does; small images only have sh.
-        let out = Command::new(&self.cli)
-            .args([
-                "exec",
-                "-u",
-                "0",
-                handle,
-                "/bin/sh",
-                "-c",
-                "if command -v bash >/dev/null 2>&1; then exec bash -c \"$0\"; else exec sh -c \"$0\"; fi",
-                script,
-            ])
-            .stdin(Stdio::null())
-            .output()
-            .await
+        let mut args = vec!["exec"];
+        if stdin.is_some() {
+            args.push("-i");
+        }
+        args.extend([
+            "-u",
+            "0",
+            handle,
+            "/bin/sh",
+            "-c",
+            "if command -v bash >/dev/null 2>&1; then exec bash -c \"$0\"; else exec sh -c \"$0\"; fi",
+            script,
+        ]);
+        let mut child = Command::new(&self.cli)
+            .args(&args)
+            .stdin(if stdin.is_some() { Stdio::piped() } else { Stdio::null() })
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .spawn()
             .map_err(|e| BackendError(format!("running {}: {e}", self.cli)))?;
+        if let (Some(data), Some(mut pipe)) = (stdin, child.stdin.take()) {
+            pipe.write_all(data).await.map_err(|e| BackendError(format!("writing to {handle}: {e}")))?;
+            drop(pipe);
+        }
+        let out = child.wait_with_output().await.map_err(|e| BackendError(format!("running {}: {e}", self.cli)))?;
         Ok(Some(CommandOutput {
             exit_code: out.status.code().unwrap_or(-1),
             stdout: String::from_utf8_lossy(&out.stdout).into_owned(),

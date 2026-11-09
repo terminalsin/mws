@@ -21,6 +21,7 @@ pub mod generated {
 
 pub mod backend;
 mod catalog;
+mod console;
 mod firewall;
 mod handler;
 pub mod imds;
@@ -441,6 +442,9 @@ impl Service for Ec2 {
     async fn handle(&self, ctx: RequestContext, request: HttpRequest) -> HttpResponse {
         if request.uri().path().starts_with(imds::PREFIX) {
             return imds::serve(self, &ctx, &request).await;
+        }
+        if request.uri().path().starts_with(console::PREFIX) {
+            return console::serve(self, &ctx, &request).await;
         }
         let params = mws_proto_ec2::read_params(&request);
         let action = params.get("Action").unwrap_or_default().to_string();
