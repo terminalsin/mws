@@ -50,7 +50,8 @@ pub fn exec_script(command: &str, cwd: Option<&str>) -> String {
         Some(c) => format!("cd {} 2>/dev/null || cd \"$HOME\" 2>/dev/null || cd /", quote(c)),
         None => "cd \"$HOME\" 2>/dev/null || cd /".to_string(),
     };
-    format!("{cd}\n{command}\n__mws_rc=$?\nprintf '\\n\\036%s\\036%s' \"$__mws_rc\" \"$PWD\"\n")
+    // An EXIT trap, so `exit 3` still reports its status and directory.
+    format!("{cd}\ntrap '__mws_rc=$?; printf \"\\n\\036%s\\036%s\" \"$__mws_rc\" \"$PWD\"' EXIT\n{command}\n")
 }
 
 /// Split a terminal command's output into what it printed, its exit code
@@ -276,6 +277,18 @@ mod tests {
     #[test]
     fn quotes_single_quotes() {
         assert_eq!(quote("it's"), r"'it'\''s'");
+    }
+
+    #[test]
+    fn exec_reports_status_after_exit() {
+        let script = exec_script("cd /tmp; echo hi; exit 3", None);
+        let out = std::process::Command::new("sh").arg("-c").arg(&script).output().unwrap();
+        let out = Output {
+            exit_code: out.status.code().unwrap_or(-1),
+            stdout: String::from_utf8(out.stdout).unwrap(),
+            stderr: String::new(),
+        };
+        assert_eq!(parse_exec(&out), ("hi\n".to_string(), 3, Some("/tmp".to_string())));
     }
 
     #[test]

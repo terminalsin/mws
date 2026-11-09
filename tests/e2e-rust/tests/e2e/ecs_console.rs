@@ -106,7 +106,7 @@ async fn console_docker_shell_in_a_task() {
         )
         .await;
     assert_eq!(status, 200, "{}", String::from_utf8_lossy(&out));
-    assert_eq!(json(&out)["stdout"], "alpine");
+    assert_eq!(json(&out)["stdout"], "alpine\n");
     let (status, _, _) = mws.signed("ecs", "PUT", &format!("{base}/file?path=%2Ftmp%2Fhello.txt"), b"hello").await;
     assert_eq!(status, 200);
     let (_, _, out) = mws.signed("ecs", "GET", &format!("{base}/files?path=%2Ftmp"), b"").await;

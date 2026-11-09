@@ -100,7 +100,7 @@ async fn console_docker_terminal_and_files() {
         .await;
     assert_eq!(status, 200, "{}", String::from_utf8_lossy(&out));
     let v = json(&out);
-    assert_eq!(v["stdout"], "hi");
+    assert_eq!(v["stdout"], "hi\n");
     assert_eq!(v["exitCode"], 0);
     assert_eq!(v["cwd"], "/tmp");
     let (_, _, out) = mws
@@ -112,7 +112,7 @@ async fn console_docker_terminal_and_files() {
         )
         .await;
     let v = json(&out);
-    assert_eq!(v["stdout"], "/tmp");
+    assert_eq!(v["stdout"], "/tmp\n");
     assert_eq!(v["exitCode"], 3);
 
     // Files: upload (binary-safe), list, download, delete.
