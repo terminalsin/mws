@@ -3455,6 +3455,7 @@ dependencies = [
  "bytes",
  "chrono",
  "flate2",
+ "form_urlencoded",
  "http 1.5.0",
  "mws-bedrock",
  "mws-codegen",

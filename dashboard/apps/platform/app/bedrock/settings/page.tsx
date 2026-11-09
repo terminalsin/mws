@@ -1,11 +1,13 @@
 import { GetModelInvocationLoggingConfigurationCommand } from "@aws-sdk/client-bedrock";
 import { load } from "@mws-dashboard/aws";
-import { ActionForm, AwsIcon, ErrorNotice, Field, List, Page, Pill, Section, Sheet, zoneHref } from "@mws-dashboard/ui";
+import { roleOptions } from "@mws-dashboard/aws/auto";
+import { ActionForm, AutoPick, AwsIcon, ErrorNotice, Field, List, Page, Pill, Section, Sheet, zoneHref } from "@mws-dashboard/ui";
 import { PowerOff, Settings2 } from "lucide-react";
 import type { Metadata } from "next";
 
 import { bedrock } from "../../../lib/clients";
 import { saveLogging, stopLogging } from "../actions";
+import { Providers } from "./providers";
 
 export const metadata: Metadata = { title: "Settings" };
 
@@ -19,11 +21,13 @@ export default async function Settings() {
     );
   }
   const c = config.value;
+  const roles = await roleOptions("bedrock.amazonaws.com");
   const cw = c?.cloudWatchConfig;
   const s3 = c?.s3Config;
   const kinds = c && [c.textDataDeliveryEnabled && "text", c.imageDataDeliveryEnabled && "image", c.embeddingDataDeliveryEnabled && "embeddings", c.videoDataDeliveryEnabled && "video"].filter(Boolean);
   return (
     <Page title="Settings">
+      <Providers />
       <Section
         title="Model invocation logging"
         actions={
@@ -32,11 +36,9 @@ export default async function Settings() {
             <Sheet title="Model invocation logging" label="Edit logging" icon={<Settings2 size={15} />} testId="edit-logging">
               <ActionForm action={saveLogging} submit="Save" testId="edit-logging">
                 <Field label="Log group">
-                  <input name="logGroup" defaultValue={cw?.logGroupName} placeholder="/aws/bedrock/invocations" />
+                  <input name="logGroup" defaultValue={cw?.logGroupName ?? "/aws/bedrock/invocations"} />
                 </Field>
-                <Field label="Service role ARN">
-                  <input name="role" defaultValue={cw?.roleArn} placeholder="arn:aws:iam::…:role/…" />
-                </Field>
+                <AutoPick name="role" label="Service role" creates="AmazonBedrockInvocationLoggingRole" options={roles} preferred={cw?.roleArn} testId="logging-role" />
                 <div className="form-row">
                   <Field label="S3 bucket">
                     <input name="bucket" defaultValue={s3?.bucketName} />

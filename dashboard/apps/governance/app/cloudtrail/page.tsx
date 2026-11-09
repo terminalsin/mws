@@ -1,6 +1,7 @@
 import { DescribeTrailsCommand, GetTrailStatusCommand, LookupEventsCommand, type LookupAttributeKey } from "@aws-sdk/client-cloudtrail";
 import { ago, load } from "@mws-dashboard/aws";
-import { ActionForm, AwsIcon, Empty, ErrorNotice, Field, List, Page, Pill, Sheet, Status, SERVICES } from "@mws-dashboard/ui";
+import { bucketOptions } from "@mws-dashboard/aws/auto";
+import { ActionForm, AutoPick, AwsIcon, Empty, ErrorNotice, Field, List, Page, Pill, Sheet, Status, SERVICES } from "@mws-dashboard/ui";
 import { Pause, Play, Search, Trash2, User } from "lucide-react";
 import type { Metadata } from "next";
 
@@ -27,15 +28,14 @@ export default async function CloudTrail({ searchParams }: Props) {
       const list = (await client.send(new DescribeTrailsCommand({}))).trailList ?? [];
       return Promise.all(list.map(async (t) => ({ t, status: await client.send(new GetTrailStatusCommand({ Name: t.TrailARN })).catch(() => undefined) })));
     });
+    const buckets = await bucketOptions();
     const create = (
       <Sheet title="Create trail" label="Create trail" testId="create-trail">
         <ActionForm action={createTrail} submit="Create trail" testId="create-trail">
           <Field label="Trail name">
             <input name="name" required autoFocus />
           </Field>
-          <Field label="S3 bucket">
-            <input name="bucket" required />
-          </Field>
+          <AutoPick name="bucket" label="S3 bucket" creates="aws-cloudtrail-logs-<account>-<region>" options={buckets} testId="trail-bucket" />
           <label className="check">
             <input type="checkbox" name="multi" defaultChecked /> All Regions
           </label>

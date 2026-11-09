@@ -593,6 +593,28 @@
   .check {
     @apply inline-flex items-center gap-2;
   }
+  /* Existing resource, or "create automatically". */
+  .auto-pick-row {
+    @apply flex items-stretch gap-px;
+  }
+  .auto-pick-row > select {
+    @apply flex-1;
+  }
+  .auto-new {
+    @apply flex h-10 min-w-0 flex-1 items-center gap-2 border-b border-interactive bg-[var(--tag)] px-4 text-sm text-primary;
+  }
+  .auto-new svg {
+    @apply shrink-0 text-interactive;
+  }
+  .auto-toggle {
+    @apply inline-flex gap-px;
+  }
+  .auto-toggle button {
+    @apply inline-flex h-10 w-10 cursor-pointer items-center justify-center border-0 border-b border-strong bg-field text-secondary hover:bg-hover disabled:cursor-not-allowed disabled:opacity-40;
+  }
+  .auto-toggle button[aria-pressed="true"] {
+    @apply bg-interactive text-white;
+  }
   input:where(:not([type="checkbox"], [type="radio"], [type="file"])),
   select,
   textarea {

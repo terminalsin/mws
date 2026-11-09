@@ -28,3 +28,6 @@ export function zoneHref(id: ZoneId, path = "/"): string {
   const base = zone(id).basePath;
   return path === "/" ? base || "/" : base + path;
 }
+
+/** The form value of an `AutoPick` set to "create automatically". */
+export const AUTO = "auto:";

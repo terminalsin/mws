@@ -14,6 +14,7 @@ import {
   type Runtime,
 } from "@aws-sdk/client-lambda";
 import { act, required, text, type ActionResult } from "@mws-dashboard/aws";
+import { ROLES, roleFrom } from "@mws-dashboard/aws/auto";
 import { strToU8, unzipSync, zipSync } from "fflate";
 import { redirect } from "next/navigation";
 
@@ -56,7 +57,7 @@ export async function createFunction(_: ActionResult | null, form: FormData) {
       new CreateFunctionCommand({
         FunctionName: name,
         Runtime: runtime as Runtime,
-        Role: required(form, "role", "Execution role"),
+        Role: await roleFrom(form, "role", ROLES.lambda(name)),
         Handler: starter.handler,
         Code: { ZipFile: zipSync({ [starter.file]: strToU8(starter.code) }) },
         Architectures: [text(form, "arch") === "x86_64" ? "x86_64" : "arm64"],

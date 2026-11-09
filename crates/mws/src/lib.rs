@@ -16,6 +16,7 @@ use mws_amplify::Amplify;
 use mws_autoscaling::AutoScaling;
 use mws_bedrock::Bedrock;
 use mws_bedrock_runtime::BedrockRuntime;
+pub use mws_bedrock_runtime::{ProviderConfig as BedrockProviderConfig, Providers as BedrockProviders};
 use mws_ce::CostExplorer;
 use mws_cloudformation::CloudFormation;
 use mws_cloudtrail::CloudTrail;
@@ -82,10 +83,12 @@ pub struct Config {
     pub ec2_backend: BackendChoice,
     /// The Docker-compatible CLI (`MWS_EC2_DOCKER`, e.g. `podman`).
     pub ec2_docker_cli: Option<String>,
-    /// What answers Bedrock model invocations (`MWS_BEDROCK_BACKEND`:
-    /// `echo`, `openai` or `anthropic`, with `MWS_BEDROCK_BACKEND_URL`,
-    /// `_API_KEY` and `_MODEL`). Defaults to the deterministic echo.
-    pub bedrock_backend: mws_bedrock_runtime::BackendConfig,
+    /// Which model providers answer Bedrock invocations, from the
+    /// environment (`MWS_BEDROCK_BACKEND*`, `MWS_BEDROCK_PROVIDERS`,
+    /// `MWS_BEDROCK_PROVIDER_<NAME>_<SETTING>`, `MWS_BEDROCK_DEFAULT_PROVIDER`).
+    /// Settings stored at runtime through `/_aws/bedrock/providers` go on
+    /// top. Defaults to the deterministic echo.
+    pub bedrock_providers: mws_bedrock_runtime::Providers,
     /// Which quota values accounts start with (`MWS_QUOTA_PROFILE`:
     /// `established`, the default, or `new-account` for AWS's exact
     /// new-account defaults such as 5 standard EC2 vCPUs).
@@ -214,7 +217,7 @@ impl Config {
             skip_federation_signature_verification: skip,
             ec2_backend,
             ec2_docker_cli: std::env::var("MWS_EC2_DOCKER").ok().filter(|v| !v.is_empty()),
-            bedrock_backend: mws_bedrock_runtime::BackendConfig::from_env(),
+            bedrock_providers: mws_bedrock_runtime::Providers::from_env(),
             quota_profile,
             ses_auto_verify: std::env::var("MWS_SES_AUTO_VERIFY")
                 .is_ok_and(|v| matches!(v.as_str(), "1" | "true" | "yes")),
@@ -439,7 +442,7 @@ fn build_with_store(config: Config, store: Option<Arc<Store>>) -> Mws {
     let marketplace_entitlement = Entitlement::new(config.iam.account_id.clone());
     let marketplace_metering = Metering::new(marketplace_entitlement.clone());
     let bedrock = Bedrock::new();
-    let bedrock_runtime = BedrockRuntime::new(bedrock.clone(), s3.clone(), &config.bedrock_backend)
+    let bedrock_runtime = BedrockRuntime::new(bedrock.clone(), s3.clone(), config.bedrock_providers.clone())
         .with_logs(logs.clone())
         .with_sts(sts.clone());
     tracing::info!(backend = bedrock_runtime.backend_name(), "Bedrock model backend");

@@ -2,6 +2,7 @@
 
 import { CreateClusterCommand, CreateNodegroupCommand, DeleteClusterCommand, DeleteNodegroupCommand, UpdateNodegroupConfigCommand } from "@aws-sdk/client-eks";
 import { act, required, text, type ActionResult } from "@mws-dashboard/aws";
+import { ROLES, roleFrom } from "@mws-dashboard/aws/auto";
 import { redirect } from "next/navigation";
 
 import { eks } from "../../lib/clients";
@@ -14,7 +15,7 @@ export async function createCluster(_: ActionResult | null, form: FormData) {
       new CreateClusterCommand({
         name,
         version: text(form, "version") || undefined,
-        roleArn: required(form, "role", "Cluster service role"),
+        roleArn: await roleFrom(form, "role", ROLES.eksCluster),
         resourcesVpcConfig: { subnetIds: await subnetsOf(required(form, "vpc", "VPC")), endpointPublicAccess: true },
         accessConfig: { authenticationMode: "API_AND_CONFIG_MAP", bootstrapClusterCreatorAdminPermissions: true },
       }),
@@ -37,7 +38,7 @@ export async function createNodegroup(cluster: string, subnets: string[], _: Act
       new CreateNodegroupCommand({
         clusterName: cluster,
         nodegroupName: required(form, "name", "Node group name"),
-        nodeRole: required(form, "role", "Node IAM role"),
+        nodeRole: await roleFrom(form, "role", ROLES.eksNode),
         subnets,
         instanceTypes: [text(form, "type") || "t3.medium"],
         scalingConfig: { minSize: Math.min(1, size), desiredSize: size, maxSize: Math.max(size, Number(text(form, "max") || size)) },

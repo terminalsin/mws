@@ -9,6 +9,7 @@ mod acmpca_parity;
 mod amplify;
 mod autoscaling;
 mod bedrock;
+mod bedrock_providers;
 mod bedrock_runtime;
 mod cloudformation;
 mod cloudformation_iac;

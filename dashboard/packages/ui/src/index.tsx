@@ -19,7 +19,8 @@ import { navigation, iconUrl } from "./catalog";
 import { CommandPalette, NavLink, RegionPicker, ServicesMenu, SideNav, Toasts, type NavGroup } from "./client";
 import { zoneHref, type ZoneId } from "./zones";
 
-export { ActionForm, CommandPalette, NavLink, RegionPicker, Sheet, Toasts, type ActionResult, type FormAction, type SearchHit } from "./client";
+export { AUTO } from "./zones";
+export { ActionForm, AutoPick, CommandPalette, NavLink, RegionPicker, Sheet, Toasts, type ActionResult, type FormAction, type SearchHit } from "./client";
 export { CATEGORIES, SERVICES, iconUrl, navigation, runtimeIcon, service, type Category, type CategoryId, type NavItem, type Service } from "./catalog";
 export { ZONES, zone, zoneHref, REGION_COOKIE, type Zone, type ZoneId } from "./zones";
 

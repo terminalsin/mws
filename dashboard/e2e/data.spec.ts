@@ -1,6 +1,7 @@
+import { GetRoleCommand, IAMClient } from "@aws-sdk/client-iam";
 import { expect, test } from "@playwright/test";
 
-import { row, submit, unique } from "./helpers";
+import { row, sdk, submit, unique } from "./helpers";
 
 test("RDS: create a PostgreSQL database and find its connection command", async ({ page }) => {
   const id = unique("dash-db");
@@ -18,6 +19,38 @@ test("ElastiCache: create a serverless Valkey cache", async ({ page }) => {
   await submit(page, "create-cache", { engine: "valkey", mode: "serverless", name });
   await expect(page.getByRole("heading", { level: 1, name })).toBeVisible();
   await expect(page.locator(".specs")).toContainText("Serverless");
+});
+
+test("EKS: create a cluster with its service role made automatically", async ({ page }) => {
+  const name = unique("dash-eks");
+  await page.goto("/data/eks");
+  const form = page.locator("dialog[open]").getByTestId("create-eks-cluster").and(page.locator("form"));
+  await expect(async () => {
+    if (!(await form.isVisible())) await page.getByTestId("create-eks-cluster-open").first().click();
+    await expect(form).toBeVisible({ timeout: 1000 });
+  }).toPass();
+  await form.locator('[name="name"]').fill(name);
+  await form.getByTestId("cluster-role").getByRole("button", { name: "Create automatically" }).click();
+  await expect(form.getByTestId("cluster-role-auto")).toContainText("AmazonEKSClusterRole");
+  await form.locator('button[type="submit"]').click();
+  await expect(page.getByRole("heading", { level: 1, name })).toBeVisible();
+  const role = await new IAMClient(sdk).send(new GetRoleCommand({ RoleName: "AmazonEKSClusterRole" }));
+  expect(decodeURIComponent(role.Role!.AssumeRolePolicyDocument!)).toContain("eks.amazonaws.com");
+});
+
+test("Firehose: a stream with its bucket and role made automatically", async ({ page }) => {
+  const name = unique("dash-fh");
+  await page.goto("/data/firehose");
+  const form = page.locator("dialog[open]").getByTestId("create-delivery-stream").and(page.locator("form"));
+  await expect(async () => {
+    if (!(await form.isVisible())) await page.getByTestId("create-delivery-stream-open").first().click();
+    await expect(form).toBeVisible({ timeout: 1000 });
+  }).toPass();
+  await form.locator('[name="name"]').fill(name);
+  for (const pick of ["destination-bucket", "firehose-role"]) await form.getByTestId(pick).getByRole("button", { name: "Create automatically" }).click();
+  await form.locator('button[type="submit"]').click();
+  await expect(page.getByRole("heading", { level: 1, name })).toBeVisible();
+  await expect(page.locator("main")).toContainText(/firehose-\d{12}-/);
 });
 
 test("ECR: create a repository with a lifecycle rule", async ({ page }) => {

@@ -6,12 +6,17 @@
 //! Throughput, custom deployments, prompt routers) and guardrails resolve
 //! through the control plane's public API (`mws-bedrock`). Answers come
 //! from a pluggable [`backend::Backend`]: a deterministic echo by default,
-//! or a real OpenAI-compatible or Anthropic endpoint.
+//! or real OpenAI-compatible and Anthropic endpoints, chosen per model by
+//! the [`providers`] settings (environment variables, overridden by stored
+//! settings that persist with MWS state).
 //!
 //! MWS side channel (unsigned): `POST /_aws/bedrock/responses` queues
 //! scripted answers for the echo backend (a JSON object or array of
 //! `{"modelId"?, "text"?, "toolUse"?: {"name", "input"}, "stopReason"?,
 //! "error"?}`), `GET` shows how many are queued and `DELETE` clears them.
+//! `/_aws/bedrock/providers` lists, stores and deletes provider settings
+//! (`GET`, `PUT /{name}`, `DELETE /{name}`, `PUT {"default": name}`) and
+//! `GET /_aws/bedrock/providers/route?modelId=...` says who answers a model.
 
 #[allow(clippy::all, dead_code, unused_imports, non_snake_case, non_camel_case_types)]
 pub mod generated {
@@ -27,6 +32,7 @@ mod handler;
 mod logging;
 mod native;
 pub mod prompt;
+pub mod providers;
 
 use std::collections::BTreeMap;
 use std::sync::{Arc, Mutex, MutexGuard, OnceLock};
@@ -40,10 +46,10 @@ use mws_s3::S3;
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 
-pub use backend::BackendConfig;
-use backend::{Backend, Script, Scripted};
+use backend::{Script, Scripted};
 use generated::types;
 use prompt::{Completion, OutPart, Prompt, StopReason};
+pub use providers::{ProviderConfig, Providers};
 
 pub const SIDE_CHANNEL: &str = "/_aws/bedrock/";
 
@@ -68,8 +74,8 @@ struct Inner {
     s3: S3,
     logs: OnceLock<mws_logs::Logs>,
     sts: OnceLock<mws_sts::Sts>,
-    backend: Arc<dyn Backend>,
-    backend_name: &'static str,
+    /// Provider settings from the environment; stored ones live in `State`.
+    env_providers: Providers,
     script: Script,
     state: Mutex<State>,
 }
@@ -79,6 +85,9 @@ struct Inner {
 struct State {
     /// Asynchronous invocations by ARN.
     async_invokes: BTreeMap<String, AsyncInvoke>,
+    /// Provider settings stored through `/_aws/bedrock/providers`, on top
+    /// of the environment's.
+    providers: Providers,
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
@@ -191,17 +200,11 @@ fn not_chat_model() -> ServiceError {
 impl BedrockRuntime {
     /// bedrock-runtime over `bedrock`'s models and guardrails, writing
     /// batch and asynchronous output to `s3`.
-    pub fn new(bedrock: Bedrock, s3: S3, config: &BackendConfig) -> Self {
+    pub fn new(bedrock: Bedrock, s3: S3, providers: Providers) -> Self {
         let script = Script::default();
-        let backend_name = match config {
-            BackendConfig::Echo => "echo",
-            BackendConfig::OpenAi { .. } => "openai",
-            BackendConfig::Anthropic { .. } => "anthropic",
-        };
         let runtime = BedrockRuntime {
             inner: Arc::new(Inner {
-                backend: backend::build(config, script.clone()),
-                backend_name,
+                env_providers: providers,
                 script,
                 bedrock: bedrock.clone(),
                 s3,
@@ -236,9 +239,51 @@ impl BedrockRuntime {
         self
     }
 
-    /// Which backend answers (`echo`, `openai` or `anthropic`).
-    pub fn backend_name(&self) -> &'static str {
-        self.inner.backend_name
+    /// The default provider and its kind, e.g. `openai (openai)`.
+    pub fn backend_name(&self) -> String {
+        let p = self.providers();
+        let d = p.resolve(&p.default_name()).expect("the default provider resolves");
+        format!("{} ({})", d.name, d.kind.as_str())
+    }
+
+    /// The provider settings in effect: the environment's, with stored
+    /// settings on top.
+    pub fn providers(&self) -> Providers {
+        self.inner.env_providers.merged(&self.lock().providers)
+    }
+
+    /// Store settings for provider `name` (replacing earlier stored ones; an
+    /// absent `apiKey` keeps the stored key, an empty one removes it).
+    pub fn put_provider(&self, name: &str, mut config: ProviderConfig) -> Result<(), String> {
+        config.validate(name)?;
+        let mut state = self.lock();
+        if config.api_key.is_none() {
+            config.api_key = state.providers.providers.get(name).and_then(|c| c.api_key.clone());
+        } else if config.api_key.as_deref() == Some("") {
+            config.api_key = None;
+        }
+        state.providers.providers.insert(name.to_string(), config);
+        Ok(())
+    }
+
+    /// Forget stored settings for `name`. Returns whether there were any.
+    pub fn delete_provider(&self, name: &str) -> bool {
+        let mut state = self.lock();
+        if state.providers.default.as_deref() == Some(name) {
+            state.providers.default = None;
+        }
+        state.providers.providers.remove(name).is_some()
+    }
+
+    /// Store the default provider (`None` falls back to the environment's).
+    pub fn set_default_provider(&self, name: Option<String>) -> Result<(), String> {
+        if let Some(n) = &name {
+            if !self.providers().names().contains(n) {
+                return Err(format!("There is no provider named {n:?}."));
+            }
+        }
+        self.lock().providers.default = name;
+        Ok(())
     }
 
     /// Queue a scripted answer for the echo backend.
@@ -314,9 +359,8 @@ impl BedrockRuntime {
                 latency_ms: started.elapsed().as_millis() as i64,
             });
         }
-        let mut completion = self
-            .inner
-            .backend
+        let backend = self.providers().route(&prompt.model_id).backend(self.inner.script.clone());
+        let mut completion = backend
             .complete(prompt)
             .await
             .map_err(|e| generated::errors::model_error(format!("{} (upstream status {})", e.message, e.status)))?;
@@ -917,6 +961,9 @@ impl BedrockRuntime {
 
     fn side_channel(&self, request: &HttpRequest) -> HttpResponse {
         let path = request.uri().path();
+        if let Some(rest) = path.trim_end_matches('/').strip_prefix("/_aws/bedrock/providers") {
+            return self.providers_endpoint(request, rest.trim_start_matches('/'));
+        }
         if path.trim_end_matches('/') != "/_aws/bedrock/responses" {
             return json_response(404, json!({"message": format!("No MWS Bedrock endpoint at {path}.")}));
         }
@@ -949,6 +996,104 @@ impl BedrockRuntime {
                 json_response(200, json!({"queued": self.inner.script.len()}))
             }
             _ => json_response(405, json!({"message": "Use GET, POST or DELETE."})),
+        }
+    }
+
+    fn describe_providers(&self) -> Value {
+        let effective = self.providers();
+        let stored = self.lock().providers.clone();
+        let env = &self.inner.env_providers;
+        let list: Vec<Value> = effective
+            .names()
+            .iter()
+            .filter_map(|n| {
+                let source = match (env.providers.contains_key(n), stored.providers.contains_key(n)) {
+                    (true, true) => "environment+stored",
+                    (true, false) => "environment",
+                    (false, true) => "stored",
+                    (false, false) => "builtin",
+                };
+                Some(effective.resolve(n)?.describe(source))
+            })
+            .collect();
+        json!({ "default": effective.default_name(), "providers": list })
+    }
+
+    fn providers_endpoint(&self, request: &HttpRequest, name: &str) -> HttpResponse {
+        let bad = |m: String| json_response(400, json!({ "message": m }));
+        let method = request.method().clone();
+        if name == "route" && method == http::Method::GET {
+            let query = request.uri().query().unwrap_or_default();
+            let model_id = form_urlencoded::parse(query.as_bytes())
+                .find(|(k, _)| k == "modelId")
+                .map(|(_, v)| v.into_owned())
+                .unwrap_or_default();
+            if model_id.is_empty() {
+                return bad("Pass the Bedrock model id as ?modelId=.".into());
+            }
+            let r = self.providers().route(&model_id);
+            return json_response(
+                200,
+                json!({ "modelId": model_id, "provider": r.name, "kind": r.kind.as_str(), "upstreamModel": r.upstream_model(&model_id) }),
+            );
+        }
+        match (method, name.is_empty()) {
+            (http::Method::GET, true) => json_response(200, self.describe_providers()),
+            (http::Method::GET, false) => {
+                let effective = self.providers();
+                match effective.resolve(name) {
+                    Some(r) => {
+                        let all = self.describe_providers();
+                        let found = all["providers"].as_array().and_then(|l| l.iter().find(|p| p["name"] == name));
+                        json_response(200, found.cloned().unwrap_or_else(|| r.describe("builtin")))
+                    }
+                    None => json_response(404, json!({ "message": format!("There is no provider named {name:?}.") })),
+                }
+            }
+            (http::Method::PUT | http::Method::POST, true) => {
+                let body: Value = match serde_json::from_slice(request.body()) {
+                    Ok(v) => v,
+                    Err(e) => return bad(format!("Expected a JSON object: {e}")),
+                };
+                if let Some(d) = body.get("default") {
+                    let name = d.as_str().filter(|s| !s.is_empty()).map(str::to_string);
+                    if let Err(e) = self.set_default_provider(name) {
+                        return bad(e);
+                    }
+                }
+                if let Some(ps) = body.get("providers") {
+                    let ps: BTreeMap<String, ProviderConfig> = match serde_json::from_value(ps.clone()) {
+                        Ok(p) => p,
+                        Err(e) => return bad(format!("Invalid providers: {e}")),
+                    };
+                    for (n, c) in ps {
+                        if let Err(e) = self.put_provider(&n, c) {
+                            return bad(e);
+                        }
+                    }
+                }
+                json_response(200, self.describe_providers())
+            }
+            (http::Method::PUT | http::Method::POST, false) => {
+                let config: ProviderConfig = match serde_json::from_slice(request.body()) {
+                    Ok(c) => c,
+                    Err(e) => return bad(format!("Invalid provider settings: {e}")),
+                };
+                if let Err(e) = self.put_provider(name, config) {
+                    return bad(e);
+                }
+                let all = self.describe_providers();
+                let found = all["providers"].as_array().and_then(|l| l.iter().find(|p| p["name"] == name)).cloned();
+                json_response(200, found.unwrap_or_default())
+            }
+            (http::Method::DELETE, false) => {
+                if self.delete_provider(name) {
+                    json_response(200, self.describe_providers())
+                } else {
+                    json_response(404, json!({ "message": format!("No stored settings for provider {name:?}.") }))
+                }
+            }
+            _ => json_response(405, json!({ "message": "Use GET, PUT or DELETE." })),
         }
     }
 }

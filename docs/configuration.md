@@ -83,13 +83,32 @@ scripted answers with `POST /_aws/bedrock/responses` (see
 
 | Variable | Default | Description |
 | --- | --- | --- |
-| `MWS_BEDROCK_BACKEND` | `echo` | `echo`, `openai` (any OpenAI-compatible chat completions API: OpenAI, Ollama, vLLM, LM Studio) or `anthropic` (the Anthropic Messages API). |
-| `MWS_BEDROCK_BACKEND_URL` | `https://api.openai.com/v1` or `https://api.anthropic.com` | Base URL of the provider (for example `http://localhost:11434/v1` for Ollama). |
-| `MWS_BEDROCK_BACKEND_API_KEY` | `OPENAI_API_KEY` or `ANTHROPIC_API_KEY` | API key sent to the provider. |
-| `MWS_BEDROCK_BACKEND_MODEL` | derived from the Bedrock model id | Provider model to use for every request (for example `llama3.2`). Without it, Anthropic gets the Claude model matching the Bedrock id and OpenAI-compatible servers get the Bedrock id. |
+| `MWS_BEDROCK_PROVIDER_<NAME>_<SETTING>` | unset | One setting of the provider `<name>` (lowercased, `_` becomes `-`). Settings: `KIND` (`openai`, `anthropic` or `echo`; inferred from the name otherwise), `URL`, `API_KEY`, `MODEL` (upstream model for every request), `MODELS` (comma-separated Bedrock model ids this provider answers, `*` wildcards), `MODEL_MAP` (`bedrock-id=upstream-model,...` or a JSON object), `PARAMS` (JSON object of request-body defaults such as `temperature`, `max_tokens`, `top_p`, `seed`), `HEADERS` (`name=value,...` or JSON), `TIMEOUT_SECONDS` (default 300), `ANTHROPIC_VERSION` (default `2023-06-01`). |
+| `MWS_BEDROCK_PROVIDERS` | unset | Every provider at once as JSON: `{"default": "local", "providers": {"local": {"kind": "openai", "url": "...", "apiKey": "...", "models": ["meta.*"], "modelMap": {...}, "params": {...}, "headers": {...}, "timeoutSeconds": 60}}}`. The per-setting variables above win over it. |
+| `MWS_BEDROCK_DEFAULT_PROVIDER` | `echo` | The provider for models no `MODELS` pattern claims. |
+| `MWS_BEDROCK_BACKEND` | `echo` | Shorthand for one provider named `openai` (any OpenAI-compatible chat completions API: OpenAI, Ollama, vLLM, LM Studio) or `anthropic` (the Anthropic Messages API) that answers every model. |
+| `MWS_BEDROCK_BACKEND_URL` | `https://api.openai.com/v1` or `https://api.anthropic.com` | Its base URL (for example `http://localhost:11434/v1` for Ollama). |
+| `MWS_BEDROCK_BACKEND_API_KEY` | `OPENAI_API_KEY` or `ANTHROPIC_API_KEY` | Its API key. Providers pointing at `api.openai.com` or `api.anthropic.com` also fall back to those two variables. |
+| `MWS_BEDROCK_BACKEND_MODEL` | derived from the Bedrock model id | Its upstream model. Without one, Anthropic gets the Claude model matching the Bedrock id and OpenAI-compatible servers get the Bedrock id. |
 | `MWS_BEDROCK_MODELS` | unset | A JSON file with extra foundation models to add to the catalog (an array in `GetFoundationModel`'s shape plus `family`). |
 
 Embeddings, images and rerank are always answered locally.
+
+Provider settings can also be stored at runtime, from the console's Bedrock
+Settings page or the unsigned `/_aws/bedrock/providers` endpoint (see
+[Bedrock](services/bedrock.md#model-providers)). Stored settings override the
+environment's field by field and are saved with the rest of MWS state, so
+`MWS_DB` keeps them across restarts. API keys stored this way sit in the
+state file in plain text, as everything else there does.
+
+```sh
+# Llama models from a local Ollama, Claude from Anthropic, the rest echo.
+MWS_BEDROCK_PROVIDER_OLLAMA_MODELS='meta.*' \
+MWS_BEDROCK_PROVIDER_OLLAMA_MODEL_MAP='meta.llama3-8b-instruct-v1:0=llama3:8b' \
+MWS_BEDROCK_PROVIDER_OLLAMA_PARAMS='{"temperature":0.2}' \
+MWS_BEDROCK_PROVIDER_ANTHROPIC_MODELS='anthropic.*' \
+ANTHROPIC_API_KEY=sk-ant-... cargo run -p mws
+```
 
 ## Client-side settings
 

@@ -33,7 +33,7 @@ one site while each zone builds, deploys and fails on its own.
 | `networking` | `/networking` | 3006 | VPC (resource map), Route 53, load balancers, Global Accelerator, ACM, Private CA |
 | `data` | `/data` | 3007 | RDS, ElastiCache, ECR, ECS, EKS, EFS, Kinesis, Firehose |
 | `governance` | `/governance` | 3008 | Organizations, CloudFormation, CloudTrail, Service Quotas, Cost Explorer, Security Hub, GuardDuty, Identity Center, RAM |
-| `platform` | `/platform` | 3009 | Bedrock (model catalog, chat playground, guardrails, inference profiles, invocation logging), Amplify (apps, branches, deploys), CodeArtifact (repositories, packages, connection instructions), Image Builder, Auto Scaling, Marketplace (catalog, subscriptions, metering) |
+| `platform` | `/platform` | 3009 | Bedrock (model catalog, chat playground, guardrails, inference profiles, invocation logging, model providers), Amplify (apps, branches, deploys), CodeArtifact (repositories, packages, connection instructions), Image Builder, Auto Scaling, Marketplace (catalog, subscriptions, metering) |
 
 The zones share two workspace packages and nothing else:
 
@@ -68,6 +68,20 @@ and the home page, so it never calls another zone's services itself.
   `zones.json`, and add it to `ZoneId` in `packages/ui/src/zones.ts`. The
   shell picks up the rewrite without changes. Serve `api/inventory` so the
   zone's resources are searchable.
+
+
+Create forms offer to make what a resource needs. A prerequisite field
+(a service role, a destination bucket, a launch template, an infrastructure
+configuration) has two modes: pick an existing one, or "create
+automatically" (the sparkle button), which makes it on submit and reuses it
+next time: `AmazonEKSClusterRole` and `AmazonEKSNodeRole` for EKS,
+`<function>-role` for Lambda, a bucket and `KinesisFirehoseServiceRole-<stream>`
+for Firehose, `aws-cloudtrail-logs-<account>-<region>` with CloudTrail's
+bucket policy, `AmazonBedrockInvocationLoggingRole` and its log group, a
+`<group>-template` launch template for Auto Scaling, and a `default`
+Image Builder infrastructure configuration with
+`EC2InstanceProfileForImageBuilder`. The field starts on "create" when
+nothing suitable exists. Helpers live in `packages/aws/src/auto.ts`.
 
 ## Design
 
