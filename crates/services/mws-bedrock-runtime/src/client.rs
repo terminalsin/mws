@@ -6,7 +6,6 @@ use std::time::Duration;
 
 use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
 
-const TIMEOUT: Duration = Duration::from_secs(300);
 const MAX_RESPONSE: usize = 32 * 1024 * 1024;
 
 #[derive(Debug, Clone)]
@@ -22,8 +21,10 @@ pub struct Request<'a> {
     pub body: Option<Vec<u8>>,
 }
 
-pub async fn send(req: Request<'_>) -> Result<Response, String> {
-    tokio::time::timeout(TIMEOUT, send_inner(req)).await.map_err(|_| "the request timed out".to_string())?
+pub async fn send_with_timeout(req: Request<'_>, timeout: Duration) -> Result<Response, String> {
+    tokio::time::timeout(timeout, send_inner(req))
+        .await
+        .map_err(|_| format!("the request timed out after {} seconds", timeout.as_secs()))?
 }
 
 async fn send_inner(req: Request<'_>) -> Result<Response, String> {

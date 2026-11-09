@@ -4,7 +4,7 @@
 
 All 108 control plane operations (`bedrock`) and 10 of the 11 runtime operations (`bedrock-runtime`) are generated from the AWS models (restJson1) and implemented. Both sign as `bedrock`; MWS routes by path. Long-running work (Provisioned Throughput, customization and import jobs, Automated Reasoning builds, asynchronous invocations) moves on the emulated clock.
 
-Answers come from a pluggable backend. The default **echo** backend is deterministic: it replays queued scripted answers, calls a tool the request forces (or whose name the user mentions) with an input built from its JSON schema, summarizes tool results, and otherwise echoes the last user message, honouring `maxTokens` and stop sequences. `MWS_BEDROCK_BACKEND=openai` or `anthropic` passes requests to a real provider instead (see [configuration](../configuration.md#bedrock)).
+Answers come from a pluggable backend. The default **echo** backend is deterministic: it replays queued scripted answers, calls a tool the request forces (or whose name the user mentions) with an input built from its JSON schema, summarizes tool results, and otherwise echoes the last user message, honouring `maxTokens` and stop sequences. Model providers send chosen models to a real OpenAI-compatible server or the Anthropic API instead (see [model providers](#model-providers)).
 
 ✅ supported · 🟡 partial · ❌ not supported
 
@@ -56,6 +56,20 @@ Answers come from a pluggable backend. The default **echo** backend is determini
 ## Scripted answers
 
 `POST /_aws/bedrock/responses` (unsigned) queues answers for the echo backend, used before any echo: a JSON object or array of `{"modelId"?, "text"?, "toolUse"?: {"name", "input"}, "stopReason"?, "error"?}`. An `error` fails that call with `ModelErrorException`. `GET` reports how many are queued; `DELETE` clears them.
+
+## Model providers
+
+Each provider has an API (`openai` for any OpenAI-compatible chat completions server, `anthropic`, or `echo`), a URL, an API key, the Bedrock model ids it answers (`models`, `*` wildcards; the most specific pattern wins, then the default provider), how those ids map to upstream model names (`model`, `modelMap`), request-body defaults (`params`, used when the Bedrock request does not set the field), extra `headers` and a `timeoutSeconds`. The built-in `echo` provider is the default.
+
+Providers come from environment variables (see [configuration](../configuration.md#bedrock)) and from stored settings, which override them field by field and persist with MWS state (`MWS_DB`). The console edits them on Bedrock → Settings. The unsigned endpoint:
+
+| Request | Effect |
+| --- | --- |
+| `GET /_aws/bedrock/providers` | `{"default", "providers": [...]}` with each provider's settings, `source` (`builtin`, `environment`, `stored`, `environment+stored`) and its API key redacted (`apiKey: "sk-…wxyz"`, `apiKeySet`). |
+| `PUT /_aws/bedrock/providers/{name}` | Store settings for a provider (camelCase fields as above). An absent `apiKey` keeps the stored key; `""` removes it. |
+| `DELETE /_aws/bedrock/providers/{name}` | Forget the stored settings; any environment settings apply again. |
+| `PUT /_aws/bedrock/providers` | `{"default": "name"}` sets the default provider (`""` returns to the environment's); `{"providers": {...}}` stores several. |
+| `GET /_aws/bedrock/providers/route?modelId=...` | Which provider answers a model, and the upstream model name it would use. |
 
 ## Known gaps
 

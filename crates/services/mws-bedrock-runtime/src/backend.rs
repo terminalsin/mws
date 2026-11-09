@@ -17,6 +17,7 @@ use crate::client as http;
 use crate::prompt::{
     sample_input, tokens, truncate_tokens, Completion, OutPart, Part, Prompt, Role, StopReason, ToolChoice,
 };
+use crate::providers::Resolved;
 
 /// A model provider failure, reported as `ModelErrorException`.
 #[derive(Debug, Clone)]
@@ -28,51 +29,6 @@ pub struct BackendError {
 #[async_trait::async_trait]
 pub trait Backend: Send + Sync {
     async fn complete(&self, prompt: &Prompt) -> Result<Completion, BackendError>;
-}
-
-/// Which backend MWS uses (`MWS_BEDROCK_BACKEND`).
-#[derive(Debug, Clone, Default)]
-pub enum BackendConfig {
-    #[default]
-    Echo,
-    OpenAi {
-        url: String,
-        api_key: Option<String>,
-        model: Option<String>,
-    },
-    Anthropic {
-        url: String,
-        api_key: Option<String>,
-        model: Option<String>,
-    },
-}
-
-impl BackendConfig {
-    /// Read `MWS_BEDROCK_BACKEND` (`echo`, `openai`, `anthropic`),
-    /// `MWS_BEDROCK_BACKEND_URL`, `MWS_BEDROCK_BACKEND_API_KEY` and
-    /// `MWS_BEDROCK_BACKEND_MODEL`.
-    pub fn from_env() -> Self {
-        let var = |k: &str| std::env::var(k).ok().filter(|v| !v.is_empty());
-        let api_key = var("MWS_BEDROCK_BACKEND_API_KEY");
-        let model = var("MWS_BEDROCK_BACKEND_MODEL");
-        match var("MWS_BEDROCK_BACKEND").as_deref().map(str::to_ascii_lowercase).as_deref() {
-            Some("openai") => BackendConfig::OpenAi {
-                url: var("MWS_BEDROCK_BACKEND_URL").unwrap_or_else(|| "https://api.openai.com/v1".into()),
-                api_key: api_key.or_else(|| var("OPENAI_API_KEY")),
-                model,
-            },
-            Some("anthropic") => BackendConfig::Anthropic {
-                url: var("MWS_BEDROCK_BACKEND_URL").unwrap_or_else(|| "https://api.anthropic.com".into()),
-                api_key: api_key.or_else(|| var("ANTHROPIC_API_KEY")),
-                model,
-            },
-            Some("echo") | None => BackendConfig::Echo,
-            Some(other) => {
-                tracing::warn!("unknown MWS_BEDROCK_BACKEND {other:?}; using echo");
-                BackendConfig::Echo
-            }
-        }
-    }
 }
 
 /// A scripted response, queued through `POST /_aws/bedrock/responses`.
@@ -239,15 +195,32 @@ fn upstream_error(status: u16, body: &[u8]) -> BackendError {
     BackendError { status, message }
 }
 
-async fn post(url: &str, headers: Vec<(String, String)>, body: &Value) -> Result<Value, BackendError> {
+/// Fill the request fields the provider's `params` set and the request
+/// itself did not.
+fn apply_params(body: &mut Value, provider: &Resolved) {
+    if let Some(o) = body.as_object_mut() {
+        for (k, v) in &provider.params {
+            o.entry(k.clone()).or_insert_with(|| v.clone());
+        }
+    }
+}
+
+async fn post(
+    provider: &Resolved,
+    url: &str,
+    headers: Vec<(String, String)>,
+    body: &Value,
+) -> Result<Value, BackendError> {
     let mut headers = headers;
     headers.push(("Content-Type".into(), "application/json".into()));
-    let res = http::send(http::Request {
-        method: "POST",
-        url,
-        headers,
-        body: Some(serde_json::to_vec(body).expect("JSON serializes")),
-    })
+    for (k, v) in &provider.headers {
+        headers.retain(|(h, _)| !h.eq_ignore_ascii_case(k));
+        headers.push((k.clone(), v.clone()));
+    }
+    let res = http::send_with_timeout(
+        http::Request { method: "POST", url, headers, body: Some(serde_json::to_vec(body).expect("JSON serializes")) },
+        provider.timeout,
+    )
     .await
     .map_err(|e| BackendError { status: 502, message: format!("The model provider could not be reached: {e}") })?;
     if !(200..300).contains(&res.status) {
@@ -259,9 +232,7 @@ async fn post(url: &str, headers: Vec<(String, String)>, body: &Value) -> Result
 
 /// Any server speaking the OpenAI Chat Completions API.
 pub struct OpenAiCompatible {
-    pub url: String,
-    pub api_key: Option<String>,
-    pub model: Option<String>,
+    pub provider: Resolved,
 }
 
 #[async_trait::async_trait]
@@ -296,7 +267,7 @@ impl Backend for OpenAiCompatible {
             }
         }
         let mut body = json!({
-            "model": self.model.clone().unwrap_or_else(|| prompt.model_id.clone()),
+            "model": self.provider.upstream_model(&prompt.model_id),
             "messages": messages,
         });
         if let Some(m) = prompt.max_tokens {
@@ -325,12 +296,13 @@ impl Backend for OpenAiCompatible {
                 _ => json!("auto"),
             };
         }
+        apply_params(&mut body, &self.provider);
         let mut headers = Vec::new();
-        if let Some(k) = &self.api_key {
+        if let Some(k) = &self.provider.api_key {
             headers.push(("Authorization".into(), format!("Bearer {k}")));
         }
-        let url = format!("{}/chat/completions", self.url.trim_end_matches('/'));
-        let v = post(&url, headers, &body).await?;
+        let url = format!("{}/chat/completions", self.provider.url.trim_end_matches('/'));
+        let v = post(&self.provider, &url, headers, &body).await?;
         let choice = v.pointer("/choices/0").cloned().unwrap_or_default();
         let msg = choice.get("message").cloned().unwrap_or_default();
         let mut parts = Vec::new();
@@ -371,9 +343,7 @@ impl Backend for OpenAiCompatible {
 
 /// The Anthropic Messages API.
 pub struct Anthropic {
-    pub url: String,
-    pub api_key: Option<String>,
-    pub model: Option<String>,
+    pub provider: Resolved,
 }
 
 /// The Anthropic API name of a Bedrock model id:
@@ -390,25 +360,18 @@ pub fn anthropic_model_name(model_id: &str) -> String {
 impl Backend for Anthropic {
     async fn complete(&self, prompt: &Prompt) -> Result<Completion, BackendError> {
         let mut body = crate::native::anthropic_request(prompt);
-        body["model"] = json!(self.model.clone().unwrap_or_else(|| anthropic_model_name(&prompt.model_id)));
+        body["model"] = json!(self.provider.upstream_model(&prompt.model_id));
         if let Some(o) = body.as_object_mut() {
             o.remove("anthropic_version");
         }
-        let mut headers = vec![("anthropic-version".to_string(), "2023-06-01".to_string())];
-        if let Some(k) = &self.api_key {
+        apply_params(&mut body, &self.provider);
+        let mut headers = vec![("anthropic-version".to_string(), self.provider.anthropic_version.clone())];
+        if let Some(k) = &self.provider.api_key {
             headers.push(("x-api-key".into(), k.clone()));
         }
-        let url = format!("{}/v1/messages", self.url.trim_end_matches('/'));
-        let v = post(&url, headers, &body).await?;
+        let url = format!("{}/v1/messages", self.provider.url.trim_end_matches('/'));
+        let v = post(&self.provider, &url, headers, &body).await?;
         Ok(crate::native::anthropic_completion(&v, prompt))
-    }
-}
-
-pub fn build(config: &BackendConfig, script: Script) -> Arc<dyn Backend> {
-    match config.clone() {
-        BackendConfig::Echo => Arc::new(Echo { script }),
-        BackendConfig::OpenAi { url, api_key, model } => Arc::new(OpenAiCompatible { url, api_key, model }),
-        BackendConfig::Anthropic { url, api_key, model } => Arc::new(Anthropic { url, api_key, model }),
     }
 }
 
