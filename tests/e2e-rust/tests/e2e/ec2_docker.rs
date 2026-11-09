@@ -474,3 +474,76 @@ async fn security_groups_acls_and_routes_filter_traffic() {
     }
     mws.stop().await;
 }
+
+/// `MWS_EC2_BACKEND=auto` with no daemon at startup (Docker Desktop not
+/// open yet): instances launch without containers, and once the daemon
+/// answers, later launches run as containers without restarting MWS. The
+/// "daemon" here is a wrapper CLI that fails until a marker file exists.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn auto_backend_picks_up_docker_started_after_mws() {
+    if !docker_available() {
+        eprintln!("skipping: no Docker daemon");
+        return;
+    }
+    let dir = std::env::temp_dir().join(format!("mws-late-docker-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    let marker = dir.join("up");
+    let cli = dir.join("docker");
+    std::fs::write(
+        &cli,
+        format!(
+            "#!/bin/sh\n[ -f '{}' ] || {{ echo 'Cannot connect to the Docker daemon' >&2; exit 1; }}\nexec docker \"$@\"\n",
+            marker.display()
+        ),
+    )
+    .unwrap();
+    {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(&cli, std::fs::Permissions::from_mode(0o755)).unwrap();
+    }
+    let config = mws::Config {
+        ec2_backend: mws_ec2::BackendChoice::Auto,
+        ec2_docker_cli: Some(cli.to_string_lossy().into_owned()),
+        ..Default::default()
+    };
+    let mws = Mws::start_on_all_interfaces(config).await;
+    let ec2 = Client::new(&mws.root_sdk_config().await);
+    let ami = alpine_ami(&ec2).await;
+    let launch = || async {
+        let run = ec2
+            .run_instances()
+            .image_id(&ami)
+            .instance_type(aws_sdk_ec2::types::InstanceType::T3Nano)
+            .min_count(1)
+            .max_count(1)
+            .send()
+            .await
+            .unwrap();
+        run.instances()[0].instance_id().unwrap().to_string()
+    };
+
+    let early = launch().await;
+    wait_for_state(&ec2, &early, InstanceStateName::Running).await;
+    assert_eq!(container_state(&early), None, "no daemon yet, so no container");
+
+    std::fs::write(&marker, "").unwrap();
+    // The background probe asks every couple of seconds.
+    tokio::time::sleep(Duration::from_secs(5)).await;
+    let late = launch().await;
+    wait_for_state(&ec2, &late, InstanceStateName::Running).await;
+    assert_eq!(container_state(&late).as_deref(), Some("running"), "the daemon answers now");
+
+    // The early instance stays metadata-only and keeps working.
+    ec2.stop_instances().instance_ids(&early).send().await.unwrap();
+    wait_for_state(&ec2, &early, InstanceStateName::Stopped).await;
+    ec2.start_instances().instance_ids(&early).send().await.unwrap();
+    wait_for_state(&ec2, &early, InstanceStateName::Running).await;
+
+    ec2.terminate_instances().instance_ids(&early).instance_ids(&late).send().await.unwrap();
+    for id in [&early, &late] {
+        wait_for_state(&ec2, id, InstanceStateName::Terminated).await;
+    }
+    assert_eq!(container_state(&late), None);
+    mws.stop().await;
+    let _ = std::fs::remove_dir_all(&dir);
+}
