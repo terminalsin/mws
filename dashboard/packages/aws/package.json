@@ -5,12 +5,17 @@
   "description": "Server-side helpers the zones share: SDK client settings, the MWS control API, action results and formatting",
   "type": "module",
   "exports": {
-    ".": "./src/index.ts"
+    ".": "./src/index.ts",
+    "./auto": "./src/auto.ts"
   },
   "scripts": {
     "typecheck": "tsc --noEmit"
   },
   "dependencies": {
+    "@aws-sdk/client-cloudwatch-logs": "^3.1164.0",
+    "@aws-sdk/client-ec2": "^3.1164.0",
+    "@aws-sdk/client-iam": "^3.1164.0",
+    "@aws-sdk/client-s3": "^3.1164.0",
     "@aws-sdk/client-sts": "^3.1164.0",
     "@mws-dashboard/ui": "*",
     "server-only": "^0.0.1"

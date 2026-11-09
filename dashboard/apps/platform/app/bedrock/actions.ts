@@ -12,7 +12,8 @@ import {
   type GuardrailPiiEntityType,
 } from "@aws-sdk/client-bedrock";
 import { ApplyGuardrailCommand, ConverseCommand } from "@aws-sdk/client-bedrock-runtime";
-import { act, required, text, type ActionResult } from "@mws-dashboard/aws";
+import { act, mws, required, text, type ActionResult } from "@mws-dashboard/aws";
+import { ROLES, ensureLogGroup, roleFrom } from "@mws-dashboard/aws/auto";
 import { redirect } from "next/navigation";
 
 import { bedrock, bedrockRuntime } from "../../lib/clients";
@@ -148,10 +149,12 @@ export async function saveLogging(_: ActionResult | null, form: FormData) {
     const group = text(form, "logGroup");
     const bucket = text(form, "bucket");
     if (!group && !bucket) throw new Error("Choose a log group or a bucket");
+    const roleArn = group ? await roleFrom(form, "role", ROLES.bedrockLogging) : undefined;
+    if (group) await ensureLogGroup(group);
     await (await bedrock()).send(
       new PutModelInvocationLoggingConfigurationCommand({
         loggingConfig: {
-          cloudWatchConfig: group ? { logGroupName: group, roleArn: required(form, "role", "Role") } : undefined,
+          cloudWatchConfig: group && roleArn ? { logGroupName: group, roleArn } : undefined,
           s3Config: bucket ? { bucketName: bucket, keyPrefix: text(form, "prefix") || undefined } : undefined,
           textDataDeliveryEnabled: true,
           imageDataDeliveryEnabled: text(form, "images") === "on",
@@ -168,5 +171,60 @@ export async function stopLogging() {
   return act(async () => {
     await (await bedrock()).send(new DeleteModelInvocationLoggingConfigurationCommand({}));
     return "Logging off";
+  }, "/bedrock/settings");
+}
+
+/** `key=value` lines (or commas) as an object. */
+function pairs(s: string): Record<string, string> | undefined {
+  const entries = list(s).map((kv) => {
+    const i = kv.indexOf("=");
+    if (i < 1) throw new Error(`"${kv}" is not key=value`);
+    return [kv.slice(0, i).trim(), kv.slice(i + 1).trim()] as const;
+  });
+  return entries.length ? Object.fromEntries(entries) : undefined;
+}
+
+export async function saveProvider(existing: string | null, _: ActionResult | null, form: FormData) {
+  return act(async () => {
+    const name = existing ?? required(form, "name", "Name").toLowerCase();
+    const raw = text(form, "params");
+    let params: unknown;
+    if (raw) {
+      try {
+        params = JSON.parse(raw);
+      } catch {
+        throw new Error("Default parameters must be a JSON object");
+      }
+      if (!params || typeof params !== "object" || Array.isArray(params)) throw new Error("Default parameters must be a JSON object");
+    }
+    const timeout = text(form, "timeout");
+    const config = {
+      kind: text(form, "kind") || undefined,
+      url: text(form, "url") || undefined,
+      apiKey: text(form, "clearKey") === "on" ? "" : text(form, "apiKey") || undefined,
+      model: text(form, "model") || undefined,
+      models: list(text(form, "models")).length ? list(text(form, "models")) : undefined,
+      modelMap: pairs(text(form, "modelMap")),
+      headers: pairs(text(form, "headers")),
+      params,
+      timeoutSeconds: timeout ? Number(timeout) : undefined,
+    };
+    await mws(`/_aws/bedrock/providers/${encodeURIComponent(name)}`, { method: "PUT", json: config });
+    if (text(form, "makeDefault") === "on") await mws("/_aws/bedrock/providers", { method: "PUT", json: { default: name } });
+    return existing ? "Saved" : `Added ${name}`;
+  }, "/bedrock/settings");
+}
+
+export async function forgetProvider(name: string) {
+  return act(async () => {
+    await mws(`/_aws/bedrock/providers/${encodeURIComponent(name)}`, { method: "DELETE" });
+    return "Stored settings removed";
+  }, "/bedrock/settings");
+}
+
+export async function setDefaultProvider(_: ActionResult | null, form: FormData) {
+  return act(async () => {
+    await mws("/_aws/bedrock/providers", { method: "PUT", json: { default: required(form, "provider", "Provider") } });
+    return "Default provider set";
   }, "/bedrock/settings");
 }

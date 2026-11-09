@@ -1,4 +1,4 @@
-import { CreateRoleCommand, IAMClient, PutRolePolicyCommand } from "@aws-sdk/client-iam";
+import { CreateRoleCommand, GetRoleCommand, IAMClient, PutRolePolicyCommand } from "@aws-sdk/client-iam";
 import { CreateFunctionCommand, LambdaClient, waitUntilFunctionActiveV2 } from "@aws-sdk/client-lambda";
 import { expect, test } from "@playwright/test";
 import { strToU8, zipSync } from "fflate";
@@ -63,25 +63,18 @@ test("Lambda: invoke, edit code and follow logs into another zone", async ({ pag
   await expect(page.getByRole("list", { name: "Log events" })).toContainText('got {"name":"console"}');
 });
 
-test("Lambda: create a function from the console", async ({ page }) => {
+test("Lambda: create a function with an automatic execution role", async ({ page }) => {
   const name = unique("dash-new");
-  const iam = new IAMClient(sdk);
-  const role = await iam.send(
-    new CreateRoleCommand({
-      RoleName: name,
-      AssumeRolePolicyDocument: JSON.stringify({
-        Version: "2012-10-17",
-        Statement: [{ Effect: "Allow", Principal: { Service: "lambda.amazonaws.com" }, Action: "sts:AssumeRole" }],
-      }),
-    }),
-  );
   await page.goto("/compute/lambda");
   await page.getByTestId("create-function-open").click();
   const form = page.getByTestId("create-function").and(page.locator("form"));
   await form.locator('[name="name"]').fill(name);
-  await form.locator('[name="role"]').fill(role.Role!.Arn!);
+  await form.getByTestId("execution-role").getByRole("button", { name: "Create automatically" }).click();
+  await expect(form.getByTestId("execution-role-auto")).toBeVisible();
   await form.locator('button[type="submit"]').click();
   await expect(page.getByRole("heading", { level: 1, name })).toBeVisible();
+  const role = await new IAMClient(sdk).send(new GetRoleCommand({ RoleName: `${name}-role` }));
+  expect(decodeURIComponent(role.Role!.AssumeRolePolicyDocument!)).toContain("lambda.amazonaws.com");
 });
 
 test("EC2: security groups flag ports open to the internet", async ({ page }) => {

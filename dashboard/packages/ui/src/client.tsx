@@ -1,6 +1,6 @@
 "use client";
 
-import { Check, ChevronDown, Command, CornerDownLeft, Globe, LayoutGrid, LoaderCircle, Plus, Search, X } from "lucide-react";
+import { Check, ChevronDown, Command, CornerDownLeft, Globe, LayoutGrid, List as ListIcon, LoaderCircle, Plus, Search, Sparkles, X } from "lucide-react";
 import Link from "next/link";
 import { usePathname, useRouter, useSearchParams } from "next/navigation";
 import {
@@ -17,7 +17,7 @@ import {
 import { useFormStatus } from "react-dom";
 
 import { iconUrl } from "./catalog";
-import { REGION_COOKIE, type ZoneId } from "./zones";
+import { AUTO, REGION_COOKIE, type ZoneId } from "./zones";
 
 /** A service as the navigation needs it (serializable, built on the server). */
 export interface NavService {
@@ -587,5 +587,58 @@ export function CommandPalette() {
         </div>
       </dialog>
     </>
+  );
+}
+
+/** A prerequisite picker: an existing resource, or one the form creates on
+ * submit (`creates` names it). Starts on "create" when nothing exists yet. */
+export function AutoPick({
+  name,
+  label,
+  options,
+  creates,
+  preferred,
+  testId,
+}: {
+  name: string;
+  label: string;
+  options: { value: string; label: string }[];
+  /** What the automatic option makes, e.g. the role name. */
+  creates: string;
+  /** Start on this existing option (e.g. the one made automatically last time). */
+  preferred?: string;
+  testId?: string;
+}) {
+  const [auto, setAuto] = useState(options.length === 0);
+  const initial = options.find((o) => o.value === preferred || o.label === creates)?.value ?? options[0]?.value;
+  return (
+    <div className="field auto-pick" data-testid={testId}>
+      <span className="field-label">{label}</span>
+      <div className="auto-pick-row">
+        {auto ? (
+          <span className="auto-new" data-testid={testId ? `${testId}-auto` : undefined}>
+            <Sparkles size={14} aria-hidden />
+            <span className="clip">{creates}</span>
+            <input type="hidden" name={name} value={AUTO} />
+          </span>
+        ) : (
+          <select name={name} aria-label={label} defaultValue={initial}>
+            {options.map((o) => (
+              <option key={o.value} value={o.value}>
+                {o.label}
+              </option>
+            ))}
+          </select>
+        )}
+        <span className="auto-toggle" role="group" aria-label={label}>
+          <button type="button" aria-pressed={auto} title="Create automatically" aria-label="Create automatically" onClick={() => setAuto(true)}>
+            <Sparkles size={15} aria-hidden />
+          </button>
+          <button type="button" aria-pressed={!auto} title="Choose existing" aria-label="Choose existing" disabled={options.length === 0} onClick={() => setAuto(false)}>
+            <ListIcon size={15} aria-hidden />
+          </button>
+        </span>
+      </div>
+    </div>
   );
 }

@@ -10,12 +10,14 @@ import {
   DeleteImageRecipeCommand,
   DeleteInfrastructureConfigurationCommand,
   GetImagePipelineCommand,
+  ListInfrastructureConfigurationsCommand,
   ListComponentBuildVersionsCommand,
   StartImagePipelineExecutionCommand,
   UpdateImagePipelineCommand,
   type Platform,
 } from "@aws-sdk/client-imagebuilder";
 import { act, required, text, type ActionResult } from "@mws-dashboard/aws";
+import { ROLES, ensureRole, wantsAuto } from "@mws-dashboard/aws/auto";
 import { randomUUID } from "node:crypto";
 
 import { imagebuilder } from "../../lib/clients";
@@ -69,6 +71,21 @@ export async function createInfrastructure(_: ActionResult | null, form: FormDat
   }, path);
 }
 
+/** The picked infrastructure configuration, or a default one (with the
+ * instance profile Image Builder needs) when "create automatically" is picked. */
+async function infrastructureFrom(form: FormData): Promise<string> {
+  if (!wantsAuto(form, "infrastructure")) return text(form, "infrastructure");
+  const client = await imagebuilder();
+  const existing = (await client.send(new ListInfrastructureConfigurationsCommand({}))).infrastructureConfigurationSummaryList ?? [];
+  const found = existing.find((i) => i.name === "default");
+  if (found?.arn) return found.arn;
+  await ensureRole(ROLES.imageBuilderInstance);
+  const out = await client.send(
+    new CreateInfrastructureConfigurationCommand({ name: "default", instanceProfileName: ROLES.imageBuilderInstance.name, terminateInstanceOnFailure: true, clientToken: randomUUID() }),
+  );
+  return out.infrastructureConfigurationArn!;
+}
+
 export async function createPipeline(_: ActionResult | null, form: FormData) {
   return act(async () => {
     const cron = text(form, "cron");
@@ -76,7 +93,7 @@ export async function createPipeline(_: ActionResult | null, form: FormData) {
       new CreateImagePipelineCommand({
         name: required(form, "name", "Name"),
         imageRecipeArn: required(form, "recipe", "Recipe"),
-        infrastructureConfigurationArn: required(form, "infrastructure", "Infrastructure configuration"),
+        infrastructureConfigurationArn: await infrastructureFrom(form),
         schedule: cron ? { scheduleExpression: `cron(${cron})`, pipelineExecutionStartCondition: "EXPRESSION_MATCH_ONLY" } : undefined,
         imageTestsConfiguration: { imageTestsEnabled: text(form, "tests") === "on" },
         status: "ENABLED",

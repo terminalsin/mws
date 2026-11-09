@@ -1,6 +1,7 @@
 import { DescribeDeliveryStreamCommand, ListDeliveryStreamsCommand } from "@aws-sdk/client-firehose";
 import { ago, load } from "@mws-dashboard/aws";
-import { ActionForm, AwsIcon, Empty, ErrorNotice, Field, List, Page, Pill, Sheet, Status } from "@mws-dashboard/ui";
+import { bucketOptions } from "@mws-dashboard/aws/auto";
+import { ActionForm, AutoPick, AwsIcon, Empty, ErrorNotice, Field, List, Page, Pill, Sheet, Status } from "@mws-dashboard/ui";
 import { ArrowRight } from "lucide-react";
 import type { Metadata } from "next";
 
@@ -12,13 +13,14 @@ import { destinationOf } from "../../lib/firehose";
 export const metadata: Metadata = { title: "Firehose" };
 
 export default async function DeliveryStreams() {
-  const [streams, roles] = await Promise.all([
+  const [streams, roles, buckets] = await Promise.all([
     load(async () => {
       const client = await firehose();
       const names = (await client.send(new ListDeliveryStreamsCommand({ Limit: 100 }))).DeliveryStreamNames ?? [];
       return Promise.all(names.map((n) => client.send(new DescribeDeliveryStreamCommand({ DeliveryStreamName: n })).then((r) => r.DeliveryStreamDescription!)));
     }),
     load(() => rolesTrusting("firehose.amazonaws.com")),
+    bucketOptions(),
   ]);
   const create = (
     <Sheet title="Create Firehose stream" label="Create Firehose stream" testId="create-delivery-stream">
@@ -26,18 +28,11 @@ export default async function DeliveryStreams() {
         <Field label="Name">
           <input name="name" required pattern="[a-zA-Z0-9_.\-]+" autoFocus />
         </Field>
-        <div className="form-row">
-          <Field label="Destination bucket">
-            <input name="bucket" required placeholder="my-bucket" />
-          </Field>
-          <Field label="Prefix">
-            <input name="prefix" placeholder="events/" />
-          </Field>
-        </div>
-        <Field label="Role">
-          <input name="role" required list="firehose-roles" defaultValue={roles.ok ? roles.value[0]?.Arn : undefined} />
+        <AutoPick name="bucket" label="Destination bucket" creates="firehose-<account>-<region>" options={buckets} testId="destination-bucket" />
+        <Field label="Prefix">
+          <input name="prefix" placeholder="events/" />
         </Field>
-        <datalist id="firehose-roles">{roles.ok && roles.value.map((r) => <option key={r.Arn} value={r.Arn} />)}</datalist>
+        <AutoPick name="role" label="Role" creates="KinesisFirehoseServiceRole-<stream>" options={roles.ok ? roles.value.map((r) => ({ value: r.Arn!, label: r.RoleName! })) : []} testId="firehose-role" />
         <Field label="Source Kinesis stream ARN">
           <input name="source" placeholder="Direct PUT" />
         </Field>

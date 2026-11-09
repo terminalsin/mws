@@ -8,7 +8,7 @@ import {
   ListInfrastructureConfigurationsCommand,
 } from "@aws-sdk/client-imagebuilder";
 import { ago, load } from "@mws-dashboard/aws";
-import { ActionForm, AwsIcon, Empty, ErrorNotice, Field, List, Page, Pill, Section, Sheet, Status, zoneHref } from "@mws-dashboard/ui";
+import { AutoPick, ActionForm, AwsIcon, Empty, ErrorNotice, Field, List, Page, Pill, Section, Sheet, Status, zoneHref } from "@mws-dashboard/ui";
 import { CalendarClock, FlaskConical, Pause, Play, Puzzle, Server, Trash2 } from "lucide-react";
 import type { Metadata } from "next";
 
@@ -58,7 +58,7 @@ async function Pipelines() {
   if (!data.ok) return { body: <ErrorNotice error={data.error} />, action: null };
   const { pipelines, recipes, infra } = data.value;
   const action =
-    recipes.length && infra.length ? (
+    recipes.length ? (
       <Sheet title="Create image pipeline" label="Create image pipeline" testId="create-pipeline">
         <ActionForm action={createPipeline} submit="Create pipeline" testId="create-pipeline">
           <Field label="Name">
@@ -73,15 +73,7 @@ async function Pipelines() {
               ))}
             </select>
           </Field>
-          <Field label="Infrastructure configuration">
-            <select name="infrastructure">
-              {infra.map((i) => (
-                <option key={i.arn} value={i.arn}>
-                  {i.name}
-                </option>
-              ))}
-            </select>
-          </Field>
+          <AutoPick name="infrastructure" label="Infrastructure configuration" creates="default · EC2InstanceProfileForImageBuilder" options={infra.map((i) => ({ value: i.arn!, label: i.name! }))} testId="pipeline-infrastructure" />
           <Field label="Schedule (cron)">
             <input name="cron" placeholder="0 0 * * ? *  (manual if empty)" />
           </Field>

@@ -1,7 +1,7 @@
 import { AddRoleToInstanceProfileCommand, CreateInstanceProfileCommand, CreateRoleCommand, IAMClient } from "@aws-sdk/client-iam";
 import { expect, test, type Page } from "@playwright/test";
 
-import { row, sdk, submit, unique } from "./helpers";
+import { row, rowAction, sdk, submit, unique } from "./helpers";
 
 /** Fill a form that is on the page (not in a sheet) and return its result line. */
 async function run(page: Page, testId: string, fields: Record<string, string>) {
@@ -38,6 +38,20 @@ test("Bedrock: the model catalog groups models by provider", async ({ page }) =>
   await expect(page.getByRole("heading", { level: 2, name: "Anthropic" })).toBeVisible();
   await page.getByRole("link", { name: /^Embeddings/ }).click();
   await expect(page.getByText("amazon.titan-embed-text-v2:0")).toBeVisible();
+});
+
+test("Bedrock: store a model provider", async ({ page, request }) => {
+  const name = unique("dash-llm").toLowerCase();
+  await page.goto("/platform/bedrock/settings");
+  await submit(page, "add-provider", { name, url: "http://127.0.0.1:9/v1", apiKey: "sk-dash-secret-9999", models: "dashtest.*", model: "tiny" });
+  const r = row(page, name);
+  await expect(r).toContainText("sk-…9999");
+  await expect(r).toContainText("dashtest.*");
+  await expect(r).not.toContainText("sk-dash-secret");
+  const route = await request.get(`${sdk.endpoint}/_aws/bedrock/providers/route?modelId=dashtest.anything`);
+  expect(await route.json()).toMatchObject({ provider: name, upstreamModel: "tiny" });
+  await rowAction(page, name, `Delete ${name}`);
+  await expect(row(page, name)).toHaveCount(0);
 });
 
 test("Amplify: deploy a site to a branch", async ({ page, request }) => {

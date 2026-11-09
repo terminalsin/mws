@@ -1,6 +1,6 @@
 import { DescribeClusterCommand, ListClustersCommand, ListNodegroupsCommand } from "@aws-sdk/client-eks";
 import { ago, load } from "@mws-dashboard/aws";
-import { ActionForm, AwsIcon, Empty, ErrorNotice, Field, List, Page, Pill, Sheet, Status } from "@mws-dashboard/ui";
+import { ActionForm, AutoPick, AwsIcon, Empty, ErrorNotice, Field, List, Page, Pill, Sheet, Status } from "@mws-dashboard/ui";
 import type { Metadata } from "next";
 
 import { ICONS, STATUS_TONE, eks } from "../../lib/clients";
@@ -43,15 +43,12 @@ export default async function Clusters() {
             </select>
           </Field>
           <Field label="VPC">
-            <select name="vpc" required>
+            <select name="vpc" required defaultValue={networks.ok ? networks.value.find((v) => v.IsDefault)?.VpcId : undefined}>
               {networks.ok && networks.value.map((v) => <option key={v.VpcId} value={v.VpcId}>{v.Tags?.find((t) => t.Key === "Name")?.Value ?? v.VpcId}</option>)}
             </select>
           </Field>
         </div>
-        <Field label="Cluster service role">
-          <input name="role" required list="eks-roles" defaultValue={roles.ok ? roles.value[0]?.Arn : undefined} />
-        </Field>
-        <datalist id="eks-roles">{roles.ok && roles.value.map((r) => <option key={r.Arn} value={r.Arn} />)}</datalist>
+        <AutoPick name="role" label="Cluster service role" creates="AmazonEKSClusterRole" options={roles.ok ? roles.value.map((r) => ({ value: r.Arn!, label: r.RoleName! })) : []} testId="cluster-role" />
       </ActionForm>
     </Sheet>
   );

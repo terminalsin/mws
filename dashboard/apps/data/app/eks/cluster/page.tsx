@@ -1,6 +1,6 @@
 import { DescribeClusterCommand, DescribeNodegroupCommand, ListAddonsCommand, ListNodegroupsCommand } from "@aws-sdk/client-eks";
 import { load, region } from "@mws-dashboard/aws";
-import { ActionForm, AwsIcon, CodeBlock, Empty, ErrorNotice, Field, List, Page, Pill, Section, Sheet, Specs, Status, Tags } from "@mws-dashboard/ui";
+import { ActionForm, AutoPick, AwsIcon, CodeBlock, Empty, ErrorNotice, Field, List, Page, Pill, Section, Sheet, Specs, Status, Tags } from "@mws-dashboard/ui";
 import { Clock, Globe, Lock, Plus, Puzzle, SlidersHorizontal, Trash2 } from "lucide-react";
 import type { Metadata } from "next";
 
@@ -48,14 +48,7 @@ export default async function Cluster({ searchParams }: Props) {
               <Field label="Name">
                 <input name="name" required autoFocus />
               </Field>
-              <Field label="Node IAM role">
-                <input name="role" required list="node-roles" defaultValue={roles[0]?.Arn} />
-              </Field>
-              <datalist id="node-roles">
-                {roles.map((r) => (
-                  <option key={r.Arn} value={r.Arn} />
-                ))}
-              </datalist>
+              <AutoPick name="role" label="Node IAM role" creates="AmazonEKSNodeRole" options={roles.map((r) => ({ value: r.Arn!, label: r.RoleName! }))} testId="node-role" />
               <div className="form-row">
                 <Field label="Instance type">
                   <input name="type" defaultValue="t3.medium" />

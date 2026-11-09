@@ -12,10 +12,11 @@ import {
 } from "@aws-sdk/client-auto-scaling";
 import { CreateLaunchTemplateCommand, type _InstanceType } from "@aws-sdk/client-ec2";
 import { act, required, text, type ActionResult } from "@mws-dashboard/aws";
+import { wantsAuto } from "@mws-dashboard/aws/auto";
 import { redirect } from "next/navigation";
 
 import { autoscaling, ec2 } from "../../lib/clients";
-import { defaultSubnets } from "../../lib/network";
+import { defaultSubnets, images } from "../../lib/network";
 
 const int = (form: FormData, name: string) => {
   const v = text(form, name);
@@ -38,10 +39,17 @@ export async function createGroup(_: ActionResult | null, form: FormData) {
   return act(async () => {
     const name = required(form, "name", "Name");
     const subnets = await defaultSubnets();
+    let template = text(form, "template");
+    if (wantsAuto(form, "template")) {
+      const image = (await images())[0];
+      if (!image?.ImageId) throw new Error("No image to launch: register an AMI first");
+      template = `${name}-template`;
+      await (await ec2()).send(new CreateLaunchTemplateCommand({ LaunchTemplateName: template, LaunchTemplateData: { ImageId: image.ImageId, InstanceType: "t3.micro" } }));
+    }
     await (await autoscaling()).send(
       new CreateAutoScalingGroupCommand({
         AutoScalingGroupName: name,
-        LaunchTemplate: { LaunchTemplateName: required(form, "template", "Launch template"), Version: "$Latest" },
+        LaunchTemplate: { LaunchTemplateName: template, Version: "$Latest" },
         MinSize: int(form, "min") ?? 0,
         MaxSize: int(form, "max") ?? 1,
         DesiredCapacity: int(form, "desired"),

@@ -1,6 +1,6 @@
 import { DescribeAutoScalingGroupsCommand } from "@aws-sdk/client-auto-scaling";
 import { ago, collect, load } from "@mws-dashboard/aws";
-import { ActionForm, AwsIcon, Empty, ErrorNotice, Field, List, Page, Pill, Section, Sheet, Status } from "@mws-dashboard/ui";
+import { ActionForm, AutoPick, AwsIcon, Empty, ErrorNotice, Field, List, Page, Pill, Section, Sheet, Status } from "@mws-dashboard/ui";
 import { FileStack, HeartPulse } from "lucide-react";
 import type { Metadata } from "next";
 
@@ -39,21 +39,19 @@ export default async function Groups() {
       </ActionForm>
     </Sheet>
   );
-  const groupSheet = templates.ok && templates.value.length > 0 && (
+  const groupSheet = (
     <Sheet title="Create Auto Scaling group" label="Create Auto Scaling group" testId="create-group">
       <ActionForm action={createGroup} submit="Create Auto Scaling group" testId="create-group">
         <Field label="Name">
           <input name="name" required autoFocus />
         </Field>
-        <Field label="Launch template">
-          <select name="template">
-            {templates.value.map((t) => (
-              <option key={t.LaunchTemplateId} value={t.LaunchTemplateName}>
-                {t.LaunchTemplateName}
-              </option>
-            ))}
-          </select>
-        </Field>
+        <AutoPick
+          name="template"
+          label="Launch template"
+          creates={`<group>-template · ${(amis.ok && amis.value[0]?.Name) || "latest image"} · t3.micro`}
+          options={templates.ok ? templates.value.map((t) => ({ value: t.LaunchTemplateName!, label: t.LaunchTemplateName! })) : []}
+          testId="launch-template"
+        />
         <div className="form-row">
           <Field label="Min">
             <input name="min" type="number" min={0} defaultValue={0} />

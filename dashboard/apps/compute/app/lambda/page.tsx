@@ -1,7 +1,7 @@
 import { ListRolesCommand } from "@aws-sdk/client-iam";
 import { applications, stage } from "@mws-dashboard/ai";
 import { ago, collect, load } from "@mws-dashboard/aws";
-import { ActionForm, AwsIcon, Curated, Empty, ErrorNotice, Field, Page, Pill, Sheet, Status, runtimeIcon } from "@mws-dashboard/ui";
+import { ActionForm, AutoPick, AwsIcon, Curated, Empty, ErrorNotice, Field, Page, Pill, Sheet, Status, runtimeIcon } from "@mws-dashboard/ui";
 import type { Metadata } from "next";
 
 import { ICONS, RUNTIMES, iam } from "../../lib/clients";
@@ -37,10 +37,7 @@ export default async function Functions() {
             <option>x86_64</option>
           </select>
         </Field>
-        <Field label="Execution role">
-          <input name="role" required list="lambda-roles" defaultValue={roles.ok ? roles.value[0]?.Arn : undefined} />
-        </Field>
-        <datalist id="lambda-roles">{roles.ok && roles.value.map((r) => <option key={r.Arn} value={r.Arn} />)}</datalist>
+        <AutoPick name="role" label="Execution role" creates="<function>-role, writes logs" options={roles.ok ? roles.value.map((r) => ({ value: r.Arn!, label: r.RoleName! })) : []} testId="execution-role" />
       </ActionForm>
     </Sheet>
   );
