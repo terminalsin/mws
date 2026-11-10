@@ -1,6 +1,7 @@
 import { ListCertificateAuthoritiesCommand } from "@aws-sdk/client-acm-pca";
 import { load } from "@mws-dashboard/aws";
-import { ActionForm, AwsIcon, Curated, Empty, ErrorNotice, Field, Page, Pill, Sheet, Status } from "@mws-dashboard/ui";
+import { ActionForm, AwsIcon, Curated, Empty, ErrorNotice, Field, Page, Pill, Sheet, Status, type Rule } from "@mws-dashboard/ui";
+import { ImportCertificate, RequestCertificate } from "@mws-dashboard/ui/model/acm";
 import { Upload } from "lucide-react";
 import type { Metadata } from "next";
 
@@ -10,6 +11,19 @@ import { importCertificate, requestCertificate } from "./actions";
 
 export const metadata: Metadata = { title: "Certificate Manager" };
 
+// The names go out as DomainName plus SubjectAlternativeNames, each held to
+// the model's domain pattern; ACM's default quota is 10 names a certificate.
+const DOMAINS: Rule = {
+  ...RequestCertificate.SubjectAlternativeNames,
+  maxLength: 10,
+  item: { ...RequestCertificate.DomainName, required: false, format: "dnsName" },
+};
+const PEM = {
+  certificate: { ...ImportCertificate.Certificate, format: "certificate" },
+  key: { ...ImportCertificate.PrivateKey, format: "privateKey" },
+  chain: { ...ImportCertificate.CertificateChain, format: "certificates" },
+} satisfies Record<string, Rule>;
+
 export default async function Certificates() {
   const [certs, cas] = await Promise.all([
     load(listCertificates),
@@ -18,11 +32,11 @@ export default async function Certificates() {
   const request = (
     <Sheet title="Request certificate" label="Request certificate" testId="request-certificate">
       <ActionForm action={requestCertificate} submit="Request" testId="request-certificate">
-        <Field label="Domain names">
+        <Field label="Domain names" rule={DOMAINS}>
           <textarea name="domains" rows={2} required placeholder={"example.com\n*.example.com"} autoFocus />
         </Field>
         <div className="form-row">
-          <Field label="Issuer">
+          <Field label="Issuer" member="CertificateAuthorityArn">
             <select name="pca" defaultValue="">
               <option value="">Amazon (public)</option>
               {cas.ok &&
@@ -33,13 +47,13 @@ export default async function Certificates() {
                 ))}
             </select>
           </Field>
-          <Field label="Validation">
+          <Field label="Validation" member="ValidationMethod">
             <select name="validation" defaultValue="DNS">
               <option value="DNS">DNS</option>
               <option value="EMAIL">Email</option>
             </select>
           </Field>
-          <Field label="Key">
+          <Field label="Key" member="KeyAlgorithm">
             <select name="key" defaultValue="RSA_2048">
               <option value="RSA_2048">RSA 2048</option>
               <option value="EC_prime256v1">ECDSA P-256</option>
@@ -53,9 +67,15 @@ export default async function Certificates() {
   const importSheet = (
     <Sheet title="Import certificate" label="Import certificate" icon={<Upload size={16} />} testId="import-certificate">
       <ActionForm action={importCertificate} submit="Import" testId="import-certificate">
-        <textarea name="certificate" rows={5} required aria-label="Certificate body" placeholder="-----BEGIN CERTIFICATE-----" className="code-editor" />
-        <textarea name="key" rows={5} required aria-label="Private key" placeholder="-----BEGIN PRIVATE KEY-----" className="code-editor" />
-        <textarea name="chain" rows={3} aria-label="Certificate chain" placeholder="-----BEGIN CERTIFICATE-----" className="code-editor" />
+        <Field label="Certificate body" rule={PEM.certificate}>
+          <textarea name="certificate" rows={5} required placeholder="-----BEGIN CERTIFICATE-----" className="code-editor" spellCheck={false} />
+        </Field>
+        <Field label="Private key" rule={PEM.key}>
+          <textarea name="key" rows={5} required placeholder="-----BEGIN PRIVATE KEY-----" className="code-editor" spellCheck={false} />
+        </Field>
+        <Field label="Certificate chain" rule={PEM.chain}>
+          <textarea name="chain" rows={3} placeholder="-----BEGIN CERTIFICATE-----" className="code-editor" spellCheck={false} />
+        </Field>
       </ActionForm>
     </Sheet>
   );

@@ -51,7 +51,7 @@ export default async function S3Object({ params, searchParams }: Props) {
           </a>
           <Sheet title="Share with a presigned URL" label="Presigned URL" icon={<Link2 size={15} aria-hidden />} testId="presign">
             <ActionForm action={presign.bind(null, bucket, key)} submit="Create URL" testId="presign">
-              <Field label="Valid for (minutes)">
+              <Field label="Valid for (minutes)" hint="Up to 7 days" rule={{ type: "integer" }}>
                 <input name="minutes" type="number" min="1" max="10080" defaultValue="60" />
               </Field>
             </ActionForm>

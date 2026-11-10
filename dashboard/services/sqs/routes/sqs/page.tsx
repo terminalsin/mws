@@ -1,19 +1,13 @@
 import { ago, load } from "@mws-dashboard/aws";
-import { ActionForm, AwsIcon, Curated, Empty, ErrorNotice, Field, Page, Pill, Sheet, type Rule } from "@mws-dashboard/ui";
+import { ActionForm, AwsIcon, Curated, Empty, ErrorNotice, Field, Page, Pill, Sheet } from "@mws-dashboard/ui";
 import { ArrowRight } from "lucide-react";
-import { CreateQueue as CreateQueueRules } from "@mws-dashboard/ui/model/sqs";
 import type { Metadata } from "next";
 
 import { ICONS, isDlq, queues, type QueueInfo } from "../../lib/clients";
+import { MAX_RECEIVES, QUEUE_NAME } from "../../lib/rules";
 import { createQueue } from "./actions";
 
 export const metadata: Metadata = { title: "SQS" };
-
-// SQS's model leaves the queue name unconstrained; the rules are in its docs.
-const QUEUE_NAME: Rule = {
-  ...CreateQueueRules.QueueName,
-  pattern: "^[A-Za-z0-9_-]{1,80}$|^[A-Za-z0-9_-]{1,75}\\.fifo$", hint: "Letters, digits, - and _", generate: "name",
-};
 
 function CreateQueue({ dlqs, names }: { dlqs: QueueInfo[]; names: string[] }) {
   return (
@@ -42,8 +36,8 @@ function CreateQueue({ dlqs, names }: { dlqs: QueueInfo[]; names: string[] }) {
                 ))}
               </select>
             </Field>
-            <Field label="Max receives">
-              <input name="maxReceiveCount" type="number" min="1" max="1000" defaultValue="5" />
+            <Field label="Max receives" rule={MAX_RECEIVES}>
+              <input name="maxReceiveCount" inputMode="numeric" defaultValue="5" />
             </Field>
           </div>
         )}

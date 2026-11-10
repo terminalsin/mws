@@ -1,5 +1,6 @@
 import { ago, load } from "@mws-dashboard/aws";
-import { ActionForm, AwsIcon, Empty, ErrorNotice, Field, FileIcon, List, Page, Pill, Sheet, type Row } from "@mws-dashboard/ui";
+import { ActionForm, AwsIcon, Empty, ErrorNotice, Field, FileIcon, List, Page, Pill, Sheet, type Row, type Rule } from "@mws-dashboard/ui";
+import { PutParameter } from "@mws-dashboard/ui/model/ssm";
 import { Eye, EyeOff, Lock, Pencil, Trash2 } from "lucide-react";
 import type { Metadata } from "next";
 import Link from "next/link";
@@ -12,14 +13,32 @@ export const metadata: Metadata = { title: "Parameter Store" };
 
 type Props = { searchParams: Promise<{ path?: string; reveal?: string }> };
 
-function form(defaults: { name?: string; value?: string; type?: string; overwrite?: boolean }, testId?: string) {
+// The model only bounds the name's length; the rest is Parameter Store's
+// documented naming rules (MWS enforces the same): a name or a /path of up
+// to 15 levels, and nothing under aws or ssm.
+const NAME: Rule = {
+  ...PutParameter.Name,
+  pattern: "^(?:[A-Za-z0-9_.-]+|(?:[/][A-Za-z0-9_.-]+){1,15})$",
+  reserved: ["/aws", "/ssm", "aws", "ssm", "/AWS", "/SSM", "AWS", "SSM"],
+  hint: "Like /app/prod/db-host",
+};
+// Standard tier (what the console creates) holds up to 4 KB.
+const VALUE: Rule = { ...PutParameter.Value, maxLength: 4096 };
+
+function form(defaults: { name?: string; value?: string; type?: string; overwrite?: boolean; path?: string; taken?: string[] }, testId?: string) {
   return (
     <ActionForm action={putParameter} submit="Save" testId={testId}>
-      <Field label="Name">
-        <input name="name" required defaultValue={defaults.name} readOnly={defaults.overwrite} placeholder="/app/prod/db-host" />
+      {defaults.overwrite ? (
+        <input type="hidden" name="name" value={defaults.name} />
+      ) : (
+        <Field label="Name" rule={{ ...NAME, generate: { prefix: defaults.path || "/" } }} taken={defaults.taken} unique>
+          <input name="name" required defaultValue={defaults.name} placeholder="/app/prod/db-host" />
+        </Field>
+      )}
+      <Field label="Value" rule={VALUE}>
+        <textarea name="value" rows={4} required defaultValue={defaults.value} />
       </Field>
-      <textarea name="value" rows={4} aria-label="Value" required defaultValue={defaults.value} />
-      <Field label="Type">
+      <Field label="Type" rule={PutParameter.Type}>
         <select name="type" defaultValue={defaults.type ?? "String"}>
           <option>String</option>
           <option>StringList</option>
@@ -40,7 +59,7 @@ export default async function Parameters({ searchParams }: Props) {
   };
   const create = (
     <Sheet title="New parameter" label="Create parameter" testId="put-parameter">
-      {form({ name: path && path.endsWith("/") ? path : undefined }, "put-parameter")}
+      {form({ name: path && path.endsWith("/") ? path : undefined, path: path.endsWith("/") ? path : undefined, taken: params.ok ? params.value.map((p) => p.meta.Name!) : [] }, "put-parameter")}
     </Sheet>
   );
   const crumbs = path

@@ -5,6 +5,7 @@ import type { Metadata } from "next";
 import Link from "next/link";
 
 import { ICONS, isDlq, queues } from "../../../lib/clients";
+import { ATTRIBUTE_RULES as RULES, SEND } from "../../../lib/rules";
 import { deleteQueue, purgeQueue, receiveMessages, redrive, saveAttributes, sendMessage } from "../actions";
 
 type Props = { params: Promise<{ name: string }> };
@@ -44,22 +45,24 @@ export default async function Queue({ params }: Props) {
         <>
           <Sheet title="Send message" label="Send message" icon={<Send size={15} aria-hidden />} testId="send-message">
             <ActionForm action={sendMessage.bind(null, name)} submit="Send" testId="send-message">
-              <textarea name="body" required aria-label="Body" autoFocus />
+              <Field label="Body" rule={SEND.MessageBody}>
+                <textarea name="body" required maxLength={Number(attrs.MaximumMessageSize) || undefined} autoFocus />
+              </Field>
               <div className="form-row">
                 {fifo ? (
                   <>
-                    <Field label="Group ID">
+                    <Field label="Group ID" rule={SEND.MessageGroupId}>
                       <input name="group" required defaultValue="default" />
                     </Field>
                     {attrs.ContentBasedDeduplication !== "true" && (
-                      <Field label="Deduplication ID">
+                      <Field label="Deduplication ID" rule={SEND.MessageDeduplicationId}>
                         <input name="dedup" required />
                       </Field>
                     )}
                   </>
                 ) : (
-                  <Field label="Delay (s)">
-                    <input name="delay" type="number" min="0" max="900" />
+                  <Field label="Delay (s)" rule={SEND.DelaySeconds}>
+                    <input name="delay" inputMode="numeric" />
                   </Field>
                 )}
               </div>
@@ -73,26 +76,26 @@ export default async function Queue({ params }: Props) {
               confirm="Move these messages back to their source queues?"
             />
           )}
-          <Sheet title="Configuration" label="Edit configuration" icon={<Settings2 size={15} aria-hidden />}>
-            <ActionForm action={saveAttributes.bind(null, name)} submit="Save">
+          <Sheet title="Configuration" label="Edit configuration" icon={<Settings2 size={15} aria-hidden />} testId="queue-config">
+            <ActionForm action={saveAttributes.bind(null, name)} submit="Save" testId="queue-config">
               <div className="form-row">
-                <Field label="Visibility timeout (s)">
-                  <input name="VisibilityTimeout" type="number" defaultValue={attrs.VisibilityTimeout} />
+                <Field label="Visibility timeout (s)" rule={RULES.VisibilityTimeout}>
+                  <input name="VisibilityTimeout" inputMode="numeric" defaultValue={attrs.VisibilityTimeout} />
                 </Field>
-                <Field label="Retention (s)">
-                  <input name="MessageRetentionPeriod" type="number" defaultValue={attrs.MessageRetentionPeriod} />
+                <Field label="Retention (s)" rule={RULES.MessageRetentionPeriod}>
+                  <input name="MessageRetentionPeriod" inputMode="numeric" defaultValue={attrs.MessageRetentionPeriod} />
                 </Field>
-                <Field label="Delay (s)">
-                  <input name="DelaySeconds" type="number" defaultValue={attrs.DelaySeconds} />
+                <Field label="Delay (s)" rule={RULES.DelaySeconds}>
+                  <input name="DelaySeconds" inputMode="numeric" defaultValue={attrs.DelaySeconds} />
                 </Field>
-                <Field label="Receive wait (s)">
-                  <input name="ReceiveMessageWaitTimeSeconds" type="number" defaultValue={attrs.ReceiveMessageWaitTimeSeconds} />
+                <Field label="Receive wait (s)" rule={RULES.ReceiveMessageWaitTimeSeconds}>
+                  <input name="ReceiveMessageWaitTimeSeconds" inputMode="numeric" defaultValue={attrs.ReceiveMessageWaitTimeSeconds} />
                 </Field>
-                <Field label="Max size (bytes)">
-                  <input name="MaximumMessageSize" type="number" defaultValue={attrs.MaximumMessageSize} />
+                <Field label="Max size (bytes)" rule={RULES.MaximumMessageSize}>
+                  <input name="MaximumMessageSize" inputMode="numeric" defaultValue={attrs.MaximumMessageSize} />
                 </Field>
               </div>
-              <Field label="Access policy">
+              <Field label="Access policy" rule={RULES.Policy}>
                 <textarea name="Policy" rows={8} defaultValue={attrs.Policy ? JSON.stringify(JSON.parse(attrs.Policy), null, 2) : ""} />
               </Field>
             </ActionForm>

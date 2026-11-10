@@ -117,13 +117,21 @@ Fields validate in place, and say how to fix what they reject. `Field`
 3. what the page adds: `format` (`json`, `yaml` (YAML or JSON documents),
    `keyvalue` (one `Key=value` per line), `policy`, `path` (IAM), `dir`, `arn`, `cidr`,
    `ipv4`, `email`, `emails` (a comma-separated list), `domain`,
-   `email-or-domain`, `url`, `s3url`, `bucket`, `name`, `port`, `phone`,
+   `email-or-domain`, `dnsName` (wildcards allowed), `url`, `s3url`, `bucket`, `name`, `port`, `phone`,
    `tags` for `key=value` tag lines, `pairs` for any `key=value` list,
-   `branch` for Git branch names), `taken` (names that exist), `reserved`
+   `branch` for Git branch names, PEM `certificate`, `certificates` and
+   `privateKey`), `taken` (names that exist), `reserved`
    (prefixes AWS keeps, offered without them),
    `known` (values the field usually points at), `generate` (`name`,
    `token`, `password`, `uuid`, or a prefix/suffix), `arn` (the ARN template
-   a bare name expands to) and `hint` (a readable pattern message).
+   a bare name expands to) and `hint` (a readable pattern message). A
+   rule's `unit` (`seconds` or `bytes`) converts "5m" or "256 KiB" and
+   shows ranges as durations or sizes.
+
+A list rule (`type: "list"` with a scalar `item`, e.g. ACM's
+`SubjectAlternativeNames`) on a text control reads it as values separated by
+commas or whitespace: each value is checked against `item`, `minLength` and
+`maxLength` count values, and repairs fix or drop the values that fail.
 
 A problem replaces the field's hint once the person leaves the field or
 submits, and comes with repairs as chips: a fix (reshaped to the pattern,
