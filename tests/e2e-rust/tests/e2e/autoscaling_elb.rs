@@ -192,6 +192,10 @@ async fn elb_health_checks_pass_on_the_metadata_backend() {
 /// Scaling replaces it once deregistration is over.
 #[tokio::test]
 async fn elb_health_checks_replace_instances_after_draining_docker() {
+    if !crate::ecr::docker_available() {
+        eprintln!("skipping: Docker is not available");
+        return;
+    }
     let mws = Mws::start_with(mws::Config { ec2_backend: mws_ec2::BackendChoice::Docker, ..Default::default() }).await;
     let Checked { asg, ec2, elb, tg_arn, first } = checked_group(&mws).await;
 

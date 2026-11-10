@@ -337,6 +337,14 @@ async fn vpcs_subnets_gateways_and_routes() {
     let e = ec2.delete_vpc().vpc_id(&vpc_id).send().await.unwrap_err();
     assert_eq!(code(&e.into_service_error()), "DependencyViolation");
     ec2.delete_nat_gateway().nat_gateway_id(&nat_id).send().await.unwrap();
+    // The NAT gateway keeps its subnet and address until it is deleted.
+    for _ in 0..100 {
+        let d = ec2.describe_nat_gateways().nat_gateway_ids(&nat_id).send().await.unwrap();
+        if d.nat_gateways()[0].state() == Some(&aws_sdk_ec2::types::NatGatewayState::Deleted) {
+            break;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+    }
     ec2.release_address().allocation_id(&alloc).send().await.unwrap();
     ec2.delete_route_table().route_table_id(&private_id).send().await.unwrap();
     ec2.delete_route_table().route_table_id(&rt_id).send().await.unwrap();
