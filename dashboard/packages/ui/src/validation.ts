@@ -123,7 +123,9 @@ export type Format =
   | "pairs"
   | "tags"
   | "branch"
-  | "dir";
+  | "dir"
+  | "schedule"
+  | "eventPattern";
 
 /** "name": a readable resource name; "token": random letters and digits;
  * "password": meets the usual complexity rules; or a fixed prefix/suffix
@@ -1372,8 +1374,114 @@ export const FORMATS: Record<Format, FormatSpec> = {
       return out;
     },
   },
+  schedule: {
+    check: scheduleProblem,
+    repair(value) {
+      const fixed = repairSchedule(value);
+      return fixed ? [{ value: fixed, label: "Use this schedule", kind: "fix" }] : [];
+    },
+  },
+  eventPattern: {
+    check(value) {
+      let parsed: unknown;
+      try {
+        parsed = JSON.parse(value);
+      } catch (e) {
+        return jsonMessage(value, e);
+      }
+      return patternProblem(parsed);
+    },
+    repair(value) {
+      const json = repairJson(value) ?? value;
+      try {
+        const fixed = JSON.stringify(wrapLeaves(JSON.parse(json)), null, 2);
+        return [{ value: fixed, label: patternProblem(JSON.parse(json)) ? "Fix the pattern" : "Fix the JSON", kind: "fix" }];
+      } catch {
+        return [];
+      }
+    },
+  },
 };
 
+// Schedules: `rate(5 minutes)` or a six-field `cron(...)` (EventBridge,
+// Scheduler, SSM). Repairs read the usual near misses: a bare "5 minutes",
+// "every hour", wrong plurals, Unix five-field cron, both day fields set.
+
+const RATE_UNITS: [RegExp, string][] = [
+  [/^m(in(ute)?s?)?$/i, "minute"],
+  [/^h((ou)?rs?|ours?)?$/i, "hour"],
+  [/^d(ays?)?$/i, "day"],
+];
+const PRESETS: Record<string, string> = { hourly: "rate(1 hour)", daily: "rate(1 day)", weekly: "rate(7 days)" };
+
+function scheduleProblem(value: string): string | null {
+  const v = value.trim();
+  const rate = v.match(/^rate\((.*)\)$/);
+  if (rate) {
+    const m = rate[1].trim().match(/^(\d+) (minutes?|hours?|days?)$/);
+    if (!m || Number(m[1]) < 1) return "Like rate(5 minutes)";
+    return (Number(m[1]) === 1) === !m[2].endsWith("s") ? null : Number(m[1]) === 1 ? `Use ${m[2].slice(0, -1)} for 1` : `Use ${m[2]}s`;
+  }
+  const cron = v.match(/^cron\((.*)\)$/);
+  if (cron) {
+    const f = cron[1].trim().split(/\s+/);
+    if (f.length !== 6) return `cron() takes 6 fields, not ${f.length}`;
+    if ((f[2] === "?") === (f[4] === "?")) return "Day-of-month or day-of-week must be ?";
+    return null;
+  }
+  return "Like rate(5 minutes) or cron(0 12 * * ? *)";
+}
+
+function repairSchedule(value: string): string | null {
+  let v = value.trim().replace(/^["'@]|["']$/g, "").trim();
+  if (PRESETS[v.toLowerCase()]) return PRESETS[v.toLowerCase()];
+  const rate = v.replace(/^rate\s*\(?|\)$/gi, "").replace(/^every\s+/i, "").trim();
+  const m = rate.match(/^(\d+)?\s*([a-z]+)$/i);
+  const unit = m && RATE_UNITS.find(([re]) => re.test(m[2]))?.[1];
+  if (m && unit) {
+    const n = Number(m[1] ?? "1");
+    if (n >= 1) return `rate(${n} ${unit}${n === 1 ? "" : "s"})`;
+  }
+  v = v.replace(/^cron\s*\(?|\)$/gi, "").trim();
+  let f = v.split(/\s+/);
+  if (!f.every((x) => /^[\w*?,/#-]+$/.test(x))) return null;
+  if (f.length === 7 && f[0] === "0") f = f.slice(1); // Quartz seconds
+  if (f.length === 5) {
+    // Unix cron: Sunday is 0 there and 1 here; no year field.
+    f[4] = f[4].replace(/\d/g, (d) => String((Number(d) % 7) + 1));
+    f.push("*");
+  }
+  if (f.length !== 6) return null;
+  f = f.map((x, i) => (i < 2 ? x.replace(/^\*\//, "0/") : x));
+  if (f[2] !== "?" && f[4] !== "?") {
+    if (f[4] === "*") f[4] = "?";
+    else if (f[2] === "*") f[2] = "?";
+  } else if (f[2] === "?" && f[4] === "?") f[4] = "*";
+  return `cron(${f.join(" ")})`;
+}
+
+// Event patterns (EventBridge rules, Pipes and Lambda event filters): a JSON
+// object whose leaves are arrays of values or matchers. A bare value is
+// almost always meant as a one-element list.
+
+function patternProblem(p: unknown, path = ""): string | null {
+  if (p === null || typeof p !== "object" || Array.isArray(p)) return path ? `"${path}" must be an object or an array` : "Must be a JSON object";
+  for (const [k, v] of Object.entries(p)) {
+    if (Array.isArray(v)) {
+      if (v.length === 0) return `"${k}" is an empty list`;
+    } else {
+      const inner = patternProblem(v, k);
+      if (inner) return inner;
+    }
+  }
+  return null;
+}
+
+function wrapLeaves(p: unknown): unknown {
+  if (p === null || typeof p !== "object") return p;
+  if (Array.isArray(p)) return p;
+  return Object.fromEntries(Object.entries(p).map(([k, v]) => [k, v !== null && typeof v === "object" ? wrapLeaves(v) : [v]]));
+}
 
 const DOMAIN = /^(?=.{1,253}$)(?:[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\.)+[a-z]{2,63}$/i;
 /** Top-level domains people mistype, and what they meant. */
