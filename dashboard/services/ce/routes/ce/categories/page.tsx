@@ -1,0 +1,77 @@
+import { ListCostCategoryDefinitionsCommand } from "@aws-sdk/client-cost-explorer";
+import { load } from "@mws-dashboard/aws";
+import { ActionForm, AwsIcon, Empty, ErrorNotice, Field, List, Page, Pill, Sheet, type Rule } from "@mws-dashboard/ui";
+import { CreateCostCategoryDefinition } from "@mws-dashboard/ui/model/ce";
+import { Trash2 } from "lucide-react";
+import type { Metadata } from "next";
+
+import { ICONS, ce } from "../../../lib/clients";
+import { createCostCategory, deleteCostCategory } from "../actions";
+
+export const metadata: Metadata = { title: "Cost categories" };
+
+const NAME: Rule = { ...CreateCostCategoryDefinition.Name, generate: "name" };
+const RULES: Rule = { required: true, format: "json" };
+const EXAMPLE = JSON.stringify(
+  [
+    { Value: "Production", Rule: { Tags: { Key: "env", Values: ["prod"] } } },
+    { Value: "Storage", Rule: { Dimensions: { Key: "SERVICE", Values: ["Amazon Simple Storage Service"] } } },
+  ],
+  null,
+  2,
+);
+
+function NewCostCategory({ names }: { names: string[] }) {
+  return (
+    <Sheet title="New cost category" label="Create cost category" testId="create-cost-category">
+      <ActionForm action={createCostCategory} submit="Create" testId="create-cost-category">
+        <Field label="Name" rule={NAME} taken={names} unique>
+          <input name="name" required autoFocus />
+        </Field>
+        <Field label="Rules" rule={RULES} hint="Each rule maps matching costs to a value">
+          <textarea name="rules" rows={12} spellCheck={false} defaultValue={EXAMPLE} className="code-editor" />
+        </Field>
+        <Field label="Uncategorized costs" rule={CreateCostCategoryDefinition.DefaultValue}>
+          <input name="default" placeholder="Other" />
+        </Field>
+      </ActionForm>
+    </Sheet>
+  );
+}
+
+export default async function CostCategories() {
+  const list = await load(async () => (await ce()).send(new ListCostCategoryDefinitionsCommand({})));
+  if (!list.ok) {
+    return (
+      <Page title="Cost categories">
+        <ErrorNotice error={list.error} />
+      </Page>
+    );
+  }
+  const categories = (list.value.CostCategoryReferences ?? []).sort((a, b) => a.Name!.localeCompare(b.Name!));
+  const names = categories.map((c) => c.Name!);
+  return (
+    <Page title="Cost categories" actions={<NewCostCategory names={names} />}>
+      <List
+        label="Cost categories"
+        empty={<Empty icon={ICONS.category} action={<NewCostCategory names={[]} />} />}
+        rows={categories.map((c) => ({
+          key: c.CostCategoryArn!,
+          icon: <AwsIcon icon={ICONS.category} size={24} />,
+          title: c.Name!,
+          subtitle: c.Values?.length ? c.Values.join(", ") : undefined,
+          meta: (
+            <>
+              {c.ProcessingStatus?.some((s) => s.Status === "PROCESSING") && <Pill tone="info">Processing</Pill>}
+              <Pill title="Rules">{c.NumberOfRules ?? 0}</Pill>
+              {c.EffectiveStart && <span>{c.EffectiveStart.slice(0, 10)}</span>}
+            </>
+          ),
+          actions: (
+            <ActionForm action={deleteCostCategory.bind(null, c.CostCategoryArn!)} submit={`Delete ${c.Name}`} icon={<Trash2 size={15} />} tone="danger" confirm={`Delete ${c.Name}?`} />
+          ),
+        }))}
+      />
+    </Page>
+  );
+}
