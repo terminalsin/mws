@@ -201,8 +201,14 @@ export function FieldShell({
       // The reset value lands after the event.
       setTimeout(refresh, 0);
     };
+    // A server error can be about the combination ("HTTPS needs a
+    // certificate"): changing another field may fix it, so it goes.
+    const onOther = (e: Event) => {
+      if (e.target !== el) setServer(null);
+    };
     el.addEventListener("input", onInput);
     el.addEventListener("change", onInput);
+    el.form?.addEventListener("change", onOther);
     el.addEventListener("blur", onBlur);
     el.addEventListener("invalid", onInvalid);
     el.form?.addEventListener("reset", onReset);
@@ -213,6 +219,7 @@ export function FieldShell({
       el.removeEventListener("blur", onBlur);
       el.removeEventListener("invalid", onInvalid);
       owner?.removeEventListener("reset", onReset);
+      owner?.removeEventListener("change", onOther);
     };
   }, [refresh]);
 

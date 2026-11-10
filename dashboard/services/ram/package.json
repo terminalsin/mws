@@ -8,6 +8,8 @@
     "./routes/*": "./routes/*"
   },
   "dependencies": {
+    "@aws-sdk/client-acm-pca": "^3.1164.0",
+    "@aws-sdk/client-organizations": "^3.1164.0",
     "@aws-sdk/client-ram": "^3.1164.0",
     "@mws-dashboard/aws": "*",
     "@mws-dashboard/ui": "*",
