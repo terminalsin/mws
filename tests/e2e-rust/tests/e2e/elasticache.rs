@@ -1340,12 +1340,7 @@ async fn deferred_cache_cluster_changes_wait_for_the_maintenance_window() {
     assert_eq!(c.pending_modified_values().and_then(|p| p.num_cache_nodes()), None);
 
     // A pending change is applied with the next ApplyImmediately request.
-    ec.modify_cache_cluster()
-        .cache_cluster_id("deferred-mc")
-        .cache_node_type("cache.t3.small")
-        .send()
-        .await
-        .unwrap();
+    ec.modify_cache_cluster().cache_cluster_id("deferred-mc").cache_node_type("cache.t3.small").send().await.unwrap();
     assert_eq!(describe(&ec).await.cache_node_type(), Some("cache.t3.micro"));
     ec.modify_cache_cluster()
         .cache_cluster_id("deferred-mc")

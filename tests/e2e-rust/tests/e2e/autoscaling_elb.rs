@@ -160,7 +160,8 @@ async fn checked_group(mws: &Mws) -> Checked {
 /// group does not churn.
 #[tokio::test]
 async fn elb_health_checks_pass_on_the_metadata_backend() {
-    let mws = Mws::start_with(mws::Config { ec2_backend: mws_ec2::BackendChoice::Metadata, ..Default::default() }).await;
+    let mws =
+        Mws::start_with(mws::Config { ec2_backend: mws_ec2::BackendChoice::Metadata, ..Default::default() }).await;
     let Checked { asg, elb, tg_arn, first, .. } = checked_group(&mws).await;
     wait_for("the target to turn healthy", 30, || {
         let elb = elb.clone();

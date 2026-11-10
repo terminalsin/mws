@@ -57,7 +57,7 @@ pub use public::{
     availability_zones, InstanceInfo, InstanceNetwork, SecurityGroupInfo, ServiceInterface, ServiceInterfaceError,
     ServiceInterfaceRequest, SubnetInfo, VpcInfo,
 };
-pub use service_eni::TaskInterface;
+pub use service_eni::{TaskInterface, TaskInterfaceRequest};
 pub use signals::{InstanceStateChange, StateChangeSink};
 use state::{RegionState, State};
 

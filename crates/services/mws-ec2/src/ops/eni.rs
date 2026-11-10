@@ -82,7 +82,7 @@ pub fn release_public_ip(r: &mut RegionState, eni_id: &str) {
     }
 }
 
-fn set_association(eni: &mut t::NetworkInterface, assoc: Option<t::NetworkInterfaceAssociation>) {
+pub(crate) fn set_association(eni: &mut t::NetworkInterface, assoc: Option<t::NetworkInterfaceAssociation>) {
     eni.association = assoc.clone();
     if let Some(primary) = eni.private_ip_addresses.iter_mut().flatten().find(|p| p.primary == Some(true)) {
         primary.association = assoc;
