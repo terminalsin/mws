@@ -76,6 +76,7 @@ export type Rules = Record<string, Rule>;
 
 export type Format =
   | "json"
+  | "list"
   | "yaml"
   | "keyvalue"
   | "policy"
@@ -103,7 +104,7 @@ export type Format =
 /** "name": a readable resource name; "token": random letters and digits;
  * "password": meets the usual complexity rules; or a fixed prefix/suffix
  * around a readable name. */
-export type Generate = "name" | "token" | "password" | "uuid" | { prefix?: string; suffix?: string; kind?: "name" | "token" };
+export type Generate = "name" | "token" | "password" | "uuid" | "account" | { prefix?: string; suffix?: string; kind?: "name" | "token" };
 
 export type IssueCode =
   | "required"
@@ -322,8 +323,9 @@ export function repairs(value: string, rule: Rule, code: IssueCode): Repair[] {
     case "format": {
       const format = rule.format && FORMATS[rule.format];
       for (const r of format?.repair?.(value, rule) ?? []) offer(r);
-      // Multi-line values (JSON, tags) do not reshape into anything useful.
-      if (out.length === 0 && !value.includes("\n")) for (const r of reshape(value, rule).slice(0, 1)) offer(r);
+      // Multi-line values (JSON, tags) do not reshape into anything useful,
+      // and a list's separators are meaningful (cleanups would join its items).
+      if (out.length === 0 && !value.includes("\n") && rule.format !== "list") for (const r of reshape(value, rule).slice(0, 1)) offer(r);
       break;
     }
     case "tooLong":
@@ -609,6 +611,7 @@ export function fresh(rule: Rule): Repair | null {
     let v: string;
     if (recipe === "uuid") v = globalThis.crypto?.randomUUID?.() ?? `${token(8, "0123456789abcdef")}-${token(4, "0123456789abcdef")}-4${token(3, "0123456789abcdef")}-a${token(3, "0123456789abcdef")}-${token(12, "0123456789abcdef")}`;
     else if (recipe === "password") v = password(rule);
+    else if (recipe === "account") v = token(1, "123456789") + token(11, "0123456789");
     else if (recipe === "token") v = token(Math.min(rule.maxLength ?? 16, Math.max(rule.minLength ?? 16, 16)));
     else {
       const spec = typeof recipe === "object" ? recipe : {};
@@ -944,6 +947,33 @@ export const FORMATS: Record<Format, FormatSpec> = {
       return /^[A-Za-z0-9_-]+$/.test(value) ? null : "Letters, digits, - and _";
     },
   },
+  // Names separated by commas or spaces, each checked against `rule.item`,
+  // none twice.
+  list: {
+    check(value, rule) {
+      const seen = new Set<string>();
+      for (const item of listItems(value)) {
+        if (seen.has(item)) return `${item} is listed twice`;
+        seen.add(item);
+        const issue = rule.item && problem(item, rule.item, {});
+        if (issue) return `${item}: ${issue.message}`;
+      }
+      return seen.size ? null : "Required";
+    },
+    repair(value, rule) {
+      const out: string[] = [];
+      let label = "";
+      for (const item of listItems(value)) {
+        const fixed = !rule.item || valid(item, rule.item) ? item : check(item, rule.item)?.repairs.find((r) => r.kind === "fix");
+        const v = typeof fixed === "string" ? fixed : fixed?.value;
+        if (typeof fixed === "object" && fixed) label ||= `${fixed.label} in ${item}`;
+        if (v === undefined) label ||= `Remove ${item}`;
+        else if (out.includes(v)) label ||= `Remove the second ${v}`;
+        else out.push(v);
+      }
+      return out.length && label ? [{ value: out.join(", "), label, kind: "fix" }] : [];
+    },
+  },
   port: {
     check() {
       return null;
@@ -1198,6 +1228,11 @@ function s3Object(value: string): { bucket: string; key: string; canonical: bool
   const consoleUrl = v.match(new RegExp(`^https://[\\w.-]*console\\.aws\\.amazon\\.com/s3/object/(${BUCKET})\\?(?:.*&)?prefix=([^&#]+)`));
   if (consoleUrl) return { bucket: consoleUrl[1], key: decodeURIComponent(consoleUrl[2]), canonical: false };
   return null;
+}
+
+/** The items of a comma- or space-separated list. */
+export function listItems(value: string): string[] {
+  return value.split(/[\s,]+/).filter(Boolean);
 }
 
 function network(o: number[], bits: number): string {
