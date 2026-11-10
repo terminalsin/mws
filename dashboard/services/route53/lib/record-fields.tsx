@@ -24,7 +24,7 @@ const PLACEHOLDER: Record<string, string> = {
 // ResourceRecordSet's members, as Route 53 documents them (the generated
 // model rules stop above this depth).
 const NAME: Rule = { required: true, maxLength: 1024 };
-const TTL: Rule = { type: "integer", min: 0, max: 2147483647 };
+const TTL: Rule = { type: "integer", min: 0, max: 2147483647, unit: "seconds" };
 const ALIAS: Rule = { maxLength: 1024 };
 
 export interface RecordDefaults {
