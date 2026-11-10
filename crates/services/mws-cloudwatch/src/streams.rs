@@ -213,6 +213,10 @@ impl CloudWatch {
         if !matches!(arn_service(&input.role_arn), Some(("iam", r)) if r.starts_with("role/")) {
             return Err(bad(format!("The value {} for parameter RoleArn is not valid.", input.role_arn)));
         }
+        // The stream hands CloudWatch the role, which needs iam:PassRole.
+        let mut pass = ConditionContext::new();
+        pass.insert("iam:PassedToService".into(), vec!["streams.metrics.cloudwatch.amazonaws.com".into()]);
+        ctx.authorize("iam:PassRole", &input.role_arn, pass)?;
         let include = input.include_filters.as_deref().unwrap_or_default();
         let exclude = input.exclude_filters.as_deref().unwrap_or_default();
         if !include.is_empty() && !exclude.is_empty() {
