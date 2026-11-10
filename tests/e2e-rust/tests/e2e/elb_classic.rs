@@ -117,7 +117,23 @@ async fn classic_load_balancers() {
         .send()
         .await
         .unwrap();
-    assert_eq!(applied.security_groups(), [sg]);
+    assert_eq!(applied.security_groups(), [sg.clone()]);
+
+    // A load balancer in a VPC has a requester-managed `ELB <name>`
+    // interface in each of its subnets, with its security groups.
+    let enis = ec2
+        .describe_network_interfaces()
+        .filters(aws_sdk_ec2::types::Filter::builder().name("description").values("ELB classic").build())
+        .send()
+        .await
+        .unwrap();
+    let enis = enis.network_interfaces();
+    assert_eq!(enis.len(), 1, "{enis:?}");
+    assert_eq!(enis[0].requester_id(), Some("amazon-elb"));
+    assert_eq!(enis[0].requester_managed(), Some(true));
+    assert_eq!(enis[0].groups().iter().filter_map(|g| g.group_id()).collect::<Vec<_>>(), [sg.as_str()]);
+    let err = ec2.delete_security_group().group_id(&sg).send().await.unwrap_err();
+    assert_eq!(aws_sdk_ec2::error::ProvideErrorMetadata::code(&err), Some("DependencyViolation"));
 
     // Health check, attributes.
     let hc = HealthCheck::builder()
@@ -374,4 +390,11 @@ async fn classic_load_balancers() {
     elb.delete_load_balancer().load_balancer_name("classic").send().await.unwrap();
     let d = elb.describe_load_balancers().send().await.unwrap();
     assert!(d.load_balancer_descriptions().is_empty());
+    let enis = ec2
+        .describe_network_interfaces()
+        .filters(aws_sdk_ec2::types::Filter::builder().name("description").values("ELB classic").build())
+        .send()
+        .await
+        .unwrap();
+    assert!(enis.network_interfaces().is_empty());
 }

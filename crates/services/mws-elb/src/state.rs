@@ -187,6 +187,8 @@ pub struct ClassicLoadBalancer {
     pub tags: Vec<ct::Tag>,
     /// Registered instance ids, in registration order.
     pub instances: Vec<String>,
+    /// The `ELB <name>` network interface in each subnet, by subnet id.
+    pub network_interfaces: BTreeMap<String, String>,
 }
 
 impl ClassicLoadBalancer {
