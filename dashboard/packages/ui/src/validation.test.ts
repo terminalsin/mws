@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 
-import { check, closest, describePattern, fresh, listItems, parseServerIssues, repairJson, repairPolicy, ruleAt, sameMember, valid, type Rule } from "./validation.ts";
+import { amount, check, closest, describePattern, fresh, listItems, parseServerIssues, repairJson, repairPolicy, ruleAt, sameMember, valid, type Rule } from "./validation.ts";
 
 const values = (r: Rule, v: string) => check(v, r)?.repairs.map((x) => x.value) ?? [];
 
@@ -69,6 +69,22 @@ test("taken names can ignore case", () => {
   assert.equal(check("Alice", { taken: ["alice"] }), null);
   assert.equal(check("Alice", { taken: ["alice"], takenIgnoreCase: true })?.code, "taken");
   assert.deepEqual(values({ taken: ["alice", "ALICE-2"], takenIgnoreCase: true }, "Alice"), ["Alice-3"]);
+});
+
+test("durations and sizes convert to the field's unit", () => {
+  const seconds: Rule = { type: "integer", min: 0, max: 43200, unit: "seconds" };
+  assert.equal(check("5m", seconds)!.message, "In seconds");
+  assert.deepEqual(values(seconds, "5m"), ["300"]);
+  assert.deepEqual(values(seconds, "1.5 hours"), ["5400"]);
+  assert.deepEqual(values(seconds, "2d"), ["43200"]);
+  assert.equal(check("50000", seconds)!.message, "0s–12h");
+  const bytes: Rule = { type: "integer", min: 1024, max: 1048576, unit: "bytes" };
+  assert.deepEqual(values(bytes, "256 KiB"), ["262144"]);
+  assert.deepEqual(values(bytes, "1MB"), ["1048576"]);
+  assert.equal(check("10", bytes)!.message, "1 KiB–1 MiB");
+  assert.equal(amount(90, "seconds"), "90s");
+  // Without a unit, letters are just dropped.
+  assert.deepEqual(values({ type: "integer" }, "5m"), ["5"]);
 });
 
 test("taken names get the next free variant", () => {
@@ -178,6 +194,7 @@ test("server validation messages become field rules", () => {
   assert.equal(issues[1].code, "required");
   const enumIssue = parseServerIssues("1 validation error detected: Value 'FOO' at 'shardIteratorType' failed to satisfy constraint: Member must satisfy enum value set: [AFTER_SEQUENCE_NUMBER, LATEST]")[0];
   assert.deepEqual(enumIssue.rule?.enum, ["AFTER_SEQUENCE_NUMBER", "LATEST"]);
+  assert.deepEqual(parseServerIssues("Invalid value for the parameter VisibilityTimeout."), [{ member: "VisibilityTimeout", code: "server", message: "Invalid value" }]);
   assert.equal(parseServerIssues("Value (x y) for parameter QueueName is invalid. Reason: Can only include alphanumeric characters.")[0].member, "QueueName");
   assert.deepEqual(parseServerIssues("Access denied"), []);
 });
@@ -347,4 +364,13 @@ test("directories are made absolute, cleaned and cut to the allowed depth", () =
   assert.deepEqual(values(efs, "/srv//my data/"), ["/srv/my-data"]);
   assert.deepEqual(values(efs, "/.cache"), ["/cache"]);
   assert.deepEqual(values(efs, "/a/b/c/d/e"), ["/a/b/c/d"]);
+});
+
+test("hierarchical names are tidied, also after dropping a reserved prefix", () => {
+  // Parameter Store's names: a/b needs a leading slash; /aws and /ssm are reserved.
+  const rule: Rule = { pattern: "^(?:[A-Za-z0-9_.-]+|(?:[/][A-Za-z0-9_.-]+){1,15})$", reserved: ["/aws", "/ssm", "aws", "ssm"] };
+  assert.deepEqual(values(rule, "app/prod/db"), ["/app/prod/db"]);
+  assert.deepEqual(values(rule, "/app//prod/db host/"), ["/app/prod/db-host"]);
+  assert.equal(check("/aws/app/db host", rule)?.code, "reserved");
+  assert.deepEqual(values(rule, "/aws/app/db host"), ["/app/db-host"]);
 });

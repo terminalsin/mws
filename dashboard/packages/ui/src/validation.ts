@@ -19,6 +19,8 @@
 // Pure functions only: this module is shared by server actions and the
 // browser.
 
+import { CERT_FORMATS } from "./certs.ts";
+
 /** A member's constraints, as generated from the model or written by hand. */
 export interface Rule {
   type?:
@@ -44,6 +46,9 @@ export interface Rule {
   enum?: string[];
   sensitive?: boolean;
   default?: string | number | boolean;
+  /** What a number counts, so "12h" or "256 KiB" convert to it and ranges
+   * read as durations or sizes. */
+  unit?: Unit;
   /** A console-side format with its own checks and repairs. */
   format?: Format;
   /** For `format: "arn"`: the ARN a bare name expands to, with `{}` where
@@ -74,8 +79,14 @@ export interface Rule {
 
 export type Rules = Record<string, Rule>;
 
+export type Unit = "seconds" | "bytes";
+
 export type Format =
   | "json"
+  | "dnsName"
+  | "certificate"
+  | "certificates"
+  | "privateKey"
   | "list"
   | "yaml"
   | "keyvalue"
@@ -231,6 +242,7 @@ const isNumeric = (r: Rule) => r.type === "integer" || r.type === "number" || r.
 
 /** The first problem with `value` under `rule`, with repairs, or null. */
 export function check(value: string, rule: Rule, options: Options = {}): Issue | null {
+  if (isList(rule)) return checkList(value, rule, options);
   const issue = problem(value, rule, options);
   if (!issue) return null;
   return { ...issue, repairs: repairs(value, rule, issue.code) };
@@ -238,7 +250,60 @@ export function check(value: string, rule: Rule, options: Options = {}): Issue |
 
 /** Is `value` acceptable (no issue at all)? */
 export function valid(value: string, rule: Rule): boolean {
-  return problem(value, rule, {}) === null;
+  return isList(rule) ? checkList(value, rule, {}) === null : problem(value, rule, {}) === null;
+}
+
+// ---------------------------------------------------------------------------
+// Lists typed into one control (names one per line or comma separated).
+
+/** A list of scalars: checked item by item. JSON-typed lists are not. */
+const isList = (r: Rule) => (r.type === "list" || r.type === "set") && !!r.item && !r.format && !r.item.fields && r.item.type !== "map";
+
+const LIST_SEP = /([\s,]+)/;
+
+
+/** The value with each item mapped, keeping the person's separators. */
+function mapItems(value: string, f: (item: string) => string): string {
+  return value
+    .split(LIST_SEP)
+    .map((t, i) => (i % 2 === 0 && t !== "" ? f(t) : t))
+    .join("");
+}
+
+const joiner = (value: string) => (value.includes("\n") ? "\n" : value.includes(",") ? ", " : " ");
+
+function checkList(value: string, rule: Rule, options: Options): Issue | null {
+  const items = listItems(value);
+  if (items.length === 0) return rule.required && !options.partial ? { code: "required", message: "Required", repairs: [] } : null;
+  const bad = items.flatMap((item) => {
+    const issue = check(item, rule.item!);
+    return issue ? [{ item, issue }] : [];
+  });
+  if (bad.length > 0) {
+    const [first] = bad;
+    const more = bad.length > 1 ? ` (+${bad.length - 1} more)` : "";
+    const out: Repair[] = [];
+    const offer = (r: Repair) => {
+      if (r.value !== value && !out.some((o) => o.value === r.value) && valid(r.value, rule)) out.push(r);
+    };
+    // Every bad item replaced by its first repair, then the first one's
+    // alternatives when it is the only problem.
+    const fixes = new Map(bad.map((b) => [b.item, b.issue.repairs[0]?.value]));
+    if (bad.every((b) => b.issue.repairs.length > 0)) {
+      offer({ value: mapItems(value, (t) => fixes.get(t) ?? t), label: bad.length > 1 ? `Fix ${bad.length} values` : first.issue.repairs[0].label, kind: first.issue.repairs[0].kind });
+    }
+    if (bad.length === 1) for (const r of first.issue.repairs.slice(1)) offer({ ...r, value: mapItems(value, (t) => (t === first.item ? r.value : t)) });
+    const kept = items.filter((t) => !fixes.has(t));
+    if (kept.length > 0) offer({ value: kept.join(joiner(value)), label: bad.length > 1 ? `Remove ${bad.length} values` : `Remove ${first.item}`, kind: "fix" });
+    return { code: first.issue.code, message: `${first.item}: ${first.issue.message}${more}`, repairs: out.slice(0, MAX_REPAIRS) };
+  }
+  const { minLength: min, maxLength: max } = rule;
+  if (max !== undefined && items.length > max) {
+    const kept = items.slice(0, max).join(joiner(value));
+    return { code: "tooLong", message: `${items.length - max} over the limit of ${max}`, repairs: [{ value: kept, label: `Keep the first ${max}`, kind: "fix" }] };
+  }
+  if (min !== undefined && items.length < min) return { code: "tooShort", message: `At least ${min}`, repairs: [] };
+  return null;
 }
 
 function problem(value: string, rule: Rule, options: Options): Omit<Issue, "repairs"> | null {
@@ -257,12 +322,13 @@ function problem(value: string, rule: Rule, options: Options): Omit<Issue, "repa
       const n = Number(value);
       const integer = rule.type === "integer" || rule.format === "port";
       if (!/^-?(\d+\.?\d*|\.\d+)(e[-+]?\d+)?$/i.test(value.trim()) || Number.isNaN(n))
-        return { code: "type", message: integer ? "Whole number" : "Number" };
+        return { code: "type", message: rule.unit && inUnit(value, rule.unit) !== null ? `In ${rule.unit}` : integer ? "Whole number" : "Number" };
       if (integer && !Number.isInteger(n)) return { code: "type", message: "Whole number" };
       const min = rule.min ?? (rule.format === "port" ? 0 : undefined);
       const max = rule.max ?? (rule.format === "port" ? 65535 : undefined);
-      if (min !== undefined && n < min) return { code: "range", message: max !== undefined ? `${min}–${max}` : `At least ${min}` };
-      if (max !== undefined && n > max) return { code: "range", message: min !== undefined ? `${min}–${max}` : `At most ${max}` };
+      const [lo, hi] = [min, max].map((v) => (v === undefined ? "" : amount(v, rule.unit)));
+      if (min !== undefined && n < min) return { code: "range", message: max !== undefined ? `${lo}–${hi}` : `At least ${lo}` };
+      if (max !== undefined && n > max) return { code: "range", message: min !== undefined ? `${lo}–${hi}` : `At most ${hi}` };
     }
   }
   const len = length(value);
@@ -306,7 +372,8 @@ export function repairs(value: string, rule: Rule, code: IssueCode): Repair[] {
       break;
     case "reserved": {
       const prefix = rule.reserved!.filter((p) => value.startsWith(p)).sort((a, b) => b.length - a.length)[0];
-      offer({ value: value.slice(prefix.length), label: `Drop ${prefix}`, kind: "fix" });
+      const rest = value.slice(prefix.length);
+      offer({ value: valid(rest, rule) ? rest : (reshape(rest, rule)[0]?.value ?? rest), label: `Drop ${prefix}`, kind: "fix" });
       offer(fresh(rule));
       break;
     }
@@ -422,6 +489,11 @@ function reshape(value: string, rule: Rule): Repair[] {
       if (i > 0) push(label, chars.slice(i).join(""));
     }
   }
+  // Hierarchical names (/app/prod/db-host): a missing leading slash, doubled
+  // or trailing ones.
+  if (allowed?.test("/")) {
+    for (const v of [...seen]) push(v.startsWith("/") ? "Tidy the slashes" : "Start with /", "/" + v.split("/").filter(Boolean).join("/"));
+  }
   return out;
 }
 
@@ -493,8 +565,45 @@ function literalEnds(pattern: string | undefined): { prefix?: string; suffix?: s
   return out;
 }
 
+const UNITS: Record<Unit, [RegExp, number][]> = {
+  seconds: [
+    [/^(?:s|secs?|seconds?)$/, 1],
+    [/^(?:m|mins?|minutes?)$/, 60],
+    [/^(?:h|hrs?|hours?)$/, 3600],
+    [/^(?:d|days?)$/, 86400],
+    [/^(?:w|wks?|weeks?)$/, 604800],
+  ],
+  bytes: [
+    [/^b(?:ytes?)?$/, 1],
+    [/^k(?:i?b)?$/, 1024],
+    [/^m(?:i?b)?$/, 1024 ** 2],
+    [/^g(?:i?b)?$/, 1024 ** 3],
+  ],
+};
+
+/** "12h" in seconds, "256 KiB" in bytes: the value in the rule's unit. */
+export function inUnit(value: string, unit: Unit): number | null {
+  const m = value.trim().toLowerCase().match(/^(\d+(?:\.\d+)?)\s*([a-z]+)$/);
+  const scale = m && UNITS[unit].find(([re]) => re.test(m[2]))?.[1];
+  return m && scale ? Number(m[1]) * scale : null;
+}
+
+/** A number as people read it in its unit: 43200 → "12h", 262144 → "256 KiB". */
+export function amount(n: number, unit?: Unit): string {
+  if (unit === "seconds") {
+    for (const [s, u] of [[604800, "w"], [86400, "d"], [3600, "h"], [60, "m"]] as const) if (n >= s && n % s === 0) return `${n / s}${u}`;
+    return `${n}s`;
+  }
+  if (unit === "bytes") {
+    for (const [s, u] of [[1024 ** 3, "GiB"], [1024 ** 2, "MiB"], [1024, "KiB"]] as const) if (n >= s && n % s === 0) return `${n / s} ${u}`;
+    return `${n} B`;
+  }
+  return String(n);
+}
+
 function numeric(value: string, rule: Rule): Repair | null {
-  const digits = value.replace(/[,_\s]/g, "").match(/-?\d+(\.\d+)?/)?.[0];
+  const converted = rule.unit ? inUnit(value, rule.unit) : null;
+  const digits = converted !== null ? String(converted) : value.replace(/[,_\s]/g, "").match(/-?\d+(\.\d+)?/)?.[0];
   if (digits === undefined) {
     return rule.min !== undefined ? { value: String(rule.min), label: `Use ${rule.min}`, kind: "fix" } : null;
   }
@@ -502,7 +611,7 @@ function numeric(value: string, rule: Rule): Repair | null {
   if (rule.type === "integer" || rule.format === "port") n = Math.round(n);
   const min = rule.min ?? (rule.format === "port" ? 0 : undefined);
   const max = rule.max ?? (rule.format === "port" ? 65535 : undefined);
-  let label = `Use ${n}`;
+  let label = converted !== null ? `${value.trim()} in ${rule.unit}` : `Use ${n}`;
   if (min !== undefined && n < min) [n, label] = [min, `Raise to the minimum, ${min}`];
   if (max !== undefined && n > max) [n, label] = [max, `Lower to the maximum, ${max}`];
   return { value: String(n), label, kind: "fix" };
@@ -646,7 +755,7 @@ function password(rule: Rule): string {
 // ---------------------------------------------------------------------------
 // Formats.
 
-interface FormatSpec {
+export interface FormatSpec {
   check: (value: string, rule: Rule) => string | null;
   repair?: (value: string, rule: Rule) => Repair[];
 }
@@ -711,6 +820,7 @@ const CSR_LABEL = /^(NEW )?CERTIFICATE REQUEST$/;
 const pem = (label: string, body: string) => `-----BEGIN ${label}-----\n${body.replace(/\s+/g, "").match(/.{1,64}/g)?.join("\n") ?? ""}\n-----END ${label}-----`;
 
 export const FORMATS: Record<Format, FormatSpec> = {
+  ...CERT_FORMATS,
   json: {
     check(value) {
       try {
@@ -1423,6 +1533,9 @@ export function parseServerIssues(message: string): FieldIssue[] {
   const missing = message.match(/(?:Missing required (?:parameter|key|field)|The parameter|Parameter) '?([A-Za-z][\w.]*)'? (?:is (?:required|missing)|must be specified)/i) ??
     message.match(/^(?:\w+: )?'?([A-Za-z][\w.]*)'? (?:is required|must be specified|cannot be empty)/);
   if (!param && missing) out.push({ member: missing[1], code: "required", message: "Required" });
+  // "Invalid value for the parameter VisibilityTimeout." (SQS attributes)
+  const attribute = message.match(/^Invalid value for the parameter (\w+)\.?$/);
+  if (attribute) out.push({ member: attribute[1], code: "server", message: "Invalid value" });
   return out;
 }
 
