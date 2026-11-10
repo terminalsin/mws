@@ -8,7 +8,6 @@
 //! terminated, and requests whose instances end close. MWS does not
 //! interrupt Spot Instances.
 
-
 use chrono::{DateTime, Utc};
 use mws_core::{ConditionContext, RequestContext, ServiceError};
 

@@ -27,7 +27,7 @@ impl TargetSink for SqsTarget {
         };
         let mut ctx = inv.ctx.as_service(inv.service_principal, inv.source_account, Some(inv.source_arn));
         ctx.received_at = inv.ctx.received_at;
-        match send_message(&self.0, ctx, inv.target_arn, message).await {
+        match send_message(&self.0, ctx, inv.target_arn, message, None).await {
             Ok(_) => Ok(()),
             Err(e) if e.code.contains("QueueDoesNotExist") || e.code.contains("NonExistentQueue") => {
                 Err(TargetError::permanent(
@@ -54,7 +54,7 @@ impl TargetSink for LambdaTarget {
         let ctx = inv.ctx.as_service(inv.service_principal, inv.source_account, Some(inv.source_arn));
         // Once Lambda accepts the event, the function's own outcome is not
         // a delivery failure.
-        match crate::links::invoke_event(&self.0, ctx, inv.target_arn, inv.payload.as_bytes().to_vec()).await {
+        match crate::links::invoke_event(&self.0, ctx, inv.target_arn, inv.payload.as_bytes().to_vec(), None).await {
             Ok(()) => Ok(()),
             Err(e) if e.code.contains("NotFound") => Err(TargetError::permanent(
                 "ResourceNotFoundException",

@@ -5,7 +5,6 @@
 //! the tasks run like any other service's; the load balancer, certificate
 //! and auto scaling ECS would manage are reported but not created.
 
-
 use mws_core::{RequestContext, ServiceError};
 
 use crate::generated::types as t;

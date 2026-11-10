@@ -753,6 +753,8 @@ fn build_with_store(config: Config, store: Option<Arc<Store>>) -> Mws {
     for s in services {
         gateway = gateway.service(s);
     }
+    // Service-to-service calls queued for retry live in the state too.
+    gateway = gateway.service(client.deliveries_service());
     let gateway = gateway.build();
     Mws {
         gateway,

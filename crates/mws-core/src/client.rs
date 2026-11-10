@@ -20,10 +20,10 @@ use crate::trail::{self, ApiCallObserver, HttpFacts};
 use crate::{Authorizer, Caller, RequestContext, Service, ServiceError};
 
 #[derive(Default)]
-struct Registry {
-    services: HashMap<&'static str, Arc<dyn Service>>,
-    observers: Vec<Arc<dyn ApiCallObserver>>,
-    authorizer: Option<Arc<dyn Authorizer>>,
+pub(crate) struct Registry {
+    pub services: HashMap<&'static str, Arc<dyn Service>>,
+    pub observers: Vec<Arc<dyn ApiCallObserver>>,
+    pub authorizer: Option<Arc<dyn Authorizer>>,
 }
 
 /// Calls any registered service's operations by name. Cheap to clone; all
@@ -31,7 +31,18 @@ struct Registry {
 /// service exists.
 #[derive(Clone, Default)]
 pub struct ServiceClient {
-    registry: Arc<RwLock<Registry>>,
+    pub(crate) registry: Arc<RwLock<Registry>>,
+    pub(crate) outbox: Arc<Outbox>,
+}
+
+/// Calls queued for retry (see [`crate::outbox`]).
+#[derive(Default)]
+pub(crate) struct Outbox {
+    pub deliveries: std::sync::Mutex<Vec<crate::outbox::Delivery>>,
+    /// How far the emulated clock runs ahead, as last seen.
+    pub clock_offset_ms: std::sync::atomic::AtomicI64,
+    pub retrying: std::sync::atomic::AtomicBool,
+    pub endpoint: std::sync::Mutex<Option<String>>,
 }
 
 impl std::fmt::Debug for ServiceClient {
@@ -93,6 +104,11 @@ impl ServiceClient {
             let r = self.registry.read().map_err(|_| ServiceError::internal("service registry poisoned"))?;
             (r.services.get(service).cloned(), r.observers.clone(), r.authorizer.clone())
         };
+        if ctx.endpoint.is_some() {
+            if let Ok(mut e) = self.outbox.endpoint.lock() {
+                e.clone_from(&ctx.endpoint);
+            }
+        }
         let mut ctx = ctx.clone();
         if let (Some(a), Some(_)) = (authorizer, ctx.caller.service_principal()) {
             ctx.authorizer = a;
@@ -122,6 +138,13 @@ impl ServiceClient {
             }
         }
         result
+    }
+}
+
+impl ServiceClient {
+    /// The emulator's URL, as the last call that knew it saw it.
+    pub(crate) fn endpoint(&self) -> Option<String> {
+        self.outbox.endpoint.lock().ok().and_then(|e| e.clone())
     }
 }
 
