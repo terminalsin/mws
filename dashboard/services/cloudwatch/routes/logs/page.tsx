@@ -13,11 +13,7 @@ import {
   Pill,
   Sheet,
 } from "@mws-dashboard/ui";
-import {
-  CreateLogGroup,
-  DescribeLogGroups,
-  PutRetentionPolicy,
-} from "@mws-dashboard/ui/model/logs";
+import { DescribeLogGroups } from "@mws-dashboard/ui/model/logs";
 import { FileSearch, Shield } from "lucide-react";
 import type { Metadata } from "next";
 import Link from "next/link";
@@ -29,7 +25,8 @@ import {
   listGroups,
   sourceIcon,
 } from "../../lib/clients";
-import { RETENTION, retentionLabel } from "../../lib/retention";
+import { GroupFields } from "../../lib/group-fields";
+import { retentionLabel } from "../../lib/retention";
 import { keyOptions } from "../../lib/destinations";
 import { createGroup } from "./actions";
 
@@ -64,47 +61,7 @@ export default async function LogGroups({ searchParams }: Props) {
           submit="Create"
           testId="create-log-group"
         >
-          <Field
-            label="Name"
-            rule={CreateLogGroup.logGroupName}
-            taken={taken}
-            generate={{ prefix: "/app/" }}
-            unique
-          >
-            <input name="name" placeholder="/app/api" autoFocus />
-          </Field>
-          <Field label="Retention" rule={PutRetentionPolicy.retentionInDays}>
-            <select name="retention" defaultValue="0">
-              {RETENTION.map((d) => (
-                <option key={d} value={d}>
-                  {retentionLabel(d)}
-                </option>
-              ))}
-            </select>
-          </Field>
-          <Field
-            label="KMS key ARN"
-            rule={{ ...CreateLogGroup.kmsKeyId, format: "arn" }}
-            known={keys.arns}
-          >
-            <input name="kms" list="create-kms-keys" />
-          </Field>
-          <datalist id="create-kms-keys">
-            {Object.entries(keys.aliases).map(([alias, arn]) => (
-              <option key={alias} value={arn}>
-                {alias}
-              </option>
-            ))}
-          </datalist>
-          <Field label="Tags" rule={{ ...CreateLogGroup.tags, format: "tags" }}>
-            <textarea name="tags" rows={1} placeholder="team=payments" />
-          </Field>
-          <label className="check">
-            <input type="checkbox" name="infrequent" /> Infrequent Access
-          </label>
-          <label className="check">
-            <input type="checkbox" name="protect" /> Deletion protection
-          </label>
+          <GroupFields taken={taken} keyArns={keys.arns} keyAliases={keys.aliases} />
         </ActionForm>
       </Sheet>
     </>

@@ -1,10 +1,11 @@
 import { GetBucketCorsCommand, GetBucketOwnershipControlsCommand, GetBucketPolicyCommand, GetBucketPolicyStatusCommand, GetPublicAccessBlockCommand } from "@aws-sdk/client-s3";
 import { load } from "@mws-dashboard/aws";
 import { ActionForm, CodeBlock, ErrorNotice, Facts, Field, Pill, Section, Sheet, Status, type FormAction } from "@mws-dashboard/ui";
-import { Globe, Pencil, ShieldCheck } from "lucide-react";
+import { FileJson, Globe, Pencil, ShieldCheck, Upload, Users } from "lucide-react";
 
-import { optional, s3 } from "../../../lib/s3";
+import { account, optional, s3 } from "../../../lib/s3";
 import { saveCors, saveOwnership, savePolicy, savePublicAccessBlock } from "../actions";
+import { TemplateForm, type Template } from "../template-form.tsx";
 
 export const BPA_SETTINGS = [
   ["BlockPublicAcls", "Block new public ACLs"],
@@ -33,7 +34,37 @@ export function BpaForm({ action, current, testId }: { action: FormAction; curre
   );
 }
 
-const CORS_TEMPLATE = [{ AllowedMethods: ["GET", "HEAD"], AllowedOrigins: ["*"], AllowedHeaders: ["*"], ExposeHeaders: ["ETag"], MaxAgeSeconds: 3000 }];
+const json = (v: unknown) => JSON.stringify(v, null, 2);
+const ICON = { size: 26, strokeWidth: 1.5, "aria-hidden": true } as const;
+
+/** Bucket policies people usually start from. */
+function policyTemplates(bucket: string, account: string, current: string | undefined): Template[] {
+  const arn = `arn:aws:s3:::${bucket}`;
+  const doc = (Statement: object[]) => json({ Version: "2012-10-17", Statement });
+  return [
+    ...(current ? [{ id: "current", label: "Current", title: "The saved policy", icon: <FileJson {...ICON} />, text: json(JSON.parse(current)) }] : []),
+    { id: "https", label: "HTTPS only", title: "Deny requests that do not use TLS", icon: <ShieldCheck {...ICON} />, text: doc([{ Sid: "DenyInsecureTransport", Effect: "Deny", Principal: "*", Action: "s3:*", Resource: [arn, `${arn}/*`], Condition: { Bool: { "aws:SecureTransport": "false" } } }]) },
+    { id: "public-read", label: "Public read", title: "Anyone may read objects (Block Public Access must allow it)", icon: <Globe {...ICON} />, text: doc([{ Sid: "PublicRead", Effect: "Allow", Principal: "*", Action: "s3:GetObject", Resource: `${arn}/*` }]) },
+    {
+      id: "cloudfront",
+      label: "CloudFront",
+      title: "Let a CloudFront distribution read through origin access control",
+      icon: "service/AmazonCloudFront",
+      text: doc([{ Sid: "AllowCloudFrontServicePrincipal", Effect: "Allow", Principal: { Service: "cloudfront.amazonaws.com" }, Action: "s3:GetObject", Resource: `${arn}/*`, Condition: { StringEquals: { "AWS:SourceArn": `arn:aws:cloudfront::${account}:distribution/EDFDVBD6EXAMPLE` } } }]),
+    },
+    { id: "logs", label: "Access logs", title: "Let S3 server access logging write here", icon: "resource/AmazonCloudWatchLogs", text: doc([{ Sid: "S3ServerAccessLogs", Effect: "Allow", Principal: { Service: "logging.s3.amazonaws.com" }, Action: "s3:PutObject", Resource: `${arn}/*`, Condition: { StringEquals: { "aws:SourceAccount": account } } }]) },
+    { id: "account", label: "Other account", title: "Let another account list and read", icon: <Users {...ICON} />, text: doc([{ Sid: "CrossAccountRead", Effect: "Allow", Principal: { AWS: "arn:aws:iam::111122223333:root" }, Action: ["s3:GetObject", "s3:ListBucket"], Resource: [arn, `${arn}/*`] }]) },
+  ];
+}
+
+/** CORS configurations people usually start from. */
+function corsTemplates(current: object[]): Template[] {
+  return [
+    ...(current.length ? [{ id: "current", label: "Current", title: "The saved rules", icon: <FileJson {...ICON} />, text: json(current) }] : []),
+    { id: "read", label: "Read anywhere", title: "GET and HEAD from any origin", icon: <Globe {...ICON} />, text: json([{ AllowedMethods: ["GET", "HEAD"], AllowedOrigins: ["*"], AllowedHeaders: ["*"], ExposeHeaders: ["ETag"], MaxAgeSeconds: 3000 }]) },
+    { id: "upload", label: "Browser uploads", title: "PUT and POST from your web app (presigned uploads)", icon: <Upload {...ICON} />, text: json([{ AllowedMethods: ["GET", "PUT", "POST", "HEAD"], AllowedOrigins: ["http://localhost:3000"], AllowedHeaders: ["*"], ExposeHeaders: ["ETag"], MaxAgeSeconds: 3000 }]) },
+  ];
+}
 
 export async function Permissions({ bucket }: { bucket: string }) {
   const client = await s3();
@@ -53,6 +84,7 @@ export async function Permissions({ bucket }: { bucket: string }) {
   const isPublic = status.ok && status.value?.PolicyStatus?.IsPublic;
   const owner = ownership.ok ? ownership.value?.OwnershipControls?.Rules?.[0]?.ObjectOwnership : undefined;
   const rules = cors.ok ? (cors.value?.CORSRules ?? []) : [];
+  const me = await account().catch(() => "123456789012");
   return (
     <>
       <Section
@@ -74,11 +106,7 @@ export async function Permissions({ bucket }: { bucket: string }) {
         title="Bucket policy"
         actions={
           <Sheet title="Bucket policy" label="Edit policy" icon={<Pencil size={15} aria-hidden />} testId="edit-policy">
-            <ActionForm action={savePolicy.bind(null, bucket)} submit="Save" testId="edit-policy">
-              <Field label="Policy JSON" hint="Empty removes the policy" format="policy">
-                <textarea name="policy" rows={14} defaultValue={policy?.Policy ? JSON.stringify(JSON.parse(policy.Policy), null, 2) : ""} />
-              </Field>
-            </ActionForm>
+            <TemplateForm action={savePolicy.bind(null, bucket)} testId="edit-policy" name="policy" label="Policy JSON" hint="Empty removes the policy" format="policy" templates={policyTemplates(bucket, me, policy?.Policy)} />
           </Sheet>
         }
       >
@@ -118,11 +146,7 @@ export async function Permissions({ bucket }: { bucket: string }) {
         count={rules.length}
         actions={
           <Sheet title="CORS" label="Edit CORS" icon={<Pencil size={15} aria-hidden />} testId="edit-cors">
-            <ActionForm action={saveCors.bind(null, bucket)} submit="Save" testId="edit-cors">
-              <Field label="CORS rules (JSON)" format="json" hint="Empty removes the configuration">
-                <textarea name="cors" rows={14} defaultValue={JSON.stringify(rules.length ? rules : CORS_TEMPLATE, null, 2)} />
-              </Field>
-            </ActionForm>
+            <TemplateForm action={saveCors.bind(null, bucket)} testId="edit-cors" name="cors" label="CORS rules (JSON)" hint="Empty removes the configuration" format="json" templates={corsTemplates(rules)} />
           </Sheet>
         }
       >

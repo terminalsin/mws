@@ -8,7 +8,7 @@ import {
   type ImageDetail,
 } from "@aws-sdk/client-ecr";
 import { ago, all, bytes, load, shortName } from "@mws-dashboard/aws";
-import { ActionForm, AwsIcon, CodeBlock, Empty, ErrorNotice, Facts, Field, List, More, Page, Pill, Section, Segments, Sheet, Specs, Status, Tags } from "@mws-dashboard/ui";
+import { ActionForm, AwsIcon, CodeBlock, CopyValue, Empty, ErrorNotice, Facts, Field, List, More, Page, Pill, Section, Segments, Sheet, Specs, Status, Tags } from "@mws-dashboard/ui";
 import { LiveRefresh } from "@mws-dashboard/ui/client";
 import { PutImageTagMutability } from "@mws-dashboard/ui/model/ecr";
 import { ruleAt } from "@mws-dashboard/ui/validation";
@@ -18,11 +18,11 @@ import Link from "next/link";
 
 import { ICONS, SEVERITY_TONE, ecr, imageHref, links, pushCommands, repoHref } from "../../../lib/clients";
 import { deleteImage, deleteRepository, previewLifecycle, saveLifecyclePolicy, saveRepositoryPolicy, saveSettings, saveTags } from "../actions";
+import { LifecycleForm } from "./lifecycle-form.tsx";
 
 export const metadata: Metadata = { title: "Repository" };
 
 type Props = { searchParams: Promise<{ name?: string; tab?: string; token?: string }> };
-
 
 const TABS = [
   ["images", "Images"],
@@ -32,17 +32,6 @@ const TABS = [
 ] as const;
 
 const PAGE = 100;
-
-const LIFECYCLE_TEMPLATE = JSON.stringify(
-  {
-    rules: [
-      { rulePriority: 1, description: "Expire untagged images after 14 days", selection: { tagStatus: "untagged", countType: "sinceImagePushed", countUnit: "days", countNumber: 14 }, action: { type: "expire" } },
-      { rulePriority: 2, description: "Keep the last 30 images", selection: { tagStatus: "any", countType: "imageCountMoreThan", countNumber: 30 }, action: { type: "expire" } },
-    ],
-  },
-  null,
-  2,
-);
 
 function ScanPill({ i }: { i: ImageDetail }) {
   const counts: Record<string, number | undefined> = i.imageScanFindingsSummary?.findingSeverityCounts ?? {};
@@ -254,18 +243,10 @@ async function Lifecycle({ name, text }: { name: string; text: Awaited<ReturnTyp
         actions={
           <>
             <Sheet title="Lifecycle policy" label="Edit lifecycle policy" icon={<Pencil size={15} aria-hidden />} testId="edit-lifecycle-policy">
-              <ActionForm action={saveLifecyclePolicy.bind(null, name)} submit="Save" testId="edit-lifecycle-policy">
-                <Field label="Policy JSON" format="json" hint="Empty removes the policy">
-                  <textarea name="policy" rows={16} defaultValue={current ? JSON.stringify(JSON.parse(current), null, 2) : LIFECYCLE_TEMPLATE} />
-                </Field>
-              </ActionForm>
+              <LifecycleForm action={saveLifecyclePolicy.bind(null, name)} current={current} submit="Save" testId="edit-lifecycle-policy" hint="Empty removes the policy" />
             </Sheet>
             <Sheet title="Preview lifecycle policy" label="Preview lifecycle policy" icon={<Eye size={15} aria-hidden />} testId="preview-lifecycle">
-              <ActionForm action={previewLifecycle.bind(null, name)} submit="Run preview" testId="preview-lifecycle">
-                <Field label="Policy JSON" format="json" hint="Empty previews the saved policy">
-                  <textarea name="policy" rows={16} defaultValue={current ? JSON.stringify(JSON.parse(current), null, 2) : LIFECYCLE_TEMPLATE} />
-                </Field>
-              </ActionForm>
+              <LifecycleForm action={previewLifecycle.bind(null, name)} current={current} submit="Run preview" testId="preview-lifecycle" hint="Empty previews the saved policy" />
             </Sheet>
           </>
         }
@@ -321,7 +302,7 @@ async function RepoTags({ arn }: { arn: string }) {
       }
     >
       {!tags.ok ? <ErrorNotice error={tags.error} /> : tags.value.length ? <Tags tags={tags.value} /> : <span className="muted">None</span>}
-      <Facts items={[["ARN", <code>{arn}</code>]]} />
+      <Facts items={[["ARN", <CopyValue value={arn} label="Copy ARN" />]]} />
     </Section>
   );
 }

@@ -294,7 +294,10 @@ test("EC2: the launch form sets the subnet, groups, IAM profile and root volume"
   const { form, input } = await openSheet(page, "launch-instance");
   await input("name").fill(name);
   await input("image").fill(image.ImageId!);
-  await input("type").fill("t3.nano");
+  await form.getByTestId("launch-size-t3.nano").click();
+  await expect(input("type")).toHaveValue("t3.nano");
+  // Network, IAM and storage wait under More.
+  await form.locator(".more-fields > summary").click();
   await input("subnet").selectOption(subnet.SubnetId!);
   await input("publicIp").selectOption("disable");
   await form.getByTestId("launch-groups").getByLabel(group).check();

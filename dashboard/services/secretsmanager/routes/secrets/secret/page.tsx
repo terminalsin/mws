@@ -2,6 +2,7 @@ import { DescribeSecretCommand, GetResourcePolicyCommand, GetSecretValueCommand,
 import { ago, all, load, when } from "@mws-dashboard/aws";
 import { ActionForm, AwsIcon, CodeBlock, Empty, ErrorNotice, Facts, Field, List, Page, Pill, Section, Segments, Sheet, Status, Tags, type Rule } from "@mws-dashboard/ui";
 import { LiveRefresh } from "@mws-dashboard/ui/client";
+import { MoreFields } from "@mws-dashboard/ui/presets";
 import { DeleteSecret, PutResourcePolicy, PutSecretValue, ReplicateSecretToRegions, RotateSecret, UpdateSecret, UpdateSecretVersionStage } from "@mws-dashboard/ui/model/secretsmanager";
 import { ArrowUpFromLine, BadgeCheck, CircleSlash, Eye, EyeOff, Globe, Pencil, Plus, RotateCw, Settings2, ShieldCheck, Tag, Trash2, Undo2, X } from "lucide-react";
 import type { Metadata } from "next";
@@ -9,6 +10,7 @@ import Link from "next/link";
 
 import { ICONS, secrets } from "../../../lib/clients";
 import { functionArns, kmsKeys } from "../../../lib/known";
+import { secretLogo } from "../../../lib/presets";
 import {
   addReplicas,
   addStage,
@@ -101,15 +103,17 @@ export default async function Secret({ searchParams }: Props) {
         </Field>
         <div className="form-row">
           <Field label="Every (days)" rule={DAYS} member="RotationRules.AutomaticallyAfterDays">
-            <input name="days" type="number" defaultValue={s.RotationRules?.ScheduleExpression ? undefined : s.RotationRules?.AutomaticallyAfterDays} />
+            <input name="days" type="number" defaultValue={s.RotationRules?.ScheduleExpression ? undefined : s.RotationRules?.AutomaticallyAfterDays} placeholder="30" />
           </Field>
           <Field label="Or schedule expression" rule={EXPRESSION} member="RotationRules.ScheduleExpression">
             <input name="expression" defaultValue={s.RotationRules?.ScheduleExpression} placeholder="rate(30 days)" />
           </Field>
         </div>
-        <Field label="Window duration" rule={DURATION} member="RotationRules.Duration">
-          <input name="duration" defaultValue={s.RotationRules?.Duration} placeholder="3h" />
-        </Field>
+        <MoreFields expanded={!!s.RotationRules?.Duration}>
+          <Field label="Window duration" rule={DURATION} member="RotationRules.Duration">
+            <input name="duration" defaultValue={s.RotationRules?.Duration} placeholder="3h" />
+          </Field>
+        </MoreFields>
         <label className="check">
           <input type="checkbox" name="immediately" defaultChecked={!s.RotationEnabled} /> Rotate immediately
         </label>
@@ -383,7 +387,7 @@ export default async function Secret({ searchParams }: Props) {
   }
 
   return (
-    <Page title={s.Name} icon={ICONS.secrets} back={back} subtitle={s.ARN} actions={actions}>
+    <Page title={s.Name} icon={secretLogo(s.Name ?? "") ?? ICONS.secrets} back={back} subtitle={s.ARN} actions={actions}>
       {rotating && <LiveRefresh />}
       <Facts
         items={[

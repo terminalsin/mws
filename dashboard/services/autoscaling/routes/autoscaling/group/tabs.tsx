@@ -79,7 +79,6 @@ import {
   startRefresh,
   terminateInstance,
 } from "../group-actions";
-import { PutScalingPolicy } from "@mws-dashboard/ui/model/autoscaling";
 
 export interface Ctx {
   g: AutoScalingGroup;
@@ -153,10 +152,7 @@ export const scalingTab: Tab = async ({ g, name }) => {
           actions={
             <Sheet title="Create dynamic scaling policy" label="Create dynamic scaling policy" icon={<Plus size={15} />} testId="add-policy">
               <ActionForm action={addPolicy.bind(null, name)} submit="Create" testId="add-policy">
-                <Field label="Policy name" rule={PutScalingPolicy.PolicyName} generate={{ prefix: "target-tracking" }}>
-                  <input name="policy" required autoFocus defaultValue="target-tracking" />
-                </Field>
-                <PolicyFields />
+                <PolicyFields taken={policies.ok ? policies.value.map((p) => p.PolicyName!) : []} />
               </ActionForm>
             </Sheet>
           }

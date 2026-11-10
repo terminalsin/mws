@@ -19,6 +19,7 @@ import Link from "next/link";
 
 import { ICONS, iam, policyDocument, principalIcon, trust } from "../../lib/clients";
 import { allGroups, attachedPolicies, groupMembers, groupsForUser, inlinePolicies, instanceProfilesForRole, policies, serviceLinked, type Kind } from "../../lib/iam";
+import { AttachFields, PolicyFields } from "../../lib/forms.tsx";
 import { RULES } from "../../lib/rules";
 import {
   addMember,
@@ -44,8 +45,6 @@ import {
   updateRole,
   updateTrust,
 } from "./actions";
-
-const EXAMPLE = JSON.stringify({ Version: "2012-10-17", Statement: [{ Effect: "Allow", Action: "s3:ListBucket", Resource: "*" }] }, null, 2);
 
 const missing = (e: unknown) => (e as { name?: string }).name === "NoSuchEntityException";
 
@@ -174,19 +173,10 @@ export async function Principal({ kind, name, tab, deletion }: { kind: Kind; nam
     key: p.PolicyArn!,
     icon: <AwsIcon icon={ICONS.policy} size={22} />,
     title: p.PolicyName,
-    subtitle: p.PolicyArn!.includes(":aws:policy/") ? "AWS managed" : "Customer managed",
+    meta: p.PolicyArn!.includes(":aws:policy/") ? <Pill>AWS managed</Pill> : undefined,
     href: `/iam/policy?arn=${encodeURIComponent(p.PolicyArn!)}`,
     actions: !linked && <ActionForm action={detachPolicy.bind(null, kind, name, p.PolicyArn!)} submit={`Detach ${p.PolicyName}`} icon={<Unlink size={15} />} />,
   });
-  const policyPicker = (
-    <datalist id="policies">
-      {attachable.map((p) => (
-        <option key={p.Arn} value={p.Arn}>
-          {p.PolicyName}
-        </option>
-      ))}
-    </datalist>
-  );
 
   // What a delete takes with it, said in the confirmation (AWS's console
   // removes these first).
@@ -262,20 +252,12 @@ export async function Principal({ kind, name, tab, deletion }: { kind: Kind; nam
             <>
               <Sheet title="Attach policy" label="Attach policy" icon={<Link2 size={16} />} testId="attach-policy">
                 <ActionForm action={attachPolicy.bind(null, kind, name)} submit="Attach" testId="attach-policy">
-                  <Field label="Policy" rule={RULES.policyArn} known={attachable.map((p) => p.Arn!)}>
-                    <input name="policyArn" list="policies" required placeholder="arn:aws:iam::aws:policy/ReadOnlyAccess" />
-                  </Field>
-                  {policyPicker}
+                  <AttachFields known={attachable.map((p) => ({ arn: p.Arn!, name: p.PolicyName! }))} attached={[...attachedArns].filter((a): a is string => !!a)} />
                 </ActionForm>
               </Sheet>
               <Sheet title="Inline policy" label="Create inline policy" icon={<Plus size={16} />} testId="inline-policy">
                 <ActionForm action={putInlinePolicy.bind(null, kind, name)} submit="Create" testId="inline-policy">
-                  <Field label="Name" rule={RULES.inlinePolicyName} taken={d.inline} unique>
-                    <input name="policyName" required />
-                  </Field>
-                  <Field label="Document" rule={RULES.document}>
-                    <textarea name="document" rows={12} required aria-label="Policy document" defaultValue={EXAMPLE} />
-                  </Field>
+                  <PolicyFields taken={d.inline} inline />
                 </ActionForm>
               </Sheet>
             </>

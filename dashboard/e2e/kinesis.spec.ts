@@ -29,11 +29,7 @@ test("Kinesis: stream names and reshard targets are repaired in place", async ({
 }) => {
   const name = unique("dash-shards");
   await page.goto("/kinesis");
-  await submit(page, "create-stream", {
-    name,
-    mode: "PROVISIONED",
-    shards: "1",
-  });
+  await createProvisioned(page, name);
   await expect(page.getByRole("heading", { level: 1, name })).toBeVisible();
   await expect(async () => {
     await page.reload();
@@ -85,13 +81,32 @@ test("Kinesis: stream names and reshard targets are repaired in place", async ({
   await expect(input).toHaveValue(`${name}-2`);
 });
 
+/** Create a one-shard provisioned stream: the capacity is a tile. */
+async function createProvisioned(
+  page: import("@playwright/test").Page,
+  name: string,
+) {
+  const form = page
+    .locator("dialog[open]")
+    .getByTestId("create-stream")
+    .and(page.locator("form"));
+  await expect(async () => {
+    if (!(await form.isVisible()))
+      await page.getByTestId("create-stream-open").first().click();
+    await expect(form).toBeVisible({ timeout: 1000 });
+  }).toPass();
+  await form.getByTestId("capacity-provisioned").click();
+  await submit(page, "create-stream", { name, shards: "1" });
+}
+
 async function activeStream(
   page: import("@playwright/test").Page,
   name: string,
   fields: Record<string, string> = {},
 ) {
   await page.goto("/kinesis");
-  await submit(page, "create-stream", { name, ...fields });
+  if (fields.mode === "PROVISIONED") await createProvisioned(page, name);
+  else await submit(page, "create-stream", { name, ...fields });
   await expect(page.getByRole("heading", { level: 1, name })).toBeVisible();
   await expect(async () => {
     await page.reload();

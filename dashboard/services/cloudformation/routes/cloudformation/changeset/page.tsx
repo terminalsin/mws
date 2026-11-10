@@ -106,7 +106,7 @@ export default async function ChangeSet({ searchParams }: Props) {
     <Page
       title={name}
       back={back}
-      subtitle={cs.ChangeSetId}
+      subtitle={cs.Description}
       actions={
         <>
           {executable && (
@@ -129,7 +129,6 @@ export default async function ChangeSet({ searchParams }: Props) {
         ]}
       />
       {cs.StatusReason && <div className={`banner${cs.Status === "FAILED" ? " error" : ""}`}>{cs.StatusReason}</div>}
-      {cs.Description && <p className="muted">{cs.Description}</p>}
       <Segments
         items={[
           { label: "Changes", href: base, active: tab === "changes", count: changes.length || undefined },

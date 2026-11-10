@@ -9,7 +9,7 @@ import {
   ListResourceTagsCommand,
 } from "@aws-sdk/client-kms";
 import { ago, all, load, when } from "@mws-dashboard/aws";
-import { ActionForm, CodeBlock, Empty, ErrorNotice, Facts, Field, List, Page, Pill, Section, Segments, Sheet, Status, Tags } from "@mws-dashboard/ui";
+import { ActionForm, CodeBlock, Empty, ErrorNotice, Facts, Field, List, Page, Pill, Section, Segments, Sheet, Specs, Status, Tags } from "@mws-dashboard/ui";
 import { LiveRefresh } from "@mws-dashboard/ui/client";
 import { ArrowRightLeft, CalendarX, Crown, Download, Globe, KeyRound, Pencil, Play, Plus, Power, RotateCw, Tag, Trash2, Undo2, Wand2, XCircle } from "lucide-react";
 import type { Metadata } from "next";
@@ -47,7 +47,8 @@ export const metadata: Metadata = { title: "Key" };
 const REGIONS = ["us-east-1", "us-east-2", "us-west-1", "us-west-2", "eu-west-1", "eu-west-2", "eu-central-1", "ap-southeast-1", "ap-southeast-2", "ap-northeast-1"];
 
 export default async function Key({ searchParams }: Props) {
-  const { id = "", tab = "policy" } = await searchParams;
+  const { id = "", tab: rawTab } = await searchParams;
+  const tab = rawTab ?? "policy";
   const back = { href: "/kms", label: "Keys" };
   const data = await load(async () => {
     const client = await kms();
@@ -136,7 +137,9 @@ export default async function Key({ searchParams }: Props) {
     customer && { id: "tags", label: "Tags", count: tags.length || undefined },
     meta.MultiRegion && { id: "regionality", label: "Regionality" },
   ].filter((t): t is { id: string; label: string; count?: number } => !!t);
-  const current = tabs.some((t) => t.id === tab) ? tab : "policy";
+  // A key waiting for its material opens where it is imported.
+  const asked = tab === "policy" && state === "PendingImport" && !rawTab ? "material" : tab;
+  const current = tabs.some((t) => t.id === asked) ? asked : "policy";
 
   let body: React.ReactNode = null;
   if (current === "policy") {
@@ -467,20 +470,20 @@ export default async function Key({ searchParams }: Props) {
   return (
     <Page title={title} icon={ICONS.key} back={back} subtitle={meta.Arn} actions={actions}>
       {MOVING.has(state) && <LiveRefresh />}
-      <Facts
+      <Specs
         items={[
-          ["State", state === "PendingDeletion" ? <Pill tone="bad">deletes {ago(meta.DeletionDate)}</Pill> : <Status tone={STATE_TONE[state] ?? "neutral"}>{state}</Status>],
-          ["Usage", USAGE.find((u) => u.id === usage)?.title ?? usage],
-          meta.KeySpec !== "SYMMETRIC_DEFAULT" && ["Spec", meta.KeySpec],
-          meta.Description && ["Description", meta.Description],
-          rotation?.KeyRotationEnabled && ["Rotation", `every ${rotation.RotationPeriodInDays ?? 365} days`],
-          meta.MultiRegion && ["Multi-Region", mr?.MultiRegionKeyType === "REPLICA" ? `replica of ${mr.PrimaryKey?.Region}` : `primary · ${mr?.ReplicaKeys?.length ?? 0} replicas`],
-          meta.Origin !== "AWS_KMS" && ["Origin", meta.Origin],
-          meta.ValidTo && ["Material expires", when(meta.ValidTo)],
-          ["Created", ago(meta.CreationDate)],
-          lastUsed?.KeyLastUsage?.Timestamp && ["Last used", `${lastUsed.KeyLastUsage.Operation} ${ago(lastUsed.KeyLastUsage.Timestamp)}`],
+          { label: "State", icon: <Power size={15} />, value: state === "PendingDeletion" ? <Pill tone="bad">deletes {ago(meta.DeletionDate)}</Pill> : <Status tone={STATE_TONE[state] ?? "neutral"}>{state === "PendingImport" ? "Pending import" : state}</Status> },
+          { label: "Usage", icon: <KeyRound size={15} />, value: USAGE.find((u) => u.id === usage)?.title ?? usage },
+          meta.KeySpec !== "SYMMETRIC_DEFAULT" && { label: "Spec", icon: <Wand2 size={15} />, value: meta.KeySpec },
+          rotation?.KeyRotationEnabled && { label: "Rotation", icon: <RotateCw size={15} />, value: `every ${rotation.RotationPeriodInDays ?? 365} days` },
+          meta.MultiRegion && { label: "Multi-Region", icon: <Globe size={15} />, value: mr?.MultiRegionKeyType === "REPLICA" ? `replica of ${mr.PrimaryKey?.Region}` : `primary · ${mr?.ReplicaKeys?.length ?? 0} replicas` },
+          meta.Origin !== "AWS_KMS" && { label: "Origin", icon: <Download size={15} />, value: meta.Origin === "EXTERNAL" ? "Imported" : meta.Origin },
+          meta.ValidTo && { label: "Material expires", icon: <CalendarX size={15} />, value: when(meta.ValidTo) },
+          { label: "Created", icon: <Plus size={15} />, value: ago(meta.CreationDate) },
+          lastUsed?.KeyLastUsage?.Timestamp && { label: "Last used", icon: <Play size={15} />, value: `${lastUsed.KeyLastUsage.Operation} ${ago(lastUsed.KeyLastUsage.Timestamp)}` },
         ]}
       />
+      {meta.Description && <p className="muted">{meta.Description}</p>}
 
       {usable && (
         <Section title={verb} icon={<Wand2 size={16} />}>

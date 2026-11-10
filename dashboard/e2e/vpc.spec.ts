@@ -36,7 +36,12 @@ const opened = (page: Page) => {
 test("VPC: create a VPC with public and private subnets and see its resource map", async ({ page }) => {
   const name = unique("dash-vpc");
   await page.goto("/vpc");
-  await submit(page, "create-vpc", { name, cidr: "10.42.0.0/16", layout: "public-private" });
+  // "VPC and more" is the tile the form opens on.
+  await expect(async () => {
+    if ((await page.locator("dialog[open]").count()) === 0) await page.getByTestId("create-vpc-open").first().click();
+    await expect(page.locator("dialog[open]").getByTestId("vpc-layout-public-private")).toHaveAttribute("aria-checked", "true", { timeout: 1000 });
+  }).toPass();
+  await submit(page, "create-vpc", { name, cidr: "10.42.0.0/16" });
   await expect(page.getByRole("heading", { level: 1, name })).toBeVisible();
   opened(page);
   const map = page.getByLabel("Resource map");
@@ -144,7 +149,10 @@ async function openSheet(page: Page, testId: string) {
 
 async function makeVpc(page: Page, name: string, layout = "public-private") {
   await page.goto("/vpc");
-  await submit(page, "create-vpc", { name, layout });
+  // What it makes is a tile ("VPC and more" by default).
+  const form = await openSheet(page, "create-vpc");
+  await form.getByTestId(`vpc-layout-${layout}`).click();
+  await submit(page, "create-vpc", { name });
   // "VPC and more" makes a dozen resources before the page opens.
   await expect(page.getByRole("heading", { level: 1, name })).toBeVisible({ timeout: 60_000 });
   return opened(page);

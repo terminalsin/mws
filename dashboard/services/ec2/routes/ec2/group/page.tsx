@@ -1,5 +1,5 @@
 import { load } from "@mws-dashboard/aws";
-import { ActionForm, AwsIcon, Empty, ErrorNotice, Facts, List, Page, Section, Segments, Sheet, Specs, Tags } from "@mws-dashboard/ui";
+import { ActionForm, AwsIcon, Empty, ErrorNotice, Facts, List, Page, Section, Segments, Sheet, Specs, Tags, CopyValue } from "@mws-dashboard/ui";
 import { ArrowDownLeft, ArrowUpRight, Network, Plus, Server, ShieldAlert, Trash2, X } from "lucide-react";
 import type { Metadata } from "next";
 import Link from "next/link";
@@ -57,7 +57,7 @@ export default async function GroupPage({ searchParams }: Props) {
       title={g.GroupName}
       icon={ICONS.sg}
       back={back}
-      subtitle={id}
+      subtitle={<CopyValue value={id} />}
       actions={
         g.GroupName !== "default" && (
           <ActionForm

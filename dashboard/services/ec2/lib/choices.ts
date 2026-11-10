@@ -5,8 +5,9 @@ import { load } from "@mws-dashboard/aws";
 import { nameTag } from "./clients";
 import { launchableImages, listGroups, listInstanceProfiles, listKeyPairs, listSubnets, listTemplates, listVpcs } from "./ec2";
 import type { LaunchChoices } from "./launch-fields";
+import { SIZES } from "./os";
 
-const TYPES = ["t3.nano", "t3.micro", "t3.small", "t3.medium", "t3.large", "t4g.micro", "t4g.small", "m7i.large", "m7g.large", "c7g.large", "r7g.large"];
+const TYPES = [...SIZES.map((s) => s.type), "t4g.micro", "t4g.small", "m7g.large", "c7g.large", "r7g.large"].filter((t, n, a) => a.indexOf(t) === n);
 
 const value = <T,>(r: { ok: true; value: T } | { ok: false }, fallback: T) => (r.ok ? r.value : fallback);
 
@@ -34,6 +35,8 @@ export async function launchChoices(): Promise<LaunchChoices> {
       arch: i.Architecture,
       root: i.RootDeviceName,
       size: i.BlockDeviceMappings?.find((b) => b.DeviceName === i.RootDeviceName)?.Ebs?.VolumeSize,
+      mine: i.ImageOwnerAlias !== "amazon",
+      created: i.CreationDate,
     })),
     types: TYPES,
     keys: value(keys, []).map((k) => k.KeyName!),

@@ -1,6 +1,6 @@
 import { DescribeImageAttributeCommand, DescribeImagesCommand } from "@aws-sdk/client-ec2";
 import { ago, load, region, when } from "@mws-dashboard/aws";
-import { ActionForm, AwsIcon, ErrorNotice, Facts, Field, List, Page, Pill, Section, Sheet, Specs, Status, Tags } from "@mws-dashboard/ui";
+import { ActionForm, AwsIcon, ErrorNotice, Facts, Field, List, Page, Pill, Section, Sheet, Specs, Status, Tags, CopyValue } from "@mws-dashboard/ui";
 import { Ban, CalendarClock, CircleCheck, Clock, Copy, Cpu, Globe, HardDrive, Pencil, Power, Share2, ShieldCheck, ShieldOff, Trash2, X } from "lucide-react";
 import type { Metadata } from "next";
 import Link from "next/link";
@@ -54,7 +54,7 @@ export default async function ImagePage({ searchParams }: Props) {
       title={title}
       icon={osIcon(`${i.PlatformDetails} ${i.Name}`)}
       back={back}
-      subtitle={id}
+      subtitle={<CopyValue value={id} />}
       actions={
         <>
           {i.State === "available" && <LaunchSheet image={id} />}

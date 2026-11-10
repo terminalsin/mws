@@ -5,7 +5,7 @@ import {
   ListProvisionedConcurrencyConfigsCommand,
 } from "@aws-sdk/client-lambda";
 import { ago, all, bytes, load } from "@mws-dashboard/aws";
-import { ActionForm, AwsIcon, Empty, ErrorNotice, Field, FileIcon, List, Page, Section, Segments, Sheet, Specs, Status, runtimeIcon } from "@mws-dashboard/ui";
+import { ActionForm, AwsIcon, Empty, ErrorNotice, Field, FileIcon, List, Page, Section, Segments, Sheet, Specs, Status, runtimeIcon, CopyValue } from "@mws-dashboard/ui";
 import { LiveRefresh } from "@mws-dashboard/ui/client";
 import { strFromU8, unzipSync } from "fflate";
 import { CircleAlert, Clock, Cpu, GitCommitVertical, Globe, MemoryStick, Timer, Trash2, Upload } from "lucide-react";
@@ -209,7 +209,7 @@ export default async function LambdaFunction({ params, searchParams }: Props) {
       title={name}
       icon={ICONS.fn}
       back={back}
-      subtitle={c.FunctionArn}
+      subtitle={<CopyValue value={c.FunctionArn} label="Copy ARN" />}
       actions={
         <>
           <a className="icon-button plain" href={`/logs/group?name=${encodeURIComponent(logGroup)}`} aria-label="View logs" title="Logs">

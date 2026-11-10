@@ -19,7 +19,7 @@ test("SNS: a topic fans out to a queue", async ({ page }) => {
   await page.goto("/sns");
   await submit(page, "create-topic", { name: topic });
   await page.getByRole("link", { name: topic }).click();
-  await submit(page, "subscribe", { protocol: "sqs", endpoint: queueArn });
+  await submit(page, "subscribe", { endpoint: queueArn });
   await expect(row(page, queue)).toBeVisible();
   await submit(page, "publish", { subject: "Hi", message: "fan-out works" });
 
@@ -82,7 +82,7 @@ test("SNS validation: the endpoint follows the protocol and server errors land o
   await expect(endpoint).toHaveValue(queueArn);
 
   // SMS: formatting is removed for E.164.
-  await input("protocol").selectOption("sms");
+  await form.getByTestId("protocol-sms").click();
   await endpoint.fill("+1 (415) 555-0100");
   await endpoint.blur();
   await expect(field("endpoint")).toHaveAttribute("data-invalid", "format");
@@ -90,7 +90,7 @@ test("SNS validation: the endpoint follows the protocol and server errors land o
   await expect(endpoint).toHaveValue("+14155550100");
 
   // HTTPS: an http:// URL switches scheme.
-  await input("protocol").selectOption("https");
+  await form.getByTestId("protocol-https").click();
   await endpoint.fill("http://example.com/hook");
   await endpoint.blur();
   await expect(field("endpoint")).toHaveAttribute("data-invalid", "pattern");
@@ -98,7 +98,7 @@ test("SNS validation: the endpoint follows the protocol and server errors land o
   await expect(endpoint).toHaveValue("https://example.com/hook");
 
   // Email: a misspelt common domain.
-  await input("protocol").selectOption("email");
+  await form.getByTestId("protocol-email").click();
   await endpoint.fill("dev@gmial.com");
   await endpoint.blur();
   await field("endpoint").getByRole("button", { name: /dev@gmail.com/ }).click();
@@ -106,7 +106,7 @@ test("SNS validation: the endpoint follows the protocol and server errors land o
 
   // A well-formed ARN of a queue that does not exist: the server's answer
   // lands on the endpoint, with the queue it probably meant.
-  await input("protocol").selectOption("sqs");
+  await form.getByTestId("protocol-sqs").click();
   await endpoint.fill(`${queueArn}x`);
   await form.locator('button[type="submit"]').click();
   await expect(field("endpoint")).toHaveAttribute("data-invalid", "missing");
@@ -174,7 +174,12 @@ test("SNS: subscribing a function lets the topic invoke it, and the subscription
   );
 
   await page.goto(`/sns/topic?arn=${encodeURIComponent(topicArn)}`);
-  await submit(page, "subscribe", { protocol: "lambda", endpoint: FunctionArn!, filter: '{"type": ["order"]}' });
+  const sub = await openSheet(page, "subscribe");
+  await sub.form.getByTestId("protocol-lambda").click();
+  await sub.input("endpoint").fill(FunctionArn!);
+  await sub.input("filter").fill('{"type": ["order"]}');
+  await sub.form.locator('button[type="submit"]').click();
+  await expect(page.locator("dialog[open]")).toHaveCount(0);
   const policy = JSON.parse((await lambda.send(new GetPolicyCommand({ FunctionName: fn }))).Policy!);
   expect(policy.Statement[0].Principal).toEqual({ Service: "sns.amazonaws.com" });
   expect(JSON.stringify(policy.Statement[0].Condition)).toContain(topicArn);

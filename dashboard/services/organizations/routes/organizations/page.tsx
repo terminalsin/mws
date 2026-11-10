@@ -1,13 +1,15 @@
 import { type Account, type PolicyType } from "@aws-sdk/client-organizations";
-import { load } from "@mws-dashboard/aws";
+import { load, region } from "@mws-dashboard/aws";
 import { ActionForm, AwsIcon, Empty, ErrorNotice, Facts, Field, List, Page, Pill, Section, Segments, Sheet, Status, type Rule } from "@mws-dashboard/ui";
-import { CreateAccount, CreateOrganizationalUnit, CreatePolicy } from "@mws-dashboard/ui/model/organizations";
+import { CreateOrganizationalUnit, CreatePolicy } from "@mws-dashboard/ui/model/organizations";
 import { ArrowRightLeft, Ban, FolderPlus, Mail, Pencil, Plug, Power, Shield, Trash2 } from "lucide-react";
 import type { Metadata } from "next";
 import Link from "next/link";
 import { redirect } from "next/navigation";
 
 import { ICONS, organizations } from "../../lib/clients";
+import { AccountFields, OrgPolicyFields } from "../../lib/forms.tsx";
+import { ORG_POLICY_PRESETS } from "../../lib/presets";
 import { POLICY_TYPES, example, flatten, orgTree, policiesOfType, policyLimit, targetsForPolicy, type OrgNode } from "../../lib/organizations";
 import { createAccount, createOrganization, createOu, createPolicy, deleteOu, disablePolicyType, enablePolicyType, moveAccount, renameOu } from "./actions";
 
@@ -163,15 +165,7 @@ export default async function Organization({ searchParams }: Props) {
             <Sheet title="Create policy" label="Create policy" testId="create-scp">
               <ActionForm action={createPolicy} submit="Create policy" testId="create-scp">
                 <input type="hidden" name="type" value={kind.type} />
-                <Field label="Name" rule={CreatePolicy.Name} taken={names} generate="name" unique>
-                  <input name="name" required autoFocus />
-                </Field>
-                <Field label="Description" rule={{ ...CreatePolicy.Description, required: false }}>
-                  <input name="description" />
-                </Field>
-                <Field label="Policy" rule={content}>
-                  <textarea name="content" rows={12} className="code-editor" defaultValue={example(kind.type)} />
-                </Field>
+                <OrgPolicyFields key={kind.type} type={kind.type} example={example(kind.type)} region={await region()} org={org.Id!} taken={names} content={content} />
               </ActionForm>
             </Sheet>
           </>
@@ -200,7 +194,7 @@ export default async function Organization({ searchParams }: Props) {
             empty={<Empty icon={ICONS.policy} />}
             rows={(policies?.ok ? policies.value : []).map(({ p, targets }) => ({
               key: p.Id!,
-              icon: <AwsIcon icon={ICONS.policy} size={22} />,
+              icon: <AwsIcon icon={(ORG_POLICY_PRESETS[kind.type] ?? []).find((x) => p.Name?.startsWith(x.name))?.icon ?? ICONS.policy} size={22} />,
               title: p.Name,
               subtitle: p.Description || undefined,
               href: `/organizations/policy?id=${p.Id}`,
@@ -251,12 +245,7 @@ export default async function Organization({ searchParams }: Props) {
           </Sheet>
           <Sheet title="Add an AWS account" label="Add an AWS account" testId="create-account">
             <ActionForm action={createAccount} submit="Create AWS account" testId="create-account">
-              <Field label="Account name" rule={CreateAccount.AccountName} generate="name">
-                <input name="name" required autoFocus />
-              </Field>
-              <Field label="Email address of the account's owner" rule={CreateAccount.Email} format="email" taken={emails} unique>
-                <input name="email" type="email" required />
-              </Field>
+              <AccountFields owner={org.MasterAccountEmail} emails={emails} />
             </ActionForm>
           </Sheet>
         </>

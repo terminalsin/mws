@@ -3,6 +3,7 @@ import { load } from "@mws-dashboard/aws";
 import { ActionForm, ErrorNotice, Field, Page, Section } from "@mws-dashboard/ui";
 import { Converse } from "@mws-dashboard/ui/model/bedrock-runtime";
 import { ruleAt } from "@mws-dashboard/ui/validation";
+import { MoreFields } from "@mws-dashboard/ui/presets";
 import type { Metadata } from "next";
 
 import { bedrock } from "../../../lib/clients";
@@ -95,6 +96,12 @@ export default async function Playground({ searchParams }: Props) {
                 )}
               </select>
             </Field>
+          </div>
+          <Field label="Prompt">
+            <textarea name="prompt" rows={6} placeholder="Ask anything" required />
+          </Field>
+          <MoreFields>
+          <div className="form-row">
             <Field label="Temperature" rule={TEMPERATURE}>
               <input name="temperature" type="number" min={0} max={1} step={0.1} defaultValue={0.7} />
             </Field>
@@ -117,9 +124,7 @@ export default async function Playground({ searchParams }: Props) {
           <Field label="System prompt">
             <input name="system" placeholder="You are a helpful assistant." />
           </Field>
-          <Field label="Prompt">
-            <textarea name="prompt" rows={6} placeholder="Ask anything" required />
-          </Field>
+          </MoreFields>
         </ActionForm>
       </Section>
     </Page>

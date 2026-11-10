@@ -7,26 +7,85 @@
 // launch template makes the image optional.
 
 import { FieldShell as Field } from "@mws-dashboard/ui/fields";
+import { MoreFields, PresetGallery, type PresetItem } from "@mws-dashboard/ui/presets";
 import type { Rule } from "@mws-dashboard/ui/validation";
 import { useMemo, useState } from "react";
 
+import { OS_FAMILIES, SIZES, familyImage, osLogo } from "./os";
 import { COUNT, IMAGE, INSTANCE_TYPE, ROOT_SIZE, TAG_VALUE, VOLUME_TYPE, VOLUME_TYPES } from "./rules";
 
 export interface LaunchChoices {
-  images: { id: string; name?: string; arch?: string; root?: string; size?: number }[];
+  images: {
+    id: string;
+    name?: string;
+    arch?: string;
+    root?: string;
+    size?: number;
+    mine?: boolean;
+    created?: string;
+  }[];
   types: string[];
   keys: string[];
-  subnets: { id: string; label: string; vpc: string; vpcLabel: string; zone: string; publicIp: boolean }[];
+  subnets: {
+    id: string;
+    label: string;
+    vpc: string;
+    vpcLabel: string;
+    zone: string;
+    publicIp: boolean;
+  }[];
   groups: { id: string; name: string; vpc: string }[];
   profiles: { name: string; arn: string }[];
   templates: { id: string; name: string; latest: number; default: number }[];
   defaultVpc?: string;
 }
 
+type ImageTile = PresetItem & { image: string };
+
+/** OS tiles (the newest general-purpose image of each family), then the account's own AMIs. */
+function imageTiles(images: LaunchChoices["images"]): ImageTile[] {
+  const families = OS_FAMILIES.flatMap((f) => {
+    const i = familyImage(
+      f,
+      images.filter((x) => !x.mine),
+    );
+    return i ? [{ id: f.id, label: f.label, icon: f.icon, title: i.name, image: i.id }] : [];
+  });
+  const mine = images
+    .filter((i) => i.mine)
+    .sort((a, b) => (b.created ?? "").localeCompare(a.created ?? ""))
+    .slice(0, 6)
+    .map((i) => ({
+      id: i.id,
+      label: i.name ?? i.id,
+      icon: osLogo(i.name) ?? "resource/AmazonEC2AMI",
+      title: `${i.name ?? ""} ${i.id}`.trim(),
+      image: i.id,
+      group: "My AMIs",
+    }));
+  return [
+    ...families.map((f) => ({
+      ...f,
+      group: mine.length ? "Quick start" : undefined,
+    })),
+    ...mine,
+  ];
+}
+
+/** Size tiles lead with the memory, the number people choose by. */
+const SIZE_TILES: PresetItem[] = SIZES.map((s) => ({
+  id: s.type,
+  label: s.type,
+  title: `${s.label} · ${s.vcpu} vCPU · ${s.mem}`,
+  icon: <b className="text-sm font-semibold">{s.mem}</b>,
+}));
+
 export function LaunchFields({ choices, mode, template, image: initialImage }: { choices: LaunchChoices; mode: "launch" | "template" | "version"; template?: string; image?: string }) {
   const { images, subnets, groups, profiles, templates } = choices;
+  const tiles = useMemo(() => imageTiles(images), [images]);
   const [templateId, setTemplateId] = useState(template ?? "");
-  const [image, setImage] = useState(initialImage ?? (mode === "launch" && !template ? (images[0]?.id ?? "") : ""));
+  const [image, setImage] = useState(initialImage ?? (mode === "launch" && !template ? (tiles[0]?.image ?? images[0]?.id ?? "") : ""));
+  const [type, setType] = useState(mode === "launch" && !template ? "t3.micro" : "");
   const [subnet, setSubnet] = useState("");
   const chosenSubnet = subnets.find((s) => s.id === subnet);
   const vpc = chosenSubnet?.vpc ?? choices.defaultVpc;
@@ -45,11 +104,20 @@ export function LaunchFields({ choices, mode, template, image: initialImage }: {
     }),
     [images, optionalImage],
   );
-  const rootRule = useMemo<Rule>(() => ({ ...ROOT_SIZE, ...(chosenImage?.size ? { min: chosenImage.size } : {}) }), [chosenImage]);
+  const rootRule = useMemo<Rule>(
+    () => ({
+      ...ROOT_SIZE,
+      ...(chosenImage?.size ? { min: chosenImage.size } : {}),
+    }),
+    [chosenImage],
+  );
   const vpcs = [...new Map(subnets.map((s) => [s.vpc, s.vpcLabel])).entries()];
+
+  const chosenTile = tiles.find((t) => t.image === image);
 
   return (
     <>
+      {tiles.length > 0 && <PresetGallery presets={tiles} chosen={chosenTile?.id} choose={(t) => setImage(t.image)} label="Image" testId="launch-os" />}
       {mode === "launch" && (
         <Field label="Name" rule={TAG_VALUE}>
           <input name="name" autoFocus />
@@ -83,7 +151,12 @@ export function LaunchFields({ choices, mode, template, image: initialImage }: {
           </select>
         </Field>
       )}
-      <Field label="Image" rule={imageRule} member="ImageId" hint={optionalImage ? "Blank: the template's" : undefined}>
+      <Field
+        label="Image"
+        rule={imageRule}
+        member="ImageId"
+        hint={optionalImage && !image ? "Blank: the template's" : chosenImage?.name && chosenImage.name !== chosenTile?.label ? chosenImage.name : undefined}
+      >
         <input name="image" list="launch-images" value={image} onChange={(e) => setImage(e.target.value)} required={!optionalImage} />
       </Field>
       <datalist id="launch-images">
@@ -93,86 +166,88 @@ export function LaunchFields({ choices, mode, template, image: initialImage }: {
           </option>
         ))}
       </datalist>
-      <Field label="Instance type" rule={INSTANCE_TYPE} member="InstanceType">
-        <input name="type" defaultValue={mode === "launch" && !templateId ? "t3.micro" : ""} list="launch-types" />
+      <PresetGallery presets={SIZE_TILES} chosen={type} choose={(t) => setType(type === t.id && optionalImage ? "" : t.id)} label="Size" testId="launch-size" />
+      <Field label="Instance type" rule={INSTANCE_TYPE} member="InstanceType" hint={optionalImage && !type ? "Blank: the template's" : undefined}>
+        <input name="type" value={type} onChange={(e) => setType(e.target.value)} list="launch-types" />
       </Field>
       <datalist id="launch-types">
         {choices.types.map((t) => (
           <option key={t} value={t} />
         ))}
       </datalist>
-      <Field label="Key pair">
-        <select name="keyName" defaultValue="">
-          <option value="">None</option>
-          {choices.keys.map((k) => (
-            <option key={k}>{k}</option>
-          ))}
-        </select>
-      </Field>
-      <Field label="Subnet" member="SubnetId">
-        <select name="subnet" value={subnet} onChange={(e) => setSubnet(e.target.value)}>
-          <option value="">Default subnet</option>
-          {vpcs.map(([id, label]) => (
-            <optgroup key={id} label={label}>
-              {subnets
-                .filter((s) => s.vpc === id)
-                .map((s) => (
-                  <option key={s.id} value={s.id}>
-                    {s.label} · {s.zone}
-                  </option>
-                ))}
-            </optgroup>
-          ))}
-        </select>
-      </Field>
-      {subnet && (
-        <Field label="Public IP" member="AssociatePublicIpAddress">
-          <select name="publicIp" defaultValue="">
-            <option value="">Subnet setting ({chosenSubnet?.publicIp ? "on" : "off"})</option>
-            <option value="enable">Assign</option>
-            <option value="disable">Don&apos;t assign</option>
+      {choices.keys.length > 0 && (
+        <Field label="Key pair">
+          <select name="keyName" defaultValue="">
+            <option value="">None</option>
+            {choices.keys.map((k) => (
+              <option key={k}>{k}</option>
+            ))}
           </select>
         </Field>
       )}
-      {vpcGroups.length > 0 && (
-        <fieldset className="checks" data-testid="launch-groups">
-          <legend>Security groups</legend>
-          {vpcGroups.map((g) => (
-            <label key={g.id} className="check">
-              <input type="checkbox" name="securityGroups" value={g.id} /> {g.name}
-            </label>
-          ))}
-        </fieldset>
-      )}
-      <Field label="IAM instance profile" member="IamInstanceProfile">
-        <select name="iamProfile" defaultValue="">
-          <option value="">None</option>
-          {profiles.map((p) => (
-            <option key={p.arn} value={p.name}>
-              {p.name}
-            </option>
-          ))}
-        </select>
-      </Field>
-      <Field label="Root volume (GiB)" rule={rootRule} member="VolumeSize" hint={chosenImage?.size ? `Image: ${chosenImage.size} GiB` : undefined}>
-        <input name="rootSize" type="number" min={chosenImage?.size ?? 1} placeholder={chosenImage?.size ? String(chosenImage.size) : undefined} />
-      </Field>
-      <Field label="Root volume type" rule={VOLUME_TYPE} member="VolumeType">
-        <select name="rootType" defaultValue="">
-          <option value="">Image default</option>
-          {VOLUME_TYPES.map((t) => (
-            <option key={t}>{t}</option>
-          ))}
-        </select>
-      </Field>
-      {mode !== "launch" && <input type="hidden" name="rootDevice" value={chosenImage?.root ?? "/dev/xvda"} />}
-      {mode === "launch" && (
-        <Field label="Count" rule={COUNT} member="MaxCount">
-          <input name="count" type="number" min={1} max={20} defaultValue={1} />
+      <MoreFields>
+        <Field label="Subnet" member="SubnetId">
+          <select name="subnet" value={subnet} onChange={(e) => setSubnet(e.target.value)}>
+            <option value="">Default subnet</option>
+            {vpcs.map(([id, label]) => (
+              <optgroup key={id} label={label}>
+                {subnets
+                  .filter((s) => s.vpc === id)
+                  .map((s) => (
+                    <option key={s.id} value={s.id}>
+                      {s.label} · {s.zone}
+                    </option>
+                  ))}
+              </optgroup>
+            ))}
+          </select>
         </Field>
-      )}
-      <details>
-        <summary>Advanced details</summary>
+        {subnet && (
+          <Field label="Public IP" member="AssociatePublicIpAddress">
+            <select name="publicIp" defaultValue="">
+              <option value="">Subnet setting ({chosenSubnet?.publicIp ? "on" : "off"})</option>
+              <option value="enable">Assign</option>
+              <option value="disable">Don&apos;t assign</option>
+            </select>
+          </Field>
+        )}
+        {vpcGroups.length > 0 && (
+          <fieldset className="checks" data-testid="launch-groups">
+            <legend>Security groups</legend>
+            {vpcGroups.map((g) => (
+              <label key={g.id} className="check">
+                <input type="checkbox" name="securityGroups" value={g.id} /> {g.name}
+              </label>
+            ))}
+          </fieldset>
+        )}
+        <Field label="IAM instance profile" member="IamInstanceProfile">
+          <select name="iamProfile" defaultValue="">
+            <option value="">None</option>
+            {profiles.map((p) => (
+              <option key={p.arn} value={p.name}>
+                {p.name}
+              </option>
+            ))}
+          </select>
+        </Field>
+        <Field label="Root volume (GiB)" rule={rootRule} member="VolumeSize" hint={chosenImage?.size ? `Image: ${chosenImage.size} GiB` : undefined}>
+          <input name="rootSize" type="number" min={chosenImage?.size ?? 1} placeholder={chosenImage?.size ? String(chosenImage.size) : undefined} />
+        </Field>
+        <Field label="Root volume type" rule={VOLUME_TYPE} member="VolumeType">
+          <select name="rootType" defaultValue="">
+            <option value="">Image default</option>
+            {VOLUME_TYPES.map((t) => (
+              <option key={t}>{t}</option>
+            ))}
+          </select>
+        </Field>
+        {mode !== "launch" && <input type="hidden" name="rootDevice" value={chosenImage?.root ?? "/dev/xvda"} />}
+        {mode === "launch" && (
+          <Field label="Count" rule={COUNT} member="MaxCount">
+            <input name="count" type="number" min={1} max={20} defaultValue={1} />
+          </Field>
+        )}
         <label className="check">
           <input type="checkbox" name="protect" /> Termination protection
         </label>
@@ -194,8 +269,7 @@ export function LaunchFields({ choices, mode, template, image: initialImage }: {
           </Field>
         )}
         <textarea name="userData" rows={4} aria-label="User data" placeholder="#!/bin/bash" className="code-editor" />
-      </details>
+      </MoreFields>
     </>
   );
 }
-

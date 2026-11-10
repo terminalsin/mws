@@ -20,3 +20,9 @@ export const ENDPOINT: Rule = {
 export const ENDPOINTS: Rule = { type: "list", maxLength: 10, item: ENDPOINT, hint: "A load balancer ARN, i-… or eipalloc-…" };
 
 export const GROUP_RULES = UpdateEndpointGroup;
+
+/** The first free name: `base`, else `base-2`, ... (server-side twin of the presets helper). */
+export function nextName(base: string, taken: string[]) {
+  if (!taken.includes(base)) return base;
+  for (let n = 2; ; n++) if (!taken.includes(`${base}-${n}`)) return `${base}-${n}`;
+}

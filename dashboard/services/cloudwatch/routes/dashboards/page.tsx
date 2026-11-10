@@ -1,48 +1,23 @@
 import { ListDashboardsCommand } from "@aws-sdk/client-cloudwatch";
-import { ago, all, bytes, load } from "@mws-dashboard/aws";
+import { ago, all, bytes, load, region } from "@mws-dashboard/aws";
 import {
   ActionForm,
+  AwsIcon,
   Empty,
   ErrorNotice,
-  Field,
   List,
   Page,
   Sheet,
-  type Rule,
 } from "@mws-dashboard/ui";
-import { PutDashboard } from "@mws-dashboard/ui/model/cloudwatch";
-import { LayoutDashboard, Trash2 } from "lucide-react";
+import { Trash2 } from "lucide-react";
 import type { Metadata } from "next";
 
+import { formOptions } from "../../lib/alarms";
 import { cloudwatch } from "../../lib/clients";
+import { DashboardFields } from "../../lib/dashboard-fields";
 import { createDashboard, deleteDashboard } from "./actions";
 
 export const metadata: Metadata = { title: "Dashboards" };
-
-// PutDashboard: "Dashboard names can contain only alphanumerics, dash (-) and underscore (_)."
-const NAME: Rule = {
-  ...PutDashboard.DashboardName,
-  pattern: "^[A-Za-z0-9_-]+$",
-  maxLength: 255,
-  hint: "Letters, digits, - and _",
-};
-
-const STARTER = JSON.stringify(
-  {
-    widgets: [
-      {
-        type: "text",
-        x: 0,
-        y: 0,
-        width: 24,
-        height: 2,
-        properties: { markdown: "# My dashboard" },
-      },
-    ],
-  },
-  null,
-  2,
-);
 
 export default async function Dashboards() {
   const list = await load(async () => {
@@ -53,6 +28,7 @@ export default async function Dashboards() {
       (r) => r.NextToken,
     );
   });
+  const [here, { namespaces }] = await Promise.all([region(), formOptions()]);
   const taken = list.ok ? list.value.map((d) => d.DashboardName!) : [];
   const create = (
     <Sheet
@@ -65,24 +41,7 @@ export default async function Dashboards() {
         submit="Create"
         testId="create-dashboard"
       >
-        <Field label="Name" rule={NAME} taken={taken} generate="name" unique>
-          <input name="name" autoFocus />
-        </Field>
-        <Field
-          label="Source"
-          rule={{
-            ...PutDashboard.DashboardBody,
-            required: false,
-            format: "json",
-          }}
-        >
-          <textarea
-            name="body"
-            rows={8}
-            className="code-editor"
-            defaultValue={STARTER}
-          />
-        </Field>
+        <DashboardFields taken={taken} region={here} namespaces={namespaces} />
       </ActionForm>
     </Sheet>
   );
@@ -94,7 +53,7 @@ export default async function Dashboards() {
           empty={<Empty icon="service/AmazonCloudWatch" action={create} />}
           rows={list.value.map((d) => ({
             key: d.DashboardArn ?? d.DashboardName!,
-            icon: <LayoutDashboard size={20} />,
+            icon: <AwsIcon icon="service/AmazonCloudWatch" size={22} />,
             title: d.DashboardName,
             href: `/dashboards/dashboard?${new URLSearchParams({ name: d.DashboardName! })}`,
             meta: (

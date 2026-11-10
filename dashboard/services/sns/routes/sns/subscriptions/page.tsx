@@ -1,6 +1,6 @@
 import { ListSubscriptionsCommand } from "@aws-sdk/client-sns";
 import { all, load } from "@mws-dashboard/aws";
-import { ActionForm, Empty, ErrorNotice, List, Page, Status } from "@mws-dashboard/ui";
+import { ActionForm, AwsIcon, Empty, ErrorNotice, List, Page, Pill, Status } from "@mws-dashboard/ui";
 import { CheckCheck } from "lucide-react";
 import type { Metadata } from "next";
 
@@ -29,9 +29,18 @@ export default async function Subscriptions() {
               key: `${s.SubscriptionArn}${s.TopicArn}${s.Endpoint}`,
               icon: protocolIcon(s.Protocol),
               title: <Endpoint sub={s} linked={waiting} />,
-              subtitle: `${s.Protocol} · ${arnName(s.TopicArn)}`,
+              subtitle: (
+                <>
+                  <AwsIcon icon={ICONS.topic} size={12} /> {arnName(s.TopicArn)}
+                </>
+              ),
               href: waiting ? undefined : `/sns/subscription?arn=${encodeURIComponent(s.SubscriptionArn!)}`,
-              meta: waiting ? <Status tone="warn">pending</Status> : <Status tone="good">confirmed</Status>,
+              meta: (
+                <>
+                  <Pill>{s.Protocol}</Pill>
+                  {waiting && <Status tone="warn">pending</Status>}
+                </>
+              ),
               actions: waiting ? (
                 <ActionForm action={confirmPending.bind(null, s.TopicArn!, s.Protocol!, s.Endpoint!)} submit={`Confirm ${s.Endpoint}`} icon={<CheckCheck size={16} aria-hidden />} />
               ) : undefined,

@@ -6,14 +6,14 @@ import {
   ListServicesCommand,
 } from "@aws-sdk/client-service-quotas";
 import { ago, all, load, region } from "@mws-dashboard/aws";
-import { ActionForm, AwsIcon, Empty, ErrorNotice, Facts, Field, List, More, Page, Pill, Segments, Sheet, Status } from "@mws-dashboard/ui";
+import { ActionForm, AwsIcon, Empty, ErrorNotice, Facts, List, More, Page, Pill, Segments, Sheet, Status } from "@mws-dashboard/ui";
 import { LiveRefresh } from "@mws-dashboard/ui/client";
-import { RequestServiceQuotaIncrease } from "@mws-dashboard/ui/model/servicequotas";
 import { ArrowUp, Bot, Gauge, Globe } from "lucide-react";
 import type { Metadata } from "next";
 import Link from "next/link";
 
 import { ICONS, quotas } from "../../lib/clients";
+import { IncreaseFields } from "../../lib/increase-fields";
 import { openRequests, statusWord, tone, usage, utilization } from "../../lib/quotas";
 import { requestIncrease, startUtilizationReport } from "./actions";
 import { iconOf, requestRow } from "./rows";
@@ -57,7 +57,6 @@ export default async function Quotas({ searchParams }: Props) {
     const name = list.ok ? (list.value[0]?.d?.ServiceName ?? list.value[0]?.applied?.ServiceName ?? service) : service;
     return (
       <Page title={name} icon={iconOf(service)} back={{ href: "/servicequotas", label: "AWS services" }} actions={links}>
-        <Facts items={[["Region", where]]} />
         {list.ok ? (
           <>
             <LiveRefresh when={list.value.some((q) => q.open?.Status === "PENDING")} />
@@ -94,9 +93,7 @@ export default async function Quotas({ searchParams }: Props) {
                     q.Adjustable && !open ? (
                       <Sheet title={`Request increase: ${q.QuotaName}`} label={`Request increase ${q.QuotaCode}`} icon={<ArrowUp size={15} />} testId={`increase-${q.QuotaCode}`}>
                         <ActionForm action={requestIncrease.bind(null, service, q.QuotaCode!)} submit="Request" testId={`increase-${q.QuotaCode}`}>
-                          <Field label="New value" hint={`Now ${value ?? 0}`} rule={{ ...RequestServiceQuotaIncrease.DesiredValue, min: Math.floor(value ?? 0) + 1 }} member="DesiredValue">
-                            <input name="value" type="number" step="any" min={Math.floor(value ?? 0) + 1} defaultValue={(value ?? 0) * 2 || 1} required />
-                          </Field>
+                          <IncreaseFields value={value ?? 0} />
                         </ActionForm>
                       </Sheet>
                     ) : undefined,

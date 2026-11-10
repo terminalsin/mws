@@ -10,6 +10,7 @@ import { ICONS, LINKS, ec2, nameTag } from "../clients";
 import { RESOURCE_TONE, listInstances, listSnapshots, listVolumes, volumeSpec } from "../ec2";
 import { DEVICE, SNAPSHOT_DESCRIPTION, TAG_VALUE } from "../rules";
 import { VolumeFields } from "../volume-fields";
+import { MoreFields } from "@mws-dashboard/ui/presets";
 
 export async function zones() {
   return ((await (await ec2()).send(new DescribeAvailabilityZonesCommand({}))).AvailabilityZones ?? []).map((z) => z.ZoneName!);
@@ -49,12 +50,14 @@ export function CreateVolumeSheet({ zones, snapshots, snapshot, zone }: { zones:
           )
         )}
         <VolumeFields size={snapshot ? undefined : 8} minSize={snapshot?.VolumeSize} optionalSize={!!snapshot} />
-        <label className="check">
-          <input type="checkbox" name="encrypted" defaultChecked={snapshot?.Encrypted} /> Encrypted
-        </label>
-        <Field label="KMS key" member="KmsKeyId" hint="Blank: aws/ebs">
-          <input name="kmsKey" placeholder="alias/aws/ebs" />
-        </Field>
+        <MoreFields label="Encryption">
+          <label className="check">
+            <input type="checkbox" name="encrypted" defaultChecked={snapshot?.Encrypted} /> Encrypted
+          </label>
+          <Field label="KMS key" member="KmsKeyId" hint="Blank: aws/ebs">
+            <input name="kmsKey" placeholder="alias/aws/ebs" />
+          </Field>
+        </MoreFields>
       </ActionForm>
     </Sheet>
   );

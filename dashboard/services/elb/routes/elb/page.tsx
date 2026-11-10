@@ -1,15 +1,16 @@
 import { DescribeLoadBalancersCommand as DescribeClassicCommand } from "@aws-sdk/client-elastic-load-balancing";
 import { DescribeVpcsCommand } from "@aws-sdk/client-ec2";
 import { DescribeTrustStoreAssociationsCommand, DescribeTrustStoresCommand } from "@aws-sdk/client-elastic-load-balancing-v2";
-import { ago, all, load } from "@mws-dashboard/aws";
+import { all, load } from "@mws-dashboard/aws";
 import { ActionForm, AwsIcon, Curated, Empty, ErrorNotice, Field, List, Page, Pill, Segments, Sheet, Status } from "@mws-dashboard/ui";
 import { RefreshCw, Trash2 } from "lucide-react";
-import { CreateLoadBalancer, CreateTargetGroup, CreateTrustStore } from "@mws-dashboard/ui/model/elbv2";
+import { CreateTrustStore } from "@mws-dashboard/ui/model/elbv2";
 import type { Metadata } from "next";
 
-import { ICONS, LB_ICON, classic, ec2, elb, nameTag } from "../../lib/clients";
+import { ICONS, LB_ICON, TARGET_ICON, classic, ec2, elb, nameTag } from "../../lib/clients";
 import { healthCounts, lbHref, listLoadBalancers, listTargetGroups, tgHref } from "../../lib/elb";
-import { HEALTH_PATH, LB_NAME, PORT, TG_NAME } from "../../lib/rules";
+import { LoadBalancerFields, TargetGroupFields, type VpcChoice } from "../../lib/create-forms";
+import { LB_NAME } from "../../lib/rules";
 import { createLoadBalancer, createTargetGroup, createTrustStore, deleteTrustStore, modifyTrustStore } from "./actions";
 import { createClassic } from "./classic-actions";
 
@@ -102,7 +103,7 @@ async function TrustStores() {
   );
 }
 
-async function ClassicList({ vpcOptions }: { vpcOptions: React.ReactNode }) {
+async function ClassicList({ vpcOptions, defaultVpc }: { vpcOptions: React.ReactNode; defaultVpc?: string }) {
   const lbs = await load(async () => {
     const client = await classic();
     return all(
@@ -125,7 +126,7 @@ async function ClassicList({ vpcOptions }: { vpcOptions: React.ReactNode }) {
             </select>
           </Field>
           <Field label="VPC" member="Subnets">
-            <select name="vpc" required>
+            <select name="vpc" required defaultValue={defaultVpc}>
               {vpcOptions}
             </select>
           </Field>
@@ -151,9 +152,8 @@ async function ClassicList({ vpcOptions }: { vpcOptions: React.ReactNode }) {
             href: `/elb/classic?name=${encodeURIComponent(l.LoadBalancerName!)}`,
             meta: (
               <>
-                <Pill>{l.Scheme}</Pill>
-                <span>{l.Instances?.length ?? 0} instances</span>
-                <span>{ago(l.CreatedTime)}</span>
+                {l.Scheme === "internal" && <Pill>internal</Pill>}
+                <Pill icon={<AwsIcon icon={ICONS.instance} size={14} />} title="Instances">{l.Instances?.length ?? 0}</Pill>
               </>
             ),
           }))}
@@ -169,6 +169,8 @@ export default async function LoadBalancers({ searchParams }: Props) {
   const { tab = "lbs" } = await searchParams;
   if (tab === "truststores") return <TrustStores />;
   const vpcs = await load(async () => (await (await ec2()).send(new DescribeVpcsCommand({}))).Vpcs ?? []);
+  const vpcChoices: VpcChoice[] = vpcs.ok ? vpcs.value.map((v) => ({ id: v.VpcId!, label: `${nameTag(v) ?? v.VpcId} · ${v.CidrBlock}`, isDefault: v.IsDefault })) : [];
+  const defaultVpc = vpcChoices.find((v) => v.isDefault)?.id;
   const vpcOptions = vpcs.ok
     ? vpcs.value.map((v) => (
         <option key={v.VpcId} value={v.VpcId}>
@@ -176,7 +178,7 @@ export default async function LoadBalancers({ searchParams }: Props) {
         </option>
       ))
     : null;
-  if (tab === "classic") return <ClassicList vpcOptions={vpcOptions} />;
+  if (tab === "classic") return <ClassicList vpcOptions={vpcOptions} defaultVpc={defaultVpc} />;
 
   if (tab === "targets") {
     const groups = await load(listTargetGroups);
@@ -184,55 +186,7 @@ export default async function LoadBalancers({ searchParams }: Props) {
     const create = (
       <Sheet title="Create target group" label="Create target group" testId="create-target-group">
         <ActionForm action={createTargetGroup} submit="Create target group" testId="create-target-group">
-          <Field label="Name" rule={TG_NAME} taken={names} unique>
-            <input name="name" required maxLength={32} autoFocus />
-          </Field>
-          <Field label="Target type" rule={CreateTargetGroup.TargetType}>
-            <select name="targetType" defaultValue="instance">
-              <option value="instance">Instances</option>
-              <option value="ip">IP addresses</option>
-              <option value="lambda">Lambda function</option>
-              <option value="alb">Application Load Balancer</option>
-            </select>
-          </Field>
-          <div className="form-row">
-            <Field label="Protocol" rule={CreateTargetGroup.Protocol} hint="GENEVE for Gateway Load Balancers">
-              <select name="protocol" defaultValue="HTTP">
-                {["HTTP", "HTTPS", "TCP", "UDP", "TLS", "TCP_UDP", "GENEVE"].map((p) => (
-                  <option key={p}>{p}</option>
-                ))}
-              </select>
-            </Field>
-            <Field label="Port" rule={PORT} format="port">
-              <input name="port" type="number" defaultValue={80} />
-            </Field>
-          </div>
-          <div className="form-row">
-            <Field label="Protocol version (HTTP/HTTPS)" rule={CreateTargetGroup.ProtocolVersion}>
-              <select name="protocolVersion" defaultValue="">
-                <option value="">HTTP1</option>
-                <option value="HTTP2">HTTP2</option>
-                <option value="GRPC">gRPC</option>
-              </select>
-            </Field>
-            <Field label="IP address type" rule={CreateTargetGroup.IpAddressType}>
-              <select name="ipType" defaultValue="">
-                <option value="">IPv4</option>
-                <option value="ipv6">IPv6</option>
-              </select>
-            </Field>
-          </div>
-          <Field label="VPC" member="VpcId">
-            <select name="vpc">{vpcOptions}</select>
-          </Field>
-          <div className="form-row">
-            <Field label="Health check path" rule={HEALTH_PATH}>
-              <input name="healthPath" placeholder="/" />
-            </Field>
-            <Field label="Success codes" rule={{ pattern: "^\\d{1,3}([,-]\\d{1,3})*$", hint: "Like 200 or 200-299" }} member="Matcher.HttpCode">
-              <input name="matcher" placeholder="200" />
-            </Field>
-          </div>
+          <TargetGroupFields names={names} vpcs={vpcChoices} />
         </ActionForm>
       </Sheet>
     );
@@ -247,9 +201,9 @@ export default async function LoadBalancers({ searchParams }: Props) {
               const { healthy, total } = healthCounts(targets);
               return {
                 key: g.TargetGroupArn!,
-                icon: <AwsIcon icon={g.TargetType === "lambda" ? "resource/AWSLambdaLambdaFunction" : ICONS.elb} size={24} />,
+                icon: <AwsIcon icon={TARGET_ICON[g.TargetType ?? "instance"] ?? ICONS.elb} size={24} />,
                 title: g.TargetGroupName,
-                subtitle: g.Protocol ? `${g.Protocol}:${g.Port} · ${g.TargetType}` : g.TargetType,
+                subtitle: g.Protocol ? `${g.Protocol}:${g.Port}` : undefined,
                 href: tgHref(g.TargetGroupArn),
                 meta: (
                   <>
@@ -274,37 +228,7 @@ export default async function LoadBalancers({ searchParams }: Props) {
   const create = (
     <Sheet title="Create load balancer" label="Create load balancer" testId="create-load-balancer">
       <ActionForm action={createLoadBalancer} submit="Create load balancer" testId="create-load-balancer">
-        <Field label="Name" rule={LB_NAME} taken={names} unique>
-          <input name="name" required maxLength={32} autoFocus />
-        </Field>
-        <div className="form-row">
-          <Field label="Type" rule={CreateLoadBalancer.Type}>
-            <select name="type" defaultValue="application">
-              <option value="application">Application</option>
-              <option value="network">Network</option>
-              <option value="gateway">Gateway</option>
-            </select>
-          </Field>
-          <Field label="Scheme" rule={CreateLoadBalancer.Scheme}>
-            <select name="scheme" defaultValue="internet-facing">
-              <option value="internet-facing">Internet-facing</option>
-              <option value="internal">Internal</option>
-            </select>
-          </Field>
-        </div>
-        <div className="form-row">
-          <Field label="VPC" member="Subnets">
-            <select name="vpc" required>
-              {vpcOptions}
-            </select>
-          </Field>
-          <Field label="IP address type" rule={CreateLoadBalancer.IpAddressType}>
-            <select name="ipType" defaultValue="">
-              <option value="">IPv4</option>
-              <option value="dualstack">Dualstack</option>
-            </select>
-          </Field>
-        </div>
+        <LoadBalancerFields names={names} vpcs={vpcChoices} />
       </ActionForm>
     </Sheet>
   );
@@ -334,9 +258,8 @@ export default async function LoadBalancers({ searchParams }: Props) {
           href: lbHref(l.LoadBalancerArn),
           meta: (
             <>
-              <Pill>{l.Type}</Pill>
+              {l.Scheme === "internal" && <Pill>internal</Pill>}
               <Status tone={l.State?.Code === "active" ? "good" : l.State?.Code === "failed" ? "bad" : "warn"}>{l.State?.Code}</Status>
-              <span>{ago(l.CreatedTime)}</span>
             </>
           ),
         })}

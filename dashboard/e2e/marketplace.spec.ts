@@ -87,7 +87,11 @@ test("Marketplace: fields repair dimensions, accounts and quantities in place", 
 async function newProduct(page: Page, type: "SaaS" | "AMI" | "Container") {
   const title = unique(`Dash ${type}`);
   await page.goto("/marketplace");
-  await submit(page, "create-product", { title, type, dimensions: "users" });
+  // The sheet opens on the product type.
+  const { form } = await openSheet(page, "create-product");
+  await form.getByTestId(`preset-${type}`).click();
+  await expect(form.getByTestId(`preset-${type}`)).toHaveAttribute("aria-checked", "true");
+  await submit(page, "create-product", { title, dimensions: "users" });
   await expect(page.getByRole("heading", { level: 1, name: title })).toBeVisible();
   return title;
 }

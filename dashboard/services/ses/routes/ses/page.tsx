@@ -2,6 +2,7 @@ import { ListEmailIdentitiesCommand, type IdentityInfo } from "@aws-sdk/client-s
 import { all, load, type Loaded } from "@mws-dashboard/aws";
 import { ActionForm, Empty, ErrorNotice, Field, List, Page, Section, Segments, Sheet, Status, type Rule } from "@mws-dashboard/ui";
 import { LiveRefresh } from "@mws-dashboard/ui/client";
+import { MoreFields } from "@mws-dashboard/ui/presets";
 import { CreateEmailIdentity, SendEmail } from "@mws-dashboard/ui/model/sesv2";
 import { BadgeCheck, Globe, Mail, Send, Trash2 } from "lucide-react";
 import type { Metadata } from "next";
@@ -72,21 +73,10 @@ async function SendEmailSheet({ identities, sandbox }: { identities: Loaded<Iden
       <ActionForm action={sendEmail} submit="Send" testId="send-email">
         <div className="form-row">
           <Field label="From" rule={rules.from} member="FromEmailAddress">
-            <input name="from" required autoComplete="email" />
+            <input name="from" required autoComplete="email" defaultValue={rules.from.known?.[0]} />
           </Field>
           <Field label="To" rule={rules.to} member="ToAddresses">
-            <input name="to" required />
-          </Field>
-        </div>
-        <div className="form-row">
-          <Field label="Cc" rule={rules.cc} member="CcAddresses">
-            <input name="cc" />
-          </Field>
-          <Field label="Bcc" rule={rules.cc} member="BccAddresses">
-            <input name="bcc" />
-          </Field>
-          <Field label="Reply-To" rule={{ format: "emails" }} member="ReplyToAddresses">
-            <input name="replyTo" />
+            <input name="to" required defaultValue={sandbox ? `success@${SIMULATOR}` : undefined} />
           </Field>
         </div>
         {temps.length > 0 && (
@@ -108,27 +98,35 @@ async function SendEmailSheet({ identities, sandbox }: { identities: Loaded<Iden
           <input name="subject" />
         </Field>
         <textarea name="body" aria-label="Body" />
-        <details>
-          <summary>HTML body</summary>
+        {sets.length > 0 && (
+          <Field label="Configuration set" member="ConfigurationSetName">
+            <select name="configSet" defaultValue="">
+              <option value="">Identity default</option>
+              {sets.map((s) => (
+                <option key={s}>{s}</option>
+              ))}
+            </select>
+          </Field>
+        )}
+        <MoreFields label="Cc, Bcc, HTML, tags">
+          <div className="form-row">
+            <Field label="Cc" rule={rules.cc} member="CcAddresses">
+              <input name="cc" />
+            </Field>
+            <Field label="Bcc" rule={rules.cc} member="BccAddresses">
+              <input name="bcc" />
+            </Field>
+            <Field label="Reply-To" rule={{ format: "emails" }} member="ReplyToAddresses">
+              <input name="replyTo" />
+            </Field>
+          </div>
           <Field label="HTML body">
             <textarea name="html" rows={3} className="code-editor" />
           </Field>
-        </details>
-        <div className="form-row">
-          {sets.length > 0 && (
-            <Field label="Configuration set" member="ConfigurationSetName">
-              <select name="configSet" defaultValue="">
-                <option value="">Identity default</option>
-                {sets.map((s) => (
-                  <option key={s}>{s}</option>
-                ))}
-              </select>
-            </Field>
-          )}
           <Field label="Message tags (name=value)" rule={{ pattern: "^\\s*([\\w-]+=[\\w.@-]*\\s*(,\\s*|$))*$", hint: "Like campaign=spring" }} member="EmailTags">
             <input name="tags" />
           </Field>
-        </div>
+        </MoreFields>
       </ActionForm>
     </Sheet>
   );
@@ -169,7 +167,6 @@ function Identities({ identities }: { identities: Loaded<IdentityInfo[]> }) {
               key: i.IdentityName!,
               icon: i.IdentityType === "DOMAIN" ? <Globe size={18} aria-hidden /> : <Mail size={18} aria-hidden />,
               title: i.IdentityName,
-              subtitle: i.IdentityType === "DOMAIN" ? "Domain" : "Email address",
               href: identityHref(i.IdentityName),
               meta: <Status tone={VERIFICATION_TONE[i.VerificationStatus ?? "PENDING"] ?? "warn"}>{verificationLabel(i.VerificationStatus)}</Status>,
               actions: (

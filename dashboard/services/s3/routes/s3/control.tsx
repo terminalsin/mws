@@ -19,7 +19,7 @@ import { ago, all, load, shortName } from "@mws-dashboard/aws";
 import { roleOptions } from "@mws-dashboard/aws/auto";
 import { ActionForm, AutoPick, AwsIcon, CodeBlock, Empty, ErrorNotice, Facts, Field, List, Metric, Metrics, Pill, Section, Sheet, Status, type Rule } from "@mws-dashboard/ui";
 import { LiveRefresh } from "@mws-dashboard/ui/client";
-import { CreateAccessGrantsLocation, CreateAccessPointForObjectLambda, CreateJob, CreateMultiRegionAccessPoint, PutStorageLensConfiguration } from "@mws-dashboard/ui/model/s3control";
+import { CreateAccessGrantsLocation, CreateAccessPointForObjectLambda, CreateMultiRegionAccessPoint, PutStorageLensConfiguration } from "@mws-dashboard/ui/model/s3control";
 import { ruleAt } from "@mws-dashboard/ui/validation";
 import { Check, Plus, Trash2, X } from "lucide-react";
 import Link from "next/link";
@@ -28,11 +28,11 @@ import type { ReactNode } from "react";
 import { BATCH_ROLE, GRANTS_ROLE } from "../../lib/roles";
 import { CONTROL_ICONS, account, bucketHref, control, controlHref, links, optional, s3 } from "../../lib/s3";
 import { accessPoints } from "./access-points";
+import { JobForm } from "./job-form.tsx";
 import {
   createGrant,
   createGrantsInstance,
   createGrantsLocation,
-  createJob,
   createLens,
   createMrap,
   createObjectLambda,
@@ -295,68 +295,7 @@ async function jobs(): Promise<View> {
   const names = buckets.ok ? buckets.value : [];
   const actions = (
     <Sheet title="Create job" label="Create job" testId="create-job">
-      <ActionForm action={createJob} submit="Create job" testId="create-job">
-        <div className="form-row">
-          <Field label="Source bucket" hint="Every object (S3-generated manifest)">
-            <select name="source" required>
-              {names.map((b) => (
-                <option key={b}>{b}</option>
-              ))}
-            </select>
-          </Field>
-          <Field label="Key prefix">
-            <input name="prefix" placeholder="logs/" />
-          </Field>
-        </div>
-        <Field label="Operation">
-          <select name="operation" defaultValue="tag">
-            <option value="tag">Replace all object tags</option>
-            <option value="untag">Delete all object tags</option>
-            <option value="copy">Copy</option>
-            <option value="lambda">Invoke Lambda function</option>
-            <option value="restore">Restore</option>
-          </select>
-        </Field>
-        <Field label="Tags (for tagging)" format="tags">
-          <textarea name="tags" rows={2} placeholder="processed=true" />
-        </Field>
-        <div className="form-row">
-          <Field label="Copy to bucket">
-            <select name="target" defaultValue="">
-              <option value="">—</option>
-              {names.map((b) => (
-                <option key={b}>{b}</option>
-              ))}
-            </select>
-          </Field>
-          <Field label="Copy key prefix">
-            <input name="targetPrefix" />
-          </Field>
-        </div>
-        <Field label="Lambda function ARN (for invoke)" rule={ruleAt(CreateJob, "Operation.LambdaInvoke.FunctionArn")}>
-          <input name="function" />
-        </Field>
-        <div className="form-row">
-          <Field label="Priority" rule={{ ...ruleAt(CreateJob, "Priority"), type: "integer", min: 0 }}>
-            <input name="priority" type="number" min={0} defaultValue={10} />
-          </Field>
-          <Field label="Completion report bucket">
-            <select name="report" defaultValue="">
-              <option value="">No report</option>
-              {names.map((b) => (
-                <option key={b}>{b}</option>
-              ))}
-            </select>
-          </Field>
-        </div>
-        <Field label="Description" rule={ruleAt(CreateJob, "Description")}>
-          <input name="description" />
-        </Field>
-        <AutoPick name="role" label="IAM role" creates={BATCH_ROLE.name} options={roles} testId="job-role" />
-        <label className="check">
-          <input type="checkbox" name="confirm" /> Wait for confirmation before running
-        </label>
-      </ActionForm>
+      <JobForm buckets={names} roles={roles} roleName={BATCH_ROLE.name} />
     </Sheet>
   );
   const active = list.ok && list.value.some((j) => ACTIVE.test(j.Status ?? ""));

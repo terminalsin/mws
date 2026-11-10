@@ -1,6 +1,5 @@
 import { ago, load } from "@mws-dashboard/aws";
-import { ActionForm, AwsIcon, Empty, ErrorNotice, Field, List, Page, Pill, Segments, Sheet } from "@mws-dashboard/ui";
-import { CreateDocument } from "@mws-dashboard/ui/model/ssm";
+import { ActionForm, AwsIcon, Empty, ErrorNotice, List, Page, Pill, Segments, Sheet } from "@mws-dashboard/ui";
 import type { Metadata } from "next";
 import Link from "next/link";
 
@@ -8,6 +7,7 @@ import { ICONS } from "../../../lib/clients";
 import { SsmNav } from "../../../lib/nav";
 import { listDocuments } from "../../../lib/nodes";
 import { createDocument } from "./actions";
+import { DocumentFields } from "./fields";
 
 export const metadata: Metadata = { title: "Documents" };
 
@@ -21,20 +21,6 @@ const OWNERS = [
 
 const TYPES = ["Command", "Automation", "Session", "Policy", "ChangeCalendar", "Package", "Automation.ChangeTemplate"];
 
-const SAMPLE = `schemaVersion: "2.2"
-description: Say hello
-parameters:
-  name:
-    type: String
-    default: world
-mainSteps:
-  - action: aws:runShellScript
-    name: hello
-    inputs:
-      runCommand:
-        - echo "hello {{ name }}"
-`;
-
 export default async function Documents({ searchParams }: Props) {
   const { owner = "Self", type } = await searchParams;
   const docs = await load(() =>
@@ -43,39 +29,7 @@ export default async function Documents({ searchParams }: Props) {
   const create = (
     <Sheet title="Create document" label="Create document" testId="create-document">
       <ActionForm action={createDocument} submit="Create" testId="create-document">
-        <Field label="Name" rule={CreateDocument.Name} unique taken={docs.ok && owner === "Self" ? docs.value.map((d) => d.Name!) : []} generate="name">
-          <input name="name" required autoFocus placeholder="Hello-World" />
-        </Field>
-        <div className="form-row">
-          <Field label="Type" rule={CreateDocument.DocumentType}>
-            <select name="type" defaultValue="Command">
-              {TYPES.map((t) => (
-                <option key={t}>{t}</option>
-              ))}
-            </select>
-          </Field>
-          <Field label="Format" rule={CreateDocument.DocumentFormat}>
-            <select name="format" defaultValue="YAML">
-              <option>YAML</option>
-              <option>JSON</option>
-              <option>TEXT</option>
-            </select>
-          </Field>
-        </div>
-        <Field label="Content" rule={{ ...CreateDocument.Content, format: "yaml" }}>
-          <textarea name="content" rows={14} className="code-editor" spellCheck={false} defaultValue={SAMPLE} required />
-        </Field>
-        <div className="form-row">
-          <Field label="Target type" rule={CreateDocument.TargetType}>
-            <input name="targetType" placeholder="/AWS::EC2::Instance" />
-          </Field>
-          <Field label="Version name" rule={CreateDocument.VersionName}>
-            <input name="versionName" />
-          </Field>
-        </div>
-        <Field label="Tags" format="tags">
-          <textarea name="tags" rows={2} />
-        </Field>
+        <DocumentFields taken={docs.ok && owner === "Self" ? docs.value.map((d) => d.Name!) : []} />
       </ActionForm>
     </Sheet>
   );

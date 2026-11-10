@@ -1,39 +1,20 @@
 import { ListCostCategoryDefinitionsCommand } from "@aws-sdk/client-cost-explorer";
 import { all, load } from "@mws-dashboard/aws";
-import { ActionForm, AwsIcon, Empty, ErrorNotice, Field, List, Page, Pill, Sheet, Status, type Rule } from "@mws-dashboard/ui";
-import { CreateCostCategoryDefinition } from "@mws-dashboard/ui/model/ce";
+import { ActionForm, AwsIcon, Empty, ErrorNotice, List, Page, Pill, Sheet, Status } from "@mws-dashboard/ui";
 import { Trash2 } from "lucide-react";
 import type { Metadata } from "next";
 
 import { ICONS, ce } from "../../../lib/clients";
 import { createCostCategory, deleteCostCategory } from "../actions";
+import { CategoryFields } from "./fields";
 
 export const metadata: Metadata = { title: "Cost categories" };
-
-const NAME: Rule = { ...CreateCostCategoryDefinition.Name, generate: "name" };
-const RULES: Rule = { required: true, format: "json" };
-const EXAMPLE = JSON.stringify(
-  [
-    { Value: "Production", Rule: { Tags: { Key: "env", Values: ["prod"] } } },
-    { Value: "Storage", Rule: { Dimensions: { Key: "SERVICE", Values: ["Amazon Simple Storage Service"] } } },
-  ],
-  null,
-  2,
-);
 
 function NewCostCategory({ names }: { names: string[] }) {
   return (
     <Sheet title="New cost category" label="Create cost category" testId="create-cost-category">
       <ActionForm action={createCostCategory} submit="Create" testId="create-cost-category">
-        <Field label="Name" rule={NAME} taken={names} unique>
-          <input name="name" required autoFocus />
-        </Field>
-        <Field label="Rules" rule={RULES} hint="Each rule maps matching costs to a value">
-          <textarea name="rules" rows={12} spellCheck={false} defaultValue={EXAMPLE} className="code-editor" />
-        </Field>
-        <Field label="Uncategorized costs" rule={CreateCostCategoryDefinition.DefaultValue}>
-          <input name="default" placeholder="Other" />
-        </Field>
+        <CategoryFields names={names} />
       </ActionForm>
     </Sheet>
   );

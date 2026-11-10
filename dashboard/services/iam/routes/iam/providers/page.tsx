@@ -1,11 +1,13 @@
 import { GetOpenIDConnectProviderCommand, ListOpenIDConnectProvidersCommand, ListSAMLProvidersCommand } from "@aws-sdk/client-iam";
 import { ago, load } from "@mws-dashboard/aws";
-import { ActionForm, Empty, ErrorNotice, Field, List, Page, Pill, Sheet } from "@mws-dashboard/ui";
-import { CreateOpenIDConnectProvider, CreateSAMLProvider } from "@mws-dashboard/ui/model/iam";
+import { ActionForm, AwsIcon, Empty, ErrorNotice, Field, List, Page, Pill, Sheet } from "@mws-dashboard/ui";
+import { CreateSAMLProvider } from "@mws-dashboard/ui/model/iam";
 import { Fingerprint, Plus, Trash2 } from "lucide-react";
 import type { Metadata } from "next";
 
 import { iam } from "../../../lib/clients";
+import { OidcFields } from "../../../lib/forms.tsx";
+import { oidcIcon } from "../../../lib/presets";
 import { createOidcProvider, createSamlProvider, deleteProvider } from "../actions";
 
 export const metadata: Metadata = { title: "Identity providers" };
@@ -26,15 +28,7 @@ export default async function Providers() {
     <>
       <Sheet title="Add OpenID Connect provider" label="Add OpenID Connect provider" icon={<Plus size={16} />} testId="create-oidc-provider">
         <ActionForm action={createOidcProvider} submit="Add provider" testId="create-oidc-provider">
-          <Field label="Provider URL" rule={CreateOpenIDConnectProvider.Url} format="url">
-            <input name="url" required placeholder="https://token.actions.githubusercontent.com" />
-          </Field>
-          <Field label="Audiences" rule={CreateOpenIDConnectProvider.ClientIDList}>
-            <input name="clients" placeholder="sts.amazonaws.com" defaultValue="sts.amazonaws.com" />
-          </Field>
-          <Field label="Thumbprints" rule={CreateOpenIDConnectProvider.ThumbprintList} hint="Optional: 40 hex characters each">
-            <input name="thumbprints" />
-          </Field>
+          <OidcFields urls={data.ok ? data.value.oidc.map((p) => p.Url ?? "") : []} />
         </ActionForm>
       </Sheet>
       <Sheet title="Add SAML provider" label="Add SAML provider" icon={<Fingerprint size={16} />} testId="create-saml-provider">
@@ -61,11 +55,11 @@ export default async function Providers() {
     <Page title="Identity providers" back={back} actions={actions}>
       <List
         label="Identity providers"
-        empty={<Empty icon="resource/AWSIdentityAccessManagementRole" />}
+        empty={<Empty icon="resource/AWSIdentityAccessManagementRole" action={actions} />}
         rows={[
           ...oidc.map((p) => ({
             key: p.arn,
-            icon: <Fingerprint size={18} />,
+            icon: oidcIcon(p.Url) ? <AwsIcon icon={oidcIcon(p.Url)!} size={22} /> : <Fingerprint size={18} />,
             title: p.Url,
             subtitle: (p.ClientIDList ?? []).join(", ") || "no audience",
             meta: (

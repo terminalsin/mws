@@ -1,7 +1,8 @@
 import { GetIPSetCommand, GetThreatIntelSetCommand, ListIPSetsCommand, ListThreatIntelSetsCommand } from "@aws-sdk/client-guardduty";
 import { all, load } from "@mws-dashboard/aws";
-import { ActionForm, AwsIcon, Curated, Empty, ErrorNotice, Field, Page, Sheet, Status, type Rule } from "@mws-dashboard/ui";
+import { ActionForm, AwsIcon, Curated, Empty, ErrorNotice, Field, Page, Pill, Sheet, Status, type Rule } from "@mws-dashboard/ui";
 import { CreateIPSet } from "@mws-dashboard/ui/model/guardduty";
+import { MoreFields } from "@mws-dashboard/ui/presets";
 import { Pause, Play, ShieldAlert, ShieldCheck, Trash2 } from "lucide-react";
 import type { Metadata } from "next";
 
@@ -41,18 +42,20 @@ function AddList({ detector, kind, names, objects }: { detector: string; kind: L
         <Field label="Location" rule={CreateIPSet.Location} format="s3url" known={objects}>
           <input name="location" required placeholder="s3://bucket/key" />
         </Field>
-        <Field label="Format" rule={CreateIPSet.Format}>
-          <select name="format" defaultValue="TXT">
-            {FORMATS.map(([value, label]) => (
-              <option key={value} value={value}>
-                {label}
-              </option>
-            ))}
-          </select>
-        </Field>
-        <label className="check">
-          <input type="checkbox" name="activate" defaultChecked /> Activate
-        </label>
+        <MoreFields>
+          <Field label="Format" rule={CreateIPSet.Format}>
+            <select name="format" defaultValue="TXT">
+              {FORMATS.map(([value, label]) => (
+                <option key={value} value={value}>
+                  {label}
+                </option>
+              ))}
+            </select>
+          </Field>
+          <label className="check">
+            <input type="checkbox" name="activate" defaultChecked /> Activate
+          </label>
+        </MoreFields>
       </ActionForm>
     </Sheet>
   );
@@ -132,7 +135,7 @@ export default async function Lists() {
           meta: (
             <>
               <Status tone={l.active ? "good" : "neutral"}>{l.active ? "Active" : "Inactive"}</Status>
-              <span>{FORMATS.find(([v]) => v === l.format)?.[1] ?? l.format}</span>
+              {l.format !== "TXT" && <Pill>{FORMATS.find(([v]) => v === l.format)?.[1] ?? l.format}</Pill>}
             </>
           ),
           actions: (

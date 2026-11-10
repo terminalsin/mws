@@ -30,8 +30,9 @@ test("ce: cost and usage page and its sections", async ({ page }) => {
 test("ce: a monitor repairs account IDs written the way AWS shows them", async ({ page }) => {
   const { form, field, submit } = await openSheet(page, "/ce/anomalies", "create-monitor");
   const name = unique("dash-accounts");
+  // The sheet opens on what the monitor watches; picking it fills in a name.
+  await form.getByTestId("preset-accounts").click();
   await form.locator('input[name="name"]').fill(name);
-  await form.locator('select[name="kind"]').selectOption("accounts");
   const accounts = form.locator('input[name="accounts"]');
   await accounts.fill("1111-2222-3333");
   await accounts.blur();
@@ -50,8 +51,8 @@ test("ce: an alert subscription checks its address against the frequency", async
   // Subscriptions need a monitor to watch.
   let sheet = await openSheet(page, "/ce/anomalies", "create-monitor");
   const monitor = unique("dash-tagged");
+  await sheet.form.getByTestId("preset-tag").click();
   await sheet.form.locator('input[name="name"]').fill(monitor);
-  await sheet.form.locator('select[name="kind"]').selectOption("tag");
   await sheet.form.locator('input[name="tagKey"]').fill("team");
   await sheet.form.locator('input[name="tagValues"]').fill("payments");
   await sheet.submit();
@@ -145,6 +146,8 @@ test("ce: query costs by day, filtered and grouped", async ({ page, request }) =
   await form.locator('[name="end"]').fill(tomorrow);
   await form.locator('[name="granularity"]').selectOption("DAILY");
   await form.locator('[name="group"]').first().selectOption("DIMENSION:SERVICE");
+  // Filters wait under More.
+  await form.locator(".more-fields > summary").click();
   await form.locator('[name="filter"]').selectOption("DIMENSION:USAGE_TYPE");
   await form.locator('[name="values"]').fill(usage);
   await form.getByRole("button", { name: "Apply" }).click();

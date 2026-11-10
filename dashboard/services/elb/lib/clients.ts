@@ -24,8 +24,17 @@ export const ICONS = {
   classic: "resource/ElasticLoadBalancingClassicLoadBalancer",
   trust: "resource/AWSCertificateManagerCertificateAuthority",
   sg: "resource/AmazonVPCNetworkAccessControlList",
+  instance: "resource/AmazonEC2Instance",
 };
 
 export const LB_ICON: Record<string, string> = { application: ICONS.alb, network: ICONS.nlb, gateway: ICONS.gwlb };
 
 export const nameTag = (r: { Tags?: { Key?: string; Value?: string }[] }) => r.Tags?.find((t) => t.Key === "Name")?.Value;
+
+/** A target group's icon, by what it sends traffic to. */
+export const TARGET_ICON: Record<string, string> = {
+  instance: "resource/AmazonEC2Instance",
+  ip: ICONS.eni,
+  lambda: "resource/AWSLambdaLambdaFunction",
+  alb: ICONS.alb,
+};

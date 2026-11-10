@@ -112,7 +112,7 @@ export default async function Share({ searchParams }: Props) {
       <ActionForm action={associate.bind(null, arn)} submit="Add" testId={`add-${focus}`}>
         {focus === "resources" ? (
           <Field label="Resource ARNs" rule={RULES.resources} member="resourceArns">
-            <textarea name="resources" rows={3} placeholder={targets?.resources[0] ?? "arn:aws:acm-pca:…"} autoFocus />
+            <textarea name="resources" rows={3} defaultValue={targets?.resources.find((r) => !resourceRows.some((x) => x.arn === r))} placeholder="arn:aws:acm-pca:…" autoFocus />
           </Field>
         ) : (
           <Field label="Principals" rule={RULES.principals} member="principals">

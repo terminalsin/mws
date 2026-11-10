@@ -1,7 +1,7 @@
 import "server-only";
 
 import { ago, load } from "@mws-dashboard/aws";
-import { ActionForm, Empty, ErrorNotice, Field, List, Pill, Sheet } from "@mws-dashboard/ui";
+import { ActionForm, Empty, ErrorNotice, Field, List, Pill, Sheet, freeName } from "@mws-dashboard/ui";
 import { Import, KeyRound, Trash2 } from "lucide-react";
 
 import { createKeyPair, deleteKeyPair, importKeyPair } from "../../routes/ec2/actions";
@@ -27,7 +27,7 @@ export async function KeysView() {
       <Sheet title="New key pair" label="Create key pair" icon={<KeyRound size={16} />} testId="create-key-pair">
         <ActionForm action={createKeyPair} submit="Create" testId="create-key-pair">
           <Field label="Name" rule={KEY_NAME} member="KeyName" taken={taken} unique>
-            <input name="name" required autoFocus />
+            <input name="name" required autoFocus defaultValue={freeName("my-key", taken)} />
           </Field>
           <Field label="Type">
             <select name="type" defaultValue="ed25519">

@@ -17,6 +17,7 @@ import Link from "next/link";
 import type { ReactNode } from "react";
 
 import { ec2, ICONS, nameTag, STATE_TONE } from "../../lib/clients";
+import { knownService, serviceKey } from "../../lib/endpoint-services";
 import { SubnetFields, VpcFields } from "../../lib/forms";
 import { EndpointFields, NatFields, PeeringFields, type NetworkChoice } from "../../lib/network-forms";
 import { choices, cidrsOf, isPublic, label, listAcls, listAddresses, listEndpoints, listGroups, listIgws, listNats, listPeerings, routeTarget } from "../../lib/vpc";
@@ -75,11 +76,11 @@ function VpcSelect({ vpcs, name = "vpc", label: text = "VPC", optional, defaultV
   );
 }
 
-export function CreateVpcSheet({ used }: { used: string[] }) {
+export function CreateVpcSheet({ used, names }: { used: string[]; names?: string[] }) {
   return (
     <Sheet title="Create VPC" label="Create VPC" testId="create-vpc">
       <ActionForm action={createVpc} submit="Create VPC" testId="create-vpc">
-        <VpcFields used={used} />
+        <VpcFields used={used} names={names} />
       </ActionForm>
     </Sheet>
   );
@@ -134,17 +135,18 @@ export function deleteVpcConfirm(name: string) {
 
 export const vpcsTab: Tab = async ({ vpcs, subnets, tables }) => {
   const used = vpcs.flatMap(cidrsOf);
+  const names = vpcs.map((v) => nameTag(v)).filter((n): n is string => !!n);
   return {
     actions: (
       <>
         {!vpcs.some((v) => v.IsDefault) && <ActionForm action={createDefaultVpc} submit="Create default VPC" icon={<Star size={16} />} confirm="Create a default VPC with a default subnet in every Availability Zone?" />}
-        <CreateVpcSheet used={used} />
+        <CreateVpcSheet used={used} names={names} />
       </>
     ),
     body: (
       <List
         label="VPCs"
-        empty={<Empty icon={ICONS.vpc} action={<CreateVpcSheet used={used} />} />}
+        empty={<Empty icon={ICONS.vpc} action={<CreateVpcSheet used={used} names={names} />} />}
         rows={vpcs.map((v) => {
           const own = subnets.filter((s) => s.VpcId === v.VpcId);
           const pub = own.filter((s) => isPublic(s, tables)).length;
@@ -505,11 +507,16 @@ export const endpointsTab: Tab = async (net) => {
         empty={<Empty icon={ICONS.endpoint} action={create} />}
         row={(e) => ({
           key: e.VpcEndpointId!,
-          icon: <AwsIcon icon={ICONS.endpoint} size={24} />,
-          title: nameTag(e) ?? e.ServiceName,
-          subtitle: `${nameTag(e) ? `${e.ServiceName} · ` : ""}${e.VpcEndpointId} · ${vpcName(e.VpcId)}`,
+          icon: <AwsIcon icon={knownService(e.ServiceName)?.icon ?? ICONS.endpoint} size={24} />,
+          title: nameTag(e) ?? knownService(e.ServiceName)?.label ?? serviceKey(e.ServiceName),
+          subtitle: `${nameTag(e) ? `${knownService(e.ServiceName)?.label ?? serviceKey(e.ServiceName)} · ` : ""}${vpcName(e.VpcId)}`,
           href: `/vpc/endpoint?id=${e.VpcEndpointId}`,
-          meta: <Status tone={STATE_TONE(e.State?.toLowerCase())}>{e.State?.toLowerCase() ?? ""}</Status>,
+          meta: (
+            <>
+              <Pill>{e.VpcEndpointType}</Pill>
+              <Status tone={STATE_TONE(e.State?.toLowerCase())}>{e.State?.toLowerCase() ?? ""}</Status>
+            </>
+          ),
           actions: <ActionForm action={deleteEndpoint.bind(null, e.VpcEndpointId!, undefined)} submit={`Delete ${e.VpcEndpointId}`} icon={<Trash2 size={15} />} tone="danger" confirm={`Delete ${e.VpcEndpointId}?`} />,
         })}
       />

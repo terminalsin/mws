@@ -2,12 +2,14 @@ import { ListGroupsCommand, ListPoliciesCommand, ListRolesCommand, ListUsersComm
 import { search } from "@mws-dashboard/ai";
 import { ago, all, frameInfo, load } from "@mws-dashboard/aws";
 import { ActionForm, AwsIcon, Curated, Empty, ErrorNotice, Field, List, Page, Pill, Section, Sheet } from "@mws-dashboard/ui";
-import { Fingerprint, FlaskConical, Settings } from "lucide-react";
+import { Fingerprint, FlaskConical, Link2, Settings } from "lucide-react";
+import { MoreFields } from "@mws-dashboard/ui/presets";
 import type { Metadata } from "next";
 import Link from "next/link";
 
 import { ICONS, iam, policyDocument, principalIcon, trust } from "../../lib/clients";
-import { RULES, SERVICE_PRINCIPALS } from "../../lib/rules";
+import { PolicyFields, RoleFields } from "../../lib/forms.tsx";
+import { RULES } from "../../lib/rules";
 import { createGroup, createPolicy, createRole, createUser } from "./actions";
 
 export const metadata: Metadata = { title: "IAM" };
@@ -50,32 +52,18 @@ export default async function Iam({ searchParams }: Props) {
           <Field label="Name" rule={RULES.userName} taken={users.map((u) => u.UserName!)} unique>
             <input name="name" required autoFocus />
           </Field>
-          <Field label="Path" rule={RULES.path}>
-            <input name="path" placeholder="/" />
-          </Field>
+          <MoreFields>
+            <Field label="Path" rule={RULES.path}>
+              <input name="path" placeholder="/" />
+            </Field>
+          </MoreFields>
         </ActionForm>
       </Sheet>
     ),
     roles: (
       <Sheet title="New role" label="Create role" testId="create-role">
         <ActionForm action={createRole} submit="Create" testId="create-role">
-          <Field label="Name" rule={RULES.roleName} taken={roles.map((r) => r.RoleName!)} unique>
-            <input name="name" required autoFocus />
-          </Field>
-          <Field label="Trusted service" rule={RULES.service}>
-            <input name="service" defaultValue="lambda.amazonaws.com" list="principals" />
-          </Field>
-          <datalist id="principals">
-            {SERVICE_PRINCIPALS.map((p) => (
-              <option key={p} value={p} />
-            ))}
-          </datalist>
-          <Field label="Description" rule={RULES.roleDescription}>
-            <input name="description" />
-          </Field>
-          <Field label="Or a trust policy" rule={RULES.trust}>
-            <textarea name="trust" placeholder='{"Version": "2012-10-17", "Statement": [...]}' />
-          </Field>
+          <RoleFields taken={roles.map((r) => r.RoleName!)} account={info.account} />
         </ActionForm>
       </Sheet>
     ),
@@ -85,30 +73,18 @@ export default async function Iam({ searchParams }: Props) {
           <Field label="Name" rule={RULES.groupName} taken={groups.map((g) => g.GroupName!)} unique>
             <input name="name" required autoFocus />
           </Field>
-          <Field label="Path" rule={RULES.path}>
-            <input name="path" placeholder="/" />
-          </Field>
+          <MoreFields>
+            <Field label="Path" rule={RULES.path}>
+              <input name="path" placeholder="/" />
+            </Field>
+          </MoreFields>
         </ActionForm>
       </Sheet>
     ),
     policies: (
       <Sheet title="New policy" label="Create policy" testId="create-policy">
         <ActionForm action={createPolicy} submit="Create" testId="create-policy">
-          <Field label="Name" rule={RULES.policyName} taken={policies.map((p) => p.PolicyName!)} unique>
-            <input name="name" required autoFocus />
-          </Field>
-          <Field label="Description" rule={RULES.policyDescription}>
-            <input name="description" />
-          </Field>
-          <Field label="Document" rule={RULES.document}>
-            <textarea
-              name="document"
-              rows={12}
-              required
-              aria-label="Policy document"
-              defaultValue={JSON.stringify({ Version: "2012-10-17", Statement: [{ Effect: "Allow", Action: "s3:GetObject", Resource: "*" }] }, null, 2)}
-            />
-          </Field>
+          <PolicyFields taken={policies.map((p) => p.PolicyName!)} />
         </ActionForm>
       </Sheet>
     ),
@@ -121,7 +97,7 @@ export default async function Iam({ searchParams }: Props) {
       <Curated
         label="Roles"
         sections={TRUST_SECTIONS.map((s) => ({ id: s.id, title: s.title, items: classified.filter((c) => c.kind === s.id) }))}
-        empty={<Empty icon={ICONS.role} />}
+        empty={<Empty icon={ICONS.role} action={create.roles} />}
         row={({ role, services }) => ({
           key: role.RoleId!,
           icon: <AwsIcon icon={services[0] ? principalIcon(services[0]) : ICONS.role} size={24} />,
@@ -136,7 +112,7 @@ export default async function Iam({ searchParams }: Props) {
     body = (
       <List
         label="Groups"
-        empty={<Empty icon={ICONS.users} />}
+        empty={<Empty icon={ICONS.users} action={create.groups} />}
         rows={groups.map((g) => ({
           key: g.GroupId!,
           icon: <AwsIcon icon={ICONS.users} size={24} />,
@@ -165,7 +141,14 @@ export default async function Iam({ searchParams }: Props) {
       title: p.PolicyName,
       subtitle: p.Description,
       href: `/iam/policy?arn=${encodeURIComponent(p.Arn!)}`,
-      meta: (p.AttachmentCount ?? 0) > 0 ? <Pill>{p.AttachmentCount}</Pill> : <Pill tone="warn">unattached</Pill>,
+      meta:
+        (p.AttachmentCount ?? 0) > 0 ? (
+          <Pill icon={<Link2 size={12} />} title={`Attached to ${p.AttachmentCount}`}>
+            {p.AttachmentCount}
+          </Pill>
+        ) : (
+          <Pill tone="warn">unattached</Pill>
+        ),
     });
     body = (
       <>
@@ -174,7 +157,7 @@ export default async function Iam({ searchParams }: Props) {
           <input name="q" defaultValue={q} placeholder="Find a policy, including AWS managed ones" aria-label="Find a policy" />
         </form>
         <Section title="Customer managed" count={local.length} plain>
-          <List label="Customer managed policies" rows={local.map(row)} empty={<Empty icon={ICONS.policy} />} />
+          <List label="Customer managed policies" rows={local.map(row)} empty={<Empty icon={ICONS.policy} action={q ? undefined : create.policies} />} />
         </Section>
         {aws && (
           <Section title="AWS managed" count={aws.ok ? aws.value.length : undefined} plain>
@@ -187,7 +170,7 @@ export default async function Iam({ searchParams }: Props) {
     body = (
       <List
         label="Users"
-        empty={<Empty icon={ICONS.user} />}
+        empty={<Empty icon={ICONS.user} action={create.users} />}
         rows={users.map((u) => ({
           key: u.UserId!,
           icon: <AwsIcon icon={ICONS.user} size={24} />,

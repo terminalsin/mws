@@ -11,9 +11,22 @@ export async function pipelines(): Promise<InventoryItem[]> {
 }
 
 export async function recipes(): Promise<InventoryItem[]> {
-  return (await lists.recipes()).map((r) => ({ service: "imagebuilder", type: "Image recipe", id: r.arn!, name: `${r.name} ${lists.versionOf(r.arn)}`, href: `/imagebuilder?tab=recipes`, tags: r.tags }));
+  return (await lists.recipes()).map((r) => ({
+    service: "imagebuilder",
+    type: "Image recipe",
+    id: r.arn!,
+    name: `${r.name} ${lists.versionOf(r.arn)}`,
+    href: `/imagebuilder?tab=recipes`,
+    tags: r.tags,
+  }));
 }
 
 export async function components(): Promise<InventoryItem[]> {
-  return (await lists.components()).map((c) => ({ service: "imagebuilder", type: "Image Builder component", id: c.arn!, name: `${c.name} ${c.version}`, href: `/imagebuilder/component?arn=${enc(c.arn!)}` }));
+  return (await lists.components()).map((c) => ({
+    service: "imagebuilder",
+    type: "Image Builder component",
+    id: c.arn!,
+    name: `${c.name} ${c.version}`,
+    href: `/imagebuilder/component?arn=${enc(c.arn!)}`,
+  }));
 }

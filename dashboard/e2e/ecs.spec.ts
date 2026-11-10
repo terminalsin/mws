@@ -160,7 +160,9 @@ test("ECS: stopped tasks stay visible with the reason they stopped", async ({ pa
 
 test("ECS: a task definition shows its containers and revisions, and makes a new revision from JSON", async ({ page }) => {
   const family = unique("dash-td");
-  await page.goto("/ecs?tab=taskdefs");
+  // The environment waits under More.
+  const { form } = await openSheet(page, "/ecs?tab=taskdefs", "register-task-definition");
+  await form.locator("summary", { hasText: "More" }).click();
   await submit(page, "register-task-definition", { family, image: "public.ecr.aws/nginx/nginx:latest", port: "80", env: "MODE=e2e" });
   await row(page, family).locator("a").click();
   await expect(page.getByRole("heading", { level: 1, name: `${family}:1` })).toBeVisible();

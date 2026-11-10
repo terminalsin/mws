@@ -1,13 +1,15 @@
 import { DescribeEventBusCommand, ListRulesCommand, ListTargetsByRuleCommand, type Target } from "@aws-sdk/client-eventbridge";
 import { all, load } from "@mws-dashboard/aws";
-import { ActionForm, AwsIcon, CodeBlock, Empty, ErrorNotice, Facts, Field, List, Page, Pill, Section, Segments, Sheet } from "@mws-dashboard/ui";
-import { Clock, Pause, Play, Send, Settings2, Trash2 } from "lucide-react";
+import { ActionForm, AwsIcon, CodeBlock, CopyValue, Empty, ErrorNotice, Facts, Field, List, Page, Pill, Section, Segments, Sheet } from "@mws-dashboard/ui";
+import { Pause, Play, Send, Settings2, Trash2 } from "lucide-react";
+import { MoreFields } from "@mws-dashboard/ui/presets";
 import type { Metadata } from "next";
 import Link from "next/link";
 
 import { enabled, events, ICONS, managed } from "../../lib/clients";
 import { arnHref, arnName } from "../../lib/links";
-import { BUS_DESCRIPTION, BUS_NAME, DLQ, ENTRY, PATTERN, ROLE, RULE_DESCRIPTION, RULE_NAME, SCHEDULE, SOURCE, TARGET } from "../../lib/rules";
+import { CreateRuleFields } from "../../lib/create-rule";
+import { BUS_DESCRIPTION, BUS_NAME, DLQ, ENTRY, SOURCE } from "../../lib/rules";
 import { buses as listBuses, targetArns } from "../../lib/targets";
 import { ruleHref, TargetIcons } from "../../lib/targets-view";
 import { EventsTabs } from "../../lib/tabs";
@@ -116,9 +118,11 @@ export default async function EventBridge({ searchParams }: Props) {
                   <Field label="Dead-letter queue" rule={{ ...DLQ, required: false }} known={known.filter((a) => a.split(":")[2] === "sqs")}>
                     <input name="dlq" defaultValue={b.DeadLetterConfig?.Arn} spellCheck={false} />
                   </Field>
-                  <Field label="Resource-based policy" format="policy">
-                    <textarea name="policy" rows={8} spellCheck={false} defaultValue={b.Policy ? JSON.stringify(JSON.parse(b.Policy), null, 2) : ""} />
-                  </Field>
+                  <MoreFields label="Resource-based policy" expanded={!!b.Policy}>
+                    <Field label="Resource-based policy" format="policy">
+                      <textarea name="policy" rows={8} spellCheck={false} defaultValue={b.Policy ? JSON.stringify(JSON.parse(b.Policy), null, 2) : ""} />
+                    </Field>
+                  </MoreFields>
                   {b.Policy && <input type="hidden" name="hadPolicy" value="1" />}
                 </ActionForm>
               </Sheet>
@@ -130,7 +134,7 @@ export default async function EventBridge({ searchParams }: Props) {
         >
           <Facts
             items={[
-              ["ARN", <code key="a">{b.Arn}</code>],
+              ["ARN", <CopyValue key="a" value={b.Arn} label="Copy ARN" />],
               b.Description && ["Description", b.Description],
               partner && ["Type", <Pill key="p" tone="info">partner</Pill>],
               b.DeadLetterConfig?.Arn && ["Dead-letter queue", arnHref(b.DeadLetterConfig.Arn) ? <Link key="d" href={arnHref(b.DeadLetterConfig.Arn)!}>{arnName(b.DeadLetterConfig.Arn)}</Link> : b.DeadLetterConfig.Arn],
@@ -153,37 +157,7 @@ export default async function EventBridge({ searchParams }: Props) {
         actions={
           <Sheet title={`New rule on ${bus}`} label="Create rule" testId="create-rule">
             <ActionForm action={createRule.bind(null, bus)} submit="Create" testId="create-rule">
-              <Field label="Name" rule={RULE_NAME} taken={listed.map(({ rule }) => rule.Name!)} unique>
-                <input name="name" required autoFocus />
-              </Field>
-              <Field label="Description" rule={RULE_DESCRIPTION}>
-                <input name="description" />
-              </Field>
-              <Field label="Event pattern" rule={PATTERN} member="EventPattern" format="eventPattern">
-                <textarea name="pattern" placeholder='{"source": ["my.app"]}' />
-              </Field>
-              {/* Schedules run on the default bus only. */}
-              {bus === "default" && (
-                <Field label="Or schedule" rule={SCHEDULE} member="ScheduleExpression" format="schedule">
-                  <input name="schedule" placeholder="rate(5 minutes)" />
-                </Field>
-              )}
-              <Field label="Target ARN" rule={TARGET} member="Arn" format="arn" known={targetArnList}>
-                <input name="target" placeholder="arn:aws:sqs:…" list="event-targets" spellCheck={false} />
-              </Field>
-              <datalist id="event-targets">
-                {targetArnList.map((a) => (
-                  <option key={a} value={a}>
-                    {arnName(a)}
-                  </option>
-                ))}
-              </datalist>
-              <Field label="Target role" rule={{ ...ROLE, required: false }} member="RoleArn">
-                <input name="role" placeholder="For Kinesis, Firehose, buses and API destinations" spellCheck={false} />
-              </Field>
-              <label className="check">
-                <input type="checkbox" name="grant" defaultChecked /> Allow the rule in the target&apos;s resource policy
-              </label>
+              <CreateRuleFields bus={bus} taken={listed.map(({ rule }) => rule.Name!)} targets={targetArnList.map((a) => ({ arn: a, name: arnName(a) }))} />
             </ActionForm>
           </Sheet>
         }
@@ -197,7 +171,7 @@ export default async function EventBridge({ searchParams }: Props) {
               const own = managed(rule);
               return {
                 key: rule.Name!,
-                icon: rule.ScheduleExpression ? <Clock size={18} aria-hidden /> : <AwsIcon icon={ICONS.rule} size={24} />,
+                icon: <AwsIcon icon={rule.ScheduleExpression ? "resource/AmazonEventBridgeScheduler" : ICONS.rule} size={24} />,
                 title: rule.Name,
                 href: ruleHref(bus, rule.Name!),
                 subtitle: rule.Description ?? rule.ScheduleExpression,

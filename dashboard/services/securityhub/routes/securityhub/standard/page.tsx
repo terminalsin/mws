@@ -6,6 +6,7 @@ import { Minus, Power, PowerOff, ShieldCheck } from "lucide-react";
 import type { Metadata } from "next";
 
 import { ICONS, securityhub, severity, word } from "../../../lib/clients";
+import { controlIcon } from "../../../lib/presets";
 import { disableStandard, setControl } from "../actions";
 
 export const metadata: Metadata = { title: "Standard · Security Hub" };
@@ -64,13 +65,13 @@ export default async function Standard({ searchParams }: Props) {
           const sev = severity(c.SeverityRating);
           return {
             key: c.StandardsControlArn!,
-            icon: <AwsIcon icon={ICONS.securityhub} size={20} />,
+            icon: <AwsIcon icon={controlIcon(c.ControlId)} size={20} />,
             title: `${c.ControlId} ${c.Title ?? ""}`,
             subtitle: on ? undefined : [c.DisabledReason, c.ControlStatusUpdatedAt ? `since ${when(c.ControlStatusUpdatedAt)}` : ""].filter(Boolean).join(" · "),
             meta: (
               <>
                 <Status tone={sev.tone}>{sev.label}</Status>
-                <Pill tone={on ? "good" : "neutral"}>{word(c.ControlStatus)}</Pill>
+                {!on && <Pill>{word(c.ControlStatus)}</Pill>}
               </>
             ),
             actions: on ? (

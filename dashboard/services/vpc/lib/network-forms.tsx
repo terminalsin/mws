@@ -8,11 +8,14 @@
 
 import { AutoPick } from "@mws-dashboard/ui/client";
 import { FieldShell as Field } from "@mws-dashboard/ui/fields";
+import { MoreFields, PresetGallery, type PresetItem } from "@mws-dashboard/ui/presets";
 import type { Rule } from "@mws-dashboard/ui/validation";
 import { CreateNetworkAclEntry, CreateRoute, CreateVpcEndpoint } from "@mws-dashboard/ui/model/ec2";
+import { ArrowLeftRight, Asterisk, Globe, Lock, Monitor, Terminal } from "lucide-react";
 import { useMemo, useState } from "react";
 
 import { PROTOCOLS } from "./acl";
+import { KNOWN_SERVICES, serviceKey } from "./endpoint-services";
 
 const IPV4: Rule = { ...CreateRoute.DestinationCidrBlock, format: "cidr" };
 const OTHER: Rule = { pattern: "^(pl-[0-9a-f]{8,17}|[0-9a-fA-F:]+/\\d{1,3})$", hint: "An IPv4 or IPv6 CIDR, or a prefix list ID" };
@@ -84,8 +87,20 @@ export function EndpointFields({ services, vpcs }: { services: ServiceChoice[]; 
   const type = picked && offered.includes(picked) ? picked : offered[0];
   const [vpcId, setVpcId] = useState(vpcs[0]?.id ?? "");
   const vpc = vpcs.find((v) => v.id === vpcId);
+  // The well-known services this Region offers, as logo tiles; the select
+  // below still lists every service.
+  const tiles = useMemo(
+    () =>
+      KNOWN_SERVICES.flatMap((k) => {
+        const s = services.find((x) => serviceKey(x.name) === k.key);
+        const gateway = s?.types.includes("Gateway");
+        return s ? [{ id: s.name, label: k.label, icon: k.icon, title: gateway ? `${s.name} · gateway endpoint, no charge` : s.name, found: gateway } satisfies PresetItem] : [];
+      }),
+    [services],
+  );
   return (
     <>
+      {tiles.length > 0 && <PresetGallery presets={tiles} chosen={service} choose={(t) => setService(t.id)} label="Service" size={24} testId="endpoint-service" />}
       <Field label="Name" rule={{ maxLength: 256 }}>
         <input name="name" />
       </Field>
@@ -126,9 +141,11 @@ export function EndpointFields({ services, vpcs }: { services: ServiceChoice[]; 
           )}
         </>
       )}
-      <Field label="Policy" rule={{ ...CreateVpcEndpoint.PolicyDocument, format: "policy", required: false }} member="PolicyDocument" hint="Full access when empty">
-        <textarea name="policy" rows={5} spellCheck={false} />
-      </Field>
+      <MoreFields>
+        <Field label="Policy" rule={{ ...CreateVpcEndpoint.PolicyDocument, format: "policy", required: false }} member="PolicyDocument" hint="Full access when empty">
+          <textarea name="policy" rows={5} spellCheck={false} />
+        </Field>
+      </MoreFields>
     </>
   );
 }
@@ -209,9 +226,28 @@ export function PeeringFields({ vpcs, regions, region }: { vpcs: Choice[]; regio
 
 const RULE_NUMBER: Rule = { ...CreateNetworkAclEntry.RuleNumber, min: 1, max: 32766 };
 
+// Common rules, as tiles: each sets the protocol and ports.
+interface AclPreset extends PresetItem {
+  protocol: string;
+  ports?: string;
+}
+const ACL_PRESETS: AclPreset[] = [
+  { id: "https", label: "HTTPS", protocol: "6", ports: "443", icon: <Lock size={22} aria-hidden /> },
+  { id: "http", label: "HTTP", protocol: "6", ports: "80", icon: <Globe size={22} aria-hidden /> },
+  { id: "ssh", label: "SSH", protocol: "6", ports: "22", icon: <Terminal size={22} aria-hidden /> },
+  { id: "rdp", label: "RDP", protocol: "6", ports: "3389", icon: <Monitor size={22} aria-hidden /> },
+  { id: "ephemeral", label: "Ephemeral", protocol: "6", ports: "1024-65535", icon: <ArrowLeftRight size={22} aria-hidden />, title: "Return traffic: TCP 1024-65535" },
+  { id: "all", label: "All traffic", protocol: "-1", icon: <Asterisk size={22} aria-hidden /> },
+];
+
 export function AclEntryFields({ taken, entry }: { taken: string[]; entry?: { number: number; egress: boolean; protocol: string; ports?: string; cidr: string; action: string } }) {
   const known = PROTOCOLS.some((p) => p.value === entry?.protocol);
+  const [preset, setPreset] = useState<AclPreset | undefined>(entry ? undefined : ACL_PRESETS[0]);
   const [protocol, setProtocol] = useState(entry ? (known ? entry.protocol : "custom") : "6");
+  const pick = (p: AclPreset) => {
+    setPreset(p);
+    setProtocol(p.protocol);
+  };
   const ports = PROTOCOLS.find((p) => p.value === protocol)?.ports || protocol === "custom";
   const next = useMemo(() => {
     for (let n = 100; n < 32766; n += 100) if (!taken.includes(String(n))) return n;
@@ -232,7 +268,8 @@ export function AclEntryFields({ taken, entry }: { taken: string[]; entry?: { nu
           </Field>
         </div>
       )}
-      <div className="form-row">
+      {!entry && <PresetGallery presets={ACL_PRESETS} chosen={preset && preset.protocol === protocol ? preset.id : undefined} choose={pick} label="Rule" size={22} testId="acl-preset" />}
+      <div className="form-row" key={preset?.id}>
         <Field label="Type" member="Protocol">
           <select name="protocol" value={protocol} onChange={(e) => setProtocol(e.target.value)}>
             {PROTOCOLS.map((p) => (
@@ -249,7 +286,7 @@ export function AclEntryFields({ taken, entry }: { taken: string[]; entry?: { nu
         )}
         {ports && (
           <Field label="Port range" format="ports" member="PortRange">
-            <input name="ports" required={protocol !== "custom"} defaultValue={entry?.ports ?? "443"} spellCheck={false} />
+            <input name="ports" required={protocol !== "custom"} defaultValue={entry?.ports ?? preset?.ports ?? "443"} spellCheck={false} />
           </Field>
         )}
       </div>

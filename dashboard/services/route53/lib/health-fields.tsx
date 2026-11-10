@@ -1,7 +1,9 @@
 "use client";
 
 import { FieldShell as Field } from "@mws-dashboard/ui/fields";
+import { MoreFields, PresetGallery, type PresetItem } from "@mws-dashboard/ui/presets";
 import type { Rule, Rules } from "@mws-dashboard/ui/validation";
+import { Plug, Sigma } from "lucide-react";
 import { useState } from "react";
 
 export type HealthKind = "http" | "TCP" | "CALCULATED" | "CLOUDWATCH_METRIC";
@@ -25,12 +27,13 @@ export interface HealthDefaults {
   insufficient?: string;
 }
 
-const KINDS: Record<HealthKind, string> = {
-  http: "Endpoint (HTTP/HTTPS)",
-  TCP: "Endpoint (TCP)",
-  CALCULATED: "Status of other health checks",
-  CLOUDWATCH_METRIC: "State of CloudWatch alarm",
-};
+// What a health check watches, as tiles.
+const KINDS: (PresetItem & { id: HealthKind })[] = [
+  { id: "http", label: "Web endpoint", icon: "resource/Internet", title: "An HTTP or HTTPS URL" },
+  { id: "TCP", label: "TCP port", icon: <Plug size={26} aria-hidden />, title: "A host and port that accepts connections" },
+  { id: "CALCULATED", label: "Other checks", icon: <Sigma size={26} aria-hidden />, title: "Healthy when enough of other health checks are" },
+  { id: "CLOUDWATCH_METRIC", label: "Alarm", icon: "service/AmazonCloudWatch", title: "Follows a CloudWatch alarm's state" },
+];
 
 const NAME: Rule = { maxLength: 256 };
 const HOST: Rule = { required: true, maxLength: 255 };
@@ -56,19 +59,17 @@ export function HealthFields({
   const endpoint = kind === "http" || kind === "TCP";
   return (
     <>
+      {editing ? (
+        <input type="hidden" name="kind" value={kind} />
+      ) : (
+        <>
+          <PresetGallery presets={KINDS} chosen={kind} choose={(k) => setKind(k.id)} label="What to monitor" testId="health-kind" />
+          <input type="hidden" name="kind" value={kind} />
+        </>
+      )}
       <Field label="Name" rule={NAME} member="Tags.Name">
         <input name="checkName" defaultValue={defaults.name} placeholder="api-primary" />
       </Field>
-      <Field label="What to monitor">
-        <select name="kind" value={kind} onChange={(e) => setKind(e.target.value as HealthKind)} disabled={editing}>
-          {Object.entries(KINDS).map(([k, v]) => (
-            <option key={k} value={k}>
-              {v}
-            </option>
-          ))}
-        </select>
-      </Field>
-      {editing && <input type="hidden" name="kind" value={kind} />}
       {kind === "http" && (
         <>
           <Field label="Endpoint URL" format="url" member="FullyQualifiedDomainName">
@@ -88,33 +89,6 @@ export function HealthFields({
             <input name="port" type="number" required defaultValue={defaults.port ?? 443} />
           </Field>
         </div>
-      )}
-      {endpoint && (
-        <>
-          <div className="form-row">
-            <Field label="Interval" rule={rules.RequestInterval} member="RequestInterval">
-              <select name="interval" defaultValue={String(defaults.interval ?? 30)} disabled={editing}>
-                <option value="30">30 seconds</option>
-                <option value="10">10 seconds</option>
-              </select>
-            </Field>
-            <Field label="Failure threshold" rule={rules.FailureThreshold} member="FailureThreshold">
-              <input name="threshold" type="number" defaultValue={defaults.threshold ?? 3} />
-            </Field>
-          </div>
-          <label className="check">
-            <input type="checkbox" checked={custom} onChange={(e) => setCustom(e.target.checked)} /> Choose checker Regions
-          </label>
-          {custom && (
-            <fieldset className="checks" aria-label="Checker Regions">
-              {checkerRegions.map((r) => (
-                <label key={r} className="check">
-                  <input type="checkbox" name="regions" value={r} defaultChecked={defaults.regions?.includes(r) ?? true} /> {r}
-                </label>
-              ))}
-            </fieldset>
-          )}
-        </>
       )}
       {kind === "CALCULATED" && (
         <>
@@ -150,12 +124,41 @@ export function HealthFields({
           </Field>
         </>
       )}
-      <label className="check">
-        <input type="checkbox" name="inverted" defaultChecked={defaults.inverted} /> Invert status
-      </label>
-      <label className="check">
-        <input type="checkbox" name="disabled" defaultChecked={defaults.disabled} /> Disabled (always healthy)
-      </label>
+      <MoreFields open={editing}>
+        {endpoint && (
+          <>
+            <div className="form-row">
+              <Field label="Interval" rule={rules.RequestInterval} member="RequestInterval">
+                <select name="interval" defaultValue={String(defaults.interval ?? 30)} disabled={editing}>
+                  <option value="30">30 seconds</option>
+                  <option value="10">10 seconds</option>
+                </select>
+              </Field>
+              <Field label="Failure threshold" rule={rules.FailureThreshold} member="FailureThreshold">
+                <input name="threshold" type="number" defaultValue={defaults.threshold ?? 3} />
+              </Field>
+            </div>
+            <label className="check">
+              <input type="checkbox" checked={custom} onChange={(e) => setCustom(e.target.checked)} /> Choose checker Regions
+            </label>
+            {custom && (
+              <fieldset className="checks" aria-label="Checker Regions">
+                {checkerRegions.map((r) => (
+                  <label key={r} className="check">
+                    <input type="checkbox" name="regions" value={r} defaultChecked={defaults.regions?.includes(r) ?? true} /> {r}
+                  </label>
+                ))}
+              </fieldset>
+            )}
+          </>
+        )}
+        <label className="check">
+          <input type="checkbox" name="inverted" defaultChecked={defaults.inverted} /> Invert status
+        </label>
+        <label className="check">
+          <input type="checkbox" name="disabled" defaultChecked={defaults.disabled} /> Disabled (always healthy)
+        </label>
+      </MoreFields>
     </>
   );
 }

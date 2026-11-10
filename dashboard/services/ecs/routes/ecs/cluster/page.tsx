@@ -1,13 +1,14 @@
 import { DescribeClustersCommand, DescribeContainerInstancesCommand, ListContainerInstancesCommand, type Task } from "@aws-sdk/client-ecs";
 import { ago, all, load } from "@mws-dashboard/aws";
-import { ActionForm, AwsIcon, Empty, ErrorNotice, Facts, Field, List, Page, Pill, Section, Segments, Sheet, Status, Tags } from "@mws-dashboard/ui";
+import { ActionForm, AwsIcon, Empty, ErrorNotice, Facts, Field, List, Page, Pill, Section, Segments, Sheet, Status, Tags, freeName } from "@mws-dashboard/ui";
 import { CreateService, RunTask } from "@mws-dashboard/ui/model/ecs";
+import { MoreFields } from "@mws-dashboard/ui/presets";
 import { Activity, Play, Plus, Server, Trash2 } from "lucide-react";
 import type { Metadata } from "next";
 import Link from "next/link";
 
 import { ICONS, STATUS_TONE, ecs } from "../../../lib/clients";
-import { activeDefinitions, revisionOf, serviceHealth, serviceHref, services as listServices, tasks as listTasks } from "../../../lib/ecs";
+import { activeDefinitions, familyOf, revisionOf, serviceHealth, serviceHref, services as listServices, tasks as listTasks } from "../../../lib/ecs";
 import { NAME } from "../../../lib/rules";
 import { createService, deleteCluster, deleteService, runTask, updateClusterInsights } from "../actions";
 import { taskRow } from "../rows.tsx";
@@ -61,13 +62,16 @@ export default async function Cluster({ searchParams }: Props) {
       {revisionOf(d)}
     </option>
   ));
+  // Fargate is what nearly everyone wants; EC2 waits under More.
   const launch = (
-    <Field label="Launch type">
-      <select name="launchType" defaultValue="FARGATE">
-        <option value="FARGATE">Fargate</option>
-        <option value="EC2">EC2</option>
-      </select>
-    </Field>
+    <MoreFields>
+      <Field label="Launch type">
+        <select name="launchType" defaultValue="FARGATE">
+          <option value="FARGATE">Fargate</option>
+          <option value="EC2">EC2</option>
+        </select>
+      </Field>
+    </MoreFields>
   );
   const insights = c.settings?.find((s) => s.name === "containerInsights")?.value;
   return (
@@ -81,19 +85,17 @@ export default async function Cluster({ searchParams }: Props) {
           <Sheet title="Create service" label="Create service" icon={<Plus size={16} />} testId="create-service">
             <ActionForm action={createService.bind(null, name)} submit="Create service" testId="create-service">
               <Field label="Service name" rule={{ ...CreateService.serviceName, ...NAME }} taken={serviceNames} unique>
-                <input name="name" required autoFocus />
+                <input name="name" required autoFocus defaultValue={defs.length ? freeName(familyOf(defs[0]), serviceNames) : undefined} />
               </Field>
               <Field label="Task definition" rule={CreateService.taskDefinition} hint={defHint}>
                 <select name="taskDefinition" required>
                   {defOptions}
                 </select>
               </Field>
-              <div className="form-row">
-                <Field label="Desired tasks" rule={CreateService.desiredCount}>
-                  <input name="desired" type="number" min={0} defaultValue={1} />
-                </Field>
-                {launch}
-              </div>
+              <Field label="Desired tasks" rule={CreateService.desiredCount}>
+                <input name="desired" type="number" min={0} defaultValue={1} />
+              </Field>
+              {launch}
             </ActionForm>
           </Sheet>
           <Sheet title="Run task" label="Run task" icon={<Play size={16} />} testId="run-task">
@@ -103,12 +105,10 @@ export default async function Cluster({ searchParams }: Props) {
                   {defOptions}
                 </select>
               </Field>
-              <div className="form-row">
-                <Field label="Count" rule={RunTask.count}>
-                  <input name="count" type="number" min={1} max={10} defaultValue={1} />
-                </Field>
-                {launch}
-              </div>
+              <Field label="Count" rule={RunTask.count}>
+                <input name="count" type="number" min={1} max={10} defaultValue={1} />
+              </Field>
+              {launch}
             </ActionForm>
           </Sheet>
           <ActionForm
@@ -140,7 +140,7 @@ export default async function Cluster({ searchParams }: Props) {
               { label: "Stopped", href: `${base}&tab=tasks&status=STOPPED`, active: desired === "STOPPED" },
             ]}
           />
-          <List label="Tasks" empty={<Empty icon={ICONS.task} />} rows={tasks.map((t) => taskRow(name, t))} />
+          <List label="Tasks" empty={<Empty icon={ICONS.task}>{desired === "STOPPED" ? "No stopped tasks" : undefined}</Empty>} rows={tasks.map((t) => taskRow(name, t))} />
         </>
       )}
       {tab === "services" && (

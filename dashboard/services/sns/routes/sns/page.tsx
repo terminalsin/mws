@@ -1,13 +1,13 @@
 import { GetTopicAttributesCommand, ListTopicsCommand } from "@aws-sdk/client-sns";
 import { sections } from "@mws-dashboard/ai";
 import { ago, all, load, shortName } from "@mws-dashboard/aws";
-import { ActionForm, AwsIcon, Curated, Empty, ErrorNotice, Field, List, Page, Pill, Section, Sheet } from "@mws-dashboard/ui";
+import { ActionForm, AwsIcon, Curated, Empty, ErrorNotice, List, Page, Pill, Section, Sheet } from "@mws-dashboard/ui";
 import { Eraser, Mail, MessageSquare, Smartphone } from "lucide-react";
 import type { Metadata } from "next";
 
 import { ICONS, sns } from "../../lib/clients";
 import { snsEmails, snsPush, snsSms } from "../../lib/outbox";
-import { DISPLAY_NAME, TOPIC_NAME } from "../../lib/rules";
+import { CreateTopicFields } from "../../lib/create-topic";
 import { SnsTabs } from "../../lib/view";
 import { clearOutbox, createTopic } from "./actions";
 
@@ -24,20 +24,7 @@ function CreateTopic({ names = [] }: { names?: string[] }) {
   return (
     <Sheet title="New topic" label="Create topic" testId="create-topic">
       <ActionForm action={createTopic} submit="Create" testId="create-topic">
-        <Field label="Name" rule={TOPIC_NAME} taken={names} unique>
-          <input name="name" required maxLength={256} autoFocus />
-        </Field>
-        <Field label="Display name" rule={DISPLAY_NAME} member="DisplayName">
-          <input name="displayName" />
-        </Field>
-        <div className="form-row">
-          <label className="check">
-            <input type="checkbox" name="fifo" /> FIFO
-          </label>
-          <label className="check">
-            <input type="checkbox" name="dedup" /> Content-based deduplication (FIFO)
-          </label>
-        </div>
+        <CreateTopicFields names={names} />
       </ActionForm>
     </Sheet>
   );

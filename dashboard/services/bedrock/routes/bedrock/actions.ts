@@ -21,7 +21,7 @@ import { ROLES, bucketOptions, ensureLogGroup, roleFrom } from "@mws-dashboard/a
 import { redirect } from "next/navigation";
 
 import { bedrock, bedrockRuntime } from "../../lib/clients";
-import { FILTERS } from "../../lib/guardrail-form";
+import { FILTERS } from "../../lib/guardrail-presets";
 
 const list = (s: string) => s.split(/[\n,]+/).map((x) => x.trim()).filter(Boolean);
 

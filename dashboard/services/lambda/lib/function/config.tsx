@@ -3,6 +3,7 @@ import { ago, bytes } from "@mws-dashboard/aws";
 import { ActionForm, CopyButton, Facts, Field, List, Pill, Section, Sheet, Status, Tags } from "@mws-dashboard/ui";
 import { Gauge, Globe, Plus, Settings2, Tag, Trash2, Undo2 } from "lucide-react";
 import Link from "next/link";
+import { MoreFields } from "@mws-dashboard/ui/presets";
 
 import {
   addProvisioned,
@@ -108,9 +109,6 @@ export function Configuration({
                 <Field label="Timeout (s)" rule={TIMEOUT}>
                   <input name="timeout" type="number" min={1} defaultValue={c.Timeout} />
                 </Field>
-                <Field label="Ephemeral storage (MB)" rule={EPHEMERAL}>
-                  <input name="ephemeral" inputMode="numeric" defaultValue={c.EphemeralStorage?.Size} />
-                </Field>
               </div>
               {c.PackageType !== "Image" && (
                 <div className="form-row">
@@ -129,21 +127,26 @@ export function Configuration({
               <Field label="Execution role" rule={ROLE} arn={`arn:aws:iam::${account}:role/{}`} known={roles}>
                 <input name="role" defaultValue={c.Role} spellCheck={false} />
               </Field>
-              <Field label="Dead-letter queue or topic" rule={{ ...DLQ_TARGET, required: false }} known={destinations.filter((d) => /:(sqs|sns):/.test(d))}>
-                <input name="dlq" defaultValue={dlq} spellCheck={false} />
-              </Field>
-              {dlq && <input type="hidden" name="hadDlq" value="1" />}
-              {c.PackageType !== "Image" && (
-                <Field label="Layers" rule={{ ...LAYER_ARNS, required: false }}>
-                  <textarea name="layers" rows={2} spellCheck={false} defaultValue={c.Layers?.map((l) => l.Arn).join("\n")} />
-                </Field>
-              )}
-              <label className="check">
-                <input type="checkbox" name="tracing" value="Active" defaultChecked={c.TracingConfig?.Mode === "Active"} /> Active tracing
-              </label>
               <Field label="Environment variables" rule={ENVIRONMENT}>
                 <textarea name="env" rows={6} placeholder="KEY=value" spellCheck={false} defaultValue={Object.entries(env).map(([k, v]) => `${k}=${v}`).join("\n")} />
               </Field>
+              <MoreFields expanded={!!dlq || !!c.Layers?.length || c.TracingConfig?.Mode === "Active" || (c.EphemeralStorage?.Size ?? 512) !== 512}>
+                <Field label="Ephemeral storage (MB)" rule={EPHEMERAL}>
+                  <input name="ephemeral" inputMode="numeric" defaultValue={c.EphemeralStorage?.Size} />
+                </Field>
+                <Field label="Dead-letter queue or topic" rule={{ ...DLQ_TARGET, required: false }} known={destinations.filter((d) => /:(sqs|sns):/.test(d))}>
+                  <input name="dlq" defaultValue={dlq} spellCheck={false} />
+                </Field>
+                {dlq && <input type="hidden" name="hadDlq" value="1" />}
+                {c.PackageType !== "Image" && (
+                  <Field label="Layers" rule={{ ...LAYER_ARNS, required: false }}>
+                    <textarea name="layers" rows={2} spellCheck={false} defaultValue={c.Layers?.map((l) => l.Arn).join("\n")} />
+                  </Field>
+                )}
+                <label className="check">
+                  <input type="checkbox" name="tracing" value="Active" defaultChecked={c.TracingConfig?.Mode === "Active"} /> Active tracing
+                </label>
+              </MoreFields>
             </ActionForm>
           </Sheet>
         }

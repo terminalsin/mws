@@ -16,7 +16,8 @@ test("Load balancers: an ALB with a listener forwarding to a target group", asyn
 
   const tg = unique("tg").slice(0, 32);
   await page.goto("/elb?tab=targets");
-  await submit(page, "create-target-group", { name: tg, targetType: "ip", vpc: vpcId });
+  await pick(page, "create-target-group", "tg-type-ip");
+  await submit(page, "create-target-group", { name: tg, vpc: vpcId });
   await expect(page.getByRole("heading", { level: 1, name: tg })).toBeVisible();
 
   const lb = unique("alb").slice(0, 32);
@@ -29,6 +30,15 @@ test("Load balancers: an ALB with a listener forwarding to a target group", asyn
   await s.form.locator('button[type="submit"]').click();
   await expect(row(page, ":8080")).toContainText(tg);
 });
+
+/** Open the sheet holding form `testId` and pick one of its type tiles
+ * (the fields below remount for it, so pick before filling). */
+async function pick(page: Page, testId: string, tile: string) {
+  const s = await sheet(page, testId);
+  await s.form.getByTestId(tile).click();
+  await expect(s.form.getByTestId(tile)).toHaveAttribute("aria-checked", "true");
+  return s;
+}
 
 /** Open the sheet holding form `testId`; returns the form and a field getter. */
 async function sheet(page: Page, testId: string) {
@@ -48,14 +58,13 @@ test("Load balancers: fields flag problems in place and offer repairs", async ({
   // Target group: a health check path without its leading slash.
   const tg = unique("tgv").slice(0, 32);
   await page.goto("/elb?tab=targets");
-  let s = await sheet(page, "create-target-group");
+  let s = await pick(page, "create-target-group", "tg-type-ip");
   await s.control("healthPath").fill("health");
   await s.control("healthPath").blur();
   await expect(s.field("healthPath")).toHaveAttribute("data-invalid", "pattern");
   await s.field("healthPath").getByRole("button", { name: /Add \// }).click();
   await expect(s.control("healthPath")).toHaveValue("/health");
   await s.control("name").fill(tg);
-  await s.control("targetType").selectOption("ip");
   await s.control("vpc").selectOption(vpcId);
   await s.form.locator('button[type="submit"]').click();
   await expect(page.getByRole("heading", { level: 1, name: tg })).toBeVisible();
@@ -123,7 +132,8 @@ test("Load balancers: listener rules with priorities, a modified listener, healt
   const web = unique("tg-web").slice(0, 32);
   for (const name of [web, api]) {
     await page.goto("/elb?tab=targets");
-    await submit(page, "create-target-group", { name, targetType: "ip", vpc: vpcId });
+    await pick(page, "create-target-group", "tg-type-ip");
+    await submit(page, "create-target-group", { name, vpc: vpcId });
     await expect(page.getByRole("heading", { level: 1, name })).toBeVisible();
   }
   // Health check settings and attributes of the last group.
@@ -183,12 +193,14 @@ test("Load balancers: Network and Gateway Load Balancers only forward; GENEVE gr
   const vpcId = await defaultVpc();
   const geneve = unique("tg-gnv").slice(0, 32);
   await page.goto("/elb?tab=targets");
-  await submit(page, "create-target-group", { name: geneve, targetType: "ip", protocol: "GENEVE", vpc: vpcId });
+  await pick(page, "create-target-group", "tg-type-ip");
+  await submit(page, "create-target-group", { name: geneve, protocol: "GENEVE", vpc: vpcId });
   await expect(page.getByText("GENEVE:6081")).toBeVisible();
 
   const gw = unique("gwlb").slice(0, 32);
   await page.goto("/elb");
-  await submit(page, "create-load-balancer", { name: gw, type: "gateway", vpc: vpcId });
+  await pick(page, "create-load-balancer", "lb-type-gateway");
+  await submit(page, "create-load-balancer", { name: gw, vpc: vpcId });
   await expect(page.getByRole("heading", { level: 1, name: gw })).toBeVisible();
   const add = page.locator("dialog[open]").getByTestId("add-listener").and(page.locator("form"));
   await expect(async () => {
@@ -203,7 +215,8 @@ test("Load balancers: Network and Gateway Load Balancers only forward; GENEVE gr
 
   const nlb = unique("nlb").slice(0, 32);
   await page.goto("/elb");
-  await submit(page, "create-load-balancer", { name: nlb, type: "network", vpc: vpcId });
+  await pick(page, "create-load-balancer", "lb-type-network");
+  await submit(page, "create-load-balancer", { name: nlb, vpc: vpcId });
   await expect(page.getByRole("heading", { level: 1, name: nlb })).toBeVisible();
   const n = page.locator("dialog[open]").getByTestId("add-listener").and(page.locator("form"));
   await expect(async () => {

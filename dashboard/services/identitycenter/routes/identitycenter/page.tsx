@@ -1,6 +1,6 @@
 import { ListManagedPoliciesInPermissionSetCommand } from "@aws-sdk/client-sso-admin";
 import { all, load } from "@mws-dashboard/aws";
-import { ActionForm, AwsIcon, CopyButton, Empty, ErrorNotice, Facts, Field, List, Page, Pill, Sheet, type Rule } from "@mws-dashboard/ui";
+import { ActionForm, AwsIcon, CopyValue, Empty, ErrorNotice, Facts, Field, List, Page, Pill, Sheet, type Rule } from "@mws-dashboard/ui";
 import { CreateGroup, CreateUser } from "@mws-dashboard/ui/model/identitystore";
 import { CreatePermissionSet } from "@mws-dashboard/ui/model/sso-admin";
 import { RefreshCw, Timer, Trash2, Users } from "lucide-react";
@@ -10,7 +10,7 @@ import { ICONS, ssoAdmin } from "../../lib/clients";
 import { duration, groups as listGroups, instance as loadInstance, memberships, outdated, permissionSets, users as listUsers, userName } from "../../lib/sso";
 import { createGroup, createPermissionSet, createUser, deleteGroup, deletePermissionSet, deleteUser, enableInstance, enablePermissionSets, provisionPermissionSet } from "./actions";
 import { Links } from "./parts";
-import { POLICIES } from "../../lib/policies";
+import { PermissionSetFields, UserFields } from "../../lib/forms.tsx";
 
 export const metadata: Metadata = { title: "IAM Identity Center" };
 
@@ -21,8 +21,6 @@ type Props = { searchParams: Promise<{ tab?: string }> };
 const USERNAME: Rule = { ...CreateUser.UserName, hint: "No spaces", takenIgnoreCase: true };
 const PERMISSION_SET_NAME: Rule = { ...CreatePermissionSet.Name, hint: "Letters, digits and +=,.@-_", generate: "name" };
 const GROUP_NAME: Rule = { ...CreateGroup.DisplayName, generate: "name", takenIgnoreCase: true };
-const HOURS: Rule = { type: "number", min: 1, max: 12 };
-
 
 export default async function IdentityCenter({ searchParams }: Props) {
   const { tab = "users" } = await searchParams;
@@ -131,28 +129,7 @@ export default async function IdentityCenter({ searchParams }: Props) {
     const create = (
       <Sheet title="Create permission set" label="Create permission set" testId="create-permission-set">
         <ActionForm action={createPermissionSet.bind(null, arn)} submit="Create" testId="create-permission-set">
-          <Field label="Name" rule={PERMISSION_SET_NAME} member="Name" taken={taken} unique>
-            <input name="name" required autoFocus />
-          </Field>
-          <Field label="Description" rule={CreatePermissionSet.Description} member="Description">
-            <input name="description" />
-          </Field>
-          <Field label="AWS managed policy">
-            <select name="policy" defaultValue={POLICIES[2]}>
-              <option value="">None</option>
-              {POLICIES.map((p) => (
-                <option key={p} value={p}>
-                  {p.split("/").pop()}
-                </option>
-              ))}
-            </select>
-          </Field>
-          <Field label="Session duration (hours)" rule={HOURS}>
-            <input name="hours" type="number" min={1} max={12} defaultValue={1} />
-          </Field>
-          <Field label="Relay state" rule={CreatePermissionSet.RelayState} member="RelayState" format="url">
-            <input name="relay" placeholder="https://console.aws.amazon.com/s3" />
-          </Field>
+          <PermissionSetFields rule={PERMISSION_SET_NAME} taken={taken} />
         </ActionForm>
       </Sheet>
     );
@@ -208,20 +185,7 @@ export default async function IdentityCenter({ searchParams }: Props) {
   const create = (
     <Sheet title="Add user" label="Add user" testId="create-sso-user">
       <ActionForm action={createUser.bind(null, store)} submit="Add user" testId="create-sso-user">
-        <Field label="Username" rule={USERNAME} member="UserName" taken={taken} unique>
-          <input name="username" required autoFocus />
-        </Field>
-        <div className="form-row">
-          <Field label="First name" rule={CreateUser.Name.fields?.GivenName} member="Name.GivenName">
-            <input name="given" required />
-          </Field>
-          <Field label="Last name" rule={CreateUser.Name.fields?.FamilyName} member="Name.FamilyName">
-            <input name="family" required />
-          </Field>
-        </div>
-        <Field label="Email address" rule={CreateUser.Emails.item?.fields?.Value} member="Emails.Value" format="email">
-          <input name="email" type="email" />
-        </Field>
+        <UserFields rule={USERNAME} taken={taken} />
       </ActionForm>
     </Sheet>
   );
@@ -239,10 +203,7 @@ export default async function IdentityCenter({ searchParams }: Props) {
         items={[
           [
             "AWS access portal URL",
-            <span key="u" style={{ display: "inline-flex", alignItems: "center", gap: 4 }}>
-              <code>{inst.startUrl}</code>
-              <CopyButton value={inst.startUrl} label="Copy start URL" />
-            </span>,
+            <CopyValue key="u" value={inst.startUrl} label="Copy start URL" />,
           ],
           ["Region", inst.region],
         ]}

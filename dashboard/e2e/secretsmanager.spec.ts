@@ -52,7 +52,8 @@ test("Secrets Manager: create-secret fields repair names, JSON values and KMS ke
   await expect(field("value").getByRole("button", { name: /Generate/ })).toBeVisible();
   await control("value").fill(json);
 
-  // A key Secrets Manager can't use comes back on the KMS key field.
+  // A key Secrets Manager can't use comes back on the KMS key field (under More).
+  await form.locator("summary", { hasText: "More" }).click();
   await control("kmsKeyId").fill("alias/no-such-key");
   await form.locator('button[type="submit"]').click();
   await expect(field("kmsKeyId")).toHaveAttribute("data-invalid", /.+/);

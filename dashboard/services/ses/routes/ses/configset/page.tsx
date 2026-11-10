@@ -67,7 +67,6 @@ export default async function ConfigSet({ searchParams }: Props) {
       title={name}
       icon={ICONS.email}
       back={back}
-      subtitle="Configuration set"
       actions={
         <>
           <Sheet title="Edit configuration set" label="Edit configuration set" icon={<Pencil size={16} />} testId="edit-config-set">

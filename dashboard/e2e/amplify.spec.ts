@@ -44,6 +44,9 @@ test("Amplify: forms repair branch names, URLs and taken branches in place", asy
   // on the token.
   await page.goto("/amplify");
   let { form, field, input } = await sheet(page, "create-app");
+  // A Git host adds the repository and token fields (an upload needs neither).
+  await form.getByTestId("source-github").click();
+  await expect(form.getByTestId("source-github")).toHaveAttribute("aria-checked", "true");
   await input("branch").fill("my feature");
   await input("branch").blur();
   await expect(field("branch")).toHaveAttribute("data-invalid", "format");
@@ -137,6 +140,8 @@ test("Amplify: app settings, branch settings and a custom domain", async ({ page
   const app = (await amplify.send(new CreateAppCommand({ name: unique("dash-edit") }))).app!;
   await amplify.send(new CreateBranchCommand({ appId: app.appId!, branchName: "main" }));
   await page.goto(`/amplify/app?id=${app.appId}`);
+  // Rewrites wait under More.
+  await (await sheet(page, "edit-app")).form.locator(".more-fields > summary").click();
   await submit(page, "edit-app", { env: "API_URL=https://api.example.com", rules: "/old /new 301" });
   await expect(page.getByText("API_URL", { exact: true })).toBeVisible();
   await expect(row(page, "/old")).toContainText("301");

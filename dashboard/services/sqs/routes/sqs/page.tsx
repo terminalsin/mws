@@ -1,42 +1,21 @@
 import { ago, load } from "@mws-dashboard/aws";
-import { ActionForm, AwsIcon, Curated, Empty, ErrorNotice, Field, Page, Pill, Sheet } from "@mws-dashboard/ui";
+import { ActionForm, AwsIcon, Curated, Empty, ErrorNotice, Page, Pill, Sheet } from "@mws-dashboard/ui";
 import { LiveRefresh } from "@mws-dashboard/ui/client";
 import { ArrowRight } from "lucide-react";
 import type { Metadata } from "next";
 
 import { ICONS, isDlq, queues, type QueueInfo } from "../../lib/clients";
 import { arnName } from "../../lib/links";
-import { ATTRIBUTE_RULES as RULES, KMS_KEY, KMS_REUSE, MAX_RECEIVES, QUEUE_NAME, SOURCE_ARNS } from "../../lib/rules";
-import { QueueSettings } from "../../lib/settings";
+import { CreateQueueFields } from "../../lib/create";
 import { createQueue } from "./actions";
 
 export const metadata: Metadata = { title: "SQS" };
 
-function CreateQueue({ all, names }: { all: QueueInfo[]; names: string[] }) {
+function CreateQueue({ all }: { all: QueueInfo[] }) {
   return (
     <Sheet title="New queue" label="Create queue" testId="create-queue">
       <ActionForm action={createQueue} submit="Create" testId="create-queue">
-        <Field label="Name" rule={QUEUE_NAME} taken={names} unique>
-          <input name="name" required maxLength={80} autoFocus />
-        </Field>
-        <div className="form-row">
-          <Field label="Visibility timeout (s)" rule={RULES.VisibilityTimeout}>
-            <input name="VisibilityTimeout" inputMode="numeric" placeholder="30" />
-          </Field>
-          <Field label="Retention (s)" rule={RULES.MessageRetentionPeriod}>
-            <input name="MessageRetentionPeriod" inputMode="numeric" placeholder="345600" />
-          </Field>
-          <Field label="Delay (s)" rule={RULES.DelaySeconds}>
-            <input name="DelaySeconds" inputMode="numeric" placeholder="0" />
-          </Field>
-          <Field label="Receive wait (s)" rule={RULES.ReceiveMessageWaitTimeSeconds}>
-            <input name="ReceiveMessageWaitTimeSeconds" inputMode="numeric" placeholder="0" />
-          </Field>
-        </div>
-        <QueueSettings
-          queues={all.map((q) => ({ name: q.name, arn: q.arn, fifo: q.attrs.FifoQueue === "true" }))}
-          rules={{ maxReceives: MAX_RECEIVES, kmsKey: KMS_KEY, kmsReuse: KMS_REUSE, sources: SOURCE_ARNS }}
-        />
+        <CreateQueueFields queues={all.map((q) => ({ name: q.name, arn: q.arn, fifo: q.attrs.FifoQueue === "true" }))} />
       </ActionForm>
     </Sheet>
   );
@@ -58,12 +37,12 @@ export default async function Queues() {
   ].filter((s) => s.items.length);
   const busy = all.some((q) => Number(q.attrs.ApproximateNumberOfMessagesNotVisible ?? 0) > 0 || Number(q.attrs.ApproximateNumberOfMessagesDelayed ?? 0) > 0);
   return (
-    <Page title="Queues" actions={<CreateQueue all={all} names={all.map((q) => q.name)} />}>
+    <Page title="Queues" actions={<CreateQueue all={all} />}>
       <LiveRefresh when={busy} />
       <Curated
         label="Queues"
         sections={sections}
-        empty={<Empty icon={ICONS.queue} action={<CreateQueue all={[]} names={[]} />} />}
+        empty={<Empty icon={ICONS.queue} action={<CreateQueue all={[]} />} />}
         row={(q) => {
           const visible = Number(q.attrs.ApproximateNumberOfMessages ?? 0);
           const inflight = Number(q.attrs.ApproximateNumberOfMessagesNotVisible ?? 0);

@@ -1,6 +1,7 @@
 "use client";
 
 import { FieldShell as Field } from "@mws-dashboard/ui/fields";
+import { freeName, MoreFields, PresetGallery } from "@mws-dashboard/ui/presets";
 import type { Rule } from "@mws-dashboard/ui/validation";
 import { useState } from "react";
 
@@ -26,36 +27,36 @@ export interface DestinationDefaults {
 const ARN: Rule = { required: true, pattern: "^arn:aws[\\w-]*:", hint: "An ARN" };
 const DIMENSION: Rule = { required: true, pattern: "^[\\w:-]{1,256}$", hint: "Letters, digits, _ - : only" };
 
-/** An event destination: which events, and where they go (each kind takes
- * its own target). */
+const KINDS: { id: DestinationKind; label: string; icon: string; title: string }[] = [
+  { id: "sns", label: "SNS", icon: "service/AmazonSimpleNotificationService", title: "Amazon SNS topic" },
+  { id: "eventbridge", label: "EventBridge", icon: "service/AmazonEventBridge", title: "Amazon EventBridge event bus" },
+  { id: "firehose", label: "Firehose", icon: "service/AmazonDataFirehose", title: "Amazon Data Firehose stream" },
+  { id: "cloudwatch", label: "CloudWatch", icon: "service/AmazonCloudWatch", title: "Amazon CloudWatch metrics" },
+];
+
+/** An event destination: where events go (a logo per kind, each taking its
+ * own target), and which events; the event list waits under More. */
 export function DestinationFields({ defaults, topics, streams, editing, nameRule }: { defaults: DestinationDefaults; topics: string[]; streams: string[]; editing?: boolean; nameRule: Rule }) {
   const [kind, setKind] = useState<DestinationKind>(defaults.kind);
   return (
     <>
+      {!editing && (
+        <PresetGallery
+          presets={KINDS.map((k) => ({ ...k, found: (k.id === "sns" && topics.length > 0) || (k.id === "firehose" && streams.length > 0) }))}
+          chosen={kind}
+          choose={(k) => setKind(k.id)}
+          label="Destination"
+          testId="destination-kind"
+        />
+      )}
+      <input type="hidden" name="kind" value={kind} />
       {editing ? (
         <input type="hidden" name="destName" value={defaults.name} />
       ) : (
-        <Field label="Name" rule={nameRule} unique>
-          <input name="destName" required defaultValue={defaults.name} />
+        <Field key={kind} label="Name" rule={nameRule} unique>
+          <input name="destName" required defaultValue={defaults.name ?? freeName(`to-${kind}`, nameRule.taken ?? [])} />
         </Field>
       )}
-      <fieldset className="checks">
-        <legend>Event types</legend>
-        {EVENT_TYPES.map((t) => (
-          <label className="check" key={t}>
-            <input type="checkbox" name="event" value={t} defaultChecked={defaults.events.includes(t)} /> {label(t)}
-          </label>
-        ))}
-      </fieldset>
-      <Field label="Destination">
-        <select name="kind" value={kind} onChange={(e) => setKind(e.target.value as DestinationKind)} disabled={editing}>
-          <option value="sns">Amazon SNS</option>
-          <option value="eventbridge">Amazon EventBridge</option>
-          <option value="firehose">Amazon Data Firehose</option>
-          <option value="cloudwatch">Amazon CloudWatch</option>
-        </select>
-      </Field>
-      {editing && <input type="hidden" name="kind" value={kind} />}
       {kind === "sns" && (
         <Field label="SNS topic" rule={ARN} known={topics} member="TopicArn">
           <input name="topic" required defaultValue={defaults.topic ?? topics[0]} />
@@ -96,6 +97,16 @@ export function DestinationFields({ defaults, topics, streams, editing, nameRule
       <label className="check">
         <input type="checkbox" name="enabled" defaultChecked={defaults.enabled} /> Enabled
       </label>
+      <MoreFields label="Event types" expanded={editing}>
+        <fieldset className="checks">
+          <legend>Event types</legend>
+          {EVENT_TYPES.map((t) => (
+            <label className="check" key={t}>
+              <input type="checkbox" name="event" value={t} defaultChecked={defaults.events.includes(t)} /> {label(t)}
+            </label>
+          ))}
+        </fieldset>
+      </MoreFields>
     </>
   );
 }

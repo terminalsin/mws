@@ -7,6 +7,7 @@
 // on when the VPC changes or the block gets used.
 
 import { FieldShell as Field } from "@mws-dashboard/ui/fields";
+import { PresetGallery, freeName, type PresetItem } from "@mws-dashboard/ui/presets";
 import { freeBlocks, type Rule } from "@mws-dashboard/ui/validation";
 import { CreateSubnet, CreateVpc } from "@mws-dashboard/ui/model/ec2";
 import { useMemo, useState } from "react";
@@ -84,7 +85,14 @@ export function SubnetFields({ vpcs, zones, vpc: fixed }: { vpcs: VpcChoice[]; z
   );
 }
 
-export function VpcFields({ used }: { used: string[] }) {
+// What "Create VPC" makes, as tiles: the VPC with its subnets, gateway and
+// route tables (the common case), or the VPC alone.
+const LAYOUTS: PresetItem[] = [
+  { id: "public-private", label: "VPC and more", icon: "group/VirtualprivatecloudVPC", title: "Public and private subnets in 2 zones, an internet gateway and route tables" },
+  { id: "vpc", label: "VPC only", icon: "resource/AmazonVPCVirtualprivatecloudVPC" },
+];
+
+export function VpcFields({ used, names = [] }: { used: string[]; names?: string[] }) {
   const [layout, setLayout] = useState("public-private");
   // A /16 in 10.0.0.0/8 that no VPC uses yet, so peering stays possible.
   const suggested = useMemo(() => freeBlocks(16, { within: ["10.0.0.0/8"], avoid: used }, 1)[0] ?? "10.0.0.0/16", [used]);
@@ -95,18 +103,16 @@ export function VpcFields({ used }: { used: string[] }) {
   );
   return (
     <>
-      <Field label="Name" rule={NAME}>
-        <input name="name" autoFocus />
-      </Field>
-      <Field label="IPv4 CIDR" rule={rule} member="CidrBlock">
-        <input name="cidr" required defaultValue={suggested} spellCheck={false} />
-      </Field>
-      <Field label="Resources">
-        <select name="layout" value={layout} onChange={(e) => setLayout(e.target.value)}>
-          <option value="public-private">VPC and more: public and private subnets in 2 zones</option>
-          <option value="vpc">VPC only</option>
-        </select>
-      </Field>
+      <PresetGallery presets={LAYOUTS} chosen={layout} choose={(p) => setLayout(p.id)} label="Resources" testId="vpc-layout" />
+      <input type="hidden" name="layout" value={layout} />
+      <div className="form-row">
+        <Field label="Name" rule={NAME}>
+          <input name="name" autoFocus defaultValue={freeName("vpc", names)} />
+        </Field>
+        <Field label="IPv4 CIDR" rule={rule} member="CidrBlock">
+          <input name="cidr" required defaultValue={suggested} spellCheck={false} />
+        </Field>
+      </div>
     </>
   );
 }

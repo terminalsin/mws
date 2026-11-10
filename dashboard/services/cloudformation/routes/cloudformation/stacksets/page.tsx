@@ -1,9 +1,9 @@
 import { ListStackSetsCommand } from "@aws-sdk/client-cloudformation";
 import { all, load, region } from "@mws-dashboard/aws";
 import { roleOptions } from "@mws-dashboard/aws/auto";
-import { ActionForm, AutoPick, Empty, ErrorNotice, Field, List, Page, Pill, Sheet, Status } from "@mws-dashboard/ui";
+import { ActionForm, AutoPick, AwsIcon, Empty, ErrorNotice, Field, List, Page, Pill, Sheet, Status } from "@mws-dashboard/ui";
 import { CreateStackInstances as InstanceRules, CreateStackSet as Rules } from "@mws-dashboard/ui/model/cloudformation";
-import { Boxes } from "lucide-react";
+import { MoreFields } from "@mws-dashboard/ui/presets";
 import type { Metadata } from "next";
 
 import { PARAMETERS, SAMPLE_TEMPLATE, STACK_NAME, TEMPLATE, word } from "../../../lib/cloudformation";
@@ -22,28 +22,28 @@ function CreateStackSet({ names, roles, here }: { names: string[]; roles: { valu
         <Field label="StackSet name" rule={{ ...Rules.StackSetName, ...STACK_NAME }} taken={names} unique>
           <input name="name" required maxLength={128} />
         </Field>
-        <Field label="Description" rule={Rules.Description}>
-          <input name="description" />
-        </Field>
         <Field label="Template" rule={{ ...Rules.TemplateBody, ...TEMPLATE }}>
           <textarea name="template" rows={12} required className="code-editor" spellCheck={false} defaultValue={SAMPLE_TEMPLATE} />
         </Field>
         <Field label="Parameters" rule={PARAMETERS}>
           <textarea name="parameters" rows={2} spellCheck={false} placeholder="Env=prod" />
         </Field>
-        <Capabilities />
-        <AutoPick name="adminRole" label="Administration role" options={roles} creates={ADMIN_ROLE} testId="admin-role" />
-        <Field label="Execution role name" rule={Rules.ExecutionRoleName}>
-          <input name="executionRole" defaultValue={EXECUTION_ROLE} />
+        <Field label="Regions" rule={InstanceRules.Regions} hint="Blank to deploy later">
+          <input name="regions" defaultValue={here} placeholder={here} />
         </Field>
-        <div className="form-row">
+        <MoreFields>
+          <Field label="Description" rule={Rules.Description}>
+            <input name="description" />
+          </Field>
+          <Capabilities />
+          <AutoPick name="adminRole" label="Administration role" options={roles} creates={ADMIN_ROLE} testId="admin-role" />
+          <Field label="Execution role name" rule={Rules.ExecutionRoleName}>
+            <input name="executionRole" defaultValue={EXECUTION_ROLE} />
+          </Field>
           <Field label="Deploy to accounts" rule={InstanceRules.Accounts} hint="Blank for this account">
             <input name="accounts" placeholder="123456789012" />
           </Field>
-          <Field label="Regions" rule={InstanceRules.Regions} hint="Blank to deploy later">
-            <input name="regions" placeholder={here} />
-          </Field>
-        </div>
+        </MoreFields>
       </ActionForm>
     </Sheet>
   );
@@ -60,18 +60,19 @@ export default async function StackSets() {
   });
   const [roles, here] = await Promise.all([roleOptions("cloudformation.amazonaws.com"), region()]);
   const names = data.ok ? data.value.map((s) => s.StackSetName!) : [];
+  const create = <CreateStackSet names={names} roles={roles} here={here} />;
   return (
-    <Page title="StackSets" actions={<CreateStackSet names={names} roles={roles} here={here} />}>
+    <Page title="StackSets" actions={create}>
       <CloudFormationNav active="stacksets" />
       {!data.ok ? (
         <ErrorNotice error={data.error} />
       ) : (
         <List
           label="StackSets"
-          empty={<Empty icon={ICONS.cloudformation} />}
+          empty={<Empty icon={ICONS.cloudformation} action={create} />}
           rows={data.value.map((s) => ({
             key: s.StackSetId!,
-            icon: <Boxes size={20} aria-hidden />,
+            icon: <AwsIcon icon={ICONS.stack} size={24} />,
             title: s.StackSetName,
             subtitle: s.Description,
             href: `/cloudformation/stackset?name=${encodeURIComponent(s.StackSetName!)}`,

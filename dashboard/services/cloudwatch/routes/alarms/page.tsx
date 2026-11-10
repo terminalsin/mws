@@ -58,16 +58,19 @@ export default async function Alarms() {
     formOptions(),
   ]);
   const taken = alarms.ok ? alarms.value.map((a) => a.AlarmName!) : [];
+  const newAlarm = (
+    <Sheet title="New alarm" label="Create alarm" testId="create-alarm">
+      <AlarmForm
+        {...options}
+        taken={taken}
+        action={saveAlarm.bind(null, null)}
+        testId="create-alarm"
+      />
+    </Sheet>
+  );
   const create = (
     <>
-      <Sheet title="New alarm" label="Create alarm" testId="create-alarm">
-        <AlarmForm
-          {...options}
-          taken={taken}
-          action={saveAlarm.bind(null, null)}
-          testId="create-alarm"
-        />
-      </Sheet>
+      {newAlarm}
       <Sheet
         title="New composite alarm"
         label="Create composite alarm"
@@ -129,7 +132,7 @@ export default async function Alarms() {
           ...s,
           items: list.filter((a) => a.StateValue === s.id),
         }))}
-        empty={<Empty icon={ICONS.alarm} />}
+        empty={<Empty icon={ICONS.alarm} action={newAlarm} />}
         row={(a) => {
           const icon =
             a.kind === "metric" && a.Namespace

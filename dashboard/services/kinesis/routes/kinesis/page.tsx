@@ -4,27 +4,19 @@ import {
   AwsIcon,
   Empty,
   ErrorNotice,
-  Field,
   List,
   Page,
   Pill,
   Sheet,
   Status,
-  type Rule,
 } from "@mws-dashboard/ui";
-import { CreateStream } from "@mws-dashboard/ui/model/kinesis";
 import type { Metadata } from "next";
 
 import { ICONS, STATUS_TONE, listStreams, streamHref } from "../../lib/clients";
+import { CreateStreamFields } from "../../lib/create";
 import { createStream } from "./actions";
 
 export const metadata: Metadata = { title: "Kinesis" };
-
-const STREAM_NAME: Rule = {
-  ...CreateStream.StreamName,
-  hint: "Letters, digits, _ . -",
-  generate: "name",
-};
 
 export default async function Streams() {
   const streams = await load(listStreams);
@@ -36,26 +28,7 @@ export default async function Streams() {
       testId="create-stream"
     >
       <ActionForm action={createStream} submit="Create" testId="create-stream">
-        <Field label="Name" rule={STREAM_NAME} taken={names} unique>
-          <input name="name" required autoFocus />
-        </Field>
-        <div className="form-row">
-          <Field
-            label="Capacity mode"
-            rule={CreateStream.StreamModeDetails.fields!.StreamMode}
-          >
-            <select name="mode" defaultValue="ON_DEMAND">
-              <option value="ON_DEMAND">On-demand</option>
-              <option value="PROVISIONED">Provisioned</option>
-            </select>
-          </Field>
-          <Field label="Shards (provisioned)" rule={CreateStream.ShardCount}>
-            <input name="shards" type="number" min={1} defaultValue={1} />
-          </Field>
-        </div>
-        <Field label="Tags" rule={{ ...CreateStream.Tags, format: "tags" }}>
-          <textarea name="tags" rows={1} placeholder="team=data" />
-        </Field>
+        <CreateStreamFields names={names} />
       </ActionForm>
     </Sheet>
   );
@@ -72,14 +45,14 @@ export default async function Streams() {
             href: streamHref(s.StreamName!),
             meta: (
               <>
-                <Pill>
-                  {s.StreamModeDetails?.StreamMode === "ON_DEMAND"
-                    ? "On-demand"
-                    : "Provisioned"}
-                </Pill>
-                <Status tone={STATUS_TONE(s.StreamStatus)}>
-                  {s.StreamStatus?.toLowerCase()}
-                </Status>
+                {s.StreamModeDetails?.StreamMode !== "ON_DEMAND" && (
+                  <Pill>provisioned</Pill>
+                )}
+                {s.StreamStatus !== "ACTIVE" && (
+                  <Status tone={STATUS_TONE(s.StreamStatus)}>
+                    {s.StreamStatus?.toLowerCase()}
+                  </Status>
+                )}
                 <span>{ago(s.StreamCreationTimestamp)}</span>
               </>
             ),

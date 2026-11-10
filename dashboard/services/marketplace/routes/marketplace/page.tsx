@@ -1,11 +1,11 @@
 import { ago, load } from "@mws-dashboard/aws";
-import { ActionForm, AwsIcon, Empty, ErrorNotice, Field, List, Page, Pill, Section, Sheet } from "@mws-dashboard/ui";
-import { ACCOUNT, DIMENSIONS, TITLE } from "../../lib/rules";
-import { Eraser, Gauge, Users } from "lucide-react";
+import { ActionForm, AwsIcon, Empty, ErrorNotice, List, Page, Pill, Section, Sheet } from "@mws-dashboard/ui";
+import { Eraser, Users } from "lucide-react";
 import type { Metadata } from "next";
 
 import { ICONS } from "../../lib/clients";
 import { products, PRODUCT_ICONS, records, subscriptions } from "../../lib/marketplace";
+import { ProductFields } from "../../lib/product-fields";
 import { clearRecords, createProduct } from "./actions";
 import { Usage } from "./usage";
 
@@ -17,6 +17,7 @@ async function Records() {
   const [list, catalog] = await Promise.all([load(() => records()), load(products)]);
   if (!list.ok) return <ErrorNotice error={list.error} />;
   const title = (code: string) => (catalog.ok && catalog.value.find((p) => p.productCode === code)?.title) || code;
+  const productType = (code: string) => (catalog.ok ? catalog.value.find((p) => p.productCode === code)?.productType : undefined);
   return (
     <>
       {list.value.length > 0 && (
@@ -30,7 +31,7 @@ async function Records() {
           empty={<Empty icon={ICONS.marketplace} />}
           rows={[...list.value].reverse().map((r) => ({
             key: r.meteringRecordId,
-            icon: <Gauge size={18} />,
+            icon: <AwsIcon icon={PRODUCT_ICONS[productType(r.productCode) ?? ""] ?? ICONS.marketplace} size={22} />,
             title: `${r.quantity.toLocaleString()} × ${r.dimension}`,
             subtitle: `${title(r.productCode)} · ${r.customerIdentifier ?? r.customerAWSAccountId}`,
             meta: (
@@ -59,27 +60,7 @@ export default async function Marketplace({ searchParams }: Props) {
   const create = (
     <Sheet title="Create product" label="Create product" testId="create-product">
       <ActionForm action={createProduct} submit="Create product" testId="create-product">
-        <Field label="Title" rule={TITLE}>
-          <input name="title" required autoFocus />
-        </Field>
-        <Field label="Type">
-          <select name="type" defaultValue="SaaS">
-            <option value="SaaS">SaaS</option>
-            <option value="AMI">AMI</option>
-            <option value="Container">Container</option>
-          </select>
-        </Field>
-        <Field label="Pricing dimensions" rule={DIMENSIONS}>
-          <input name="dimensions" required placeholder="users, requests" />
-        </Field>
-        <div className="form-row">
-          <Field label="Product code" hint="Generated when empty" taken={catalog.ok ? catalog.value.map((p) => p.productCode) : []} unique>
-            <input name="code" pattern="[A-Za-z0-9]{1,255}" />
-          </Field>
-          <Field label="Seller account" rule={{ ...ACCOUNT, required: false, generate: undefined }} hint="This account when empty">
-            <input name="seller" inputMode="numeric" />
-          </Field>
-        </div>
+        <ProductFields titles={catalog.ok ? catalog.value.map((p) => p.title) : []} codes={catalog.ok ? catalog.value.map((p) => p.productCode) : []} />
       </ActionForm>
     </Sheet>
   );
@@ -99,7 +80,6 @@ export default async function Marketplace({ searchParams }: Props) {
               href: `/marketplace/product?code=${p.productCode}`,
               meta: (
                 <>
-                  <Pill>{p.productType}</Pill>
                   {buyers > 0 && <Pill icon={<Users size={11} />}>{buyers}</Pill>}
                   {p.createdAt && <span>{ago(p.createdAt)}</span>}
                 </>

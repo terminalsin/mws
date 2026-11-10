@@ -1,4 +1,5 @@
 import { ActionForm, Field, Sheet } from "@mws-dashboard/ui";
+import { MoreFields } from "@mws-dashboard/ui/presets";
 
 import { publishLayer } from "../routes/lambda/actions";
 import { RUNTIMES } from "./clients";
@@ -15,9 +16,6 @@ export function PublishLayer({ name, names = [] }: { name?: string; names?: stri
             <input name="name" required autoFocus spellCheck={false} />
           </Field>
         )}
-        <Field label="Description" rule={LAYER_DESCRIPTION}>
-          <input name="description" />
-        </Field>
         <Field label=".zip file">
           <input type="file" name="zip" accept=".zip,application/zip" required />
         </Field>
@@ -28,19 +26,23 @@ export function PublishLayer({ name, names = [] }: { name?: string; names?: stri
             ))}
           </select>
         </Field>
-        <div className="form-row">
-          <label className="check">
-            <input type="checkbox" name="archs" value="x86_64" /> x86_64
-          </label>
-          <label className="check">
-            <input type="checkbox" name="archs" value="arm64" /> arm64
-          </label>
-        </div>
-        <Field label="License">
-          <input name="license" placeholder="MIT" />
-        </Field>
+        <MoreFields>
+          <Field label="Description" rule={LAYER_DESCRIPTION}>
+            <input name="description" />
+          </Field>
+          <div className="form-row">
+            <label className="check">
+              <input type="checkbox" name="archs" value="x86_64" /> x86_64
+            </label>
+            <label className="check">
+              <input type="checkbox" name="archs" value="arm64" /> arm64
+            </label>
+          </div>
+          <Field label="License">
+            <input name="license" placeholder="MIT" />
+          </Field>
+        </MoreFields>
       </ActionForm>
     </Sheet>
   );
 }
-

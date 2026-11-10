@@ -2,6 +2,7 @@ import { ListRolesCommand, ListUsersCommand, SimulateCustomPolicyCommand, Simula
 import { all, load } from "@mws-dashboard/aws";
 import { ErrorNotice, Field, Page, Section, Status, Table } from "@mws-dashboard/ui";
 import { FlaskConical } from "lucide-react";
+import { MoreFields } from "@mws-dashboard/ui/presets";
 import type { Metadata } from "next";
 
 import { iam } from "../../../lib/clients";
@@ -69,9 +70,11 @@ export default async function Simulator({ searchParams }: Props) {
           <Field label="Resources" hint="ARNs, comma separated; empty means *">
             <input name="resources" defaultValue={resources} placeholder="arn:aws:s3:::bucket/key" />
           </Field>
-          <Field label="Policy to add (or test alone)" rule={{ ...RULES.document, required: false }}>
-            <textarea name="policy" rows={6} defaultValue={policy} aria-label="Policy to simulate" />
-          </Field>
+          <MoreFields label="Policy" expanded={!!policy}>
+            <Field label="Policy to add (or test alone)" rule={{ ...RULES.document, required: false }}>
+              <textarea name="policy" rows={6} className="code-editor" spellCheck={false} defaultValue={policy} aria-label="Policy to simulate" />
+            </Field>
+          </MoreFields>
           <div className="form-row">
             <button type="submit" className="button primary">
               <FlaskConical size={16} aria-hidden />

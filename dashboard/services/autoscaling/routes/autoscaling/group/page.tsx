@@ -1,6 +1,6 @@
 import { DescribeAutoScalingGroupsCommand } from "@aws-sdk/client-auto-scaling";
 import { load } from "@mws-dashboard/aws";
-import { ActionForm, AwsIcon, ErrorNotice, Page, Pill, Segments, Sheet, Specs, Status } from "@mws-dashboard/ui";
+import { ActionForm, AwsIcon, ErrorNotice, Page, Pill, Segments, Sheet, Specs, Status, CopyValue } from "@mws-dashboard/ui";
 import { LiveRefresh } from "@mws-dashboard/ui/client";
 import { Ban, FileStack, Gauge, HeartPulse, MapPin, Minus, Network, Pause, Plus, RotateCcw, Settings2, Trash2 } from "lucide-react";
 import type { Metadata } from "next";
@@ -60,7 +60,7 @@ export default async function Group({ searchParams }: Props) {
       title={name}
       icon={ICONS.asg}
       back={back}
-      subtitle={g.AutoScalingGroupARN}
+      subtitle={<CopyValue value={g.AutoScalingGroupARN} label="Copy ARN" />}
       actions={
         <>
           {desired > min && <ActionForm action={scale.bind(null, name, desired - 1)} submit="Scale in" icon={<Minus size={16} />} />}

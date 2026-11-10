@@ -3,6 +3,7 @@ import { load, region as currentRegion } from "@mws-dashboard/aws";
 import { ActionForm, AwsIcon, Empty, ErrorNotice, Field, List, Page, Pill, Section, Sheet, Specs, Status } from "@mws-dashboard/ui";
 import { LiveRefresh } from "@mws-dashboard/ui/client";
 import { Gauge, HeartPulse, Pencil, Plus, Shuffle, Trash2, X } from "lucide-react";
+import { MoreFields } from "@mws-dashboard/ui/presets";
 import type { Metadata } from "next";
 
 import { ICONS, acceleratorHref, endpointCandidates, endpointHref, endpointIcon, endpointName, ga } from "../../../lib/clients";
@@ -69,32 +70,6 @@ export default async function EndpointGroup({ searchParams }: Props) {
               <Field label="Traffic dial (%)" rule={GROUP_RULES.TrafficDialPercentage}>
                 <input name="dial" type="number" defaultValue={g.TrafficDialPercentage ?? 100} />
               </Field>
-              <div className="form-row">
-                <Field label="Health check protocol" rule={GROUP_RULES.HealthCheckProtocol}>
-                  <select name="hcProtocol" defaultValue={g.HealthCheckProtocol ?? "TCP"}>
-                    <option>TCP</option>
-                    <option>HTTP</option>
-                    <option>HTTPS</option>
-                  </select>
-                </Field>
-                <Field label="Health check port" rule={GROUP_RULES.HealthCheckPort} format="port">
-                  <input name="hcPort" type="number" defaultValue={g.HealthCheckPort} />
-                </Field>
-              </div>
-              <Field label="Health check path (HTTP, HTTPS)" rule={GROUP_RULES.HealthCheckPath}>
-                <input name="hcPath" defaultValue={g.HealthCheckPath ?? "/"} />
-              </Field>
-              <div className="form-row">
-                <Field label="Interval" rule={{ ...GROUP_RULES.HealthCheckIntervalSeconds, unit: "seconds" }} member="HealthCheckIntervalSeconds">
-                  <select name="interval" defaultValue={String(g.HealthCheckIntervalSeconds ?? 30)}>
-                    <option value="10">10 seconds</option>
-                    <option value="30">30 seconds</option>
-                  </select>
-                </Field>
-                <Field label="Threshold" rule={GROUP_RULES.ThresholdCount}>
-                  <input name="threshold" type="number" defaultValue={g.ThresholdCount ?? 3} />
-                </Field>
-              </div>
               <Field label="Port overrides (listener=endpoint)" rule={{ pattern: "^\\s*(\\d{1,5}\\s*=\\s*\\d{1,5}\\s*([,\\n]\\s*\\d{1,5}\\s*=\\s*\\d{1,5}\\s*)*)?$", hint: "Like 80=8080" }} member="PortOverrides">
                 <textarea name="overrides" rows={2} defaultValue={(g.PortOverrides ?? []).map((o) => `${o.ListenerPort}=${o.EndpointPort}`).join("\n")} />
               </Field>
@@ -109,6 +84,34 @@ export default async function EndpointGroup({ searchParams }: Props) {
                   </label>
                 </div>
               ))}
+              <MoreFields label="Health check">
+                <div className="form-row">
+                  <Field label="Health check protocol" rule={GROUP_RULES.HealthCheckProtocol}>
+                    <select name="hcProtocol" defaultValue={g.HealthCheckProtocol ?? "TCP"}>
+                      <option>TCP</option>
+                      <option>HTTP</option>
+                      <option>HTTPS</option>
+                    </select>
+                  </Field>
+                  <Field label="Health check port" rule={GROUP_RULES.HealthCheckPort} format="port">
+                    <input name="hcPort" type="number" defaultValue={g.HealthCheckPort} />
+                  </Field>
+                </div>
+                <Field label="Health check path (HTTP, HTTPS)" rule={GROUP_RULES.HealthCheckPath}>
+                  <input name="hcPath" defaultValue={g.HealthCheckPath ?? "/"} />
+                </Field>
+                <div className="form-row">
+                  <Field label="Interval" rule={{ ...GROUP_RULES.HealthCheckIntervalSeconds, unit: "seconds" }} member="HealthCheckIntervalSeconds">
+                    <select name="interval" defaultValue={String(g.HealthCheckIntervalSeconds ?? 30)}>
+                      <option value="10">10 seconds</option>
+                      <option value="30">30 seconds</option>
+                    </select>
+                  </Field>
+                  <Field label="Threshold" rule={GROUP_RULES.ThresholdCount}>
+                    <input name="threshold" type="number" defaultValue={g.ThresholdCount ?? 3} />
+                  </Field>
+                </div>
+              </MoreFields>
             </ActionForm>
           </Sheet>
           <ActionForm action={deleteEndpointGroup.bind(null, arn, acceleratorArn)} submit="Delete endpoint group" icon={<Trash2 size={16} />} tone="danger" confirm="Delete this endpoint group?" testId="delete-endpoint-group" />

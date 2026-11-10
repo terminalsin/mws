@@ -18,6 +18,7 @@ import {
   UpdateClusterVersionCommand,
   UpdateNodegroupConfigCommand,
   UpdateNodegroupVersionCommand,
+  type AMITypes,
 } from "@aws-sdk/client-eks";
 import { FieldError, act, required, text, type ActionResult } from "@mws-dashboard/aws";
 import { ROLES, roleFrom } from "@mws-dashboard/aws/auto";
@@ -268,6 +269,7 @@ export async function createNodegroup(cluster: string, subnets: string[], _: Act
             instanceTypes: [text(form, "type") || "t3.medium"],
             scalingConfig: { minSize: Math.min(1, size), desiredSize: size, maxSize: Number(text(form, "max") || size) },
             capacityType: text(form, "spot") === "on" ? "SPOT" : "ON_DEMAND",
+            amiType: (text(form, "amiType") || undefined) as AMITypes | undefined,
           }),
         ),
       );

@@ -12,13 +12,14 @@ import {
   type SecurityHubClient,
 } from "@aws-sdk/client-securityhub";
 import { ago, all, load, when } from "@mws-dashboard/aws";
-import { ActionForm, AwsIcon, Curated, Empty, ErrorNotice, Facts, Field, List, Metric, Metrics, More, Page, Pill, Section, Segments, Status, type FormAction } from "@mws-dashboard/ui";
+import { ActionForm, CopyValue, AwsIcon, Curated, Empty, ErrorNotice, Facts, Field, List, Metric, Metrics, More, Page, Pill, Section, Segments, Status, type FormAction } from "@mws-dashboard/ui";
 import { BellOff, CheckCircle2, Minus, Pause, Play, Plus, RotateCcw, Search, Trash2 } from "lucide-react";
 import type { Metadata } from "next";
 import type { ReactNode } from "react";
 
 import { ICONS, SEVERITY_LABELS, isManagedInsight, securityhub, severity, word, workflowTone } from "../../lib/clients";
 import { filters, type FindingView } from "../../lib/findings";
+import { controlIcon, productIcon } from "../../lib/presets";
 import { deleteActionTarget, deleteAutomationRule, deleteInsight, disableHub, disableStandard, enableHub, enableStandard, setRuleStatus, setWorkflow, updateHubSettings } from "./actions";
 import { ImportFindings, NewActionTarget, NewAutomationRule, NewInsight } from "./forms";
 
@@ -160,9 +161,9 @@ async function Findings({ client, view, hubArn }: { client: SecurityHubClient; v
             status !== to && <ActionForm key={to} action={setWorkflow.bind(null, f.Id!, f.ProductArn!, to)} submit={`${label} finding`} icon={icon} />;
           return {
             key: `${f.ProductArn}|${f.Id}`,
-            icon: <AwsIcon icon={ICONS.finding} size={22} />,
+            icon: <AwsIcon icon={productIcon(f.ProductArn, f.ProductName)} size={22} label={f.ProductName} />,
             title: f.Title,
-            subtitle: [f.ProductName ?? f.ProductArn?.split("/").pop(), r ? `${r.Type} ${r.Id}` : "", f.AwsAccountId, f.Region].filter(Boolean).join(" · "),
+            subtitle: r ? `${r.Type} ${r.Id?.split(/[:/]/).filter(Boolean).pop() ?? ""}` : undefined,
             href: `/securityhub/finding?id=${encodeURIComponent(f.Id!)}&product=${encodeURIComponent(f.ProductArn!)}`,
             meta: (
               <>
@@ -224,7 +225,7 @@ async function Standards({ client }: { client: SecurityHubClient }) {
               key: s.StandardsArn!,
               icon: <AwsIcon icon={ICONS.securityhub} size={22} />,
               title: s.Name,
-              subtitle: sub?.StandardsStatusReason?.StatusReasonCode ? word(sub.StandardsStatusReason.StatusReasonCode) : s.Description,
+              subtitle: sub?.StandardsStatusReason?.StatusReasonCode ? word(sub.StandardsStatusReason.StatusReasonCode) : undefined,
               href: sub && st !== "DELETING" ? `/securityhub/standard?arn=${encodeURIComponent(sub.StandardsSubscriptionArn!)}` : undefined,
               meta: sub ? <Status tone={st === "READY" ? "good" : st === "FAILED" || st === "INCOMPLETE" ? "bad" : "warn"}>{word(st)}</Status> : undefined,
               actions: sub ? (
@@ -267,7 +268,7 @@ async function Controls({ client }: { client: SecurityHubClient }) {
             const sev = severity(c.SeverityRating);
             return {
               key: c.SecurityControlId!,
-              icon: <AwsIcon icon={ICONS.securityhub} size={22} />,
+              icon: <AwsIcon icon={controlIcon(c.SecurityControlId)} size={22} />,
               title: `${c.SecurityControlId} ${c.Title ?? ""}`,
               subtitle: c.RemediationUrl ? (
                 <a href={c.RemediationUrl} target="_blank" rel="noreferrer">
@@ -277,7 +278,7 @@ async function Controls({ client }: { client: SecurityHubClient }) {
               meta: (
                 <>
                   <Status tone={sev.tone}>{sev.label}</Status>
-                  {c.status && <Status tone={c.status === "ENABLED" ? "good" : "neutral"}>{word(c.status)}</Status>}
+                  {c.status && c.status !== "ENABLED" && <Status tone="neutral">{word(c.status)}</Status>}
                 </>
               ),
             };
@@ -296,7 +297,7 @@ function Settings({ hub }: { hub: DescribeHubCommandOutput }) {
       <Nav tab="settings" />
       <Facts
         items={[
-          ["Hub ARN", <code key="arn">{hub.HubArn}</code>],
+          ["Hub ARN", <CopyValue key="arn" value={hub.HubArn} label="Copy hub ARN" />],
           hub.SubscribedAt && ["Enabled", when(hub.SubscribedAt)],
         ]}
       />

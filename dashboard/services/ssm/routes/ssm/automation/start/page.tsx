@@ -2,6 +2,7 @@ import { DescribeDocumentCommand } from "@aws-sdk/client-ssm";
 import { load } from "@mws-dashboard/aws";
 import { ActionForm, Empty, ErrorNotice, Field, Page, Section } from "@mws-dashboard/ui";
 import { StartAutomationExecution } from "@mws-dashboard/ui/model/ssm";
+import { MoreFields } from "@mws-dashboard/ui/presets";
 import type { Metadata } from "next";
 import Link from "next/link";
 
@@ -58,6 +59,7 @@ export default async function Start({ searchParams }: Props) {
               )}
             </Field>
           ))}
+          <MoreFields>
           <div className="form-row">
             <Field label="Mode">
               <select name="mode" defaultValue="Auto">
@@ -69,6 +71,7 @@ export default async function Start({ searchParams }: Props) {
               <input name="version" placeholder="$DEFAULT" />
             </Field>
           </div>
+          </MoreFields>
           <input type="hidden" name="params" />
         </ActionForm>
       )}

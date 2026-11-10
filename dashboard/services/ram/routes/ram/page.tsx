@@ -1,19 +1,17 @@
 import { GetResourceShareInvitationsCommand, GetResourceSharesCommand, ListPendingInvitationResourcesCommand, ListPermissionsCommand, ListResourceTypesCommand } from "@aws-sdk/client-ram";
 import { ago, all, load } from "@mws-dashboard/aws";
-import { ActionForm, AwsIcon, Empty, ErrorNotice, Field, List, Page, Pill, Section, Segments, Sheet, Status, type Rule } from "@mws-dashboard/ui";
-import { CreatePermission, CreateResourceShare } from "@mws-dashboard/ui/model/ram";
+import { ActionForm, AwsIcon, Empty, ErrorNotice, Field, List, Page, Pill, Section, Segments, Sheet, Status } from "@mws-dashboard/ui";
+import { CreatePermission } from "@mws-dashboard/ui/model/ram";
 import { Building2, Check, Globe, X } from "lucide-react";
 import type { Metadata } from "next";
 
 import { ICONS, orgSharing, permissionHref, ram, shareHref, shareTargets } from "../../lib/clients";
-import { shareRules } from "../../lib/rules";
+import { ShareFields } from "../../lib/share-fields";
 import { answerInvitation, createPermission, createShare, enableOrgSharing } from "./actions";
 
 export const metadata: Metadata = { title: "RAM" };
 
 type Props = { searchParams: Promise<{ tab?: string }> };
-
-const NAME: Rule = { ...CreateResourceShare.name, generate: "name" };
 
 const STATUS_TONE: Record<string, "good" | "warn" | "bad" | "neutral"> = { ACTIVE: "good", PENDING: "warn", FAILED: "bad", DELETING: "warn", ACCEPTED: "good", REJECTED: "neutral", EXPIRED: "neutral" };
 const TABS = [
@@ -182,34 +180,25 @@ export default async function Shares({ searchParams }: Props) {
     tab === "others" ? null : orgSharing(),
     tab === "others" ? null : allPermissions().catch(() => []),
   ]);
-  const RULES = shareRules(targets);
   const create = (
     <Sheet title="Create resource share" label="Create resource share" testId="create-share">
       <ActionForm action={createShare} submit="Create resource share" testId="create-share">
-        <Field label="Name" rule={NAME}>
-          <input name="name" required autoFocus />
-        </Field>
-        <Field label="Resource ARNs" rule={RULES.resources} member="resourceArns">
-          <textarea name="resources" rows={3} placeholder="arn:aws:acm-pca:…:certificate-authority/…" />
-        </Field>
-        <Field label="Principals" rule={RULES.principals} member="principals">
-          <textarea name="principals" rows={2} placeholder="111122223333 or an OU / organization ARN" />
-        </Field>
-        {perms && perms.length > 0 && (
-          <Field label="Managed permission" member="permissionArns">
-            <select name="permission" defaultValue="">
-              <option value="">Default for each resource type</option>
-              {perms.map((p) => (
-                <option key={p.arn} value={p.arn}>
-                  {p.name} · {p.resourceType}
-                </option>
-              ))}
-            </select>
-          </Field>
+        {targets && (
+          <ShareFields targets={targets} names={shares.ok ? shares.value.map((x) => x.name!) : []} orgSharing={org?.state === "on"}>
+            {perms && perms.length > 0 && (
+              <Field label="Managed permission" member="permissionArns">
+                <select name="permission" defaultValue="">
+                  <option value="">Default for each resource type</option>
+                  {perms.map((p) => (
+                    <option key={p.arn} value={p.arn}>
+                      {p.name} · {p.resourceType}
+                    </option>
+                  ))}
+                </select>
+              </Field>
+            )}
+          </ShareFields>
         )}
-        <label className="check">
-          <input type="checkbox" name="external" /> Allow sharing outside the organization
-        </label>
       </ActionForm>
     </Sheet>
   );

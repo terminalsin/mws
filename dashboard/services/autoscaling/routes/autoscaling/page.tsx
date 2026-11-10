@@ -2,6 +2,7 @@ import { DescribeAutoScalingGroupsCommand } from "@aws-sdk/client-auto-scaling";
 import { ago, all, load } from "@mws-dashboard/aws";
 import { ActionForm, AutoPick, AwsIcon, Empty, ErrorNotice, Field, List, Page, Pill, Section, Sheet, Status, type Rule } from "@mws-dashboard/ui";
 import { LiveRefresh } from "@mws-dashboard/ui/client";
+import { MoreFields } from "@mws-dashboard/ui/presets";
 import { CreateAutoScalingGroup } from "@mws-dashboard/ui/model/autoscaling";
 import { CreateLaunchTemplate } from "@mws-dashboard/ui/model/ec2";
 import { FileStack, HeartPulse } from "lucide-react";
@@ -12,6 +13,7 @@ import { autoscaling, ICONS } from "../../lib/clients";
 import { NetworkFields } from "../../lib/forms";
 import { images, launchTemplates, targetGroups, vpcNetwork } from "../../lib/network";
 import { GroupSize } from "../../lib/sizes";
+import { TemplateFields } from "../../lib/template-fields";
 import { createGroup, createLaunchTemplate } from "./actions";
 
 export const metadata: Metadata = { title: "Auto Scaling groups" };
@@ -43,21 +45,12 @@ export default async function Groups() {
   const templateSheet = (
     <Sheet title="Create launch template" label="Create launch template" icon={<FileStack size={15} />} testId="create-launch-template">
       <ActionForm action={createLaunchTemplate} submit="Create launch template" testId="create-launch-template">
-        <Field label="Name" rule={TEMPLATE_NAME} taken={templateNames} unique>
-          <input name="name" required autoFocus />
-        </Field>
-        <Field label="Image" member="LaunchTemplateData.ImageId">
-          <select name="image">
-            {(amis.ok ? amis.value : []).map((i) => (
-              <option key={i.ImageId} value={i.ImageId}>
-                {i.Name ?? i.ImageId}
-              </option>
-            ))}
-          </select>
-        </Field>
-        <Field label="Instance type" rule={INSTANCE_TYPE} member="LaunchTemplateData.InstanceType">
-          <input name="type" defaultValue="t3.micro" />
-        </Field>
+        <TemplateFields
+          images={(amis.ok ? amis.value : []).map((i) => ({ id: i.ImageId!, name: i.Name, arch: i.Architecture }))}
+          nameRule={TEMPLATE_NAME}
+          typeRule={INSTANCE_TYPE}
+          taken={templateNames}
+        />
       </ActionForm>
     </Sheet>
   );
@@ -75,34 +68,36 @@ export default async function Groups() {
           testId="launch-template"
         />
         <GroupSize min={0} desired={1} max={2} />
-        {net.ok && net.value.vpcs.length > 0 && (
-          <NetworkFields
-            vpcs={net.value.vpcs}
-            subnets={net.value.subnets}
-            targetGroups={tgs.ok ? tgs.value.map((t) => ({ arn: t.TargetGroupArn!, name: t.TargetGroupName!, vpc: t.VpcId })) : []}
-          />
-        )}
-        <div className="form-row">
-          <Field label="Health check type" rule={CreateAutoScalingGroup.HealthCheckType} member="HealthCheckType">
-            <select name="health" defaultValue="EC2">
-              <option>EC2</option>
-              <option>ELB</option>
-              <option>EBS</option>
-            </select>
+        <MoreFields>
+          {net.ok && net.value.vpcs.length > 0 && (
+            <NetworkFields
+              vpcs={net.value.vpcs}
+              subnets={net.value.subnets}
+              targetGroups={tgs.ok ? tgs.value.map((t) => ({ arn: t.TargetGroupArn!, name: t.TargetGroupName!, vpc: t.VpcId })) : []}
+            />
+          )}
+          <div className="form-row">
+            <Field label="Health check type" rule={CreateAutoScalingGroup.HealthCheckType} member="HealthCheckType">
+              <select name="health" defaultValue="EC2">
+                <option>EC2</option>
+                <option>ELB</option>
+                <option>EBS</option>
+              </select>
+            </Field>
+            <Field label="Health check grace period (seconds)" rule={{ ...CreateAutoScalingGroup.HealthCheckGracePeriod, min: 0 }} member="HealthCheckGracePeriod">
+              <input name="grace" type="number" min={0} defaultValue={300} />
+            </Field>
+          </div>
+          <label className="check">
+            <input type="checkbox" name="protect" /> Protect new instances from scale in
+          </label>
+          <label className="check">
+            <input type="checkbox" name="rebalance" /> Capacity rebalancing
+          </label>
+          <Field label="Tags" format="tags" member="Tags" hint="key=value per line, propagated to instances">
+            <textarea name="tags" rows={2} spellCheck={false} />
           </Field>
-          <Field label="Health check grace period (seconds)" rule={{ ...CreateAutoScalingGroup.HealthCheckGracePeriod, min: 0 }} member="HealthCheckGracePeriod">
-            <input name="grace" type="number" min={0} defaultValue={300} />
-          </Field>
-        </div>
-        <label className="check">
-          <input type="checkbox" name="protect" /> Protect new instances from scale in
-        </label>
-        <label className="check">
-          <input type="checkbox" name="rebalance" /> Capacity rebalancing
-        </label>
-        <Field label="Tags" format="tags" member="Tags" hint="key=value per line, propagated to instances">
-          <textarea name="tags" rows={2} spellCheck={false} />
-        </Field>
+        </MoreFields>
       </ActionForm>
     </Sheet>
   );

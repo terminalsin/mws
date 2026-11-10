@@ -8,7 +8,8 @@ import {
   type FileSystemDescription,
 } from "@aws-sdk/client-efs";
 import { ago, bytes, load, region, shortName } from "@mws-dashboard/aws";
-import { ActionForm, AwsIcon, CodeBlock, Empty, ErrorNotice, Facts, Field, List, Page, Pill, Section, Segments, Sheet, Specs, Status, Tags, type Rule } from "@mws-dashboard/ui";
+import { MoreFields } from "@mws-dashboard/ui/presets";
+import { ActionForm, AwsIcon, CodeBlock, Empty, ErrorNotice, Facts, Field, List, Page, Pill, Section, Segments, Sheet, Specs, Status, Tags, type Rule, CopyValue } from "@mws-dashboard/ui";
 import { CreateAccessPoint as Rules, CreateMountTarget, CreateReplicationConfiguration, UpdateFileSystem } from "@mws-dashboard/ui/model/efs";
 import { ruleAt } from "@mws-dashboard/ui/validation";
 import { Archive, Gauge, HardDrive, KeyRound, Lock, MapPin, Pencil, Plus, Shield, Trash2 } from "lucide-react";
@@ -71,7 +72,14 @@ const policyTemplate = (arn: string) =>
     {
       Version: "2012-10-17",
       Statement: [
-        { Sid: "ClientAccess", Effect: "Allow", Principal: { AWS: "*" }, Action: ["elasticfilesystem:ClientMount", "elasticfilesystem:ClientWrite"], Resource: arn, Condition: { Bool: { "elasticfilesystem:AccessedViaMountTarget": "true" } } },
+        {
+          Sid: "ClientAccess",
+          Effect: "Allow",
+          Principal: { AWS: "*" },
+          Action: ["elasticfilesystem:ClientMount", "elasticfilesystem:ClientWrite"],
+          Resource: arn,
+          Condition: { Bool: { "elasticfilesystem:AccessedViaMountTarget": "true" } },
+        },
       ],
     },
     null,
@@ -112,7 +120,15 @@ export default async function FileSystem({ searchParams }: Props) {
             title="Tags"
             actions={
               <Sheet title="Tags" label="Edit tags" icon={<Pencil size={15} aria-hidden />} testId="edit-fs-tags">
-                <ActionForm action={saveTags.bind(null, id, (f.Tags ?? []).map((t) => t.Key!))} submit="Save" testId="edit-fs-tags">
+                <ActionForm
+                  action={saveTags.bind(
+                    null,
+                    id,
+                    (f.Tags ?? []).map((t) => t.Key!),
+                  )}
+                  submit="Save"
+                  testId="edit-fs-tags"
+                >
                   <Field label="One Key=Value per line" format="tags" hint="Name is the file system's name">
                     <textarea name="tags" defaultValue={(f.Tags ?? []).map((t) => `${t.Key}=${t.Value}`).join("\n")} />
                   </Field>
@@ -132,7 +148,7 @@ export default async function FileSystem({ searchParams }: Props) {
       title={f.Name ?? id}
       icon={ICONS.fileSystem}
       back={back}
-      subtitle={arn}
+      subtitle={<CopyValue value={arn} label="Copy ARN" />}
       actions={
         <ActionForm
           action={deleteFileSystem.bind(null, id)}
@@ -244,7 +260,13 @@ async function General({ id, f, dns }: { id: string; f: FileSystemDescription; d
         {!lifecycle.ok ? (
           <ErrorNotice error={lifecycle.error} />
         ) : (
-          <Facts items={[["To Infrequent Access", label(ia) ?? "None"], ["To Archive", label(archive) ?? "None"], ["To Standard", primary ? "On first access" : "None"]]} />
+          <Facts
+            items={[
+              ["To Infrequent Access", label(ia) ?? "None"],
+              ["To Archive", label(archive) ?? "None"],
+              ["To Standard", primary ? "On first access" : "None"],
+            ]}
+          />
         )}
       </Section>
       <Section
@@ -252,7 +274,12 @@ async function General({ id, f, dns }: { id: string; f: FileSystemDescription; d
         actions={
           <>
             <ActionForm action={setBackup.bind(null, id, !backupOn)} submit={backupOn ? "Turn off automatic backups" : "Turn on automatic backups"} tone="plain" inline testId="toggle-backup" />
-            <ActionForm action={setProtection.bind(null, id, protection !== "ENABLED")} submit={protection === "ENABLED" ? "Allow replication overwrite" : "Protect from replication overwrite"} tone="plain" inline />
+            <ActionForm
+              action={setProtection.bind(null, id, protection !== "ENABLED")}
+              submit={protection === "ENABLED" ? "Allow replication overwrite" : "Protect from replication overwrite"}
+              tone="plain"
+              inline
+            />
           </>
         }
       >
@@ -276,7 +303,9 @@ async function Network({ id, targets }: { id: string; targets: Awaited<ReturnTyp
   const [groups, subnets, vpcGroups] = await Promise.all([
     load(async () =>
       Object.fromEntries(
-        await Promise.all(targets.map(async (t) => [t.MountTargetId!, (await client.send(new DescribeMountTargetSecurityGroupsCommand({ MountTargetId: t.MountTargetId }))).SecurityGroups ?? []] as const)),
+        await Promise.all(
+          targets.map(async (t) => [t.MountTargetId!, (await client.send(new DescribeMountTargetSecurityGroupsCommand({ MountTargetId: t.MountTargetId }))).SecurityGroups ?? []] as const),
+        ),
       ),
     ),
     vpc ? load(() => subnetsOf(vpc)) : null,
@@ -286,37 +315,36 @@ async function Network({ id, targets }: { id: string; targets: Awaited<ReturnTyp
   const used = new Set(targets.map((t) => t.AvailabilityZoneName));
   const groupName = Object.fromEntries((vpcGroups?.ok ? vpcGroups.value : []).map((g) => [g.GroupId!, g.GroupName ?? g.GroupId!]));
   const free = (subnets?.ok ? subnets.value : []).filter((s) => !used.has(s.AvailabilityZone));
-  const add =
-    vpc ? (
-      <Sheet title="Add mount target" label="Add mount target" icon={<Plus size={15} aria-hidden />} testId="create-mount-target">
-        <ActionForm action={createMountTarget.bind(null, id)} submit="Create" testId="create-mount-target">
-          <Field label="Subnet" rule={CreateMountTarget.SubnetId} member="SubnetId" hint="One mount target per Availability Zone">
-            <select name="subnet" required>
-              {free.map((s) => (
-                <option key={s.SubnetId} value={s.SubnetId}>
-                  {s.AvailabilityZone} · {nameOf(s.Tags) ?? s.SubnetId} ({s.CidrBlock})
-                </option>
-              ))}
-            </select>
-          </Field>
-          <Field label="IP address" rule={CreateMountTarget.IpAddress} format="ipv4" hint="Automatic when empty">
-            <input name="ip" />
-          </Field>
-          <SecurityGroupPicker groups={vpcGroups?.ok ? vpcGroups.value : []} selected={[]} />
-        </ActionForm>
-      </Sheet>
-    ) : (
-      <Sheet title="Add mount target" label="Add mount target" icon={<Plus size={15} aria-hidden />} testId="create-mount-target">
-        <ActionForm action={createMountTarget.bind(null, id)} submit="Create" testId="create-mount-target">
-          <Field label="Subnet ID" rule={CreateMountTarget.SubnetId} member="SubnetId" hint={networks?.ok ? `In one of ${networks.value.map((v) => nameOf(v.Tags) ?? v.VpcId).join(", ")}` : undefined}>
-            <input name="subnet" required placeholder="subnet-…" />
-          </Field>
-          <Field label="IP address" rule={CreateMountTarget.IpAddress} format="ipv4" hint="Automatic when empty">
-            <input name="ip" />
-          </Field>
-        </ActionForm>
-      </Sheet>
-    );
+  const add = vpc ? (
+    <Sheet title="Add mount target" label="Add mount target" icon={<Plus size={15} aria-hidden />} testId="create-mount-target">
+      <ActionForm action={createMountTarget.bind(null, id)} submit="Create" testId="create-mount-target">
+        <Field label="Subnet" rule={CreateMountTarget.SubnetId} member="SubnetId" hint="One mount target per Availability Zone">
+          <select name="subnet" required>
+            {free.map((s) => (
+              <option key={s.SubnetId} value={s.SubnetId}>
+                {s.AvailabilityZone} · {nameOf(s.Tags) ?? s.SubnetId} ({s.CidrBlock})
+              </option>
+            ))}
+          </select>
+        </Field>
+        <Field label="IP address" rule={CreateMountTarget.IpAddress} format="ipv4" hint="Automatic when empty">
+          <input name="ip" />
+        </Field>
+        <SecurityGroupPicker groups={vpcGroups?.ok ? vpcGroups.value : []} selected={[]} />
+      </ActionForm>
+    </Sheet>
+  ) : (
+    <Sheet title="Add mount target" label="Add mount target" icon={<Plus size={15} aria-hidden />} testId="create-mount-target">
+      <ActionForm action={createMountTarget.bind(null, id)} submit="Create" testId="create-mount-target">
+        <Field label="Subnet ID" rule={CreateMountTarget.SubnetId} member="SubnetId" hint={networks?.ok ? `In one of ${networks.value.map((v) => nameOf(v.Tags) ?? v.VpcId).join(", ")}` : undefined}>
+          <input name="subnet" required placeholder="subnet-…" />
+        </Field>
+        <Field label="IP address" rule={CreateMountTarget.IpAddress} format="ipv4" hint="Automatic when empty">
+          <input name="ip" />
+        </Field>
+      </ActionForm>
+    </Sheet>
+  );
   return (
     <Section title="Mount targets" count={targets.length} actions={add} plain>
       {vpc && (
@@ -353,12 +381,23 @@ async function Network({ id, targets }: { id: string; targets: Awaited<ReturnTyp
             meta: <Status tone={STATUS_TONE(t.LifeCycleState)}>{t.LifeCycleState ?? ""}</Status>,
             actions: (
               <>
-                <Sheet title={`Security groups of ${t.MountTargetId}`} label={`Edit security groups of ${t.AvailabilityZoneName}`} icon={<Shield size={15} aria-hidden />} testId={`edit-sgs-${t.AvailabilityZoneName}`}>
+                <Sheet
+                  title={`Security groups of ${t.MountTargetId}`}
+                  label={`Edit security groups of ${t.AvailabilityZoneName}`}
+                  icon={<Shield size={15} aria-hidden />}
+                  testId={`edit-sgs-${t.AvailabilityZoneName}`}
+                >
                   <ActionForm action={saveSecurityGroups.bind(null, t.MountTargetId!)} submit="Save" testId={`edit-sgs-${t.AvailabilityZoneName}`}>
                     <SecurityGroupPicker groups={vpcGroups?.ok ? vpcGroups.value : []} selected={sgs} />
                   </ActionForm>
                 </Sheet>
-                <ActionForm action={deleteMountTarget.bind(null, t.MountTargetId!)} submit={`Delete mount target ${t.AvailabilityZoneName}`} icon={<Trash2 size={15} />} tone="danger" confirm={`Delete the mount target in ${t.AvailabilityZoneName}? Clients mounted through it lose access.`} />
+                <ActionForm
+                  action={deleteMountTarget.bind(null, t.MountTargetId!)}
+                  submit={`Delete mount target ${t.AvailabilityZoneName}`}
+                  icon={<Trash2 size={15} />}
+                  tone="danger"
+                  confirm={`Delete the mount target in ${t.AvailabilityZoneName}? Clients mounted through it lose access.`}
+                />
               </>
             ),
           };
@@ -374,7 +413,8 @@ function SecurityGroupPicker({ groups, selected }: { groups: { GroupId?: string;
       <legend className="field-label">Security groups</legend>
       {groups.map((g) => (
         <label key={g.GroupId} className="check">
-          <input type="checkbox" name="groups" value={g.GroupId} defaultChecked={selected.length ? selected.includes(g.GroupId!) : g.GroupName === "default"} /> {g.GroupName} <code className="muted">{g.GroupId}</code>
+          <input type="checkbox" name="groups" value={g.GroupId} defaultChecked={selected.length ? selected.includes(g.GroupId!) : g.GroupName === "default"} /> {g.GroupName}{" "}
+          <code className="muted">{g.GroupId}</code>
         </label>
       ))}
     </fieldset>
@@ -400,7 +440,13 @@ async function Policy({ id, arn }: { id: string; arn: string }) {
         </Sheet>
       }
     >
-      {!policy.ok ? <ErrorNotice error={policy.error} /> : doc ? <CodeBlock value={doc} label="File system policy" /> : <span className="muted">None: any client that can reach a mount target may mount and write</span>}
+      {!policy.ok ? (
+        <ErrorNotice error={policy.error} />
+      ) : doc ? (
+        <CodeBlock value={doc} label="File system policy" />
+      ) : (
+        <span className="muted">None: any client that can reach a mount target may mount and write</span>
+      )}
     </Section>
   );
 }
@@ -426,23 +472,25 @@ async function AccessPoints({ id }: { id: string }) {
                 <input name="uid" type="number" min={0} defaultValue={1000} />
               </Field>
               <Field label="POSIX group id" rule={GID} member="PosixUser.Gid">
-                <input name="gid" type="number" min={0} />
+                <input name="gid" type="number" min={0} placeholder="Same as user" />
               </Field>
+            </div>
+            <MoreFields>
               <Field label="Secondary group ids" hint="Comma-separated" member="PosixUser.SecondaryGids">
                 <input name="secondary" />
               </Field>
-            </div>
-            <div className="form-row">
-              <Field label="Owner user id" rule={{ ...UID, required: false, hint: "Defaults to the user id" }} member="RootDirectory.CreationInfo.OwnerUid">
-                <input name="ownerUid" type="number" min={0} />
-              </Field>
-              <Field label="Owner group id" rule={GID} member="RootDirectory.CreationInfo.OwnerGid">
-                <input name="ownerGid" type="number" min={0} />
-              </Field>
-              <Field label="Permissions" rule={PERMISSIONS} member="RootDirectory.CreationInfo.Permissions">
-                <input name="permissions" defaultValue="755" />
-              </Field>
-            </div>
+              <div className="form-row">
+                <Field label="Owner user id" rule={{ ...UID, required: false, hint: "Defaults to the user id" }} member="RootDirectory.CreationInfo.OwnerUid">
+                  <input name="ownerUid" type="number" min={0} />
+                </Field>
+                <Field label="Owner group id" rule={GID} member="RootDirectory.CreationInfo.OwnerGid">
+                  <input name="ownerGid" type="number" min={0} />
+                </Field>
+                <Field label="Permissions" rule={PERMISSIONS} member="RootDirectory.CreationInfo.Permissions">
+                  <input name="permissions" defaultValue="755" />
+                </Field>
+              </div>
+            </MoreFields>
           </ActionForm>
         </Sheet>
       }
@@ -467,7 +515,9 @@ async function AccessPoints({ id }: { id: string }) {
               </>
             ),
             meta: <Status tone={STATUS_TONE(p.LifeCycleState)}>{p.LifeCycleState ?? ""}</Status>,
-            actions: <ActionForm action={deleteAccessPoint.bind(null, p.AccessPointId!)} submit={`Delete ${p.AccessPointId}`} icon={<Trash2 size={15} />} tone="danger" confirm="Delete this access point?" />,
+            actions: (
+              <ActionForm action={deleteAccessPoint.bind(null, p.AccessPointId!)} submit={`Delete ${p.AccessPointId}`} icon={<Trash2 size={15} />} tone="danger" confirm="Delete this access point?" />
+            ),
           }))}
         />
       )}
@@ -491,7 +541,12 @@ async function Replication({ id }: { id: string }) {
               <Field label="Destination Region" rule={ruleAt(CreateReplicationConfiguration, "Destinations.Region")} member="Destinations.Region">
                 <input name="region" required defaultValue={await region()} />
               </Field>
-              <Field label="Existing destination file system" rule={{ ...ruleAt(CreateReplicationConfiguration, "Destinations.FileSystemId"), required: false }} hint="Empty creates a new one" member="Destinations.FileSystemId">
+              <Field
+                label="Existing destination file system"
+                rule={{ ...ruleAt(CreateReplicationConfiguration, "Destinations.FileSystemId"), required: false }}
+                hint="Empty creates a new one"
+                member="Destinations.FileSystemId"
+              >
                 <input name="destination" placeholder="fs-…" />
               </Field>
               <div className="form-row">
@@ -505,7 +560,14 @@ async function Replication({ id }: { id: string }) {
             </ActionForm>
           </Sheet>
         ) : mine ? (
-          <ActionForm action={deleteReplication.bind(null, id)} submit="Delete replication" icon={<Trash2 size={15} />} tone="danger" confirm="Delete this replication? The destination becomes writable." testId="delete-replication" />
+          <ActionForm
+            action={deleteReplication.bind(null, id)}
+            submit="Delete replication"
+            icon={<Trash2 size={15} />}
+            tone="danger"
+            confirm="Delete this replication? The destination becomes writable."
+            testId="delete-replication"
+          />
         ) : undefined
       }
     >
@@ -513,7 +575,8 @@ async function Replication({ id }: { id: string }) {
         <ErrorNotice error={repl.error} />
       ) : asDestination ? (
         <p>
-          Replica of <Link href={fsHref(asDestination.SourceFileSystemId!)}>{asDestination.SourceFileSystemId}</Link> ({asDestination.SourceFileSystemRegion}): read-only until the replication is deleted.
+          Replica of <Link href={fsHref(asDestination.SourceFileSystemId!)}>{asDestination.SourceFileSystemId}</Link> ({asDestination.SourceFileSystemRegion}): read-only until the replication is
+          deleted.
         </p>
       ) : mine ? (
         <List

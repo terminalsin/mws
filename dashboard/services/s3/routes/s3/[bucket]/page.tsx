@@ -1,6 +1,7 @@
 import { GetBucketVersioningCommand } from "@aws-sdk/client-s3";
 import { ActionForm, Field, Page, Segments, Sheet, type Rule } from "@mws-dashboard/ui";
 import { PutObject } from "@mws-dashboard/ui/model/s3";
+import { MoreFields } from "@mws-dashboard/ui/presets";
 import { FilePlus, FolderPlus, Trash2, Upload } from "lucide-react";
 import type { Metadata } from "next";
 
@@ -62,6 +63,7 @@ export default async function Bucket({ params, searchParams }: Props) {
       title={bucket}
       icon={BUCKET_ICON}
       back={{ href: "/s3", label: "Buckets" }}
+      subtitle={`arn:aws:s3:::${bucket}`}
       actions={
         <>
           {objects && (
@@ -72,18 +74,20 @@ export default async function Bucket({ params, searchParams }: Props) {
                   <Field label="Files">
                     <input type="file" name="file" multiple required />
                   </Field>
-                  <div className="form-row">
-                    <Field label="Key" hint="Single file only; defaults to the file name" rule={{ maxLength: KEY.maxLength }}>
-                      <input name="key" placeholder={prefix + "…"} />
-                    </Field>
-                    <Field label="Storage class">
-                      <select name="storageClass" defaultValue="STANDARD">
-                        {STORAGE_CLASSES.map((c) => (
-                          <option key={c}>{c}</option>
-                        ))}
-                      </select>
-                    </Field>
-                  </div>
+                  <MoreFields>
+                    <div className="form-row">
+                      <Field label="Key" hint="Single file only; defaults to the file name" rule={{ maxLength: KEY.maxLength }}>
+                        <input name="key" placeholder={prefix + "…"} />
+                      </Field>
+                      <Field label="Storage class">
+                        <select name="storageClass" defaultValue="STANDARD">
+                          {STORAGE_CLASSES.map((c) => (
+                            <option key={c}>{c}</option>
+                          ))}
+                        </select>
+                      </Field>
+                    </div>
+                  </MoreFields>
                 </ActionForm>
               </Sheet>
               <Sheet title="New folder" label="New folder" icon={<FolderPlus size={15} aria-hidden />} testId="create-folder">

@@ -1,12 +1,13 @@
-import { GetFindingsCommand } from "@aws-sdk/client-guardduty";
-import { ago, load, when } from "@mws-dashboard/aws";
-import { ActionForm, AwsIcon, CodeBlock, ErrorNotice, Facts, Field, List, Page, Pill, Section, Sheet, Specs, Status } from "@mws-dashboard/ui";
-import { Archive, ArchiveRestore, Clock, FlaskConical, Hash, ThumbsDown, ThumbsUp } from "lucide-react";
+import { GetFindingsCommand, ListFiltersCommand } from "@aws-sdk/client-guardduty";
+import { ago, all, load, when } from "@mws-dashboard/aws";
+import { ActionForm, CopyValue, AwsIcon, CodeBlock, ErrorNotice, Facts, Field, List, Page, Pill, Section, Sheet, Specs, Status } from "@mws-dashboard/ui";
+import { Archive, ArchiveRestore, Clock, EyeOff, FlaskConical, Hash, ThumbsDown, ThumbsUp } from "lucide-react";
 import type { Metadata } from "next";
 
 import { ICONS, RESOURCE_ICON, detectorId, guardduty, severity } from "../../../lib/clients";
+import { FilterFields } from "../../../lib/filter-fields";
 import { actor, affected } from "../../../lib/resources";
-import { archive, feedback, unarchive } from "../actions";
+import { archive, createSuppressionRule, feedback, unarchive } from "../actions";
 
 export const metadata: Metadata = { title: "Finding · GuardDuty" };
 
@@ -18,9 +19,18 @@ export default async function Finding({ searchParams }: Props) {
   const data = await load(async () => {
     const detector = await detectorId();
     if (!detector) throw new Error("GuardDuty is not enabled in this Region");
-    const f = (await (await guardduty()).send(new GetFindingsCommand({ DetectorId: detector, FindingIds: [id] }))).Findings?.[0];
+    const client = await guardduty();
+    const [found, filters] = await Promise.all([
+      client.send(new GetFindingsCommand({ DetectorId: detector, FindingIds: [id] })),
+      all(
+        (NextToken) => client.send(new ListFiltersCommand({ DetectorId: detector, NextToken })),
+        (r) => r.FilterNames,
+        (r) => r.NextToken,
+      ).catch(() => [] as string[]),
+    ]);
+    const f = found.Findings?.[0];
     if (!f) throw new Error(`Finding ${id} not found`);
-    return { detector, f };
+    return { detector, f, filters };
   });
   if (!data.ok) {
     return (
@@ -29,7 +39,8 @@ export default async function Finding({ searchParams }: Props) {
       </Page>
     );
   }
-  const { detector, f } = data.value;
+  const { detector, f, filters } = data.value;
+  const icon = RESOURCE_ICON[f.Resource?.ResourceType ?? ""] ?? ICONS.guardduty;
   const sev = severity(f.Severity);
   const s = f.Service;
   const archived = !!s?.Archived;
@@ -47,11 +58,18 @@ export default async function Finding({ searchParams }: Props) {
   return (
     <Page
       title={f.Title}
-      icon={RESOURCE_ICON[f.Resource?.ResourceType ?? ""] ?? ICONS.guardduty}
+      icon={icon}
       back={back}
       subtitle={f.Arn}
       actions={
         <>
+          {f.Type && (
+            <Sheet title="Suppress findings like this" label="Suppress findings like this" icon={<EyeOff size={16} />} testId="suppress-similar">
+              <ActionForm action={createSuppressionRule.bind(null, detector)} submit="Create" testId="suppress-similar">
+                <FilterFields types={[f.Type]} names={filters} like={{ type: f.Type, resource: f.Resource?.ResourceType, icon }} />
+              </ActionForm>
+            </Sheet>
+          )}
           {fb("USEFUL")}
           {fb("NOT_USEFUL")}
           {archived ? (
@@ -90,7 +108,7 @@ export default async function Finding({ searchParams }: Props) {
         <Facts
           items={[
             ["Finding type", <code key="type">{f.Type}</code>],
-            ["Finding ID", <code key="id">{f.Id}</code>],
+            ["Finding ID", <CopyValue key="id" value={f.Id} label="Copy finding ID" />],
             ["Account", f.AccountId],
             ["Region", f.Region],
             ["Resource type", f.Resource?.ResourceType],

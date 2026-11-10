@@ -34,7 +34,8 @@ test("Private CA: fields repair the subject, the CSR and the validity in place",
   const name = unique("Dash Validation CA");
   await cn.input.fill(name);
 
-  // A country written out becomes its ISO code.
+  // A country written out becomes its ISO code (the subject's details wait under More).
+  await form.locator("summary", { hasText: "More" }).click();
   const country = field("country");
   await country.input.fill("Germany");
   await country.input.blur();
@@ -121,7 +122,9 @@ test("Private CA: an ECDSA root signs a subordinate, authorizes ACM and backs a 
 
   const sub = unique("Dash EC Issuing");
   await page.goto("/pca");
-  await submit(page, "create-ca", { cn: sub, type: "SUBORDINATE", key: "EC_prime256v1" });
+  await openSheet(page, "create-ca");
+  await page.locator("dialog[open]").getByTestId("ca-preset-subordinate").click();
+  await submit(page, "create-ca", { cn: sub, key: "EC_prime256v1" });
   await expect(page.getByRole("heading", { level: 1, name: sub })).toBeVisible();
   const subArn = arnOf();
   await submit(page, "sign-subordinate", { parent: rootArn });

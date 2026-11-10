@@ -1,7 +1,8 @@
 import { DescribeClusterCommand, DescribeClusterVersionsCommand, ListNodegroupsCommand } from "@aws-sdk/client-eks";
 import { ago, all, load } from "@mws-dashboard/aws";
-import { ActionForm, AutoPick, AwsIcon, Empty, ErrorNotice, Field, List, Page, Pill, Sheet, Status, type Rule } from "@mws-dashboard/ui";
+import { ActionForm, AutoPick, AwsIcon, Empty, ErrorNotice, Field, List, Page, Pill, Sheet, Status, type Rule, freeName } from "@mws-dashboard/ui";
 import { CreateCluster } from "@mws-dashboard/ui/model/eks";
+import { MoreFields } from "@mws-dashboard/ui/presets";
 import type { Metadata } from "next";
 
 import { ICONS, STATUS_TONE, eks } from "../../lib/clients";
@@ -40,9 +41,17 @@ export default async function Clusters() {
     <Sheet title="Create cluster" label="Create cluster" testId="create-eks-cluster">
       <ActionForm action={createCluster} submit="Create" testId="create-eks-cluster">
         <Field label="Name" rule={CLUSTER_NAME} taken={names} unique>
-          <input name="name" autoFocus />
+          <input name="name" autoFocus defaultValue={freeName("dev", names)} />
         </Field>
-        <div className="form-row">
+        <AutoPick
+          name="role"
+          label="Cluster service role"
+          creates="AmazonEKSClusterRole"
+          options={roles.ok ? roles.value.map((r) => ({ value: r.Arn!, label: r.RoleName! })) : []}
+          testId="cluster-role"
+        />
+        {/* The default version and VPC suit nearly every cluster. */}
+        <MoreFields expanded={!vpc}>
           <Field label="Kubernetes version" rule={CreateCluster.version}>
             <select name="version" defaultValue="">
               <option value="">{fallback ? `Default (${fallback})` : "Default"}</option>
@@ -67,14 +76,7 @@ export default async function Clusters() {
                 ))}
             </select>
           </Field>
-        </div>
-        <AutoPick
-          name="role"
-          label="Cluster service role"
-          creates="AmazonEKSClusterRole"
-          options={roles.ok ? roles.value.map((r) => ({ value: r.Arn!, label: r.RoleName! })) : []}
-          testId="cluster-role"
-        />
+        </MoreFields>
       </ActionForm>
     </Sheet>
   );
@@ -88,7 +90,6 @@ export default async function Clusters() {
             key: c.arn!,
             icon: <AwsIcon icon="brand/kubernetes" size={24} />,
             title: c.name,
-            subtitle: c.endpoint ? <code className="clip">{c.endpoint}</code> : undefined,
             href: `/eks/cluster?name=${encodeURIComponent(c.name!)}`,
             meta: (
               <>

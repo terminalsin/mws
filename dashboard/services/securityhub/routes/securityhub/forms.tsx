@@ -2,16 +2,12 @@ import { ActionForm, Field, Sheet, type Rule } from "@mws-dashboard/ui";
 import { Pencil, Upload } from "lucide-react";
 import { CreateActionTarget, CreateAutomationRule, CreateInsight } from "@mws-dashboard/ui/model/securityhub";
 
+import { InsightFields, RuleFields } from "../../lib/preset-fields";
+import { GROUP_BY } from "../../lib/presets";
+
 import { createActionTarget, createAutomationRule, createInsight, importFindings, updateAutomationRule, updateInsight } from "./actions";
 
-/** The finding attributes an insight can group by (the ASFF filter names). */
-export const GROUP_BY = [
-  "ResourceId", "ResourceType", "ResourceRegion", "ResourceTags", "ResourceAwsIamUserUserName", "ResourceContainerImageName",
-  "AwsAccountId", "AwsAccountName", "Region", "ProductArn", "ProductName", "CompanyName", "GeneratorId", "Type", "Title",
-  "SeverityLabel", "Criticality", "Confidence", "ComplianceStatus", "ComplianceSecurityControlId", "ComplianceAssociatedStandardsId",
-  "WorkflowStatus", "RecordState", "VerificationState", "MalwareName", "MalwareType", "NetworkSourceIpV4", "NetworkDestinationDomain",
-  "ProcessName", "ThreatIntelIndicatorType", "NoteUpdatedBy", "VulnerabilitiesExploitAvailable", "VulnerabilitiesFixAvailable",
-];
+export { GROUP_BY };
 
 export const SEVERITIES = ["CRITICAL", "HIGH", "MEDIUM", "LOW", "INFORMATIONAL"] as const;
 const label = (s: string) => s[0] + s.slice(1).toLowerCase();
@@ -39,15 +35,7 @@ export function NewInsight({ names }: { names: string[] }) {
   return (
     <Sheet title="New insight" label="Create insight" testId="create-insight">
       <ActionForm action={createInsight} submit="Create" testId="create-insight">
-        <Field label="Name" rule={INSIGHT_NAME} taken={names} unique>
-          <input name="name" required autoFocus />
-        </Field>
-        <div className="form-row">
-          <Field label="Group by" rule={GROUP}>
-            <input name="group" required defaultValue="ResourceId" spellCheck={false} />
-          </Field>
-          <Severity any="Any severity" />
-        </div>
+        <InsightFields names={names} />
       </ActionForm>
     </Sheet>
   );
@@ -60,27 +48,7 @@ export function NewAutomationRule({ next, names }: { next: number; names: string
   return (
     <Sheet title="New automation rule" label="Create automation rule" testId="create-rule">
       <ActionForm action={createAutomationRule} submit="Create" testId="create-rule">
-        <Field label="Name" rule={RULE_NAME} taken={names}>
-          <input name="name" required autoFocus />
-        </Field>
-        <Field label="Description" rule={RULE_DESCRIPTION}>
-          <input name="description" />
-        </Field>
-        <div className="form-row">
-          <Severity any="Every finding" />
-          <Field label="Set workflow to">
-            <select name="status" defaultValue="SUPPRESSED">
-              {["NEW", "NOTIFIED", "RESOLVED", "SUPPRESSED"].map((s) => (
-                <option key={s} value={s}>
-                  {label(s)}
-                </option>
-              ))}
-            </select>
-          </Field>
-          <Field label="Order" rule={CreateAutomationRule.RuleOrder}>
-            <input name="order" type="number" required defaultValue={String(Math.min(next, 1000))} />
-          </Field>
-        </div>
+        <RuleFields next={next} names={names} />
       </ActionForm>
     </Sheet>
   );

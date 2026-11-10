@@ -1,7 +1,9 @@
 "use client";
 
 import { FieldShell as Field, setControlValue } from "@mws-dashboard/ui/fields";
+import { MoreFields, PresetGallery, type PresetItem } from "@mws-dashboard/ui/presets";
 import type { Rule } from "@mws-dashboard/ui/validation";
+import { FileCheck2, Globe, Link2, Mail, ShieldCheck } from "lucide-react";
 import { useCallback, useRef, useState } from "react";
 
 import { nameIssue, valuesIssue } from "./records";
@@ -20,6 +22,24 @@ const PLACEHOLDER: Record<string, string> = {
   CAA: '0 issue "amazon.com"',
   PTR: "host.example.com",
 };
+
+// What people add most, as tiles: each picks the type (and alias) and, for
+// CAA, the value that lets ACM issue. The Type select still offers the rest.
+interface Kind extends PresetItem {
+  type: string;
+  alias?: boolean;
+  value?: (zone: string) => string;
+}
+const ICON = 24;
+const KINDS: Kind[] = [
+  { id: "alias", type: "A", alias: true, label: "AWS resource", icon: "service/ElasticLoadBalancing", title: "Alias to a load balancer, CloudFront, S3 website or a record of this zone" },
+  { id: "A", type: "A", label: "IPv4", icon: <Globe size={ICON} aria-hidden />, title: "A record: an IPv4 address" },
+  { id: "AAAA", type: "AAAA", label: "IPv6", icon: <Globe size={ICON} aria-hidden />, title: "AAAA record: an IPv6 address" },
+  { id: "CNAME", type: "CNAME", label: "Other name", icon: <Link2 size={ICON} aria-hidden />, title: "CNAME record: another domain name" },
+  { id: "MX", type: "MX", label: "Mail", icon: <Mail size={ICON} aria-hidden />, title: "MX record: mail servers", value: (z) => `10 mail.${z}` },
+  { id: "TXT", type: "TXT", label: "Text", icon: <FileCheck2 size={ICON} aria-hidden />, title: "TXT record: verification, SPF, DMARC" },
+  { id: "CAA", type: "CAA", label: "CA policy", icon: <ShieldCheck size={ICON} aria-hidden />, title: "CAA record: which CAs may issue (Amazon)", value: () => '0 issue "amazon.com"' },
+];
 
 // ResourceRecordSet's members, as Route 53 documents them (the generated
 // model rules stop above this depth).
@@ -83,13 +103,29 @@ export interface RecordChoices {
 /** The record set's fields: the value checks follow the chosen type, an
  * alias target replaces the values, and the routing policy adds what it
  * needs (set identifier, weight, Region, failover role, location). */
-export function RecordFields({ zone, zoneId, defaults, names, choices }: { zone: string; zoneId: string; defaults: RecordDefaults; names: string[]; choices: RecordChoices }) {
+export function RecordFields({
+  zone,
+  zoneId,
+  defaults,
+  names,
+  choices,
+  creating,
+}: {
+  zone: string;
+  zoneId: string;
+  defaults: RecordDefaults;
+  names: string[];
+  choices: RecordChoices;
+  /** A new record: open on the record kinds. */
+  creating?: boolean;
+}) {
   const [type, setType] = useState(defaults.type);
   const [alias, setAlias] = useState(!!defaults.alias);
   const [policy, setPolicy] = useState<Policy>(defaults.policy);
   const [dns, setDns] = useState(defaults.alias ?? "");
   const dnsInput = useRef<HTMLInputElement>(null);
   const zoneInput = useRef<HTMLInputElement>(null);
+  const values = useRef<HTMLTextAreaElement>(null);
   const [collection, setCollection] = useState(defaults.cidrCollection ?? choices.cidr[0]?.id ?? "");
   const checkName = useCallback((v: string) => nameIssue(v, zone, type), [zone, type]);
   const checkValues = useCallback((v: string) => valuesIssue(type, v, alias), [type, alias]);
@@ -106,15 +142,24 @@ export function RecordFields({ zone, zoneId, defaults, names, choices }: { zone:
     if (dnsInput.current) setControlValue(dnsInput.current, value);
     typedDns(value);
   };
+  const kind = alias && policy !== "multivalue" ? "alias" : KINDS.find((k) => !k.alias && k.type === type)?.id;
+  const pickKind = (k: Kind) => {
+    setType(k.type);
+    setAlias(!!k.alias);
+    // Fill a value only into an empty field: never overwrite what was typed.
+    const v = k.value?.(zone);
+    if (v && values.current && !values.current.value.trim()) setControlValue(values.current, v);
+  };
   const locations = choices.cidr.find((c) => c.id === collection)?.locations ?? [];
   return (
     <>
+      {creating && <PresetGallery presets={KINDS} chosen={kind} choose={pickKind} label="Record kind" size={24} testId="record-kind" />}
       <div className="form-row">
         <Field label="Record name" rule={NAME} validate={checkName} member="Name">
           <input name="name" defaultValue={defaults.name} />
         </Field>
         <Field label="Type" member="Type">
-          <select name="type" defaultValue={defaults.type} onChange={(e) => setType(e.target.value)}>
+          <select name="type" value={type} onChange={(e) => setType(e.target.value)}>
             {TYPES.map((t) => (
               <option key={t}>{t}</option>
             ))}
@@ -159,91 +204,93 @@ export function RecordFields({ zone, zoneId, defaults, names, choices }: { zone:
       ) : (
         <>
           <Field label="Value" validate={checkValues} member="ResourceRecords">
-            <textarea name="values" rows={3} placeholder={PLACEHOLDER[type]} className="code-editor" defaultValue={defaults.values} />
+            <textarea ref={values} name="values" rows={3} placeholder={PLACEHOLDER[type]} className="code-editor" defaultValue={defaults.values} />
           </Field>
           <Field label="TTL (seconds)" rule={TTL} member="TTL">
             <input name="ttl" type="number" defaultValue={defaults.ttl} />
           </Field>
         </>
       )}
-      <Field label="Routing policy">
-        <select name="policy" value={policy} onChange={(e) => setPolicy(e.target.value as Policy)}>
-          {Object.entries(POLICIES).map(([k, v]) => (
-            <option key={k} value={k}>
-              {v}
-            </option>
-          ))}
-        </select>
-      </Field>
-      {policy !== "simple" && (
-        <div className="form-row">
-          <Field label="Record ID" rule={SET_ID} member="SetIdentifier">
-            <input name="setId" defaultValue={defaults.setId} placeholder="primary" />
-          </Field>
-          {policy === "weighted" && (
-            <Field label="Weight" rule={WEIGHT} member="Weight">
-              <input name="weight" type="number" defaultValue={defaults.weight ?? 100} />
-            </Field>
-          )}
-          {policy === "latency" && (
-            <Field label="Region" member="Region">
-              <select name="region" defaultValue={defaults.region ?? choices.regions[0]}>
-                {choices.regions.map((r) => (
-                  <option key={r}>{r}</option>
-                ))}
-              </select>
-            </Field>
-          )}
-          {policy === "failover" && (
-            <Field label="Failover record type" member="Failover">
-              <select name="failover" defaultValue={defaults.failover ?? "PRIMARY"}>
-                <option value="PRIMARY">Primary</option>
-                <option value="SECONDARY">Secondary</option>
-              </select>
-            </Field>
-          )}
-          {policy === "geo" && (
-            <Field label="Location" member="GeoLocation">
-              <select name="geo" defaultValue={defaults.geo ?? "*"}>
-                {choices.geos.map((g) => (
-                  <option key={g.value} value={g.value}>
-                    {g.label}
-                  </option>
-                ))}
-              </select>
-            </Field>
-          )}
-        </div>
-      )}
-      {policy === "cidr" && (
-        <div className="form-row">
-          <Field label="CIDR collection" member="CidrRoutingConfig.CollectionId">
-            <select name="cidrCollection" value={collection} onChange={(e) => setCollection(e.target.value)} required>
-              {choices.cidr.length === 0 && <option value="">No CIDR collections</option>}
-              {choices.cidr.map((c) => (
-                <option key={c.id} value={c.id}>
-                  {c.name}
-                </option>
-              ))}
-            </select>
-          </Field>
-          <Field label="CIDR location" rule={LOCATION} known={["*", ...locations]} member="CidrRoutingConfig.LocationName">
-            <input name="cidrLocation" defaultValue={defaults.cidrLocation ?? locations[0] ?? "*"} />
-          </Field>
-        </div>
-      )}
-      {(policy !== "simple" || defaults.healthCheck) && (
-        <Field label="Health check" member="HealthCheckId">
-          <select name="healthCheck" defaultValue={defaults.healthCheck ?? ""}>
-            <option value="">None</option>
-            {choices.healthChecks.map((h) => (
-              <option key={h.id} value={h.id}>
-                {h.label}
+      <MoreFields label="Routing" open={defaults.policy !== "simple" || !!defaults.healthCheck}>
+        <Field label="Routing policy">
+          <select name="policy" value={policy} onChange={(e) => setPolicy(e.target.value as Policy)}>
+            {Object.entries(POLICIES).map(([k, v]) => (
+              <option key={k} value={k}>
+                {v}
               </option>
             ))}
           </select>
         </Field>
-      )}
+        {policy !== "simple" && (
+          <div className="form-row">
+            <Field label="Record ID" rule={SET_ID} member="SetIdentifier">
+              <input name="setId" defaultValue={defaults.setId} placeholder="primary" />
+            </Field>
+            {policy === "weighted" && (
+              <Field label="Weight" rule={WEIGHT} member="Weight">
+                <input name="weight" type="number" defaultValue={defaults.weight ?? 100} />
+              </Field>
+            )}
+            {policy === "latency" && (
+              <Field label="Region" member="Region">
+                <select name="region" defaultValue={defaults.region ?? choices.regions[0]}>
+                  {choices.regions.map((r) => (
+                    <option key={r}>{r}</option>
+                  ))}
+                </select>
+              </Field>
+            )}
+            {policy === "failover" && (
+              <Field label="Failover record type" member="Failover">
+                <select name="failover" defaultValue={defaults.failover ?? "PRIMARY"}>
+                  <option value="PRIMARY">Primary</option>
+                  <option value="SECONDARY">Secondary</option>
+                </select>
+              </Field>
+            )}
+            {policy === "geo" && (
+              <Field label="Location" member="GeoLocation">
+                <select name="geo" defaultValue={defaults.geo ?? "*"}>
+                  {choices.geos.map((g) => (
+                    <option key={g.value} value={g.value}>
+                      {g.label}
+                    </option>
+                  ))}
+                </select>
+              </Field>
+            )}
+          </div>
+        )}
+        {policy === "cidr" && (
+          <div className="form-row">
+            <Field label="CIDR collection" member="CidrRoutingConfig.CollectionId">
+              <select name="cidrCollection" value={collection} onChange={(e) => setCollection(e.target.value)} required>
+                {choices.cidr.length === 0 && <option value="">No CIDR collections</option>}
+                {choices.cidr.map((c) => (
+                  <option key={c.id} value={c.id}>
+                    {c.name}
+                  </option>
+                ))}
+              </select>
+            </Field>
+            <Field label="CIDR location" rule={LOCATION} known={["*", ...locations]} member="CidrRoutingConfig.LocationName">
+              <input name="cidrLocation" defaultValue={defaults.cidrLocation ?? locations[0] ?? "*"} />
+            </Field>
+          </div>
+        )}
+        {(policy !== "simple" || defaults.healthCheck) && (
+          <Field label="Health check" member="HealthCheckId">
+            <select name="healthCheck" defaultValue={defaults.healthCheck ?? ""}>
+              <option value="">None</option>
+              {choices.healthChecks.map((h) => (
+                <option key={h.id} value={h.id}>
+                  {h.label}
+                </option>
+              ))}
+            </select>
+          </Field>
+        )}
+      </MoreFields>
     </>
   );
 }

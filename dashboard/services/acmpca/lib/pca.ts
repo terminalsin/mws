@@ -49,3 +49,25 @@ export const caName = (c: { Arn?: string; CertificateAuthorityConfiguration?: { 
   c.CertificateAuthorityConfiguration?.Subject?.CommonName ?? c.Arn?.split("/").pop() ?? "";
 
 export const DAY = 86_400_000;
+
+/** What a new CA usually is. Picking one sets its type, mode and key. */
+export const CA_PRESETS = [
+  { id: "root", label: "Root", icon: "resource/AWSCertificateManagerCertificateAuthority", type: "ROOT", usage: "GENERAL_PURPOSE", key: "RSA_2048", cn: "Root CA" },
+  { id: "subordinate", label: "Issuing", title: "Subordinate CA, signed by a root", icon: "lucide:git-branch", type: "SUBORDINATE", usage: "GENERAL_PURPOSE", key: "RSA_2048", cn: "Issuing CA" },
+  { id: "short-lived", label: "Short-lived", title: "Certificates valid up to 7 days, at a lower price", icon: "lucide:timer", type: "ROOT", usage: "SHORT_LIVED_CERTIFICATE", key: "EC_prime256v1", cn: "Short-lived CA" },
+  { id: "post-quantum", label: "Post-quantum", title: "ML-DSA keys", icon: "lucide:atom", type: "ROOT", usage: "GENERAL_PURPOSE", key: "ML_DSA_65", cn: "PQ Root CA" },
+] as const;
+
+export type CaPreset = (typeof CA_PRESETS)[number];
+
+/** Issuance templates as tiles. */
+export const TEMPLATE_ICONS: Record<string, string> = {
+  "EndEntityCertificate/V1": "lucide:badge-check",
+  "EndEntityClientAuthCertificate/V1": "lucide:user-round",
+  "EndEntityServerAuthCertificate/V1": "lucide:server",
+  "CodeSigningCertificate/V1": "lucide:file-code",
+  "OCSPSigningCertificate/V1": "lucide:radio-tower",
+  "BlankEndEntityCertificate_APIPassthrough/V1": "lucide:file",
+};
+
+export const keyLabel = (k: string) => k.replace(/_/g, " ").replace("EC prime256v1", "ECDSA P-256").replace("EC secp384r1", "ECDSA P-384").replace("EC secp521r1", "ECDSA P-521");

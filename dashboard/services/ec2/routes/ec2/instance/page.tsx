@@ -9,7 +9,7 @@ import {
 } from "@aws-sdk/client-ec2";
 import { ago, load } from "@mws-dashboard/aws";
 import { SHELL_ACTIONS } from "@mws-dashboard/aws/shell";
-import { ActionForm, AwsIcon, CodeBlock, ErrorNotice, Facts, Field, List, Page, Pill, Section, Segments, Sheet, Specs, Status, Tags, type Tone } from "@mws-dashboard/ui";
+import { ActionForm, AwsIcon, CodeBlock, ErrorNotice, Facts, Field, List, Page, Pill, Section, Segments, Sheet, Specs, Status, Tags, type Tone, CopyValue } from "@mws-dashboard/ui";
 import { LiveRefresh } from "@mws-dashboard/ui/client";
 import { FileExplorer, Terminal } from "@mws-dashboard/ui/console";
 import {
@@ -147,7 +147,7 @@ export default async function InstancePage({ searchParams }: Props) {
       title={name ?? id}
       icon={ICONS.instance}
       back={back}
-      subtitle={name ? id : undefined}
+      subtitle={name ? <CopyValue value={id} /> : undefined}
       actions={
         !gone && (
           <>

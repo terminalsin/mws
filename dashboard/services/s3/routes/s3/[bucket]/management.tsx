@@ -5,9 +5,8 @@ import { Braces, Pause, Play, Plus, Trash2, X } from "lucide-react";
 import Link from "next/link";
 
 import { CONTROL_ICONS, bucketHref, links, optional, s3 } from "../../../lib/s3";
-import { abortUpload, addLifecycleRule, saveLifecycleJson, setLifecycleRule } from "../actions";
-
-const STORAGE_CLASSES = ["STANDARD_IA", "ONEZONE_IA", "INTELLIGENT_TIERING", "GLACIER_IR", "GLACIER", "DEEP_ARCHIVE"];
+import { abortUpload, saveLifecycleJson, setLifecycleRule } from "../actions";
+import { LifecycleRuleForm } from "./lifecycle-rule.tsx";
 
 /** What a lifecycle rule does, in a line. */
 function describeRule(r: LifecycleRule) {
@@ -56,37 +55,7 @@ export async function Management({ bucket }: { bucket: string }) {
         actions={
           <>
             <Sheet title="Create lifecycle rule" label="Create lifecycle rule" icon={<Plus size={15} aria-hidden />} testId="create-lifecycle-rule">
-              <ActionForm action={addLifecycleRule.bind(null, bucket)} submit="Create rule" testId="create-lifecycle-rule">
-                <Field label="Rule name" rule={{ maxLength: 255, generate: "name" }} taken={rules.map((r) => r.ID!).filter(Boolean)} unique>
-                  <input name="id" required />
-                </Field>
-                <Field label="Prefix" hint="Empty applies to the whole bucket">
-                  <input name="prefix" placeholder="logs/" />
-                </Field>
-                <div className="form-row">
-                  <Field label="Transition after (days)" rule={{ type: "integer", min: 1 }}>
-                    <input name="transition" type="number" min={1} />
-                  </Field>
-                  <Field label="To storage class">
-                    <select name="storageClass" defaultValue="STANDARD_IA">
-                      {STORAGE_CLASSES.map((c) => (
-                        <option key={c}>{c}</option>
-                      ))}
-                    </select>
-                  </Field>
-                </div>
-                <div className="form-row">
-                  <Field label="Expire current versions after (days)" rule={{ type: "integer", min: 1 }}>
-                    <input name="expire" type="number" min={1} />
-                  </Field>
-                  <Field label="Expire noncurrent versions after (days)" rule={{ type: "integer", min: 1 }}>
-                    <input name="noncurrent" type="number" min={1} />
-                  </Field>
-                  <Field label="Abort incomplete uploads after (days)" rule={{ type: "integer", min: 1 }}>
-                    <input name="abort" type="number" min={1} />
-                  </Field>
-                </div>
-              </ActionForm>
+              <LifecycleRuleForm bucket={bucket} taken={rules.map((r) => r.ID!).filter(Boolean)} />
             </Sheet>
             <Sheet title="Lifecycle configuration" label="Edit lifecycle rules as JSON" icon={<Braces size={15} aria-hidden />} testId="edit-lifecycle">
               <ActionForm action={saveLifecycleJson.bind(null, bucket)} submit="Save" testId="edit-lifecycle">

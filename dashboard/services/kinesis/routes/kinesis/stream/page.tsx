@@ -30,6 +30,7 @@ import {
   Trash2,
   Users,
 } from "lucide-react";
+import { MoreFields } from "@mws-dashboard/ui/presets";
 import type { Metadata } from "next";
 
 import { ICONS, STATUS_TONE, kinesis, streamHref } from "../../../lib/clients";
@@ -142,12 +143,6 @@ export default async function Stream({ searchParams }: Props) {
                   <Field label="Partition key" rule={PutRecord.PartitionKey}>
                     <input name="key" placeholder="random" />
                   </Field>
-                  <Field
-                    label="Explicit hash key"
-                    rule={PutRecord.ExplicitHashKey}
-                  >
-                    <input name="hash" />
-                  </Field>
                   <Field label="Data" rule={PutRecord.Data}>
                     <textarea
                       name="data"
@@ -157,6 +152,14 @@ export default async function Stream({ searchParams }: Props) {
                       defaultValue={'{\n  "event": "hello"\n}'}
                     />
                   </Field>
+                  <MoreFields label="Explicit hash key">
+                    <Field
+                      label="Explicit hash key"
+                      rule={PutRecord.ExplicitHashKey}
+                    >
+                      <input name="hash" />
+                    </Field>
+                  </MoreFields>
                 </ActionForm>
               </Sheet>
               <Sheet

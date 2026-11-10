@@ -1,14 +1,16 @@
 import { GetAppCommand, ListBranchesCommand, ListDomainAssociationsCommand, ListJobsCommand, ListWebhooksCommand } from "@aws-sdk/client-amplify";
 import { ago, all, describeError, load } from "@mws-dashboard/aws";
 import { roleOptions } from "@mws-dashboard/aws/auto";
-import { ActionForm, AwsIcon, CodeBlock, CopyButton, Empty, ErrorNotice, Facts, Field, List, Page, Pill, Section, Sheet, Specs, Status } from "@mws-dashboard/ui";
+import { ActionForm, AwsIcon, CodeBlock, CopyValue, Empty, ErrorNotice, Facts, Field, List, Page, Pill, Section, Sheet, Specs, Status } from "@mws-dashboard/ui";
 import { LiveRefresh } from "@mws-dashboard/ui/client";
+import { MoreFields } from "@mws-dashboard/ui/presets";
 import { UpdateApp } from "@mws-dashboard/ui/model/amplify";
 import { Clock, ExternalLink, GitBranch, Globe, Lock, Pencil, Play, Plus, Settings2, Trash2, Webhook } from "lucide-react";
 import type { Metadata } from "next";
 import Link from "next/link";
 
 import { RUNNING, rulesText, siteUrl, envText } from "../../../lib/amplify";
+import { frameworkIcon, sourceIcon } from "../../../lib/presets";
 import { amplify, ICONS, tone } from "../../../lib/clients";
 import { BRANCH, CreateBranch } from "../../../lib/rules";
 import { createBranch, createDomain, createWebhook, deleteApp, deleteWebhook, retargetWebhook, triggerWebhook, updateApp } from "../actions";
@@ -89,6 +91,7 @@ export default async function App({ searchParams }: Props) {
         <Field label="Environment variables" format="env">
           <textarea name="env" rows={4} defaultValue={envText(env)} placeholder="API_URL=https://api.example.com" />
         </Field>
+        <MoreFields>
         <Field label="Rewrites and redirects" hint="One per line: source target status, e.g. /old /new 301 or /<*> /index.html 404-200">
           <textarea name="rules" rows={4} className="code-editor" spellCheck={false} defaultValue={rulesText(rules)} />
         </Field>
@@ -110,6 +113,7 @@ export default async function App({ searchParams }: Props) {
         <label className="check">
           <input type="checkbox" name="autoDelete" defaultChecked={!!app.enableBranchAutoDeletion} /> Delete branches removed from Git
         </label>
+        </MoreFields>
       </ActionForm>
     </Sheet>
   );
@@ -134,10 +138,15 @@ export default async function App({ searchParams }: Props) {
       <LiveRefresh when={running} />
       <Specs
         items={[
-          { label: "Domain", icon: <Globe size={15} />, value: app.defaultDomain },
-          app.repository && { label: "Repository", icon: <GitBranch size={15} />, value: /^https?:/.test(app.repository) ? <a href={app.repository}>{app.repository.replace(/^https:\/\/(github\.com\/)?/, "")}</a> : <code>{app.repository}</code> },
+          { label: "Domain", icon: <Globe size={15} />, value: <CopyValue value={app.defaultDomain} label="Copy domain" /> },
+          app.repository && { label: "Repository", icon: sourceIcon(app.repository) ? <AwsIcon icon={sourceIcon(app.repository)!} size={15} /> : <GitBranch size={15} />, value: /^https?:/.test(app.repository) ? <a href={app.repository}>{app.repository.replace(/^https:\/\/(github\.com\/)?/, "")}</a> : <code>{app.repository}</code> },
           app.platform && app.platform !== "WEB" && { label: "Platform", icon: <Settings2 size={15} />, value: app.platform },
           app.enableBasicAuth && { label: "Basic auth", icon: <Lock size={15} />, value: "on" },
+          app.iamServiceRoleArn && {
+            label: "Service role",
+            icon: <AwsIcon icon="resource/AWSIdentityAccessManagementRole" size={15} />,
+            value: <Link href={`/iam/roles/${encodeURIComponent(app.iamServiceRoleArn.split("/").pop()!)}`}>{app.iamServiceRoleArn.split("/").pop()}</Link>,
+          },
           { label: "Updated", icon: <Clock size={15} />, value: ago(app.updateTime) },
         ]}
       />
@@ -153,7 +162,7 @@ export default async function App({ searchParams }: Props) {
                 <input name="name" required autoFocus />
               </Field>
               <Field label="Stage" rule={CreateBranch.stage}>
-                <select name="stage" defaultValue="DEVELOPMENT">
+                <select name="stage" defaultValue={production ? "DEVELOPMENT" : "PRODUCTION"}>
                   {["PRODUCTION", "BETA", "DEVELOPMENT", "EXPERIMENTAL", "PULL_REQUEST"].map((s) => (
                     <option key={s} value={s}>
                       {s[0] + s.slice(1).toLowerCase().replace("_", " ")}
@@ -170,7 +179,7 @@ export default async function App({ searchParams }: Props) {
           empty={<Empty icon={ICONS.amplify} />}
           rows={branches.map((b) => ({
             key: b.branchName!,
-            icon: <GitBranch size={18} />,
+            icon: frameworkIcon(b.framework) ? <AwsIcon icon={frameworkIcon(b.framework)!} size={20} /> : <GitBranch size={18} />,
             title: b.displayName ?? b.branchName,
             subtitle: b.job ? `${b.job.jobType?.toLowerCase().replace("_", " ")} #${b.job.jobId}${b.job.commitMessage ? ` · ${b.job.commitMessage}` : ""}` : b.error,
             href: `/amplify/branch?app=${id}&name=${encodeURIComponent(b.branchName!)}`,
@@ -257,12 +266,7 @@ export default async function App({ searchParams }: Props) {
               key: w.webhookId!,
               icon: <Webhook size={18} />,
               title: w.description || w.webhookId,
-              subtitle: (
-                <span className="inline-icon">
-                  <code className="clip">{w.webhookUrl}</code>
-                  <CopyButton value={w.webhookUrl!} label="Copy webhook URL" />
-                </span>
-              ),
+              subtitle: <CopyValue value={w.webhookUrl} label="Copy webhook URL" />,
               meta: (
                 <>
                   <Pill icon={<GitBranch size={11} />}>{w.branchName}</Pill>
@@ -323,15 +327,6 @@ export default async function App({ searchParams }: Props) {
       {app.customHeaders && (
         <Section title="Custom headers">
           <CodeBlock value={app.customHeaders} label="Custom headers" />
-        </Section>
-      )}
-      {app.iamServiceRoleArn && (
-        <Section>
-          <Facts
-            items={[
-              app.iamServiceRoleArn && ["Service role", <Link key="r" href={`/iam/roles/${encodeURIComponent(app.iamServiceRoleArn.split("/").pop()!)}`}>{app.iamServiceRoleArn.split("/").pop()}</Link>],
-            ]}
-          />
         </Section>
       )}
     </Page>

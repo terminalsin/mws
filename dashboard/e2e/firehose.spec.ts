@@ -24,6 +24,9 @@ async function openCreate(page: Page) {
     form,
     field,
     input: (name: string) => form.locator(`[name="${name}"]`),
+    /** Unfold the buffering, prefix and transform fields. */
+    more: () =>
+      form.locator("summary", { hasText: "Buffering, prefix, transform" }).click(),
   };
 }
 
@@ -59,7 +62,7 @@ test("Firehose: fields repair names, intervals and bare source streams in place"
   page,
 }) => {
   const source = await kinesisStream("dash-fh-src");
-  const { form, field, input } = await openCreate(page);
+  const { form, field, input, more } = await openCreate(page);
 
   // The model's name pattern: spaces become hyphens.
   const name = unique("Dash Clicks");
@@ -73,6 +76,7 @@ test("Firehose: fields repair names, intervals and bare source streams in place"
   await expect(field("name")).not.toHaveAttribute("data-invalid");
 
   // Buffering interval is 0–900 s: clamped to the maximum.
+  await more();
   await input("interval").fill("1200");
   await input("interval").blur();
   await expect(field("interval")).toHaveAttribute("data-invalid", "range");
@@ -187,7 +191,7 @@ test("Firehose: an HTTP endpoint stream, its full configuration and an edit", as
   const name = unique("dash-fh-http");
   const { form, input } = await openCreate(page);
   await input("name").fill(name);
-  await input("destination").selectOption("http");
+  await form.getByTestId("destination-http").click();
   await input("url").fill("https://example.com/ingest");
   await input("endpointName").fill("Example");
   for (const pick of ["destination-bucket", "firehose-role"])
@@ -220,8 +224,9 @@ test("Firehose: S3 delivery shows up under Destination objects", async ({
   page,
 }) => {
   const name = unique("dash-fh-obj");
-  const { form, input } = await openCreate(page);
+  const { form, input, more } = await openCreate(page);
   await input("name").fill(name);
+  await more();
   await input("prefix").fill(`${name}/`);
   await input("interval").fill("0");
   for (const pick of ["destination-bucket", "firehose-role"])

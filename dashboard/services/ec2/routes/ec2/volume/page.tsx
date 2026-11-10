@@ -1,6 +1,6 @@
 import { DescribeVolumesModificationsCommand, DescribeVolumeStatusCommand } from "@aws-sdk/client-ec2";
 import { ago, load } from "@mws-dashboard/aws";
-import { ActionForm, AwsIcon, ErrorNotice, Facts, List, Page, Pill, Section, Sheet, Specs, Status, Tags } from "@mws-dashboard/ui";
+import { ActionForm, AwsIcon, ErrorNotice, Facts, List, Page, Pill, Section, Sheet, Specs, Status, Tags, CopyValue } from "@mws-dashboard/ui";
 import { LiveRefresh } from "@mws-dashboard/ui/client";
 import { Activity, Clock, Gauge, HardDrive, Lock, MapPin, Power, SlidersHorizontal, Trash2, Unlink } from "lucide-react";
 import type { Metadata } from "next";
@@ -58,7 +58,7 @@ export default async function VolumePage({ searchParams }: Props) {
       title={name ?? id}
       icon={ICONS.volume}
       back={back}
-      subtitle={name ? id : undefined}
+      subtitle={name ? <CopyValue value={id} /> : undefined}
       actions={
         <>
           {v.State === "available" && <AttachSheet volume={v} instances={instanceList} />}

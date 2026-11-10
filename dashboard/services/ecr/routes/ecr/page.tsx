@@ -8,18 +8,19 @@ import {
 } from "@aws-sdk/client-ecr";
 import { DescribeRegistriesCommand, DescribeRepositoriesCommand as DescribePublicRepositoriesCommand } from "@aws-sdk/client-ecr-public";
 import { ago, all, load, shortName } from "@mws-dashboard/aws";
-import { ActionForm, AwsIcon, CodeBlock, Empty, ErrorNotice, Facts, Field, List, Page, Pill, Section, Segments, Sheet, Status, type Rule } from "@mws-dashboard/ui";
-import { CreatePullThroughCacheRule, CreateRepository as CreateRepositoryRules, CreateRepositoryCreationTemplate } from "@mws-dashboard/ui/model/ecr";
+import { ActionForm, AwsIcon, CodeBlock, CopyValue, Empty, ErrorNotice, Facts, Field, List, Page, Pill, Section, Segments, Sheet, Status, type Rule } from "@mws-dashboard/ui";
+import { CreateRepository as CreateRepositoryRules, CreateRepositoryCreationTemplate } from "@mws-dashboard/ui/model/ecr";
 import { CreateRepository as CreatePublicRules } from "@mws-dashboard/ui/model/ecr-public";
+import { MoreFields } from "@mws-dashboard/ui/presets";
 import { Globe, Lock, Pencil, Plus, ScanSearch, Trash2 } from "lucide-react";
 import type { Metadata } from "next";
 import Link from "next/link";
 import type { ReactNode } from "react";
 
 import { ICONS, ecr, ecrPublic, links, publicHref, repoHref, repositories } from "../../lib/clients";
+import { UPSTREAM_PRESETS } from "../../lib/presets";
 import {
   createPublicRepository,
-  createPullThrough,
   createRepository,
   createTemplate,
   deletePullThrough,
@@ -29,6 +30,7 @@ import {
   saveScanning,
   setAccountSetting,
 } from "./actions";
+import { PullThroughForm } from "./pull-through.tsx";
 
 export const metadata: Metadata = { title: "ECR" };
 
@@ -44,26 +46,28 @@ function CreateRepository({ names }: { names: string[] }) {
         <Field label="Repository name" rule={REPOSITORY_NAME} taken={names} unique>
           <input name="name" required autoFocus placeholder="team/app" />
         </Field>
-        <label className="check">
-          <input type="checkbox" name="immutable" /> Immutable tags
-        </label>
-        <label className="check">
-          <input type="checkbox" name="scan" defaultChecked /> Scan on push
-        </label>
-        <div className="form-row">
-          <Field label="Encryption">
-            <select name="encryption" defaultValue="AES256">
-              <option value="AES256">AES-256</option>
-              <option value="KMS">AWS KMS</option>
-            </select>
-          </Field>
-          <Field label="KMS key" hint="Empty uses aws/ecr" member="kmsKey">
-            <input name="kms" />
-          </Field>
-        </div>
         <Field label="Keep last N images">
           <input name="keep" type="number" min={0} step={1} placeholder="All" />
         </Field>
+        <MoreFields>
+          <label className="check">
+            <input type="checkbox" name="immutable" /> Immutable tags
+          </label>
+          <label className="check">
+            <input type="checkbox" name="scan" defaultChecked /> Scan on push
+          </label>
+          <div className="form-row">
+            <Field label="Encryption">
+              <select name="encryption" defaultValue="AES256">
+                <option value="AES256">AES-256</option>
+                <option value="KMS">AWS KMS</option>
+              </select>
+            </Field>
+            <Field label="KMS key" hint="Empty uses aws/ecr" member="kmsKey">
+              <input name="kms" />
+            </Field>
+          </div>
+        </MoreFields>
       </ActionForm>
     </Sheet>
   );
@@ -135,20 +139,22 @@ async function Public(): Promise<{ actions: ReactNode; body: ReactNode }> {
         <Field label="Description" rule={{ maxLength: 1024 }}>
           <input name="description" />
         </Field>
-        <div className="form-row">
-          <Field label="Architectures" hint="Like x86-64, ARM 64">
-            <input name="architectures" />
+        <MoreFields>
+          <div className="form-row">
+            <Field label="Architectures" hint="Like x86-64, ARM 64">
+              <input name="architectures" />
+            </Field>
+            <Field label="Operating systems" hint="Linux, Windows">
+              <input name="os" defaultValue="Linux" />
+            </Field>
+          </div>
+          <Field label="About (Markdown)">
+            <textarea name="about" rows={3} />
           </Field>
-          <Field label="Operating systems" hint="Linux, Windows">
-            <input name="os" defaultValue="Linux" />
+          <Field label="Usage (Markdown)">
+            <textarea name="usage" rows={3} />
           </Field>
-        </div>
-        <Field label="About (Markdown)">
-          <textarea name="about" rows={3} />
-        </Field>
-        <Field label="Usage (Markdown)">
-          <textarea name="usage" rows={3} />
-        </Field>
+        </MoreFields>
       </ActionForm>
     </Sheet>
   );
@@ -160,7 +166,7 @@ async function Public(): Promise<{ actions: ReactNode; body: ReactNode }> {
       <>
         {data.value.registries[0] && (
           <Section title="Public registry">
-            <Facts items={[["Registry", <code>{data.value.registries[0].registryUri}</code>], alias && ["Default alias", alias], ["Verified", data.value.registries[0].verified ? "Yes" : "No"]]} />
+            <Facts items={[["Registry", <CopyValue value={data.value.registries[0].registryUri} label="Copy registry URI" />], alias && ["Default alias", alias], ["Verified", data.value.registries[0].verified ? "Yes" : "No"]]} />
           </Section>
         )}
         <List
@@ -252,24 +258,7 @@ async function Registry(): Promise<{ actions: ReactNode; body: ReactNode }> {
           plain
           actions={
             <Sheet title="Create pull through cache rule" label="Create pull through cache rule" icon={<Plus size={15} aria-hidden />} testId="create-pull-through">
-              <ActionForm action={createPullThrough} submit="Create" testId="create-pull-through">
-                <Field label="Repository prefix" rule={CreatePullThroughCacheRule.ecrRepositoryPrefix} member="ecrRepositoryPrefix">
-                  <input name="prefix" required placeholder="ecr-public" />
-                </Field>
-                <Field label="Upstream" rule={CreatePullThroughCacheRule.upstreamRegistry} member="upstreamRegistry">
-                  <select name="upstream" defaultValue="ecr-public">
-                    {(CreatePullThroughCacheRule.upstreamRegistry?.enum ?? []).map((u) => (
-                      <option key={u}>{u}</option>
-                    ))}
-                  </select>
-                </Field>
-                <Field label="Upstream registry URL" member="upstreamRegistryUrl">
-                  <input name="url" required defaultValue="public.ecr.aws" />
-                </Field>
-                <Field label="Credentials (Secrets Manager ARN)" rule={{ ...CreatePullThroughCacheRule.credentialArn, required: false }} member="credentialArn" hint="ecr-pullthroughcache/… secret; Docker Hub, GitHub and others need one">
-                  <input name="credential" />
-                </Field>
-              </ActionForm>
+              <PullThroughForm prefixes={rules.ok ? rules.value.map((r) => r.ecrRepositoryPrefix!) : []} upstreams={rules.ok ? rules.value.map((r) => r.upstreamRegistry ?? "") : []} />
             </Sheet>
           }
         >
@@ -281,6 +270,7 @@ async function Registry(): Promise<{ actions: ReactNode; body: ReactNode }> {
               empty={<span className="muted">None</span>}
               rows={rules.value.map((r) => ({
                 key: r.ecrRepositoryPrefix!,
+                icon: <AwsIcon icon={UPSTREAM_PRESETS.find((p) => p.id === r.upstreamRegistry)?.icon || ICONS.ecr} size={22} />,
                 title: `${r.ecrRepositoryPrefix}/`,
                 subtitle: (
                   <>
@@ -293,7 +283,7 @@ async function Registry(): Promise<{ actions: ReactNode; body: ReactNode }> {
                     )}
                   </>
                 ),
-                meta: r.upstreamRegistry && <Pill>{r.upstreamRegistry}</Pill>,
+                meta: r.credentialArn && <Lock size={13} aria-label="Signs in upstream" />,
                 actions: <ActionForm action={deletePullThrough.bind(null, r.ecrRepositoryPrefix!)} submit={`Delete rule ${r.ecrRepositoryPrefix}`} icon={<Trash2 size={15} aria-hidden />} tone="danger" confirm={`Delete the ${r.ecrRepositoryPrefix} rule?`} />,
               }))}
             />

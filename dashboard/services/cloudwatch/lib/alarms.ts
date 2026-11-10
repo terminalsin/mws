@@ -63,6 +63,11 @@ export async function formOptions() {
     namespaces: [...new Set(list.map((m) => m.Namespace!))].sort(),
     names: [...new Set(list.map((m) => m.MetricName!))].sort(),
     dims: [...new Set(list.map((m) => dimsText(m.Dimensions)).filter(Boolean))],
+    dimsByNamespace: list.reduce<Record<string, string[]>>((by, m) => {
+      const d = dimsText(m.Dimensions);
+      if (d && !(by[m.Namespace!] ??= []).includes(d)) by[m.Namespace!].push(d);
+      return by;
+    }, {}),
     topics: topics.ok ? topics.value : [],
     topicArn: info.account
       ? `arn:aws:sns:${info.region}:${info.account}:{}`

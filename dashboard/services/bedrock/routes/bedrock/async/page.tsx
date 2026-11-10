@@ -7,6 +7,7 @@ import { LiveRefresh } from "@mws-dashboard/ui/client";
 import { StartAsyncInvoke } from "@mws-dashboard/ui/model/bedrock-runtime";
 import { ruleAt } from "@mws-dashboard/ui/validation";
 import { Send } from "lucide-react";
+import { MoreFields } from "@mws-dashboard/ui/presets";
 import type { Metadata } from "next";
 
 import { bedrock, bedrockRuntime, ICONS, tone } from "../../../lib/clients";
@@ -57,9 +58,11 @@ export default async function AsyncInvokes() {
         <Field label="Output location" rule={OUTPUT} known={buckets.map((b) => `s3://${b.value}/`)}>
           <input name="output" required placeholder="s3://bucket/async/" />
         </Field>
+        <MoreFields>
         <Field label="Tags" format="tags">
           <textarea name="tags" rows={2} placeholder="team=ml" />
         </Field>
+        </MoreFields>
       </ActionForm>
     </Sheet>
   );

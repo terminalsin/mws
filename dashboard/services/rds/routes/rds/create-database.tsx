@@ -1,10 +1,11 @@
 "use client";
 
 import { ActionForm, Field } from "@mws-dashboard/ui";
-import { setControlValue } from "@mws-dashboard/ui/fields";
-import { useMemo, useRef, useState } from "react";
+import { MoreFields, PresetGallery, freeName } from "@mws-dashboard/ui/presets";
+import { useMemo, useState } from "react";
 
-import { DATABASE_NAME, ENGINES, RETENTION, family, identifier, password, STORAGE, username } from "../../lib/rules";
+import { ENGINE_PRESETS, type EnginePreset } from "../../lib/presets";
+import { DATABASE_NAME, RETENTION, family, identifier, password, STORAGE, username } from "../../lib/rules";
 import { createDatabase } from "./actions";
 
 const DEFAULT_USER = { postgres: "postgres", mysql: "admin" };
@@ -14,108 +15,90 @@ const ID = identifier(63);
 const USER = { postgres: username("postgres"), mysql: username("mysql") };
 const PASSWORD = { postgres: password("postgres"), mysql: password("mysql") };
 
-/** The create sheet's form: the rules follow the engine (name and password
- * limits, the classes RDS offers it), and untouched defaults move with it. */
-export function CreateDatabaseForm({ classes, versions, taken }: { classes: Record<string, string[]>; versions: Record<string, string[]>; taken: string[] }) {
-  const [engine, setEngine] = useState("postgres");
+/** The create sheet's form. It opens on the engines' logos: picking one
+ * names the database, picks the smallest class RDS offers that engine and
+ * the engine's usual user; everything else waits under More. */
+export function CreateDatabaseForm({ classes, versions, taken, inUse = [] }: { classes: Record<string, string[]>; versions: Record<string, string[]>; taken: string[]; inUse?: string[] }) {
+  const [preset, setPreset] = useState<EnginePreset>(ENGINE_PRESETS[0]);
+  const engine = preset.id;
   const f = family(engine);
   const aurora = engine.startsWith("aurora");
   const offered = useMemo(() => classes[engine] ?? [], [classes, engine]);
   const classRule = useMemo(() => (offered.length ? { required: true, enum: offered } : { required: true }), [offered]);
   const pick = (list: string[]) => PREFERRED_CLASS.find((c) => list.includes(c)) ?? list[0] ?? "db.t4g.micro";
-  const user = useRef<HTMLInputElement>(null);
-  const cls = useRef<HTMLInputElement>(null);
-  // What the person typed stays; what the form filled in follows the engine.
-  const typed = useRef({ user: false, cls: false });
-  const filling = useRef(false);
-  const fill = (el: HTMLInputElement, value: string) => {
-    filling.current = true;
-    setControlValue(el, value);
-    filling.current = false;
-  };
-
-  const change = (next: string) => {
-    const from = family(engine);
-    setEngine(next);
-    if (user.current && !typed.current.user && user.current.value === DEFAULT_USER[from]) fill(user.current, DEFAULT_USER[family(next)]);
-    const list = classes[next] ?? [];
-    if (cls.current && !typed.current.cls && list.length && !list.includes(cls.current.value)) fill(cls.current, pick(list));
-  };
 
   return (
     <ActionForm action={createDatabase} submit="Create database" testId="create-database">
-      <Field label="Engine">
-        <select name="engine" value={engine} onChange={(e) => change(e.target.value)}>
-          {ENGINES.map((e) => (
-            <option key={e.value} value={e.value}>
-              {e.label}
-            </option>
-          ))}
-        </select>
-      </Field>
-      <div className="form-row">
-        <Field label="DB identifier" rule={ID} taken={taken} unique>
-          <input name="id" required autoFocus spellCheck={false} />
-        </Field>
-        <Field label="Engine version">
-          <select name="version" key={engine} defaultValue="">
-            <option value="">Default</option>
-            {(versions[engine] ?? []).map((v) => (
-              <option key={v} value={v}>
-                {v}
-              </option>
-            ))}
-          </select>
-        </Field>
-      </div>
-      <div className="form-row">
-        <Field label="Master username" rule={USER[f]}>
-          <input ref={user} name="username" defaultValue={DEFAULT_USER.postgres} spellCheck={false} onInput={() => (typed.current.user ||= !filling.current)} />
-        </Field>
-        <Field label="Master password" rule={PASSWORD[f]}>
-          <input name="password" type="password" autoComplete="new-password" />
-        </Field>
-      </div>
-      <div className="form-row">
-        <Field label="Instance class" rule={classRule}>
-          <input ref={cls} name="class" defaultValue={pick(classes.postgres ?? [])} list="db-classes" spellCheck={false} onInput={() => (typed.current.cls ||= !filling.current)} />
-        </Field>
-        {!aurora && (
-          <Field label="Storage (GiB)" rule={STORAGE}>
-            <input name="storage" type="number" defaultValue={20} />
+      <PresetGallery presets={ENGINE_PRESETS.map((p) => ({ ...p, added: inUse.includes(p.id) }))} chosen={engine} choose={setPreset} label="Engine" />
+      <input type="hidden" name="engine" value={engine} />
+      {/* Fields remount per engine, so each starts from that engine's defaults. */}
+      <div key={engine} className="preset-fields">
+        <div className="form-row">
+          <Field label="DB identifier" rule={ID} taken={taken} unique>
+            <input name="id" required spellCheck={false} defaultValue={freeName(engine, taken)} />
           </Field>
-        )}
-      </div>
-      <datalist id="db-classes">
-        {offered.map((c) => (
-          <option key={c} value={c} />
-        ))}
-      </datalist>
-      <div className="form-row">
-        <Field label="Initial database name" rule={DATABASE_NAME[f]}>
-          <input name="dbName" spellCheck={false} placeholder="optional" />
-        </Field>
-        <Field label="Backup retention (days)" rule={RETENTION}>
-          <input name="retention" type="number" defaultValue={1} />
-        </Field>
-      </div>
-      <div className="form-row">
-        {!aurora && (
-          <label className="check">
-            <input type="checkbox" name="multiAz" /> Multi-AZ
-          </label>
-        )}
-        {!aurora && (
-          <label className="check">
-            <input type="checkbox" name="public" /> Publicly accessible
-          </label>
-        )}
-        <label className="check">
-          <input type="checkbox" name="encrypted" defaultChecked /> Encryption
-        </label>
-        <label className="check">
-          <input type="checkbox" name="deletionProtection" /> Deletion protection
-        </label>
+          <Field label="Instance class" rule={classRule}>
+            <input name="class" defaultValue={pick(offered)} list="db-classes" spellCheck={false} />
+          </Field>
+        </div>
+        <datalist id="db-classes">
+          {offered.map((c) => (
+            <option key={c} value={c} />
+          ))}
+        </datalist>
+        <div className="form-row">
+          <Field label="Master username" rule={USER[f]}>
+            <input name="username" defaultValue={DEFAULT_USER[f]} spellCheck={false} />
+          </Field>
+          <Field label="Master password" rule={PASSWORD[f]}>
+            <input name="password" type="password" autoComplete="new-password" />
+          </Field>
+        </div>
+        <MoreFields>
+          <div className="form-row">
+            <Field label="Engine version">
+              <select name="version" defaultValue="">
+                <option value="">Default</option>
+                {(versions[engine] ?? []).map((v) => (
+                  <option key={v} value={v}>
+                    {v}
+                  </option>
+                ))}
+              </select>
+            </Field>
+            {!aurora && (
+              <Field label="Storage (GiB)" rule={STORAGE}>
+                <input name="storage" type="number" defaultValue={20} />
+              </Field>
+            )}
+          </div>
+          <div className="form-row">
+            <Field label="Initial database name" rule={DATABASE_NAME[f]}>
+              <input name="dbName" spellCheck={false} placeholder="optional" />
+            </Field>
+            <Field label="Backup retention (days)" rule={RETENTION}>
+              <input name="retention" type="number" defaultValue={1} />
+            </Field>
+          </div>
+          <div className="form-row">
+            {!aurora && (
+              <label className="check">
+                <input type="checkbox" name="multiAz" /> Multi-AZ
+              </label>
+            )}
+            {!aurora && (
+              <label className="check">
+                <input type="checkbox" name="public" /> Publicly accessible
+              </label>
+            )}
+            <label className="check">
+              <input type="checkbox" name="encrypted" defaultChecked /> Encryption
+            </label>
+            <label className="check">
+              <input type="checkbox" name="deletionProtection" /> Deletion protection
+            </label>
+          </div>
+        </MoreFields>
       </div>
     </ActionForm>
   );

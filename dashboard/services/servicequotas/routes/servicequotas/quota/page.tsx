@@ -7,12 +7,12 @@ import {
 import { all, load, region } from "@mws-dashboard/aws";
 import { ActionForm, Empty, ErrorNotice, Facts, Field, List, Metric, Metrics, Page, Pill, Section, Sheet, Tags } from "@mws-dashboard/ui";
 import { LiveRefresh } from "@mws-dashboard/ui/client";
-import { RequestServiceQuotaIncrease } from "@mws-dashboard/ui/model/servicequotas";
 import { ArrowUp, LifeBuoy, Tag } from "lucide-react";
 import type { Metadata } from "next";
 import Link from "next/link";
 
 import { ICONS, quotas } from "../../../lib/clients";
+import { IncreaseFields } from "../../../lib/increase-fields";
 import { OPEN, tone, usage, utilization } from "../../../lib/quotas";
 import { createSupportCase, requestIncrease, saveQuotaTags } from "../actions";
 import { iconOf, requestRow } from "../rows";
@@ -78,9 +78,7 @@ export default async function Quota({ searchParams }: Props) {
           {q.Adjustable && !open && (
             <Sheet title={`Request increase: ${q.QuotaName}`} label="Request increase" icon={<ArrowUp size={16} />} testId={`increase-${code}`}>
               <ActionForm action={requestIncrease.bind(null, service, code)} submit="Request" testId={`increase-${code}`}>
-                <Field label="New value" hint={`Now ${value}`} rule={{ ...RequestServiceQuotaIncrease.DesiredValue, min: Math.floor(value) + 1 }} member="DesiredValue">
-                  <input name="value" type="number" step="any" min={Math.floor(value) + 1} defaultValue={value * 2 || 1} required />
-                </Field>
+                <IncreaseFields value={value} />
               </ActionForm>
             </Sheet>
           )}
