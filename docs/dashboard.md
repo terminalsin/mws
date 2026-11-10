@@ -15,60 +15,73 @@ cd dashboard && npm ci && npm run dev  # http://localhost:3000
 
 For a production build, `npm run build && npm start`.
 
-## Architecture: Next.js multi-zones
+## Architecture: one app, a package per service
 
-The console is ten [Next.js](https://nextjs.org) apps, each owning part of the
-URL space. The **shell** serves `/` and `/control` and forwards every other
-zone's base path to that zone's own server with rewrites, so the browser sees
-one site while each zone builds, deploys and fails on its own.
+Every AWS service's pages are their own workspace package under
+[`services/<id>/`](../dashboard/services) (`@mws-dashboard/service-<id>`), and
+one [Next.js](https://nextjs.org) app, [`apps/console`](../dashboard/apps/console),
+serves all of them from a single server on port 3000. The console app itself
+owns only home (`/`), search and the control plane (`/control`).
 
-| Zone | Base path | Port | Services |
-| --- | --- | --- | --- |
-| `shell` | `/` | 3000 | Home, search, control plane (`/_mws`) |
-| `storage` | `/storage` | 3001 | S3 (objects, previews, presigned URLs, versioning, policy, tags) |
-| `messaging` | `/messaging` | 3002 | SQS (DLQs, redrive), SNS (+ outbox), EventBridge (buses, rules), SES (+ outbox) |
-| `security` | `/security` | 3003 | IAM (users, roles, groups, policies, access keys), KMS, Secrets Manager, Parameter Store |
-| `compute` | `/compute` | 3004 | Lambda (create, invoke, edit code, configuration, triggers), EC2 (instances, images, key pairs, security groups) |
-| `observability` | `/observability` | 3005 | CloudWatch Logs, alarms, metrics |
-| `networking` | `/networking` | 3006 | VPC (resource map), Route 53, load balancers, Global Accelerator, ACM, Private CA |
-| `data` | `/data` | 3007 | RDS, ElastiCache, ECR, ECS, EKS, EFS, Kinesis, Firehose |
-| `governance` | `/governance` | 3008 | Organizations, CloudFormation, CloudTrail, Service Quotas, Cost Explorer, Security Hub, GuardDuty, Identity Center, RAM |
-| `platform` | `/platform` | 3009 | Bedrock (model catalog, chat playground, guardrails, inference profiles, invocation logging, model providers), Amplify (apps, branches, deploys), CodeArtifact (repositories, packages, connection instructions), Image Builder, Auto Scaling, Marketplace (catalog, subscriptions, metering) |
+A service package holds:
 
-The zones share two workspace packages and nothing else:
+- `routes/`: its pages, laid out like the URLs they serve.
+  `services/s3/routes/s3/[bucket]/page.tsx` is `/s3/<bucket>`; CloudWatch
+  owns `/logs`, `/alarms` and `/metrics`; API routes go under
+  `routes/api/<id>/` (S3's downloads are `/api/s3/object`).
+- `lib/`: its SDK clients and helpers.
+- `inventory.ts` (optional): the resources it contributes to search and the
+  home page, each with a service id, type, name, link, optional tags and an
+  optional *signal* (an alarm firing, a key or secret pending deletion, a
+  dead-letter queue filling up).
+- `package.json`: the SDK clients it uses, and nothing from another service.
+
+Next.js only serves routes from the app's own `app/` folder, so
+[`scripts/services.mjs`](../dashboard/scripts/services.mjs) mounts the
+packages: for every route file it writes a one-line re-export into
+`apps/console/app/(services)/` (git-ignored; route segment options such as
+`dynamic` are copied, since Next.js reads them statically), gives every
+service folder its own error boundary so a failing page stays inside its
+service, and writes the inventory registry the home page reads. `npm run dev`,
+`build` and `typecheck` run it first, and `npm run dev` keeps re-running it as
+routes are added or removed.
+
+The same script enforces the isolation and fails the build when a service
+breaks it: a service may import its own files, the npm packages its
+`package.json` declares and the shared packages below, never another service
+(link to another service's pages by URL instead), and two services may not
+claim the same URL.
+
+The shared packages:
 
 - `@mws-dashboard/ui`: the frame (sidebar, toolbar with search and region),
-  components and styles; [`zones.json`](../dashboard/packages/ui/zones.json),
-  which says which zone owns which base path and port (the shell's rewrites
-  and `scripts/zones.mjs` read it); and the service catalog
-  (`src/catalog.ts`): every service's name, category, official icon and, once
-  it has pages, its zone and path. The sidebar is built from the catalog.
+  components and styles, and the service catalog (`src/catalog.ts`): every
+  service's name, category, official icon, landing path and sidebar sections.
+  The sidebar and Services menu are built from it.
 - `@mws-dashboard/aws`: server-side helpers: SDK client settings (endpoint,
-  credentials, the region from the shared `mws-region` cookie), calls to
-  `/_mws` and `/_aws`, and the wrapper that turns server actions into results.
+  credentials, the region from the `mws-region` cookie), calls to `/_mws` and
+  `/_aws`, and the wrapper that turns server actions into results.
 - `@mws-dashboard/ai`: embeddings and what the console builds on them (see
   [Curation](#curation)).
 
-Each zone depends only on the SDK clients of its own services. Pages are React
-Server Components that call the SDK on the server; changes are server actions,
-so no credentials reach the browser. Links inside a zone navigate on the
-client; links to another zone load a new document from that zone.
+Pages are React Server Components that call the SDK on the server; changes
+are server actions, so no credentials reach the browser. Because everything is
+one app, links between services navigate on the client and the frame never
+reloads.
 
-Every zone also serves `<basePath>/api/inventory`: its resources as
-`{items, errors}`, each item with a service id, type, name, link, optional
-tags and an optional *signal* (an alarm firing, a key or secret pending
-deletion, a dead-letter queue filling up). The shell reads these for search
-and the home page, so it never calls another zone's services itself.
+Earlier versions ran ten Next.js servers (multi-zones) with services grouped
+into them. One server per service would have meant 41 dev servers of a few
+hundred MB each; compiling the packages into one app gives the same code
+isolation with one dev server and a production build of about 20 seconds.
 
-### Adding a page or a zone
+### Adding a page or a service
 
-- A page in an existing zone: add it under `apps/<zone>/app/`. A new service
-  gets `zone` and `path` in the catalog, which puts it in the sidebar.
-- A new zone: copy a zone app, give it a new base path and port in
-  `zones.json`, and add it to `ZoneId` in `packages/ui/src/zones.ts`. The
-  shell picks up the rewrite without changes. Serve `api/inventory` so the
-  zone's resources are searchable.
-
+- A page: add it under the service's `routes/`. `npm run dev` mounts it.
+- A service: create `services/<id>/` with a `package.json` named
+  `@mws-dashboard/service-<id>` (copy one), its `routes/` and, if it has
+  resources worth searching, an `inventory.ts` exporting `inventory`, an array
+  of functions returning `InventoryItem[]`. Give it a `path` (and `nav`) in the
+  catalog, which puts it in the sidebar, then `npm install` to link it.
 
 Running EC2 instances and ECS task containers have Terminal, Files and Logs
 tabs. The terminal runs one command at a time; `cd` carries over, and ↑/↓
@@ -95,15 +108,15 @@ nothing suitable exists. Helpers live in `packages/aws/src/auto.ts`.
 The layout is the AWS console's: a top bar (Services menu, search,
 account, region), a per-service sidebar with the same sections AWS has
 (`nav` in `packages/ui/src/catalog.ts`, e.g. IAM: Users, Roles, Groups,
-Policies), the zone's other services below it, and AWS's tab names on detail
+Policies), the other services of its category below it, and AWS's tab names on detail
 pages. The look follows IBM's [Carbon](https://carbondesignsystem.com): IBM
 Plex type, the Gray 10 / Gray 100 themes with Blue 60 for interaction, square
 corners, flat layers separated by 1px rules, line tabs, bottom-border fields
 and left-aligned buttons. Styles are [Tailwind CSS](https://tailwindcss.com)
 v4 (`packages/ui/src/styles.css`): the Carbon tokens are theme variables, so
-zones can use utilities such as `bg-layer` or `text-secondary`, and the shared
-components are classes composed with `@apply`. Each zone has a
-`postcss.config.mjs` that runs Tailwind. Rules the pages keep to:
+pages can use utilities such as `bg-layer` or `text-secondary`, and the shared
+components are classes composed with `@apply`. The console's
+`postcss.config.mjs` runs Tailwind. Rules the pages keep to:
 
 - **Show, don't label.** If something can be an icon, it is one; self-evident
   things are not described; facts nobody acts on are left out (an empty
@@ -113,8 +126,7 @@ components are classes composed with `@apply`. Each zone has a
   package); runtimes and operating systems use their own logos
   ([`simple-icons`](https://simpleicons.org)). `node scripts/icons.mjs` copies
   every icon the source mentions (`"service/…"`, `"resource/…"`,
-  `"category/…"`, `"brand/…"`) into the shell's `public/icons`, where all
-  zones load them; run it after using a new icon.
+  `"category/…"`, `"brand/…"`) into the console's `public/icons`; run it after using a new icon.
 - **Signals first.** What needs attention (an alarm, a port open to the
   internet, a deletion pending) is shown in color with an icon, and gathered
   on the home page.
@@ -135,8 +147,8 @@ components are classes composed with `@apply`. Each zone has a
   spinner to a check, a deleting row fading back, a failed submit shaking).
   Motion that carries information stays: the progress bar, skeleton shimmer,
   a breathing dot on states still changing ("creating", "pending"), numbers
-  counting to a new value, a toast's remaining time. Moving between zones
-  keeps the top bar and sidebar still (cross-document view transitions).
+  counting to a new value, a toast's remaining time. Moving between services
+  keeps the top bar and sidebar still.
   `prefers-reduced-motion` turns all of it off.
 - **Recipes, not improvisation.** Timings and curves follow
   [transitions.dev](https://transitions.dev): one smooth-out curve
@@ -159,7 +171,7 @@ components are classes composed with `@apply`. Each zone has a
 
 Long lists are grouped by what the resources are rather than shown flat:
 
-- **Search** (⌘K and `/search`) ranks every zone's inventory by meaning and
+- **Search** (⌘K and `/search`) ranks every service's inventory by meaning and
   words together (embeddings blended with keyword scores).
 - **Sections** come from classifiers: buckets by purpose (logs, websites,
   artifacts, backups, data, media), roles by who may assume them (services,
@@ -190,11 +202,11 @@ When the chosen source fails the console falls back to `lexical`.
 
 | Variable | Default | Used by |
 | --- | --- | --- |
-| `MWS_ENDPOINT` | `http://127.0.0.1:4566` | every zone (SDK calls and `/_mws`) |
+| `MWS_ENDPOINT` | `http://127.0.0.1:4566` | every page (SDK calls and `/_mws`) |
 | `MWS_REGION` | `us-east-1` | the region until one is picked in the top bar |
 | `MWS_ACCESS_KEY_ID`, `MWS_SECRET_ACCESS_KEY`, `MWS_SESSION_TOKEN` | the root user | who the console calls MWS as |
-| `MWS_DASHBOARD_<ZONE>_URL` | `http://127.0.0.1:<port>` | the shell, at build time: where a zone runs |
-| `MWS_DASHBOARD_ORIGINS` | none | extra `host:port` origins allowed to send server actions (when the shell is not on port 3000) |
+| `MWS_DASHBOARD_PORT` | `3000` | `npm run dev` / `npm start`: the console's port |
+| `MWS_DASHBOARD_ORIGINS` | none | extra `host:port` origins allowed to send server actions (when a proxy serves the console under another host) |
 
 Calling as a less privileged identity shows what that identity may see:
 point `MWS_ACCESS_KEY_ID` and `MWS_SECRET_ACCESS_KEY` at an IAM user's keys
@@ -203,7 +215,8 @@ and pages show MWS's `AccessDenied` messages where the policy says no.
 ## Tests
 
 [`dashboard/e2e`](../dashboard/e2e) drives the built console with
-[Playwright](https://playwright.dev) against a running MWS: one spec per zone,
+[Playwright](https://playwright.dev) against a running MWS: one spec per service (`e2e/<id>.spec.ts`, plus
+`console.spec.ts` for home, search and the frame),
 each creating resources with unique names through the UI (and seeding with the
 SDK only what the UI cannot create, such as Lambda code that logs or metric
 data). `npm test -w @mws-dashboard/ai` runs the unit tests of the curation
@@ -213,7 +226,7 @@ code.
 cargo run -p mws &
 cd dashboard && npm ci && npm run build
 npx playwright install chromium
-npm test                      # starts every zone with scripts/zones.mjs
+npm test                      # starts the console with scripts/console.mjs
 ```
 
 `npm run typecheck` type-checks every package. CI runs the `dashboard` job

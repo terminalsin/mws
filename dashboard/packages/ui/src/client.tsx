@@ -40,19 +40,18 @@ import { iconUrl } from "./catalog";
 import { DotMatrix } from "./loaders";
 import { machine, useMachine } from "./machine";
 import { CheckMark } from "./motion";
-import { AUTO, REGION_COOKIE, type ZoneId } from "./zones";
+import { AUTO, REGION_COOKIE } from "./constants";
 
 /** A service as the navigation needs it (serializable, built on the server). */
 export interface NavService {
   id: string;
   short: string;
   icon: string;
-  zone: ZoneId;
-  /** Landing path inside its zone. */
+  /** Category id, for the "related services" list. */
+  category: string;
+  /** Landing page. */
   path: string;
-  /** Absolute URL of the landing page (for other zones). */
-  href: string;
-  nav: { label: string; path: string; icon: string; href: string }[];
+  nav: { label: string; path: string; icon: string }[];
 }
 
 export interface NavGroup {
@@ -71,12 +70,11 @@ function splitPath(path: string) {
   return { pathname, tab: new URLSearchParams(query).get("tab") };
 }
 
-/** The service a pathname belongs to in this zone: the longest matching path. */
-function activeService(services: NavService[], zone: ZoneId, pathname: string) {
+/** The service a pathname belongs to: the longest matching path. */
+function activeService(services: NavService[], pathname: string) {
   let best: NavService | undefined;
   let length = 0;
   for (const s of services) {
-    if (s.zone !== zone) continue;
     for (const p of [s.path, ...s.nav.map((n) => splitPath(n.path).pathname)]) {
       if ((pathname === p || pathname.startsWith(p + "/")) && p.length > length) {
         best = s;
@@ -99,14 +97,16 @@ function activeItem(service: NavService, pathname: string, tab: string | null) {
 }
 
 /** The sidebar. Inside a service it is that service's own navigation, as in
- * the AWS console; elsewhere (home, control plane) it lists every service. */
-export function SideNav({ zone, groups }: { zone: ZoneId; groups: NavGroup[] }) {
+ * the AWS console, followed by its neighbours in the same category;
+ * elsewhere (home, control plane) it lists every service. */
+export function SideNav({ groups }: { groups: NavGroup[] }) {
   const pathname = usePathname() || "/";
   const tab = useSearchParams().get("tab");
   const services = groups.flatMap((g) => g.services);
-  const current = zone === "shell" ? undefined : activeService(services, zone, pathname);
+  const current = activeService(services, pathname);
   if (current) {
     const active = activeItem(current, pathname, tab);
+    const related = services.filter((s) => s.category === current.category && s.id !== current.id);
     return (
       <nav aria-label={current.short} className="service-nav">
         <Link className="service-head" href={current.path}>
@@ -119,16 +119,14 @@ export function SideNav({ zone, groups }: { zone: ZoneId; groups: NavGroup[] }) 
             <span>{n.label}</span>
           </Link>
         ))}
-        {services.some((s) => s.zone === zone && s.id !== current.id) && (
+        {related.length > 0 && (
           <div className="nav-group related">
-            {services
-              .filter((s) => s.zone === zone && s.id !== current.id)
-              .map((s) => (
-                <Link key={s.id} className="nav-link" href={s.path}>
-                  <Icon icon={s.icon} size={20} />
-                  <span>{s.short}</span>
-                </Link>
-              ))}
+            {related.map((s) => (
+              <Link key={s.id} className="nav-link" href={s.path}>
+                <Icon icon={s.icon} size={20} />
+                <span>{s.short}</span>
+              </Link>
+            ))}
           </div>
         )}
       </nav>
@@ -139,19 +137,12 @@ export function SideNav({ zone, groups }: { zone: ZoneId; groups: NavGroup[] }) 
       {groups.map((g) => (
         <div key={g.id} className="nav-group">
           <div className="nav-title">{g.name}</div>
-          {g.services.map((s) =>
-            s.zone === zone ? (
-              <Link key={s.id} className="nav-link" href={s.path}>
-                <Icon icon={s.icon} />
-                <span>{s.short}</span>
-              </Link>
-            ) : (
-              <a key={s.id} className="nav-link" href={s.href}>
-                <Icon icon={s.icon} />
-                <span>{s.short}</span>
-              </a>
-            ),
-          )}
+          {g.services.map((s) => (
+            <Link key={s.id} className="nav-link" href={s.path}>
+              <Icon icon={s.icon} />
+              <span>{s.short}</span>
+            </Link>
+          ))}
         </div>
       ))}
     </nav>
@@ -196,10 +187,10 @@ export function ServicesMenu({ groups }: { groups: NavGroup[] }) {
             <div key={g.id} className="services-group">
               <div className="nav-title">{g.name}</div>
               {g.services.map((s) => (
-                <a key={s.id} role="menuitem" className="nav-link" href={s.href}>
+                <Link key={s.id} role="menuitem" className="nav-link" href={s.path} onClick={() => setOpen(false)}>
                   <Icon icon={s.icon} size={24} />
                   <span>{s.short}</span>
-                </a>
+                </Link>
               ))}
             </div>
           ))}
@@ -209,42 +200,14 @@ export function ServicesMenu({ groups }: { groups: NavGroup[] }) {
   );
 }
 
-/** A sidebar entry. Links inside the current zone navigate on the client;
- * links to another zone are plain anchors, because that page belongs to a
- * different Next.js app and needs a full document load. */
-export function NavLink({
-  href,
-  zonePath,
-  sameZone,
-  icon,
-  children,
-}: {
-  href: string;
-  /** The path inside the current zone, when the link belongs to it. */
-  zonePath?: string;
-  sameZone: boolean;
-  icon?: ReactNode;
-  children: ReactNode;
-}) {
+/** A sidebar entry, highlighted while its page (or one below it) is open. */
+export function NavLink({ href, icon, children }: { href: string; icon?: ReactNode; children: ReactNode }) {
   const pathname = usePathname() || "/";
-  const target = zonePath ?? href;
-  const active = sameZone && (target === "/" ? pathname === "/" : pathname === target || pathname.startsWith(target + "/"));
-  const body = (
-    <>
+  const active = href === "/" ? pathname === "/" : pathname === href || pathname.startsWith(href + "/");
+  return (
+    <Link className={active ? "nav-link active" : "nav-link"} href={href} aria-current={active ? "page" : undefined}>
       {icon}
       <span>{children}</span>
-    </>
-  );
-  if (!sameZone) {
-    return (
-      <a className="nav-link" href={href}>
-        {body}
-      </a>
-    );
-  }
-  return (
-    <Link className={active ? "nav-link active" : "nav-link"} href={target} aria-current={active ? "page" : undefined}>
-      {body}
     </Link>
   );
 }
@@ -266,7 +229,7 @@ const REGIONS = [
   "sa-east-1",
 ];
 
-/** Every zone reads the region from one cookie, so a change here applies to
+/** Every page reads the region from one cookie, so a change here applies to
  * the whole console. */
 export function RegionPicker({ region }: { region: string }) {
   const router = useRouter();
@@ -571,7 +534,7 @@ export function Toasts({ children }: { children: ReactNode }) {
   );
 }
 
-// Command palette (⌘K): semantic search across every zone's resources.
+// Command palette (⌘K): semantic search across every service's resources.
 
 export interface SearchHit {
   id: string;
@@ -881,7 +844,7 @@ export function RouteProgress() {
   return <div className="route-progress" data-state={phase} aria-hidden />;
 }
 
-/** What a zone shows when a page throws: the failure, and a retry that
+/** What a service shows when a page throws: the failure, and a retry that
  * re-renders the page on the server. */
 export function ErrorView({ error, reset }: { error: Error & { digest?: string }; reset: () => void }) {
   const router = useRouter();

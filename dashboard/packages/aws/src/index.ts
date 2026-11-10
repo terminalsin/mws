@@ -1,4 +1,4 @@
-// Server-only helpers shared by every zone. Zones talk to MWS exactly as an
+// Server-only helpers shared by every service package. Pages talk to MWS exactly as an
 // application would: through the AWS SDK for JavaScript v3, pointed at the
 // MWS endpoint with the credentials below. The only non-AWS calls go to MWS's
 // own control API (`/_mws/...`) and the outboxes services expose under
@@ -7,7 +7,7 @@ import "server-only";
 
 import { GetCallerIdentityCommand, STSClient } from "@aws-sdk/client-sts";
 import type { ActionResult, FrameInfo } from "@mws-dashboard/ui";
-import { REGION_COOKIE } from "@mws-dashboard/ui/zones";
+import { REGION_COOKIE } from "@mws-dashboard/ui/constants";
 import { revalidatePath } from "next/cache";
 import { cookies } from "next/headers";
 import { unstable_rethrow } from "next/navigation";
@@ -26,7 +26,7 @@ export function credentials() {
   };
 }
 
-/** The region the user picked in the top bar (a cookie shared by all zones). */
+/** The region the user picked in the top bar (one cookie for the whole console). */
 export async function region(): Promise<string> {
   const jar = await cookies();
   return jar.get(REGION_COOKIE)?.value || process.env.MWS_REGION || "us-east-1";
@@ -191,8 +191,8 @@ export function ago(d: Date | string | number | undefined | null): string {
   return s >= 0 ? `${n}${unit} ago` : `in ${n}${unit}`;
 }
 
-/** A resource as the shell's search and home page see it. Every zone serves
- * its resources at `<basePath>/api/inventory` (see `inventoryResponse`). */
+/** A resource as the console's search and home page see it. Each service
+ * package lists its own in `services/<id>/inventory.ts`. */
 export interface InventoryItem {
   /** Catalog service id ("s3", "sqs", ...). */
   service: string;
@@ -201,22 +201,13 @@ export interface InventoryItem {
   /** Unique across the console: usually the ARN. */
   id: string;
   name: string;
-  /** Absolute path of the resource's page (including the zone's base path). */
+  /** Absolute path of the resource's page. */
   href: string;
   /** A short fact worth showing next to the name. */
   detail?: string;
   tags?: Record<string, string>;
   /** Something that needs attention: an alarm firing, a backlog, a deletion. */
   signal?: { tone: "bad" | "warn"; text: string };
-}
-
-/** Gather a zone's inventory: each source runs independently, so one
- * failing service (or permission) does not hide the rest. */
-export async function inventoryResponse(sources: (() => Promise<InventoryItem[]>)[]): Promise<Response> {
-  const settled = await Promise.allSettled(sources.map((s) => s()));
-  const items = settled.flatMap((r) => (r.status === "fulfilled" ? r.value : []));
-  const errors = settled.flatMap((r) => (r.status === "rejected" ? [describeError(r.reason)] : []));
-  return Response.json({ items, errors }, { headers: { "cache-control": "no-store" } });
 }
 
 /** AWS tag lists ([{Key, Value}]) as a plain object. */

@@ -1,6 +1,6 @@
 "use client";
 
-// A terminal and a file explorer for compute resources. The zone passes the
+// A terminal and a file explorer for compute resources. The page passes the
 // server actions (from @mws-dashboard/aws/shell-actions) and the target.
 import { ArrowUp, Download, File, FileSymlink, Folder, FolderPlus, RefreshCw, Trash2, Upload, X } from "lucide-react";
 import { useCallback, useEffect, useRef, useState, type KeyboardEvent } from "react";

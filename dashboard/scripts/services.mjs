@@ -1,0 +1,198 @@
+#!/usr/bin/env node
+// Mount every service package into the console app.
+//
+// Each AWS service's pages live in their own workspace package under
+// services/<id>/ (package @mws-dashboard/service-<id>). Its `routes/` folder
+// mirrors the URL space it owns: services/s3/routes/s3/[bucket]/page.tsx is
+// served at /s3/<bucket>. Next.js only serves routes from the app's own
+// `app/` folder, so this script writes a one-line re-export for every route
+// file into apps/console/app/(services)/ (git-ignored), plus the registry the
+// home page and search read inventories from.
+//
+// It also enforces the isolation between services: a service may import the
+// shared packages (@mws-dashboard/ui, aws, ai), its declared npm
+// dependencies and its own files, never another service. Run with --watch to
+// keep the mounts current while `next dev` runs.
+import { existsSync, mkdirSync, readFileSync, readdirSync, rmSync, statSync, watch, writeFileSync } from "node:fs";
+import { dirname, join, relative, resolve, sep } from "node:path";
+import { fileURLToPath } from "node:url";
+
+const root = join(dirname(fileURLToPath(import.meta.url)), "..");
+const servicesDir = join(root, "services");
+const app = join(root, "apps/console/app");
+const mountDir = join(app, "(services)");
+const registry = join(root, "apps/console/lib/services.generated.ts");
+
+/** File names Next.js treats as part of a route. */
+const ROUTE_FILES = /^(page|layout|loading|error|not-found|template|default|route)\.tsx?$/;
+/** Route segment options Next.js reads statically, so they must be copied, not re-exported. */
+const SEGMENT_CONFIG = /^export const (dynamic|dynamicParams|revalidate|fetchCache|runtime|preferredRegion|maxDuration)\s*=.*$/gm;
+const SHARED = new Set(["@mws-dashboard/ui", "@mws-dashboard/aws", "@mws-dashboard/ai"]);
+const BUILTIN = /^(node:|next$|next\/|react$|react\/|react-dom|server-only$)/;
+
+const walk = (d) => (existsSync(d) ? readdirSync(d).flatMap((f) => (statSync(join(d, f)).isDirectory() ? walk(join(d, f)) : [join(d, f)])) : []);
+const posix = (p) => p.split(sep).join("/");
+
+function services() {
+  return readdirSync(servicesDir)
+    .filter((id) => existsSync(join(servicesDir, id, "package.json")))
+    .sort()
+    .map((id) => {
+      const dir = join(servicesDir, id);
+      const pkg = JSON.parse(readFileSync(join(dir, "package.json"), "utf8"));
+      return { id, dir, pkg, inventory: existsSync(join(dir, "inventory.ts")) };
+    });
+}
+
+/** The modules a file imports or re-exports. */
+function importsOf(text) {
+  return [
+    ...text.matchAll(/^\s*(?:import|export)\b[^;"'`]*?\bfrom\s*["']([^"']+)["']/gm),
+    ...text.matchAll(/^\s*import\s*["']([^"']+)["']/gm),
+    ...text.matchAll(/\bimport\(\s*["']([^"']+)["']\s*\)/g),
+  ].map((m) => m[1]);
+}
+
+/** Import specifiers a service may not use. */
+function violations(svc) {
+  const problems = [];
+  const declared = new Set(Object.keys({ ...svc.pkg.dependencies, ...svc.pkg.peerDependencies }));
+  for (const file of walk(svc.dir).filter((f) => /\.(ts|tsx|mjs|js)$/.test(f) && !f.includes("node_modules"))) {
+    const text = readFileSync(file, "utf8");
+    for (const spec of importsOf(text)) {
+      const where = posix(relative(root, file));
+      if (spec.startsWith(".")) {
+        const target = resolve(dirname(file), spec);
+        if (!target.startsWith(svc.dir + sep)) problems.push(`${where}: "${spec}" reaches outside services/${svc.id}`);
+        continue;
+      }
+      const pkg = spec.startsWith("@") ? spec.split("/").slice(0, 2).join("/") : spec.split("/")[0];
+      if (pkg.startsWith("@mws-dashboard/service-")) problems.push(`${where}: imports another service (${pkg}); link to its pages by URL instead`);
+      else if (pkg.startsWith("@mws-dashboard/") && !SHARED.has(pkg)) problems.push(`${where}: "${pkg}" is not a shared package`);
+      else if (!BUILTIN.test(spec) && !declared.has(pkg)) problems.push(`${where}: "${pkg}" is not in services/${svc.id}/package.json`);
+    }
+  }
+  return problems;
+}
+
+function reexport(svc, file) {
+  const rel = posix(relative(svc.dir, file));
+  const spec = `${svc.pkg.name}/${rel}`;
+  const text = readFileSync(file, "utf8");
+  const names = new Set();
+  if (/^export default\b/m.test(text) || /export \{[^}]*\bas default\b/.test(text)) names.add("default");
+  for (const m of text.matchAll(/^export (?:async )?(?:function|const|let) (\w+)/gm)) names.add(m[1]);
+  for (const m of text.matchAll(/^export \{([^}]*)\}/gm))
+    for (const n of m[1].split(",")) {
+      const name = n.trim().split(/\s+as\s+/).pop();
+      if (name) names.add(name);
+    }
+  const config = [...text.matchAll(SEGMENT_CONFIG)].map((m) => m[0]);
+  const configNames = new Set(config.map((c) => /export const (\w+)/.exec(c)[1]));
+  const exported = [...names].filter((n) => !configNames.has(n));
+  const lines = [];
+  if (/^\s*["']use client["']/.test(text)) lines.push(`"use client";`, "");
+  lines.push(`// Generated by scripts/services.mjs from services/${svc.id}/${rel}. Do not edit.`);
+  if (exported.length) lines.push(`export { ${exported.join(", ")} } from "${spec}";`);
+  lines.push(...config);
+  return lines.join("\n") + "\n";
+}
+
+const ERROR_BOUNDARY = `"use client";\n\n// Generated by scripts/services.mjs: a failing page stays inside its service.\nexport { ErrorView as default } from "@mws-dashboard/ui/client";\n`;
+
+export function generate() {
+  const all = services();
+  const problems = all.flatMap(violations);
+  if (problems.length) throw new Error(`service isolation:\n  ${problems.join("\n  ")}`);
+
+  const files = new Map(); // path under mountDir -> { owner, content }
+  const put = (path, owner, content) => {
+    const prior = files.get(path);
+    if (prior && prior.owner !== owner) throw new Error(`${path} is claimed by both ${prior.owner} and ${owner}`);
+    files.set(path, { owner, content });
+  };
+  const owns = {};
+  for (const svc of all) {
+    const routes = join(svc.dir, "routes");
+    for (const file of walk(routes).filter((f) => ROUTE_FILES.test(f.split(sep).pop()))) {
+      put(posix(relative(routes, file)), svc.id, reexport(svc, file));
+    }
+    // Every top-level folder a service serves gets an error boundary of its own.
+    for (const top of existsSync(routes) ? readdirSync(routes) : []) {
+      if (top === "api" || !statSync(join(routes, top)).isDirectory()) continue;
+      (owns[svc.id] ??= []).push(`/${top}`);
+      if (existsSync(join(app, top))) throw new Error(`/${top} of service ${svc.id} collides with the console's own app/${top}`);
+      if (!files.has(`${top}/error.tsx`)) put(`${top}/error.tsx`, svc.id, ERROR_BOUNDARY);
+    }
+  }
+
+  // Write only what changed, so the dev server does not recompile everything.
+  const wanted = new Set();
+  for (const [path, { content }] of files) {
+    const target = join(mountDir, path);
+    wanted.add(target);
+    if (existsSync(target) && readFileSync(target, "utf8") === content) continue;
+    mkdirSync(dirname(target), { recursive: true });
+    writeFileSync(target, content);
+  }
+  for (const file of walk(mountDir)) if (!wanted.has(file)) rmSync(file);
+
+  const withInventory = all.filter((s) => s.inventory);
+  const ident = (id) => `inventory_${id.replace(/\W/g, "_")}`;
+  const reg = [
+    "// Generated by scripts/services.mjs. Do not edit.",
+    'import "server-only";',
+    "",
+    ...withInventory.map((s) => `import { inventory as ${ident(s.id)} } from "${s.pkg.name}/inventory";`),
+    "",
+    "/** Every service package, and where its pages live. */",
+    `export const SERVICE_PACKAGES = ${JSON.stringify(Object.fromEntries(all.map((s) => [s.id, { package: s.pkg.name, paths: owns[s.id] ?? [] }])), null, 2)} as const;`,
+    "",
+    "/** Each service's inventory sources, for the home page and search. */",
+    "export const INVENTORIES = {",
+    ...withInventory.map((s) => `  ${JSON.stringify(s.id)}: ${ident(s.id)},`),
+    "};",
+    "",
+  ].join("\n");
+  if (!existsSync(registry) || readFileSync(registry, "utf8") !== reg) writeFileSync(registry, reg);
+
+  // The console depends on every service package.
+  const consolePkgPath = join(root, "apps/console/package.json");
+  const consolePkg = JSON.parse(readFileSync(consolePkgPath, "utf8"));
+  const deps = Object.fromEntries(Object.entries(consolePkg.dependencies).filter(([k]) => !k.startsWith("@mws-dashboard/service-")));
+  for (const s of all) deps[s.pkg.name] = "*";
+  const sorted = Object.fromEntries(Object.entries(deps).sort(([a], [b]) => a.localeCompare(b)));
+  if (JSON.stringify(sorted) !== JSON.stringify(consolePkg.dependencies)) {
+    consolePkg.dependencies = sorted;
+    writeFileSync(consolePkgPath, JSON.stringify(consolePkg, null, 2) + "\n");
+  }
+  return { services: all.length, routes: files.size };
+}
+
+/** Mount again whenever a service's files change (for `next dev`). */
+export function watchServices() {
+  let timer;
+  watch(servicesDir, { recursive: true }, (_event, name) => {
+    if (!name || name.includes("node_modules")) return;
+    clearTimeout(timer);
+    timer = setTimeout(() => {
+      try {
+        generate();
+      } catch (e) {
+        console.error(e.message);
+      }
+    }, 150);
+  });
+}
+
+const main = resolve(process.argv[1] ?? "") === fileURLToPath(import.meta.url);
+if (main) {
+  try {
+    const { services: n, routes } = generate();
+    console.log(`mounted ${n} services (${routes} route files)`);
+  } catch (e) {
+    console.error(e.message);
+    process.exit(1);
+  }
+  if (process.argv.includes("--watch")) watchServices();
+}

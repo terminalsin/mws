@@ -18,9 +18,8 @@ import { Suspense, type ReactNode } from "react";
 import { navigation, iconUrl } from "./catalog";
 import { CommandPalette, CopyButton, NavLink, RegionPicker, RouteProgress, ServicesMenu, SideNav, Toasts, type NavGroup } from "./client";
 import { CountUp } from "./motion";
-import { zoneHref, type ZoneId } from "./zones";
 
-export { AUTO } from "./zones";
+export { AUTO } from "./constants";
 export { Asciify, CheckMark, CountUp, Segments } from "./motion";
 export { DotMatrix, type DotPattern } from "./loaders";
 export {
@@ -39,7 +38,7 @@ export {
   type SearchHit,
 } from "./client";
 export { CATEGORIES, SERVICES, iconUrl, navigation, runtimeIcon, service, type Category, type CategoryId, type NavItem, type Service } from "./catalog";
-export { ZONES, zone, zoneHref, REGION_COOKIE, type Zone, type ZoneId } from "./zones";
+export { REGION_COOKIE } from "./constants";
 
 export interface FrameInfo {
   endpoint: string;
@@ -65,9 +64,9 @@ export function AwsIcon({ icon, size = 20, label }: { icon: string; size?: numbe
   );
 }
 
-/** The page chrome every zone renders around its content: one sidebar that
- * spans all zones and a toolbar with search, region and account. */
-export function Frame({ zone: current, info, children }: { zone: ZoneId; info: FrameInfo; children: ReactNode }) {
+/** The page chrome around every page: the sidebar and a toolbar with
+ * search, region and account. */
+export function Frame({ info, children }: { info: FrameInfo; children: ReactNode }) {
   const groups: NavGroup[] = navigation().map(({ category, services }) => ({
     id: category.id,
     name: category.name,
@@ -75,13 +74,16 @@ export function Frame({ zone: current, info, children }: { zone: ZoneId; info: F
       id: s.id,
       short: s.short,
       icon: s.icon,
-      zone: s.zone!,
+      category: s.category,
       path: s.path!,
-      href: zoneHref(s.zone!, s.path!),
-      nav: (s.nav ?? []).map((n) => ({ ...n, href: zoneHref(s.zone!, n.path) })),
+      nav: s.nav ?? [],
     })),
   }));
-  const home = current === "shell" ? <Link className="brand" href="/" aria-label="MWS home">{brand}</Link> : <a className="brand" href="/" aria-label="MWS home">{brand}</a>;
+  const home = (
+    <Link className="brand" href="/" aria-label="MWS home">
+      {brand}
+    </Link>
+  );
   return (
     <Toasts>
       <div className="frame">
@@ -110,10 +112,10 @@ export function Frame({ zone: current, info, children }: { zone: ZoneId; info: F
         <div className="frame-body">
           <aside className="sidebar">
             <Suspense>
-              <SideNav zone={current} groups={groups} />
+              <SideNav groups={groups} />
             </Suspense>
             <div className="nav-foot">
-              <NavLink {...(current === "shell" ? { href: "/control", zonePath: "/control", sameZone: true } : { href: "/control", sameZone: false })} icon={<SlidersHorizontal size={17} aria-hidden />}>
+              <NavLink href="/control" icon={<SlidersHorizontal size={17} aria-hidden />}>
                 Control plane
               </NavLink>
             </div>
@@ -229,7 +231,7 @@ export interface Row {
   meta?: ReactNode;
   /** Row actions: icon buttons. */
   actions?: ReactNode;
-  /** Link across zones (full document load). */
+  /** Load the target as a new document (downloads, pages outside the console). */
   external?: boolean;
 }
 
@@ -535,7 +537,7 @@ export function Skeleton({ width, height, block }: { width?: number | string; he
 
 /** What a page looks like while it loads: its title row, then either a list
  * (index pages), vital signs and facts (resource pages), or tiles (home).
- * Every zone's `loading.tsx` renders one. */
+ * Every page's `loading.tsx` renders one. */
 export function PageSkeleton({ variant = "list" }: { variant?: "list" | "detail" | "home" }) {
   const rows = [62, 48, 70, 40, 56, 66, 44];
   return (

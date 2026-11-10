@@ -1,0 +1,23 @@
+{
+  "name": "@mws-dashboard/service-elb",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Elastic Load Balancing pages for the MWS console",
+  "exports": {
+    "./inventory": "./inventory.ts",
+    "./routes/*": "./routes/*"
+  },
+  "dependencies": {
+    "@aws-sdk/client-acm": "^3.1164.0",
+    "@aws-sdk/client-ec2": "^3.1164.0",
+    "@aws-sdk/client-elastic-load-balancing-v2": "^3.1164.0",
+    "@mws-dashboard/aws": "*",
+    "@mws-dashboard/ui": "*",
+    "lucide-react": "^1.70.0"
+  },
+  "peerDependencies": {
+    "next": "16.4.5",
+    "react": "^19.3.1",
+    "react-dom": "^19.3.1"
+  }
+}

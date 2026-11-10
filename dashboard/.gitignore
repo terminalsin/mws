@@ -4,3 +4,6 @@ next-env.d.ts
 *.tsbuildinfo
 test-results/
 playwright-report/
+# Written by scripts/services.mjs
+apps/console/app/(services)/
+apps/console/lib/services.generated.ts

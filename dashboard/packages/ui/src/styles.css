@@ -2,7 +2,7 @@
    scale with Blue 60 for interaction, square corners, flat layers separated
    by 1px rules, line tabs, bottom-border fields and left-aligned buttons.
    Built on Tailwind: tokens are theme variables (so utilities such as
-   `bg-layer` or `text-secondary` work in any zone), and the shared pieces
+   `bg-layer` or `text-secondary` work in any service), and the shared pieces
    below are component classes composed with @apply. */
 
 @import "tailwindcss";
@@ -1617,8 +1617,8 @@
   }
 }
 
-/* Moving between zones is a full page load: hold the top bar and sidebar
-   still and swap the content beneath them, so the console stays one app. */
+/* On a full page load (a reload, a plain link): hold the top bar and sidebar
+   still and swap the content beneath them. */
 @media (prefers-reduced-motion: no-preference) {
   @view-transition {
     navigation: auto;

@@ -26,10 +26,12 @@ export function Segments({ items, label }: { items: { label: ReactNode; href: st
       setBox(el ? { x: el.offsetLeft, y: el.offsetTop + el.offsetHeight - 2, w: el.offsetWidth } : null);
     };
     measure();
+    // Tabs change width without the bar doing so (a count arriving), so
+    // watch each tab as well as the bar.
     const observer = new ResizeObserver(measure);
-    if (nav.current) observer.observe(nav.current);
+    if (nav.current) for (const el of [nav.current, ...nav.current.querySelectorAll<HTMLElement>("[data-href]")]) observer.observe(el);
     return () => observer.disconnect();
-  }, [target]);
+  }, [target, items.length]);
   // Place the indicator first, then let it move: no slide in from 0 on load.
   useEffect(() => {
     if (!box || ready) return;
