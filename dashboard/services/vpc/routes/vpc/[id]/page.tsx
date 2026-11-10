@@ -1,14 +1,20 @@
-import { DescribeInternetGatewaysCommand, DescribeNatGatewaysCommand, DescribeSecurityGroupsCommand, DescribeVpcEndpointsCommand } from "@aws-sdk/client-ec2";
+import { DescribeAvailabilityZonesCommand, DescribeInternetGatewaysCommand, DescribeNatGatewaysCommand, DescribeSecurityGroupsCommand, DescribeVpcEndpointsCommand } from "@aws-sdk/client-ec2";
 import { load } from "@mws-dashboard/aws";
-import { ActionForm, AwsIcon, ErrorNotice, Field, List, Page, Pill, Section, Sheet, Specs, Status, Tags } from "@mws-dashboard/ui";
+import { ActionForm, AwsIcon, ErrorNotice, Field, List, Page, Pill, Section, Sheet, Specs, Status, Tags, type Rule } from "@mws-dashboard/ui";
+import { CreateRoute } from "@mws-dashboard/ui/model/ec2";
 import { Globe, Network, Plus, Server, Trash2 } from "lucide-react";
 import type { Metadata } from "next";
 
 import { ICONS, ec2, nameTag } from "../../../lib/clients";
-import { isPublic, network, routeTarget, tableFor } from "../../../lib/vpc";
-import { addRoute, createInternetGateway, createNatGateway, deleteRoute, deleteVpc } from "../actions";
+import { SubnetFields } from "../../../lib/forms";
+import { choices, isPublic, network, routeTarget, tableFor } from "../../../lib/vpc";
+import { addRoute, createInternetGateway, createNatGateway, createSubnet, deleteRoute, deleteVpc } from "../actions";
 
 type Props = { params: Promise<{ id: string }> };
+
+const DESTINATION: Rule = { ...CreateRoute.DestinationCidrBlock, format: "cidr" };
+// The targets `addRoute` knows how to send to.
+const TARGET: Rule = { pattern: "^(igw|nat|pcx|tgw|eni|vgw)-[0-9a-f]{8,17}$", hint: "A gateway, NAT, peering or interface ID" };
 
 export async function generateMetadata({ params }: Props): Promise<Metadata> {
   return { title: (await params).id };
@@ -20,14 +26,15 @@ export default async function Vpc({ params }: Props) {
   const data = await load(async () => {
     const client = await ec2();
     const Filters = [{ Name: "vpc-id", Values: [id] }];
-    const [net, igws, nats, endpoints, groups] = await Promise.all([
+    const [net, igws, nats, endpoints, groups, zones] = await Promise.all([
       network(id),
       client.send(new DescribeInternetGatewaysCommand({ Filters: [{ Name: "attachment.vpc-id", Values: [id] }] })).then((r) => r.InternetGateways ?? []),
       client.send(new DescribeNatGatewaysCommand({ Filter: Filters })).then((r) => (r.NatGateways ?? []).filter((n) => n.State !== "deleted")),
       client.send(new DescribeVpcEndpointsCommand({ Filters })).then((r) => r.VpcEndpoints ?? []),
       client.send(new DescribeSecurityGroupsCommand({ Filters })).then((r) => r.SecurityGroups ?? []),
+      client.send(new DescribeAvailabilityZonesCommand({})).then((r) => (r.AvailabilityZones ?? []).map((z) => z.ZoneName!)),
     ]);
-    return { ...net, igws, nats, endpoints, groups };
+    return { ...net, igws, nats, endpoints, groups, zones };
   });
   if (!data.ok) {
     return (
@@ -36,7 +43,7 @@ export default async function Vpc({ params }: Props) {
       </Page>
     );
   }
-  const { vpcs, subnets, tables, igws, nats, endpoints, groups } = data.value;
+  const { vpcs, subnets, tables, igws, nats, endpoints, groups, zones: allZones } = data.value;
   const vpc = vpcs[0];
   const name = nameTag(vpc) ?? id;
   const publicSubnet = subnets.find((s) => isPublic(s, tables));
@@ -51,6 +58,11 @@ export default async function Vpc({ params }: Props) {
       subtitle={nameTag(vpc) ? id : undefined}
       actions={
         <>
+          <Sheet title="Create subnet" label="Create subnet" icon={<Plus size={16} />} testId="create-subnet">
+            <ActionForm action={createSubnet} submit="Create subnet" testId="create-subnet">
+              <SubnetFields vpcs={choices(vpcs, subnets)} zones={allZones} vpc={id} />
+            </ActionForm>
+          </Sheet>
           {igws.length === 0 && <ActionForm action={createInternetGateway.bind(null, id)} submit="Attach internet gateway" icon={<Globe size={16} />} />}
           {publicSubnet && <ActionForm action={createNatGateway.bind(null, publicSubnet.SubnetId!)} submit="Create NAT gateway" icon={<AwsIcon icon={ICONS.nat} size={18} />} />}
           {!vpc.IsDefault && <ActionForm action={deleteVpc.bind(null, id)} submit="Delete VPC" icon={<Trash2 size={16} />} tone="danger" confirm={`Delete ${name}?`} testId="delete-vpc" />}
@@ -139,11 +151,11 @@ export default async function Vpc({ params }: Props) {
               actions={
                 <Sheet title="Add route" label={`Add route to ${t.RouteTableId}`} icon={<Plus size={16} />} testId={`add-route-${t.RouteTableId}`}>
                   <ActionForm action={addRoute.bind(null, t.RouteTableId!)} submit="Add route" testId={`add-route-${t.RouteTableId}`}>
-                    <Field label="Destination">
-                      <input name="destination" required defaultValue="0.0.0.0/0" />
+                    <Field label="Destination" rule={DESTINATION} member="DestinationCidrBlock" taken={(t.Routes ?? []).flatMap((r) => (r.DestinationCidrBlock ? [r.DestinationCidrBlock] : []))}>
+                      <input name="destination" required defaultValue="0.0.0.0/0" spellCheck={false} />
                     </Field>
-                    <Field label="Target">
-                      <input name="target" required list={`targets-${t.RouteTableId}`} defaultValue={targets[0]} />
+                    <Field label="Target" rule={TARGET} known={targets}>
+                      <input name="target" required list={`targets-${t.RouteTableId}`} defaultValue={targets[0]} spellCheck={false} />
                     </Field>
                     <datalist id={`targets-${t.RouteTableId}`}>
                       {targets.map((x) => (

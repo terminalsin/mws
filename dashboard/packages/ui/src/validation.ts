@@ -54,6 +54,10 @@ export interface Rule {
   /** For `format: "arn"`: the ARN a bare name expands to, with `{}` where
    * the name goes, e.g. `arn:aws:iam::123456789012:role/{}`. */
   arn?: string;
+  /** For `format: "cidr"`: the prefix lengths allowed (`[16, 28]` for a
+   * VPC), the blocks a value must fit inside (its VPC) and the blocks it
+   * must not overlap (sibling subnets). Repairs then offer free blocks. */
+  cidr?: CidrRule;
   /** Values that already exist (a create form's name field). */
   taken?: string[];
   /** `taken` ignores case (the service treats `Alice` and `alice` as the
@@ -83,6 +87,13 @@ export interface Rule {
 export type Rules = Record<string, Rule>;
 
 export type Unit = "seconds" | "bytes";
+
+export interface CidrRule {
+  prefix?: [number, number];
+  within?: string[];
+  avoid?: string[];
+}
+
 
 export type Format =
   | "json"
@@ -957,25 +968,47 @@ export const FORMATS: Record<Format, FormatSpec> = {
     },
   },
   cidr: {
-    check(value) {
+    check(value, rule) {
       const [ip, bits, ...rest] = value.trim().split("/");
       if (rest.length || bits === undefined) return "Like 10.0.0.0/16";
       const o = octets(ip);
       const n = Number(bits);
       if (!ipOk(o) || !/^\d{1,2}$/.test(bits) || n > 32) return "Like 10.0.0.0/16";
       const base = network(o!, n);
-      return base !== ip ? `Host bits set; the network is ${base}/${n}` : null;
+      if (base !== ip) return `Host bits set; the network is ${base}/${n}`;
+      const c = rule.cidr;
+      if (!c) return null;
+      const [lo, hi] = c.prefix ?? [0, 32];
+      if (n < lo || n > hi) return lo === hi ? `Netmask /${lo}` : `Netmask /${lo} to /${hi}`;
+      const block = toBlock(value.trim())!;
+      const within = blocks(c.within);
+      if (within.length && !within.some((w) => inside(block, w))) return `Outside ${c.within!.join(", ")}`;
+      const clash = blocks(c.avoid).find((a) => overlap(block, a));
+      return clash ? `Overlaps ${blockText(clash)}` : null;
     },
-    repair(value) {
+    repair(value, rule) {
       const v = value.trim().replace(/\s+/g, "");
       const [ip, bits] = v.split("/");
       const o = octets(ip);
       if (!ipOk(o)) return [];
+      const [lo, hi] = rule.cidr?.prefix ?? [0, 32];
+      const clamp = (n: number) => Math.min(hi, Math.max(lo, n));
+      const out: Repair[] = [];
       if (bits === undefined || bits === "") {
-        return [16, 24].map((n) => ({ value: `${network(o!, n)}/${n}`, label: `Use /${n}`, kind: "fix" as const }));
+        for (const n of new Set([16, 24].map(clamp))) out.push({ value: `${network(o!, n)}/${n}`, label: `Use /${n}`, kind: "fix" });
+      } else {
+        const asked = Math.min(32, Number(bits) || 0);
+        const n = clamp(asked);
+        out.push({ value: `${network(o!, n)}/${n}`, label: n === asked ? "Use the network address" : `Use /${n}`, kind: "fix" });
+        // Somewhere it fits: the first free blocks of that size, or of the
+        // next size down when none is left.
+        for (let size = n; size <= hi; size++) {
+          const free = freeBlocks(size, rule.cidr);
+          for (const f of free) out.push({ value: f, label: `Free /${size}`, kind: "suggest" });
+          if (free.length || !rule.cidr?.within?.length) break;
+        }
       }
-      const n = Math.min(32, Number(bits) || 0);
-      return [{ value: `${network(o!, n)}/${n}`, label: "Use the network address", kind: "fix" }];
+      return out;
     },
   },
   ipv4: {
@@ -1405,6 +1438,39 @@ function s3Object(value: string): { bucket: string; key: string; canonical: bool
 /** The items of a comma- or space-separated list. */
 export function listItems(value: string): string[] {
   return value.split(/[\s,]+/).filter(Boolean);
+}
+
+// CIDR blocks as [first address, prefix length].
+type Block = [number, number];
+const ipNumber = (o: number[]) => ((o[0] << 24) | (o[1] << 16) | (o[2] << 8) | o[3]) >>> 0;
+const sizeOf = (bits: number) => 2 ** (32 - bits);
+function toBlock(cidr: string): Block | null {
+  const [ip, bits] = cidr.split("/");
+  const o = octets(ip);
+  const n = Number(bits);
+  if (!ipOk(o) || !/^\d{1,2}$/.test(bits ?? "") || n > 32) return null;
+  return [ipNumber(o!) - (ipNumber(o!) % sizeOf(n)), n];
+}
+const blocks = (list: string[] | undefined) => (list ?? []).map(toBlock).filter((b): b is Block => b !== null);
+const blockText = ([start, bits]: Block) => `${[start >>> 24, (start >>> 16) & 255, (start >>> 8) & 255, start & 255].join(".")}/${bits}`;
+const inside = ([s, b]: Block, [ws, wb]: Block) => b >= wb && s >= ws && s + sizeOf(b) <= ws + sizeOf(wb);
+const overlap = ([s, b]: Block, [os, ob]: Block) => s < os + sizeOf(ob) && os < s + sizeOf(b);
+
+/** The first free blocks of a prefix length inside `within`, clear of
+ * `avoid`, in address order. */
+export function freeBlocks(bits: number, rule: CidrRule | undefined, limit = 2): string[] {
+  const avoid = blocks(rule?.avoid);
+  const out: string[] = [];
+  for (const [ws, wb] of blocks(rule?.within)) {
+    if (bits < wb) continue;
+    for (let s = ws; s < ws + sizeOf(wb) && out.length < limit; s += sizeOf(bits)) {
+      const hit = avoid.find((a) => overlap([s, bits], a));
+      if (!hit) out.push(blockText([s, bits]));
+      // Skip past what is in use rather than stepping through it.
+      else if (hit[1] < bits) s = hit[0] + sizeOf(hit[1]) - sizeOf(bits);
+    }
+  }
+  return out;
 }
 
 function network(o: number[], bits: number): string {
