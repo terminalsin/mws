@@ -211,10 +211,11 @@ impl Lambda {
         // `Invoke` calls fail before getting here).
         self.wait_until_invocable(f).await;
         let (spec_parts, reserved, executed_version) = {
+            let now = self.lifecycle_now();
             let st = self.read();
             let func = Self::function(&st, f)?;
             let version = Self::pick_version(func, f.qualifier.as_deref()).ok_or_else(|| f.not_found())?;
-            let v = crate::lifecycle::running_version(func, &version).ok_or_else(|| f.not_found())?.clone();
+            let v = crate::lifecycle::running_version(func, &version, now).ok_or_else(|| f.not_found())?.clone();
             (v, func.reserved_concurrency, version)
         };
         let config = &spec_parts.config;
@@ -552,12 +553,13 @@ impl Lambda {
         let f = names::parse_function(ctx, &input.function_name, input.qualifier.as_deref())?;
         self.authorize_function(ctx, "lambda:InvokeFunction", &f, ConditionContext::new())?;
         {
+            let now = self.lifecycle_now();
             let st = self.read();
             let func = Self::function(&st, &f)?;
             if func.version_for(f.qualifier.as_deref()).is_none() {
                 return Err(f.not_found());
             }
-            crate::lifecycle::check_invocable(func, f.qualifier.as_deref())?;
+            crate::lifecycle::check_invocable(func, f.qualifier.as_deref(), now)?;
         }
         let payload = input.payload.unwrap_or_default();
         let kind = input.invocation_type.as_deref().unwrap_or("RequestResponse");
@@ -613,8 +615,9 @@ impl Lambda {
         let f = names::parse_function(ctx, &input.function_name, None)?;
         self.authorize_function(ctx, "lambda:InvokeFunction", &f, ConditionContext::new())?;
         {
+            let now = self.lifecycle_now();
             let st = self.read();
-            crate::lifecycle::check_invocable(Self::function(&st, &f)?, None)?;
+            crate::lifecycle::check_invocable(Self::function(&st, &f)?, None, now)?;
         }
         Self::check_payload(&input.invoke_args, MAX_ASYNC_PAYLOAD, "InvokeAsync")?;
         self.enqueue(ctx, &f, input.invoke_args);
@@ -629,8 +632,9 @@ impl Lambda {
         let f = names::parse_function(ctx, &input.function_name, input.qualifier.as_deref())?;
         self.authorize_function(ctx, "lambda:InvokeFunction", &f, ConditionContext::new())?;
         {
+            let now = self.lifecycle_now();
             let st = self.read();
-            crate::lifecycle::check_invocable(Self::function(&st, &f)?, f.qualifier.as_deref())?;
+            crate::lifecycle::check_invocable(Self::function(&st, &f)?, f.qualifier.as_deref(), now)?;
         }
         let payload = input.payload.unwrap_or_default();
         Self::check_payload(&payload, MAX_SYNC_PAYLOAD, "InvokeWithResponseStream")?;

@@ -546,11 +546,12 @@ impl Lambda {
         let f = names::parse_function(ctx, &input.function_name, None)?;
         self.authorize_function(ctx, "lambda:UpdateFunctionCode", &f, ConditionContext::new())?;
         let (package_type, csc, architectures) = {
+            let now = self.lifecycle_now();
             let st = self.read();
             let func = Self::function(&st, &f)?;
             check_revision(func.latest.config.revision_id.as_deref(), input.revision_id.as_deref())?;
             if !input.dry_run {
-                crate::lifecycle::check_updatable(func)?;
+                crate::lifecycle::check_updatable(func, now)?;
             }
             (
                 func.latest.config.package_type.clone().unwrap_or_else(|| "Zip".into()),
@@ -584,6 +585,7 @@ impl Lambda {
             new.s3_source = s3;
             (stored.size, stored.sha256)
         };
+        let now = self.lifecycle_now();
         let mut st = self.write();
         let func = Self::function_mut(&mut st, &f)?;
         if input.dry_run {
@@ -592,8 +594,8 @@ impl Lambda {
             c.code_size = size;
             return Ok(c);
         }
-        crate::lifecycle::settle_if_due(func, chrono::Utc::now());
-        crate::lifecycle::check_updatable(func)?;
+        crate::lifecycle::settle_if_due(func, now);
+        crate::lifecycle::check_updatable(func, now)?;
         func.previous = Some(Box::new(func.latest.clone()));
         let latest = &mut func.latest;
         latest.code_hex = new.code_hex;
@@ -633,10 +635,11 @@ impl Lambda {
         }
         self.authorize_function(ctx, "lambda:UpdateFunctionConfiguration", &f, extra)?;
         {
+            let now = self.lifecycle_now();
             let st = self.read();
             let func = Self::function(&st, &f)?;
             check_revision(func.latest.config.revision_id.as_deref(), input.revision_id.as_deref())?;
-            crate::lifecycle::check_updatable(func)?;
+            crate::lifecycle::check_updatable(func, now)?;
         }
         if let Some(role) = &input.role {
             self.check_role(ctx, role)?;
@@ -649,10 +652,11 @@ impl Lambda {
             Some(l) => Some(self.resolve_layers(ctx, l)?),
             None => None,
         };
+        let now = self.lifecycle_now();
         let mut st = self.write();
         let func = Self::function_mut(&mut st, &f)?;
-        crate::lifecycle::settle_if_due(func, chrono::Utc::now());
-        crate::lifecycle::check_updatable(func)?;
+        crate::lifecycle::settle_if_due(func, now);
+        crate::lifecycle::check_updatable(func, now)?;
         func.previous = Some(Box::new(func.latest.clone()));
         let c = &mut func.latest.config;
         macro_rules! set {
@@ -728,11 +732,12 @@ impl Lambda {
     ) -> Result<types::FunctionConfiguration, ServiceError> {
         let f = names::parse_function(ctx, &input.function_name, None)?;
         self.authorize_function(ctx, "lambda:PublishVersion", &f, ConditionContext::new())?;
+        let now = self.lifecycle_now();
         let mut st = self.write();
         let func = Self::function_mut(&mut st, &f)?;
         check_revision(func.latest.config.revision_id.as_deref(), input.revision_id.as_deref())?;
-        crate::lifecycle::settle_if_due(func, chrono::Utc::now());
-        crate::lifecycle::check_updatable(func)?;
+        crate::lifecycle::settle_if_due(func, now);
+        crate::lifecycle::check_updatable(func, now)?;
         if let Some(sha) = &input.code_sha256 {
             let current = func.latest.config.code_sha256.clone().unwrap_or_default();
             if *sha != current {
