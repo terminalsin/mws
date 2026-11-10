@@ -1,34 +1,53 @@
 import { GetResourceShareInvitationsCommand, GetResourceSharesCommand } from "@aws-sdk/client-ram";
 import { ago, load } from "@mws-dashboard/aws";
-import { ActionForm, AwsIcon, Empty, ErrorNotice, Field, List, Page, Pill, Section, Sheet, Status } from "@mws-dashboard/ui";
+import { ActionForm, AwsIcon, Empty, ErrorNotice, Field, List, Page, Pill, Section, Sheet, Status, type Rule } from "@mws-dashboard/ui";
+import { CreateResourceShare } from "@mws-dashboard/ui/model/ram";
 import { Check, Globe, X } from "lucide-react";
 import type { Metadata } from "next";
 
-import { ICONS, ram } from "../../lib/clients";
+import { ICONS, ram, shareTargets } from "../../lib/clients";
 import { answerInvitation, createShare } from "./actions";
 
 export const metadata: Metadata = { title: "RAM" };
 
 type Props = { searchParams: Promise<{ tab?: string }> };
 
+// The principals RAM accepts (its model leaves them unconstrained).
+const PRINCIPAL: Rule = {
+  format: "principal",
+  pattern:
+    "^(\\d{12}|arn:aws[\\w-]*:organizations::\\d{12}:(organization/o-[a-z0-9]+|ou/o-[a-z0-9]+/ou-[a-z0-9-]+)|arn:aws[\\w-]*:iam::\\d{12}:(role|user)/.+|[a-z0-9.-]+\\.amazonaws\\.com)$",
+  hint: "An account, organization, OU, IAM role or user, or service",
+};
+const NAME: Rule = { ...CreateResourceShare.name, generate: "name" };
+
+/** Lists checked item by item, with the account's CAs and organization
+ * principals as suggestions. */
+const rules = (targets: Awaited<ReturnType<typeof shareTargets>> | null) => ({
+  resources: { ...CreateResourceShare.resourceArns, item: { type: "string", format: "arn", known: targets?.resources, arn: targets?.caArn } },
+  principals: { ...CreateResourceShare.principals, item: { ...PRINCIPAL, known: targets?.principals } },
+}) satisfies Record<string, Rule>;
+
 export default async function Shares({ searchParams }: Props) {
   const { tab = "mine" } = await searchParams;
   const client = await ram();
   const owner = tab === "others" ? "OTHER-ACCOUNTS" : "SELF";
-  const [shares, invitations] = await Promise.all([
+  const [shares, invitations, targets] = await Promise.all([
     load(async () => ((await client.send(new GetResourceSharesCommand({ resourceOwner: owner }))).resourceShares ?? []).filter((s) => s.status !== "DELETED")),
     load(async () => ((await client.send(new GetResourceShareInvitationsCommand({}))).resourceShareInvitations ?? []).filter((i) => i.status === "PENDING")),
+    tab === "others" ? null : shareTargets(),
   ]);
+  const RULES = rules(targets);
   const create = (
     <Sheet title="Create resource share" label="Create resource share" testId="create-share">
       <ActionForm action={createShare} submit="Create resource share" testId="create-share">
-        <Field label="Name">
+        <Field label="Name" rule={NAME}>
           <input name="name" required autoFocus />
         </Field>
-        <Field label="Resource ARNs">
+        <Field label="Resource ARNs" rule={RULES.resources} member="resourceArns">
           <textarea name="resources" rows={3} placeholder="arn:aws:acm-pca:…:certificate-authority/…" />
         </Field>
-        <Field label="Principals">
+        <Field label="Principals" rule={RULES.principals} member="principals">
           <textarea name="principals" rows={2} placeholder="111122223333 or an OU / organization ARN" />
         </Field>
         <label className="check">

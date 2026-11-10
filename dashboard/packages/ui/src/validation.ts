@@ -131,7 +131,8 @@ export type Format =
   | "branch"
   | "dir"
   | "schedule"
-  | "eventPattern";
+  | "eventPattern"
+  | "principal";
 
 /** "name": a readable resource name; "token": random letters and digits;
  * "password": meets the usual complexity rules; or a fixed prefix/suffix
@@ -1465,6 +1466,22 @@ export const FORMATS: Record<Format, FormatSpec> = {
       } catch {
         return [];
       }
+    },
+  },
+  principal: {
+    // An account ID, an ARN (role, user, organization...) or a service principal.
+    check(value) {
+      if (/^\d{12}$/.test(value) || /^[a-z0-9-]+(\.[a-z0-9-]+)*\.amazonaws\.com(\.cn)?$/.test(value)) return null;
+      if (value.startsWith("arn:")) return FORMATS.arn.check(value, {});
+      return "An account ID, ARN or service principal";
+    },
+    repair(value) {
+      const v = value.trim();
+      const digits = v.replace(/[\s-]/g, "");
+      if (/^\d{12}$/.test(digits)) return [{ value: digits, label: "Digits only", kind: "fix" }];
+      if (/^[a-z0-9.-]+\.amazon\.com$/.test(v)) return [{ value: v.replace(/\.amazon\.com$/, ".amazonaws.com"), label: "Use amazonaws.com", kind: "fix" }];
+      if (/^[a-z0-9-]+$/.test(v) && !/^\d+$/.test(v)) return [{ value: `${v}.amazonaws.com`, label: "Add .amazonaws.com", kind: "fix" }];
+      return FORMATS.arn.repair!(v, {});
     },
   },
 };
