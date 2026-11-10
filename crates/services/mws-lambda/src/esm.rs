@@ -80,6 +80,8 @@ pub(crate) struct Pollers {
     template: Mutex<Option<(RequestContext, chrono::Duration)>>,
     busy: Mutex<HashSet<String>>,
     queues: Mutex<HashMap<String, Scaling>>,
+    /// When each stream mapping polls next.
+    stream_next: Mutex<HashMap<String, std::time::Instant>>,
     started: std::sync::OnceLock<()>,
 }
 
@@ -105,6 +107,10 @@ const INITIAL_QUEUE_CONCURRENCY: usize = 5;
 const MAX_QUEUE_CONCURRENCY: usize = 1_250;
 
 const POLL_INTERVAL: Duration = Duration::from_millis(250);
+/// How often a stream mapping reads a shard that had no new records:
+/// Lambda polls each shard about once a second, so a shard's five reads a
+/// second leave room for other consumers.
+const STREAM_IDLE_INTERVAL: Duration = Duration::from_secs(1);
 
 fn is_sqs(arn: &str) -> bool {
     arn.split(':').nth(2) == Some("sqs")
@@ -167,20 +173,40 @@ impl Lambda {
             .lock()
             .expect("poller lock poisoned")
             .retain(|uuid, s| s.inflight > 0 || mappings.iter().any(|(u, ..)| u == uuid));
+        self.inner
+            .pollers
+            .stream_next
+            .lock()
+            .expect("poller lock poisoned")
+            .retain(|uuid, _| mappings.iter().any(|(u, ..)| u == uuid));
         for (uuid, config, account, region) in mappings {
             let stream = config.event_source_arn.as_deref().is_some_and(crate::esm_stream::is_kinesis);
             if !stream {
                 self.poll_queue(uuid, config, account, region);
                 continue;
             }
-            if !self.inner.pollers.busy.lock().expect("poller lock poisoned").insert(uuid.clone()) {
+            let due = self
+                .inner
+                .pollers
+                .stream_next
+                .lock()
+                .expect("poller lock poisoned")
+                .get(&uuid)
+                .is_none_or(|at| *at <= std::time::Instant::now());
+            if !due || !self.inner.pollers.busy.lock().expect("poller lock poisoned").insert(uuid.clone()) {
                 continue;
             }
             let lambda = self.clone();
             tokio::spawn(async move {
-                if let Err(e) = lambda.poll_stream(&uuid, &config, &account, &region).await {
-                    tracing::debug!(mapping = %uuid, "event source mapping poll failed: {}", e.message);
-                }
+                let busy = match lambda.poll_stream(&uuid, &config, &account, &region).await {
+                    Ok(busy) => busy,
+                    Err(e) => {
+                        tracing::debug!(mapping = %uuid, "event source mapping poll failed: {}", e.message);
+                        false
+                    }
+                };
+                let next = std::time::Instant::now() + if busy { Duration::ZERO } else { STREAM_IDLE_INTERVAL };
+                lambda.inner.pollers.stream_next.lock().expect("poller lock poisoned").insert(uuid.clone(), next);
                 lambda.inner.pollers.busy.lock().expect("poller lock poisoned").remove(&uuid);
             });
         }
