@@ -21,6 +21,7 @@ import { CountUp } from "./motion";
 import { FieldShell, type FieldRules } from "./fields";
 
 export { AUTO } from "./constants";
+export { freeName } from "./names";
 export type { FieldRules } from "./fields";
 export type { FieldIssue, Format, Generate, Issue, Repair, Rule, Rules } from "./validation";
 export { Asciify, CheckMark, CountUp, Segments } from "./motion";
@@ -640,5 +641,16 @@ export function PageSkeleton({ variant = "list" }: { variant?: "list" | "detail"
         </ul>
       )}
     </div>
+  );
+}
+
+/** A value shown as code with a copy button beside it (ARNs, URLs, DNS names). */
+export function CopyValue({ value, label }: { value: string | undefined | null; label?: string }) {
+  if (!value) return null;
+  return (
+    <span className="inline-flex items-center gap-1 min-w-0">
+      <code className="truncate">{value}</code>
+      <CopyButton value={value} label={label ?? `Copy ${value}`} />
+    </span>
   );
 }
