@@ -1,8 +1,9 @@
 import "server-only";
 
-import { DescribeRouteTablesCommand, DescribeSubnetsCommand, DescribeVpcsCommand, type RouteTable, type Subnet } from "@aws-sdk/client-ec2";
+import { DescribeRouteTablesCommand, DescribeSubnetsCommand, DescribeVpcsCommand, type RouteTable, type Subnet, type Vpc } from "@aws-sdk/client-ec2";
 
-import { ec2 } from "./clients";
+import { ec2, nameTag } from "./clients";
+import type { VpcChoice } from "./forms";
 
 /** The route table that governs a subnet: its explicit association, else
  * its VPC's main table. */
@@ -35,4 +36,20 @@ export function routeTarget(r: NonNullable<RouteTable["Routes"]>[number]) {
   const id =
     r.GatewayId ?? r.NatGatewayId ?? r.TransitGatewayId ?? r.VpcPeeringConnectionId ?? r.NetworkInterfaceId ?? r.InstanceId ?? r.EgressOnlyInternetGatewayId ?? r.CarrierGatewayId ?? "";
   return id;
+}
+
+/** A VPC's associated IPv4 blocks. */
+export function cidrsOf(v: Vpc): string[] {
+  const associated = (v.CidrBlockAssociationSet ?? []).filter((a) => a.CidrBlockState?.State === "associated").map((a) => a.CidrBlock!);
+  return associated.length ? associated : v.CidrBlock ? [v.CidrBlock] : [];
+}
+
+/** The VPCs a new subnet can go in, with the blocks it must fit and avoid. */
+export function choices(vpcs: Vpc[], subnets: Subnet[]): VpcChoice[] {
+  return vpcs.map((v) => ({
+    id: v.VpcId!,
+    label: nameTag(v) ?? v.VpcId!,
+    cidrs: cidrsOf(v),
+    subnets: subnets.filter((s) => s.VpcId === v.VpcId && s.CidrBlock).map((s) => s.CidrBlock!),
+  }));
 }
