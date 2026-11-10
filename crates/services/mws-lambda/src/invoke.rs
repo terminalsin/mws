@@ -138,15 +138,33 @@ impl Lambda {
             invoked_arn: f.qualified_arn(),
             client_context,
         };
+        let started = std::time::Instant::now();
         match self.inner.runtimes.invoke(&spec, job, reserved).await {
             Ok(outcome) => {
                 if let (Some(group), Some(stream), Some(key), token) = log_target {
                     self.deliver_logs(ctx, &group, &stream, &key, token.as_deref(), &outcome.logs);
                 }
+                let duration_ms = crate::metrics::reported_duration(&outcome.logs)
+                    .unwrap_or_else(|| started.elapsed().as_secs_f64() * 1000.0);
+                self.publish_invocation_metrics(
+                    ctx,
+                    f,
+                    crate::metrics::Result::Ran {
+                        executed_version: executed_version.clone(),
+                        error: outcome.function_error.is_some(),
+                        duration_ms,
+                    },
+                );
                 Ok(Ran { outcome, executed_version })
             }
-            Err(LaunchError::Throttled) => Err(throttled()),
-            Err(e) => Err(launch_error(e)),
+            Err(LaunchError::Throttled) => {
+                self.publish_invocation_metrics(ctx, f, crate::metrics::Result::Throttled);
+                Err(throttled())
+            }
+            Err(e) => {
+                self.publish_invocation_metrics(ctx, f, crate::metrics::Result::Failed);
+                Err(launch_error(e))
+            }
         }
     }
 
@@ -510,6 +528,7 @@ impl Lambda {
             number_attributes: vec![("ErrorCode".into(), "200".into())],
             detail_type: String::new(),
             function_arn: format!("{}:{}", f.arn(), ran.executed_version),
+            s3_key: None,
         };
         self.send_to_destination(ctx, &f.qualified_arn(), target, &message).await;
     }

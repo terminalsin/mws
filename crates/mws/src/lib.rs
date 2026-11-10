@@ -6,6 +6,7 @@ mod links;
 mod ses;
 mod sinks;
 mod ssm;
+mod wiring;
 
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -419,6 +420,11 @@ fn build_with_store(config: Config, store: Option<Arc<Store>>) -> Mws {
     firehose.set_metric_publisher(Arc::new(links::FirehoseToCloudWatch(cloudwatch.clone())));
     kinesis.set_metric_publisher(Arc::new(links::KinesisToCloudWatch(cloudwatch.clone())));
     sqs.set_metric_publisher(Arc::new(links::SqsToCloudWatch(cloudwatch.clone())));
+    let metrics: Arc<dyn mws_core::metrics::MetricPublisher> = Arc::new(wiring::CloudWatchMetrics(cloudwatch.clone()));
+    lambda.set_metric_publisher(metrics.clone());
+    sns.set_metric_publisher(metrics.clone());
+    events.set_metric_publisher(metrics.clone());
+    events.register_target_sink("ssm", Arc::new(wiring::RunCommandTarget(ssm.clone())));
     cloudwatch.set_metric_stream_delivery(Arc::new(links::MetricStreamsToFirehose {
         firehose: firehose.clone(),
         sts: sts.clone(),
@@ -431,6 +437,7 @@ fn build_with_store(config: Config, store: Option<Arc<Store>>) -> Mws {
         partition: config.iam.partition.clone(),
     }));
     tracing::info!(backend = ec2.backend_name(), "EC2 compute backend");
+    cloudwatch.register_action_target("automate", Arc::new(wiring::Ec2AlarmActions(ec2.clone())));
     ec2.set_instance_roles(Arc::new(links::Ec2InstanceRoles { iam: iam.clone(), sts: sts.clone() }));
     guardduty.set_event_sink(Arc::new(sinks::GuardDutyToEvents(events.clone())));
     guardduty.set_finding_exporter(Arc::new(links::GuardDutyToS3(s3.clone())));
@@ -573,6 +580,7 @@ fn build_with_store(config: Config, store: Option<Arc<Store>>) -> Mws {
         elb: elb.clone(),
         autoscaling: autoscaling.clone(),
     }));
+    events.register_target_sink("ecs", Arc::new(wiring::EcsTarget(ecs.clone())));
     let cloudformation = CloudFormation::new();
     cloudformation.set_role_assumer(Arc::new(links::CloudFormationRoles(sts.clone(), iam.clone())));
     let authorizer = iam.authorizer();

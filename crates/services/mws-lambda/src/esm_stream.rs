@@ -232,7 +232,11 @@ impl Lambda {
             let payload = serde_json::to_vec(&json!({"Records": batch.iter().map(|(v, _)| v).collect::<Vec<_>>()}))
                 .expect("records serialize");
             let f = names::parse_function(&ctx, function_arn, None)?;
-            let ran = self.run(&ctx, &f, payload, None).await;
+            let ran = self.run(&ctx, &f, payload.clone(), None).await;
+            if let Some(newest) = read.records.last() {
+                let age = (now - newest.approximate_arrival).num_milliseconds().max(0) as f64;
+                self.publish_function_metric(&ctx, &f, "IteratorAge", "Milliseconds", age);
+            }
             let failed = match &ran {
                 Ok(r) if r.outcome.function_error.is_none() => {
                     let reports =
@@ -294,11 +298,23 @@ impl Lambda {
                         let error = ran.as_ref().ok().and_then(|r| r.outcome.function_error.clone());
                         let records: Vec<&StreamRecord> = batch.iter().map(|(_, r)| *r).collect();
                         let info = BatchInfo { shard_id: &shard.shard_id, stream_arn: &stream, records: &records };
-                        let body = failure_record(&ctx, function_arn, &executed, error, condition, attempts, &info);
+                        let mut body = failure_record(&ctx, function_arn, &executed, error, condition, attempts, &info);
+                        let to_bucket = destination.split(':').nth(2) == Some("s3");
+                        if to_bucket {
+                            // S3 destinations get the whole invocation payload.
+                            body["payload"] = Value::String(String::from_utf8_lossy(&payload).into_owned());
+                        }
                         let message = crate::DestinationMessage {
                             body: body.to_string(),
                             function_arn: function_arn.to_string(),
                             detail_type: "Lambda Function Invocation Result - Failure".into(),
+                            s3_key: to_bucket.then(|| {
+                                format!(
+                                    "aws/lambda/{uuid}/{}/{}",
+                                    shard.shard_id,
+                                    crate::destinations::s3_key_suffix(ctx.received_at)
+                                )
+                            }),
                             ..Default::default()
                         };
                         self.send_to_destination(&ctx, function_arn, &destination, &message).await;

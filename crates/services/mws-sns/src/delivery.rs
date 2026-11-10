@@ -167,6 +167,13 @@ impl Sns {
                 let body_scope = sub.attributes.get("FilterPolicyScope").is_some_and(|s| s == "MessageBody");
                 let parsed: Value = serde_json::from_str(policy).unwrap_or(Value::Null);
                 if !filter::matches(&parsed, body_scope, &msg.attributes, msg.message_for(&sub.protocol)) {
+                    let scoped = if body_scope {
+                        "NumberOfNotificationsFilteredOut-MessageBody"
+                    } else {
+                        "NumberOfNotificationsFilteredOut-MessageAttributes"
+                    };
+                    self.topic_metric(ctx, &topic.arn, "NumberOfNotificationsFilteredOut", "Count", 1.0);
+                    self.topic_metric(ctx, &topic.arn, scoped, "Count", 1.0);
                     continue;
                 }
             }

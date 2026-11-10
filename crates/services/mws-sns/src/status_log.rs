@@ -79,6 +79,8 @@ impl Sns {
     }
 
     pub(crate) fn log_delivery(&self, ctx: &RequestContext, msg: &Outgoing, a: Attempt<'_>) {
+        let metric = if a.success { "NumberOfNotificationsDelivered" } else { "NumberOfNotificationsFailed" };
+        self.topic_metric(ctx, a.topic_arn, metric, "Count", 1.0);
         let Some((logs, sts)) = self.inner.status_logs.get() else { return };
         let Some(prefix) = attribute_prefix(a.protocol) else { return };
         let attributes = {

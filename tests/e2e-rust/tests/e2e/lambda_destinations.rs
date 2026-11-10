@@ -290,3 +290,57 @@ async fn kinesis_mapping_failures_reach_the_on_failure_destination() {
     lambda.delete_event_source_mapping().uuid(uuid).send().await.unwrap();
     mws.stop().await;
 }
+
+#[tokio::test]
+async fn failed_async_invocations_land_in_an_s3_bucket_destination() {
+    let mws = Mws::start().await;
+    let cfg = mws.root_sdk_config().await;
+    let lambda = aws_sdk_lambda::Client::new(&cfg);
+    let s3 = Mws::s3(&cfg);
+    s3.create_bucket().bucket("failures").send().await.unwrap();
+    let role_arn = role(&cfg, "s3-dest-role", r#"["s3:PutObject","logs:*"]"#).await;
+    lambda
+        .create_function()
+        .function_name("charge")
+        .runtime(Runtime::Python312)
+        .role(&role_arn)
+        .handler("app.handler")
+        .code(FunctionCode::builder().zip_file(Blob::new(zip(&[("app.py", HANDLER)]))).build())
+        .send()
+        .await
+        .unwrap();
+    lambda
+        .put_function_event_invoke_config()
+        .function_name("charge")
+        .maximum_retry_attempts(0)
+        .destination_config(
+            DestinationConfig::builder()
+                .on_failure(OnFailure::builder().destination("arn:aws:s3:::failures").build())
+                .build(),
+        )
+        .send()
+        .await
+        .unwrap();
+    lambda
+        .invoke()
+        .function_name("charge")
+        .invocation_type(InvocationType::Event)
+        .payload(Blob::new(br#"{"id":7,"fail":true}"#.to_vec()))
+        .send()
+        .await
+        .unwrap();
+    for _ in 0..200 {
+        let listed = s3.list_objects_v2().bucket("failures").prefix("aws/lambda/async/charge/").send().await.unwrap();
+        if let Some(key) = listed.contents().first().and_then(|o| o.key()) {
+            let object = s3.get_object().bucket("failures").key(key).send().await.unwrap();
+            let record: serde_json::Value =
+                serde_json::from_slice(&object.body.collect().await.unwrap().into_bytes()).unwrap();
+            assert_eq!(record["requestContext"]["condition"], "RetriesExhausted");
+            assert_eq!(record["requestPayload"], serde_json::json!({"id": 7, "fail": true}));
+            assert_eq!(record["responsePayload"]["errorType"], "ValueError");
+            return;
+        }
+        tokio::time::sleep(Duration::from_millis(100)).await;
+    }
+    panic!("no record reached the bucket");
+}

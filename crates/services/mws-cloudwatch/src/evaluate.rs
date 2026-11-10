@@ -636,6 +636,13 @@ impl CloudWatch {
                         state: t.alarm.state_value.clone(),
                         threshold: t.alarm.metric.as_ref().and_then(|m| m.threshold),
                         metric_value,
+                        dimensions: t
+                            .alarm
+                            .metric
+                            .as_ref()
+                            .and_then(|m| m.dimensions.as_ref())
+                            .map(|d| d.iter().map(|d| (d.name.clone(), d.value.clone())).collect())
+                            .unwrap_or_default(),
                     },
                 )
             }

@@ -14,7 +14,7 @@ All 55 operations are generated from the AWS model and implemented. MWS answers 
 | `GetMetricStatistics` | ✅ | `SampleCount`, `Sum`, `Average`, `Minimum`, `Maximum` and extended statistics (`pNN`, `tmNN`, `wmNN`, `tcNN`, `tsNN`, `PR(a:b)`, `IQM`) with the 1,440-datapoint limit. |
 | `ListMetrics` | ✅ | By namespace, name, dimensions and `RecentlyActive`. |
 | Metric math | ✅ | `GetMetricData` with arithmetic and logic, `SEARCH`, `METRICS()`, `FILL`, `IF`, `RATE`, `DIFF`, `RUNNING_SUM`, `SORT`, `SLICE`, time functions, `ANOMALY_DETECTION_BAND`, `INSIGHT_RULE_METRIC` and label templates, with pagination and `PartialData`. |
-| AWS service metrics | 🟡 | Published by SQS, Kinesis, Firehose and ACM; other `AWS/*` namespaces stay empty. |
+| AWS service metrics | 🟡 | Published by Lambda (`Invocations`, `Errors`, `Duration`, `Throttles`, `ConcurrentExecutions`, `IteratorAge`), SNS (published, delivered, failed and filtered-out notifications, `PublishSize`), EventBridge (matched events, triggered rules, invocations and attempts), SQS, Kinesis, Firehose, Logs, Elastic Load Balancing, Auto Scaling, ElastiCache, ACM and Service Quotas usage; other `AWS/*` namespaces stay empty. |
 
 ## Alarms
 
@@ -25,7 +25,9 @@ All 55 operations are generated from the AWS model and implemented. MWS answers 
 | Composite alarms | ✅ | `ALARM()`, `OK()`, `INSUFFICIENT_DATA()`, `AT_LEAST`, `AND`/`OR`/`NOT`, cycle checks and actions suppressors. |
 | Log alarms | ✅ | Run their Logs Insights query on its schedule. |
 | Actions | ✅ | SNS (as `cloudwatch.amazonaws.com`, with AWS's alarm message) and Lambda (as `lambda.alarms.cloudwatch.amazonaws.com`), judged by their policies; mute rules and disabled actions apply. |
-| EC2, Auto Scaling and Systems Manager actions | ❌ | Not yet. |
+| Auto Scaling actions | ✅ | Run the named scaling policy. |
+| EC2 actions | ✅ | `arn:aws:automate:<region>:ec2:stop`, `terminate`, `reboot` and `recover` act on the instance named by the alarm's `InstanceId` dimension (`recover` reboots it). |
+| Systems Manager actions | ❌ | Not yet. |
 | History and events | ✅ | Alarm history with AWS's reason strings and data; `CloudWatch Alarm State Change` events to EventBridge. |
 
 ## Other features

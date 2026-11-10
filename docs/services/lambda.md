@@ -17,6 +17,7 @@
 | `InvokeWithResponseStream` | 🟡 | Supported; function URL `RESPONSE_STREAM` responses are buffered. |
 | Execution environments | ✅ | Stay warm, honour timeouts and reserved concurrency (throttling with `TooManyRequestsException`), and get the execution role's STS credentials and an `AWS_ENDPOINT_URL` pointing back at MWS. |
 | Logs | ✅ | `START`/`END`/`REPORT` lines, `LogType: Tail`, and CloudWatch Logs groups written as the execution role. |
+| Metrics | ✅ | `AWS/Lambda` `Invocations`, `Errors`, `Duration`, `Throttles` and `ConcurrentExecutions` per invocation (by `FunctionName`, `Resource`, `ExecutedVersion` and across functions), and `IteratorAge` for stream mappings, in [CloudWatch](cloudwatch.md). |
 
 ## Container images
 
@@ -48,7 +49,7 @@
 | --- | :---: | --- |
 | Destinations | ✅ | On success and on failure to Lambda, SQS, SNS and EventBridge, sent as the execution role. |
 | Dead-letter queues | ✅ | Events that exhaust their retries go to the function's dead-letter target with Lambda's `RequestID`, `ErrorCode` and `ErrorMessage` attributes. |
-| S3 on-failure destinations | ❌ | Not yet. |
+| S3 on-failure destinations | ✅ | Records are written as the execution role under `aws/lambda/async/<function>/YYYY/MM/DD/...` (asynchronous invocations) or `aws/lambda/<mapping>/<shard>/...` (stream mappings, with the batch payload). |
 | Retries | 🟡 | Retried as Lambda does, but delays follow the wall clock, and throttled events are not kept for six hours. |
 | Permission checks | 🟡 | Destinations and dead-letter queues are not checked when configured. |
 | Recursive loop detection | ❌ | Configurable, but inert. |

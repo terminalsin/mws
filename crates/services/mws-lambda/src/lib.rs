@@ -31,6 +31,7 @@ mod handler;
 mod image;
 mod invoke;
 mod layers;
+mod metrics;
 mod names;
 mod object_lambda;
 mod permissions;
@@ -68,6 +69,8 @@ pub(crate) struct Inner {
     destinations: destinations::Sinks,
     /// Where container images come from, when ECR is wired in.
     images: std::sync::OnceLock<Arc<dyn image::ImageSource>>,
+    /// Where the `AWS/Lambda` metrics go.
+    metrics: mws_core::metrics::MetricOutlet,
 }
 
 /// The Lambda service. Cheap to clone; clones share state.
@@ -108,6 +111,7 @@ impl Lambda {
                 pollers: esm::Pollers::default(),
                 destinations: destinations::Sinks::default(),
                 images: std::sync::OnceLock::new(),
+                metrics: Default::default(),
             }),
         }
     }
@@ -128,6 +132,13 @@ impl Lambda {
             None => 1000.0,
         };
         value.clamp(0.0, i32::MAX as f64) as i32
+    }
+
+    /// Publish the `AWS/Lambda` metrics (`Invocations`, `Errors`,
+    /// `Duration`, `Throttles`, `ConcurrentExecutions`, ...) through
+    /// `publisher`.
+    pub fn set_metric_publisher(&self, publisher: Arc<dyn mws_core::metrics::MetricPublisher>) {
+        self.inner.metrics.connect(publisher);
     }
 
     pub fn set_logs(&self, logs: mws_logs::Logs) {

@@ -145,6 +145,11 @@ impl Lambda {
         }
     }
 
+    /// The emulated clock minus the wall clock, as last seen.
+    pub(crate) fn clock_skew(&self) -> chrono::Duration {
+        self.inner.pollers.template.lock().expect("poller lock poisoned").as_ref().map(|(_, o)| *o).unwrap_or_default()
+    }
+
     /// A context for work done on behalf of `account` in `region`, at the
     /// emulated time now.
     pub(crate) fn poller_context(&self, account: &str, region: &str) -> Option<RequestContext> {
