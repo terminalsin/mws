@@ -394,7 +394,7 @@ export function repairs(value: string, rule: Rule, code: IssueCode): Repair[] {
       if (rule.enum?.length) for (const e of rule.enum.slice(0, MAX_REPAIRS)) offer({ value: e, label: `Use ${e}`, kind: "suggest" });
       break;
     case "taken":
-      offer(rule.format === "semver" ? bump(value, rule) : nextFree(value, rule));
+      offer(rule.format === "semver" ? bump(value, rule) : (nextNumber(value, rule) ?? nextFree(value, rule)));
       offer(fresh(rule));
       break;
     case "reserved": {
@@ -532,6 +532,7 @@ function reshape(value: string, rule: Rule): Repair[] {
   }
   return out;
 }
+
 
 function clean(value: string, allowed: RegExp | null, sep: string, lower: boolean): string {
   let v = value.normalize("NFKD").replace(/[\u0300-\u036f]/g, "").trim();
@@ -674,6 +675,16 @@ function isTaken(value: string, rule: Rule): boolean {
   if (!rule.takenIgnoreCase) return rule.taken.includes(value);
   const v = value.toLowerCase();
   return rule.taken.some((t) => t.toLowerCase() === v);
+}
+
+/** The next free number after a taken one (a listener port). */
+function nextNumber(value: string, rule: Rule): Repair | null {
+  if (!(rule.type === "integer" || rule.format === "port") || !/^\d+$/.test(value.trim())) return null;
+  const max = rule.max ?? 65535;
+  for (let n = Number(value) + 1; n <= max; n++) {
+    if (!isTaken(String(n), rule)) return { value: String(n), label: `Use ${n}`, kind: "fix" };
+  }
+  return null;
 }
 
 /** The next free patch version of a taken one: 1.0.0 → 1.0.1. */

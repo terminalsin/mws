@@ -3,10 +3,12 @@ import { DescribeListenersCommand, DescribeLoadBalancersCommand, DescribeRulesCo
 import { load } from "@mws-dashboard/aws";
 import { ActionForm, AwsIcon, CodeBlock, ErrorNotice, Field, List, Page, Pill, Section, Sheet, Specs, Status } from "@mws-dashboard/ui";
 import { ArrowRight, Clock, Globe, Lock, Network, Plus, Trash2 } from "lucide-react";
+import { CreateListener } from "@mws-dashboard/ui/model/elbv2";
 import type { Metadata } from "next";
 import Link from "next/link";
 
 import { ICONS, LB_ICON, acm, elb } from "../../../lib/clients";
+import { LISTENER_PORT, forwardsTo } from "../../../lib/rules";
 import { createListener, deleteListener, deleteLoadBalancer } from "../actions";
 
 export const metadata: Metadata = { title: "Load balancer" };
@@ -46,8 +48,13 @@ export default async function LoadBalancer({ searchParams }: Props) {
   }
   const { lb, listeners, groups, certs, rules } = data.value;
   const groupName = (a: string | undefined) => groups.find((g) => g.TargetGroupArn === a)?.TargetGroupName ?? a?.split("/")[1];
-  const mine = groups.filter((g) => g.VpcId === lb.VpcId || g.TargetType === "lambda");
+  // Only the groups this load balancer can forward to: its VPC's (or
+  // Lambda's), with a protocol its listeners speak.
+  const mine = groups.filter((g) => (g.VpcId === lb.VpcId || g.TargetType === "lambda") && forwardsTo(lb.Type, g));
   const application = lb.Type === "application";
+  const gateway = lb.Type === "gateway";
+  const ports = listeners.map((l) => String(l.Port));
+  const freePort = [application ? 80 : 443, 443, 8080, 8443].find((p) => !ports.includes(String(p))) ?? 8081;
   return (
     <Page
       title={lb.LoadBalancerName}
@@ -58,19 +65,21 @@ export default async function LoadBalancer({ searchParams }: Props) {
         <>
           <Sheet title="Add listener" label="Add listener" icon={<Plus size={16} />} testId="add-listener">
             <ActionForm action={createListener.bind(null, arn)} submit="Add listener" testId="add-listener">
-              <div className="form-row">
-                <Field label="Protocol">
-                  <select name="protocol" defaultValue={application ? "HTTP" : "TCP"}>
-                    {(application ? ["HTTP", "HTTPS"] : lb.Type === "gateway" ? ["GENEVE"] : ["TCP", "TLS", "UDP", "TCP_UDP"]).map((p) => (
-                      <option key={p}>{p}</option>
-                    ))}
-                  </select>
-                </Field>
-                <Field label="Port">
-                  <input name="port" type="number" min={1} max={65535} defaultValue={80} required />
-                </Field>
-              </div>
-              <Field label="Forward to">
+              {!gateway && (
+                <div className="form-row">
+                  <Field label="Protocol" rule={CreateListener.Protocol}>
+                    <select name="protocol" defaultValue={application ? "HTTP" : "TCP"}>
+                      {(application ? ["HTTP", "HTTPS"] : ["TCP", "TLS", "UDP", "TCP_UDP"]).map((p) => (
+                        <option key={p}>{p}</option>
+                      ))}
+                    </select>
+                  </Field>
+                  <Field label="Port" rule={LISTENER_PORT} format="port" taken={ports}>
+                    <input name="port" type="number" defaultValue={freePort} required />
+                  </Field>
+                </div>
+              )}
+              <Field label="Forward to" member="DefaultActions">
                 <select name="targetGroup" defaultValue={mine[0]?.TargetGroupArn ?? ""}>
                   <option value="">Fixed 404 response</option>
                   {mine.map((g) => (
@@ -80,8 +89,8 @@ export default async function LoadBalancer({ searchParams }: Props) {
                   ))}
                 </select>
               </Field>
-              {certs.length > 0 && (
-                <Field label="Certificate (HTTPS, TLS)">
+              {!gateway && (
+                <Field label="Certificate (HTTPS, TLS)" member="Certificates" hint={certs.length ? undefined : <Link href="/acm">Request a certificate</Link>}>
                   <select name="certificate" defaultValue="">
                     <option value="">—</option>
                     {certs.map((c) => (

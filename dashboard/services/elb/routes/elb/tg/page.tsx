@@ -1,12 +1,14 @@
-import { DescribeTargetGroupsCommand, DescribeTargetHealthCommand } from "@aws-sdk/client-elastic-load-balancing-v2";
+import { DescribeInstancesCommand } from "@aws-sdk/client-ec2";
+import { DescribeLoadBalancersCommand, DescribeTargetGroupsCommand, DescribeTargetHealthCommand } from "@aws-sdk/client-elastic-load-balancing-v2";
 import { load } from "@mws-dashboard/aws";
 import { ActionForm, AwsIcon, Empty, ErrorNotice, Field, List, Page, Sheet, Specs, Status } from "@mws-dashboard/ui";
 import { HeartPulse, Network, Plus, Server, X } from "lucide-react";
 import type { Metadata } from "next";
 import Link from "next/link";
 
-import { ICONS, elb } from "../../../lib/clients";
+import { ICONS, ec2, elb } from "../../../lib/clients";
 import { HEALTH_TONE } from "../../../lib/elb";
+import { TARGET_PORT, targetsRule } from "../../../lib/rules";
 import { deleteTargetGroup, deregisterTarget, registerTargets } from "../actions";
 
 export const metadata: Metadata = { title: "Target group" };
@@ -20,6 +22,19 @@ const TARGET_ICON: Record<string, string> = {
   alb: ICONS.alb,
 };
 
+/** What this group's targets usually are: the VPC's instances (or their
+ * addresses), or the Application Load Balancers there. */
+async function knownTargets(type: string | undefined, vpc: string | undefined): Promise<string[]> {
+  if (type === "lambda" || !vpc) return [];
+  if (type === "alb") {
+    const lbs = await (await elb()).send(new DescribeLoadBalancersCommand({})).then((r) => r.LoadBalancers ?? [], () => []);
+    return lbs.filter((l) => l.Type === "application" && l.VpcId === vpc).map((l) => l.LoadBalancerArn!);
+  }
+  const out = await (await ec2()).send(new DescribeInstancesCommand({ Filters: [{ Name: "vpc-id", Values: [vpc] }] })).catch(() => null);
+  const instances = (out?.Reservations ?? []).flatMap((r) => r.Instances ?? []).filter((i) => i.State?.Name !== "terminated");
+  return instances.map((i) => (type === "ip" ? i.PrivateIpAddress : i.InstanceId)).filter((v): v is string => !!v);
+}
+
 export default async function TargetGroup({ searchParams }: Props) {
   const { arn = "" } = await searchParams;
   const back = { href: "/elb?tab=targets", label: "Target groups" };
@@ -29,7 +44,7 @@ export default async function TargetGroup({ searchParams }: Props) {
       client.send(new DescribeTargetGroupsCommand({ TargetGroupArns: [arn] })).then((r) => r.TargetGroups![0]),
       client.send(new DescribeTargetHealthCommand({ TargetGroupArn: arn })).then((r) => r.TargetHealthDescriptions ?? []),
     ]);
-    return { group, targets };
+    return { group, targets, known: await knownTargets(group.TargetType, group.VpcId) };
   });
   if (!data.ok) {
     return (
@@ -38,7 +53,10 @@ export default async function TargetGroup({ searchParams }: Props) {
       </Page>
     );
   }
-  const { group: g, targets } = data.value;
+  const { group: g, targets, known } = data.value;
+  const [, , , region, account] = (g.TargetGroupArn ?? "").split(":");
+  const rule = targetsRule(g.TargetType, `arn:aws:lambda:${region}:${account}:function:{}`);
+  const example = known[0] ?? (g.TargetType === "ip" ? "10.0.0.10" : g.TargetType === "lambda" ? "arn:aws:lambda:…" : "i-0123456789abcdef0");
   return (
     <Page
       title={g.TargetGroupName}
@@ -49,10 +67,12 @@ export default async function TargetGroup({ searchParams }: Props) {
         <>
           <Sheet title="Register targets" label="Register targets" icon={<Plus size={16} />} testId="register-targets">
             <ActionForm action={registerTargets.bind(null, arn)} submit="Register" testId="register-targets">
-              <textarea name="targets" rows={3} aria-label="Targets" required placeholder={g.TargetType === "ip" ? "10.0.0.10" : g.TargetType === "lambda" ? "arn:aws:lambda:…" : "i-0123456789abcdef0"} />
+              <Field label="Targets" rule={rule} known={known} member="Targets">
+                <textarea name="targets" rows={3} required placeholder={example} />
+              </Field>
               {g.TargetType !== "lambda" && (
-                <Field label="Port">
-                  <input name="port" type="number" min={1} max={65535} defaultValue={g.Port} />
+                <Field label="Port" rule={TARGET_PORT} format="port">
+                  <input name="port" type="number" defaultValue={g.Port} />
                 </Field>
               )}
             </ActionForm>

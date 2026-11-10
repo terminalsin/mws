@@ -409,6 +409,11 @@ test("event patterns wrap bare values in lists", () => {
 
 
 
+test("taken numbers get the next free one, required prefixes are added", () => {
+  assert.deepEqual(values({ type: "integer", min: 1, max: 65535, taken: ["80", "81"] }, "80"), ["82"]);
+  assert.deepEqual(values({ pattern: "^/[\\S]*$" }, "health"), ["/health"]);
+});
+
 test("hierarchical names are tidied, also after dropping a reserved prefix", () => {
   // Parameter Store's names: a/b needs a leading slash; /aws and /ssm are reserved.
   const rule: Rule = { pattern: "^(?:[A-Za-z0-9_.-]+|(?:[/][A-Za-z0-9_.-]+){1,15})$", reserved: ["/aws", "/ssm", "aws", "ssm"] };
