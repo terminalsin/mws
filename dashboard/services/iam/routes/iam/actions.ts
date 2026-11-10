@@ -146,7 +146,14 @@ export async function createRole(_: ActionResult | null, form: FormData) {
         Version: "2012-10-17",
         Statement: [{ Effect: "Allow", Principal: { Service: service || "lambda.amazonaws.com" }, Action: "sts:AssumeRole" }],
       });
-    await (await iam()).send(new CreateRoleCommand({ RoleName: name, AssumeRolePolicyDocument: doc, Description: text(form, "description") || undefined }));
+    const client = await iam();
+    await client.send(new CreateRoleCommand({ RoleName: name, AssumeRolePolicyDocument: doc, Description: text(form, "description") || undefined }));
+    // The managed policy the chosen kind of role usually needs (the console's preset).
+    const attach = text(form, "attach");
+    if (attach) {
+      await client.send(new AttachRolePolicyCommand({ RoleName: name, PolicyArn: attach }));
+      return `Created ${name} with ${attach.split("/").pop()}`;
+    }
     return `Created ${name}`;
   }, { revalidate: ["/iam"], fields: { RoleName: "name", Description: "description", AssumeRolePolicyDocument: policy, MalformedPolicyDocumentException: policy } });
 }

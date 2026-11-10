@@ -61,6 +61,8 @@ test("IAM validation: names, paths and service principals are repaired in place"
   await field("name").getByRole("button", { name: /Replace spaces/ }).click();
   await expect(control("name")).toHaveValue(user.replace(/\s+/g, "-"));
 
+  // The path waits under More.
+  await form.locator("summary", { hasText: "More" }).click();
   await control("path").fill("team");
   await control("path").blur();
   await expect(field("path")).toHaveAttribute("data-invalid", "format");
@@ -81,6 +83,8 @@ test("IAM validation: names, paths and service principals are repaired in place"
   await expect(r.field("service")).toHaveAttribute("data-invalid", "pattern");
   await r.field("service").getByRole("button", { name: /amazonaws\.com/ }).click();
   await expect(r.control("service")).toHaveValue("lambda.amazonaws.com");
+  // A typed trust policy waits under More (Lambda is the default tile).
+  await r.form.locator("summary", { hasText: "More" }).click();
   await r.control("trust").fill(`{effect: 'allow', principal: {"Service": "ecs-tasks.amazonaws.com"}, action: 'sts:AssumeRole'}`);
   await r.control("trust").blur();
   await expect(r.field("trust")).toHaveAttribute("data-invalid", "format");

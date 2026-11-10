@@ -8,13 +8,15 @@ import {
 } from "@aws-sdk/client-cost-explorer";
 import { all, describeError, load } from "@mws-dashboard/aws";
 import { AwsIcon, Empty, ErrorNotice, Field, Metric, Metrics, Page, Section, SERVICES, Table } from "@mws-dashboard/ui";
-import { Filter, Tags } from "lucide-react";
+import { MoreFields } from "@mws-dashboard/ui/presets";
+import { CalendarDays, Filter, Globe, ReceiptText, Tags } from "lucide-react";
+import type { ReactNode } from "react";
 import type { Metadata } from "next";
 import Link from "next/link";
 
 import { ICONS, ce } from "../../lib/clients";
 import { addDays, day, money, monthStart, mwsNow } from "../../lib/clock";
-import { DIMENSIONS, filterOf, groupBy, label, METRICS, parseQuery, period, split, type Query } from "../../lib/query";
+import { DIMENSIONS, filterOf, groupBy, href, label, METRICS, parseQuery, period, split, type Query } from "../../lib/query";
 
 export const metadata: Metadata = { title: "Cost Explorer" };
 
@@ -47,6 +49,35 @@ function serviceIcon(name: string) {
   const n = name.toLowerCase().replace(/^(amazon|aws)\s*/, "");
   return SERVICES.find((s) => s.id === id || s.name.toLowerCase().replace(/^(amazon|aws)\s*/, "") === n)?.icon ?? ICONS.ce;
 }
+
+/** AWS's saved reports, one click each. */
+function reports(now: Date): { id: string; label: string; icon: ReactNode; q: Query }[] {
+  const months = { start: day(monthStart(now, -5)), end: day(addDays(now, 1)), granularity: "MONTHLY" as const, metric: "UnblendedCost", values: [], exclude: false };
+  const days = { ...months, start: day(addDays(now, -29)), granularity: "DAILY" as const };
+  const logo = (icon: string) => <AwsIcon icon={icon} size={26} />;
+  return [
+    { id: "services", label: "By service", icon: logo(ICONS.ce), q: { ...months, groups: ["DIMENSION:SERVICE"] } },
+    { id: "daily", label: "Daily", icon: <CalendarDays size={26} aria-hidden />, q: { ...days, groups: ["DIMENSION:SERVICE"] } },
+    { id: "accounts", label: "By account", icon: logo("service/AWSOrganizations"), q: { ...months, groups: ["DIMENSION:LINKED_ACCOUNT"] } },
+    { id: "regions", label: "By Region", icon: <Globe size={26} aria-hidden />, q: { ...months, groups: ["DIMENSION:REGION"] } },
+    { id: "usage", label: "By usage type", icon: <ReceiptText size={26} aria-hidden />, q: { ...months, groups: ["DIMENSION:USAGE_TYPE"] } },
+    {
+      id: "ec2",
+      label: "EC2 instances",
+      icon: logo("service/AmazonEC2"),
+      q: { ...days, groups: ["DIMENSION:INSTANCE_TYPE"], filter: "DIMENSION:SERVICE", values: ["Amazon Elastic Compute Cloud - Compute"] },
+    },
+  ];
+}
+
+const same = (a: Query, b: Query) =>
+  a.start === b.start &&
+  a.granularity === b.granularity &&
+  a.metric === b.metric &&
+  a.groups.join() === b.groups.join() &&
+  (a.filter ?? "") === (b.filter ?? "") &&
+  a.values.join() === b.values.join() &&
+  a.exclude === b.exclude;
 
 type Props = { searchParams: Promise<Record<string, string | string[] | undefined>> };
 
@@ -168,6 +199,22 @@ export default async function CostExplorer({ searchParams }: Props) {
         )}
         <Metric label="Last month" value={money(last)} />
       </Metrics>
+      <nav className="presets" aria-label="Reports">
+        <div className="preset-grid">
+          {reports(now).map((r) => (
+            <Link
+              key={r.id}
+              href={href(r.q)}
+              className="preset no-underline aria-[current=page]:bg-[var(--accent-soft)] aria-[current=page]:shadow-[inset_0_0_0_2px_var(--accent)]"
+              aria-current={same(r.q, q) ? "page" : undefined}
+              data-testid={`report-${r.id}`}
+            >
+              {r.icon}
+              <span>{r.label}</span>
+            </Link>
+          ))}
+        </div>
+      </nav>
       {!forecast.ok && (forecast.expected ? <p className="muted" data-testid="forecast-unavailable">{forecast.message}</p> : <ErrorNotice error={`Forecast: ${forecast.message}`} />)}
       <Section title="Report parameters">
         <form className="action-form" action="/ce" data-testid="cost-query">
@@ -185,6 +232,10 @@ export default async function CostExplorer({ searchParams }: Props) {
                 <option value="HOURLY">Hourly</option>
               </select>
             </Field>
+            {groupSelect(0)}
+          </div>
+          <MoreFields expanded={!!q.filter || q.groups.length > 1 || q.metric !== "UnblendedCost"}>
+          <div className="form-row">
             <Field label="Metric">
               <select name="metric" defaultValue={q.metric}>
                 {Object.entries(METRICS).map(([k, l]) => (
@@ -194,9 +245,6 @@ export default async function CostExplorer({ searchParams }: Props) {
                 ))}
               </select>
             </Field>
-          </div>
-          <div className="form-row">
-            {groupSelect(0)}
             {groupSelect(1)}
           </div>
           <div className="form-row">
@@ -217,6 +265,7 @@ export default async function CostExplorer({ searchParams }: Props) {
               <input type="checkbox" name="exclude" defaultChecked={q.exclude} /> Exclude
             </label>
           </div>
+          </MoreFields>
           <div className="form-actions">
             <button type="submit" className="button primary">
               Apply

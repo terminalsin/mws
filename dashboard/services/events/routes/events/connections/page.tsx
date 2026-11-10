@@ -1,5 +1,5 @@
 import { ago, load } from "@mws-dashboard/aws";
-import { ActionForm, Empty, ErrorNotice, Field, List, Page, Pill, Sheet, Status, type Tone } from "@mws-dashboard/ui";
+import { ActionForm, Empty, ErrorNotice, List, Page, Pill, Sheet, Status, type Tone } from "@mws-dashboard/ui";
 import { LiveRefresh } from "@mws-dashboard/ui/client";
 import { KeyRound, Trash2, Unplug } from "lucide-react";
 import type { Metadata } from "next";
@@ -22,13 +22,11 @@ export default async function Connections() {
       actions={
         <Sheet title="New connection" label="Create connection" testId="create-connection">
           <ActionForm action={createConnection} submit="Create" testId="create-connection">
-            <Field label="Name" rule={CONNECTION_NAME} taken={list.ok ? list.value.map((c) => c.Name!) : []} unique member="Name">
-              <input name="name" required autoFocus spellCheck={false} />
-            </Field>
-            <Field label="Description">
-              <input name="description" maxLength={512} />
-            </Field>
-            <ConnectionAuthFields rules={{ keyName: API_KEY_NAME, keyValue: API_KEY_VALUE, username: USERNAME, password: PASSWORD }} />
+            <ConnectionAuthFields
+              rules={{ keyName: API_KEY_NAME, keyValue: API_KEY_VALUE, username: USERNAME, password: PASSWORD }}
+              nameRule={CONNECTION_NAME}
+              taken={list.ok ? list.value.map((c) => c.Name!) : []}
+            />
           </ActionForm>
         </Sheet>
       }

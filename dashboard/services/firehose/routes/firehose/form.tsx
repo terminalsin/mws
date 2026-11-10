@@ -1,5 +1,6 @@
 import { AutoPick, Field } from "@mws-dashboard/ui";
 import { CreateDeliveryStream as Rules } from "@mws-dashboard/ui/model/firehose";
+import { MoreFields } from "@mws-dashboard/ui/presets";
 
 import { DestinationSwitch } from "../../lib/destination-fields";
 import { COMPRESSIONS } from "../../lib/firehose";
@@ -21,13 +22,6 @@ export function DestinationFields({
 }) {
   return (
     <DestinationSwitch name="destination">
-      <Field label="Destination" rule={{ enum: ["s3", "http", "splunk"] }}>
-        <select name="destination" defaultValue="s3">
-          <option value="s3">Amazon S3</option>
-          <option value="http">HTTP endpoint</option>
-          <option value="splunk">Splunk</option>
-        </select>
-      </Field>
       <fieldset data-dest="http" style={FIELDSET}>
         <Field
           label="Endpoint URL"
@@ -110,69 +104,71 @@ export function DestinationFields({
         options={buckets}
         testId="destination-bucket"
       />
-      <div className="form-grid">
-        <Field label="Prefix" rule={S3.Prefix}>
-          <input name="prefix" placeholder="events/" />
-        </Field>
-        <Field label="Error prefix" rule={S3.ErrorOutputPrefix}>
-          <input
-            name="errorPrefix"
-            placeholder="errors/!{firehose:error-output-type}/"
-          />
-        </Field>
+      <MoreFields label="Buffering, prefix, transform">
+        <div className="form-grid">
+          <Field label="Prefix" rule={S3.Prefix}>
+            <input name="prefix" placeholder="events/" />
+          </Field>
+          <Field label="Error prefix" rule={S3.ErrorOutputPrefix}>
+            <input
+              name="errorPrefix"
+              placeholder="errors/!{firehose:error-output-type}/"
+            />
+          </Field>
+          <Field
+            label="Buffer interval (s)"
+            rule={S3.BufferingHints.fields!.IntervalInSeconds}
+          >
+            <input
+              name="interval"
+              type="number"
+              min={0}
+              max={900}
+              defaultValue={300}
+            />
+          </Field>
+          <Field
+            label="Buffer size (MiB)"
+            rule={S3.BufferingHints.fields!.SizeInMBs}
+          >
+            <input name="size" type="number" defaultValue={5} />
+          </Field>
+          <Field label="Compression" rule={S3.CompressionFormat}>
+            <select name="compression" defaultValue="UNCOMPRESSED">
+              {COMPRESSIONS.map((c) => (
+                <option key={c}>{c}</option>
+              ))}
+            </select>
+          </Field>
+        </div>
+        <fieldset data-dest="s3" style={FIELDSET}>
+          <Field label="File extension" rule={S3.FileExtension}>
+            <input name="extension" placeholder=".json" />
+          </Field>
+          <label className="check">
+            <input type="checkbox" name="backup" /> Back up source records
+          </label>
+        </fieldset>
         <Field
-          label="Buffer interval (s)"
-          rule={S3.BufferingHints.fields!.IntervalInSeconds}
+          label="Transform with Lambda"
+          rule={{ format: "arn", known: functions }}
         >
           <input
-            name="interval"
-            type="number"
-            min={0}
-            max={900}
-            defaultValue={300}
+            name="lambda"
+            list="firehose-functions"
+            placeholder="arn:aws:lambda:…"
           />
         </Field>
-        <Field
-          label="Buffer size (MiB)"
-          rule={S3.BufferingHints.fields!.SizeInMBs}
-        >
-          <input name="size" type="number" defaultValue={5} />
-        </Field>
-        <Field label="Compression" rule={S3.CompressionFormat}>
-          <select name="compression" defaultValue="UNCOMPRESSED">
-            {COMPRESSIONS.map((c) => (
-              <option key={c}>{c}</option>
-            ))}
-          </select>
-        </Field>
-      </div>
-      <fieldset data-dest="s3" style={FIELDSET}>
-        <Field label="File extension" rule={S3.FileExtension}>
-          <input name="extension" placeholder=".json" />
-        </Field>
+        <datalist id="firehose-functions">
+          {functions.map((f) => (
+            <option key={f} value={f} />
+          ))}
+        </datalist>
         <label className="check">
-          <input type="checkbox" name="backup" /> Back up source records
+          <input type="checkbox" name="logging" /> Log delivery errors to
+          CloudWatch
         </label>
-      </fieldset>
-      <Field
-        label="Transform with Lambda"
-        rule={{ format: "arn", known: functions }}
-      >
-        <input
-          name="lambda"
-          list="firehose-functions"
-          placeholder="arn:aws:lambda:…"
-        />
-      </Field>
-      <datalist id="firehose-functions">
-        {functions.map((f) => (
-          <option key={f} value={f} />
-        ))}
-      </datalist>
-      <label className="check">
-        <input type="checkbox" name="logging" /> Log delivery errors to
-        CloudWatch
-      </label>
+      </MoreFields>
     </DestinationSwitch>
   );
 }

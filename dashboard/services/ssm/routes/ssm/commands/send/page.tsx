@@ -2,6 +2,7 @@ import { DescribeDocumentCommand } from "@aws-sdk/client-ssm";
 import { load } from "@mws-dashboard/aws";
 import { ActionForm, ErrorNotice, Field, Page, Section } from "@mws-dashboard/ui";
 import { SendCommand } from "@mws-dashboard/ui/model/ssm";
+import { MoreFields } from "@mws-dashboard/ui/presets";
 import type { Metadata } from "next";
 import Link from "next/link";
 
@@ -73,6 +74,7 @@ export default async function Send({ searchParams }: Props) {
           <Field label="Or targets" hint="tag:env=prod, InstanceIds=i-1,i-2 (one a line)" member="Targets">
             <textarea name="targets" rows={2} placeholder="tag:env=prod" />
           </Field>
+          <MoreFields>
           <div className="form-row">
             <Field label="Comment" rule={SendCommand.Comment}>
               <input name="comment" />
@@ -92,6 +94,7 @@ export default async function Send({ searchParams }: Props) {
               <input name="version" placeholder="$DEFAULT" />
             </Field>
           </div>
+          </MoreFields>
         </ActionForm>
       )}
     </Page>

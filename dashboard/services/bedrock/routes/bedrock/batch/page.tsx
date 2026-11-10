@@ -6,6 +6,7 @@ import { LiveRefresh } from "@mws-dashboard/ui/client";
 import { CreateModelInvocationJob } from "@mws-dashboard/ui/model/bedrock";
 import { ruleAt } from "@mws-dashboard/ui/validation";
 import { Layers } from "lucide-react";
+import { MoreFields } from "@mws-dashboard/ui/presets";
 import type { Metadata } from "next";
 
 import { bedrock, ICONS, tone } from "../../../lib/clients";
@@ -67,6 +68,7 @@ export default async function Batch() {
         <Field label="Output location" rule={{ ...at("outputDataConfig.s3OutputDataConfig.s3Uri"), format: "s3url" }} known={known}>
           <input name="output" required placeholder="s3://bucket/output/" />
         </Field>
+        <MoreFields>
         <AutoPick name="role" label="Service role" creates="AmazonBedrockBatchInferenceRole" options={roles} testId="batch-role" />
         <Field label="Timeout (hours)" rule={at("timeoutDurationInHours")}>
           <input name="timeout" type="number" placeholder="24" />
@@ -74,6 +76,7 @@ export default async function Batch() {
         <Field label="Tags" format="tags">
           <textarea name="tags" rows={2} placeholder="team=ml" />
         </Field>
+        </MoreFields>
       </ActionForm>
     </Sheet>
   );

@@ -1,6 +1,6 @@
 import { GetDetectorCommand } from "@aws-sdk/client-guardduty";
 import { load, when } from "@mws-dashboard/aws";
-import { ActionForm, Empty, ErrorNotice, Facts, Field, Page, Section, Status, Tags } from "@mws-dashboard/ui";
+import { ActionForm, CopyValue, AwsIcon, Empty, ErrorNotice, Facts, Field, Page, Section, Status, Tags } from "@mws-dashboard/ui";
 import { Trash2 } from "lucide-react";
 import type { Metadata } from "next";
 
@@ -10,13 +10,13 @@ import { deleteDetector, enableGuardDuty, updateDetector } from "../actions";
 
 export const metadata: Metadata = { title: "Settings · GuardDuty" };
 
-const PLANS: [string, string][] = [
-  ["S3_DATA_EVENTS", "S3 Protection"],
-  ["EKS_AUDIT_LOGS", "EKS Protection"],
-  ["RUNTIME_MONITORING", "Runtime Monitoring"],
-  ["EBS_MALWARE_PROTECTION", "Malware Protection for EC2"],
-  ["RDS_LOGIN_EVENTS", "RDS Protection"],
-  ["LAMBDA_NETWORK_LOGS", "Lambda Protection"],
+const PLANS: [string, string, string][] = [
+  ["S3_DATA_EVENTS", "S3 Protection", "service/AmazonSimpleStorageService"],
+  ["EKS_AUDIT_LOGS", "EKS Protection", "service/AmazonElasticKubernetesService"],
+  ["RUNTIME_MONITORING", "Runtime Monitoring", "service/AmazonEC2"],
+  ["EBS_MALWARE_PROTECTION", "Malware Protection for EC2", "service/AmazonElasticBlockStore"],
+  ["RDS_LOGIN_EVENTS", "RDS Protection", "service/AmazonRDS"],
+  ["LAMBDA_NETWORK_LOGS", "Lambda Protection", "service/AWSLambda"],
 ];
 
 export default async function Settings() {
@@ -50,8 +50,8 @@ export default async function Settings() {
       <GuardDutyNav active="settings" />
       <Facts
         items={[
-          ["Detector ID", <code key="id">{detector}</code>],
           ["Status", <Status key="s" tone={d.Status === "ENABLED" ? "good" : "warn"}>{(d.Status ?? "").toLowerCase()}</Status>],
+          ["Detector ID", <CopyValue key="id" value={detector} label="Copy detector ID" />],
           d.ServiceRole && ["Service role", d.ServiceRole],
           ["Created", when(d.CreatedAt)],
           d.UpdatedAt && ["Updated", when(d.UpdatedAt)],
@@ -61,9 +61,9 @@ export default async function Settings() {
         <ActionForm action={updateDetector.bind(null, detector)} submit="Save" testId="detector-settings">
           <fieldset className="checks">
             <legend>Protection plans</legend>
-            {PLANS.map(([name, label]) => (
+            {PLANS.map(([name, label, icon]) => (
               <label key={name} className="check">
-                <input type="checkbox" name="feature" value={name} defaultChecked={on.has(name)} /> {label}
+                <input type="checkbox" name="feature" value={name} defaultChecked={on.has(name)} /> <AwsIcon icon={icon} size={18} /> {label}
               </label>
             ))}
           </fieldset>

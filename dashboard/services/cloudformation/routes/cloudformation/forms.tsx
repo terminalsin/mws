@@ -1,9 +1,11 @@
 import { ActionForm, Field, Sheet } from "@mws-dashboard/ui";
 import { CreateChangeSet as ChangeSetRules, CreateStack as CreateStackRules } from "@mws-dashboard/ui/model/cloudformation";
+import { MoreFields } from "@mws-dashboard/ui/presets";
 import { GitCompare } from "lucide-react";
 
 import { PARAMETERS, SAMPLE_TEMPLATE, STACK_NAME, TEMPLATE } from "../../lib/cloudformation";
 import { createChangeSet, createStack } from "./actions";
+import { StackFields } from "./stack-fields";
 
 const CAPABILITIES = [
   ["CAPABILITY_IAM", "IAM resources"],
@@ -12,13 +14,13 @@ const CAPABILITIES = [
 ] as const;
 
 /** The acknowledgments AWS asks for before it creates IAM resources or runs macros. */
-export function Capabilities() {
+export function Capabilities({ checked = [] }: { checked?: string[] }) {
   return (
     <fieldset className="checks">
       <legend>Capabilities</legend>
       {CAPABILITIES.map(([value, label]) => (
         <label key={value} className="check">
-          <input type="checkbox" name="capabilities" value={value} /> {label}
+          <input type="checkbox" name="capabilities" value={value} defaultChecked={checked.includes(value)} /> {label}
         </label>
       ))}
     </fieldset>
@@ -45,36 +47,7 @@ export function CreateStack({ names }: { names: string[] }) {
   return (
     <Sheet title="Create stack" label="Create stack" testId="create-stack">
       <ActionForm action={createStack} submit="Create stack" testId="create-stack">
-        <Field label="Stack name" rule={{ ...CreateStackRules.StackName, ...STACK_NAME }} taken={names} unique>
-          <input name="name" required maxLength={128} autoFocus />
-        </Field>
-        <Field label="Template" rule={{ ...CreateStackRules.TemplateBody, ...TEMPLATE }}>
-          <textarea name="template" rows={16} required className="code-editor" spellCheck={false} defaultValue={SAMPLE_TEMPLATE} />
-        </Field>
-        <Field label="Parameters" rule={PARAMETERS}>
-          <textarea name="parameters" rows={2} placeholder="Env=prod" spellCheck={false} />
-        </Field>
-        <Capabilities />
-        <div className="form-row">
-          <Field label="On failure">
-            <select name="onFailure" defaultValue="ROLLBACK">
-              <option value="ROLLBACK">Roll back</option>
-              <option value="DO_NOTHING">Preserve resources</option>
-              <option value="DELETE">Delete</option>
-            </select>
-          </Field>
-          <Field label="Timeout (minutes)" rule={CreateStackRules.TimeoutInMinutes}>
-            <input name="timeout" type="number" min={1} />
-          </Field>
-        </div>
-        <Role />
-        <Field label="Notification topics" rule={CreateStackRules.NotificationARNs} hint="SNS topic ARNs">
-          <input name="notifications" placeholder="arn:aws:sns:us-east-1:123456789012:deploys" />
-        </Field>
-        <TagsField />
-        <label className="check">
-          <input type="checkbox" name="protect" /> Termination protection
-        </label>
+        <StackFields names={names} />
       </ActionForm>
     </Sheet>
   );
@@ -117,9 +90,6 @@ export function CreateChangeSet({
             </select>
           </Field>
         </div>
-        <Field label="Description" rule={ChangeSetRules.Description}>
-          <input name="description" />
-        </Field>
         <Field label="Template" rule={{ ...ChangeSetRules.TemplateBody, ...TEMPLATE }}>
           <textarea name="template" rows={14} required className="code-editor" spellCheck={false} defaultValue={template ?? SAMPLE_TEMPLATE} />
         </Field>
@@ -129,9 +99,14 @@ export function CreateChangeSet({
         <Field label="Resources to import" format="pairs" hint="For an import: LogicalId=identifier, e.g. Bucket=my-bucket">
           <textarea name="imports" rows={2} spellCheck={false} placeholder="Bucket=my-existing-bucket" />
         </Field>
-        <Capabilities />
-        <Role />
-        {!stack && <TagsField />}
+        <MoreFields>
+          <Field label="Description" rule={ChangeSetRules.Description}>
+            <input name="description" />
+          </Field>
+          <Capabilities />
+          <Role />
+          {!stack && <TagsField />}
+        </MoreFields>
       </ActionForm>
     </Sheet>
   );

@@ -8,6 +8,7 @@ import {
   Empty,
   ErrorNotice,
   Field,
+  freeName,
   List,
   More,
   Page,
@@ -17,6 +18,7 @@ import {
 } from "@mws-dashboard/ui";
 import { ArrowRight, Lock } from "lucide-react";
 import { CreateDeliveryStream as Rules } from "@mws-dashboard/ui/model/firehose";
+import { MoreFields } from "@mws-dashboard/ui/presets";
 import type { Metadata } from "next";
 
 import {
@@ -95,7 +97,12 @@ export default async function DeliveryStreams({ searchParams }: Props) {
         testId="create-delivery-stream"
       >
         <Field label="Name" rule={NAME} taken={names} generate="name" unique>
-          <input name="name" required autoFocus />
+          <input
+            name="name"
+            required
+            defaultValue={freeName("delivery-stream", names)}
+            spellCheck={false}
+          />
         </Field>
         <Field
           label="Source Kinesis stream ARN"
@@ -125,13 +132,15 @@ export default async function DeliveryStreams({ searchParams }: Props) {
           buckets={buckets}
           functions={functions.ok ? functions.value : []}
         />
-        <label className="check">
-          <input type="checkbox" name="sse" /> Server-side encryption (Direct
-          PUT)
-        </label>
-        <Field label="Tags" rule={{ ...Rules.Tags, format: "tags" }}>
-          <textarea name="tags" rows={1} placeholder="team=data" />
-        </Field>
+        <MoreFields label="Encryption, tags">
+          <label className="check">
+            <input type="checkbox" name="sse" /> Server-side encryption (Direct
+            PUT)
+          </label>
+          <Field label="Tags" rule={{ ...Rules.Tags, format: "tags" }}>
+            <textarea name="tags" rows={1} placeholder="team=data" />
+          </Field>
+        </MoreFields>
       </ActionForm>
     </Sheet>
   );

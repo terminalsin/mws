@@ -11,8 +11,8 @@ test("EventBridge: put an event on the default bus", async ({ page }) => {
 
 /** Open the sheet holding the form `testId`; returns the form and a
  * locator for the field around a named control. */
-async function openSheet(page: Page, testId: string) {
-  await page.goto("/events");
+async function openSheet(page: Page, testId: string, url: string | null = "/events") {
+  if (url) await page.goto(url);
   const form = page.locator("dialog[open]").getByTestId(testId).and(page.locator("form"));
   await expect(async () => {
     if (!(await form.isVisible())) await page.getByTestId(`${testId}-open`).first().click();
@@ -134,14 +134,17 @@ test("EventBridge: add a target with an input transformer and retries on the rul
   const queueArn = (await sqs.send(new GetQueueAttributesCommand({ QueueUrl, AttributeNames: ["QueueArn"] }))).Attributes!.QueueArn!;
 
   await page.goto(`/events/rule?bus=default&name=${rule}`);
-  await submit(page, "add-target", {
-    id: "shaped",
-    target: queueArn,
-    input: "transformer",
-    inputPaths: '{"n": "$.detail.n"}',
-    inputTemplate: '{"number": <n>}',
-    retries: "3",
-  });
+  const add = await openSheet(page, "add-target", null);
+  await add.control("id").fill("shaped");
+  await add.control("target").fill(queueArn);
+  await add.control("input").selectOption("transformer");
+  await add.control("inputPaths").fill('{"n": "$.detail.n"}');
+  await add.control("inputTemplate").fill('{"number": <n>}');
+  // Retries wait under More.
+  await add.form.locator("summary", { hasText: "Retries, dead-letter queue" }).click();
+  await add.control("retries").fill("3");
+  await add.form.locator('button[type="submit"]').click();
+  await expect(page.locator("dialog[open]")).toHaveCount(0);
   const targets = (await events.send(new ListTargetsByRuleCommand({ Rule: rule }))).Targets ?? [];
   expect(targets[0].InputTransformer?.InputTemplate).toBe('{"number": <n>}');
   expect(targets[0].RetryPolicy?.MaximumRetryAttempts).toBe(3);

@@ -18,8 +18,10 @@ test("Certificates: a private CA issues a certificate requested through ACM", as
   await expect(page.locator(".specs")).toContainText("active");
 
   const domain = `${unique("svc")}.internal.example`;
-  await page.goto("/acm");
-  await submit(page, "request-certificate", { domains: domain, pca: `Private · ${cn}` });
+  // The issuer is a tile: open the sheet and pick the private CA first.
+  const { form } = await openSheet(page, "request-certificate");
+  await form.getByRole("radio", { name: cn }).click();
+  await submit(page, "request-certificate", { domains: domain });
   await expect(page.getByRole("heading", { level: 1, name: domain })).toBeVisible();
   await expect(page.locator(".specs")).toContainText(/Issued|Pending/);
 });

@@ -1,8 +1,9 @@
 import { GetEventSelectorsCommand, GetInsightSelectorsCommand, GetTrailCommand, GetTrailStatusCommand, ListTagsCommand } from "@aws-sdk/client-cloudtrail";
 import { ago, frameInfo, load, region as currentRegion, shortName } from "@mws-dashboard/aws";
-import { ActionForm, CodeBlock, ErrorNotice, Facts, Field, Page, Pill, Section, Sheet, Specs, Status, Tags, type Rule } from "@mws-dashboard/ui";
+import { ActionForm, CodeBlock, CopyValue, ErrorNotice, Facts, Field, Page, Pill, Section, Sheet, Specs, Status, Tags, type Rule } from "@mws-dashboard/ui";
 import { UpdateTrail } from "@mws-dashboard/ui/model/cloudtrail";
 import { Braces, Globe, Lightbulb, Pause, Pencil, Play, ShieldCheck, Tag, Trash2 } from "lucide-react";
+import { MoreFields } from "@mws-dashboard/ui/presets";
 import type { Metadata } from "next";
 import Link from "next/link";
 import type { ReactNode } from "react";
@@ -55,7 +56,6 @@ export default async function TrailPage({ searchParams }: Props) {
       title={t.Name}
       icon={ICONS.cloudtrail}
       back={back}
-      subtitle={t.TrailARN}
       actions={
         shadow ? undefined : (
           <>
@@ -69,18 +69,20 @@ export default async function TrailPage({ searchParams }: Props) {
                     <input name="prefix" defaultValue={t.S3KeyPrefix} />
                   </Field>
                 </div>
-                <Field label="SNS topic" hint="Name or ARN; empty turns notifications off">
-                  <input name="topic" defaultValue={t.SnsTopicARN} />
-                </Field>
-                <Field label="KMS key" hint="Key ID, ARN or alias; empty uses SSE-S3">
-                  <input name="kms" defaultValue={t.KmsKeyId} />
-                </Field>
-                <Field label="CloudWatch Logs log group ARN" rule={ARN_RULE}>
-                  <input name="logGroup" defaultValue={t.CloudWatchLogsLogGroupArn} placeholder="arn:aws:logs:region:account:log-group:name:*" />
-                </Field>
-                <Field label="CloudWatch Logs role ARN" rule={ARN_RULE}>
-                  <input name="logRole" defaultValue={t.CloudWatchLogsRoleArn} />
-                </Field>
+                <MoreFields expanded={!!(t.SnsTopicARN || t.KmsKeyId || t.CloudWatchLogsLogGroupArn)}>
+                  <Field label="SNS topic" hint="Name or ARN; empty turns notifications off">
+                    <input name="topic" defaultValue={t.SnsTopicARN} />
+                  </Field>
+                  <Field label="KMS key" hint="Key ID, ARN or alias; empty uses SSE-S3">
+                    <input name="kms" defaultValue={t.KmsKeyId} />
+                  </Field>
+                  <Field label="CloudWatch Logs log group ARN" rule={ARN_RULE}>
+                    <input name="logGroup" defaultValue={t.CloudWatchLogsLogGroupArn} placeholder="arn:aws:logs:region:account:log-group:name:*" />
+                  </Field>
+                  <Field label="CloudWatch Logs role ARN" rule={ARN_RULE}>
+                    <input name="logRole" defaultValue={t.CloudWatchLogsRoleArn} />
+                  </Field>
+                </MoreFields>
                 <label className="check">
                   <input type="checkbox" name="multi" defaultChecked={t.IsMultiRegionTrail} /> All Regions
                 </label>
@@ -127,6 +129,7 @@ export default async function TrailPage({ searchParams }: Props) {
       <Section title="General details">
         <Facts
           items={[
+            ["ARN", <CopyValue value={t.TrailARN} label="Copy trail ARN" />],
             ["Home Region", t.HomeRegion],
             ["S3 bucket", <Link href={links.bucket(t.S3BucketName!)}>{`s3://${t.S3BucketName}/${t.S3KeyPrefix ?? ""}`}</Link>],
             t.KmsKeyId ? ["KMS key", <Link href={links.key(t.KmsKeyId)}>{shortName(t.KmsKeyId)}</Link>] : ["Encryption", "SSE-S3"],

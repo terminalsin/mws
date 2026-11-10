@@ -1,6 +1,6 @@
 import { DescribeLaunchTemplateVersionsCommand, type LaunchTemplateVersion } from "@aws-sdk/client-ec2";
 import { ago, all, load } from "@mws-dashboard/aws";
-import { ActionForm, AwsIcon, CodeBlock, ErrorNotice, Facts, Field, List, Page, Pill, Section, Sheet, Specs, Tags } from "@mws-dashboard/ui";
+import { ActionForm, AwsIcon, CodeBlock, ErrorNotice, Facts, Field, List, Page, Pill, Section, Sheet, Specs, Tags, CopyValue } from "@mws-dashboard/ui";
 import { Clock, GitBranchPlus, Layers, Star, Trash2, User } from "lucide-react";
 import type { Metadata } from "next";
 import Link from "next/link";
@@ -88,7 +88,7 @@ export default async function LaunchTemplatePage({ searchParams }: Props) {
       title={t.LaunchTemplateName}
       icon={ICONS.template}
       back={back}
-      subtitle={id}
+      subtitle={<CopyValue value={id} />}
       actions={
         <>
           <LaunchSheet template={id} />

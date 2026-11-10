@@ -73,12 +73,9 @@ export default async function Certificate({ searchParams }: Props) {
       <>
         <Facts
           items={[
-            d.CertificateAuthorityArn && ["Certificate authority", <Link key="ca" href={`/pca/ca?arn=${encodeURIComponent(d.CertificateAuthorityArn)}`}>{d.Issuer ?? d.CertificateAuthorityArn.split("/").pop()}</Link>],
-            !d.CertificateAuthorityArn && d.Issuer && ["Issuer", d.Issuer],
             d.Subject && ["Subject", d.Subject],
             d.Serial && ["Serial", <code key="s">{d.Serial}</code>],
             d.NotBefore && ["Valid from", when(d.NotBefore)],
-            d.NotAfter && ["Valid until", when(d.NotAfter)],
             d.CreatedAt && ["Requested", when(d.CreatedAt)],
             d.IssuedAt && ["Issued", when(d.IssuedAt)],
             d.ImportedAt && ["Imported", when(d.ImportedAt)],
@@ -111,7 +108,7 @@ export default async function Certificate({ searchParams }: Props) {
               label="In use by"
               rows={d.InUseBy!.map((a) => {
                 const u = usedBy(a);
-                return { key: a, icon: <AwsIcon icon={u.icon} size={22} />, title: u.name, subtitle: a, href: u.href };
+                return { key: a, icon: <AwsIcon icon={u.icon} size={22} />, title: u.name, href: u.href };
               })}
             />
           </Section>
@@ -213,7 +210,7 @@ export default async function Certificate({ searchParams }: Props) {
           {exportable && d.Status === "ISSUED" && (
             <Sheet title="Export certificate" label="Export" icon={<Download size={16} />} testId="export-certificate">
               <ActionForm action={exportCertificate.bind(null, arn)} submit="Export" testId="export-certificate">
-                <Field label="Passphrase" rule={PASSPHRASE} member="Passphrase" hint="Encrypts the exported private key">
+                <Field label="Passphrase" rule={PASSPHRASE} member="Passphrase">
                   <input name="passphrase" type="password" required autoComplete="new-password" />
                 </Field>
               </ActionForm>

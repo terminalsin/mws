@@ -17,7 +17,11 @@ test("CodeArtifact: a repository with an npm upstream and its connection instruc
   await submit(page, "create-domain", { name: domain });
   await expect(row(page, domain)).toBeVisible();
   await page.goto("/codeartifact");
-  await submit(page, "create-repository", { name: repo, domain, external: "public:npmjs" });
+  // The sheet opens on the public upstream; npm names the repository npm-store.
+  const form = await openSheet(page, "create-repository");
+  await form.getByTestId("preset-public:npmjs").click();
+  await expect(form.locator('input[name="name"]')).toHaveValue(/^npm-store/);
+  await submit(page, "create-repository", { name: repo, domain });
   await expect(page.getByRole("heading", { level: 1, name: repo })).toBeVisible();
   await expect(page.locator(".specs")).toContainText("npmjs");
   await expect(page.locator("pre.code")).toContainText("npm config set registry");

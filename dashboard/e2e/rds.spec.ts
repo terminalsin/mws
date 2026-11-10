@@ -6,7 +6,10 @@ import { row, sdk, submit, unique } from "./helpers";
 test("RDS: create a PostgreSQL database and find its connection command", async ({ page }) => {
   const id = unique("dash-db");
   await page.goto("/rds");
-  await submit(page, "create-database", { engine: "postgres", id, username: "app", password: "correct-horse-battery" });
+  // The sheet opens on the engines' logos, PostgreSQL chosen.
+  const { form } = await openSheet(page, "create-database");
+  await expect(form.getByTestId("preset-postgres")).toHaveAttribute("aria-checked", "true");
+  await submit(page, "create-database", { id, username: "app", password: "correct-horse-battery" });
   await expect(page.getByRole("heading", { level: 1, name: id })).toBeVisible();
   await expect(page.locator(".specs")).toContainText("postgres");
 
@@ -58,7 +61,7 @@ test("RDS: create-database fields repair what RDS would reject", async ({ page }
   // Aurora has no micro instances: the untouched default follows the
   // engine, and a typed one is answered with the sizes Aurora offers.
   const cls = field("class");
-  await form.locator('select[name="engine"]').selectOption("aurora-postgresql");
+  await form.getByTestId("preset-aurora-postgresql").click();
   await expect(cls.locator("input")).toHaveValue("db.t4g.medium");
   await expect(form.locator('input[name="storage"]')).toHaveCount(0);
   await cls.locator("input").fill("db.t4g.micro");
@@ -68,7 +71,7 @@ test("RDS: create-database fields repair what RDS would reject", async ({ page }
   await expect(cls).not.toHaveAttribute("data-invalid");
 
   // MySQL user names stop at 32 characters.
-  await form.locator('select[name="engine"]').selectOption("mysql");
+  await form.getByTestId("preset-mysql").click();
   const user = field("username");
   await expect(user.locator("input")).toHaveValue("admin");
   await user.locator("input").fill("a".repeat(40));
@@ -82,7 +85,9 @@ test("RDS: an Aurora cluster lists its instances, and deleting it deletes them f
   test.setTimeout(240_000);
   const id = unique("dash-aurora");
   await page.goto("/rds");
-  await submit(page, "create-database", { engine: "aurora-postgresql", id, username: "app", password: "correct-horse-battery" });
+  const { form } = await openSheet(page, "create-database");
+  await form.getByTestId("preset-aurora-postgresql").click();
+  await submit(page, "create-database", { id, username: "app", password: "correct-horse-battery" });
   await expect(page.getByRole("heading", { level: 1, name: id })).toBeVisible();
   const instances = page.getByLabel("Instances", { exact: true });
   await expect(instances.locator("li.row").filter({ hasText: `${id}-instance-1` })).toContainText("Writer");

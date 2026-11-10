@@ -1,7 +1,8 @@
 import { DescribeAcceleratorAttributesCommand, DescribeAcceleratorCommand, ListEndpointGroupsCommand, ListListenersCommand, ListTagsForResourceCommand } from "@aws-sdk/client-global-accelerator";
 import { all, load, region as currentRegion } from "@mws-dashboard/aws";
-import { ActionForm, AwsIcon, CodeBlock, Empty, ErrorNotice, Field, List, Page, Pill, Section, Sheet, Specs, Status } from "@mws-dashboard/ui";
-import { LiveRefresh } from "@mws-dashboard/ui/client";
+import { ActionForm, AwsIcon, Empty, ErrorNotice, Facts, Field, List, Page, Pill, Section, Sheet, Specs, Status } from "@mws-dashboard/ui";
+import { CopyButton, LiveRefresh } from "@mws-dashboard/ui/client";
+import { MoreFields } from "@mws-dashboard/ui/presets";
 import { FileText, Globe, MapPin, Pause, Pencil, Play, Plus, Tag, Trash2, X } from "lucide-react";
 import { CreateAccelerator, TagResource, UpdateAcceleratorAttributes } from "@mws-dashboard/ui/model/global-accelerator";
 import type { Metadata } from "next";
@@ -121,8 +122,12 @@ export default async function Accelerator({ searchParams }: Props) {
           attributes?.FlowLogsEnabled && { label: "Flow logs", icon: <FileText size={15} />, value: `s3://${attributes.FlowLogsS3Bucket}/${attributes.FlowLogsS3Prefix ?? ""}` },
         ]}
       />
-      <CodeBlock value={a.DnsName} label="DNS name" />
-      {a.DualStackDnsName && <CodeBlock value={a.DualStackDnsName} label="Dual-stack DNS name" />}
+      <Facts
+        items={[
+          a.DnsName && ["DNS name", <span key="dns" className="chips"><code>{a.DnsName}</code><CopyButton value={a.DnsName} label="Copy DNS name" /></span>],
+          a.DualStackDnsName && ["Dual-stack DNS name", <span key="dual" className="chips"><code>{a.DualStackDnsName}</code><CopyButton value={a.DualStackDnsName} label="Copy dual-stack DNS name" /></span>],
+        ]}
+      />
       {listeners.map((l, i) => {
         const taken = new Set(groups[i].map((g) => g.EndpointGroupRegion));
         const free = regionList.filter((r) => !taken.has(r));
@@ -138,10 +143,10 @@ export default async function Accelerator({ searchParams }: Props) {
                     <ActionForm action={addEndpointGroup.bind(null, l.ListenerArn!)} submit="Add endpoint group" testId={`add-endpoint-group-${i}`}>
                       {/* A listener has one endpoint group per Region. */}
                       <EndpointGroupFields regions={free} candidates={candidates} initial={here} rule={ENDPOINTS} />
-                      <div className="form-row">
-                        <Field label="Traffic dial (%)" rule={GROUP_RULES.TrafficDialPercentage}>
-                          <input name="dial" type="number" defaultValue={100} />
-                        </Field>
+                      <Field label="Traffic dial (%)" rule={GROUP_RULES.TrafficDialPercentage}>
+                        <input name="dial" type="number" defaultValue={100} />
+                      </Field>
+                      <MoreFields>
                         <Field label="Health check protocol" rule={GROUP_RULES.HealthCheckProtocol}>
                           <select name="hcProtocol" defaultValue="TCP">
                             <option>TCP</option>
@@ -149,10 +154,10 @@ export default async function Accelerator({ searchParams }: Props) {
                             <option>HTTPS</option>
                           </select>
                         </Field>
-                      </div>
-                      <label className="check">
-                        <input type="checkbox" name="preserve" /> Preserve client IP address
-                      </label>
+                        <label className="check">
+                          <input type="checkbox" name="preserve" /> Preserve client IP address
+                        </label>
+                      </MoreFields>
                     </ActionForm>
                   </Sheet>
                 )}
@@ -172,7 +177,7 @@ export default async function Accelerator({ searchParams }: Props) {
             {l.ClientAffinity === "SOURCE_IP" && <Pill>Source IP affinity</Pill>}
             <List
               label="Endpoint groups"
-              empty={<div className="empty">No endpoint groups</div>}
+              empty={<Empty icon={ICONS.region} />}
               rows={groups[i].map((g) => {
                 const ends = g.EndpointDescriptions ?? [];
                 const healthy = ends.filter((e) => e.HealthState === "HEALTHY").length;

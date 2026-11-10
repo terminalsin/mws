@@ -8,7 +8,9 @@ import Link from "next/link";
 import { allowIngress, createSecurityGroup, deleteSecurityGroup, revokeIngress } from "../../routes/ec2/actions";
 import { ICONS, LINKS, nameTag } from "../clients";
 import { describeRule, listGroups, listRules, listVpcs } from "../ec2";
-import { GROUP_DESCRIPTION, GROUP_NAME, PORTS, SOURCE_CIDR } from "../rules";
+import { QuickRuleFields } from "../rule-fields";
+import { MoreFields } from "@mws-dashboard/ui/presets";
+import { GROUP_DESCRIPTION, GROUP_NAME, SOURCE_CIDR } from "../rules";
 
 export async function GroupsView() {
   const [groups, rules, vpcs] = await Promise.all([load(() => listGroups()), load(() => listRules()), load(listVpcs)]);
@@ -29,19 +31,21 @@ export async function GroupsView() {
         <Field label="Name" rule={GROUP_NAME} member="GroupName" taken={everywhere} unique>
           <input name="name" required autoFocus />
         </Field>
-        <Field label="Description" rule={GROUP_DESCRIPTION} member="Description">
-          <input name="description" />
-        </Field>
-        <Field label="VPC" member="VpcId">
-          <select name="vpc" defaultValue={defaultVpc}>
-            {vpcList.map((v) => (
-              <option key={v.VpcId} value={v.VpcId}>
-                {nameTag(v) ?? v.VpcId}
-                {v.IsDefault ? " (default)" : ""}
-              </option>
-            ))}
-          </select>
-        </Field>
+        <MoreFields>
+          <Field label="Description" rule={GROUP_DESCRIPTION} member="Description" hint="Blank: the name">
+            <input name="description" />
+          </Field>
+          <Field label="VPC" member="VpcId">
+            <select name="vpc" defaultValue={defaultVpc}>
+              {vpcList.map((v) => (
+                <option key={v.VpcId} value={v.VpcId}>
+                  {nameTag(v) ?? v.VpcId}
+                  {v.IsDefault ? " (default)" : ""}
+                </option>
+              ))}
+            </select>
+          </Field>
+        </MoreFields>
       </ActionForm>
     </Sheet>
   );
@@ -96,19 +100,7 @@ export async function GroupsView() {
               <>
                 <Sheet title={`Allow inbound · ${g.GroupName}`} label={`Allow inbound to ${g.GroupName}`} icon={<Plus size={15} />}>
                   <ActionForm action={allowIngress.bind(null, g.GroupId!)} submit="Allow">
-                    <Field label="Protocol">
-                      <select name="protocol" defaultValue="tcp">
-                        <option>tcp</option>
-                        <option>udp</option>
-                        <option value="-1">all</option>
-                      </select>
-                    </Field>
-                    <Field label="Ports" rule={PORTS} member="portRange">
-                      <input name="ports" placeholder="443 or 8000-8080" />
-                    </Field>
-                    <Field label="Source CIDR" rule={cidrRule} member="CidrIp">
-                      <input name="cidr" defaultValue="10.0.0.0/8" required />
-                    </Field>
+                    <QuickRuleFields cidrRule={cidrRule} />
                   </ActionForm>
                 </Sheet>
                 {g.GroupName !== "default" && (

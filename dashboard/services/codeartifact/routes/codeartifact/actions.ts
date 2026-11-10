@@ -56,6 +56,8 @@ export async function createRepository(_: ActionResult | null, form: FormData) {
     const domain = required(form, "domain", "Domain");
     const repository = required(form, "name", "Repository name");
     const upstreams = form.getAll("upstream").map(String).filter(Boolean);
+    // The first repository brings its domain along.
+    if (text(form, "newDomain") === "on") await client.send(new CreateDomainCommand({ domain }));
     await client.send(
       new CreateRepositoryCommand({
         domain,

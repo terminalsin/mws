@@ -1,9 +1,11 @@
 import { DescribeTrailsCommand, GetTrailStatusCommand, LookupEventsCommand, type LookupAttributeKey } from "@aws-sdk/client-cloudtrail";
 import { ago, describeError, frameInfo, load, region as currentRegion } from "@mws-dashboard/aws";
 import { bucketOptions } from "@mws-dashboard/aws/auto";
-import { ActionForm, AutoPick, AwsIcon, Empty, ErrorNotice, Field, List, More, Page, Pill, Sheet, Status, SERVICES } from "@mws-dashboard/ui";
+import { ActionForm, AutoPick, AwsIcon, Empty, ErrorNotice, Field, freeName, List, More, Page, Pill, Sheet, Status, SERVICES } from "@mws-dashboard/ui";
 import { Pause, Play, Search, Trash2, TriangleAlert, User } from "lucide-react";
+import { MoreFields } from "@mws-dashboard/ui/presets";
 import type { Metadata } from "next";
+import Link from "next/link";
 
 import { ICONS, cloudtrail, eventHref, shadowOf, trailHref } from "../../lib/clients";
 import { TRAIL_NAME, parseRecord } from "../../lib/rules";
@@ -19,6 +21,13 @@ function sourceIcon(source: string | undefined) {
   const id = source?.split(".")[0] ?? "";
   return SERVICES.find((s) => s.id === id || s.endpoints.includes(id))?.icon ?? ICONS.cloudtrail;
 }
+
+/** The views people reach for: everything, only changes, Insights. */
+const VIEWS: { id: string; label: string; params: Params }[] = [
+  { id: "all", label: "All events", params: {} },
+  { id: "writes", label: "Changes", params: { key: "ReadOnly", value: "false" } },
+  { id: "insight", label: "Insights", params: { category: "insight" } },
+];
 
 const ATTRIBUTES = ["EventName", "Username", "EventSource", "ResourceName", "ResourceType", "AccessKeyId", "ReadOnly", "EventId"];
 
@@ -55,22 +64,25 @@ async function Trails() {
   const all = await bucketOptions();
   const preferred = all.find((b) => b.value === auto)?.value ?? all.find((b) => /cloudtrail/i.test(b.value))?.value;
   const buckets = preferred ? all : [];
+  const taken = trails.ok ? trails.value.map(({ t }) => t.Name!) : [];
   const create = (
     <Sheet title="Create trail" label="Create trail" testId="create-trail">
       <ActionForm action={createTrail} submit="Create trail" testId="create-trail">
-        <Field label="Trail name" rule={TRAIL_NAME} taken={trails.ok ? trails.value.map(({ t }) => t.Name!) : []} unique>
-          <input name="name" required maxLength={128} autoFocus />
+        <Field label="Trail name" rule={TRAIL_NAME} taken={taken} unique>
+          <input name="name" required maxLength={128} autoFocus defaultValue={freeName("management-events", taken)} />
         </Field>
         <AutoPick name="bucket" label="S3 bucket" creates={auto} preferred={preferred} options={buckets} testId="trail-bucket" />
-        <label className="check">
-          <input type="checkbox" name="multi" defaultChecked /> All Regions
-        </label>
-        <label className="check">
-          <input type="checkbox" name="validation" defaultChecked /> Log file validation
-        </label>
-        <label className="check">
-          <input type="checkbox" name="start" defaultChecked /> Start logging
-        </label>
+        <MoreFields>
+          <label className="check">
+            <input type="checkbox" name="multi" defaultChecked /> All Regions
+          </label>
+          <label className="check">
+            <input type="checkbox" name="validation" defaultChecked /> Log file validation
+          </label>
+          <label className="check">
+            <input type="checkbox" name="start" defaultChecked /> Start logging
+          </label>
+        </MoreFields>
       </ActionForm>
     </Sheet>
   );
@@ -153,11 +165,18 @@ export default async function CloudTrail({ searchParams }: Props) {
   const list = events.ok ? (events.value.Events ?? []) : [];
   return (
     <Page title={insights ? "Insights" : "Event history"}>
+      <nav className="chips" aria-label="Show">
+        {VIEWS.map((v) => {
+          const active = v.id === "insight" ? insights : v.id === "writes" ? !insights && key === "ReadOnly" && value === "false" : !insights && !(key === "ReadOnly" && value === "false");
+          return (
+            <Link key={v.id} href={href(v.params)} className={active ? "tag active" : "tag"} aria-current={active ? "true" : undefined}>
+              <span>{v.label}</span>
+            </Link>
+          );
+        })}
+      </nav>
       <form className="search-page-form filter-bar" action="/cloudtrail" data-testid="lookup-events">
-        <select name="category" defaultValue={category ?? ""} aria-label="Event category">
-          <option value="">Management events</option>
-          <option value="insight">Insights events</option>
-        </select>
+        {insights && <input type="hidden" name="category" value="insight" />}
         <select name="key" defaultValue={key || "EventName"} aria-label="Lookup attribute">
           {ATTRIBUTES.map((k) => (
             <option key={k} value={k}>

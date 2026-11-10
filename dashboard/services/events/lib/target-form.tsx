@@ -6,6 +6,7 @@
 
 import type { Rule } from "@mws-dashboard/ui";
 import { FieldShell } from "@mws-dashboard/ui/fields";
+import { MoreFields } from "@mws-dashboard/ui/presets";
 import { useState } from "react";
 
 export interface TargetValues {
@@ -79,17 +80,19 @@ export function TargetFields({ values, rules, known, ids }: { values?: TargetVal
           </FieldShell>
         </>
       )}
-      <div className="form-row">
-        <FieldShell label="Retry attempts" rule={rules.retries} member="RetryPolicy.MaximumRetryAttempts">
-          <input name="retries" inputMode="numeric" placeholder="185" defaultValue={values?.retries} />
+      <MoreFields label="Retries, dead-letter queue">
+        <div className="form-row">
+          <FieldShell label="Retry attempts" rule={rules.retries} member="RetryPolicy.MaximumRetryAttempts">
+            <input name="retries" inputMode="numeric" placeholder="185" defaultValue={values?.retries} />
+          </FieldShell>
+          <FieldShell label="Maximum event age (s)" rule={rules.age} member="RetryPolicy.MaximumEventAgeInSeconds">
+            <input name="age" inputMode="numeric" placeholder="86400" defaultValue={values?.age} />
+          </FieldShell>
+        </div>
+        <FieldShell label="Dead-letter queue" rule={{ ...rules.dlq, required: false }} known={known.filter((a) => a.split(":")[2] === "sqs")} member="DeadLetterConfig.Arn">
+          <input name="dlq" defaultValue={values?.dlq} spellCheck={false} />
         </FieldShell>
-        <FieldShell label="Maximum event age (s)" rule={rules.age} member="RetryPolicy.MaximumEventAgeInSeconds">
-          <input name="age" inputMode="numeric" placeholder="86400" defaultValue={values?.age} />
-        </FieldShell>
-      </div>
-      <FieldShell label="Dead-letter queue" rule={{ ...rules.dlq, required: false }} known={known.filter((a) => a.split(":")[2] === "sqs")} member="DeadLetterConfig.Arn">
-        <input name="dlq" defaultValue={values?.dlq} spellCheck={false} />
-      </FieldShell>
+      </MoreFields>
       {(needsRole || values?.role) && (
         <FieldShell label="Role" rule={{ ...rules.role, required: false }} member="RoleArn">
           <input name="role" defaultValue={values?.role} spellCheck={false} />

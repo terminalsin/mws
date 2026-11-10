@@ -7,11 +7,13 @@ import {
 import { ago, all, load } from "@mws-dashboard/aws";
 import { ActionForm, AwsIcon, Empty, ErrorNotice, Field, List, Page, Pill, Section, Segments, Sheet, Specs, Status } from "@mws-dashboard/ui";
 import { CreatePackageGroup } from "@mws-dashboard/ui/model/codeartifact";
-import { Boxes, HardDrive, KeyRound, Package, Plus, Trash2, User } from "lucide-react";
+import { Boxes, HardDrive, KeyRound, Lock, Package, Plus, Trash2, User } from "lucide-react";
 import type { Metadata } from "next";
 import Link from "next/link";
 
 import { codeartifact, ICONS } from "../../../lib/clients";
+import { externalIcon } from "../../../lib/external";
+import { publicUpstreams } from "../../../lib/upstreams";
 import { PolicySection } from "../../../lib/policy";
 import { domainHref, groupHref, repoHref } from "../../../lib/refs";
 import { createPackageGroup, deleteDomain } from "../actions";
@@ -55,6 +57,7 @@ export default async function Domain({ searchParams }: Props) {
   }
   const { d, repos, groups, policy } = data.value;
   const key = d.encryptionKey;
+  const upstream = tab === "repositories" ? await publicUpstreams(repos) : new Map<string, string | undefined>();
   const groupSheet = (
     <Sheet title="Create package group" label="Create package group" icon={<Plus size={15} />} testId="create-package-group">
       <ActionForm action={createPackageGroup.bind(null, name, owner)} submit="Create package group" testId="create-package-group">
@@ -92,7 +95,7 @@ export default async function Domain({ searchParams }: Props) {
       <Specs
         items={[
           { label: "Status", icon: <AwsIcon icon={ICONS.codeartifact} size={15} />, value: <Status tone={d.status === "Active" ? "good" : "warn"}>{d.status?.toLowerCase() ?? ""}</Status> },
-          { label: "Owner", icon: <User size={15} />, value: d.owner },
+          d.owner && { label: "Owner", icon: <User size={15} />, value: d.owner },
           { label: "Repositories", icon: <Package size={15} />, value: d.repositoryCount ?? repos.length },
           { label: "Assets", icon: <HardDrive size={15} />, value: bytes(d.assetSizeBytes) },
           key && { label: "Key", icon: <KeyRound size={15} />, value: <Link href={`/kms/key?id=${encodeURIComponent(key)}`}>{key.includes("alias/aws/") ? "AWS managed" : key.split("/").pop()}</Link> },
@@ -145,7 +148,7 @@ export default async function Domain({ searchParams }: Props) {
             empty={<Empty icon={ICONS.codeartifact} />}
             rows={repos.map((r) => ({
               key: r.arn ?? r.name!,
-              icon: <Package size={18} />,
+              icon: externalIcon(upstream.get(r.arn!)) ? <AwsIcon icon={externalIcon(upstream.get(r.arn!))!} size={22} /> : <Lock size={18} aria-label="No public upstream" />,
               title: r.name,
               subtitle: r.description,
               href: repoHref(name, r.name!, owner),

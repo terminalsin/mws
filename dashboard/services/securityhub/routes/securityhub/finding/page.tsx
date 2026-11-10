@@ -8,6 +8,7 @@ import type { Metadata } from "next";
 
 import { ICONS, SEVERITY_LABELS, WORKFLOWS, securityhub, severity, word, workflowTone } from "../../../lib/clients";
 import { productHref, resourceHref } from "../../../lib/links";
+import { productIcon } from "../../../lib/presets";
 import { setWorkflow, updateFinding } from "../actions";
 
 export const metadata: Metadata = { title: "Finding · Security Hub" };
@@ -51,7 +52,7 @@ export default async function Finding({ searchParams }: Props) {
   return (
     <Page
       title={f.Title}
-      icon={ICONS.finding}
+      icon={productIcon(f.ProductArn, f.ProductName)}
       back={back}
       subtitle={f.Id}
       actions={

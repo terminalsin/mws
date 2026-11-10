@@ -11,8 +11,9 @@ import {
   type CloudFormationClient,
 } from "@aws-sdk/client-cloudformation";
 import { ago, all, load, when } from "@mws-dashboard/aws";
-import { ActionForm, AwsIcon, CodeBlock, Empty, ErrorNotice, Facts, Field, List, More, Page, Pill, Section, Segments, Sheet, Specs, Status, Tags } from "@mws-dashboard/ui";
-import { LiveRefresh } from "@mws-dashboard/ui/client";
+import { ActionForm, AwsIcon, CodeBlock, CopyValue, Empty, ErrorNotice, Facts, Field, List, More, Page, Pill, Section, Segments, Sheet, Specs, Status, Tags } from "@mws-dashboard/ui";
+import { CopyButton, LiveRefresh } from "@mws-dashboard/ui/client";
+import { MoreFields } from "@mws-dashboard/ui/presets";
 import { SetStackPolicy as PolicyRules, UpdateStack as UpdateStackRules } from "@mws-dashboard/ui/model/cloudformation";
 import { Ban, Clock, GitBranch, Layers, Pencil, Radar, RotateCcw, ShieldCheck, ShieldOff, Trash2, Undo2 } from "lucide-react";
 import Link from "next/link";
@@ -131,6 +132,7 @@ export default async function Stack({ searchParams }: Props) {
               </>
             ),
             meta: o.ExportName ? <Pill tone={users.length ? "info" : "neutral"}>export {o.ExportName}</Pill> : undefined,
+            actions: o.OutputValue ? <CopyButton value={o.OutputValue} label={`Copy ${o.OutputKey}`} /> : undefined,
           };
         })}
       />
@@ -240,7 +242,7 @@ export default async function Stack({ searchParams }: Props) {
       <>
         <Facts
           items={[
-            ["Stack ID", <code key="id">{s.StackId}</code>],
+            ["Stack ID", <CopyValue key="id" value={s.StackId} label="Copy stack ID" />],
             s.Description && ["Description", s.Description],
             ["Created", when(s.CreationTime)],
             s.LastUpdatedTime && ["Updated", when(s.LastUpdatedTime)],
@@ -339,7 +341,7 @@ export default async function Stack({ searchParams }: Props) {
       title={title}
       icon={ICONS.stack}
       back={back}
-      subtitle={s.StackId}
+      subtitle={s.Description}
       actions={
         !s.DeletionTime && (
           <>
@@ -370,13 +372,15 @@ export default async function Stack({ searchParams }: Props) {
                   <Field label="Parameters" rule={PARAMETERS} hint={hidden ? "Leave **** to keep a hidden value" : undefined}>
                     <textarea name="parameters" rows={2} spellCheck={false} defaultValue={paramText} />
                   </Field>
-                  <Capabilities />
-                  <Field label="Service role" rule={UpdateStackRules.RoleARN} format="arn">
-                    <input name="role" defaultValue={s.RoleARN} />
-                  </Field>
-                  <label className="check">
-                    <input type="checkbox" name="disableRollback" /> Preserve resources on failure
-                  </label>
+                  <MoreFields expanded={!!s.Capabilities?.length}>
+                    <Capabilities checked={s.Capabilities} />
+                    <Field label="Service role" rule={UpdateStackRules.RoleARN} format="arn">
+                      <input name="role" defaultValue={s.RoleARN} />
+                    </Field>
+                    <label className="check">
+                      <input type="checkbox" name="disableRollback" /> Preserve resources on failure
+                    </label>
+                  </MoreFields>
                 </ActionForm>
               </Sheet>
             )}

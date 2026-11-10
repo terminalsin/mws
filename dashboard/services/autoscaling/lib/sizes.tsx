@@ -56,8 +56,8 @@ const TARGET = PutScalingPolicy.TargetTrackingConfiguration?.fields?.TargetValue
 
 /** The metric and the value to hold it at: a percentage for CPU, a positive
  * number for the rest. */
-export function PolicyTarget() {
-  const [metric, setMetric] = useState(METRICS[0][0]);
+export function PolicyTarget({ metric: fixed, target = 50 }: { metric?: string; target?: number } = {}) {
+  const [metric, setMetric] = useState(fixed ?? METRICS[0][0]);
   const rule = useMemo<Rule>(
     () => ({
       ...TARGET,
@@ -68,17 +68,21 @@ export function PolicyTarget() {
   );
   return (
     <>
-      <Field label="Metric type">
-        <select name="metric" value={metric} onChange={(e) => setMetric(e.currentTarget.value)}>
-          {METRICS.map(([v, l]) => (
-            <option key={v} value={v}>
-              {l}
-            </option>
-          ))}
-        </select>
-      </Field>
-      <Field label="Target value" rule={rule} member="TargetTrackingConfiguration.TargetValue">
-        <input name="target" type="number" step="any" defaultValue={50} />
+      {fixed ? (
+        <input type="hidden" name="metric" value={fixed} />
+      ) : (
+        <Field label="Metric type">
+          <select name="metric" value={metric} onChange={(e) => setMetric(e.currentTarget.value)}>
+            {METRICS.map(([v, l]) => (
+              <option key={v} value={v}>
+                {l}
+              </option>
+            ))}
+          </select>
+        </Field>
+      )}
+      <Field label={fixed ? (METRICS.find(([v]) => v === fixed)?.[1] ?? "Target value") : "Target value"} rule={rule} member="TargetTrackingConfiguration.TargetValue">
+        <input name="target" type="number" step="any" defaultValue={target} />
       </Field>
     </>
   );

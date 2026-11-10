@@ -1,10 +1,12 @@
 import { GetAutoManagementConfigurationCommand } from "@aws-sdk/client-service-quotas";
 import { load } from "@mws-dashboard/aws";
-import { ActionForm, ErrorNotice, Facts, Field, List, Page, Section, Sheet, Status } from "@mws-dashboard/ui";
+import { ActionForm, AwsIcon, ErrorNotice, Facts, Field, List, Page, Section, Sheet, Status } from "@mws-dashboard/ui";
 import { Pencil, Play, Square } from "lucide-react";
 import type { Metadata } from "next";
 
+import { AutoType } from "../../../lib/auto-fields";
 import { ICONS, quotas } from "../../../lib/clients";
+import { iconOf } from "../rows";
 import { saveAutoManagement, stopAutoManagement } from "../actions";
 
 export const metadata: Metadata = { title: "Automatic management" };
@@ -25,12 +27,7 @@ export default async function Automatic() {
   const excluded = Object.entries(c.ExclusionList ?? {});
   const form = (
     <ActionForm action={saveAutoManagement.bind(null, on)} submit={on ? "Save" : "Start"} testId="auto-management">
-      <Field label="When usage reaches 80%">
-        <select name="type" defaultValue={c.OptInType ?? "NotifyOnly"}>
-          <option value="NotifyOnly">Notify only</option>
-          <option value="NotifyAndAdjust">Notify and request an increase</option>
-        </select>
-      </Field>
+      <AutoType type={c.OptInType} />
       <Field label="Excluded quotas" hint="One service per line: ec2=L-1216C47A,L-34B43A08, or a service code alone" format="pairs">
         <textarea
           name="exclude"
@@ -69,6 +66,7 @@ export default async function Automatic() {
             rows={excluded.flatMap(([service, qs]) =>
               (qs.length ? qs : [{ QuotaCode: undefined, QuotaName: "All quotas" }]).map((q) => ({
                 key: `${service}:${q.QuotaCode ?? "*"}`,
+                icon: <AwsIcon icon={iconOf(service)} size={22} />,
                 title: q.QuotaName ?? q.QuotaCode,
                 subtitle: `${service}${q.QuotaCode ? ` · ${q.QuotaCode}` : ""}`,
                 href: q.QuotaCode ? `/servicequotas/quota?service=${service}&code=${q.QuotaCode}` : `/servicequotas?service=${service}`,

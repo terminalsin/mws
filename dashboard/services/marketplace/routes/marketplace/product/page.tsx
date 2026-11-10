@@ -2,6 +2,7 @@ import { GetEntitlementsCommand, type GetEntitlementFilterName } from "@aws-sdk/
 import { ago, all, load, mws, when } from "@mws-dashboard/aws";
 import { ActionForm, AwsIcon, CodeBlock, Empty, ErrorNotice, Field, List, Page, Pill, Section, Segments, Sheet, Specs, Status, Table } from "@mws-dashboard/ui";
 import { Building2, Clock, FileSignature, Gauge, KeyRound, Pencil, ScanSearch, Search, Tag, Trash2, UserMinus, UserPlus, Users } from "lucide-react";
+import { MoreFields } from "@mws-dashboard/ui/presets";
 import type { Metadata } from "next";
 
 import { entitlements as entitlementClient, ICONS } from "../../../lib/clients";
@@ -81,8 +82,7 @@ export default async function ProductPage({ searchParams }: Props) {
             <input name="account" required autoFocus inputMode="numeric" placeholder="111122223333" />
           </Field>
           <EntitlementFields p={p} />
-          <details>
-            <summary>Identifiers</summary>
+          <MoreFields label="Identifiers">
             <Field label="Customer identifier" hint="Generated when empty">
               <input name="customer" />
             </Field>
@@ -97,7 +97,7 @@ export default async function ProductPage({ searchParams }: Props) {
                 <input name="tokenTtl" type="number" />
               </Field>
             )}
-          </details>
+          </MoreFields>
         </ActionForm>
       </Sheet>
       {saas && (

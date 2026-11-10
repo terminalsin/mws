@@ -36,6 +36,7 @@ export default async function Caches({ searchParams }: Props) {
         types={offered.ok ? offered.value.types : {}}
         versions={offered.ok ? offered.value.versions : {}}
         snapshots={snapList.filter((s) => s.status === "available").map((s) => ({ kind: s.kind, name: s.name, arn: s.arn, engine: s.engine }))}
+        inUse={caches.ok ? [...new Set(caches.value.map((c) => c.engine ?? ""))] : []}
       />
     </Sheet>
   );
@@ -112,7 +113,7 @@ export default async function Caches({ searchParams }: Props) {
           { id: "redis", title: "Redis OSS", items: caches.value.filter((c) => c.engine === "redis") },
           { id: "memcached", title: "Memcached", items: caches.value.filter((c) => c.engine === "memcached") },
         ]}
-        empty={<Empty icon={ICONS.elasticache} />}
+        empty={<Empty icon={ICONS.elasticache} action={create} />}
         row={(c) => ({
           key: `${c.kind}:${c.name}`,
           icon: <AwsIcon icon={engineIcon(c.engine)} size={24} />,

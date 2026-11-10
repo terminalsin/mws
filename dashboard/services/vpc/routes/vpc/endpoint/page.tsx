@@ -7,6 +7,7 @@ import type { Metadata } from "next";
 import Link from "next/link";
 
 import { ICONS, STATE_TONE, ec2, nameTag } from "../../../lib/clients";
+import { knownService } from "../../../lib/endpoint-services";
 import { EndpointNetworkFields } from "../../../lib/network-forms";
 import { label, listGroups, network } from "../../../lib/vpc";
 import { deleteEndpoint, editEndpointNetwork, editEndpointPolicy } from "../network-actions";
@@ -110,7 +111,7 @@ export default async function EndpointPage({ searchParams }: Props) {
   return (
     <Page
       title={nameTag(ep) ?? id}
-      icon={ICONS.endpoint}
+      icon={knownService(ep.ServiceName)?.icon ?? ICONS.endpoint}
       back={back}
       subtitle={nameTag(ep) ? id : undefined}
       actions={

@@ -42,13 +42,14 @@ export async function createApp(_: ActionResult | null, form: FormData) {
         accessToken: text(form, "token") || undefined,
         iamServiceRoleArn: text(form, "role") || undefined,
         environmentVariables: env(form, "env"),
+        buildSpec: text(form, "buildSpec") || undefined,
       }),
     );
     const appId = out.app!.appId!;
     const branch = text(form, "branch");
-    if (branch) await client.send(new CreateBranchCommand({ appId, branchName: branch, stage: "PRODUCTION" }));
+    if (branch) await client.send(new CreateBranchCommand({ appId, branchName: branch, stage: "PRODUCTION", framework: text(form, "framework") || undefined }));
     redirect(`/amplify/app?id=${appId}`);
-  }, { fields: { repository: "repository", accessToken: "token", iamServiceRoleArn: "role", environmentVariables: "env" } });
+  }, { fields: { repository: "repository", accessToken: "token", iamServiceRoleArn: "role", environmentVariables: "env", buildSpec: "buildSpec" } });
 }
 
 export async function deleteApp(appId: string) {

@@ -211,6 +211,8 @@ test("Bedrock: start an async invocation and open it", async ({ page }) => {
 test("Bedrock: edit a guardrail's word filter and test the draft", async ({ page }) => {
   const name = unique("dash-guard-edit");
   await page.goto("/bedrock/guardrails");
+  // The description waits under More.
+  await (await sheet(page, "create-guardrail")).form.locator(".more-fields > summary").click();
   await submit(page, "create-guardrail", { name, words: "pineapple", description: "edits" });
   await expect(page.getByRole("heading", { level: 1, name })).toBeVisible();
   await submit(page, "edit-guardrail", { words: "anchovy", regexes: "Order: ORD-[0-9]{6}", grounding: "0.5" });

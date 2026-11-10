@@ -9,14 +9,15 @@ import {
   type LoadBalancer as LoadBalancerT,
 } from "@aws-sdk/client-elastic-load-balancing-v2";
 import { all, load } from "@mws-dashboard/aws";
-import { ActionForm, AwsIcon, CodeBlock, Empty, ErrorNotice, Field, List, Page, Pill, Section, Segments, Sheet, Specs, Status } from "@mws-dashboard/ui";
+import { ActionForm, AwsIcon, Empty, ErrorNotice, Facts, Field, List, Page, Pill, Section, Segments, Sheet, Specs, Status } from "@mws-dashboard/ui";
+import { CopyButton } from "@mws-dashboard/ui/client";
 import { TagsSection } from "../../../lib/tags";
-import { Clock, Globe, Lock, Network, Plus, Route, Shield, Trash2 } from "lucide-react";
+import { Globe, Lock, Network, Plus, Route, Shield, Trash2 } from "lucide-react";
 import type { Metadata } from "next";
 import Link from "next/link";
 
 import { AttributesForm } from "../../../lib/attributes";
-import { ICONS, LB_ICON, ec2, elb, nameTag } from "../../../lib/clients";
+import { ICONS, LB_ICON, TARGET_ICON, ec2, elb, nameTag } from "../../../lib/clients";
 import { HEALTH_TONE, allTargetGroups, healthCounts, listenerHref, tgHref } from "../../../lib/elb";
 import { describeAction } from "../../../lib/listener";
 import { ListenerFields, listenerChoices } from "../../../lib/listener-form";
@@ -88,17 +89,18 @@ export default async function LoadBalancer({ searchParams }: Props) {
           { label: "VPC", icon: <AwsIcon icon={ICONS.vpc} size={16} />, value: <Link href={`/vpc/${lb.VpcId}`}>{lb.VpcId}</Link> },
           lb.IpAddressType && lb.IpAddressType !== "ipv4" && { label: "IP address type", icon: <Network size={15} />, value: lb.IpAddressType },
           lb.CanonicalHostedZoneId && { label: "Hosted zone (for Route 53 aliases)", icon: <AwsIcon icon="resource/AmazonRoute53HostedZone" size={16} />, value: <code>{lb.CanonicalHostedZoneId}</code> },
-          { label: "Created", icon: <Clock size={15} />, value: lb.CreatedTime?.toISOString().slice(0, 10) },
         ]}
       />
-      {lb.DNSName && <CodeBlock value={lb.DNSName} label="DNS name" />}
+      {lb.DNSName && (
+        <Facts items={[["DNS name", <span key="dns" className="chips"><code>{lb.DNSName}</code><CopyButton value={lb.DNSName} label="Copy DNS name" /></span>]]} />
+      )}
       <Segments label="Load balancer" items={tabs} />
       {tab === "listeners" && (
         <>
           <Section title="Listeners" count={listeners.length} plain>
             <List
               label="Listeners"
-              empty={<div className="empty">No listeners</div>}
+              empty={<Empty icon={LB_ICON[lb.Type ?? "application"]} />}
               rows={listeners.map((l, i) => {
                 const extra = rules[i].filter((r) => !r.IsDefault).length;
                 return {
@@ -145,7 +147,7 @@ async function TargetGroupsHealth({ groups }: { groups: Awaited<ReturnType<typeo
           const { healthy, total } = healthCounts(health[i]);
           return {
             key: g.TargetGroupArn!,
-            icon: <AwsIcon icon={ICONS.elb} size={20} />,
+            icon: <AwsIcon icon={TARGET_ICON[g.TargetType ?? "instance"] ?? ICONS.elb} size={20} />,
             title: g.TargetGroupName,
             subtitle: g.Protocol ? `${g.Protocol}:${g.Port}` : g.TargetType,
             href: tgHref(g.TargetGroupArn),

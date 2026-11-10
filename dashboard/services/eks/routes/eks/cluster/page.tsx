@@ -1,6 +1,6 @@
 import { DescribeAddonVersionsCommand, DescribeClusterCommand, DescribeClusterVersionsCommand, ListAccessPoliciesCommand, type Update } from "@aws-sdk/client-eks";
 import { all, load, region, shortName, when } from "@mws-dashboard/aws";
-import { ActionForm, AutoPick, AwsIcon, CodeBlock, Empty, ErrorNotice, Facts, Field, List, Page, Pill, Section, Segments, Sheet, Specs, Status, Tags, type Rule } from "@mws-dashboard/ui";
+import { ActionForm, AutoPick, AwsIcon, CodeBlock, CopyValue, Empty, ErrorNotice, Facts, Field, List, Page, Pill, Section, Segments, Sheet, Specs, Status, Tags, type Rule, freeName } from "@mws-dashboard/ui";
 import { CreateAccessEntry, CreateAddon, CreateFargateProfile, CreateNodegroup } from "@mws-dashboard/ui/model/eks";
 import { ArrowUpCircle, Clock, Globe, KeyRound, Lock, Plus, Puzzle, ScrollText, Shield, Trash2, TriangleAlert, UserPlus } from "lucide-react";
 import type { Metadata } from "next";
@@ -9,7 +9,8 @@ import Link from "next/link";
 import { ICONS, STATUS_TONE, eks } from "../../../lib/clients";
 import { accessEntries, addons as listAddons, fargateProfiles, nextMinor, nodegroups, updates as listUpdates } from "../../../lib/data";
 import { instanceTypes, rolesTrusting } from "../../../lib/eks";
-import { Scaling } from "../../../lib/scaling.tsx";
+import { AddonFields, NodegroupFields } from "../../../lib/forms.tsx";
+import { addonIcon } from "../../../lib/presets";
 import {
   associatePolicy,
   createAccessEntry,
@@ -264,15 +265,11 @@ export default async function Cluster({ searchParams }: Props) {
               items={[
                 c.endpoint && [
                   "API server endpoint",
-                  <code key="e" className="clip">
-                    {c.endpoint}
-                  </code>,
+                  <CopyValue key="e" value={c.endpoint} label="Copy endpoint" />,
                 ],
                 c.identity?.oidc?.issuer && [
                   "OpenID Connect provider URL",
-                  <code key="o" className="clip">
-                    {c.identity.oidc.issuer}
-                  </code>,
+                  <CopyValue key="o" value={c.identity.oidc.issuer} label="Copy issuer URL" />,
                 ],
                 c.roleArn && [
                   "Cluster IAM role",
@@ -321,31 +318,18 @@ export default async function Cluster({ searchParams }: Props) {
               !registered && (
                 <Sheet title="Add node group" label="Add node group" icon={<Plus size={16} />} testId="create-nodegroup">
                   <ActionForm action={createNodegroup.bind(null, name, subnets)} submit="Create" testId="create-nodegroup">
-                    <Field label="Name" rule={NODEGROUP_NAME} taken={groups.map((g) => g.nodegroupName!)} unique>
-                      <input name="name" autoFocus />
-                    </Field>
-                    <AutoPick
-                      name="role"
-                      label="Node IAM role"
-                      creates="AmazonEKSNodeRole"
-                      options={nodeRoles.map((r) => ({
-                        value: r.Arn!,
-                        label: r.RoleName!,
-                      }))}
-                      testId="node-role"
-                    />
-                    <Field label="Instance type" member="instanceTypes" rule={types.length ? { required: true, enum: types } : { required: true }}>
-                      <input name="type" defaultValue="t3.medium" list="eks-instance-types" autoComplete="off" />
-                    </Field>
-                    <datalist id="eks-instance-types">
-                      {types.map((t) => (
-                        <option key={t} value={t} />
-                      ))}
-                    </datalist>
-                    <Scaling rules={CreateNodegroup.scalingConfig.fields!} names={{ desired: "size", max: "max" }} defaults={{ desired: 2, max: 3 }} />
-                    <label className="check">
-                      <input type="checkbox" name="spot" /> Spot capacity
-                    </label>
+                    <NodegroupFields rule={NODEGROUP_NAME} taken={groups.map((g) => g.nodegroupName!)} types={types}>
+                      <AutoPick
+                        name="role"
+                        label="Node IAM role"
+                        creates="AmazonEKSNodeRole"
+                        options={nodeRoles.map((r) => ({
+                          value: r.Arn!,
+                          label: r.RoleName!,
+                        }))}
+                        testId="node-role"
+                      />
+                    </NodegroupFields>
                   </ActionForm>
                 </Sheet>
               )
@@ -385,7 +369,7 @@ export default async function Cluster({ searchParams }: Props) {
                 <Sheet title="Add Fargate profile" label="Add Fargate profile" icon={<Plus size={16} />} testId="create-fargate-profile">
                   <ActionForm action={createFargateProfile.bind(null, name, subnets)} submit="Create" testId="create-fargate-profile">
                     <Field label="Name" rule={PROFILE_NAME} taken={profiles.map((p) => p.fargateProfileName!)} unique>
-                      <input name="name" autoFocus />
+                      <input name="name" autoFocus defaultValue={freeName("default", profiles.map((p) => p.fargateProfileName!))} />
                     </Field>
                     <AutoPick
                       name="role"
@@ -527,38 +511,16 @@ export default async function Cluster({ searchParams }: Props) {
             offered?.ok && (
               <Sheet title="Get more add-ons" label="Get more add-ons" icon={<Plus size={16} />} testId="create-addon">
                 <ActionForm action={createAddon.bind(null, name)} submit="Create" testId="create-addon">
-                  <Field
-                    label="Add-on"
-                    rule={{
-                      ...CreateAddon.addonName,
-                      enum: offered.value.map((a) => a.addonName!).filter((a) => !addons.some((x) => x.addonName === a)),
-                    }}
-                  >
-                    <select name="addon" required>
-                      {offered.value
-                        .filter((a) => !addons.some((x) => x.addonName === a.addonName))
-                        .map((a) => (
-                          <option key={a.addonName} value={a.addonName}>
-                            {a.addonName}
-                            {a.publisher ? ` · ${a.publisher}` : ""}
-                          </option>
-                        ))}
-                    </select>
-                  </Field>
-                  <Field label="Version" hint="Default: the version EKS marks as default">
-                    <input name="version" list="addon-versions" spellCheck={false} autoComplete="off" />
-                  </Field>
-                  <datalist id="addon-versions">
-                    {[...new Set(offered.value.flatMap((a) => (a.addonVersions ?? []).map((v) => v.addonVersion!)))].map((v) => (
-                      <option key={v} value={v} />
-                    ))}
-                  </datalist>
-                  <Field label="Service account role ARN" format="arn">
-                    <input name="role" spellCheck={false} placeholder="optional" />
-                  </Field>
-                  <Field label="Configuration values" format="jsonish">
-                    <textarea name="config" rows={3} spellCheck={false} placeholder="optional JSON or YAML" />
-                  </Field>
+                  <AddonFields
+                    offered={offered.value
+                      .filter((a) => !addons.some((x) => x.addonName === a.addonName))
+                      .map((a) => ({
+                        name: a.addonName!,
+                        publisher: a.publisher,
+                        versions: (a.addonVersions ?? []).map((v) => v.addonVersion!),
+                        default: a.addonVersions?.find((v) => v.compatibilities?.some((x) => x.defaultVersion))?.addonVersion,
+                      }))}
+                  />
                 </ActionForm>
               </Sheet>
             )
@@ -574,7 +536,7 @@ export default async function Cluster({ searchParams }: Props) {
               const issues = a.health?.issues ?? [];
               return {
                 key: a.addonArn ?? a.addonName!,
-                icon: <Puzzle size={18} aria-hidden />,
+                icon: addonIcon(a.addonName) ? <AwsIcon icon={addonIcon(a.addonName)!} size={22} /> : <Puzzle size={18} aria-hidden />,
                 title: a.addonName,
                 subtitle: issues.length ? <span className="row-subtitle">{issues.map((i) => `${i.code}: ${i.message}`).join("; ")}</span> : a.addonVersion,
                 meta: (

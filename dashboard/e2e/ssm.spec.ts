@@ -6,8 +6,13 @@ import { row, sdk, submit, unique } from "./helpers";
 test("Parameter Store: browse by path; SecureStrings stay hidden until asked", async ({ page }) => {
   const root = unique("dash");
   const name = `/${root}/db/password`;
-  await page.goto("/ssm");
-  await submit(page, "put-parameter", { name, type: "SecureString", value: "s3cret" });
+  // A secret starts from its tile, which sets the SecureString type.
+  const { form } = await openSheet(page);
+  await form.getByTestId("preset-secure").click();
+  await form.locator('input[name="name"]').fill(name);
+  await form.locator('textarea[name="value"]').fill("s3cret");
+  await form.locator('button[type="submit"]').click();
+  await expect(page.locator("dialog[open]")).toHaveCount(0);
   await page.goto(`/ssm?path=${encodeURIComponent(`/${root}/db/`)}`);
   await expect(row(page, "password")).not.toContainText("s3cret");
   await page.getByRole("link", { name: "Reveal values" }).click();

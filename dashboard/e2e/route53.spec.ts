@@ -26,6 +26,13 @@ async function openSheet(page: Page, testId: string) {
   return { form, field, control: (name: string) => form.locator(`[name="${name}"]`) };
 }
 
+/** Open a sheet and unfold its folded fields (MoreFields, by its label). */
+async function unfold(page: Page, testId: string, label = "More") {
+  const { form } = await openSheet(page, testId);
+  await form.locator("summary", { hasText: label }).click();
+  return form;
+}
+
 test("Route 53 validation: zone names and record values are repaired in place", async ({ page }) => {
   const domain = `${unique("dash-v")}.example.com`;
   await page.goto("/route53");
@@ -92,6 +99,8 @@ test("Route 53 validation: health check URL and threshold", async ({ page }) => 
   await field("url").getByRole("button", { name: /Add https/ }).click();
   await expect(control("url")).toHaveValue(`https://${host}/health`);
 
+  // The failure threshold waits under More.
+  await form.locator("summary", { hasText: "More" }).click();
   await control("threshold").fill("20");
   await control("threshold").blur();
   await expect(field("threshold")).toHaveAttribute("data-invalid", "range");
@@ -109,9 +118,11 @@ test("Route 53: routing policies, aliases with their zone, and renames that leav
   await expect(page.getByRole("heading", { level: 1, name: domain })).toBeVisible();
   const zoneId = new URL(page.url()).searchParams.get("id")!;
 
-  // Two weighted records for one name.
+  // Two weighted records for one name (the routing policy is folded under "Routing").
+  await unfold(page, "create-record", "Routing");
   await submit(page, "create-record", { name: `api.${domain}`, type: "A", values: "192.0.2.21", policy: "weighted", setId: "blue", weight: "70" });
   await expect(row(page, "192.0.2.21")).toContainText("weight 70");
+  await unfold(page, "create-record", "Routing");
   await submit(page, "create-record", { name: `api.${domain}`, type: "A", values: "192.0.2.22", policy: "weighted", setId: "green", weight: "30" });
   await expect(row(page, "192.0.2.22")).toContainText("weight 30");
 
@@ -151,7 +162,10 @@ test("Route 53: routing policies, aliases with their zone, and renames that leav
 test("Route 53: health check detail, edit and tags; zone tags and query logging", async ({ page }) => {
   const name = unique("hc-tcp");
   await page.goto("/route53?tab=health");
-  await submit(page, "create-health-check", { checkName: name, kind: "TCP", host: "192.0.2.80", port: "22" });
+  // What to monitor is a tile.
+  const hc = await openSheet(page, "create-health-check");
+  await hc.form.getByTestId("health-kind-TCP").click();
+  await submit(page, "create-health-check", { checkName: name, host: "192.0.2.80", port: "22" });
   await page.getByRole("link", { name }).click();
   await expect(page.getByRole("heading", { level: 1, name })).toBeVisible();
   await submit(page, "edit-health-check", { threshold: "5" });

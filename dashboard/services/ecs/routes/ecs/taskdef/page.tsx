@@ -1,12 +1,13 @@
 import { DescribeTaskDefinitionCommand } from "@aws-sdk/client-ecs";
 import { ago, load, when } from "@mws-dashboard/aws";
-import { ActionForm, AwsIcon, CodeBlock, Empty, ErrorNotice, Facts, Field, List, Page, Pill, Section, Segments, Sheet, Specs, Status, Tags } from "@mws-dashboard/ui";
+import { ActionForm, AwsIcon, CodeBlock, CopyValue, Empty, ErrorNotice, Facts, Field, List, Page, Pill, Section, Segments, Sheet, Specs, Status, Tags } from "@mws-dashboard/ui";
 import { Box, Cpu, FilePlus2, MemoryStick, Network, Trash2, XCircle } from "lucide-react";
 import type { Metadata } from "next";
 import Link from "next/link";
 
 import { ICONS, ecs } from "../../../lib/clients";
 import { revisionOf, revisions } from "../../../lib/ecs";
+import { imageIcon } from "../../../lib/presets";
 import { deleteTaskDefinitions, deregisterTaskDefinition, registerRevision } from "../actions";
 
 export const metadata: Metadata = { title: "Task definition" };
@@ -97,11 +98,12 @@ export default async function TaskDefinition({ searchParams }: Props) {
           {(d.containerDefinitions ?? []).map((c) => {
             const log = c.logConfiguration;
             const group = log?.options?.["awslogs-group"];
+            const logo = imageIcon(c.image);
             return (
-              <Section key={c.name} title={c.name} icon={<Box size={16} aria-hidden />} actions={c.essential !== false ? <Pill tone="info">Essential</Pill> : undefined}>
+              <Section key={c.name} title={c.name} icon={logo ? <AwsIcon icon={logo} size={16} /> : <Box size={16} aria-hidden />} actions={c.essential !== false ? <Pill tone="info">Essential</Pill> : undefined}>
                 <Facts
                   items={[
-                    ["Image", <code key="i" className="clip">{c.image}</code>],
+                    ["Image", <CopyValue key="i" value={c.image} label="Copy image URI" />],
                     (c.cpu || c.memory || c.memoryReservation) && ["Resources", [c.cpu ? `${c.cpu} CPU units` : "", c.memory ? `${c.memory} MiB` : "", c.memoryReservation ? `${c.memoryReservation} MiB soft` : ""].filter(Boolean).join(" · ")],
                     c.portMappings?.length && ["Ports", c.portMappings.map((p) => `${p.containerPort}/${p.protocol ?? "tcp"}${p.hostPort && p.hostPort !== p.containerPort ? ` → ${p.hostPort}` : ""}`).join(", ")],
                     c.command?.length && ["Command", <code key="c">{c.command.join(" ")}</code>],

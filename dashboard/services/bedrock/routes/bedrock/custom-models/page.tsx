@@ -6,6 +6,7 @@ import { LiveRefresh } from "@mws-dashboard/ui/client";
 import { CreateModelCustomizationJob } from "@mws-dashboard/ui/model/bedrock";
 import { ruleAt } from "@mws-dashboard/ui/validation";
 import { FlaskConical } from "lucide-react";
+import { MoreFields } from "@mws-dashboard/ui/presets";
 import type { Metadata } from "next";
 
 import { bedrock, ICONS, providerIcon, tone } from "../../../lib/clients";
@@ -78,11 +79,12 @@ export default async function CustomModels({ searchParams }: Props) {
         <Field label="Training data" rule={S3("trainingDataConfig.s3Uri")} known={known}>
           <input name="training" required placeholder="s3://bucket/train.jsonl" />
         </Field>
-        <Field label="Validation data" rule={S3("validationDataConfig.validators.s3Uri", false)} known={known}>
-          <input name="validation" placeholder="s3://bucket/validation.jsonl" />
-        </Field>
         <Field label="Output location" rule={S3("outputDataConfig.s3Uri")} known={known}>
           <input name="output" required placeholder="s3://bucket/output/" />
+        </Field>
+        <MoreFields>
+        <Field label="Validation data" rule={S3("validationDataConfig.validators.s3Uri", false)} known={known}>
+          <input name="validation" placeholder="s3://bucket/validation.jsonl" />
         </Field>
         <Field label="Hyperparameters" format="pairs">
           <textarea name="hyper" rows={3} defaultValue={"epochCount=2\nbatchSize=1\nlearningRate=0.00001"} />
@@ -94,6 +96,7 @@ export default async function CustomModels({ searchParams }: Props) {
         <Field label="Model tags" format="tags">
           <textarea name="tags" rows={2} placeholder="team=ml" />
         </Field>
+        </MoreFields>
       </ActionForm>
     </Sheet>
   );

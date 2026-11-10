@@ -85,6 +85,9 @@ test("EFS: mount targets, their security groups, the file system policy and life
   const sg = (await ec2.send(new CreateSecurityGroupCommand({ GroupName: sgName, Description: "NFS", VpcId: vpc }))).GroupId!;
 
   await page.goto("/efs");
+  // The lifecycle policy waits under More.
+  const sheet = await openSheet(page, "create-file-system");
+  await sheet.form.locator(".more-fields > summary").click();
   await submit(page, "create-file-system", { name, vpc, ia: "AFTER_14_DAYS" });
   await expect(page.getByRole("heading", { level: 1, name })).toBeVisible();
   const id = new URL(page.url()).searchParams.get("id")!;

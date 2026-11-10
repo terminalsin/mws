@@ -1,13 +1,15 @@
 import { GetAppCommand, GetBranchCommand, ListJobsCommand } from "@aws-sdk/client-amplify";
 import { ago, load } from "@mws-dashboard/aws";
-import { ActionForm, CodeBlock, Empty, ErrorNotice, Facts, Field, List, More, Page, Pill, Section, Sheet, Specs, Status } from "@mws-dashboard/ui";
+import { ActionForm, AwsIcon, CodeBlock, Empty, ErrorNotice, Facts, Field, List, More, Page, Pill, Section, Sheet, Specs, Status } from "@mws-dashboard/ui";
 import { LiveRefresh } from "@mws-dashboard/ui/client";
+import { MoreFields } from "@mws-dashboard/ui/presets";
 import { UpdateBranch } from "@mws-dashboard/ui/model/amplify";
 import { Clock, ExternalLink, GitBranch, GitCommitVertical, Hammer, Layers, Lock, RotateCw, Settings2, Square, Trash2, Upload } from "lucide-react";
 import type { Metadata } from "next";
 
 import { duration, envText, RUNNING, siteUrl } from "../../../lib/amplify";
 import { amplify, ICONS, tone } from "../../../lib/clients";
+import { frameworkIcon } from "../../../lib/presets";
 import { SOURCE_URL } from "../../../lib/rules";
 import { build, buildCommit, deleteBranch, deploy, retryJob, stopJob, updateBranch } from "../actions";
 
@@ -88,49 +90,51 @@ export default async function Branch({ searchParams }: Props) {
           </Sheet>
           <Sheet title="Branch settings" label="Edit branch settings" icon={<Settings2 size={15} />} testId="edit-branch">
             <ActionForm action={updateBranch.bind(null, app, name, !!branch.enableBasicAuth)} submit="Save" testId="edit-branch">
-              <div className="form-row">
-                <Field label="Display name" rule={UpdateBranch.displayName}>
-                  <input name="displayName" defaultValue={branch.displayName} />
-                </Field>
-                <Field label="Stage" rule={UpdateBranch.stage}>
-                  <select name="stage" defaultValue={branch.stage}>
-                    {STAGES.map((s) => (
-                      <option key={s} value={s}>
-                        {s[0] + s.slice(1).toLowerCase().replace("_", " ")}
-                      </option>
-                    ))}
-                  </select>
-                </Field>
-                <Field label="Framework" rule={UpdateBranch.framework}>
-                  <input name="framework" defaultValue={branch.framework} placeholder="React" />
-                </Field>
-              </div>
-              <Field label="Description" rule={UpdateBranch.description}>
-                <input name="description" defaultValue={branch.description} />
+              <Field label="Stage" rule={UpdateBranch.stage}>
+                <select name="stage" defaultValue={branch.stage}>
+                  {STAGES.map((s) => (
+                    <option key={s} value={s}>
+                      {s[0] + s.slice(1).toLowerCase().replace("_", " ")}
+                    </option>
+                  ))}
+                </select>
               </Field>
               <Field label="Environment variables" format="env" hint="Override the app's for this branch">
                 <textarea name="env" rows={4} defaultValue={envText(env)} placeholder="API_URL=https://staging.example.com" />
               </Field>
-              <Field label="Build specification" format="yaml" rule={UpdateBranch.buildSpec} hint="Overrides the app's">
-                <textarea name="buildSpec" rows={6} className="code-editor" spellCheck={false} defaultValue={branch.buildSpec} />
-              </Field>
-              <label className="check">
-                <input type="checkbox" name="basicAuth" defaultChecked={!!branch.enableBasicAuth} /> Password protect
-              </label>
-              <Field label="Credentials" hint={branch.enableBasicAuth ? "user:password; blank keeps the current one" : "user:password"}>
-                <input name="credentials" autoComplete="off" />
-              </Field>
-              <div className="form-row">
+              <MoreFields>
+                <div className="form-row">
+                  <Field label="Display name" rule={UpdateBranch.displayName}>
+                    <input name="displayName" defaultValue={branch.displayName} />
+                  </Field>
+                  <Field label="Framework" rule={UpdateBranch.framework}>
+                    <input name="framework" defaultValue={branch.framework} placeholder="React" />
+                  </Field>
+                </div>
+                <Field label="Description" rule={UpdateBranch.description}>
+                  <input name="description" defaultValue={branch.description} />
+                </Field>
+                <Field label="Build specification" format="yaml" rule={UpdateBranch.buildSpec} hint="Overrides the app's">
+                  <textarea name="buildSpec" rows={6} className="code-editor" spellCheck={false} defaultValue={branch.buildSpec} />
+                </Field>
                 <label className="check">
-                  <input type="checkbox" name="autoBuild" defaultChecked={branch.enableAutoBuild !== false} /> Build on push
+                  <input type="checkbox" name="basicAuth" defaultChecked={!!branch.enableBasicAuth} /> Password protect
                 </label>
-                <label className="check">
-                  <input type="checkbox" name="previews" defaultChecked={!!branch.enablePullRequestPreview} /> Pull request previews
-                </label>
-              </div>
-              <Field label="Cache TTL (seconds)" rule={UpdateBranch.ttl}>
-                <input name="ttl" defaultValue={branch.ttl} inputMode="numeric" />
-              </Field>
+                <Field label="Credentials" hint={branch.enableBasicAuth ? "user:password; blank keeps the current one" : "user:password"}>
+                  <input name="credentials" autoComplete="off" />
+                </Field>
+                <div className="form-row">
+                  <label className="check">
+                    <input type="checkbox" name="autoBuild" defaultChecked={branch.enableAutoBuild !== false} /> Build on push
+                  </label>
+                  <label className="check">
+                    <input type="checkbox" name="previews" defaultChecked={!!branch.enablePullRequestPreview} /> Pull request previews
+                  </label>
+                </div>
+                <Field label="Cache TTL (seconds)" rule={UpdateBranch.ttl}>
+                  <input name="ttl" defaultValue={branch.ttl} inputMode="numeric" />
+                </Field>
+              </MoreFields>
             </ActionForm>
           </Sheet>
           <ActionForm action={deleteBranch.bind(null, app, name)} submit="Delete branch" icon={<Trash2 size={16} />} tone="danger" confirm={`Delete ${name}?`} />
@@ -141,7 +145,7 @@ export default async function Branch({ searchParams }: Props) {
       <Specs
         items={[
           { label: "Stage", icon: <Layers size={15} />, value: branch.stage?.toLowerCase().replace("_", " ") },
-          branch.framework && { label: "Framework", icon: <GitBranch size={15} />, value: branch.framework },
+          branch.framework && { label: "Framework", icon: frameworkIcon(branch.framework) ? <AwsIcon icon={frameworkIcon(branch.framework)!} size={15} /> : <GitBranch size={15} />, value: branch.framework },
           branch.enableBasicAuth && { label: "Basic auth", icon: <Lock size={15} />, value: "on" },
           live && { label: "Deployed", icon: <Clock size={15} />, value: ago(live.endTime) },
           live && { label: "Site", icon: <ExternalLink size={15} />, value: <a href={siteUrl(app, name)}>{new URL(siteUrl(app, name)).host}</a> },

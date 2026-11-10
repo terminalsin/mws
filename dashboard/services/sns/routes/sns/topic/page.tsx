@@ -2,6 +2,7 @@ import { GetTopicAttributesCommand, ListSubscriptionsByTopicCommand, ListTagsFor
 import { all, load, shortName } from "@mws-dashboard/aws";
 import { ActionForm, CodeBlock, Empty, ErrorNotice, Facts, Field, List, Page, Pill, Section, Sheet, Status, Tags } from "@mws-dashboard/ui";
 import { CheckCheck, FileClock, Send, Settings2, Tag, Trash2, Unlink } from "lucide-react";
+import { MoreFields } from "@mws-dashboard/ui/presets";
 import type { Metadata } from "next";
 import Link from "next/link";
 
@@ -92,12 +93,14 @@ export default async function Topic({ searchParams }: Props) {
               <Field label="Message" rule={MESSAGE}>
                 <textarea name="message" required />
               </Field>
-              <label className="check">
-                <input type="checkbox" name="structure" value="json" /> Different message per protocol (JSON with a &quot;default&quot; key)
-              </label>
-              <Field label="Message attributes" rule={MESSAGE_ATTRIBUTES} member="MessageAttributes">
-                <textarea name="attributes" rows={3} placeholder={"type=order\nprice:Number=10"} spellCheck={false} />
-              </Field>
+              <MoreFields label="Attributes, per-protocol messages">
+                <Field label="Message attributes" rule={MESSAGE_ATTRIBUTES} member="MessageAttributes">
+                  <textarea name="attributes" rows={3} placeholder={"type=order\nprice:Number=10"} spellCheck={false} />
+                </Field>
+                <label className="check">
+                  <input type="checkbox" name="structure" value="json" /> Different message per protocol (JSON with a &quot;default&quot; key)
+                </label>
+              </MoreFields>
             </ActionForm>
           </Sheet>
           <Sheet title="Topic settings" label="Edit topic" icon={<Settings2 size={15} aria-hidden />} testId="edit-topic">
@@ -113,9 +116,7 @@ export default async function Topic({ searchParams }: Props) {
                   <input name="kmsKey" defaultValue={attrs.KmsMasterKeyId ?? "alias/aws/sns"} spellCheck={false} />
                 </Field>
               </div>
-              <label className="check">
-                <input type="checkbox" name="tracing" defaultChecked={attrs.TracingConfig === "Active"} /> Active tracing
-              </label>
+
               {fifo && (
                 <div className="form-row">
                   <label className="check">
@@ -126,12 +127,17 @@ export default async function Topic({ searchParams }: Props) {
                   </Field>
                 </div>
               )}
-              <Field label="Access policy" rule={ACCESS_POLICY} member="Policy">
-                <textarea name="policy" rows={8} spellCheck={false} defaultValue={pretty(attrs.Policy)} />
-              </Field>
-              <Field label="Delivery policy (HTTP/S)" rule={JSON_POLICY} member="DeliveryPolicy">
-                <textarea name="deliveryPolicy" rows={4} spellCheck={false} defaultValue={pretty(attrs.DeliveryPolicy)} />
-              </Field>
+              <MoreFields label="Policies, tracing">
+                <Field label="Access policy" rule={ACCESS_POLICY} member="Policy">
+                  <textarea name="policy" rows={8} spellCheck={false} defaultValue={pretty(attrs.Policy)} />
+                </Field>
+                <Field label="Delivery policy (HTTP/S)" rule={JSON_POLICY} member="DeliveryPolicy">
+                  <textarea name="deliveryPolicy" rows={4} spellCheck={false} defaultValue={pretty(attrs.DeliveryPolicy)} />
+                </Field>
+                <label className="check">
+                  <input type="checkbox" name="tracing" defaultChecked={attrs.TracingConfig === "Active"} /> Active tracing
+                </label>
+              </MoreFields>
             </ActionForm>
           </Sheet>
           <Sheet title="Delivery status logging" label="Delivery status logging" icon={<FileClock size={15} aria-hidden />} testId="topic-logging">
@@ -181,9 +187,13 @@ export default async function Topic({ searchParams }: Props) {
               key: s.SubscriptionArn! + s.Endpoint,
               icon: protocolIcon(s.Protocol),
               title: waiting ? <Endpoint sub={s} /> : <Endpoint sub={s} linked={false} />,
-              subtitle: s.Protocol,
               href: waiting ? undefined : `/sns/subscription?arn=${encodeURIComponent(s.SubscriptionArn!)}`,
-              meta: waiting ? <Status tone="warn">pending</Status> : <Status tone="good">confirmed</Status>,
+              meta: (
+                <>
+                  <Pill>{s.Protocol}</Pill>
+                  {waiting && <Status tone="warn">pending</Status>}
+                </>
+              ),
               actions: waiting ? (
                 <ActionForm action={confirmPending.bind(null, arn, s.Protocol!, s.Endpoint!)} submit={`Confirm ${s.Endpoint}`} icon={<CheckCheck size={16} aria-hidden />} />
               ) : (

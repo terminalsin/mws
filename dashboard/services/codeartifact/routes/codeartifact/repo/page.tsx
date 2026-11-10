@@ -9,12 +9,12 @@ import {
 import { all, describeError, endpoint, load } from "@mws-dashboard/aws";
 import { ActionForm, AwsIcon, CodeBlock, Empty, ErrorNotice, Field, List, Page, Pill, Section, Segments, Sheet, Specs, Status } from "@mws-dashboard/ui";
 import { UpdateRepository } from "@mws-dashboard/ui/model/codeartifact";
-import { ArrowUpFromLine, Globe, Package, Pencil, Plus, Trash2, Unplug, User } from "lucide-react";
+import { ArrowUpFromLine, Globe, Package, Pencil, Plus, Trash2, Unplug } from "lucide-react";
 import type { Metadata } from "next";
 import Link from "next/link";
 
 import { codeartifact, FORMAT_ICONS, ICONS } from "../../../lib/clients";
-import { EXTERNAL } from "../../../lib/external";
+import { EXTERNAL, EXTERNAL_INFO, externalIcon } from "../../../lib/external";
 import { PolicySection } from "../../../lib/policy";
 import { domainHref, packageHref, packageTitle, repoHref } from "../../../lib/refs";
 import { addExternalConnection, deleteRepository, removeExternalConnection, updateRepository } from "../actions";
@@ -51,14 +51,16 @@ function instructions(format: string, url: string, domain: string, owner: string
 }
 
 export default async function Repository({ searchParams }: Props) {
-  const { domain = "", owner, name = "", format = "npm" } = await searchParams;
+  const { domain = "", owner, name = "", format: asked } = await searchParams;
   const back = { href: "/codeartifact", label: "Repositories" };
   const base = repoHref(domain, name, owner);
   const data = await load(async () => {
     const client = await codeartifact();
     const args = { domain, domainOwner: owner, repository: name };
-    const [repo, packages, url, siblings, policy] = await Promise.all([
-      client.send(new DescribeRepositoryCommand(args)).then((r) => r.repository!),
+    const repo = await client.send(new DescribeRepositoryCommand(args)).then((r) => r.repository!);
+    // Instructions start with the tool of the public upstream (pip for PyPI, ...).
+    const format = asked ?? EXTERNAL_INFO[repo.externalConnections?.[0]?.externalConnectionName ?? ""]?.format ?? "npm";
+    const [packages, url, siblings, policy] = await Promise.all([
       all((nextToken) => client.send(new ListPackagesCommand({ ...args, nextToken })), (r) => r.packages, (r) => r.nextToken),
       client.send(new GetRepositoryEndpointCommand({ ...args, format: format as PackageFormat })).then(
         (r) => ({ ok: true as const, url: r.repositoryEndpoint! }),
@@ -67,7 +69,7 @@ export default async function Repository({ searchParams }: Props) {
       all((nextToken) => client.send(new ListRepositoriesInDomainCommand({ domain, domainOwner: owner, nextToken })), (r) => r.repositories, (r) => r.nextToken).catch(() => []),
       client.send(new GetRepositoryPermissionsPolicyCommand(args)).then((r) => r.policy?.document, () => undefined),
     ]);
-    return { repo, packages, url, siblings, policy };
+    return { repo, packages, url, siblings, policy, format };
   });
   if (!data.ok) {
     return (
@@ -76,7 +78,7 @@ export default async function Repository({ searchParams }: Props) {
       </Page>
     );
   }
-  const { repo, packages, url, siblings, policy } = data.value;
+  const { repo, packages, url, siblings, policy, format } = data.value;
   const external = repo.externalConnections ?? [];
   const upstreams = repo.upstreams ?? [];
   const others = siblings.map((r) => r.name!).filter((r) => r !== name);
@@ -122,8 +124,7 @@ export default async function Repository({ searchParams }: Props) {
       <Specs
         items={[
           { label: "Domain", icon: <AwsIcon icon={ICONS.codeartifact} size={16} />, value: <Link href={domainHref(domain, owner)}>{domain}</Link> },
-          { label: "Owner", icon: <User size={15} />, value: repo.domainOwner },
-          external.length > 0 && { label: "Public upstream", icon: <Globe size={15} />, value: external.map((e) => e.externalConnectionName?.replace("public:", "")).join(", ") },
+          external.length > 0 && { label: "Public upstream", icon: externalIcon(external[0].externalConnectionName) ? <AwsIcon icon={externalIcon(external[0].externalConnectionName)!} size={15} /> : <Globe size={15} />, value: external.map((e) => e.externalConnectionName?.replace("public:", "")).join(", ") },
           { label: "Packages", icon: <Package size={15} />, value: packages.length },
         ]}
       />
@@ -142,7 +143,7 @@ export default async function Repository({ searchParams }: Props) {
               })),
               ...external.map((e) => ({
                 key: `e/${e.externalConnectionName}`,
-                icon: <Globe size={18} />,
+                icon: externalIcon(e.externalConnectionName) ? <AwsIcon icon={externalIcon(e.externalConnectionName)!} size={20} /> : <Globe size={18} />,
                 title: EXTERNAL.find(([v]) => v === e.externalConnectionName)?.[1] ?? e.externalConnectionName,
                 subtitle: <code>{e.externalConnectionName}</code>,
                 meta: (

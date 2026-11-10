@@ -25,13 +25,14 @@ async function offers() {
   return Object.fromEntries(entries) as Record<string, { classes: string[]; versions: string[] }>;
 }
 
-function CreateDatabase({ offered, taken }: { offered: Record<string, { classes: string[]; versions: string[] }>; taken: string[] }) {
+function CreateDatabase({ offered, taken, inUse }: { offered: Record<string, { classes: string[]; versions: string[] }>; taken: string[]; inUse?: string[] }) {
   return (
     <Sheet title="Create database" label="Create database" testId="create-database">
       <CreateDatabaseForm
         classes={Object.fromEntries(Object.entries(offered).map(([k, v]) => [k, v.classes]))}
         versions={Object.fromEntries(Object.entries(offered).map(([k, v]) => [k, v.versions]))}
         taken={taken}
+        inUse={inUse}
       />
     </Sheet>
   );
@@ -99,7 +100,8 @@ export default async function Databases({ searchParams }: Props) {
       </Page>
     );
   }
-  const create = (taken: string[]) => <CreateDatabase offered={offers_} taken={taken} />;
+  const inUse = data.ok ? [...new Set([...data.value.instances.filter((i) => !i.DBClusterIdentifier).map((i) => i.Engine ?? ""), ...data.value.clusters.map((c) => c.Engine ?? "")])] : [];
+  const create = (taken: string[]) => <CreateDatabase offered={offers_} taken={taken} inUse={inUse} />;
   if (!data.ok) {
     return (
       <Page title="Databases" actions={create([])}>

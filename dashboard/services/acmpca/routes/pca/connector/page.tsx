@@ -1,6 +1,6 @@
 import { GetChallengePasswordCommand, GetConnectorCommand, ListChallengeMetadataCommand, ListTagsForResourceCommand } from "@aws-sdk/client-pca-connector-scep";
 import { ago, all, load, when } from "@mws-dashboard/aws";
-import { ActionForm, Empty, ErrorNotice, Facts, Field, List, Page, Section, Sheet, Status, Tags } from "@mws-dashboard/ui";
+import { ActionForm, CopyValue, Empty, ErrorNotice, Facts, Field, List, Page, Section, Sheet, Status, Tags } from "@mws-dashboard/ui";
 import { CopyButton } from "@mws-dashboard/ui/client";
 import { Eye, EyeOff, KeyRound, Plus, Tag, Trash2 } from "lucide-react";
 import type { Metadata } from "next";
@@ -60,7 +60,7 @@ export default async function Connector({ searchParams }: Props) {
         items={[
           ["Status", <Status key="s" tone={CA_TONE[k.Status ?? ""] ?? "neutral"}>{k.Status?.toLowerCase()}</Status>],
           k.StatusReason && ["Reason", k.StatusReason],
-          k.Endpoint && ["SCEP URL", <span key="e"><code>{k.Endpoint}</code> <CopyButton value={k.Endpoint} label="Copy SCEP URL" /></span>],
+          k.Endpoint && ["SCEP URL", <CopyValue key="e" value={k.Endpoint} label="Copy SCEP URL" />],
           ["Certificate authority", <Link key="ca" href={`/pca/ca?arn=${encodeURIComponent(k.CertificateAuthorityArn!)}`}>{k.CertificateAuthorityArn!.split("/").pop()}</Link>],
           ["Type", k.Type === "INTUNE" ? "Microsoft Intune" : "General purpose"],
           intune && ["Azure application", intune.AzureApplicationId],

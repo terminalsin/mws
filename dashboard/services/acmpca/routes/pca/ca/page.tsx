@@ -11,6 +11,7 @@ import { ListBucketsCommand, S3Client } from "@aws-sdk/client-s3";
 import { all, client, load, when } from "@mws-dashboard/aws";
 import { ActionForm, AwsIcon, CodeBlock, Empty, ErrorNotice, Facts, Field, List, Page, Pill, Section, Segments, Sheet, Specs, Status, Tags, type Rule } from "@mws-dashboard/ui";
 import { LiveRefresh } from "@mws-dashboard/ui/client";
+import { MoreFields } from "@mws-dashboard/ui/presets";
 import { IssueCertificate, PutPolicy, RevokeCertificate } from "@mws-dashboard/ui/model/acm-pca";
 import { Ban, BadgeCheck, CalendarClock, Download, FileSignature, KeyRound, Pause, Pencil, Play, RotateCcw, ShieldCheck, Tag, Trash2, Upload, UserCheck } from "lucide-react";
 import type { Metadata } from "next";
@@ -18,7 +19,8 @@ import Link from "next/link";
 
 import { listAuthorities } from "../../../lib/cas";
 import { ICONS, pca } from "../../../lib/clients";
-import { CA_TONE, DAY, TEMPLATES, caName, signingFor } from "../../../lib/pca";
+import { TemplatePicker } from "../../../lib/ca-fields";
+import { CA_TONE, DAY, caName, signingFor } from "../../../lib/pca";
 import {
   activateRoot,
   auditReport,
@@ -399,32 +401,24 @@ export default async function Authority({ searchParams }: Props) {
                 <Field label="CSR" rule={CSR} member="Csr">
                   <textarea name="csr" rows={8} required placeholder="-----BEGIN CERTIFICATE REQUEST-----" className="code-editor" />
                 </Field>
-                <div className="form-row">
-                  <Field label="Template" member="TemplateArn">
-                    <select name="template" defaultValue="EndEntityCertificate/V1">
-                      {TEMPLATES.map((t) => (
-                        <option key={t.id} value={t.id}>
-                          {t.label}
-                        </option>
-                      ))}
-                    </select>
-                  </Field>
-                  <Field label="Signature algorithm" member="SigningAlgorithm">
-                    <select name="signing" defaultValue={cfg?.SigningAlgorithm}>
-                      {signing.map((s) => (
-                        <option key={s}>{s}</option>
-                      ))}
-                    </select>
-                  </Field>
-                </div>
-                <div className="form-row">
-                  <Field label="Validity (days)" rule={days} member="Validity.Value" hint={caDays !== undefined ? `Up to ${maxDays}, when the CA ${ca.UsageMode === "SHORT_LIVED_CERTIFICATE" && maxDays === 7 ? "caps short-lived certificates" : "expires"}` : undefined}>
-                    <input name="days" type="number" defaultValue={maxDays !== undefined ? Math.min(365, maxDays) : 365} />
-                  </Field>
-                  <Field label="Valid from" member="ValidityNotBefore">
-                    <input name="notBefore" type="datetime-local" />
-                  </Field>
-                </div>
+                <TemplatePicker />
+                <Field label="Validity (days)" rule={days} member="Validity.Value" hint={caDays !== undefined ? `Up to ${maxDays}, when the CA ${ca.UsageMode === "SHORT_LIVED_CERTIFICATE" && maxDays === 7 ? "caps short-lived certificates" : "expires"}` : undefined}>
+                  <input name="days" type="number" defaultValue={maxDays !== undefined ? Math.min(365, maxDays) : 365} />
+                </Field>
+                <MoreFields>
+                  <div className="form-row">
+                    <Field label="Signature algorithm" member="SigningAlgorithm">
+                      <select name="signing" defaultValue={cfg?.SigningAlgorithm}>
+                        {signing.map((s) => (
+                          <option key={s}>{s}</option>
+                        ))}
+                      </select>
+                    </Field>
+                    <Field label="Valid from" member="ValidityNotBefore">
+                      <input name="notBefore" type="datetime-local" />
+                    </Field>
+                  </div>
+                </MoreFields>
               </ActionForm>
             </Sheet>
           )}

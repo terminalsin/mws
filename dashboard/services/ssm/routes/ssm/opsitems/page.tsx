@@ -2,6 +2,7 @@ import { DescribeOpsItemsCommand, type OpsItemFilter } from "@aws-sdk/client-ssm
 import { ago, all, load } from "@mws-dashboard/aws";
 import { ActionForm, AwsIcon, Empty, ErrorNotice, Field, List, Metric, Metrics, Page, Pill, Segments, Sheet } from "@mws-dashboard/ui";
 import { CreateOpsItem } from "@mws-dashboard/ui/model/ssm";
+import { MoreFields } from "@mws-dashboard/ui/presets";
 import type { Metadata } from "next";
 
 import { ICONS, ssm } from "../../../lib/clients";
@@ -30,12 +31,14 @@ export default async function OpsItems({ searchParams }: Props) {
     <Sheet title="Create OpsItem" label="Create OpsItem" testId="create-opsitem">
       <ActionForm action={createOpsItem} submit="Create" testId="create-opsitem">
         <OpsItemFields />
+<MoreFields>
         <Field label="Source" rule={CreateOpsItem.Source}>
           <input name="source" required defaultValue="console" />
         </Field>
         <Field label="Type" rule={CreateOpsItem.OpsItemType} known={["/aws/issue", "/aws/insight"]}>
           <input name="type" placeholder="/aws/issue" />
         </Field>
+</MoreFields>
       </ActionForm>
     </Sheet>
   );
@@ -53,14 +56,14 @@ export default async function OpsItems({ searchParams }: Props) {
       {list.ok ? (
         <List
           label="OpsItems"
-          empty={<Empty icon={ICONS.opsItem} />}
+          empty={<Empty icon={ICONS.opsItem} action={view.id !== "resolved" ? create : undefined} />}
           rows={list.value
             .sort((a, b) => (a.Priority ?? 9) - (b.Priority ?? 9) || (b.CreatedTime?.getTime() ?? 0) - (a.CreatedTime?.getTime() ?? 0))
             .map((o) => ({
               key: o.OpsItemId!,
               icon: <AwsIcon icon={ICONS.opsItem} size={24} />,
               title: o.Title,
-              subtitle: [o.OpsItemId, o.Source, o.OpsItemType, o.Category].filter(Boolean).join(" · "),
+              subtitle: [o.Category, o.Source !== "console" ? o.Source : null].filter(Boolean).join(" · "),
               href: `/ssm/opsitem?id=${o.OpsItemId}`,
               meta: (
                 <>

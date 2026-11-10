@@ -6,22 +6,11 @@ import { ShieldCheck } from "lucide-react";
 
 import { ICONS, LINKS } from "../clients";
 import { RESOURCE_TONE, listImages } from "../ec2";
+import { osLogo } from "../os";
 
 /** The OS logo for an image, from its platform details or name. */
 export function osIcon(text: string | undefined) {
-  const t = (text ?? "").toLowerCase();
-  const brand = [
-    ["ubuntu", "brand/ubuntu"],
-    ["debian", "brand/debian"],
-    ["red hat", "brand/redhat"],
-    ["rhel", "brand/redhat"],
-    ["suse", "brand/suse"],
-    ["alpine", "brand/alpinelinux"],
-    ["amazon linux", "brand/linux"],
-    ["al2", "brand/linux"],
-    ["linux", "brand/linux"],
-  ].find(([k]) => t.includes(k))?.[1];
-  return brand ?? runtimeIcon(t) ?? ICONS.ami;
+  return osLogo(text) ?? runtimeIcon(text) ?? ICONS.ami;
 }
 
 const OWNERS = [

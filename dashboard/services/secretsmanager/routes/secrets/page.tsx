@@ -1,48 +1,23 @@
 import { sections } from "@mws-dashboard/ai";
 import { ago, load } from "@mws-dashboard/aws";
-import { ActionForm, AwsIcon, Curated, Empty, ErrorNotice, Field, Page, Pill, Sheet, type Rule } from "@mws-dashboard/ui";
-import { CreateSecret } from "@mws-dashboard/ui/model/secretsmanager";
+import { ActionForm, AwsIcon, Curated, Empty, ErrorNotice, Page, Pill, Sheet } from "@mws-dashboard/ui";
 import { RotateCw } from "lucide-react";
 import type { Metadata } from "next";
 
 import { ICONS } from "../../lib/clients";
 import { kmsKeys } from "../../lib/known";
+import { secretLogo } from "../../lib/presets";
+import { SecretFields } from "../../lib/secret-fields";
 import { SECRET_KINDS, listSecrets } from "../../lib/secrets";
 import { createSecret } from "./actions";
 
 export const metadata: Metadata = { title: "Secrets Manager" };
 
-// The model leaves names unconstrained; the characters are in AWS's docs.
-const NAME: Rule = { ...CreateSecret.Name, pattern: "^[A-Za-z0-9/_+=.@-]+$", hint: "Letters, digits and /_+=.@-", generate: "name" };
-// The console asks for a value; an empty one gets a generated password.
-const VALUE: Rule = { ...CreateSecret.SecretString, required: true, format: "jsonish", generate: "password" };
-const REGIONS: Rule = { ...CreateSecret.AddReplicaRegions, item: CreateSecret.AddReplicaRegions.item!.fields!.Region };
-
 function Create({ names, keys }: { names: string[]; keys: string[] }) {
   return (
     <Sheet title="New secret" label="Create secret" testId="create-secret">
       <ActionForm action={createSecret} submit="Create" testId="create-secret">
-        <Field label="Name" rule={NAME} taken={names} unique>
-          <input name="name" placeholder="prod/app/db" autoFocus />
-        </Field>
-        <Field label="Value" rule={VALUE} member="SecretString">
-          <textarea name="value" rows={6} placeholder='{"username": "app", "password": "…"}' />
-        </Field>
-        <Field label="Description" rule={CreateSecret.Description}>
-          <input name="description" />
-        </Field>
-        <Field label="KMS key" rule={CreateSecret.KmsKeyId} known={keys}>
-          <input name="kmsKeyId" placeholder="alias/aws/secretsmanager" />
-        </Field>
-        <Field label="Tags" format="tags">
-          <textarea name="tags" rows={2} placeholder="team=payments" />
-        </Field>
-        <Field label="Replicate to Regions" rule={REGIONS} member="AddReplicaRegions">
-          <input name="regions" placeholder="eu-west-1, ap-southeast-2" />
-        </Field>
-        <label className="check">
-          <input type="checkbox" name="overwrite" /> Overwrite a secret with the same name in those Regions
-        </label>
+        <SecretFields names={names} keys={keys} />
       </ActionForm>
     </Sheet>
   );
@@ -69,7 +44,7 @@ export default async function Secrets() {
         empty={<Empty icon={ICONS.secrets} />}
         row={(s) => ({
           key: s.ARN!,
-          icon: <AwsIcon icon={ICONS.secrets} size={24} />,
+          icon: <AwsIcon icon={secretLogo(s.Name!) ?? ICONS.secrets} size={24} />,
           title: s.Name,
           subtitle: s.Description,
           href: `/secrets/secret?id=${encodeURIComponent(s.ARN!)}`,

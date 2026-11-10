@@ -1,6 +1,6 @@
 import { DescribeEventsCommand, type DBCluster, type DBInstance } from "@aws-sdk/client-rds";
 import { ago, all, load, shortName, when } from "@mws-dashboard/aws";
-import { ActionForm, AwsIcon, CodeBlock, Empty, ErrorNotice, Facts, Field, List, Page, Pill, Section, Segments, Sheet, Specs, Status, Tags } from "@mws-dashboard/ui";
+import { ActionForm, AwsIcon, CodeBlock, CopyValue, Empty, ErrorNotice, Facts, Field, List, Page, Pill, Section, Segments, Sheet, Specs, Status, Tags } from "@mws-dashboard/ui";
 import {
   ArrowUpCircle,
   Camera,
@@ -385,7 +385,7 @@ export default async function DbPage({ searchParams }: Props) {
               <CodeBlock value={connection(engine, host, port, user, dbName)} label="Connection command" />
               {c?.ReaderEndpoint && (
                 <div className="muted">
-                  Reader: <code>{c.ReaderEndpoint}</code>
+                  Reader: <CopyValue value={c.ReaderEndpoint} label="Copy reader endpoint" />
                 </div>
               )}
             </Section>
@@ -393,7 +393,7 @@ export default async function DbPage({ searchParams }: Props) {
           <Section title="Networking">
             <Facts
               items={[
-                host && ["Endpoint", <code key="e">{host}</code>],
+                host && ["Endpoint", <CopyValue key="e" value={host} label="Copy endpoint" />],
                 port && ["Port", port],
                 i?.AvailabilityZone && ["Availability Zone", i.AvailabilityZone],
                 i?.SecondaryAvailabilityZone && ["Secondary zone", i.SecondaryAvailabilityZone],

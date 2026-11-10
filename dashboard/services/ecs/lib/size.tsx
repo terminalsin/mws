@@ -8,8 +8,8 @@ import { useMemo, useState } from "react";
 
 import { FARGATE_MEMORY, memoryHint } from "./rules";
 
-export function FargateSize() {
-  const [cpu, setCpu] = useState("256");
+export function FargateSize({ cpu: initialCpu = "256", memory: initialMemory = "512" }: { cpu?: string; memory?: string }) {
+  const [cpu, setCpu] = useState(initialCpu);
   const memory = useMemo(() => ({ enum: FARGATE_MEMORY[cpu] }), [cpu]);
   return (
     <div className="form-row">
@@ -23,7 +23,7 @@ export function FargateSize() {
         </select>
       </FieldShell>
       <FieldShell label="Memory (MiB)" hint={memoryHint(cpu)} rule={memory}>
-        <input name="memory" type="number" defaultValue={512} min={512} />
+        <input name="memory" type="number" defaultValue={initialMemory} min={512} />
       </FieldShell>
     </div>
   );

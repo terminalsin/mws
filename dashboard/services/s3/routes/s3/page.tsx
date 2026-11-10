@@ -1,16 +1,15 @@
 import { ListBucketsCommand } from "@aws-sdk/client-s3";
 import { GetPublicAccessBlockCommand } from "@aws-sdk/client-s3-control";
 import { stage, sections } from "@mws-dashboard/ai";
-import { ago, load } from "@mws-dashboard/aws";
-import { ActionForm, AwsIcon, Curated, Empty, ErrorNotice, Facts, Field, Page, Pill, Section, Segments, Sheet } from "@mws-dashboard/ui";
-import { CreateBucket as CreateBucketRules } from "@mws-dashboard/ui/model/s3";
+import { ago, load, region } from "@mws-dashboard/aws";
+import { AwsIcon, Curated, Empty, ErrorNotice, Facts, Page, Pill, Section, Segments, Sheet } from "@mws-dashboard/ui";
 import { Pencil, ShieldCheck } from "lucide-react";
 import type { Metadata } from "next";
 import type { ReactNode } from "react";
 
 import { BUCKET_ICON, BUCKET_PURPOSES, account, bucketHref, control, controlHref, optional, s3 } from "../../lib/s3";
 import { AccessPointList, CreateAccessPointSheet, accessPoints } from "./access-points";
-import { createBucket } from "./actions";
+import { CreateBucketForm } from "./create-bucket.tsx";
 import { ControlTab, CONTROL_TABS } from "./control";
 import { saveAccountBpa } from "./control-actions";
 import { BPA_SETTINGS, BpaForm, bpaSummary } from "./[bucket]/permissions";
@@ -22,24 +21,7 @@ type Props = { searchParams: Promise<{ tab?: string; id?: string }> };
 function CreateBucket({ names = [] }: { names?: string[] }) {
   return (
     <Sheet title="New bucket" label="Create bucket" testId="create-bucket">
-      <ActionForm action={createBucket} submit="Create" testId="create-bucket">
-        <Field label="Name" rule={CreateBucketRules.Bucket} format="bucket" generate="name" taken={names} unique>
-          <input name="name" required minLength={3} maxLength={63} autoFocus />
-        </Field>
-        <Field label="Object Ownership" rule={CreateBucketRules.ObjectOwnership}>
-          <select name="ownership" defaultValue="BucketOwnerEnforced">
-            <option value="BucketOwnerEnforced">ACLs disabled (bucket owner enforced)</option>
-            <option value="BucketOwnerPreferred">ACLs enabled, bucket owner preferred</option>
-            <option value="ObjectWriter">ACLs enabled, object writer</option>
-          </select>
-        </Field>
-        <label className="check">
-          <input type="checkbox" name="versioning" /> Versioning
-        </label>
-        <label className="check">
-          <input type="checkbox" name="lock" /> Object Lock (turns versioning on)
-        </label>
-      </ActionForm>
+      <CreateBucketForm names={names} />
     </Sheet>
   );
 }
@@ -60,6 +42,7 @@ async function Buckets() {
     );
   });
   const names = buckets.ok ? buckets.value.flatMap((s) => s.items.map((b) => b.Name!)) : [];
+  const here = await region();
   return {
     actions: <CreateBucket names={names} />,
     body: buckets.ok ? (
@@ -73,7 +56,8 @@ async function Buckets() {
             key: b.Name!,
             icon: <AwsIcon icon={BUCKET_ICON} size={24} />,
             title: b.Name,
-            subtitle: b.BucketRegion,
+            // The Region only says something when it is not this one.
+            subtitle: b.BucketRegion && b.BucketRegion !== here ? b.BucketRegion : undefined,
             href: bucketHref(b.Name!),
             meta: (
               <>

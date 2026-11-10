@@ -1,15 +1,16 @@
 import { DescribeVpcsCommand } from "@aws-sdk/client-ec2";
 import { GetHealthCheckStatusCommand, ListHostedZonesCommand, ListReusableDelegationSetsCommand } from "@aws-sdk/client-route-53";
 import { all, load } from "@mws-dashboard/aws";
-import { ActionForm, AwsIcon, Curated, Empty, ErrorNotice, Field, List, Page, Pill, Sheet, Status } from "@mws-dashboard/ui";
+import { ActionForm, AwsIcon, Curated, Empty, ErrorNotice, List, Page, Pill, Sheet, Status } from "@mws-dashboard/ui";
 import { LiveRefresh } from "@mws-dashboard/ui/client";
 import { HeartPulse, Lock, Trash2 } from "lucide-react";
-import { CreateHealthCheck, CreateHostedZone } from "@mws-dashboard/ui/model/route53";
+import { CreateHealthCheck } from "@mws-dashboard/ui/model/route53";
 import type { Metadata } from "next";
 
 import { allHealthChecks, healthCheckNames, healthCheckTarget } from "../../lib/choices";
 import { ICONS, ec2, healthHref, nameTag, route53, zoneHref } from "../../lib/clients";
 import { HealthFields } from "../../lib/health-fields";
+import { ZoneFields } from "../../lib/zone-fields";
 import { CHECKER_REGIONS, healthOf } from "../../lib/health";
 import { createHealthCheck, createZone, deleteHealthCheck } from "./actions";
 
@@ -51,7 +52,6 @@ async function HealthChecks() {
                 {c.Disabled && <Pill>Disabled</Pill>}
                 {c.Inverted && <Pill>Inverted</Pill>}
                 <Status tone={status.tone}>{status.word}</Status>
-                {c.RequestInterval && <span>{c.RequestInterval}s</span>}
               </>
             ),
             actions: <ActionForm action={deleteHealthCheck.bind(null, h.Id!, false)} submit="Delete health check" icon={<Trash2 size={15} />} tone="danger" confirm="Delete this health check?" />,
@@ -102,35 +102,10 @@ export default async function Route53({ searchParams }: Props) {
   const create = (
     <Sheet title="Create hosted zone" label="Create hosted zone" testId="create-zone">
       <ActionForm action={createZone} submit="Create hosted zone" testId="create-zone">
-        <Field label="Domain name" rule={CreateHostedZone.Name} format="domain" unique>
-          <input name="name" placeholder="example.com" autoFocus />
-        </Field>
-        <Field label="Type">
-          <select name="vpc" defaultValue="">
-            <option value="">Public hosted zone</option>
-            {vpcs.ok &&
-              vpcs.value.map((v) => (
-                <option key={v.VpcId} value={v.VpcId}>
-                  Private · {nameTag(v) ?? v.VpcId}
-                </option>
-              ))}
-          </select>
-        </Field>
-        <Field label="Description" rule={CreateHostedZone.HostedZoneConfig.fields?.Comment} member="HostedZoneConfig.Comment">
-          <input name="comment" />
-        </Field>
-        {sets.ok && sets.value.length > 0 && (
-          <Field label="Reusable delegation set" rule={CreateHostedZone.DelegationSetId} member="DelegationSetId">
-            <select name="delegationSet" defaultValue="">
-              <option value="">New name servers</option>
-              {sets.value.map((d) => (
-                <option key={d.Id} value={d.Id!.split("/").pop()}>
-                  {d.NameServers?.[0]} …
-                </option>
-              ))}
-            </select>
-          </Field>
-        )}
+        <ZoneFields
+          vpcs={vpcs.ok ? vpcs.value.map((v) => ({ id: v.VpcId!, name: nameTag(v) ?? v.VpcId!, cidr: v.CidrBlock })) : []}
+          sets={sets.ok ? sets.value.map((d) => ({ id: d.Id!.split("/").pop()!, label: `${d.NameServers?.[0] ?? d.Id} …` })) : []}
+        />
       </ActionForm>
     </Sheet>
   );
@@ -161,7 +136,7 @@ export default async function Route53({ searchParams }: Props) {
             <>
               {z.Config?.PrivateZone && <Lock size={14} aria-label="Private" />}
               {z.LinkedService?.ServicePrincipal && <Pill>{z.LinkedService.ServicePrincipal.split(".")[0]}</Pill>}
-              <span>{z.ResourceRecordSetCount} records</span>
+              <Pill title="Records">{z.ResourceRecordSetCount}</Pill>
             </>
           ),
         })}

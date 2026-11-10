@@ -2,9 +2,9 @@
 
 import { ActionForm, Field, Sheet, type Rule } from "@mws-dashboard/ui";
 import { CreateAnomalyMonitor, CreateAnomalySubscription } from "@mws-dashboard/ui/model/ce";
+import { freeName, PresetGallery } from "@mws-dashboard/ui/presets";
+import { Pencil, Tag } from "lucide-react";
 import { useState } from "react";
-
-import { Pencil } from "lucide-react";
 
 import { createMonitor, createSubscription, renameMonitor, updateSubscription } from "../actions";
 
@@ -25,43 +25,49 @@ export interface MonitorChoices {
   tagKeys: string[];
 }
 
+const KINDS = [
+  { id: "services", label: "AWS services", icon: "service/AWSCostExplorer", name: "aws-services-monitor", title: "Every service this account uses (one per account)" },
+  { id: "accounts", label: "Linked accounts", icon: "service/AWSOrganizations", name: "accounts-monitor", title: "Up to 10 linked accounts" },
+  { id: "tag", label: "Cost allocation tag", icon: <Tag size={24} aria-hidden />, name: "tag-monitor", title: "Resources with a tag value" },
+];
+
 export function NewMonitor({ names, hasServices, accounts, tagKeys }: MonitorChoices) {
-  const [kind, setKind] = useState(hasServices ? "accounts" : "services");
+  const [kind, setKind] = useState(KINDS[hasServices ? 1 : 0]);
   return (
     <Sheet title="New monitor" label="Create monitor" testId="create-monitor">
       <ActionForm action={createMonitor} submit="Create" testId="create-monitor">
-        <Field label="Name" rule={MONITOR_NAME} taken={names} unique>
-          <input name="name" required autoFocus />
-        </Field>
-        <Field label="Watches" hint={hasServices ? "This account already watches AWS services" : undefined}>
-          <select name="kind" value={kind} onChange={(e) => setKind(e.target.value)}>
-            <option value="services" disabled={hasServices}>
-              AWS services
-            </option>
-            <option value="accounts">Linked accounts</option>
-            <option value="tag">Cost allocation tag</option>
-          </select>
-        </Field>
-        {kind === "accounts" && (
-          <Field label="Accounts" rule={ACCOUNTS} known={accounts}>
-            <input name="accounts" required placeholder={accounts[0]} />
+        <PresetGallery
+          label="Watches"
+          presets={KINDS.map((k) => (k.id === "services" ? { ...k, added: hasServices, disabled: hasServices } : k))}
+          chosen={kind.id}
+          choose={(p) => setKind(KINDS.find((k) => k.id === p.id)!)}
+        />
+        <input type="hidden" name="kind" value={kind.id} />
+        <div key={kind.id}>
+          <Field label="Name" rule={MONITOR_NAME} taken={names} unique>
+            <input name="name" required defaultValue={freeName(kind.name, names)} />
           </Field>
-        )}
-        {kind === "tag" && (
-          <div className="form-row">
-            <Field label="Tag key" rule={TAG_KEY} known={tagKeys}>
-              <input name="tagKey" required list="ce-tag-keys" />
+          {kind.id === "accounts" && (
+            <Field label="Accounts" rule={ACCOUNTS} known={accounts}>
+              <input name="accounts" required placeholder={accounts[0]} defaultValue={accounts.length === 1 ? accounts[0] : undefined} />
             </Field>
-            <Field label="Values" hint="Comma separated">
-              <input name="tagValues" required />
-            </Field>
-            <datalist id="ce-tag-keys">
-              {tagKeys.map((k) => (
-                <option key={k} value={k} />
-              ))}
-            </datalist>
-          </div>
-        )}
+          )}
+          {kind.id === "tag" && (
+            <div className="form-row">
+              <Field label="Tag key" rule={TAG_KEY} known={tagKeys}>
+                <input name="tagKey" required list="ce-tag-keys" defaultValue={tagKeys.length === 1 ? tagKeys[0] : undefined} />
+              </Field>
+              <Field label="Values" hint="Comma separated">
+                <input name="tagValues" required />
+              </Field>
+              <datalist id="ce-tag-keys">
+                {tagKeys.map((k) => (
+                  <option key={k} value={k} />
+                ))}
+              </datalist>
+            </div>
+          )}
+        </div>
       </ActionForm>
     </Sheet>
   );
@@ -87,7 +93,7 @@ export function NewSubscription({ names, monitors, topics, topicArn }: Subscript
     <Sheet title="New alert subscription" label="Create alert subscription" testId="create-subscription">
       <ActionForm action={createSubscription} submit="Create" testId="create-subscription">
         <Field label="Name" rule={SUBSCRIPTION_NAME} taken={names} unique>
-          <input name="name" required autoFocus />
+          <input name="name" required defaultValue={freeName("cost-alerts", names)} />
         </Field>
         <Field label="Monitor">
           <select name="monitor" required defaultValue={monitors[0]?.arn}>

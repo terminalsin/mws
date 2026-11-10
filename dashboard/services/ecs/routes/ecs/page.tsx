@@ -1,13 +1,14 @@
 import { load } from "@mws-dashboard/aws";
-import { ActionForm, AwsIcon, Empty, ErrorNotice, Field, List, Page, Pill, Sheet, Status } from "@mws-dashboard/ui";
-import { Trash2 } from "lucide-react";
-import { RegisterTaskDefinition } from "@mws-dashboard/ui/model/ecs";
+import { DescribeTaskDefinitionCommand } from "@aws-sdk/client-ecs";
+import { ActionForm, AwsIcon, Empty, ErrorNotice, Field, List, Page, Pill, Sheet, Status, freeName } from "@mws-dashboard/ui";
+import { Cpu, Trash2 } from "lucide-react";
 import type { Metadata } from "next";
 
-import { ICONS, STATUS_TONE } from "../../lib/clients";
+import { ICONS, STATUS_TONE, ecs } from "../../lib/clients";
 import { clusters as listClusters, families as listFamilies, revisionOf, revisions } from "../../lib/ecs";
-import { NAME, IMAGE } from "../../lib/rules";
-import { FargateSize } from "../../lib/size.tsx";
+import { imageIcon } from "../../lib/presets";
+import { NAME } from "../../lib/rules";
+import { TaskDefinitionFields } from "../../lib/taskdef-form.tsx";
 import { createCluster, deregisterTaskDefinition, registerTaskDefinition } from "./actions";
 
 export const metadata: Metadata = { title: "ECS" };
@@ -18,11 +19,19 @@ export default async function Clusters({ searchParams }: Props) {
   const { tab = "clusters" } = await searchParams;
   if (tab === "taskdefs") {
     const defs = await load(async () => {
+      const client = await ecs();
       const families = await listFamilies("ACTIVE");
       return Promise.all(
         families.map(async (family) => {
           const arns = await revisions(family);
-          return { family, latest: arns[0], revisions: arns.length };
+          // The latest revision's image and size: the row leads with its logo.
+          const def = arns[0]
+            ? await client
+                .send(new DescribeTaskDefinitionCommand({ taskDefinition: arns[0] }))
+                .then((r) => r.taskDefinition)
+                .catch(() => undefined)
+            : undefined;
+          return { family, latest: arns[0], revisions: arns.length, image: def?.containerDefinitions?.[0]?.image, cpu: def?.cpu, memory: def?.memory };
         }),
       );
     });
@@ -30,27 +39,7 @@ export default async function Clusters({ searchParams }: Props) {
     const register = (
       <Sheet title="Create task definition" label="Create task definition" testId="register-task-definition">
         <ActionForm action={registerTaskDefinition} submit="Create" testId="register-task-definition">
-          <Field label="Family" rule={{ ...RegisterTaskDefinition.family, ...NAME }} known={families}>
-            <input name="family" required autoFocus />
-          </Field>
-          <Field label="Image URI" rule={IMAGE}>
-            <input name="image" required placeholder="public.ecr.aws/nginx/nginx:latest" />
-          </Field>
-          <FargateSize />
-          <div className="form-row">
-            <Field label="Port" format="port">
-              <input name="port" type="number" min={1} max={65535} placeholder="80" />
-            </Field>
-            <Field label="Command">
-              <input name="command" placeholder="optional" />
-            </Field>
-          </div>
-          <Field label="Environment" format="env">
-            <textarea name="env" rows={3} spellCheck={false} placeholder="KEY=value" />
-          </Field>
-          <label className="check">
-            <input type="checkbox" name="logs" defaultChecked /> Send output to CloudWatch Logs
-          </label>
+          <TaskDefinitionFields families={families} />
         </ActionForm>
       </Sheet>
     );
@@ -60,15 +49,27 @@ export default async function Clusters({ searchParams }: Props) {
           <List
             label="Task definitions"
             empty={<Empty icon={ICONS.task} action={register} />}
-            rows={defs.value.map((d) => ({
-              key: d.family,
-              icon: <AwsIcon icon={ICONS.task} size={24} />,
-              title: d.family,
-              subtitle: revisionOf(d.latest),
-              href: `/ecs/taskdef?family=${encodeURIComponent(d.family)}`,
-              meta: <span>{d.revisions} revisions</span>,
-              actions: d.latest ? <ActionForm action={deregisterTaskDefinition.bind(null, d.latest)} submit={`Deregister ${d.latest.split("/").pop()}`} icon={<Trash2 size={15} />} tone="danger" confirm="Deregister the latest revision?" /> : undefined,
-            }))}
+            rows={defs.value.map((d) => {
+              const logo = imageIcon(d.image);
+              return {
+                key: d.family,
+                icon: logo ? <AwsIcon icon={logo} size={24} /> : <AwsIcon icon={ICONS.task} size={24} />,
+                title: d.family,
+                subtitle: d.image && <code className="clip">{d.image}</code>,
+                href: `/ecs/taskdef?family=${encodeURIComponent(d.family)}`,
+                meta: (
+                  <>
+                    {d.cpu && d.memory && (
+                      <Pill icon={<Cpu size={12} />} title="CPU · memory">
+                        {Number(d.cpu) / 1024} vCPU · {Number(d.memory) / 1024} GB
+                      </Pill>
+                    )}
+                    <Pill title={`${d.revisions} active revisions`}>rev {revisionOf(d.latest).split(":").pop()}</Pill>
+                  </>
+                ),
+                actions: d.latest ? <ActionForm action={deregisterTaskDefinition.bind(null, d.latest)} submit={`Deregister ${d.latest.split("/").pop()}`} icon={<Trash2 size={15} />} tone="danger" confirm="Deregister the latest revision?" /> : undefined,
+              };
+            })}
           />
         ) : (
           <ErrorNotice error={defs.error} />
@@ -77,11 +78,12 @@ export default async function Clusters({ searchParams }: Props) {
     );
   }
   const clusters = await load(() => listClusters());
+  const clusterNames = clusters.ok ? clusters.value.map((c) => c.clusterName!) : [];
   const create = (
     <Sheet title="Create cluster" label="Create cluster" testId="create-ecs-cluster">
       <ActionForm action={createCluster} submit="Create" testId="create-ecs-cluster">
-        <Field label="Cluster name" rule={NAME} taken={clusters.ok ? clusters.value.map((c) => c.clusterName!) : []} unique>
-          <input name="name" required autoFocus />
+        <Field label="Cluster name" rule={NAME} taken={clusterNames} unique>
+          <input name="name" required autoFocus defaultValue={freeName(clusterNames.includes("default") ? "cluster" : "default", clusterNames)} />
         </Field>
         <label className="check">
           <input type="checkbox" name="insights" /> Container Insights

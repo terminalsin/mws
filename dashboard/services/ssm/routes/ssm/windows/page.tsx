@@ -16,10 +16,7 @@ export default async function Windows() {
   const create = (
     <Sheet title="Create maintenance window" label="Create maintenance window" testId="create-window">
       <ActionForm action={createWindow} submit="Create" testId="create-window">
-        <WindowFields />
-        <label className="check">
-          <input type="checkbox" name="unassociated" /> Allow unregistered targets
-        </label>
+        <WindowFields taken={list.ok ? list.value.map((w) => w.Name!) : []} />
       </ActionForm>
     </Sheet>
   );
@@ -34,7 +31,7 @@ export default async function Windows() {
             key: w.WindowId!,
             icon: <AwsIcon icon={ICONS.window} size={24} />,
             title: w.Name,
-            subtitle: [w.WindowId, w.Schedule, w.ScheduleTimezone, `${w.Duration}h, cutoff ${w.Cutoff}h`].filter(Boolean).join(" · "),
+            subtitle: [w.Schedule, w.ScheduleTimezone, `${w.Duration}h`].filter(Boolean).join(" · "),
             href: `/ssm/window?id=${w.WindowId}`,
             meta: (
               <>

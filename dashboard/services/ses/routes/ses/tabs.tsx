@@ -4,17 +4,18 @@ import { ago, all, load } from "@mws-dashboard/aws";
 import { ActionForm, AwsIcon, Empty, ErrorNotice, Field, List, Metric, Metrics, Pill, Section, Sheet, Status } from "@mws-dashboard/ui";
 import { PutAccountDetails, PutSuppressedDestination } from "@mws-dashboard/ui/model/sesv2";
 import { CreateReceiptFilter as ReceiptFilter } from "@mws-dashboard/ui/model/ses";
+import { MoreFields } from "@mws-dashboard/ui/presets";
 import { Ban, Check, Eraser, Inbox, Pause, Play, Rocket, ShieldBan, Trash2, X } from "lucide-react";
 
 import { configSets, templates } from "../../lib/choices";
 import { configSetHref, ICONS, ruleSetHref, ses, sesV1, templateHref } from "../../lib/clients";
 import { htmlText, receivedMail, sesMail } from "../../lib/outbox";
 import { CONFIG_SET_NAME, RULE_SET_NAME, TEMPLATE_NAME } from "../../lib/rules";
+import { TemplateFields } from "../../lib/templates";
 import { clearOutbox, deleteMail, requestProduction, setAccountSending, setAccountSuppression, suppress, unsuppress } from "./actions";
 import { createConfigSet, deleteConfigSet } from "./config-actions";
 import { createFilter, createRuleSet, deleteFilter, deleteRuleSet, receiveTest, setActiveRuleSet } from "./receipt-actions";
 import { createTemplate, deleteTemplate } from "./template-actions";
-
 
 export function AccountPanel({ account }: { account: GetAccountCommandOutput }) {
   const production = !!account.ProductionAccessEnabled;
@@ -87,15 +88,17 @@ export async function ConfigSets() {
         <label className="check">
           <input type="checkbox" name="reputation" /> Reputation metrics
         </label>
-        <Field label="TLS to the receiving server" member="TlsPolicy">
-          <select name="tls" defaultValue="OPTIONAL">
-            <option value="OPTIONAL">Optional</option>
-            <option value="REQUIRE">Require</option>
-          </select>
-        </Field>
-        <Field label="Custom redirect domain (open and click tracking)" rule={{ format: "domain" }} member="CustomRedirectDomain">
-          <input name="redirectDomain" placeholder="track.example.com" />
-        </Field>
+        <MoreFields label="TLS, tracking domain">
+          <Field label="TLS to the receiving server" member="TlsPolicy">
+            <select name="tls" defaultValue="OPTIONAL">
+              <option value="OPTIONAL">Optional</option>
+              <option value="REQUIRE">Require</option>
+            </select>
+          </Field>
+          <Field label="Custom redirect domain (open and click tracking)" rule={{ format: "domain" }} member="CustomRedirectDomain">
+            <input name="redirectDomain" placeholder="track.example.com" />
+          </Field>
+        </MoreFields>
       </ActionForm>
     </Sheet>
   );
@@ -125,18 +128,7 @@ export async function Templates() {
   const create = (
     <Sheet title="Create template" label="Create template" testId="create-template">
       <ActionForm action={createTemplate} submit="Create" testId="create-template">
-        <Field label="Name" rule={TEMPLATE_NAME} taken={list.ok ? list.value.map((t) => t.TemplateName!) : undefined} unique member="TemplateName">
-          <input name="name" required autoFocus />
-        </Field>
-        <Field label="Subject" rule={{ required: true }} member="Subject">
-          <input name="subject" required placeholder="Hello {{name}}" />
-        </Field>
-        <Field label="Text part" member="Text">
-          <textarea name="text" rows={4} placeholder="Hi {{name}}, your order {{order}} shipped." />
-        </Field>
-        <Field label="HTML part" member="Html">
-          <textarea name="html" rows={4} className="code-editor" placeholder="<p>Hi {{name}}</p>" />
-        </Field>
+        <TemplateFields nameRule={TEMPLATE_NAME} taken={list.ok ? list.value.map((t) => t.TemplateName!) : []} />
       </ActionForm>
     </Sheet>
   );

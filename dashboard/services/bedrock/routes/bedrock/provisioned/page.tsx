@@ -3,6 +3,7 @@ import { ago, all, load } from "@mws-dashboard/aws";
 import { ActionForm, AwsIcon, Empty, ErrorNotice, Field, List, Page, Pill, Section, Sheet, Status } from "@mws-dashboard/ui";
 import { CreateProvisionedModelThroughput } from "@mws-dashboard/ui/model/bedrock";
 import { Gauge } from "lucide-react";
+import { MoreFields } from "@mws-dashboard/ui/presets";
 import type { Metadata } from "next";
 
 import { bedrock, ICONS, providerIcon, tone } from "../../../lib/clients";
@@ -65,19 +66,21 @@ export default async function Provisioned({ searchParams }: Props) {
           <Field label="Model units" rule={CreateProvisionedModelThroughput.modelUnits}>
             <input name="units" type="number" min={1} defaultValue={1} required />
           </Field>
-          <Field label="Commitment term">
-            <select name="commitment" defaultValue="">
-              {Object.entries(COMMITMENT).map(([v, l]) => (
-                <option key={v} value={v}>
-                  {l}
-                </option>
-              ))}
-            </select>
-          </Field>
         </div>
+        <MoreFields>
+        <Field label="Commitment term">
+          <select name="commitment" defaultValue="">
+            {Object.entries(COMMITMENT).map(([v, l]) => (
+              <option key={v} value={v}>
+                {l}
+              </option>
+            ))}
+          </select>
+        </Field>
         <Field label="Tags" format="tags">
           <textarea name="tags" rows={2} placeholder="team=ml" />
         </Field>
+        </MoreFields>
       </ActionForm>
     </Sheet>
   );

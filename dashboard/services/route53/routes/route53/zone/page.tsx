@@ -70,7 +70,7 @@ function RecordForm({ zone, record, domain, names, choices }: { zone: string; re
   const testId = record ? `edit-record-${record.Name}-${record.Type}${record.SetIdentifier ? `-${record.SetIdentifier}` : ""}` : "create-record";
   return (
     <ActionForm action={saveRecord.bind(null, zone, record ?? null)} submit={record ? "Save record" : "Create record"} testId={testId}>
-      <RecordFields zone={domain} zoneId={zone} names={names} defaults={recordDefaults(record, domain)} choices={choices} />
+      <RecordFields zone={domain} zoneId={zone} names={names} defaults={recordDefaults(record, domain)} choices={choices} creating={!record} />
     </ActionForm>
   );
 }

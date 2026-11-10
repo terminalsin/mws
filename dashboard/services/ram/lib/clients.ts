@@ -34,7 +34,13 @@ const quietly = async <T,>(read: () => Promise<T>, fallback: T): Promise<T> => {
 export async function shareTargets() {
   const [info, cas, principals] = await Promise.all([
     frameInfo(),
-    quietly(async () => ((await (await client(ACMPCAClient)).send(new ListCertificateAuthoritiesCommand({}))).CertificateAuthorities ?? []).filter((c) => c.Status !== "DELETED").map((c) => c.Arn!), [] as string[]),
+    quietly(
+      async () =>
+        ((await (await client(ACMPCAClient)).send(new ListCertificateAuthoritiesCommand({}))).CertificateAuthorities ?? [])
+          .filter((c) => c.Status !== "DELETED")
+          .map((c) => ({ arn: c.Arn!, name: c.CertificateAuthorityConfiguration?.Subject?.CommonName ?? c.Arn!.split("/").pop()! })),
+      [] as { arn: string; name: string }[],
+    ),
     quietly(async () => {
       const orgs = await client(OrganizationsClient);
       const [org, accounts, roots] = await Promise.all([
@@ -47,7 +53,9 @@ export async function shareTargets() {
     }, [] as string[]),
   ]);
   return {
-    resources: cas,
+    resources: cas.map((c) => c.arn),
+    /** The CAs by name, for the create form's tiles. */
+    cas,
     // You don't share with yourself.
     principals: principals.filter((p) => p !== info.account),
     caArn: info.account ? `arn:aws:acm-pca:${info.region}:${info.account}:certificate-authority/{}` : undefined,

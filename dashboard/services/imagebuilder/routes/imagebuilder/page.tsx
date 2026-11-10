@@ -4,11 +4,13 @@ import { DescribeInstanceTypesCommand } from "@aws-sdk/client-ec2";
 import { ago, all, load } from "@mws-dashboard/aws";
 import { AutoPick, ActionForm, AwsIcon, Empty, ErrorNotice, Field, List, More, Page, Pill, Section, Segments, Sheet, Status, type Rule } from "@mws-dashboard/ui";
 import { CreateComponent, CreateImagePipeline, CreateImageRecipe, CreateInfrastructureConfiguration } from "@mws-dashboard/ui/model/imagebuilder";
-import { CalendarClock, FlaskConical, Pause, Pencil, Play, Puzzle, Server, Trash2 } from "lucide-react";
+import { CalendarClock, FlaskConical, Pause, Pencil, Play, Server, Trash2 } from "lucide-react";
 import type { Metadata } from "next";
 
 import { ec2, iam, ICONS, imagebuilder, tone } from "../../lib/clients";
+import { ComponentFields, RecipeFields } from "../../lib/fields";
 import * as lists from "../../lib/lists";
+import { componentIcon, osLogo } from "../../lib/logos";
 import { versionOf } from "../../lib/lists";
 import { createComponent, createInfrastructure, createPipeline, createRecipe, deleteResource, runPipeline, setPipelineEnabled, updateInfrastructure } from "./actions";
 import { ContainerRecipes, Distributions, LifecyclePolicies, Workflows } from "./tabs";
@@ -29,25 +31,6 @@ const TABS: [string, string][] = [
   ["lifecycle", "Lifecycle policies"],
 ];
 
-const SAMPLE = `name: install-nginx
-schemaVersion: 1.0
-phases:
-  - name: build
-    steps:
-      - name: Install
-        action: ExecuteBash
-        inputs:
-          commands:
-            - sudo dnf install -y nginx
-  - name: validate
-    steps:
-      - name: Check
-        action: ExecuteBash
-        inputs:
-          commands:
-            - nginx -v
-`;
-
 // Image Builder's name pattern reads badly as text; every resource shares it.
 const named = (rule: Rule): Rule => ({ ...rule, hint: "Letters, digits, spaces, - and _", generate: "name" });
 const NAMES = {
@@ -59,8 +42,7 @@ const NAMES = {
 const SCHEDULE: Rule = { ...CreateImagePipeline.schedule.fields!.scheduleExpression, format: "cron" };
 const PAGE = 50;
 
-const osIcon = (platform: string | undefined, os: string | undefined) =>
-  /ubuntu/i.test(os ?? "") ? "brand/ubuntu" : platform === "Windows" ? "resource/AmazonEC2AMI" : "brand/linux";
+const osIcon = (platform: string | undefined, os: string | undefined) => (platform === "Windows" ? "resource/AmazonEC2AMI" : osLogo(os));
 const enc = encodeURIComponent;
 
 async function Pipelines() {
@@ -207,41 +189,12 @@ async function Recipes() {
   const action = (
     <Sheet title="Create image recipe" label="Create image recipe" testId="create-recipe">
       <ActionForm action={createRecipe} submit="Create recipe" testId="create-recipe">
-        <div className="form-row">
-          <Field label="Name" rule={NAMES.recipe}>
-            <input name="name" required autoFocus />
-          </Field>
-          <Field label="Version" rule={CreateImageRecipe.semanticVersion} format="semver" member="semanticVersion" unique>
-            <input name="version" required defaultValue="1.0.0" />
-          </Field>
-        </div>
-        <Field label="Base image" rule={CreateImageRecipe.parentImage} member="parentImage" hint="An Image Builder image, an AMI ID or ssm:/parameter" known={[...parents, ...ownImages].map((p) => p.arn!)}>
-          <input name="parent" required list="imagebuilder-parents" defaultValue={parents[0]?.arn} spellCheck={false} />
-        </Field>
-        <datalist id="imagebuilder-parents">
-          {[...parents, ...ownImages].map((p) => (
-            <option key={p.arn} value={p.arn}>
-              {p.name}
-            </option>
-          ))}
-        </datalist>
-        <fieldset className="checks">
-          <legend>Components</legend>
-          {components
-            .filter((c) => c.type !== "TEST" && c.platform !== "Windows")
-            .map((c) => (
-              <label key={c.arn} className="check">
-                <input type="checkbox" name="component" value={c.arn} defaultChecked={c.name === "update-linux"} /> {c.name}
-                {c.owner !== "Amazon" && <Pill>own</Pill>}
-              </label>
-            ))}
-        </fieldset>
-        <Field label="Working directory" rule={CreateImageRecipe.workingDirectory}>
-          <input name="workdir" placeholder="/tmp" spellCheck={false} />
-        </Field>
-        <Field label="User data" rule={CreateImageRecipe.additionalInstanceConfiguration?.fields?.userDataOverride}>
-          <textarea name="userData" rows={3} spellCheck={false} placeholder="#!/bin/bash" />
-        </Field>
+        <RecipeFields
+          parents={[...parents.map((p) => ({ arn: p.arn!, name: p.name!, os: p.osVersion })), ...ownImages.map((p) => ({ arn: p.arn!, name: p.name!, os: p.osVersion, own: true }))]}
+          components={components.filter((c) => c.type !== "TEST" && c.platform !== "Windows").map((c) => ({ arn: c.arn!, name: c.name!, own: c.owner !== "Amazon" }))}
+          names={recipes.map((r) => r.name!)}
+          rules={{ name: NAMES.recipe, version: CreateImageRecipe.semanticVersion, parent: CreateImageRecipe.parentImage, workdir: CreateImageRecipe.workingDirectory, userData: CreateImageRecipe.additionalInstanceConfiguration?.fields?.userDataOverride }}
+        />
       </ActionForm>
     </Sheet>
   );
@@ -274,17 +227,7 @@ async function Components() {
   const action = (
     <Sheet title="Create component" label="Create component" testId="create-component">
       <ActionForm action={createComponent} submit="Create component" testId="create-component">
-        <div className="form-row">
-          <Field label="Name" rule={NAMES.component}>
-            <input name="name" required autoFocus />
-          </Field>
-          <Field label="Version" rule={CreateComponent.semanticVersion} format="semver" member="semanticVersion" unique>
-            <input name="version" required defaultValue="1.0.0" />
-          </Field>
-        </div>
-        <Field label="Document" rule={CreateComponent.data}>
-          <textarea name="data" rows={16} className="code-editor" spellCheck={false} defaultValue={SAMPLE} />
-        </Field>
+        <ComponentFields names={data.ok ? data.value.map((c) => c.name!) : []} rules={{ name: NAMES.component, version: CreateComponent.semanticVersion, data: CreateComponent.data }} />
       </ActionForm>
     </Sheet>
   );
@@ -297,7 +240,7 @@ async function Components() {
         empty={<Empty icon={ICONS.imagebuilder} action={action} />}
         rows={data.value.map((c) => ({
           key: c.arn!,
-          icon: <Puzzle size={18} />,
+          icon: <AwsIcon icon={componentIcon(c.name!)} size={20} />,
           title: c.name,
           subtitle: c.description,
           href: `/imagebuilder/component?arn=${enc(c.arn!)}`,

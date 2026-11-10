@@ -147,7 +147,7 @@ export default async function TargetGroup({ searchParams }: Props) {
   return (
     <Page
       title={g.TargetGroupName}
-      icon={ICONS.elb}
+      icon={TARGET_ICON[g.TargetType ?? "instance"] ?? ICONS.elb}
       back={back}
       subtitle={g.TargetGroupArn}
       actions={

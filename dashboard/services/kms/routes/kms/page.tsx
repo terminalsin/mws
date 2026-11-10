@@ -1,16 +1,14 @@
 import type { KeyMetadata } from "@aws-sdk/client-kms";
 import { ago, load } from "@mws-dashboard/aws";
-import { ActionForm, AwsIcon, Curated, Empty, ErrorNotice, Field, Metric, Metrics, Page, Pill, Sheet, Status } from "@mws-dashboard/ui";
+import { AwsIcon, Curated, Empty, ErrorNotice, Metric, Metrics, Page, Pill, Sheet, Status } from "@mws-dashboard/ui";
 import type { Metadata } from "next";
 
 import { ICONS } from "../../lib/clients";
-import { ALL_SPECS, STATE_TONE, USAGE, listAliases, listKeys } from "../../lib/kms";
-import { ALIAS, DESCRIPTION, KEY_POLICY, ROTATION_DAYS, TAGS, takenAliases } from "../../lib/rules";
-import { createKey } from "./actions";
+import { STATE_TONE, USAGE, listAliases, listKeys } from "../../lib/kms";
+import { takenAliases } from "../../lib/rules";
+import { CreateKeyForm } from "./create-key.tsx";
 
 export const metadata: Metadata = { title: "KMS" };
-
-
 
 type Props = { searchParams: Promise<{ tab?: string }> };
 
@@ -20,59 +18,7 @@ export default async function Keys({ searchParams }: Props) {
   const taken = takenAliases(aliases.ok ? aliases.value.map((a) => a.AliasName!) : []);
   const create = (
     <Sheet title="New key" label="Create key" testId="create-key">
-      <ActionForm action={createKey} submit="Create" testId="create-key">
-        <Field label="Alias" rule={ALIAS} taken={taken} unique>
-          <input name="alias" placeholder="alias/app-data" autoFocus />
-        </Field>
-        <Field label="Description" rule={DESCRIPTION}>
-          <input name="description" />
-        </Field>
-        <div className="form-row">
-          <Field label="Key usage" member="KeyUsage">
-            <select name="usage" defaultValue="">
-              <option value="">By key spec</option>
-              {USAGE.map((u) => (
-                <option key={u.id} value={u.id}>
-                  {u.title}
-                </option>
-              ))}
-            </select>
-          </Field>
-          <Field label="Key spec" member="KeySpec">
-            <select name="spec" defaultValue="SYMMETRIC_DEFAULT">
-              {ALL_SPECS.map((s) => (
-                <option key={s}>{s}</option>
-              ))}
-            </select>
-          </Field>
-        </div>
-        <Field label="Key material origin" member="Origin">
-          <select name="origin" defaultValue="AWS_KMS">
-            <option value="AWS_KMS">KMS</option>
-            <option value="EXTERNAL">External (import key material)</option>
-          </select>
-        </Field>
-        <div className="form-row">
-          <label className="check">
-            <input type="checkbox" name="rotation" defaultChecked /> Automatic rotation
-          </label>
-          <Field label="Rotation period (days)" rule={ROTATION_DAYS} member="RotationPeriodInDays">
-            <input name="rotationDays" type="number" placeholder="365" />
-          </Field>
-        </div>
-        <label className="check">
-          <input type="checkbox" name="multiRegion" /> Multi-Region
-        </label>
-        <Field label="Tags" rule={TAGS}>
-          <textarea name="tags" rows={2} placeholder="team=payments" />
-        </Field>
-        <details>
-          <summary>Key policy</summary>
-          <Field label="Key policy" rule={KEY_POLICY}>
-            <textarea name="policy" rows={8} placeholder="Default: the account root may use and manage the key" className="code-editor" spellCheck={false} />
-          </Field>
-        </details>
-      </ActionForm>
+      <CreateKeyForm taken={taken} />
     </Sheet>
   );
   if (!keys.ok) {
@@ -125,7 +71,7 @@ export default async function Keys({ searchParams }: Props) {
           { id: "other", title: "Other", items: shown.filter((k) => !USAGE.some((u) => u.id === k.meta.KeyUsage)) },
         ]}
         row={row}
-        empty={<Empty icon={ICONS.key} />}
+        empty={<Empty icon={ICONS.key} action={tab === "aws" ? undefined : create} />}
       />
     </Page>
   );

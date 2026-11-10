@@ -94,7 +94,6 @@ export async function Properties({ bucket }: { bucket: string }) {
         <Facts
           items={[
             ["Region", location.LocationConstraint || "us-east-1"],
-            ["ARN", <code>{`arn:aws:s3:::${bucket}`}</code>],
             ["Versioning", <Status tone={versioned ? "good" : "neutral"}>{versioning.Status ?? "Off"}</Status>],
             versioning.MFADelete === "Enabled" && ["MFA delete", "Enabled"],
           ]}

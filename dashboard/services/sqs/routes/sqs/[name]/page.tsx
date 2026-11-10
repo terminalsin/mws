@@ -1,7 +1,8 @@
 import { ago, load } from "@mws-dashboard/aws";
-import { ActionForm, AwsIcon, CodeBlock, Empty, ErrorNotice, Facts, Field, List, Metric, Metrics, Page, Pill, Section, Sheet, Status, Tags, type Tone } from "@mws-dashboard/ui";
+import { ActionForm, AwsIcon, CodeBlock, CopyValue, Empty, ErrorNotice, Facts, Field, List, Metric, Metrics, Page, Pill, Section, Sheet, Status, Tags, type Tone } from "@mws-dashboard/ui";
 import { LiveRefresh } from "@mws-dashboard/ui/client";
-import { Eraser, OctagonX, Send, Settings2, Tag, Trash2, Undo2, Zap } from "lucide-react";
+import { MoreFields } from "@mws-dashboard/ui/presets";
+import { Eraser, Inbox, OctagonX, Plane, Send, Settings2, Tag, Timer, Trash2, Undo2, Zap } from "lucide-react";
 import type { Metadata } from "next";
 import Link from "next/link";
 
@@ -115,16 +116,20 @@ export default async function Queue({ params }: Props) {
                     <input name="delay" inputMode="numeric" />
                   </Field>
                 )}
-                <Field label="Copies" rule={COPIES}>
-                  <input name="copies" inputMode="numeric" placeholder="1" />
-                </Field>
               </div>
               <Field label="Message attributes" rule={MESSAGE_ATTRIBUTES} member="MessageAttributes">
-                <textarea name="attributes" rows={3} placeholder={"type=order\npriority:Number=1"} spellCheck={false} />
+                <textarea name="attributes" rows={2} placeholder={"type=order\npriority:Number=1"} spellCheck={false} />
               </Field>
-              <Field label="X-Ray trace header">
-                <input name="trace" placeholder="Root=1-…" spellCheck={false} />
-              </Field>
+              <MoreFields>
+                <div className="form-row">
+                  <Field label="Copies" rule={COPIES}>
+                    <input name="copies" inputMode="numeric" placeholder="1" />
+                  </Field>
+                  <Field label="X-Ray trace header">
+                    <input name="trace" placeholder="Root=1-…" spellCheck={false} />
+                  </Field>
+                </div>
+              </MoreFields>
             </ActionForm>
           </Sheet>
           <Sheet title="Configuration" label="Edit configuration" icon={<Settings2 size={15} aria-hidden />} testId="queue-config">
@@ -136,16 +141,20 @@ export default async function Queue({ params }: Props) {
                 <Field label="Retention (s)" rule={RULES.MessageRetentionPeriod}>
                   <input name="MessageRetentionPeriod" inputMode="numeric" defaultValue={attrs.MessageRetentionPeriod} />
                 </Field>
-                <Field label="Delay (s)" rule={RULES.DelaySeconds}>
-                  <input name="DelaySeconds" inputMode="numeric" defaultValue={attrs.DelaySeconds} />
-                </Field>
-                <Field label="Receive wait (s)" rule={RULES.ReceiveMessageWaitTimeSeconds}>
-                  <input name="ReceiveMessageWaitTimeSeconds" inputMode="numeric" defaultValue={attrs.ReceiveMessageWaitTimeSeconds} />
-                </Field>
-                <Field label="Max size (bytes)" rule={RULES.MaximumMessageSize}>
-                  <input name="MaximumMessageSize" inputMode="numeric" defaultValue={attrs.MaximumMessageSize} />
-                </Field>
               </div>
+              <MoreFields label="Delay, long polling, size">
+                <div className="form-row">
+                  <Field label="Delay (s)" rule={RULES.DelaySeconds}>
+                    <input name="DelaySeconds" inputMode="numeric" defaultValue={attrs.DelaySeconds} />
+                  </Field>
+                  <Field label="Receive wait (s)" rule={RULES.ReceiveMessageWaitTimeSeconds}>
+                    <input name="ReceiveMessageWaitTimeSeconds" inputMode="numeric" defaultValue={attrs.ReceiveMessageWaitTimeSeconds} />
+                  </Field>
+                  <Field label="Max size (bytes)" rule={RULES.MaximumMessageSize}>
+                    <input name="MaximumMessageSize" inputMode="numeric" defaultValue={attrs.MaximumMessageSize} />
+                  </Field>
+                </div>
+              </MoreFields>
               <QueueSettings queues={candidates} current={current} fifo={fifo} rules={settingRules} />
               <Field label="Access policy" rule={RULES.Policy}>
                 <textarea name="Policy" rows={8} defaultValue={attrs.Policy ? JSON.stringify(JSON.parse(attrs.Policy), null, 2) : ""} />
@@ -180,9 +189,9 @@ export default async function Queue({ params }: Props) {
     >
       <LiveRefresh when={running || inflight > 0 || delayed > 0} />
       <Metrics>
-        <Metric label="Available" value={<span data-testid="available">{visible}</span>} tone={isDlq && visible > 0 ? "bad" : undefined} />
-        <Metric label="In flight" value={inflight} />
-        <Metric label="Delayed" value={delayed} />
+        <Metric label="Available" icon={<Inbox size={14} aria-hidden />} value={<span data-testid="available">{visible}</span>} tone={isDlq && visible > 0 ? "bad" : undefined} />
+        <Metric label="In flight" icon={<Plane size={14} aria-hidden />} value={inflight} />
+        <Metric label="Delayed" icon={<Timer size={14} aria-hidden />} value={delayed} />
       </Metrics>
       {isDlq && (
         <Section
@@ -236,7 +245,7 @@ export default async function Queue({ params }: Props) {
       <Section title="Configuration">
         <Facts
           items={[
-            ["ARN", <code key="a">{q.arn}</code>],
+            ["ARN", <CopyValue key="a" value={q.arn} label="Copy ARN" />],
             fifo && ["Type", <Pill key="f" tone="info">FIFO</Pill>],
             ["Visibility timeout", seconds(attrs.VisibilityTimeout)],
             ["Retention", seconds(attrs.MessageRetentionPeriod)],

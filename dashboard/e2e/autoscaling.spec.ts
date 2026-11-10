@@ -87,6 +87,8 @@ test("Auto Scaling: a group is created in a chosen VPC and its hooks, schedules,
   await input("min").fill("0");
   await input("desired").fill("0");
   await input("max").fill("2");
+  // Network, health checks and tags wait under More.
+  await form.locator(".more-fields > summary").click();
   const subnets = form.locator('input[name="subnet"]');
   await expect(subnets.first()).toBeVisible();
   // Only the first subnet.
@@ -110,7 +112,10 @@ test("Auto Scaling: a group is created in a chosen VPC and its hooks, schedules,
   await page.getByRole("link", { name: /^Automatic scaling/ }).click();
   await submit(page, "add-schedule", { action: "nightly", desired: "1", kind: "cron", recurrence: "0 2 * * *" });
   await expect(page.getByLabel("Scheduled actions")).toContainText("0 2 * * *");
-  await submit(page, "add-policy", { policy: "step-out", type: "StepScaling", steps: "0:=1" });
+  // The policy form opens on common policies: pick step scaling.
+  const policy = await openSheet(page, "add-policy");
+  await policy.form.getByTestId("policy-preset-step").click();
+  await submit(page, "add-policy", { policy: "step-out", steps: "0:=1" });
   await expect(page.getByLabel("Scaling policies")).toContainText("step-out");
 
   // Details: a tag, a suspended process.

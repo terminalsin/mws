@@ -87,7 +87,7 @@ test("service quotas: a utilization report is generated", async ({ page }) => {
 
 test("service quotas: automatic management starts and stops", async ({ page }) => {
   await page.goto("/servicequotas/automatic");
-  await submit(page, "auto-management", { type: "NotifyOnly", exclude: "ec2=L-1216C47A" });
+  await submit(page, "auto-management", { exclude: "ec2=L-1216C47A" });
   await expect(page.locator(".facts")).toContainText("enabled");
   await expect(row(page, "L-1216C47A")).toBeVisible();
   page.once("dialog", (d) => d.accept().catch(() => {}));
