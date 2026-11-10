@@ -69,6 +69,9 @@ export interface Rule {
   /** Values the field usually refers to (existing roles, keys, queues):
    * close ones are offered when a value is rejected as unknown. */
   known?: string[];
+  /** Readable names for values (an image's name for its ID): a value close
+   * to a name is offered the value it stands for. */
+  aliases?: Record<string, string>;
   /** How to make a fresh valid value when the field is empty or taken. */
   generate?: Generate;
   /** Overrides the message for a pattern mismatch (the model's patterns
@@ -115,6 +118,7 @@ export type Format =
   | "bucket"
   | "name"
   | "port"
+  | "ports"
   | "semver"
   | "cron"
   | "country"
@@ -375,6 +379,12 @@ export function repairs(value: string, rule: Rule, code: IssueCode): Repair[] {
     if (!valid(r.value, rule)) return;
     out.push(r);
   };
+  // A name that stands for a value (an image's name for its ID) says what
+  // was meant better than any reshaping of it.
+  if (rule.aliases && code !== "required" && code !== "taken") {
+    for (const r of didYouMean(value, { aliases: rule.aliases })) offer(r);
+    if (out.length) return out.slice(0, MAX_REPAIRS);
+  }
   switch (code) {
     case "required":
       offer(fresh(rule));
@@ -451,6 +461,11 @@ export function nearestNumbers(value: string, allowed: string[]): string[] | nul
 
 /** Close matches among the values a field usually refers to. */
 export function didYouMean(value: string, rule: Rule): Repair[] {
+  const named = Object.entries(rule.aliases ?? {});
+  // `closest` leaves out the value itself, which here is the best match.
+  const exact = named.filter(([n]) => n === value).map(([n]) => n);
+  const byName = [...exact, ...closest(value, named.map(([n]) => n))].map((n) => ({ value: rule.aliases![n], label: `Use ${n}`, kind: "suggest" as const }));
+  if (byName.length) return byName;
   const known = rule.known ?? [];
   const near = closest(value, known).map((s) => ({ value: s, label: `Did you mean ${s}?`, kind: "suggest" as const }));
   if (near.length || known.length > MAX_REPAIRS) return near;
@@ -881,6 +896,13 @@ const pem = (label: string, body: string) => `-----BEGIN ${label}-----\n${body.r
 
 const DAYS = ["SUN", "MON", "TUE", "WED", "THU", "FRI", "SAT"];
 
+/** Well-known services by name, for a port typed as one ("ssh"). */
+const SERVICE_PORTS: Record<string, number> = {
+  ftp: 21, ssh: 22, telnet: 23, smtp: 25, dns: 53, http: 80, pop3: 110, ntp: 123, imap: 143, ldap: 389, https: 443, smtps: 465,
+  imaps: 993, mssql: 1433, oracle: 1521, nfs: 2049, mysql: 3306, aurora: 3306, rdp: 3389, postgres: 5432, postgresql: 5432,
+  redis: 6379, memcached: 11211, mongodb: 27017, elasticsearch: 9200, kafka: 9092,
+};
+
 export const FORMATS: Record<Format, FormatSpec> = {
   ...CERT_FORMATS,
   json: {
@@ -1175,6 +1197,29 @@ export const FORMATS: Record<Format, FormatSpec> = {
   port: {
     check() {
       return null;
+    },
+  },
+  ports: {
+    check(value) {
+      const m = value.match(/^(\d{1,5})(?:-(\d{1,5}))?$/);
+      if (!m) return "Like 443 or 8000-8080";
+      const [from, to] = [Number(m[1]), Number(m[2] ?? m[1])];
+      if (from > 65535 || to > 65535) return "Ports go up to 65535";
+      return from > to ? "Start with the lower port" : null;
+    },
+    repair(value) {
+      const v = value.trim().toLowerCase();
+      const out: Repair[] = [];
+      const service = SERVICE_PORTS[v.replace(/[^a-z0-9]/g, "")];
+      if (service !== undefined) out.push({ value: String(service), label: `${value.trim()} uses ${service}`, kind: "suggest" });
+      if (/^(\*|all|any)$/.test(v)) out.push({ value: "0-65535", label: "All ports", kind: "fix" });
+      const m = v.match(/^(\d+)\s*(?:-|–|—|:|\.\.|to)\s*(\d+)$/) ?? v.match(/^(\d+)(?:\/(?:tcp|udp))?$/);
+      if (m) {
+        const [a, b] = [m[1], m[2] ?? m[1]].map((n) => Math.min(65535, Number(n)));
+        const [from, to] = a <= b ? [a, b] : [b, a];
+        out.push({ value: from === to ? String(from) : `${from}-${to}`, label: a > b ? "Swap the ports" : "Use a port range", kind: "fix" });
+      }
+      return out;
     },
   },
   semver: {
@@ -1792,6 +1837,14 @@ export function parseServerIssues(message: string): FieldIssue[] {
   // "Value (x) for parameter QueueName is invalid. Reason: ..."
   const param = message.match(/Value \(?'?([^)']*)'?\)? for parameter (\w+) is invalid\.?\s*(?:Reason: )?(.*)$/);
   if (param) out.push({ member: param[2], value: param[1], code: "server", message: sentence(param[3] || "Invalid value") });
+  // EC2: "Invalid value 'x' for keyName." (the value may be the reason itself)
+  if (!param && out.length === 0) {
+    for (const m of message.matchAll(/Invalid value '((?:[^']|'(?! for ))*)' for (\w+)\.?\s*([^]*?)\s*$/g)) {
+      const reason = m[3] || (/\s/.test(m[1]) ? m[1] : "");
+      out.push({ member: m[2], value: reason === m[1] ? undefined : m[1], code: "server", message: reason ? sentence(reason) : "Not accepted" });
+    }
+    if (out.length) return out;
+  }
   // "The parameter MasterUserPassword is not a valid password because it is shorter than 8 characters."
   const notValid = message.match(/The parameter (\w+) is (not a valid \w+)(?: because (?:it is )?([^.]*))?/);
   if (!param && notValid) return [{ member: notValid[1], code: "server", message: sentence(notValid[3] ? `${notValid[2]}: ${notValid[3]}` : notValid[2]) }];

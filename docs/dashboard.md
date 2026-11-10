@@ -117,12 +117,13 @@ Fields validate in place, and say how to fix what they reject. `Field`
 3. what the page adds: `format` (`json`, `yaml` (YAML or JSON documents),
    `keyvalue` (one `Key=value` per line), `policy`, `path` (IAM), `dir`, `arn`, `cidr`,
    `ipv4`, `email`, `emails` (a comma-separated list), `domain`,
-   `email-or-domain`, `dnsName` (wildcards allowed), `url`, `s3url`, `bucket`, `name`, `port`, `semver`, `cron` (AWS's six fields), `phone`,
+   `email-or-domain`, `dnsName` (wildcards allowed), `url`, `s3url`, `bucket`, `name`, `port`, `ports` (a port or range), `semver`, `cron` (AWS's six fields), `phone`,
    `tags` for `key=value` tag lines, `pairs` for any `key=value` list,
    `branch` for Git branch names, PEM `certificate`, `certificates` and
    `privateKey`), `taken` (names that exist), `reserved`
    (prefixes AWS keeps, offered without them),
-   `known` (values the field usually points at), `generate` (`name`,
+   `known` (values the field usually points at), `aliases` (readable names
+   for values: an image name offers its ID), `generate` (`name`,
    `token`, `password`, `uuid`, or a prefix/suffix), `arn` (the ARN template
    a bare name expands to), `cidr` (allowed netmasks, the blocks a CIDR must
    fit inside and the ones it must not overlap; repairs offer free blocks, as
@@ -154,8 +155,8 @@ messages (`Value 'x' at 'roleName' failed to satisfy constraint: ...`) back
 into rules, so a backend rejection gets the same repairs; "already exists"
 errors land on the field marked `unique` with the next free name; anything
 else is mapped with `act(run, { revalidate, fields: { QueueName: "name",
-NoSuchEntityException: "role" } })` (error codes as the JS SDK names them, `e.name`), and `throw new FieldError(field, message)` targets
-a field directly; its optional `repairs` carry fixes only the action can work
+NoSuchEntityException: "role" } })` (error codes as the JS SDK names them, `e.name`), and `throw new FieldError(field, message, code, rule)` targets
+a field directly (a rule's `known` values become its suggestions); its optional `repairs` carry fixes only the action can work
 out (CloudFormation's template errors offer the closest logical id, resource
 type or section, see `services/cloudformation/lib/repairs.ts`). Only issues no field claims show under the form. All of
 this lives in the console (`validation.ts`, `fields.tsx`); MWS itself only

@@ -9,6 +9,7 @@ import Link from "next/link";
 
 import { ICONS, ec2, nameTag } from "../../../lib/clients";
 import { STATE_TONE } from "../../../lib/ec2";
+import { TAG_VALUE } from "../../../lib/rules";
 import { changeState, rename } from "../actions";
 
 type Props = { searchParams: Promise<{ id?: string; tab?: string }> };
@@ -63,8 +64,8 @@ export default async function InstancePage({ searchParams }: Props) {
           <>
             <Sheet title="Name" label="Rename" icon={<Pencil size={16} />}>
               <ActionForm action={rename.bind(null, id)} submit="Save">
-                <Field label="Name">
-                  <input name="name" defaultValue={name} />
+                <Field label="Name" rule={TAG_VALUE}>
+                  <input name="name" defaultValue={name} autoFocus />
                 </Field>
               </ActionForm>
             </Sheet>
