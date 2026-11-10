@@ -23,8 +23,10 @@
 //! State Manager associations apply documents on their schedule
 //! ([`associations`]); inventory and compliance come from the nodes
 //! ([`inventory`], [`compliance`]); resource data syncs write inventory into
-//! S3 ([`nodes`]). Automation, sessions and OpsCenter answer
-//! `NotImplemented`.
+//! S3 ([`nodes`]). Automation runbooks run step by step through the other
+//! services' APIs ([`automation`], [`engine`]), Change Manager change
+//! requests wait for approval, and OpsCenter keeps OpsItems ([`ops`]).
+//! Sessions answer `NotImplemented`.
 
 #[allow(clippy::all, dead_code, unused_imports, non_snake_case, non_camel_case_types)]
 pub mod generated {
@@ -33,15 +35,18 @@ pub mod generated {
 
 mod activations;
 mod associations;
+mod automation;
 mod changes;
 mod commands;
 mod compliance;
 mod documents;
+mod engine;
 mod handler;
 mod inventory;
 mod maintenance;
 mod names;
 mod nodes;
+mod ops;
 mod params;
 mod patch;
 pub mod policies;
@@ -59,6 +64,7 @@ use std::sync::{Arc, Mutex, MutexGuard, RwLock};
 use mws_core::{ConditionContext, HttpRequest, HttpResponse, RequestContext, Service, ServiceError};
 use mws_kms::Kms;
 
+pub use automation::{AutomationRuntime, ScriptCredentials};
 pub use changes::{ParameterChange, ParameterChangeSink};
 pub use commands::{ManagedNode, ManagedNodes, ShellOutput};
 pub use maintenance::{TaskInvoker, WindowEvent};
@@ -78,6 +84,7 @@ pub struct Ssm {
     nodes: Arc<RwLock<Option<Arc<dyn ManagedNodes>>>>,
     invoker: Arc<RwLock<Option<Arc<dyn TaskInvoker>>>>,
     data_sync: Arc<RwLock<Option<Arc<dyn DataSyncDestination>>>>,
+    automation: Arc<RwLock<Option<Arc<dyn AutomationRuntime>>>>,
     /// The most recent request, as a template for work the clock starts
     /// (maintenance window Lambda tasks).
     template: Arc<RwLock<Option<RequestContext>>>,
@@ -98,6 +105,7 @@ impl Ssm {
             nodes: Arc::default(),
             invoker: Arc::default(),
             data_sync: Arc::default(),
+            automation: Arc::default(),
             template: Arc::default(),
             clock_offset_ms: Arc::default(),
             ticking: Arc::default(),

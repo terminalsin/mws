@@ -1451,6 +1451,20 @@ impl Ssm {
             let (status, details, execution_id, parameters) = match task.task_type.as_deref() {
                 Some("RUN_COMMAND") => self.run_command_task(account, region, task, resource.as_deref(), &vars).await,
                 Some("LAMBDA") => self.run_lambda_task(account, region, task, &vars, clock()).await,
+                Some("AUTOMATION") => {
+                    let params: BTreeMap<String, Vec<String>> = task
+                        .task_invocation_parameters
+                        .as_ref()
+                        .and_then(|p| p.automation.as_ref())
+                        .and_then(|a| a.parameters.clone())
+                        .unwrap_or_default()
+                        .into_iter()
+                        .map(|(k, v)| (k, v.iter().map(|x| pseudo(x, &vars)).collect()))
+                        .collect();
+                    let partition = self.template().map(|t| t.partition).unwrap_or_else(|| "aws".into());
+                    let arn = window_arn(&partition, region, account, &wid);
+                    self.run_automation_task(account, region, task, params, &arn).await
+                }
                 Some(other) => (
                     "FAILED",
                     format!("MWS does not run {other} maintenance window tasks."),

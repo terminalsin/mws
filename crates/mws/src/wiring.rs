@@ -176,14 +176,50 @@ impl TargetSink for EcsTarget {
     }
 }
 
-/// EventBridge targets that are Systems Manager documents: Run Command
-/// sends the document to the `RunCommandParameters` targets as the target's
-/// role, with the event input as the document's parameters.
+/// EventBridge targets in Systems Manager: Run Command sends a document to
+/// the `RunCommandParameters` targets as the target's role, with the event
+/// input as the document's parameters; Automation targets start a runbook
+/// the same way; OpsItem targets create OpsItems from events.
 pub(crate) struct RunCommandTarget(pub mws_ssm::Ssm);
 
 #[async_trait::async_trait]
 impl TargetSink for RunCommandTarget {
     async fn deliver(&self, inv: TargetInvocation<'_>) -> Result<(), TargetError> {
+        let parts: Vec<&str> = inv.target_arn.splitn(6, ':').collect();
+        if parts.len() == 6 && parts[5] == "opsitem" {
+            // OpsCenter targets turn the event into an OpsItem.
+            let event: Value = serde_json::from_str(inv.payload).unwrap_or(Value::String(inv.payload.to_string()));
+            return self
+                .0
+                .create_ops_item_from_event(parts[1], parts[4], parts[3], inv.source_arn, &event)
+                .map(|_| ())
+                .map_err(|e| TargetError::permanent("InvalidParameter", e));
+        }
+        if let Some(definition) = inv.target_arn.split_once(":automation-definition/").map(|(_, d)| d) {
+            // Automation targets start the runbook as the target's role,
+            // with the event input as its parameters.
+            let ctx = inv.role_context()?;
+            let (name, version) = match definition.split_once(':') {
+                Some((n, v)) => (n, Some(v)),
+                None => (definition, None),
+            };
+            let mut request = json!({ "DocumentName": name });
+            if let Some(v) = version.filter(|v| *v != "$DEFAULT") {
+                request["DocumentVersion"] = Value::String(v.to_string());
+            }
+            if let Ok(Value::Object(params)) = serde_json::from_str::<Value>(inv.payload) {
+                let params: Map<String, Value> = params
+                    .into_iter()
+                    .map(|(k, v)| match v {
+                        Value::Array(_) => (k, v),
+                        Value::String(s) => (k, json!([s])),
+                        other => (k, json!([other.to_string()])),
+                    })
+                    .collect();
+                request["Parameters"] = Value::Object(params);
+            }
+            return self.0.invoke(ctx, "StartAutomationExecution", request).await.map(|_| ()).map_err(target_error);
+        }
         let Some(document) = inv.target_arn.split_once(":document/").map(|(_, d)| d) else {
             return Err(TargetError::permanent(
                 "InvalidTarget",

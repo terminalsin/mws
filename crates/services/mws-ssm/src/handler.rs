@@ -28,6 +28,30 @@ macro_rules! delegate {
 
 impl Handler for Ssm {
     delegate! {
+        start_automation_execution(types::StartAutomationExecutionRequest) -> types::StartAutomationExecutionResult;
+        start_change_request_execution(types::StartChangeRequestExecutionRequest) -> types::StartChangeRequestExecutionResult;
+        get_automation_execution(types::GetAutomationExecutionRequest) -> types::GetAutomationExecutionResult;
+        describe_automation_executions(types::DescribeAutomationExecutionsRequest) -> types::DescribeAutomationExecutionsResult;
+        describe_automation_step_executions(types::DescribeAutomationStepExecutionsRequest) -> types::DescribeAutomationStepExecutionsResult;
+        stop_automation_execution(types::StopAutomationExecutionRequest) -> types::StopAutomationExecutionResult;
+        send_automation_signal(types::SendAutomationSignalRequest) -> types::SendAutomationSignalResult;
+        start_execution_preview(types::StartExecutionPreviewRequest) -> types::StartExecutionPreviewResponse;
+        get_execution_preview(types::GetExecutionPreviewRequest) -> types::GetExecutionPreviewResponse;
+        create_ops_item(types::CreateOpsItemRequest) -> types::CreateOpsItemResponse;
+        get_ops_item(types::GetOpsItemRequest) -> types::GetOpsItemResponse;
+        update_ops_item(types::UpdateOpsItemRequest) -> types::UpdateOpsItemResponse;
+        delete_ops_item(types::DeleteOpsItemRequest) -> types::DeleteOpsItemResponse;
+        describe_ops_items(types::DescribeOpsItemsRequest) -> types::DescribeOpsItemsResponse;
+        associate_ops_item_related_item(types::AssociateOpsItemRelatedItemRequest) -> types::AssociateOpsItemRelatedItemResponse;
+        disassociate_ops_item_related_item(types::DisassociateOpsItemRelatedItemRequest) -> types::DisassociateOpsItemRelatedItemResponse;
+        list_ops_item_related_items(types::ListOpsItemRelatedItemsRequest) -> types::ListOpsItemRelatedItemsResponse;
+        list_ops_item_events(types::ListOpsItemEventsRequest) -> types::ListOpsItemEventsResponse;
+        get_ops_summary(types::GetOpsSummaryRequest) -> types::GetOpsSummaryResult;
+        create_ops_metadata(types::CreateOpsMetadataRequest) -> types::CreateOpsMetadataResult;
+        get_ops_metadata(types::GetOpsMetadataRequest) -> types::GetOpsMetadataResult;
+        update_ops_metadata(types::UpdateOpsMetadataRequest) -> types::UpdateOpsMetadataResult;
+        delete_ops_metadata(types::DeleteOpsMetadataRequest) -> types::DeleteOpsMetadataResult;
+        list_ops_metadata(types::ListOpsMetadataRequest) -> types::ListOpsMetadataResult;
         list_nodes(types::ListNodesRequest) -> types::ListNodesResult;
         list_nodes_summary(types::ListNodesSummaryRequest) -> types::ListNodesSummaryResult;
         describe_instance_properties(types::DescribeInstancePropertiesRequest) -> types::DescribeInstancePropertiesResult;

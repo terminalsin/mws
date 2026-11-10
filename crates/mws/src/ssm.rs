@@ -185,6 +185,133 @@ impl mws_events::ClockSource for SsmWindowEvents {
     }
 }
 
+/// How Automation runbooks reach the rest of MWS: assume roles as
+/// `ssm.amazonaws.com` (or chain them through STS), hand scripts
+/// credentials, and call any service's API by the name AWS SDKs give it.
+pub(crate) struct SsmAutomation {
+    pub sts: mws_sts::Sts,
+    pub services: std::collections::HashMap<String, std::sync::Arc<dyn mws_core::Service>>,
+}
+
+impl SsmAutomation {
+    pub fn new(sts: mws_sts::Sts, services: &[std::sync::Arc<dyn mws_core::Service>]) -> Self {
+        let mut map = std::collections::HashMap::new();
+        for s in services {
+            map.entry(s.signing_name().to_string()).or_insert_with(|| s.clone());
+            map.insert(s.name().to_string(), s.clone());
+        }
+        Self { sts, services: map }
+    }
+
+    /// The service AWS SDKs call `name`.
+    fn service(&self, name: &str) -> Option<std::sync::Arc<dyn mws_core::Service>> {
+        let mapped = match name {
+            "cloudwatch" => "monitoring",
+            "efs" => "elasticfilesystem",
+            "service-quotas" => "servicequotas",
+            "meteringmarketplace" => "marketplace-metering",
+            "sso-admin" => "sso",
+            "elasticloadbalancingv2" => "elbv2",
+            "elasticloadbalancing" => "elb",
+            "ses" | "email" => "ses",
+            other => other,
+        };
+        self.services.get(mapped).cloned()
+    }
+
+    fn resolve(&self, ctx: &RequestContext, key: &str, token: &str) -> Result<RequestContext, String> {
+        let caller = self
+            .sts
+            .credential_store()
+            .resolve(key, Some(token), ctx.received_at)
+            .map_err(|e| format!("{e:?}"))?
+            .map(|r| r.caller)
+            .ok_or_else(|| "the role session could not be resolved".to_string())?;
+        Ok(RequestContext { caller, source_ip: None, ..ctx.clone() })
+    }
+}
+
+#[async_trait]
+impl mws_ssm::AutomationRuntime for SsmAutomation {
+    fn assume_role(
+        &self,
+        ctx: &RequestContext,
+        role_arn: &str,
+        source_arn: &str,
+    ) -> Result<(RequestContext, mws_ssm::ScriptCredentials), String> {
+        let creds = self
+            .sts
+            .assume_role_as_service(&mws_sts::ServiceAssume {
+                role_arn,
+                service_principal: "ssm.amazonaws.com",
+                session_name: "Automation",
+                duration_seconds: 3600,
+                source_account: Some(&ctx.caller.account_id),
+                source_arn: Some(source_arn),
+                now: ctx.received_at,
+            })
+            .map_err(|e| format!("Systems Manager could not assume {role_arn}: {e:?}"))?;
+        let rctx = self.resolve(ctx, &creds.access_key_id, &creds.session_token)?;
+        Ok((
+            rctx,
+            mws_ssm::ScriptCredentials {
+                access_key_id: creds.access_key_id,
+                secret_access_key: creds.secret_access_key,
+                session_token: Some(creds.session_token),
+            },
+        ))
+    }
+
+    async fn chain_role(
+        &self,
+        ctx: &RequestContext,
+        role_arn: &str,
+        session_name: &str,
+    ) -> Result<RequestContext, String> {
+        let sts = self.service("sts").ok_or("STS is not available")?;
+        let session: String =
+            session_name.chars().filter(|c| c.is_ascii_alphanumeric() || "=,.@-".contains(*c)).take(64).collect();
+        let out = sts
+            .invoke(ctx.clone(), "AssumeRole", serde_json::json!({ "RoleArn": role_arn, "RoleSessionName": session }))
+            .await
+            .map_err(|e| format!("{}: {}", e.code, e.message))?;
+        let c = &out["Credentials"];
+        let key = c["AccessKeyId"].as_str().unwrap_or_default();
+        let token = c["SessionToken"].as_str().unwrap_or_default();
+        self.resolve(ctx, key, token)
+    }
+
+    fn credentials_of(&self, ctx: &RequestContext) -> Option<mws_ssm::ScriptCredentials> {
+        if ctx.caller.session.is_some() {
+            return None;
+        }
+        let resolved =
+            self.sts.credential_store().resolve(&ctx.caller.access_key_id, None, ctx.received_at).ok().flatten()?;
+        Some(mws_ssm::ScriptCredentials {
+            access_key_id: ctx.caller.access_key_id.clone(),
+            secret_access_key: resolved.secret_access_key,
+            session_token: None,
+        })
+    }
+
+    async fn call(
+        &self,
+        ctx: &RequestContext,
+        service: &str,
+        operation: &str,
+        input: serde_json::Value,
+    ) -> Result<serde_json::Value, mws_core::ServiceError> {
+        let Some(svc) = self.service(service) else {
+            return Err(mws_core::ServiceError::client(
+                "InvalidRequest",
+                400,
+                format!("MWS does not emulate the service {service}."),
+            ));
+        };
+        svc.invoke(ctx.clone(), operation, input).await
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
