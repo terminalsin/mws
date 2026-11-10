@@ -331,13 +331,57 @@ impl Ec2 {
         ops::gateways::expire_deleted(r, ctx.received_at);
         // Every instance state change a call makes is reported.
         let before = self.wants_state_changes().then(|| signals::instance_states(r));
+        let settled = ops::instance::settle_due(r, region, self.clock_now().max(ctx.received_at));
         let out = f(r);
         let changes = before.map(|b| signals::changed_states(&b, r)).unwrap_or_default();
         drop(state);
+        self.after_settle(settled);
         if !changes.is_empty() {
             self.emit_state_changes(ctx, account, region, changes);
         }
         out
+    }
+
+    /// What finishing transitions leaves to do with the state lock released.
+    fn after_settle(&self, deleted_volumes: Option<Vec<String>>) {
+        let Some(volumes) = deleted_volumes else { return };
+        self.sync_firewalls();
+        for v in volumes {
+            self.volume_job(volumes::VolumeJob::Delete(v));
+        }
+    }
+
+    /// Finish the metadata-backend transitions that came due on the
+    /// emulated clock with no request to notice them, reporting their
+    /// state changes.
+    pub(crate) fn settle_due_everywhere(&self) {
+        let Some(template) = self.remembered_context() else { return };
+        let now = self.clock_now();
+        let mut state = self.lock();
+        let mut changes = Vec::new();
+        let mut settled = Vec::new();
+        for (key, r) in state.regions.iter_mut() {
+            if !r.instances.values().any(|i| i.settle.as_ref().is_some_and(|s| s.at <= now)) {
+                continue;
+            }
+            let Some((account, region)) = key.split_once('/') else { continue };
+            let before = signals::instance_states(r);
+            if let Some(v) = ops::instance::settle_due(r, region, now) {
+                settled.extend(v);
+            }
+            changes.push((account.to_string(), region.to_string(), signals::changed_states(&before, r)));
+        }
+        drop(state);
+        if changes.is_empty() {
+            return;
+        }
+        self.after_settle(Some(settled));
+        for (account, region, c) in changes {
+            if !c.is_empty() && self.wants_state_changes() {
+                let ctx = RequestContext { region: region.clone(), received_at: now, ..template.clone() };
+                self.emit_state_changes(&ctx, &account, &region, c);
+            }
+        }
     }
 }
 

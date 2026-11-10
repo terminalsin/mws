@@ -318,3 +318,21 @@ async fn metrics_follow_the_emulated_clock_and_drive_alarms() {
     }
     panic!("the CPU alarm never fired");
 }
+
+/// Transitions finish on the emulated clock: advancing it past the
+/// transition delay settles a pending instance without waiting.
+#[tokio::test]
+async fn transitions_follow_the_emulated_clock() {
+    let mws = start().await;
+    let ec2 = aws_sdk_ec2::Client::new(&mws.root_sdk_config().await);
+    let id = launch(&ec2, false).await;
+    assert_eq!(state(&ec2, &id).await, InstanceStateName::Pending);
+    let (status, _) = mws.control("POST", "/_mws/clock", Some(r#"{"advanceSeconds": 30}"#)).await;
+    assert_eq!(status, 200);
+    assert_eq!(state(&ec2, &id).await, InstanceStateName::Running);
+    ec2.stop_instances().instance_ids(&id).send().await.unwrap();
+    assert_eq!(state(&ec2, &id).await, InstanceStateName::Stopping);
+    let (status, _) = mws.control("POST", "/_mws/clock", Some(r#"{"advanceSeconds": 30}"#)).await;
+    assert_eq!(status, 200);
+    assert_eq!(state(&ec2, &id).await, InstanceStateName::Stopped);
+}
