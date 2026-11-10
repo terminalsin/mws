@@ -110,15 +110,46 @@ impl Logs {
         (from, to): (i64, i64),
         limit: Option<i32>,
     ) -> Result<String, ServiceError> {
-        let compiled = crate::sqlppl::compile(language, query_string).map_err(errors::malformed_query)?;
+        let now = now_ms(ctx);
+        // Joins and subqueries load their log groups while compiling.
+        let mut fetched: Vec<GroupRef> = Vec::new();
+        let mut fetch_error: Option<ServiceError> = None;
+        let mut scanned_bytes = 0i64;
+        let mut scanned = 0usize;
+        let compiled = {
+            let mut fetch = |ids: &[String]| -> Result<Vec<insights::Record>, String> {
+                let mut load = || -> Result<Vec<insights::Record>, ServiceError> {
+                    let groups: Vec<GroupRef> = ids.iter().map(|i| GroupRef::parse(ctx, i)).collect::<Result<_, _>>()?;
+                    let (records, bytes) = self.load_records(ctx, &groups, now, (from, to))?;
+                    scanned_bytes += bytes;
+                    scanned += records.len();
+                    for g in groups {
+                        if !fetched.iter().any(|f| f.arn() == g.arn()) {
+                            fetched.push(g);
+                        }
+                    }
+                    Ok(records)
+                };
+                load().map_err(|e| {
+                    let m = e.message.clone();
+                    fetch_error = Some(e);
+                    m
+                })
+            };
+            crate::sqlppl::compile_with(language, query_string, &mut fetch)
+        };
+        if let Some(e) = fetch_error {
+            return Err(e);
+        }
+        let compiled = compiled.map_err(errors::malformed_query)?;
         // SQL names its log groups in FROM; the request may not add more.
         let ids = match (language, compiled.log_groups.is_empty()) {
-            ("SQL", true) => {
+            ("SQL", true) if compiled.rows.is_none() => {
                 return Err(errors::malformed_query(
                     "Syntax error: missing FROM clause; name the log group to query in FROM",
                 ))
             }
-            ("SQL", false) if !ids.is_empty() => {
+            ("SQL", _) if !ids.is_empty() => {
                 return Err(errors::invalid_parameter(
                     "For SQL queries, specify log groups in the FROM clause of the query, not in the request.",
                 ))
@@ -127,33 +158,22 @@ impl Logs {
             _ => ids,
         };
         let query = compiled.query;
-        let groups: Vec<GroupRef> = ids.iter().map(|i| GroupRef::parse(ctx, i)).collect::<Result<_, _>>()?;
-        for g in &groups {
-            self.authorize_group(ctx, "StartQuery", g, None, ConditionContext::new())?;
-        }
         let started = std::time::Instant::now();
-        let now = now_ms(ctx);
-        let mut records = Vec::new();
-        let mut scanned_bytes = 0i64;
-        {
-            let st = self.lock();
-            for g in &groups {
-                let group = st.group(g).map_err(|_| {
-                    errors::resource_not_found(format!(
-                        "Log group '{}' does not exist for account ID '{}'",
-                        g.name, g.account
-                    ))
-                })?;
-                let floor = cutoff(group, now).max(from);
-                for s in group.streams.values() {
-                    for e in s.events.iter().filter(|e| e.timestamp >= floor && e.timestamp <= to) {
-                        scanned_bytes += e.size();
-                        records.push(record(g, &s.name, e));
+        let (records, groups) = match compiled.rows {
+            Some(rows) => (rows, fetched),
+            None => {
+                let groups: Vec<GroupRef> = ids.iter().map(|i| GroupRef::parse(ctx, i)).collect::<Result<_, _>>()?;
+                let (records, bytes) = self.load_records(ctx, &groups, now, (from, to))?;
+                scanned_bytes += bytes;
+                scanned += records.len();
+                for g in groups {
+                    if !fetched.iter().any(|f| f.arn() == g.arn()) {
+                        fetched.push(g);
                     }
                 }
+                (records, fetched)
             }
-        }
-        let scanned = records.len();
+        };
         let limit = limit.map_or(10_000, |l| l.clamp(1, 10_000) as usize);
         let out = insights::execute(&query, records, limit);
         // `@ptr` is a Logs Insights language field.
@@ -190,6 +210,36 @@ impl Logs {
         };
         self.lock().region(&ctx.caller.account_id, &ctx.region).queries.insert(id.clone(), q);
         Ok(id)
+    }
+
+    /// The events of `groups` in `[from, to]` as query records, after
+    /// authorizing `StartQuery` on each; and the bytes scanned.
+    fn load_records(
+        &self,
+        ctx: &RequestContext,
+        groups: &[GroupRef],
+        now: i64,
+        (from, to): (i64, i64),
+    ) -> Result<(Vec<insights::Record>, i64), ServiceError> {
+        for g in groups {
+            self.authorize_group(ctx, "StartQuery", g, None, ConditionContext::new())?;
+        }
+        let mut records = Vec::new();
+        let mut bytes = 0i64;
+        let st = self.lock();
+        for g in groups {
+            let group = st.group(g).map_err(|_| {
+                errors::resource_not_found(format!("Log group '{}' does not exist for account ID '{}'", g.name, g.account))
+            })?;
+            let floor = cutoff(group, now).max(from);
+            for s in group.streams.values() {
+                for e in s.events.iter().filter(|e| e.timestamp >= floor && e.timestamp <= to) {
+                    bytes += e.size();
+                    records.push(record(g, &s.name, e));
+                }
+            }
+        }
+        Ok((records, bytes))
     }
 
     fn query(&self, ctx: &RequestContext, id: &str) -> Result<Query, ServiceError> {

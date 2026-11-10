@@ -24,7 +24,7 @@ All 118 operations are generated from the AWS model (awsJson1.1, event streams) 
 | --- | :---: | --- |
 | Logs Insights | ✅ | `fields`, `filter`, `parse`, `stats` with `bin()`, `sort`, `limit`, `dedup`, `display`, `@ptr`, `GetLogRecord`, query definitions and field discovery. |
 | OpenSearch SQL | ✅ | `SELECT` from log groups with `WHERE`, `GROUP BY`, `HAVING`, `ORDER BY`, `LIMIT` and `DISTINCT`. |
-| SQL joins and subqueries | ❌ | Not yet. |
+| SQL joins and subqueries | ✅ | `[INNER] JOIN`, `LEFT`/`RIGHT [OUTER] JOIN`, `CROSS JOIN` and comma joins across log groups and subqueries, with aliases (`alias.field`); uncorrelated subqueries in `FROM`, `IN (...)`, `EXISTS (...)` and scalar positions. `FULL OUTER JOIN` and correlated subqueries are not supported. |
 | OpenSearch PPL | ✅ | `fields`, `where`, `eval`, `stats ... by` with `span()`, `sort`, `head`, `rename`, `dedup`, `top`, `rare`, `parse`, `fillnull`. |
 | Scheduled queries | ✅ | Run on the emulated clock as their execution role, write results to S3 and refresh lookup tables. |
 | Field indexes | ✅ | Field index policies and `DescribeFieldIndexes`. |

@@ -141,6 +141,69 @@ async fn sql_and_ppl_queries() {
     assert_eq!(reserved.code(), Some("InvalidParameterException"));
 }
 
+#[tokio::test]
+async fn sql_joins_and_subqueries() {
+    let mws = Mws::start().await;
+    let logs = Client::new(&mws.root_sdk_config().await);
+    group_with_events(&logs, "/web", EVENTS).await;
+    group_with_events(&logs, "/owners", &[r#"{"path":"/a","team":"core"}"#, r#"{"path":"/b","team":"pay"}"#]).await;
+    let (start, end) = (now_ms() / 1000 - 3600, now_ms() / 1000 + 60);
+    let run = |q: &'static str| {
+        let logs = logs.clone();
+        async move {
+            let id = logs
+                .start_query()
+                .query_language(QueryLanguage::Sql)
+                .query_string(q)
+                .start_time(start)
+                .end_time(end)
+                .send()
+                .await
+                .unwrap();
+            rows(&logs, id.query_id().unwrap()).await
+        }
+    };
+
+    // An inner join across two log groups, aggregated.
+    assert_eq!(
+        run("SELECT o.team, COUNT(*) AS hits FROM `/web` w JOIN `/owners` o ON w.path = o.path \
+             GROUP BY o.team ORDER BY hits DESC")
+        .await,
+        vec![vec!["o.team=pay", "hits=2"], vec!["o.team=core", "hits=1"]]
+    );
+    // A left join keeps the requests no team owns.
+    assert_eq!(
+        run("SELECT w.path FROM `/web` AS w LEFT OUTER JOIN `/owners` AS o ON w.path = o.path WHERE o.team IS NULL").await,
+        vec![vec!["w.path=/c"]]
+    );
+    // Subqueries in WHERE and FROM.
+    assert_eq!(
+        run("SELECT path, status FROM `/web` WHERE path IN (SELECT path FROM `/owners` WHERE team = 'core')").await,
+        vec![vec!["path=/a", "status=200"]]
+    );
+    assert_eq!(
+        run("SELECT path FROM `/web` WHERE ms = (SELECT MAX(ms) FROM `/web`)").await,
+        vec![vec!["path=/b"]]
+    );
+    assert_eq!(
+        run("SELECT t.path FROM (SELECT path, AVG(ms) AS avg_ms FROM `/web` GROUP BY path) t WHERE t.avg_ms > 50").await,
+        vec![vec!["t.path=/b"]]
+    );
+
+    // Joining a log group that doesn't exist fails like querying one.
+    let e = logs
+        .start_query()
+        .query_language(QueryLanguage::Sql)
+        .query_string("SELECT 1 FROM `/web` w JOIN `/missing` m ON w.path = m.path")
+        .start_time(start)
+        .end_time(end)
+        .send()
+        .await
+        .unwrap_err()
+        .into_service_error();
+    assert_eq!(e.code(), Some("ResourceNotFoundException"));
+}
+
 const LOGS_TRUST: &str = r#"{"Version":"2012-10-17","Statement":[{"Effect":"Allow","Principal":{"Service":"logs.amazonaws.com"},"Action":"sts:AssumeRole"}]}"#;
 
 #[tokio::test]

@@ -2,10 +2,16 @@
 //! OpenSearch PPL, compiled into the same commands the Logs Insights
 //! language runs as ([`insights::Command`]).
 //!
-//! * SQL: `SELECT [DISTINCT] items | * FROM <log group> [WHERE ...]
+//! * SQL: `SELECT [DISTINCT] items | * FROM <source> [WHERE ...]
 //!   [GROUP BY ...] [HAVING ...] [ORDER BY ... [ASC|DESC]] [LIMIT n]`,
-//!   where the log group is `` `name` `` or
-//!   `` `logGroups(logGroupIdentifier: ['a', 'b'])` ``.
+//!   where a source is a log group (`` `name` `` or
+//!   `` `logGroups(logGroupIdentifier: ['a', 'b'])` ``) or a parenthesized
+//!   subquery, with an optional alias, joined to others with `[INNER] JOIN`,
+//!   `LEFT [OUTER] JOIN`, `RIGHT [OUTER] JOIN`, `CROSS JOIN` or commas.
+//!   Aliased sources' fields are `alias.field` (and `field`, where no
+//!   source before it has one of that name). Uncorrelated subqueries
+//!   also work in expressions: `x IN (SELECT ...)`, `EXISTS (SELECT ...)`
+//!   and scalar `(SELECT ...)`.
 //! * PPL: `fields [-]`, `where`, `eval`, `stats ... by`, `sort [-]`,
 //!   `head`, `rename`, `dedup`, `top`, `rare`, `parse` and `fillnull`,
 //!   on the log groups the request names.
@@ -19,7 +25,9 @@
 
 use regex::Regex;
 
-use crate::insights::{self, contains_aggregate, tokenize, Command, Expr, Named, Query, Tok, AGGREGATES, P};
+use crate::insights::{
+    self, contains_aggregate, tokenize, Command, Expr, Named, Query, Record, Tok, AGGREGATES, P, V,
+};
 
 /// A query ready to run, and the log groups it names itself (SQL `FROM`,
 /// PPL `source`).
@@ -27,14 +35,28 @@ use crate::insights::{self, contains_aggregate, tokenize, Command, Expr, Named, 
 pub struct Compiled {
     pub query: Query,
     pub log_groups: Vec<String>,
+    /// The records to run over, when the SQL `FROM` already produced them
+    /// (joins, subqueries, aliases); otherwise the log groups' events.
+    pub rows: Option<Vec<Record>>,
 }
 
-/// Compile a query in `language` (`CWLI`, `SQL` or `PPL`).
+/// Loads the events of some log groups as records (for joins and
+/// subqueries, which need data while compiling).
+pub type Fetch<'a> = dyn FnMut(&[String]) -> Result<Vec<Record>, String> + 'a;
+
+/// Compile a query in `language` (`CWLI`, `SQL` or `PPL`) to check it:
+/// joins and subqueries run over no data.
 pub fn compile(language: &str, text: &str) -> Result<Compiled, String> {
+    compile_with(language, text, &mut |_: &[String]| Ok(Vec::new()))
+}
+
+/// Compile a query in `language`, loading data through `fetch` where
+/// SQL joins or subqueries need it.
+pub fn compile_with(language: &str, text: &str, fetch: &mut Fetch) -> Result<Compiled, String> {
     match language {
-        "SQL" => sql(text),
+        "SQL" => sql(tokenize(text.trim().trim_end_matches(';'))?, fetch),
         "PPL" => ppl(text),
-        _ => Ok(Compiled { query: insights::parse(text)?, log_groups: Vec::new() }),
+        _ => Ok(Compiled { query: insights::parse(text)?, log_groups: Vec::new(), rows: None }),
     }
 }
 
@@ -86,7 +108,8 @@ fn hoist_aggregates(e: Expr, aggs: &mut Vec<Named>) -> Expr {
 // ---- SQL ---------------------------------------------------------------------------
 
 const CLAUSES: &[&str] = &["select", "from", "where", "group", "having", "order", "limit", "offset"];
-const UNSUPPORTED: &[&str] = &["join", "union", "intersect", "except"];
+const UNSUPPORTED: &[&str] = &["union", "intersect", "except"];
+const JOIN_WORDS: &[&str] = &["join", "inner", "left", "right", "full", "cross", "outer"];
 
 /// `` logGroups(logGroupIdentifier: ['a', 'b']) `` or a plain name.
 fn from_groups(text: &str) -> Result<Vec<String>, String> {
@@ -106,8 +129,289 @@ fn from_groups(text: &str) -> Result<Vec<String>, String> {
     Ok(vec![t.to_string()])
 }
 
-fn sql(text: &str) -> Result<Compiled, String> {
-    let toks = tokenize(text.trim().trim_end_matches(';'))?;
+fn is_kw(t: Option<&Tok>, kw: &str) -> bool {
+    matches!(t, Some(Tok::Ident(w)) if w.eq_ignore_ascii_case(kw))
+}
+
+/// The index of the parenthesis closing the one at `open`.
+fn closing(toks: &[Tok], open: usize) -> Result<usize, String> {
+    let mut depth = 0;
+    for (i, t) in toks.iter().enumerate().skip(open) {
+        match t {
+            Tok::LParen => depth += 1,
+            Tok::RParen => {
+                depth -= 1;
+                if depth == 0 {
+                    return Ok(i);
+                }
+            }
+            _ => {}
+        }
+    }
+    Err("Syntax error: unbalanced parentheses".into())
+}
+
+/// A result row: its columns in order.
+type Row = Vec<(String, V)>;
+
+/// Run a (sub)query to its rows.
+fn run_sql(toks: Vec<Tok>, fetch: &mut Fetch) -> Result<Vec<Row>, String> {
+    let c = sql(toks, fetch)?;
+    let records = match c.rows {
+        Some(r) => r,
+        None => fetch(&c.log_groups)?,
+    };
+    let out = insights::execute(&c.query, records, 10_000);
+    Ok(out
+        .rows
+        .into_iter()
+        .map(|row| row.into_iter().filter(|(k, _)| k != "@ptr").map(|(k, v)| (k, typed(v))).collect())
+        .collect())
+}
+
+/// A result value back as a value: numbers stay numbers.
+fn typed(v: String) -> V {
+    match v.parse::<f64>() {
+        Ok(n) if !v.is_empty() => V::Num(n),
+        _ => V::Str(v),
+    }
+}
+
+fn literal(v: &V) -> Tok {
+    match v {
+        V::Num(n) => Tok::Num(*n),
+        V::Null => Tok::Ident("null".into()),
+        other => Tok::Str(other.display().unwrap_or_default()),
+    }
+}
+
+/// Replace uncorrelated subqueries in an expression with their values:
+/// `IN (SELECT ...)` with the first column's values, `EXISTS (SELECT ...)`
+/// with whether there are rows, `(SELECT ...)` with its single value.
+fn inline_subqueries(toks: Vec<Tok>, fetch: &mut Fetch) -> Result<Vec<Tok>, String> {
+    let mut out = Vec::with_capacity(toks.len());
+    let mut i = 0;
+    while i < toks.len() {
+        if matches!(toks[i], Tok::LParen) && is_kw(toks.get(i + 1), "select") {
+            let end = closing(&toks, i)?;
+            let rows = run_sql(toks[i + 1..end].to_vec(), fetch)?;
+            let first = |r: &Row| r.first().map(|(_, v)| v.clone()).unwrap_or(V::Null);
+            if is_kw(out.last(), "exists") {
+                out.pop();
+                let not = is_kw(out.last(), "not");
+                if not {
+                    out.pop();
+                }
+                out.extend([Tok::Num(1.0), Tok::Op("=".into()), Tok::Num(if rows.is_empty() == not { 1.0 } else { 0.0 })]);
+            } else if is_kw(out.last(), "in") {
+                out.push(Tok::LParen);
+                if rows.is_empty() {
+                    // Nothing matches an empty list.
+                    out.push(Tok::Str("\u{0}".into()));
+                }
+                for (n, r) in rows.iter().enumerate() {
+                    if n > 0 {
+                        out.push(Tok::Comma);
+                    }
+                    out.push(literal(&first(r)));
+                }
+                out.push(Tok::RParen);
+            } else {
+                if rows.len() > 1 {
+                    return Err("Scalar subquery returned more than one row".into());
+                }
+                out.push(literal(&rows.first().map(first).unwrap_or(V::Null)));
+            }
+            i = end + 1;
+            continue;
+        }
+        out.push(toks[i].clone());
+        i += 1;
+    }
+    Ok(out)
+}
+
+/// One `FROM` source: log groups or a subquery, and its alias.
+enum Source {
+    Groups(Vec<String>, Option<String>),
+    Rows(Vec<Record>, Option<String>),
+}
+
+#[derive(Clone, Copy, PartialEq)]
+enum Join {
+    Inner,
+    Left,
+    Right,
+    Cross,
+}
+
+/// Parse one source at `p`.
+fn source(p: &mut P, fetch: &mut Fetch) -> Result<Source, String> {
+    let alias = |p: &mut P| -> Option<String> {
+        p.eat_kw("as");
+        match p.peek() {
+            Some(Tok::Ident(a))
+                if !JOIN_WORDS.contains(&a.to_lowercase().as_str()) && !a.eq_ignore_ascii_case("on") =>
+            {
+                let a = a.clone();
+                p.pos += 1;
+                Some(a)
+            }
+            _ => None,
+        }
+    };
+    match p.peek() {
+        Some(Tok::LParen) => {
+            let end = closing(&p.toks, p.pos)?;
+            if !is_kw(p.toks.get(p.pos + 1), "select") {
+                return Err("Syntax error: expected a subquery in FROM".into());
+            }
+            let rows = run_sql(p.toks[p.pos + 1..end].to_vec(), fetch)?;
+            let rows = rows.into_iter().map(|r| r.into_iter().collect()).collect();
+            p.pos = end + 1;
+            Ok(Source::Rows(rows, alias(p)))
+        }
+        Some(Tok::Ident(t)) | Some(Tok::Str(t)) => {
+            let groups = from_groups(t)?;
+            p.pos += 1;
+            Ok(Source::Groups(groups, alias(p)))
+        }
+        other => Err(format!("Syntax error: expected a log group in FROM, found {other:?}")),
+    }
+}
+
+/// A source's records, with `alias.`-prefixed copies of their fields.
+fn records(src: Source, fetch: &mut Fetch, groups: &mut Vec<String>) -> Result<Vec<Record>, String> {
+    let (rows, alias) = match src {
+        Source::Groups(g, alias) => {
+            let rows = fetch(&g)?;
+            groups.extend(g);
+            (rows, alias)
+        }
+        Source::Rows(rows, alias) => (rows, alias),
+    };
+    Ok(match alias {
+        None => rows,
+        Some(a) => rows
+            .into_iter()
+            .map(|r| {
+                let mut out = r.clone();
+                for (k, v) in r {
+                    out.insert(format!("{a}.{k}"), v);
+                }
+                out
+            })
+            .collect(),
+    })
+}
+
+fn merge(left: &Record, right: &Record) -> Record {
+    let mut out = right.clone();
+    for (k, v) in left {
+        out.insert(k.clone(), v.clone());
+    }
+    out
+}
+
+/// The `FROM` clause: plain log groups (`Ok((groups, None))`), or the
+/// records its joins, subqueries and aliases produce.
+fn from_clause(toks: Vec<Tok>, fetch: &mut Fetch) -> Result<(Vec<String>, Option<Vec<Record>>), String> {
+    // The common case: one log group, no alias.
+    if let [Tok::Ident(t)] | [Tok::Str(t)] = toks.as_slice() {
+        return Ok((from_groups(t)?, None));
+    }
+    let mut p = parser(toks);
+    let mut groups = Vec::new();
+    let first = source(&mut p, fetch)?;
+    let mut rows = records(first, fetch, &mut groups)?;
+    while !p.done() {
+        let kind = if p.eat_kw("join") || (p.eat_kw("inner") && p.eat_kw("join")) {
+            Join::Inner
+        } else if matches!(p.peek(), Some(Tok::Comma)) {
+            p.pos += 1;
+            Join::Cross
+        } else if p.eat_kw("cross") && p.eat_kw("join") {
+            Join::Cross
+        } else if p.eat_kw("left") {
+            p.eat_kw("outer");
+            if !p.eat_kw("join") {
+                return Err("Syntax error: expected JOIN after LEFT".into());
+            }
+            Join::Left
+        } else if p.eat_kw("right") {
+            p.eat_kw("outer");
+            if !p.eat_kw("join") {
+                return Err("Syntax error: expected JOIN after RIGHT".into());
+            }
+            Join::Right
+        } else if p.at_kw("full") {
+            return Err("Unsupported SQL: FULL OUTER JOIN is not supported".into());
+        } else {
+            return Err(format!("Syntax error: unexpected token {:?} in FROM", p.peek().expect("not done")));
+        };
+        let right = records(source(&mut p, fetch)?, fetch, &mut groups)?;
+        let on = if kind != Join::Cross {
+            if !p.eat_kw("on") {
+                return Err("Syntax error: JOIN needs an ON condition".into());
+            }
+            // The condition runs to the next join.
+            let start = p.pos;
+            let mut depth = 0;
+            while let Some(t) = p.peek() {
+                match t {
+                    Tok::LParen => depth += 1,
+                    Tok::RParen => depth -= 1,
+                    Tok::Comma if depth == 0 => break,
+                    Tok::Ident(w) if depth == 0 && JOIN_WORDS.contains(&w.to_lowercase().as_str()) => break,
+                    _ => {}
+                }
+                p.pos += 1;
+            }
+            Some(parse_expr(p.toks[start..p.pos].to_vec())?)
+        } else {
+            None
+        };
+        let matches = |a: &Record| -> Vec<Record> {
+            right
+                .iter()
+                .map(|b| merge(a, b))
+                .filter(|m| on.as_ref().is_none_or(|e| insights::eval(e, m).truthy()))
+                .collect()
+        };
+        rows = match kind {
+            Join::Inner | Join::Cross => rows.iter().flat_map(matches).collect(),
+            Join::Left => rows
+                .iter()
+                .flat_map(|a| {
+                    let m = matches(a);
+                    if m.is_empty() {
+                        vec![a.clone()]
+                    } else {
+                        m
+                    }
+                })
+                .collect(),
+            Join::Right => right
+                .iter()
+                .flat_map(|b| {
+                    let m: Vec<Record> = rows
+                        .iter()
+                        .map(|a| merge(a, b))
+                        .filter(|m| on.as_ref().is_none_or(|e| insights::eval(e, m).truthy()))
+                        .collect();
+                    if m.is_empty() {
+                        vec![b.clone()]
+                    } else {
+                        m
+                    }
+                })
+                .collect(),
+        };
+    }
+    Ok((groups, Some(rows)))
+}
+
+fn sql(toks: Vec<Tok>, fetch: &mut Fetch) -> Result<Compiled, String> {
     // Split into clauses at parenthesis depth 0.
     let mut clauses: Vec<(String, Vec<Tok>)> = Vec::new();
     let mut depth = 0i32;
@@ -149,14 +453,9 @@ fn sql(text: &str) -> Result<Compiled, String> {
     let select = clause("select").ok_or("Syntax error: a SQL query starts with SELECT")?;
     let from = clause("from").ok_or("Syntax error: missing FROM clause; name the log group to query in FROM")?;
 
-    let log_groups = match from.as_slice() {
-        [Tok::Ident(t)] | [Tok::Str(t)] => from_groups(t)?,
-        [Tok::Ident(t), Tok::Ident(_)] => from_groups(t)?,
-        [Tok::Ident(t), Tok::Ident(a), Tok::Ident(_)] if a.eq_ignore_ascii_case("as") => from_groups(t)?,
-        _ => return Err("Syntax error: FROM takes one log group, or `logGroups(logGroupIdentifier: [...])`".into()),
-    };
+    let (log_groups, rows) = from_clause(from, fetch)?;
 
-    let mut p = parser(select);
+    let mut p = parser(inline_subqueries(select, fetch)?);
     let distinct = p.eat_kw("distinct");
     let star = p.toks.len() == p.pos + 1 && p.at_op("*");
     let items = if star {
@@ -166,7 +465,7 @@ fn sql(text: &str) -> Result<Compiled, String> {
         finish(&p, l)?
     };
 
-    let where_ = clause("where").map(parse_expr).transpose()?;
+    let where_ = clause("where").map(|t| inline_subqueries(t, fetch).and_then(parse_expr)).transpose()?;
     let group_by = match clause("group") {
         Some(t) => {
             let mut p = parser(t);
@@ -175,7 +474,7 @@ fn sql(text: &str) -> Result<Compiled, String> {
         }
         None => Vec::new(),
     };
-    let having = clause("having").map(parse_expr).transpose()?;
+    let having = clause("having").map(|t| inline_subqueries(t, fetch).and_then(parse_expr)).transpose()?;
     let order = clause("order").map(sort_keys).transpose()?.unwrap_or_default();
     let limit = match clause("limit").as_deref() {
         None => None,
@@ -236,7 +535,7 @@ fn sql(text: &str) -> Result<Compiled, String> {
     if let Some(n) = limit {
         commands.push(Command::Limit(n.min(10_000)));
     }
-    Ok(Compiled { query: Query { commands }, log_groups })
+    Ok(Compiled { query: Query { commands }, log_groups, rows })
 }
 
 fn parse_expr(toks: Vec<Tok>) -> Result<Expr, String> {
@@ -445,7 +744,7 @@ fn ppl(text: &str) -> Result<Compiled, String> {
         }
         finish(&p, ())?;
     }
-    Ok(Compiled { query: Query { commands }, log_groups })
+    Ok(Compiled { query: Query { commands }, log_groups, rows: None })
 }
 
 #[cfg(test)]
@@ -500,7 +799,7 @@ mod tests {
         let out = execute(&c.query, data(), 100);
         assert_eq!(out.rows.len(), 1);
         assert!(out.rows[0].iter().any(|(k, _)| k == "status"));
-        assert!(compile("SQL", "SELECT a FROM `x` JOIN `y` ON a = b").is_err());
+        assert!(compile("SQL", "SELECT a FROM `x` UNION SELECT b FROM `y`").is_err());
         assert!(compile("SQL", "SELECT a").is_err());
         assert!(compile("SQL", "fields @message").is_err());
     }
@@ -524,5 +823,68 @@ mod tests {
         assert!(out.rows[0].iter().any(|(k, _)| k == "code"));
         assert!(!out.rows[0].iter().any(|(k, _)| k == "@message"));
         assert!(compile("PPL", "bogus x").is_err());
+    }
+
+    fn users() -> Vec<Record> {
+        [("/a", "alice"), ("/b", "bob")]
+            .into_iter()
+            .map(|(p, owner)| {
+                let mut r = Record::new();
+                r.insert("path".into(), V::Str(p.into()));
+                r.insert("owner".into(), V::Str(owner.into()));
+                r
+            })
+            .collect()
+    }
+
+    fn fetch(groups: &[String]) -> Result<Vec<Record>, String> {
+        match groups {
+            [g] if g == "/x" => Ok(data()),
+            [g] if g == "/owners" => Ok(users()),
+            other => Err(format!("no group {other:?}")),
+        }
+    }
+
+    fn run(text: &str) -> Vec<Vec<(String, String)>> {
+        let c = compile_with("SQL", text, &mut fetch).unwrap();
+        let rows = match c.rows {
+            Some(r) => r,
+            None => fetch(&c.log_groups).unwrap(),
+        };
+        let rows = execute(&c.query, rows, 100).rows;
+        rows.into_iter().map(|r| r.into_iter().filter(|(k, _)| k != "@ptr").collect()).collect()
+    }
+
+    #[test]
+    fn sql_joins() {
+        let rows = run(
+            "SELECT l.path, o.owner, COUNT(*) AS n FROM `/x` AS l JOIN `/owners` o ON l.path = o.path \
+             GROUP BY l.path, o.owner ORDER BY n DESC",
+        );
+        assert_eq!(
+            rows,
+            vec![
+                vec![("l.path".into(), "/b".into()), ("o.owner".into(), "bob".into()), ("n".into(), "2".into())],
+                vec![("l.path".into(), "/a".into()), ("o.owner".into(), "alice".into()), ("n".into(), "1".into())],
+            ]
+        );
+        // Left joins keep unmatched rows.
+        let rows = run("SELECT l.path, o.owner FROM `/x` l LEFT JOIN `/owners` o ON l.path = o.path WHERE o.owner IS NULL");
+        assert_eq!(rows.len(), 1);
+        assert_eq!(rows[0][0], ("l.path".into(), "/A".into()));
+        assert_eq!(run("SELECT path FROM `/x`, `/owners`").len(), 8);
+    }
+
+    #[test]
+    fn sql_subqueries() {
+        let rows = run("SELECT status FROM `/x` WHERE path IN (SELECT path FROM `/owners` WHERE owner = 'bob') ORDER BY status");
+        let statuses: Vec<_> = rows.iter().map(|r| r[0].1.clone()).collect();
+        assert_eq!(statuses, vec!["200", "500"]);
+        let rows = run("SELECT path FROM `/x` WHERE status = (SELECT MAX(status) FROM `/x`)");
+        assert_eq!(rows, vec![vec![("path".into(), "/b".into())]]);
+        let rows = run("SELECT t.path, t.n FROM (SELECT path, COUNT(*) AS n FROM `/x` GROUP BY path) AS t WHERE t.n > 1");
+        assert_eq!(rows, vec![vec![("t.path".into(), "/b".into()), ("t.n".into(), "2".into())]]);
+        assert_eq!(run("SELECT path FROM `/x` WHERE NOT EXISTS (SELECT owner FROM `/owners`)").len(), 0);
+        assert!(compile_with("SQL", "SELECT a FROM `/x` FULL OUTER JOIN `/owners` ON a = b", &mut fetch).is_err());
     }
 }
