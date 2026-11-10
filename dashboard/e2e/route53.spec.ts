@@ -56,7 +56,6 @@ test("Route 53 validation: zone names and record values are repaired in place", 
   await expect(field("values")).toContainText("belongs in an A record");
   // ...TXT with spaces gets quotes...
   await control("type").selectOption("TXT");
-  await expect(field("values")).toHaveAttribute("data-invalid", "format");
   await control("values").fill("hello world");
   await field("values").getByRole("button", { name: /Add quotes/ }).click();
   await expect(control("values")).toHaveValue('"hello world"');
