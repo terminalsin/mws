@@ -411,6 +411,7 @@ impl Ssm {
                 r.execution.automation_execution_status = Some(status.into());
             }
         });
+        self.report_automation(&run.account, &run.region, &run.id);
         self.mirror_ops_item_status(run, status);
     }
 
@@ -443,6 +444,7 @@ impl Ssm {
                 }
             }
         });
+        self.report_automation(&run.account, &run.region, &run.id);
         let ops = if status == "Success" { "CompletedWithSuccess" } else { status };
         self.mirror_ops_item_status(run, if status == "Failed" { "CompletedWithFailure" } else { ops });
     }
@@ -545,6 +547,7 @@ impl Ssm {
             r.execution.step_executions = Some(list);
             counters(r);
         });
+        self.report_automation(&run.account, &run.region, &run.id);
     }
 
     /// Update (or add) the newest execution of step `name`.

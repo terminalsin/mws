@@ -41,6 +41,21 @@ fn event(h: &HistoryEvent) -> types::Event {
     }
 }
 
+/// The environment variable that delays events' appearance in the event
+/// history (`LookupEvents`), in seconds of emulated time.
+pub const LOOKUP_DELAY_ENV: &str = "MWS_CLOUDTRAIL_LOOKUP_DELAY_SECONDS";
+
+/// How long events take to show up in the event history: AWS documents a
+/// lag of up to about 15 minutes; MWS uses none unless
+/// [`LOOKUP_DELAY_ENV`] sets one.
+fn lookup_delay() -> Duration {
+    std::env::var(LOOKUP_DELAY_ENV)
+        .ok()
+        .and_then(|v| v.trim().parse::<i64>().ok())
+        .filter(|s| *s > 0)
+        .map_or_else(Duration::zero, Duration::seconds)
+}
+
 impl CloudTrail {
     pub(crate) fn lookup_events(
         &self,
@@ -67,6 +82,9 @@ impl CloudTrail {
         if start > end {
             return Err(errors::invalid_time_range("Start time must be before end time."));
         }
+        // AWS's event history lags the calls by up to about 15 minutes;
+        // MWS shows them at once unless asked to lag too.
+        let visible = now - lookup_delay();
         let st = self.lock();
         let history: &[HistoryEvent] = st
             .accounts
@@ -84,7 +102,7 @@ impl CloudTrail {
         let mut found = history
             .iter()
             .rev()
-            .filter(|h| h.event_time >= start && h.event_time <= end)
+            .filter(|h| h.event_time >= start && h.event_time <= end && h.event_time <= visible)
             .filter(|h| attributes.iter().all(|a| matches(h, &a.attribute_key, &a.attribute_value)));
         if let Some(token) = input.next_token.as_deref().filter(|t| !t.is_empty()) {
             let id = token.strip_prefix("mws-").unwrap_or_default();

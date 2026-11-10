@@ -4,8 +4,43 @@
 use std::collections::BTreeMap;
 use std::io::Write;
 
-/// A trail's owner, the trail, and the events waiting for it.
-type Delivery = (String, Trail, Vec<(String, Value)>, Vec<Value>);
+/// How long events wait for their log file. AWS publishes log files
+/// "about every 5 minutes" (typically within 15 minutes of the call).
+pub(crate) const LOG_FILE_INTERVAL: Duration = Duration::minutes(5);
+
+/// How long events wait for CloudWatch Logs. AWS does not document an
+/// interval; deliveries there arrive within a few minutes, sooner than log
+/// files.
+pub(crate) const CLOUDWATCH_LOGS_INTERVAL: Duration = Duration::minutes(1);
+
+/// What one trail has due: its owner, the trail, and its batches.
+#[derive(Default)]
+struct Delivery {
+    owner: String,
+    trail: Trail,
+    /// Records for a log file (and its SNS notification).
+    log: Option<Vec<(String, Value)>>,
+    insights: Vec<Value>,
+    /// Records for CloudWatch Logs.
+    cloudwatch: Option<Vec<(String, Value)>>,
+}
+
+/// Whether a batch started at `since` is due at `now`. A clock moved back
+/// (`/_mws/clock` reset) by more than a minute flushes it too, rather than
+/// holding it until the wall clock catches up.
+fn due(since: DateTime<Utc>, now: DateTime<Utc>, interval: Duration) -> bool {
+    now - since >= interval || since - now > Duration::minutes(1)
+}
+
+/// Records grouped by the account and Region they came from.
+fn by_origin(t: &Trail, pending: Vec<(String, Value)>) -> BTreeMap<(String, String), Vec<Value>> {
+    let mut groups: BTreeMap<(String, String), Vec<Value>> = BTreeMap::new();
+    for (account, record) in pending {
+        let region = record.get("awsRegion").and_then(Value::as_str).unwrap_or(&t.home_region).to_string();
+        groups.entry((account, region)).or_default().push(record);
+    }
+    groups
+}
 
 use aws_lc_rs::encoding::AsDer;
 use aws_lc_rs::signature::KeyPair as _;
@@ -133,6 +168,11 @@ impl CloudTrail {
                 }
                 if applies && t.is_logging && trail_takes(t, &e) {
                     t.pending.push((e.account.clone(), e.record.clone()));
+                    t.pending_since.get_or_insert(e.time);
+                    if t.cloud_watch_logs_log_group_arn.is_some() {
+                        t.cw_pending.push((e.account.clone(), e.record.clone()));
+                        t.cw_pending_since.get_or_insert(e.time);
+                    }
                     logged_by_trail = true;
                 }
             }
@@ -177,34 +217,60 @@ impl CloudTrail {
         }
     }
 
-    /// Write every trail's pending events out.
+    /// Write out the trails' batches that are due: a log file (and its SNS
+    /// notification) for the events of about the last five minutes, and
+    /// CloudWatch Logs records about once a minute. Then the hourly digests.
     pub(crate) fn deliver_trails(&self, ctx: &RequestContext) {
+        let now = ctx.received_at;
         let work: Vec<Delivery> = {
             let mut st = self.lock();
             let mut work = Vec::new();
             for (owner, account) in st.accounts.iter_mut() {
                 for t in account.trails.values_mut() {
-                    if !t.pending.is_empty() || !t.insight_pending.is_empty() {
-                        let pending = std::mem::take(&mut t.pending);
-                        let insights = std::mem::take(&mut t.insight_pending);
-                        work.push((owner.clone(), t.clone(), pending, insights));
+                    let mut batch = Delivery { owner: owner.clone(), ..Delivery::default() };
+                    if t.pending_since.is_some_and(|since| due(since, now, LOG_FILE_INTERVAL)) {
+                        batch.log = Some(std::mem::take(&mut t.pending));
+                        batch.insights = std::mem::take(&mut t.insight_pending);
+                        t.pending_since = None;
+                    }
+                    if t.cw_pending_since.is_some_and(|since| due(since, now, CLOUDWATCH_LOGS_INTERVAL)) {
+                        batch.cloudwatch = Some(std::mem::take(&mut t.cw_pending));
+                        t.cw_pending_since = None;
+                    }
+                    if batch.log.is_some() || batch.cloudwatch.is_some() {
+                        batch.trail = t.clone();
+                        work.push(batch);
                     }
                 }
             }
             work
         };
-        for (owner, trail, pending, insights) in work {
-            let mut outcome = self.deliver_trail(ctx, &trail, pending);
-            if !insights.is_empty() {
-                if let Err(e) = self.deliver_insights(ctx, &trail, insights) {
-                    outcome.s3_error = Some(e);
+        for batch in work {
+            let trail = &batch.trail;
+            let mut outcome = Outcome::default();
+            if let Some(pending) = batch.log {
+                outcome = self.deliver_trail(ctx, trail, pending);
+                if !batch.insights.is_empty() {
+                    if let Err(e) = self.deliver_insights(ctx, trail, batch.insights) {
+                        outcome.s3_error = Some(e);
+                    }
+                }
+            }
+            if let Some(pending) = batch.cloudwatch {
+                if let (Some(group), Some(role)) =
+                    (&trail.cloud_watch_logs_log_group_arn, &trail.cloud_watch_logs_role_arn)
+                {
+                    outcome.cloudwatch = Some(self.to_cloudwatch(ctx, trail, group, role, &by_origin(trail, pending)));
                 }
             }
             let mut st = self.lock();
-            let Some(t) = st.accounts.get_mut(&owner).and_then(|a| a.trails.get_mut(&trail.arn)) else { continue };
+            let Some(t) = st.accounts.get_mut(&batch.owner).and_then(|a| a.trails.get_mut(&trail.arn)) else {
+                continue;
+            };
             let s = &mut t.status;
-            let now = ctx.received_at;
-            s.latest_delivery_attempt_time = Some(now);
+            if outcome.attempted {
+                s.latest_delivery_attempt_time = Some(now);
+            }
             match &outcome.s3_error {
                 None if !outcome.files.is_empty() => {
                     s.latest_delivery_time = Some(now);
@@ -242,13 +308,9 @@ impl CloudTrail {
     }
 
     fn deliver_trail(&self, ctx: &RequestContext, t: &Trail, pending: Vec<(String, Value)>) -> Outcome {
-        let mut out = Outcome::default();
+        let mut out = Outcome { attempted: true, ..Outcome::default() };
         // One log file per account and Region the events came from.
-        let mut groups: BTreeMap<(String, String), Vec<Value>> = BTreeMap::new();
-        for (account, record) in pending {
-            let region = record.get("awsRegion").and_then(Value::as_str).unwrap_or(&t.home_region).to_string();
-            groups.entry((account, region)).or_default().push(record);
-        }
+        let groups = by_origin(t, pending);
         let now = ctx.received_at;
         let mut keys = Vec::new();
         for ((account, region), records) in &groups {
@@ -282,9 +344,6 @@ impl CloudTrail {
         }
         if let (Some(topic), false) = (&t.sns_topic_arn, keys.is_empty()) {
             out.notification = Some(self.notify(ctx, t, topic, &keys));
-        }
-        if let (Some(group), Some(role)) = (&t.cloud_watch_logs_log_group_arn, &t.cloud_watch_logs_role_arn) {
-            out.cloudwatch = Some(self.to_cloudwatch(ctx, t, group, role, &groups));
         }
         out
     }
@@ -410,9 +469,9 @@ impl CloudTrail {
         Ok(())
     }
 
-    /// Write a digest for each trail with validation on that delivered log
-    /// files since its last digest (or every hour, as AWS does, when it
-    /// delivered none).
+    /// Write a digest for each logging trail with validation on, every
+    /// hour as AWS does, naming the log files delivered in that hour (none
+    /// is fine: AWS writes the digest anyway).
     fn deliver_digests(&self, ctx: &RequestContext) {
         let now = ctx.received_at;
         let due: Vec<(String, Trail)> = {
@@ -422,8 +481,10 @@ impl CloudTrail {
                 .flat_map(|(o, a)| a.trails.values().map(move |t| (o.clone(), t)))
                 .filter(|(_, t)| t.log_file_validation_enabled && t.is_logging)
                 .filter(|(_, t)| {
-                    !t.digest.files.is_empty()
-                        || t.digest.last_digest_end.is_none_or(|end| now - end >= Duration::hours(1))
+                    t.digest
+                        .last_digest_end
+                        .or(t.start_logging_time)
+                        .is_some_and(|start| due(start, now, Duration::hours(1)))
                 })
                 .map(|(o, t)| (o, t.clone()))
                 .collect()
@@ -564,6 +625,8 @@ impl CloudTrail {
 
 #[derive(Default)]
 struct Outcome {
+    /// Whether a log file delivery was attempted.
+    attempted: bool,
     files: Vec<DeliveredFile>,
     s3_error: Option<String>,
     notification: Option<Result<(), String>>,

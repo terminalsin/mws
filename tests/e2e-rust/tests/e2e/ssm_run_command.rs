@@ -71,7 +71,15 @@ async fn finished(
     instance: &str,
 ) -> aws_sdk_ssm::operation::get_command_invocation::GetCommandInvocationOutput {
     for _ in 0..240 {
-        let out = ssm.get_command_invocation().command_id(command).instance_id(instance).send().await.unwrap();
+        // Invocations appear a moment after SendCommand, as in AWS.
+        let out = match ssm.get_command_invocation().command_id(command).instance_id(instance).send().await {
+            Ok(out) => out,
+            Err(e) if e.as_service_error().is_some_and(|s| s.is_invocation_does_not_exist()) => {
+                tokio::time::sleep(Duration::from_millis(250)).await;
+                continue;
+            }
+            Err(e) => panic!("{e:?}"),
+        };
         if !matches!(
             out.status(),
             Some(

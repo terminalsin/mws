@@ -378,6 +378,180 @@ impl mws_ssm::AutomationRuntime for SsmAutomation {
     }
 }
 
+/// Run Command, Automation, State Manager, compliance and change calendar
+/// events, drained from SSM every second onto the default bus.
+pub(crate) struct SsmEvents(pub mws_ssm::Ssm);
+
+impl mws_events::ClockSource for SsmEvents {
+    fn due_events(&self, _now: chrono::DateTime<chrono::Utc>) -> Vec<ServiceEvent> {
+        self.0
+            .take_events()
+            .into_iter()
+            .map(|e| ServiceEvent {
+                partition: e.partition,
+                account: e.account,
+                region: e.region,
+                source: "aws.ssm".into(),
+                detail_type: e.detail_type,
+                resources: e.resources,
+                detail: e.detail,
+                time: e.time,
+            })
+            .collect()
+    }
+}
+
+/// Where the SSM Agent writes command output (S3, CloudWatch Logs) as the
+/// node's instance profile role, and where Systems Manager publishes
+/// command notifications (SNS) as the command's service role.
+pub(crate) struct SsmOutputs {
+    pub ec2: mws_ec2::Ec2,
+    pub sts: mws_sts::Sts,
+    pub s3: mws_s3::S3,
+    pub logs: mws_logs::Logs,
+    pub sns: mws_sns::Sns,
+}
+
+impl SsmOutputs {
+    fn resolve(&self, ctx: &RequestContext, key: &str, token: &str) -> Result<RequestContext, String> {
+        let caller = self
+            .sts
+            .credential_store()
+            .resolve(key, Some(token), ctx.received_at)
+            .map_err(|e| format!("{e:?}"))?
+            .map(|r| r.caller)
+            .ok_or_else(|| "the role session could not be resolved".to_string())?;
+        Ok(RequestContext { caller, source_ip: None, ..ctx.clone() })
+    }
+
+    /// A request context for the node's instance profile role, as the
+    /// agent gets it from the instance metadata service.
+    fn node_ctx(&self, node: mws_ssm::NodeRef<'_>) -> Result<RequestContext, String> {
+        let instance = self
+            .ec2
+            .instances(node.account, node.region)
+            .into_iter()
+            .find(|i| i.instance_id == node.instance_id)
+            .ok_or_else(|| format!("instance {} not found", node.instance_id))?;
+        let profile = instance.iam_instance_profile_arn.ok_or("the instance has no instance profile")?;
+        let role = self
+            .ec2
+            .instance_profile(node.account, &profile)
+            .and_then(|p| p.role_arn)
+            .ok_or("the instance profile has no role")?;
+        let instance_arn =
+            format!("arn:{}:ec2:{}:{}:instance/{}", node.ctx.partition, node.region, node.account, node.instance_id);
+        let creds = self
+            .sts
+            .assume_role_as_service(&mws_sts::ServiceAssume {
+                role_arn: &role,
+                service_principal: "ec2.amazonaws.com",
+                session_name: node.instance_id,
+                duration_seconds: 3600,
+                source_account: Some(node.account),
+                source_arn: Some(&instance_arn),
+                now: node.ctx.received_at,
+            })
+            .map_err(|e| format!("could not assume {role}: {e:?}"))?;
+        let ctx = RequestContext { region: node.region.to_string(), ..node.ctx.clone() };
+        self.resolve(&ctx, &creds.access_key_id, &creds.session_token)
+    }
+}
+
+#[async_trait]
+impl mws_ssm::CommandOutputs for SsmOutputs {
+    async fn put_object(
+        &self,
+        node: mws_ssm::NodeRef<'_>,
+        bucket: &str,
+        key: &str,
+        body: Vec<u8>,
+    ) -> Result<(), String> {
+        let ctx = self.node_ctx(node)?;
+        let request = mws_s3::generated::types::PutObjectRequest {
+            bucket: bucket.to_string(),
+            key: key.to_string(),
+            content_length: Some(body.len() as i64),
+            content_type: Some("text/plain".into()),
+            body,
+            ..Default::default()
+        };
+        self.s3.put_object_as_caller(&ctx, request).map(|_| ()).map_err(|e| format!("{}: {}", e.code, e.message))
+    }
+
+    async fn get_object(&self, node: mws_ssm::NodeRef<'_>, bucket: &str, key: &str) -> Result<Vec<u8>, String> {
+        let ctx = self.node_ctx(node)?;
+        let request = mws_s3::generated::types::GetObjectRequest {
+            bucket: bucket.to_string(),
+            key: key.to_string(),
+            ..Default::default()
+        };
+        self.s3.get_object_as_caller(&ctx, request).map(|o| o.body).map_err(|e| format!("{}: {}", e.code, e.message))
+    }
+
+    async fn put_log_events(
+        &self,
+        node: mws_ssm::NodeRef<'_>,
+        group: &str,
+        stream: &str,
+        events: Vec<(i64, String)>,
+    ) -> Result<(), String> {
+        let ctx = self.node_ctx(node)?;
+        let events =
+            events.into_iter().map(|(timestamp, message)| mws_logs::ServiceLogEvent { timestamp, message }).collect();
+        self.logs
+            .put_log_events_as_caller(&ctx, group, stream, events)
+            .map_err(|e| format!("{}: {}", e.code, e.message))
+    }
+
+    async fn notify(&self, ctx: &RequestContext, n: mws_ssm::CommandNotification) -> Result<(), String> {
+        let creds = self
+            .sts
+            .assume_role_as_service(&mws_sts::ServiceAssume {
+                role_arn: &n.role_arn,
+                service_principal: "ssm.amazonaws.com",
+                session_name: "RunCommandNotification",
+                duration_seconds: 3600,
+                source_account: Some(&n.account),
+                source_arn: Some(&n.source_arn),
+                now: ctx.received_at,
+            })
+            .map_err(|e| format!("Systems Manager could not assume {}: {e:?}", n.role_arn))?;
+        let ctx = RequestContext { region: n.region.clone(), ..ctx.clone() };
+        let rctx = self.resolve(&ctx, &creds.access_key_id, &creds.session_token)?;
+        mws_core::Service::invoke(
+            &self.sns,
+            rctx,
+            "Publish",
+            serde_json::json!({ "TopicArn": n.topic_arn, "Message": n.message }),
+        )
+        .await
+        .map(|_| ())
+        .map_err(|e| format!("{}: {}", e.code, e.message))
+    }
+
+    fn missing_node_permissions(
+        &self,
+        ctx: &RequestContext,
+        account: &str,
+        region: &str,
+        instance_id: &str,
+        actions: &[&str],
+    ) -> Result<Vec<String>, String> {
+        let rctx = self.node_ctx(mws_ssm::NodeRef { ctx, account, region, instance_id })?;
+        Ok(actions
+            .iter()
+            .filter(|a| {
+                !matches!(
+                    rctx.check(a, "*", None, mws_core::ResourcePolicyMode::Optional, mws_core::ConditionContext::new()),
+                    mws_core::AuthzDecision::Allow
+                )
+            })
+            .map(|a| a.to_string())
+            .collect())
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

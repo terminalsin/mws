@@ -23,6 +23,29 @@ pub const AGENT_VERSION: &str = "3.3.1142.0";
 const MAX_CONTENT: usize = 24000;
 /// What a plugin's `Output` holds in `ListCommandInvocations`.
 const MAX_PLUGIN_OUTPUT: usize = 2500;
+/// How long after `SendCommand` invocations appear (real time).
+const DELIVERY_DELAY_MS: u64 = 300;
+
+/// `MaxConcurrency` and `MaxErrors` of a command, as counts.
+#[derive(Debug, Clone, Copy)]
+pub(crate) struct RateControl {
+    pub concurrency: usize,
+    pub max_errors: usize,
+}
+
+impl RateControl {
+    /// A number, or a percentage of `targets` (at least one).
+    pub fn new(concurrency: &str, max_errors: &str, targets: usize) -> Self {
+        let count = |v: &str, min: usize| match v.trim().strip_suffix('%') {
+            Some(p) => {
+                let p: f64 = p.trim().parse().unwrap_or(100.0);
+                ((p * targets as f64 / 100.0).ceil() as usize).max(min)
+            }
+            None => v.trim().parse().unwrap_or(usize::MAX).max(min),
+        };
+        Self { concurrency: count(concurrency, 1), max_errors: count(max_errors, 0) }
+    }
+}
 
 /// A node SSM manages, as the composition root sees it.
 #[derive(Debug, Clone, Default)]
@@ -93,6 +116,10 @@ pub struct PluginRun {
     pub end: Option<DateTime<Utc>>,
     pub stdout: String,
     pub stderr: String,
+    /// Where the agent uploaded the output, when the command names a
+    /// bucket.
+    pub stdout_url: String,
+    pub stderr_url: String,
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
@@ -103,6 +130,13 @@ pub struct Invocation {
     pub status: String,
     pub status_details: String,
     pub plugins: Vec<PluginRun>,
+    /// Not delivered yet: `GetCommandInvocation` and
+    /// `ListCommandInvocations` do not see it for the first moment after
+    /// `SendCommand`, as in AWS.
+    #[serde(skip)]
+    pub hidden: bool,
+    /// The status last reported to EventBridge and SNS.
+    pub reported: String,
 }
 
 impl Invocation {
@@ -116,6 +150,8 @@ impl Invocation {
 pub struct CommandRecord {
     pub command: types::Command,
     pub invocations: Vec<Invocation>,
+    /// The command status last reported to EventBridge and SNS.
+    pub reported: String,
 }
 
 /// How a step ended: status, status details, response code, stdout and
@@ -127,12 +163,20 @@ type Params = BTreeMap<String, Vec<String>>;
 
 /// One step to run: its plugin name, action and inputs (placeholders
 /// filled in).
-#[derive(Debug, Clone)]
-struct Step {
-    name: String,
-    action: String,
-    inputs: Value,
-    skip: Option<String>,
+#[derive(Debug, Clone, Default)]
+pub(crate) struct Step {
+    pub name: String,
+    pub action: String,
+    pub inputs: Value,
+    /// Why the step does not run (unsatisfied preconditions).
+    pub skip: Option<String>,
+    /// The document's `schemaVersion`.
+    pub schema: String,
+    /// `exit` or `successAndExit` (schema 2.2).
+    pub on_failure: Option<String>,
+    /// `exit` (schema 2.2).
+    pub on_success: Option<String>,
+    pub finally: bool,
 }
 
 fn node_arn(ctx: &RequestContext, id: &str) -> String {
@@ -187,7 +231,7 @@ fn substitute(v: &Value, params: &BTreeMap<String, Vec<String>>, lists: &[String
 
 /// The parameters a command runs with: the caller's, then defaults; an
 /// error when a parameter is unknown or a required one is missing.
-fn resolve_parameters(
+pub(crate) fn resolve_parameters(
     doc: &Value,
     given: &BTreeMap<String, Vec<String>>,
 ) -> Result<(Params, Vec<String>), ServiceError> {
@@ -235,8 +279,18 @@ fn resolve_parameters(
 }
 
 /// The steps of a Command document, with parameters filled in.
-fn steps(doc: &Value, params: &BTreeMap<String, Vec<String>>, lists: &[String], platform: &str) -> Vec<Step> {
+pub(crate) fn steps(
+    doc: &Value,
+    params: &BTreeMap<String, Vec<String>>,
+    lists: &[String],
+    platform: &str,
+) -> Vec<Step> {
     let mut out = Vec::new();
+    let schema = match doc.get("schemaVersion") {
+        Some(Value::String(v)) => v.clone(),
+        Some(other) => other.to_string(),
+        None => "2.2".into(),
+    };
     if let Some(rc) = doc.get("runtimeConfig").and_then(Value::as_object) {
         for (action, cfg) in rc {
             let props = cfg.get("properties").cloned().unwrap_or(Value::Null);
@@ -250,7 +304,8 @@ fn steps(doc: &Value, params: &BTreeMap<String, Vec<String>>, lists: &[String], 
                     name: action.clone(),
                     action: action.clone(),
                     inputs: substitute(&p, params, lists),
-                    skip: None,
+                    schema: schema.clone(),
+                    ..Default::default()
                 });
             }
         }
@@ -265,18 +320,29 @@ fn steps(doc: &Value, params: &BTreeMap<String, Vec<String>>, lists: &[String], 
                 format!("Step execution skipped due to unsatisfied preconditions: '\"StringEquals\": [platformType, {v}]'. Step name: {name}")
             })
         });
+        let inputs = substitute(s.get("inputs").unwrap_or(&Value::Null), params, lists);
+        let flag = |k: &str| inputs.get(k).and_then(Value::as_str).map(str::to_string);
+        let finally = match inputs.get("finallyStep") {
+            Some(Value::Bool(b)) => *b,
+            Some(Value::String(v)) => v == "true",
+            _ => false,
+        };
         out.push(Step {
+            on_failure: flag("onFailure"),
+            on_success: flag("onSuccess"),
+            finally,
             name,
             action,
-            inputs: substitute(s.get("inputs").unwrap_or(&Value::Null), params, lists),
+            inputs,
             skip,
+            schema: schema.clone(),
         });
     }
     out
 }
 
 /// The shell script an `aws:runShellScript` step runs, and its timeout.
-fn shell_script(inputs: &Value) -> (String, u64) {
+pub(crate) fn shell_script(inputs: &Value) -> (String, u64) {
     let lines: Vec<String> = match inputs.get("runCommand") {
         Some(Value::Array(a)) => {
             a.iter().map(|x| x.as_str().map(str::to_string).unwrap_or_else(|| x.to_string())).collect()
@@ -308,7 +374,7 @@ fn truncate(s: &str, max: usize) -> String {
     s[..end].to_string()
 }
 
-fn command_view(r: &CommandRecord) -> types::Command {
+pub(crate) fn command_view(r: &CommandRecord) -> types::Command {
     let mut c = r.command.clone();
     let done: Vec<&Invocation> = r.invocations.iter().filter(|i| i.done()).collect();
     c.target_count = r.invocations.len() as i32;
@@ -344,8 +410,8 @@ fn plugin_view(p: &PluginRun, c: &types::Command, details: bool) -> types::Comma
         response_start_date_time: p.start,
         response_finish_date_time: p.end,
         output: details.then(|| truncate(&format!("{}{}", p.stdout, p.stderr), MAX_PLUGIN_OUTPUT)),
-        standard_output_url: Some(String::new()),
-        standard_error_url: Some(String::new()),
+        standard_output_url: Some(p.stdout_url.clone()),
+        standard_error_url: Some(p.stderr_url.clone()),
         output_s3_region: c.output_s3_region.clone(),
         output_s3_bucket_name: c.output_s3_bucket_name.clone().or(Some(String::new())),
         output_s3_key_prefix: c.output_s3_key_prefix.clone().or(Some(String::new())),
@@ -365,8 +431,8 @@ fn invocation_view(r: &CommandRecord, i: &Invocation, details: bool) -> types::C
         status: Some(i.status.clone()),
         status_details: Some(i.status_details.clone()),
         trace_output: Some(String::new()),
-        standard_output_url: Some(String::new()),
-        standard_error_url: Some(String::new()),
+        standard_output_url: Some(i.plugins.first().map(|p| p.stdout_url.clone()).unwrap_or_default()),
+        standard_error_url: Some(i.plugins.first().map(|p| p.stderr_url.clone()).unwrap_or_default()),
         command_plugins: details.then(|| i.plugins.iter().map(|p| plugin_view(p, c, true)).collect()),
         service_role: c.service_role.clone(),
         notification_config: c.notification_config.clone(),
@@ -582,6 +648,9 @@ impl Ssm {
         for id in &ids {
             ctx.authorize("ssm:SendCommand", &node_arn(ctx, id), ConditionContext::new())?;
         }
+        if let Some(role) = &input.service_role_arn {
+            crate::names::pass_role(ctx, role)?;
+        }
         let launch = Launch {
             document_name: input.document_name,
             document_version: input.document_version,
@@ -714,20 +783,24 @@ impl Ssm {
                     status: "Pending".into(),
                     status_details: "Pending".into(),
                     plugins,
+                    hidden: true,
+                    reported: String::new(),
                 }
             })
             .collect();
-        let record = CommandRecord { command, invocations };
+        let rate = RateControl::new(
+            input.max_concurrency.as_deref().unwrap_or("50"),
+            input.max_errors.as_deref().unwrap_or("0"),
+            invocations.len(),
+        );
+        let record = CommandRecord { command, invocations, reported: String::new() };
         let view = command_view(&record);
         let command_id = record.command.command_id.clone().unwrap_or_default();
         self.lock().region(account, region).commands.insert(0, record);
-        for (id, platform, steps) in runs {
-            let ssm = self.clone();
-            let (account, region, command_id) = (account.to_string(), region.to_string(), command_id.clone());
-            spawn(
-                async move { ssm.run_invocation(&account, &region, &command_id, &id, &platform, steps, requested).await },
-            );
-        }
+        self.report_command(account, region, &command_id);
+        let ssm = self.clone();
+        let (account, region) = (account.to_string(), region.to_string());
+        spawn(async move { ssm.run_command(account, region, command_id, runs, requested, rate).await });
         Ok(view)
     }
 
@@ -749,7 +822,7 @@ impl Ssm {
     }
 
     /// Change one invocation, unless it was cancelled.
-    fn update_invocation(
+    pub(crate) fn update_invocation(
         &self,
         account: &str,
         region: &str,
@@ -768,6 +841,79 @@ impl Ssm {
         }
         f(inv);
         true
+    }
+
+    /// Deliver a command to its nodes, `rate.concurrency` at a time, and
+    /// stop delivering once more than `rate.max_errors` invocations
+    /// failed (the rest are cancelled).
+    async fn run_command(
+        &self,
+        account: String,
+        region: String,
+        command_id: String,
+        runs: Vec<(String, String, Vec<Step>)>,
+        requested: DateTime<Utc>,
+        rate: RateControl,
+    ) {
+        // Invocations appear a moment after SendCommand returns.
+        tokio::time::sleep(std::time::Duration::from_millis(DELIVERY_DELAY_MS)).await;
+        let ids: Vec<String> = runs.iter().map(|(id, _, _)| id.clone()).collect();
+        {
+            let mut st = self.lock();
+            if let Some(rec) = st
+                .region(&account, &region)
+                .commands
+                .iter_mut()
+                .find(|c| c.command.command_id.as_deref() == Some(command_id.as_str()))
+            {
+                for i in rec.invocations.iter_mut() {
+                    i.hidden = false;
+                }
+            }
+        }
+        for id in &ids {
+            self.report_invocation(&account, &region, &command_id, id);
+        }
+        let mut set = tokio::task::JoinSet::new();
+        let mut errors = 0usize;
+        let mut queue = runs.into_iter();
+        let mut stopped = false;
+        loop {
+            while !stopped && set.len() < rate.concurrency {
+                let Some((id, platform, steps)) = queue.next() else { break };
+                let ssm = self.clone();
+                let (a, r, c) = (account.clone(), region.clone(), command_id.clone());
+                set.spawn(async move {
+                    ssm.run_invocation(&a, &r, &c, &id, &platform, steps, requested).await;
+                    id
+                });
+            }
+            let Some(done) = set.join_next().await else { break };
+            let Ok(id) = done else { continue };
+            let failed = self
+                .command_status(&account, &region, &command_id)
+                .and_then(|(_, inv)| inv.into_iter().find(|i| i.instance_id == id))
+                .is_some_and(|i| matches!(i.status.as_str(), "Failed" | "TimedOut"));
+            if failed {
+                errors += 1;
+                if errors > rate.max_errors {
+                    stopped = true;
+                }
+            }
+        }
+        let skipped: Vec<String> = queue.map(|(id, _, _)| id).collect();
+        for id in &skipped {
+            self.update_invocation(&account, &region, &command_id, id, |i| {
+                i.status = "Cancelled".into();
+                i.status_details = "Cancelled".into();
+                for p in i.plugins.iter_mut() {
+                    p.status = "Cancelled".into();
+                    p.status_details = "Cancelled".into();
+                }
+            });
+            self.report_invocation(&account, &region, &command_id, id);
+        }
+        self.report_command(&account, &region, &command_id);
     }
 
     #[allow(clippy::too_many_arguments)]
@@ -789,8 +935,21 @@ impl Ssm {
         }) {
             return;
         }
-        let nodes = self.managed();
+        self.report_invocation(account, region, command_id, instance);
+        self.report_command(account, region, command_id);
+        let Some((command, _)) = self.command_status(account, region, command_id) else { return };
+        let run = crate::plugins::PluginContext {
+            account: account.to_string(),
+            region: region.to_string(),
+            command_id: command_id.to_string(),
+            instance: instance.to_string(),
+            platform: platform.to_string(),
+            depth: 0,
+        };
         let mut failed: Option<(&'static str, &'static str)> = None;
+        // Set once a step with `onFailure`/`onSuccess` ends the document.
+        let mut exited = false;
+        let last = steps.len().saturating_sub(1);
         for (n, step) in steps.iter().enumerate() {
             let start = clock(());
             if !self.update_invocation(account, region, command_id, instance, |i| {
@@ -800,73 +959,56 @@ impl Ssm {
             }) {
                 return;
             }
-            let (status, details, code, stdout, stderr) = if failed.is_some() {
+            let runs_anyway = step.finally && n == last;
+            let (mut status, mut details, mut code, mut stdout, stderr) = if exited && !runs_anyway {
                 (
-                    "Success",
-                    "Success",
+                    "Skipped",
+                    "Skipped",
                     0,
-                    "Step execution skipped because a previous step failed.".to_string(),
+                    format!(
+                        "Plugin with name {} and id {} skipped due to prior step with an exit condition",
+                        step.action, step.name
+                    ),
                     String::new(),
                 )
             } else if let Some(reason) = &step.skip {
-                ("Success", "Success", 0, reason.clone(), String::new())
+                ("Skipped", "Skipped", 0, reason.clone(), String::new())
             } else {
-                match step.action.as_str() {
-                    "aws:runShellScript" if platform != "Windows" => {
-                        let (script, timeout) = shell_script(&step.inputs);
-                        let run = async {
-                            match &nodes {
-                                Some(m) => m.run_shell(account, region, instance, &script).await,
-                                None => Ok(None),
-                            }
-                        };
-                        match tokio::time::timeout(std::time::Duration::from_secs(timeout), run).await {
-                            Err(_) => (
-                                "TimedOut",
-                                "ExecutionTimedOut",
-                                -1,
-                                String::new(),
-                                "failed to run commands: exit status timeout".to_string(),
-                            ),
-                            Ok(Err(e)) => ("Failed", "Undeliverable", -1, String::new(), e),
-                            Ok(Ok(None)) => ("Success", "Success", 0, String::new(), String::new()),
-                            Ok(Ok(Some(out))) if out.exit_code == 0 => {
-                                ("Success", "Success", 0, out.stdout, out.stderr)
-                            }
-                            Ok(Ok(Some(out))) => {
-                                let stderr =
-                                    format!("{}failed to run commands: exit status {}", out.stderr, out.exit_code);
-                                ("Failed", "Failed", out.exit_code, out.stdout, stderr)
-                            }
-                        }
-                    }
-                    "aws:runPatchBaseline" if platform != "Windows" => {
-                        self.run_patch_baseline(&nodes, account, region, instance, command_id, &step.inputs, start)
-                            .await
-                    }
-                    "aws:softwareInventory" => {
-                        self.gather_inventory(&nodes, account, region, instance, &step.inputs, start).await
-                    }
-                    "aws:runShellScript" | "aws:runPowerShellScript" | "aws:psModule" | "aws:applications" => (
-                        "Failed",
-                        "Failed",
-                        1,
-                        String::new(),
-                        format!("Step {} is not supported on the {platform} platform.", step.action),
-                    ),
-                    other => (
-                        "Success",
-                        "Success",
-                        0,
-                        format!("MWS does not run {other} steps; the step reports success without doing anything."),
-                        String::new(),
-                    ),
-                }
+                self.run_plugin(&run, step, start).await
             };
-            if failed.is_none() && status != "Success" {
-                failed = Some((status, details));
+            if !exited || runs_anyway {
+                let modern = step.schema.as_str() >= "2.2";
+                match (status, step.on_failure.as_deref(), step.on_success.as_deref()) {
+                    ("Failed" | "TimedOut", Some("exit"), _) if modern => {
+                        exited = true;
+                        stdout.push_str(
+                            "\nStep was found to have onFailure property. Further document steps will be skipped.",
+                        );
+                    }
+                    ("Failed" | "TimedOut", Some("successAndExit"), _) if modern => {
+                        exited = true;
+                        (status, details, code) = ("Success", "Success", 0);
+                        stdout.push_str(
+                            "\nStep was found to have onFailure property. Further document steps will be skipped.",
+                        );
+                    }
+                    ("Success", _, Some("exit")) if modern => {
+                        exited = true;
+                        stdout.push_str(
+                            "\nStep was found to have onSuccess property. Further document steps will be skipped.",
+                        );
+                    }
+                    _ => {}
+                }
+            }
+            if status == "Failed" || status == "TimedOut" {
+                // The agent ranks TimedOut above Failed.
+                if failed.is_none_or(|(s, _)| s != "TimedOut") {
+                    failed = Some((status, details));
+                }
             }
             let end = clock(());
+            let urls = self.upload_output(&run, &command, step, n, &stdout, &stderr).await;
             if !self.update_invocation(account, region, command_id, instance, |i| {
                 let p = &mut i.plugins[n];
                 p.status = status.into();
@@ -875,6 +1017,10 @@ impl Ssm {
                 p.end = Some(end);
                 p.stdout = stdout;
                 p.stderr = stderr;
+                if let Some((out, err)) = urls {
+                    p.stdout_url = out;
+                    p.stderr_url = err;
+                }
             }) {
                 return;
             }
@@ -884,6 +1030,8 @@ impl Ssm {
             i.status = status.into();
             i.status_details = details.into();
         });
+        self.report_invocation(account, region, command_id, instance);
+        self.report_command(account, region, command_id);
     }
 
     fn command_record(&self, ctx: &RequestContext, id: &str) -> Option<CommandRecord> {
@@ -975,7 +1123,7 @@ impl Ssm {
         }
         let mut out = Vec::new();
         for r in &records {
-            for i in &r.invocations {
+            for i in r.invocations.iter().filter(|i| !i.hidden) {
                 if input.instance_id.as_ref().is_some_and(|x| x != &i.instance_id) {
                     continue;
                 }
@@ -1002,7 +1150,7 @@ impl Ssm {
         let i = r
             .invocations
             .iter()
-            .find(|i| i.instance_id == input.instance_id)
+            .find(|i| i.instance_id == input.instance_id && !i.hidden)
             .ok_or_else(|| errors::invocation_does_not_exist(""))?;
         let plugin = match &input.plugin_name {
             Some(name) => i.plugins.iter().find(|p| &p.name == name).ok_or_else(|| errors::invalid_plugin_name(""))?,
@@ -1045,9 +1193,9 @@ impl Ssm {
                 plugin.status_details.clone()
             }),
             standard_output_content: Some(truncate(&plugin.stdout, MAX_CONTENT)),
-            standard_output_url: Some(String::new()),
+            standard_output_url: Some(plugin.stdout_url.clone()),
             standard_error_content: Some(truncate(&plugin.stderr, MAX_CONTENT)),
-            standard_error_url: Some(String::new()),
+            standard_error_url: Some(plugin.stderr_url.clone()),
             cloud_watch_output_config: c.cloud_watch_output_config.clone(),
         })
     }
@@ -1085,6 +1233,12 @@ impl Ssm {
         if only.is_empty() && rec.invocations.iter().all(|i| i.status == "Cancelled") {
             rec.command.status = Some("Cancelled".into());
         }
+        let instances: Vec<String> = rec.invocations.iter().map(|i| i.instance_id.clone()).collect();
+        drop(st);
+        for i in &instances {
+            self.report_invocation(&ctx.caller.account_id, &ctx.region, &input.command_id, i);
+        }
+        self.report_command(&ctx.caller.account_id, &ctx.region, &input.command_id);
         Ok(types::CancelCommandResult::default())
     }
 }

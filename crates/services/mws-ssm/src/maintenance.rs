@@ -713,6 +713,7 @@ impl Ssm {
         if input.task_type == "RUN_COMMAND" && self.find_document(ctx, &input.task_arn).is_none() {
             return Err(crate::documents::not_found(&input.task_arn));
         }
+        task_pass_roles(ctx, input.service_role_arn.as_deref(), input.task_invocation_parameters.as_ref())?;
         let id = uuid::Uuid::new_v4().to_string();
         let targeted = !targets.is_empty();
         w.tasks.push(types::GetMaintenanceWindowTaskResult {
@@ -765,6 +766,7 @@ impl Ssm {
         if let Some(targets) = &input.targets {
             validate_task_targets(&w, targets)?;
         }
+        task_pass_roles(ctx, input.service_role_arn.as_deref(), input.task_invocation_parameters.as_ref())?;
         let replace = input.replace.unwrap_or(false);
         let t = Self::task_mut(&mut w, &input.window_task_id)?;
         if let Some(arn) = &input.task_arn {
@@ -1604,6 +1606,31 @@ impl Ssm {
     ) -> Option<&'a mut BTreeMap<String, String>> {
         region.windows.get_mut(id).map(|w| &mut w.tags)
     }
+}
+
+/// `iam:PassRole` on the roles a maintenance window task hands to Systems
+/// Manager: its service role, a Run Command task's notification role, and
+/// an Automation task's `AutomationAssumeRole`.
+fn task_pass_roles(
+    ctx: &RequestContext,
+    service_role: Option<&str>,
+    invocation: Option<&types::MaintenanceWindowTaskInvocationParameters>,
+) -> Result<(), ServiceError> {
+    if let Some(r) = service_role {
+        crate::names::pass_role(ctx, r)?;
+    }
+    if let Some(r) = invocation.and_then(|i| i.run_command.as_ref()).and_then(|r| r.service_role_arn.as_deref()) {
+        if Some(r) != service_role {
+            crate::names::pass_role(ctx, r)?;
+        }
+    }
+    let automation = invocation.and_then(|i| i.automation.as_ref()).and_then(|a| a.parameters.as_ref());
+    for r in automation.and_then(|p| p.get("AutomationAssumeRole")).into_iter().flatten() {
+        if Some(r.as_str()) != service_role {
+            crate::names::pass_role(ctx, r)?;
+        }
+    }
+    Ok(())
 }
 
 #[cfg(test)]

@@ -28,7 +28,7 @@ async fn group_with_events(logs: &Client, group: &str, messages: &[&str]) {
 
 /// The rows of a finished query, as `field=value` strings.
 async fn rows(logs: &Client, id: &str) -> Vec<Vec<String>> {
-    let out = logs.get_query_results().query_id(id).send().await.unwrap();
+    let out = crate::logs::wait_query(logs, id).await;
     out.results()
         .iter()
         .map(|r| r.iter().map(|f| format!("{}={}", f.field().unwrap(), f.value().unwrap())).collect())
@@ -63,7 +63,7 @@ async fn sql_and_ppl_queries() {
         .await
         .unwrap();
     assert_eq!(rows(&logs, sql.query_id().unwrap()).await, vec![vec!["path=/b", "hits=2", "slowest=90"]]);
-    let got = logs.get_query_results().query_id(sql.query_id().unwrap()).send().await.unwrap();
+    let got = crate::logs::wait_query(&logs, sql.query_id().unwrap()).await;
     assert_eq!(got.query_language(), Some(&QueryLanguage::Sql));
 
     let filtered = logs

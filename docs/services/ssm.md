@@ -27,7 +27,7 @@ Parameter Store, documents, managed nodes, Run Command, maintenance windows, Pat
 | Feature | Status | Details |
 | --- | :---: | --- |
 | Documents | ✅ | JSON and YAML content checked for its document type and schema version, versions with names, the default version, `GetDocument` in either format, `DuplicateDocumentContent`, deleting a version or the whole document, tags. |
-| AWS-owned documents | 🟡 | Every account sees `AWS-RunShellScript`, `AWS-RunPowerShellScript`, `AWS-RunPatchBaseline`, `AWS-UpdateSSMAgent`, `AWS-ConfigureAWSPackage`, `AWS-StartPortForwardingSession`, `AWS-StartPortForwardingSessionToRemoteHost`, `AWS-StartSSHSession`, `AWS-StartInteractiveCommand`, `SSM-SessionManagerRunShell`, `AWS-GatherSoftwareInventory`, `AWS-StopEC2Instance`, `AWS-StartEC2Instance`, `AWS-RestartEC2Instance` and `AWS-CreateImage`; the hundreds of others are missing. |
+| AWS-owned documents | 🟡 | Every account sees `AWS-RunShellScript`, `AWS-RunPowerShellScript`, `AWS-RunPatchBaseline`, `AWS-UpdateSSMAgent`, `AWS-ConfigureAWSPackage`, `AWS-StartPortForwardingSession`, `AWS-StartPortForwardingSessionToRemoteHost`, `AWS-StartSSHSession`, `AWS-StartInteractiveCommand`, `SSM-SessionManagerRunShell`, `AWS-GatherSoftwareInventory`, `AWS-StopEC2Instance`, `AWS-StartEC2Instance`, `AWS-RestartEC2Instance`, `AWS-CreateImage`, `AWS-RunRemoteScript`, `AWS-RunDocument`, `AWS-RunAnsiblePlaybook`, `AWS-ApplyPatchBaseline` (Windows only), `AmazonCloudWatch-ManageAgent`, `AWS-UpdateLinuxAmi`, `AWSConfigRemediation-ConfigureS3BucketPublicAccessBlock`, `AWSConfigRemediation-EnableCloudTrailLogFileValidation`, `AWSConfigRemediation-DeleteUnusedSecurityGroup` and `AWSSupport-ConfigureEC2Metadata`. Their content follows AWS's but is abridged in places, and the hundreds of others are missing. |
 | Reviews | ✅ | `UpdateDocumentMetadata` review actions (send for review, comment, approve, reject) and `ListDocumentMetadataHistory`. |
 | Sharing | ✅ | `ModifyDocumentPermission` with accounts or `All`, and a shared version; shared documents are used by ARN. |
 
@@ -35,9 +35,11 @@ Parameter Store, documents, managed nodes, Run Command, maintenance windows, Pat
 
 | Feature | Status | Details |
 | --- | :---: | --- |
-| Managed nodes | 🟡 | EC2 instances launched with an instance profile are managed nodes: `DescribeInstanceInformation` lists them `Online` while running and `ConnectionLost` when stopped, with the platform from their AMI and the profile's role. MWS does not check that the role allows Systems Manager. |
-| Run Command | ✅ | `SendCommand` by instance ids or targets (`tag:<key>`, `tag-key`), with parameters checked and defaults filled in. `aws:runShellScript` steps really run in Docker-backed instances, with `workingDirectory` and `timeoutSeconds`; output, exit codes, status and timing come back through `GetCommandInvocation` and `ListCommandInvocations`. Preconditions skip steps for other platforms, `CancelCommand` cancels. With the metadata backend, commands succeed with no output. |
-| Command output | 🟡 | Output is not written to S3 or CloudWatch Logs, and no SNS notifications are sent. Other plugins (`aws:configurePackage`, ...) report success without doing anything. |
+| Managed nodes | 🟡 | EC2 instances launched with an instance profile are managed nodes: `DescribeInstanceInformation` lists them `Online` while running and `ConnectionLost` when stopped, with the platform from their AMI and the profile's role. MWS does not check that the role allows Systems Manager (`ssm:UpdateInstanceInformation`, `ssmmessages:*`); a node registers with any role. |
+| Run Command | ✅ | `SendCommand` by instance ids or targets (`tag:<key>`, `tag-key`), with parameters checked and defaults filled in. `aws:runShellScript` steps really run in Docker-backed instances, with `workingDirectory` and `timeoutSeconds`; output, exit codes, status and timing come back through `GetCommandInvocation` and `ListCommandInvocations`. Invocations appear about 300 ms after `SendCommand` (`InvocationDoesNotExist` until then, as on AWS), then go `Pending` → `InProgress` → final. Schema 2.2 control flow follows the SSM Agent: a failed step does not stop later steps unless it has `onFailure: exit` (or `successAndExit`, which reports the step `Success`); `onSuccess: exit` ends the document; a last step with `finallyStep: true` still runs; skipped steps (precondition, exit, plugin unsupported on the platform) report `Skipped`. `MaxConcurrency`/`MaxErrors` deliver to that many nodes at a time and cancel the undelivered invocations once the error threshold is exceeded. `CancelCommand` cancels. Callers passing `ServiceRoleArn` need `iam:PassRole` (`iam:PassedToService` = `ssm.amazonaws.com`). With the metadata backend, shell steps succeed with no output. |
+| Plugins | 🟡 | `aws:runShellScript`, `aws:runPatchBaseline`, `aws:softwareInventory`, `aws:runDocument` (SSM documents by name/ARN, or `LocalPath` files on the node), `aws:downloadContent` (`SSMDocument`, `S3` single objects as the node's role, `HTTP`, `GitHub` single files and `Git` fetched from inside the node with curl/wget/git; default destination `/var/lib/amazon/ssm/<node>/document/orchestration/<command>/downloads`, where shell steps without `workingDirectory` start), `aws:updateSsmAgent` (already latest), `aws:refreshAssociation`. Windows-only plugins are skipped (schema 2.2) or fail (older schemas) on Linux, as the agent does; nothing runs on Windows nodes. `aws:configurePackage` fails: a missing package fails as on AWS, and existing Distributor packages are never installed. Other plugins (`aws:runDockerAction`, `aws:configureDocker`, ...) fail with "not supported by MWS"; unknown plugins fail with the agent's message. |
+| Command output | ✅ | Non-empty stdout/stderr go to `OutputS3BucketName` (`<prefix>/<command>/<node>/<plugin>/<step>/stdout\|stderr`, step `0.<plugin>` for schema 1.2) and CloudWatch Logs (`/aws/ssm/<DocumentName>` by default, stream `<command>/<node>/<step>/stdout\|stderr`), written as the node's instance profile role; `StandardOutputUrl`/`StandardErrorUrl` point at the S3 objects. `NotificationConfig` publishes Command or Invocation notifications to SNS as the `ServiceRoleArn` (assumed by `ssm.amazonaws.com`). |
+| Events | ✅ | "EC2 Command Status-change Notification" and "EC2 Command Invocation Status-change Notification" go to the default bus, within a second. |
 | Node views | ✅ | `ListNodes`, `ListNodesSummary` (counts by attribute) and `DescribeInstanceProperties`. `UpdateManagedInstanceRole` only applies to hybrid nodes, so EC2 nodes answer `InvalidInstanceId`. |
 | Hybrid activations | 🟡 | Created, listed (with expiry) and deleted; no agent can register with them. |
 
@@ -63,7 +65,8 @@ Parameter Store, documents, managed nodes, Run Command, maintenance windows, Pat
 | Associations | ✅ | Create (one or batch), describe, list with filters, update (versioned, `InvalidAssociationVersion` on a stale version), delete, status, versions and tags. Targets by instance id, `*`, tag or tag key. |
 | Applying | ✅ | Associations apply on creation (unless `ApplyOnlyAtCronInterval`), on update, on `StartAssociationsOnce`, when their `cron`/`rate` schedule comes due on the emulated clock, and when a node newly matches the targets. Command and Policy documents run through Run Command; closed change calendars skip a run. |
 | Results | ✅ | `DescribeAssociationExecutions`, `DescribeAssociationExecutionTargets`, the association overview, `DescribeInstanceAssociationsStatus`, `DescribeEffectiveInstanceAssociations` and Association compliance (unless `SyncCompliance` is `MANUAL`). |
-| Output locations, rate controls | 🟡 | Accepted and returned; output is not written to S3, and all targets run at once. |
+| Output locations, rate controls | ✅ | Command associations write output to their S3 location and honour `MaxConcurrency`/`MaxErrors` through Run Command. Creating or updating an association needs `iam:PassRole` on its `AssociationDispatchAssumeRole` and, for Automation documents, the runbook's assume role. |
+| Events | ✅ | "EC2 State Manager Association State Change" and "EC2 State Manager Instance Association State Change" when an execution ends. |
 
 ## Inventory and compliance
 
@@ -71,7 +74,7 @@ Parameter Store, documents, managed nodes, Run Command, maintenance windows, Pat
 | --- | :---: | --- |
 | Inventory | ✅ | `PutInventory` with custom types and versioned schemas, `GetInventory` with filters, aggregators and result attributes, `GetInventorySchema`, `ListInventoryEntries`, `DeleteInventory` (dry run, disable or delete schema) and `DescribeInventoryDeletions`. Every managed node reports `AWS:InstanceInformation` and `AWS:Tag`. |
 | Gathering | 🟡 | `AWS-GatherSoftwareInventory` associations collect installed packages (rpm, dpkg, apk) and network interfaces from Docker-backed nodes. Files, services, registry and Windows updates are not gathered. |
-| Compliance | ✅ | `PutComplianceItems`, `ListComplianceItems`, `ListResourceComplianceSummaries` and `ListComplianceSummaries` over custom, Association and Patch compliance. |
+| Compliance | ✅ | `PutComplianceItems`, `ListComplianceItems`, `ListResourceComplianceSummaries` and `ListComplianceSummaries` over custom, Association and Patch compliance. A resource's compliance changing (or first being recorded) sends "Configuration Compliance State Change" (Patch events carry no `patch-baseline-id`). |
 | Resource data syncs | 🟡 | `SyncToDestination` syncs write each node's inventory as JSON lines into S3 (`<Type>/accountid=/region=/resourcetype=ManagedInstanceInventory/<node>.json`) as Systems Manager, honouring the bucket policy and SSE-KMS. `SyncFromSource` (Explorer) syncs are stored but gather nothing. |
 
 ## Automation
@@ -85,7 +88,8 @@ Parameter Store, documents, managed nodes, Run Command, maintenance windows, Pat
 | Rate control | ✅ | `Targets` (parameter values, tags, tag keys) or `TargetMaps` run one child execution per target with `MaxConcurrency` and `MaxErrors`. |
 | Multiple accounts and Regions | 🟡 | `TargetLocations` assume `AWS-SystemsManager-AutomationAdministrationRole`, which assumes each account's execution role through STS, and run the runbook there (it must be shared with those accounts). `TargetLocationsURL` is not supported. |
 | Execution previews | ✅ | `StartExecutionPreview` counts mutating, non-mutating and undetermined steps, Regions, accounts and targets. |
-| EventBridge | ✅ | Rules can target `automation-definition/<name>` ARNs, with the event input as parameters. |
+| EventBridge | ✅ | Rules can target `automation-definition/<name>` ARNs, with the event input as parameters. Executions and steps send "EC2 Automation Execution Status-change Notification" and "EC2 Automation Step Status-change Notification". |
+| `iam:PassRole` | ✅ | `StartAutomationExecution` and `StartChangeRequestExecution` (template and runbooks) need `iam:PassRole` on the assume role they resolve to, as do maintenance window tasks' `ServiceRoleArn`, Run Command notification roles and Automation `AutomationAssumeRole` parameters. |
 
 ## Change Manager and OpsCenter
 
@@ -101,7 +105,7 @@ Parameter Store, documents, managed nodes, Run Command, maintenance windows, Pat
 
 | Feature | Status | Details |
 | --- | :---: | --- |
-| Calendars | ✅ | `ChangeCalendar` documents (iCalendar, `DEFAULT_OPEN` or `DEFAULT_CLOSED`) and `GetCalendarState` at any time, with the next transition. Associations skip runs while a calendar they name is closed. |
+| Calendars | ✅ | `ChangeCalendar` documents (iCalendar, `DEFAULT_OPEN` or `DEFAULT_CLOSED`) and `GetCalendarState` at any time, with the next transition. Associations skip runs while a calendar they name is closed. "Calendar State Change" events are sent when a calendar opens or closes on the emulated clock (checked every second once SSM has had a request). |
 
 ## Session Manager
 

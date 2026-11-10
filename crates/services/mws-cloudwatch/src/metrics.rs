@@ -158,30 +158,8 @@ fn sample(d: &types::MetricDatum, at: &str, now: DateTime<Utc>) -> Result<Sample
     Ok(s)
 }
 
-/// Whether a metric alarm may read `key`'s metric.
-fn watches(m: &types::PutMetricAlarmInput, key: &MetricKey) -> bool {
-    let same = |namespace: Option<&String>, name: Option<&String>| {
-        namespace.is_some_and(|n| *n == key.namespace) && name.is_some_and(|n| *n == key.name)
-    };
-    if same(m.namespace.as_ref(), m.metric_name.as_ref()) {
-        return true;
-    }
-    m.metrics.iter().flatten().any(|q| match (&q.metric_stat, &q.expression) {
-        (Some(stat), _) => same(stat.metric.namespace.as_ref(), stat.metric.metric_name.as_ref()),
-        // SEARCH and Metrics Insights queries can read any metric.
-        (None, Some(e)) => e.contains("SEARCH") || e.contains("SELECT"),
-        (None, None) => false,
-    })
-}
-
 /// Store samples for `key`.
 pub(crate) fn record(region: &mut Region, key: MetricKey, samples: Vec<Sample>, now: DateTime<Utc>) {
-    // New data makes the alarms that read this metric evaluate early; puts
-    // to other metrics (such as the `AWS/Usage` call counts every request
-    // publishes) leave alarms to their schedule.
-    if region.alarms.values().any(|a| a.metric.as_ref().is_some_and(|m| watches(m, &key))) {
-        region.puts += 1;
-    }
     let series = region.metrics.entry(key.key()).or_insert_with(|| Series { key, ..Series::default() });
     for s in samples {
         let at = series.samples.partition_point(|x| x.t <= s.t);

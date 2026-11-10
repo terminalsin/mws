@@ -113,6 +113,9 @@ impl Ssm {
     ) {
         let key = format!("{compliance_type}|{resource_type}|{resource_id}");
         let mut st = self.lock();
+        let compliant =
+            |items: &[types::ComplianceItem]| !items.iter().any(|i| i.status.as_deref() == Some("NON_COMPLIANT"));
+        let before = st.region(account, region).compliance.get(&key).map(|r| compliant(&r.items));
         let rec = st.region(account, region).compliance.entry(key).or_insert_with(|| ComplianceRecord {
             compliance_type: compliance_type.into(),
             resource_type: resource_type.into(),
@@ -141,9 +144,41 @@ impl Ssm {
         } else {
             rec.items = items;
         }
+        let after = compliant(&rec.items);
+        let severity = rec
+            .items
+            .iter()
+            .filter(|i| i.status.as_deref() == Some("NON_COMPLIANT"))
+            .filter_map(|i| i.severity.clone())
+            .min_by_key(|s| SEVERITIES.iter().position(|x| x == s).unwrap_or(usize::MAX));
+        let item_id = rec.items.first().and_then(|i| i.id.clone());
+        let run_at = summary.execution_time;
         rec.execution_summary = Some(summary);
         drop(st);
         self.data_changed(account, region);
+        if before != Some(after) {
+            let partition = self.partition();
+            let mut detail = serde_json::json!({
+                "last-runtime": run_at.format("%Y-%m-%dT%H:%M:%SZ").to_string(),
+                "compliance-status": if after { "compliant" } else { "non_compliant" },
+                "resource-type": "managed-instance",
+                "resource-id": resource_id,
+                "compliance-type": compliance_type,
+            });
+            if let Some(sev) = severity {
+                detail["severity"] = serde_json::Value::String(sev.to_ascii_lowercase());
+            }
+            if compliance_type == "Association" {
+                detail["association-id"] = serde_json::json!(item_id);
+            }
+            self.emit(
+                account,
+                region,
+                "Configuration Compliance State Change",
+                vec![format!("arn:{partition}:ssm:{region}:{account}:managed-instance/{resource_id}")],
+                detail,
+            );
+        }
     }
 
     pub(crate) fn put_compliance_items(

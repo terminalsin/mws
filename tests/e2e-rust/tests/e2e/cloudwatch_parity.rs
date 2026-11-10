@@ -89,13 +89,20 @@ async fn set_alarm_state_holds_until_the_next_evaluation() {
     assert_eq!(status, 200);
     wait_for(&cw, "manual", StateValue::InsufficientData).await;
 
-    // New data is evaluated straight away.
+    // New data is evaluated once its period is complete, at the next
+    // evaluation.
     cw.put_metric_data()
         .namespace("Parity")
         .metric_data(MetricDatum::builder().metric_name("Latency").value(50.0).build())
         .send()
         .await
         .unwrap();
+    tokio::time::sleep(Duration::from_millis(1500)).await;
+    let now = crate::cloudwatch_anomaly::clock_now(&mws).await;
+    if now.rem_euclid(60) > 2 {
+        assert_eq!(state_of(&cw, "manual").await, Some(StateValue::InsufficientData));
+    }
+    crate::cloudwatch_anomaly::finish_minute(&mws, now).await;
     wait_for(&cw, "manual", StateValue::Alarm).await;
 }
 
@@ -103,12 +110,6 @@ async fn set_alarm_state_holds_until_the_next_evaluation() {
 async fn low_sample_count_percentiles_can_be_ignored() {
     let mws = Mws::start().await;
     let cw = Client::new(&mws.root_sdk_config().await);
-    // The alarms evaluate the current minute: put the data and create them
-    // in the same one, clear of the next boundary.
-    let ms = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_millis() % 60_000;
-    if ms > 50_000 {
-        tokio::time::sleep(Duration::from_millis((61_000 - ms) as u64)).await;
-    }
     // Five samples: p90 needs 10 / (1 - 0.9) = 100 to be significant.
     cw.put_metric_data()
         .namespace("Parity")
@@ -136,6 +137,9 @@ async fn low_sample_count_percentiles_can_be_ignored() {
             .await
             .unwrap();
     }
+    // The alarms evaluate completed periods: end the minute of the data.
+    let now = crate::cloudwatch_anomaly::clock_now(&mws).await;
+    crate::cloudwatch_anomaly::finish_minute(&mws, now).await;
     wait_for(&cw, "p90-evaluate", StateValue::Alarm).await;
     tokio::time::sleep(Duration::from_millis(1500)).await;
     assert_eq!(state_of(&cw, "p90-ignore").await, Some(StateValue::InsufficientData));
@@ -320,4 +324,58 @@ async fn statistics_follow_cloudwatch_rules() {
     assert_eq!(mine.metrics().len(), 3);
     let theirs = cw.list_metrics().namespace("Parity").owning_account("210987654321").send().await.unwrap();
     assert!(theirs.metrics().is_empty());
+}
+
+#[tokio::test]
+async fn get_metric_data_pages_do_not_repeat_finished_results() {
+    let mws = Mws::start().await;
+    let cw = Client::new(&mws.root_sdk_config().await);
+    let now = now_secs();
+    let minute = now - now.rem_euclid(60);
+    for name in ["A", "B"] {
+        for k in 1..=3 {
+            cw.put_metric_data()
+                .namespace("Pages")
+                .metric_data(
+                    MetricDatum::builder()
+                        .metric_name(name)
+                        .value(k as f64)
+                        .timestamp(DateTime::from_secs(minute - k * 60))
+                        .build(),
+                )
+                .send()
+                .await
+                .unwrap();
+        }
+    }
+    let query = |id: &str, name: &str| {
+        MetricDataQuery::builder()
+            .id(id)
+            .metric_stat(
+                MetricStat::builder()
+                    .metric(Metric::builder().namespace("Pages").metric_name(name).build())
+                    .period(60)
+                    .stat("Sum")
+                    .build(),
+            )
+            .build()
+    };
+    let request = || {
+        cw.get_metric_data()
+            .metric_data_queries(query("a", "A"))
+            .metric_data_queries(query("b", "B"))
+            .start_time(DateTime::from_secs(minute - 600))
+            .end_time(DateTime::from_secs(minute))
+            .max_datapoints(4)
+    };
+    let first = request().send().await.unwrap();
+    let ids: Vec<(&str, usize)> =
+        first.metric_data_results().iter().map(|r| (r.id().unwrap(), r.values().len())).collect();
+    assert_eq!(ids, vec![("a", 3), ("b", 1)]);
+    let token = first.next_token().unwrap();
+    let second = request().next_token(token).send().await.unwrap();
+    let ids: Vec<(&str, usize)> =
+        second.metric_data_results().iter().map(|r| (r.id().unwrap(), r.values().len())).collect();
+    assert_eq!(ids, vec![("b", 2)], "a was complete on the first page");
+    assert!(second.next_token().is_none());
 }

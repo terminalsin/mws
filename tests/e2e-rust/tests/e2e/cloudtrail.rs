@@ -1,6 +1,7 @@
 //! CloudTrail through the official Rust SDKs: trails that deliver real log
-//! files (and signed digests) to S3, CloudWatch Logs and EventBridge, the
-//! event history, and CloudTrail Lake queries.
+//! files (batched about every five minutes, and hourly signed digests) to
+//! S3, SNS, CloudWatch Logs and EventBridge, the event history, and
+//! CloudTrail Lake queries, which run in the background.
 
 use std::io::Read;
 use std::time::Duration;
@@ -24,6 +25,37 @@ fn bucket_policy(bucket: &str) -> String {
 async fn trail_bucket(s3: &aws_sdk_s3::Client, bucket: &str) {
     s3.create_bucket().bucket(bucket).send().await.unwrap();
     s3.put_bucket_policy().bucket(bucket).policy(bucket_policy(bucket)).send().await.unwrap();
+}
+
+/// Move the emulated clock forward. CloudTrail reads the clock from the
+/// requests it sees, and the S3 listing the tests poll with is one.
+async fn advance(mws: &Mws, seconds: i64) {
+    let (status, _) = mws.control("POST", "/_mws/clock", Some(&format!(r#"{{"advanceSeconds": {seconds}}}"#))).await;
+    assert_eq!(status, 200);
+}
+
+/// Past the five minutes AWS (and MWS) batch log files over.
+async fn next_log_file(mws: &Mws) {
+    advance(mws, 301).await;
+}
+
+async fn reset_clock(mws: &Mws) {
+    let _ = mws.control("POST", "/_mws/clock", Some(r#"{"offsetSeconds": 0}"#)).await;
+}
+
+/// Wait for a Lake query to leave `QUEUED`/`RUNNING`.
+async fn query_done(
+    ct: &aws_sdk_cloudtrail::Client,
+    id: &str,
+) -> aws_sdk_cloudtrail::operation::get_query_results::GetQueryResultsOutput {
+    for _ in 0..40 {
+        let out = ct.get_query_results().query_id(id).send().await.unwrap();
+        if !matches!(out.query_status().map(|s| s.as_str()), Some("QUEUED") | Some("RUNNING")) {
+            return out;
+        }
+        tokio::time::sleep(Duration::from_millis(100)).await;
+    }
+    panic!("query {id} did not finish");
 }
 
 /// Keys under `prefix`, waiting until at least one is there.
@@ -105,6 +137,7 @@ async fn trails_deliver_log_files_and_digests_to_s3() {
     assert_eq!(ct.get_trail_status().name("main").send().await.unwrap().is_logging(), Some(true));
 
     iam.create_user().user_name("audited").send().await.unwrap();
+    next_log_file(&mws).await;
     let records = all_records(&s3, "trail-logs", "CreateUser").await;
     let create = records.iter().find(|r| r["eventName"] == "CreateUser").unwrap();
     assert_eq!(create["eventSource"], "iam.amazonaws.com");
@@ -122,13 +155,15 @@ async fn trails_deliver_log_files_and_digests_to_s3() {
     let missing = iam.get_user().user_name("nobody").send().await.unwrap_err();
     assert!(missing.into_service_error().is_no_such_entity_exception());
     iam.delete_user().user_name("nobody").send().await.unwrap_err();
+    next_log_file(&mws).await;
     let records = all_records(&s3, "trail-logs", "DeleteUser").await;
     let failed = records.iter().find(|r| r["eventName"] == "DeleteUser").unwrap();
     assert_eq!(failed["errorCode"], "NoSuchEntityException");
     assert!(failed["errorMessage"].as_str().unwrap().contains("nobody"), "{failed}");
 
     // Digest files chain the log files and are signed with a key that
-    // ListPublicKeys returns.
+    // ListPublicKeys returns. They are written every hour.
+    advance(&mws, 3600).await;
     let digests = keys(&s3, "trail-logs", &format!("AWSLogs/{ACCOUNT}/CloudTrail-Digest/us-east-1/")).await;
     assert!(!digests.is_empty(), "no digest files");
     let head = s3.head_object().bucket("trail-logs").key(&digests[0]).send().await.unwrap();
@@ -164,6 +199,7 @@ async fn trails_deliver_log_files_and_digests_to_s3() {
     ct.delete_trail().name("main").send().await.unwrap();
     let gone = ct.get_trail().name("main").send().await.unwrap_err();
     assert_eq!(gone.into_service_error().meta().code(), Some("TrailNotFoundException"));
+    reset_clock(&mws).await;
     mws.stop().await;
 }
 
@@ -289,6 +325,8 @@ async fn api_calls_reach_eventbridge_and_cloudwatch_logs() {
     assert_eq!(event["detail"]["eventName"], "CreateRole");
     assert_eq!(event["detail"]["requestParameters"]["roleName"], "watched");
 
+    // CloudWatch Logs gets the records in batches about a minute apart.
+    advance(&mws, 61).await;
     let stream = format!("{ACCOUNT}_CloudTrail_us-east-1");
     let mut found = Vec::new();
     for _ in 0..60 {
@@ -303,6 +341,7 @@ async fn api_calls_reach_eventbridge_and_cloudwatch_logs() {
     assert!(found.iter().any(|r| r["eventName"] == "CreateRole"), "{found:?}");
     let status = ct.get_trail_status().name("to-logs").send().await.unwrap();
     assert!(status.latest_cloud_watch_logs_delivery_time().is_some());
+    reset_clock(&mws).await;
     mws.stop().await;
 }
 
@@ -337,7 +376,7 @@ async fn lake_event_data_stores_answer_sql_queries() {
         .await
         .unwrap();
     let query_id = q.query_id().unwrap().to_string();
-    let results = ct.get_query_results().query_id(&query_id).send().await.unwrap();
+    let results = query_done(&ct, &query_id).await;
     assert_eq!(results.query_status().map(|s| s.as_str()), Some("FINISHED"));
     let rows: Vec<(String, String)> = results
         .query_result_rows()
@@ -355,7 +394,7 @@ async fn lake_event_data_stores_answer_sql_queries() {
         .send()
         .await
         .unwrap();
-    let results = ct.get_query_results().query_id(counts.query_id().unwrap()).send().await.unwrap();
+    let results = query_done(&ct, counts.query_id().unwrap()).await;
     let top = &results.query_result_rows()[0];
     assert!(top.iter().any(|c| c.get("eventName").map(String::as_str) == Some("CreateUser")), "{top:?}");
     assert!(top.iter().any(|c| c.get("n").map(String::as_str) == Some("2")), "{top:?}");
@@ -472,5 +511,165 @@ async fn cloudtrail_actions_need_permission() {
     ct.lookup_events().send().await.unwrap();
     let denied = ct.create_trail().name("x").s3_bucket_name("y").send().await.unwrap_err();
     assert_eq!(denied.into_service_error().meta().code(), Some("AccessDeniedException"));
+    // Each import action is authorized as itself, before the import is
+    // looked up.
+    let denied = ct.list_import_failures().import_id("00000000-0000-0000-0000-000000000000").send().await.unwrap_err();
+    assert_eq!(denied.into_service_error().meta().code(), Some("AccessDeniedException"));
+    // PutAuditEvents checks the caller before it says whether the channel
+    // exists.
+    let data = aws_sdk_cloudtraildata::Client::new(&cfg);
+    let denied = data
+        .put_audit_events()
+        .channel_arn(format!("arn:aws:cloudtrail:us-east-1:{ACCOUNT}:channel/00000000-0000-0000-0000-000000000000"))
+        .audit_events(aws_sdk_cloudtraildata::types::AuditEvent::builder().id("x").event_data("{}").build().unwrap())
+        .send()
+        .await
+        .unwrap_err();
+    assert_eq!(
+        aws_sdk_cloudtraildata::error::ProvideErrorMetadata::code(&denied.into_service_error()),
+        Some("ChannelInsufficientPermission")
+    );
+    mws.stop().await;
+}
+
+#[tokio::test]
+async fn log_files_are_batched_about_every_five_minutes() {
+    let mws = Mws::start().await;
+    let cfg = mws.root_sdk_config().await;
+    let ct = aws_sdk_cloudtrail::Client::new(&cfg);
+    let s3 = Mws::s3(&cfg);
+    let iam = aws_sdk_iam::Client::new(&cfg);
+    let sns = aws_sdk_sns::Client::new(&cfg);
+    let sqs = aws_sdk_sqs::Client::new(&cfg);
+
+    // Notifications of new log files reach a queue through SNS.
+    let topic = sns.create_topic().name("trail-files").send().await.unwrap().topic_arn.unwrap();
+    let topic_policy = json!({"Version":"2012-10-17","Statement":[{"Effect":"Allow",
+        "Principal":{"Service":"cloudtrail.amazonaws.com"},"Action":"SNS:Publish","Resource":topic}]});
+    sns.set_topic_attributes()
+        .topic_arn(&topic)
+        .attribute_name("Policy")
+        .attribute_value(topic_policy.to_string())
+        .send()
+        .await
+        .unwrap();
+    let url = sqs.create_queue().queue_name("trail-files").send().await.unwrap().queue_url.unwrap();
+    let queue_arn = format!("arn:aws:sqs:us-east-1:{ACCOUNT}:trail-files");
+    let queue_policy = json!({"Version":"2012-10-17","Statement":[{"Effect":"Allow",
+        "Principal":{"Service":"sns.amazonaws.com"},"Action":"sqs:SendMessage","Resource":queue_arn}]});
+    sqs.set_queue_attributes()
+        .queue_url(&url)
+        .attributes(aws_sdk_sqs::types::QueueAttributeName::Policy, queue_policy.to_string())
+        .send()
+        .await
+        .unwrap();
+    sns.subscribe()
+        .topic_arn(&topic)
+        .protocol("sqs")
+        .endpoint(&queue_arn)
+        .attributes("RawMessageDelivery", "true")
+        .send()
+        .await
+        .unwrap();
+
+    trail_bucket(&s3, "batched").await;
+    ct.create_trail().name("batched").s3_bucket_name("batched").sns_topic_name(&topic).send().await.unwrap();
+    ct.start_logging().name("batched").send().await.unwrap();
+    for name in ["one", "two", "three"] {
+        iam.create_user().user_name(name).send().await.unwrap();
+    }
+
+    // Nothing is written straight away: the calls wait for the batch.
+    let prefix = format!("AWSLogs/{ACCOUNT}/CloudTrail/us-east-1/");
+    tokio::time::sleep(Duration::from_millis(1500)).await;
+    let early = s3.list_objects_v2().bucket("batched").prefix(&prefix).send().await.unwrap();
+    assert!(early.contents().is_empty(), "{:?}", early.contents());
+    assert!(ct.get_trail_status().name("batched").send().await.unwrap().latest_delivery_time().is_none());
+
+    // Five minutes on, one log file holds them all.
+    next_log_file(&mws).await;
+    let files = keys(&s3, "batched", &prefix).await;
+    assert_eq!(files.len(), 1, "{files:?}");
+    let key = &files[0];
+    let name = key.rsplit('/').next().unwrap();
+    assert!(name.starts_with(&format!("{ACCOUNT}_CloudTrail_us-east-1_")), "{name}");
+    assert!(name.ends_with(".json.gz"), "{name}");
+    let users: Vec<Value> = records(&s3, "batched", key)
+        .await
+        .into_iter()
+        .filter(|r| r["eventName"] == "CreateUser")
+        .map(|r| r["requestParameters"]["userName"].clone())
+        .collect();
+    assert_eq!(users, vec![json!("one"), json!("two"), json!("three")]);
+    let status = ct.get_trail_status().name("batched").send().await.unwrap();
+    assert!(status.latest_delivery_time().is_some());
+    assert!(status.latest_notification_time().is_some());
+
+    // One notification names the file.
+    let mut note = None;
+    for _ in 0..10 {
+        let got = sqs.receive_message().queue_url(&url).wait_time_seconds(1).send().await.unwrap();
+        if let Some(m) = got.messages().first() {
+            note = Some(serde_json::from_str::<Value>(m.body().unwrap()).unwrap());
+            break;
+        }
+    }
+    let note = note.expect("no log file notification");
+    assert_eq!(note["s3Bucket"], "batched");
+    assert_eq!(note["s3ObjectKey"], json!([key]));
+    reset_clock(&mws).await;
+    mws.stop().await;
+}
+
+#[tokio::test]
+async fn lake_queries_run_in_the_background() {
+    let mws = Mws::start().await;
+    let cfg = mws.root_sdk_config().await;
+    let ct = aws_sdk_cloudtrail::Client::new(&cfg);
+    let iam = aws_sdk_iam::Client::new(&cfg);
+    let arn = ct.create_event_data_store().name("async").send().await.unwrap().event_data_store_arn.unwrap();
+    let id = arn.rsplit('/').next().unwrap().to_string();
+    iam.create_user().user_name("gina").send().await.unwrap();
+    let sql = format!("SELECT eventName FROM {id} WHERE eventName = 'CreateUser'");
+
+    // A query starts queued and has no results until it finishes.
+    let q = ct.start_query().query_statement(&sql).send().await.unwrap().query_id.unwrap();
+    let described = ct.describe_query().query_id(&q).send().await.unwrap();
+    let state = described.query_status().unwrap().as_str().to_string();
+    assert!(matches!(state.as_str(), "QUEUED" | "RUNNING"), "{state}");
+    let early = ct.get_query_results().query_id(&q).send().await.unwrap();
+    let state = early.query_status().unwrap().as_str().to_string();
+    assert!(matches!(state.as_str(), "QUEUED" | "RUNNING"), "{state}");
+    assert!(early.query_result_rows().is_empty());
+
+    let done = query_done(&ct, &q).await;
+    assert_eq!(done.query_status().map(|s| s.as_str()), Some("FINISHED"));
+    assert_eq!(done.query_result_rows().len(), 1);
+    let described = ct.describe_query().query_id(&q).send().await.unwrap();
+    assert_eq!(described.query_status().map(|s| s.as_str()), Some("FINISHED"));
+    assert_eq!(described.query_statistics().unwrap().events_matched(), Some(1));
+    let finished = ct
+        .list_queries()
+        .event_data_store(&arn)
+        .query_status(aws_sdk_cloudtrail::types::QueryStatus::Finished)
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(finished.queries().len(), 1);
+
+    // A finished query cannot be cancelled.
+    let inactive = ct.cancel_query().query_id(&q).send().await.unwrap_err();
+    assert_eq!(inactive.into_service_error().meta().code(), Some("InactiveQueryException"));
+
+    // A query still queued or running can.
+    let q = ct.start_query().query_statement(&sql).send().await.unwrap().query_id.unwrap();
+    let cancelled = ct.cancel_query().query_id(&q).send().await.unwrap();
+    assert_eq!(cancelled.query_id(), q);
+    assert_eq!(cancelled.query_status().as_str(), "CANCELLED");
+    tokio::time::sleep(Duration::from_millis(1000)).await;
+    let described = ct.describe_query().query_id(&q).send().await.unwrap();
+    assert_eq!(described.query_status().map(|s| s.as_str()), Some("CANCELLED"));
+    let again = ct.cancel_query().query_id(&q).send().await.unwrap_err();
+    assert_eq!(again.into_service_error().meta().code(), Some("InactiveQueryException"));
     mws.stop().await;
 }

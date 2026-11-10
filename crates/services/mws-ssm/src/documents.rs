@@ -262,7 +262,7 @@ fn catalogue() -> &'static BTreeMap<String, Document> {
     static DOCS: OnceLock<BTreeMap<String, Document>> = OnceLock::new();
     DOCS.get_or_init(|| {
         let created = DateTime::parse_from_rfc3339("2017-08-28T16:00:00Z").expect("valid date").with_timezone(&Utc);
-        let docs: [(&str, &str, &str); 15] = [
+        let docs: &[(&str, &str, &str)] = &[
             ("AWS-RunShellScript", "Command", RUN_SHELL_SCRIPT),
             ("AWS-RunPowerShellScript", "Command", RUN_POWERSHELL_SCRIPT),
             ("AWS-RunPatchBaseline", "Command", RUN_PATCH_BASELINE),
@@ -278,8 +278,23 @@ fn catalogue() -> &'static BTreeMap<String, Document> {
             ("AWS-StartEC2Instance", "Automation", START_EC2_INSTANCE),
             ("AWS-RestartEC2Instance", "Automation", RESTART_EC2_INSTANCE),
             ("AWS-CreateImage", "Automation", CREATE_IMAGE),
+            ("AWS-RunRemoteScript", "Command", RUN_REMOTE_SCRIPT),
+            ("AWS-RunDocument", "Command", RUN_DOCUMENT),
+            ("AWS-RunAnsiblePlaybook", "Command", RUN_ANSIBLE_PLAYBOOK),
+            ("AWS-ApplyPatchBaseline", "Command", APPLY_PATCH_BASELINE),
+            ("AmazonCloudWatch-ManageAgent", "Command", CLOUDWATCH_MANAGE_AGENT),
+            ("AWS-UpdateLinuxAmi", "Automation", UPDATE_LINUX_AMI),
+            ("AWSConfigRemediation-ConfigureS3BucketPublicAccessBlock", "Automation", CONFIGURE_S3_PUBLIC_ACCESS_BLOCK),
+            (
+                "AWSConfigRemediation-EnableCloudTrailLogFileValidation",
+                "Automation",
+                ENABLE_CLOUDTRAIL_LOG_FILE_VALIDATION,
+            ),
+            ("AWSConfigRemediation-DeleteUnusedSecurityGroup", "Automation", DELETE_UNUSED_SECURITY_GROUP),
+            ("AWSSupport-ConfigureEC2Metadata", "Automation", CONFIGURE_EC2_METADATA),
         ];
-        docs.into_iter()
+        docs.iter()
+            .copied()
             .map(|(name, doc_type, content)| {
                 let d = Document {
                     name: name.to_string(),
@@ -1121,6 +1136,219 @@ const INTERACTIVE_COMMAND: &str = r#"{
     "windows": {"commands": "{{command}}", "runAsElevated": false}
   }
 }"#;
+
+const RUN_REMOTE_SCRIPT: &str = r##"{
+  "schemaVersion": "2.2",
+  "description": "Execute scripts stored in a remote location. The following remote locations are currently supported: GitHub (public and private) and Amazon S3 (S3). The following script types are currently supported: #! support on Linux and file associations on Windows.",
+  "parameters": {
+    "sourceType": {"description": "(Required) Specify the source type.", "type": "String", "allowedValues": ["GitHub", "S3"]},
+    "sourceInfo": {"description": "(Required) Specify the information required to access the resource from the source. If source type is GitHub, then you can specify any of the following: 'owner', 'repository', 'path', 'getOptions', 'tokenInfo'. If source type is S3, then you can specify 'path'.", "type": "StringMap", "displayType": "textarea", "default": {}},
+    "commandLine": {"description": "(Required) Specify the command line to be executed. The following formats of commands can be run: 'pythonMainFile.py argument1 argument2', 'ansible-playbook -i \"localhost,\" -c local example.yml'", "type": "String", "default": ""},
+    "workingDirectory": {"type": "String", "default": "", "description": "(Optional) The path where the content will be downloaded and executed from on your instance.", "maxChars": 4096},
+    "executionTimeout": {"description": "(Optional) The time in seconds for a command to complete before it is considered to have failed. Default is 3600 (1 hour). Maximum is 172800 (48 hours).", "type": "String", "default": "3600", "allowedPattern": "([1-9][0-9]{0,4})|(1[0-6][0-9]{4})|(17[0-1][0-9]{3})|(172[0-7][0-9]{2})|(172800)"}
+  },
+  "mainSteps": [
+    {"action": "aws:downloadContent", "name": "downloadContent", "inputs": {"sourceType": "{{ sourceType }}", "sourceInfo": "{{ sourceInfo }}", "destinationPath": "{{ workingDirectory }}"}},
+    {"precondition": {"StringEquals": ["platformType", "Windows"]}, "action": "aws:runPowerShellScript", "name": "runPowerShellScript", "inputs": {"runCommand": ["", "$directory = Convert-Path .", "$env:PATH += \";$directory\"", " {{ commandLine }}", "if ($?) {", "    exit $LASTEXITCODE", "} else {", "    exit 255", "}", ""], "workingDirectory": "{{ workingDirectory }}", "timeoutSeconds": "{{ executionTimeout }}"}},
+    {"precondition": {"StringEquals": ["platformType", "Linux"]}, "action": "aws:runShellScript", "name": "runShellScript", "inputs": {"runCommand": ["", "directory=$(pwd)", "export PATH=$PATH:$directory", " {{ commandLine }} ", ""], "workingDirectory": "{{ workingDirectory }}", "timeoutSeconds": "{{ executionTimeout }}"}}
+  ]
+}"##;
+
+const RUN_DOCUMENT: &str = r##"{
+  "schemaVersion": "2.2",
+  "description": "Execute composite or nested Systems Manager documents (SSM documents) stored in a remote location. The following remote locations are currently supported: GitHub (public and private), Amazon S3 (S3), and Systems Manager documents.",
+  "parameters": {
+    "sourceType": {"description": "(Required) Specify the source type.", "type": "String", "allowedValues": ["GitHub", "S3", "SSMDocument"]},
+    "sourceInfo": {"description": "(Required) Specify the information required to access the resource from the specified source type. If source type is GitHub, then you can specify any of the following: 'owner', 'repository', 'path', 'getOptions', 'tokenInfo'. If source type is S3, then you can specify 'path'. If source type is SSMDocument, then you can specify 'name'.", "type": "StringMap", "displayType": "textarea", "default": {}},
+    "documentParameters": {"description": "(Optional) The parameters for the document.", "type": "StringMap", "displayType": "textarea", "default": {}}
+  },
+  "mainSteps": [
+    {"action": "aws:downloadContent", "name": "downloadContent", "inputs": {"sourceType": "{{ sourceType }}", "sourceInfo": "{{ sourceInfo }}"}},
+    {"action": "aws:runDocument", "name": "runDocument", "inputs": {"documentType": "LocalPath", "documentPath": "", "documentParameters": "{{ documentParameters }}"}}
+  ]
+}"##;
+
+const RUN_ANSIBLE_PLAYBOOK: &str = r##"{
+  "schemaVersion": "2.0",
+  "description": "Use this document to run Ansible playbooks on Systems Manager managed instances. For more information, see https://docs.aws.amazon.com/systems-manager/latest/userguide/systems-manager-manage-ansible.html.",
+  "parameters": {
+    "playbook": {"type": "String", "description": "(Optional) If you don't specify a URL, then you must specify playbook YAML in this field.", "default": "", "displayType": "textarea"},
+    "playbookurl": {"type": "String", "description": "(Optional) If you don't specify playbook YAML, then you must specify a URL where the playbook is stored. You can specify the URL in the following formats: http://example.com/playbook.yml  or s3://examplebucket/plabook.url. For security reasons, you can't specify a URL with quotes.", "default": "", "allowedPattern": "^\\s*$|^(http|https|s3)://[^']*$"},
+    "extravars": {"type": "String", "description": "(Optional) Additional variables to pass to Ansible at runtime. Enter a space separated list of key/value pairs. For example: color=red flavor=lime", "default": "SSM=True", "displayType": "textarea", "allowedPattern": "^((^|\\s)\\w+=(\\S+|'[^']*'|\"[^\"]*\"))+$"},
+    "check": {"type": "String", "description": " (Optional) Use the check parameter to perform a dry run of the Ansible execution.", "allowedValues": ["True", "False"], "default": "False"},
+    "timeoutSeconds": {"type": "String", "description": "(Optional) The time in seconds for a command to be completed before it is considered to have failed.", "default": "3600"}
+  },
+  "mainSteps": [
+    {
+      "action": "aws:runShellScript",
+      "name": "runShellScript",
+      "inputs": {
+        "timeoutSeconds": "{{ timeoutSeconds }}",
+        "runCommand": [
+          "#!/bin/bash",
+          "ansible --version",
+          "if [ $? -ne 0 ]; then",
+          " echo \"Ansible is not installed. Please install ansible and try again.\" >&2",
+          " exit 1",
+          "fi",
+          "execdir=$(dirname $0)",
+          "cd $execdir",
+          "if [ -z '{{playbook}}' ] ; then",
+          " if [[ \"{{playbookurl}}\" == http* ]]; then",
+          "   wget '{{playbookurl}}' -O playbook.yml",
+          "   if [ $? -ne 0 ]; then",
+          "       echo \"There was a problem downloading the playbook. Make sure the URL is correct and that the playbook exists.\" >&2",
+          "       exit 1",
+          "   fi",
+          " elif [[ \"{{playbookurl}}\" == s3* ]] ; then",
+          "   aws --version",
+          "   if [ $? -ne 0 ]; then",
+          "       echo \"The AWS CLI is not installed. The CLI is required to process Amazon S3 URLs. Install the AWS CLI and run the command again.\" >&2",
+          "       exit 1",
+          "   fi",
+          "   aws s3 cp '{{playbookurl}}' playbook.yml",
+          "   if [ $? -ne 0 ]; then",
+          "       echo \"Error while downloading the document from S3\" >&2",
+          "       exit 1",
+          "   fi",
+          " else",
+          "   echo \"The playbook URL is not valid. Verify the URL and try again.\"",
+          " fi",
+          "else",
+          " echo '{{playbook}}' > playbook.yml",
+          "fi",
+          "if  [[ \"{{check}}\" == True ]] ; then",
+          "   ansible-playbook -i \"localhost,\" --check -c local -e \"{{extravars}}\" playbook.yml",
+          "else",
+          "   ansible-playbook -i \"localhost,\" -c local -e \"{{extravars}}\" playbook.yml",
+          "fi"
+        ]
+      }
+    }
+  ]
+}"##;
+
+const APPLY_PATCH_BASELINE: &str = r##"{
+  "schemaVersion": "1.2",
+  "description": "Scans for or installs patches from a patch baseline to a Windows instance.",
+  "parameters": {
+    "Operation": {"type": "String", "description": "(Required) The update or configuration to perform on the instance. The system checks if patches specified in the patch baseline are installed on the instance. The install operation installs patches missing from the baseline.", "allowedValues": ["Scan", "Install"]},
+    "SnapshotId": {"type": "String", "description": "(Optional) The snapshot ID to use to retrieve a patch baseline snapshot.", "allowedPattern": "(^$)|^[a-fA-F0-9]{8}-[a-fA-F0-9]{4}-[a-fA-F0-9]{4}-[a-fA-F0-9]{4}-[a-fA-F0-9]{12}$", "default": ""}
+  },
+  "runtimeConfig": {
+    "aws:runPowerShellScript": {
+      "properties": [
+        {"id": "0.aws:runPowerShellScript", "timeoutSeconds": 7200, "runCommand": ["$ssmAgentService = Get-ItemProperty 'HKLM:\\SYSTEM\\CurrentControlSet\\Services\\AmazonSSMAgent\\'", "Import-Module 'C:\\Program Files\\Amazon\\PatchBaselineOperations\\Amazon.PatchBaselineOperations.dll'", "$response = Invoke-PatchBaselineOperation -Operation {{Operation}} -SnapshotId '{{SnapshotId}}' -InstanceId $instanceId -Region $region", "exit $response.ExitCode"]}
+      ]
+    }
+  }
+}"##;
+
+const CLOUDWATCH_MANAGE_AGENT: &str = r##"{
+  "schemaVersion": "2.2",
+  "description": "Send commands to Amazon CloudWatch Agent",
+  "parameters": {
+    "action": {"description": "The action CloudWatch Agent should take.", "type": "String", "default": "configure", "allowedValues": ["configure", "configure (append)", "configure (remove)", "start", "status", "stop"]},
+    "mode": {"description": "Controls platform-specific default behavior such as whether to include EC2 Metadata in metrics.", "type": "String", "default": "ec2", "allowedValues": ["ec2", "onPremise", "auto"]},
+    "optionalConfigurationSource": {"description": "Only for 'configure' related actions. Use 'ssm' to apply a ssm parameter as config. Use 'default' to apply default config for amazon-cloudwatch-agent. Use 'all' with 'configure (remove)' to clean all configs for amazon-cloudwatch-agent.", "type": "String", "allowedValues": ["ssm", "default", "all"], "default": "ssm"},
+    "optionalConfigurationLocation": {"description": "Only for 'configure' related actions. Only needed when Optional Configuration Source is set to 'ssm'. The value should be a ssm parameter name.", "type": "String", "default": "", "allowedPattern": "[a-zA-Z0-9-\"~:_@./^(*)!<>?=+]*$"},
+    "optionalRestart": {"description": "Only for 'configure' related actions. If 'yes', restarts the agent to use the new configuration. Otherwise the new config will only apply on the next agent restart.", "type": "String", "default": "yes", "allowedValues": ["yes", "no"]}
+  },
+  "mainSteps": [
+    {"name": "ControlCloudWatchAgentWindows", "action": "aws:runPowerShellScript", "precondition": {"StringEquals": ["platformType", "Windows"]}, "inputs": {"runCommand": [" Set-StrictMode -Version 2.0", " $ErrorActionPreference = 'Stop'", " $Cmd = \"${Env:ProgramFiles}\\Amazon\\AmazonCloudWatchAgent\\amazon-cloudwatch-agent-ctl.ps1\"", " $action = '{{action}}'", " if ($action -eq 'configure') { $action = 'fetch-config' } elseif ($action -eq 'configure (append)') { $action = 'append-config' } elseif ($action -eq 'configure (remove)') { $action = 'remove-config' }", " $params = @('-a', $action, '-m', '{{mode}}')", " if ($action -like '*config') { $params += @('-c', '{{optionalConfigurationSource}}:{{optionalConfigurationLocation}}'); if ('{{optionalRestart}}' -eq 'yes') { $params += '-s' } }", " Invoke-Expression \"& '$Cmd' $params\""]}},
+    {"name": "ControlCloudWatchAgentLinux", "action": "aws:runShellScript", "precondition": {"StringEquals": ["platformType", "Linux"]}, "inputs": {"runCommand": [" #!/bin/sh", " set -e", " cmd='/opt/aws/amazon-cloudwatch-agent/bin/amazon-cloudwatch-agent-ctl -m {{mode}}'", " action='{{action}}'", " if [ \"$action\" = 'configure' ]; then action='fetch-config'; elif [ \"$action\" = 'configure (append)' ]; then action='append-config'; elif [ \"$action\" = 'configure (remove)' ]; then action='remove-config'; fi", " cmd=\"$cmd -a $action\"", " case \"$action\" in *config) cmd=\"$cmd -c {{optionalConfigurationSource}}:{{optionalConfigurationLocation}}\"; if [ '{{optionalRestart}}' = 'yes' ]; then cmd=\"$cmd -s\"; fi;; esac", " $cmd", " echo 'Done'"]}}
+  ]
+}"##;
+
+const UPDATE_LINUX_AMI: &str = r##"{
+  "schemaVersion": "0.3",
+  "description": "Updates a Linux AMI with the latest distribution packages and Amazon software, and creates a new AMI.",
+  "assumeRole": "{{ AutomationAssumeRole }}",
+  "parameters": {
+    "SourceAmiId": {"type": "String", "description": "(Required) The source Amazon Machine Image ID."},
+    "IamInstanceProfileName": {"type": "String", "description": "(Required) The instance profile that enables Systems Manager (SSM) to manage the instance.", "default": "ManagedInstanceProfile"},
+    "AutomationAssumeRole": {"type": "String", "description": "(Required) The ARN of the role that allows Automation to perform the actions on your behalf.", "default": "arn:aws:iam::{{global:ACCOUNT_ID}}:role/AutomationServiceRole"},
+    "TargetAmiName": {"type": "String", "description": "(Optional) The name of the new AMI that will be created. Default is a system-generated string including the source AMI id, and the creation time and date.", "default": "UpdateLinuxAmi_from_{{SourceAmiId}}_on_{{global:DATE_TIME}}"},
+    "InstanceType": {"type": "String", "description": "(Optional) Type of instance to launch as the workspace host. Instance types vary by region. Default is t2.micro.", "default": "t2.micro"},
+    "PreUpdateScript": {"type": "String", "description": "(Optional) URL of a script to run before updates are applied. Default (\"none\") is to not run a script.", "default": "none"},
+    "PostUpdateScript": {"type": "String", "description": "(Optional) URL of a script to run after package updates are applied. Default (\"none\") is to not run a script.", "default": "none"},
+    "IncludePackages": {"type": "String", "description": "(Optional) Only update these named packages. By default (\"all\"), all available updates are applied.", "default": "all"},
+    "ExcludePackages": {"type": "String", "description": "(Optional) Names of packages to hold back from updates, under all conditions. By default (\"none\"), no package is excluded.", "default": "none"}
+  },
+  "mainSteps": [
+    {"name": "launchInstance", "action": "aws:runInstances", "maxAttempts": 3, "timeoutSeconds": 1200, "onFailure": "Abort", "inputs": {"ImageId": "{{ SourceAmiId }}", "InstanceType": "{{ InstanceType }}", "MinInstanceCount": 1, "MaxInstanceCount": 1, "IamInstanceProfileName": "{{ IamInstanceProfileName }}"}},
+    {"name": "updateOSSoftware", "action": "aws:runCommand", "maxAttempts": 3, "timeoutSeconds": 3600, "onFailure": "Abort", "inputs": {"DocumentName": "AWS-RunShellScript", "InstanceIds": ["{{ launchInstance.InstanceIds }}"], "Parameters": {"commands": ["set -e", "[ '{{ PreUpdateScript }}' != 'none' ] && curl -fsSL '{{ PreUpdateScript }}' | sh", "if command -v dnf >/dev/null 2>&1; then PM=dnf; elif command -v yum >/dev/null 2>&1; then PM=yum; else PM=apt-get; apt-get update -y; fi", "EXCLUDE=''; [ '{{ ExcludePackages }}' != 'none' ] && EXCLUDE='--exclude={{ ExcludePackages }}'", "if [ '{{ IncludePackages }}' = 'all' ]; then $PM -y upgrade $EXCLUDE; else $PM -y install {{ IncludePackages }}; fi", "[ '{{ PostUpdateScript }}' != 'none' ] && curl -fsSL '{{ PostUpdateScript }}' | sh", "true"]}}},
+    {"name": "stopInstance", "action": "aws:changeInstanceState", "maxAttempts": 3, "timeoutSeconds": 1200, "onFailure": "Abort", "inputs": {"InstanceIds": ["{{ launchInstance.InstanceIds }}"], "DesiredState": "stopped"}},
+    {"name": "createImage", "action": "aws:createImage", "maxAttempts": 3, "onFailure": "Abort", "inputs": {"InstanceId": "{{ launchInstance.InstanceIds }}", "ImageName": "{{ TargetAmiName }}", "NoReboot": true, "ImageDescription": "AMI Generated by EC2 Automation on {{global:DATE_TIME}} from {{SourceAmiId}}"}},
+    {"name": "terminateInstance", "action": "aws:changeInstanceState", "maxAttempts": 3, "onFailure": "Continue", "inputs": {"InstanceIds": ["{{ launchInstance.InstanceIds }}"], "DesiredState": "terminated"}}
+  ],
+  "outputs": ["createImage.ImageId"]
+}"##;
+
+const CONFIGURE_S3_PUBLIC_ACCESS_BLOCK: &str = r##"{
+  "schemaVersion": "0.3",
+  "description": "The AWSConfigRemediation-ConfigureS3BucketPublicAccessBlock runbook creates or modifies the PublicAccessBlock configuration for an Amazon S3 bucket.",
+  "assumeRole": "{{ AutomationAssumeRole }}",
+  "parameters": {
+    "AutomationAssumeRole": {"type": "String", "description": "(Required) The ARN of the role that allows Automation to perform the actions on your behalf.", "allowedPattern": "^arn:(aws[a-zA-Z-]*)?:iam::\\d{12}:role/[\\w+=,.@/-]+$"},
+    "BucketName": {"type": "String", "description": "(Required) The bucket name (not the ARN).", "allowedPattern": "(?=^.{3,63}$)(?!^(\\d+\\.)+\\d+$)(^(([a-z0-9]|[a-z0-9][a-z0-9\\-]*[a-z0-9])\\.)*([a-z0-9]|[a-z0-9][a-z0-9\\-]*[a-z0-9])$)"},
+    "RestrictPublicBuckets": {"type": "Boolean", "description": "(Optional) Specifies whether Amazon S3 should restrict public bucket policies for this bucket.", "default": true},
+    "BlockPublicAcls": {"type": "Boolean", "description": "(Optional) Specifies whether Amazon S3 should block public access control lists (ACLs) for this bucket and objects in this bucket.", "default": true},
+    "IgnorePublicAcls": {"type": "Boolean", "description": "(Optional) Specifies whether Amazon S3 should ignore public ACLs for this bucket and objects in this bucket.", "default": true},
+    "BlockPublicPolicy": {"type": "Boolean", "description": "(Optional) Specifies whether Amazon S3 should block public bucket policies for this bucket.", "default": true}
+  },
+  "mainSteps": [
+    {"name": "PutBucketPublicAccessBlock", "action": "aws:executeAwsApi", "isEnd": false, "inputs": {"Service": "s3", "Api": "PutPublicAccessBlock", "Bucket": "{{BucketName}}", "PublicAccessBlockConfiguration": {"RestrictPublicBuckets": "{{ RestrictPublicBuckets }}", "BlockPublicAcls": "{{ BlockPublicAcls }}", "IgnorePublicAcls": "{{ IgnorePublicAcls }}", "BlockPublicPolicy": "{{ BlockPublicPolicy }}"}}},
+    {"name": "GetBucketPublicAccessBlock", "action": "aws:executeAwsApi", "isEnd": true, "inputs": {"Service": "s3", "Api": "GetPublicAccessBlock", "Bucket": "{{BucketName}}"}, "outputs": [{"Name": "RestrictPublicBuckets", "Selector": "$.PublicAccessBlockConfiguration.RestrictPublicBuckets", "Type": "Boolean"}, {"Name": "BlockPublicAcls", "Selector": "$.PublicAccessBlockConfiguration.BlockPublicAcls", "Type": "Boolean"}]}
+  ]
+}"##;
+
+const ENABLE_CLOUDTRAIL_LOG_FILE_VALIDATION: &str = r##"{
+  "schemaVersion": "0.3",
+  "description": "The AWSConfigRemediation-EnableCloudTrailLogFileValidation runbook enables log file validation for your AWS CloudTrail trail.",
+  "assumeRole": "{{ AutomationAssumeRole }}",
+  "parameters": {
+    "TrailName": {"type": "String", "description": "(Required) The name or Amazon Resource Name (ARN) of the trail you want to enable log file validation for.", "allowedPattern": "^[\\w][\\w\\.,\\-_/:]+[\\w]$"},
+    "AutomationAssumeRole": {"type": "String", "description": "(Required) The ARN of the role that allows Automation to perform the actions on your behalf.", "allowedPattern": "^arn:(aws[a-zA-Z-]*)?:iam::\\d{12}:role/[\\w+=,.@/-]+$"}
+  },
+  "outputs": ["UpdateTrail.Output"],
+  "mainSteps": [
+    {"name": "UpdateTrail", "action": "aws:executeAwsApi", "onFailure": "Abort", "inputs": {"Service": "cloudtrail", "Api": "UpdateTrail", "Name": "{{ TrailName }}", "EnableLogFileValidation": true}, "outputs": [{"Name": "Output", "Selector": "$", "Type": "StringMap"}]},
+    {"name": "VerifyTrail", "action": "aws:assertAwsResourceProperty", "isEnd": true, "inputs": {"Service": "cloudtrail", "Api": "GetTrail", "Name": "{{ TrailName }}", "PropertySelector": "$.Trail.LogFileValidationEnabled", "DesiredValues": ["True"]}}
+  ]
+}"##;
+
+const DELETE_UNUSED_SECURITY_GROUP: &str = r##"{
+  "schemaVersion": "0.3",
+  "description": "The AWSConfigRemediation-DeleteUnusedSecurityGroup runbook deletes a non-default security group that is not utilized by an elastic network interface (ENI).",
+  "assumeRole": "{{ AutomationAssumeRole }}",
+  "parameters": {
+    "AutomationAssumeRole": {"type": "String", "description": "(Required) The ARN of the role that allows Automation to perform the actions on your behalf.", "allowedPattern": "^arn:(aws[a-zA-Z-]*)?:iam::\\d{12}:role/[\\w+=,.@/-]+$"},
+    "GroupId": {"type": "String", "description": "(Required) The unique ID of the security group to be deleted.", "allowedPattern": "sg-[a-z0-9]+$"}
+  },
+  "mainSteps": [
+    {"name": "DeleteSecurityGroup", "action": "aws:executeAwsApi", "isEnd": true, "inputs": {"Service": "ec2", "Api": "DeleteSecurityGroup", "GroupId": "{{ GroupId }}"}}
+  ]
+}"##;
+
+const CONFIGURE_EC2_METADATA: &str = r##"{
+  "schemaVersion": "0.3",
+  "description": "The AWSSupport-ConfigureEC2Metadata runbook helps you configure the Instance Metadata Service (IMDS) options for an Amazon Elastic Compute Cloud (Amazon EC2) instance: the metadata endpoint, IMDSv2 tokens and the response hop limit.",
+  "assumeRole": "{{ AutomationAssumeRole }}",
+  "parameters": {
+    "InstanceId": {"type": "String", "description": "(Required) The ID of the instance whose metadata options you want to configure.", "allowedPattern": "^i-[a-z0-9]{8,17}$"},
+    "EnforceIMDSv2": {"type": "String", "description": "(Optional) Whether IMDSv2 is enforced (required) or optional.", "default": "optional", "allowedValues": ["required", "optional"]},
+    "MetadataAccess": {"type": "String", "description": "(Optional) Whether the HTTP metadata endpoint is enabled.", "default": "enabled", "allowedValues": ["enabled", "disabled"]},
+    "HopLimit": {"type": "Integer", "description": "(Optional) The desired HTTP PUT response hop limit for instance metadata requests, from 0 (no change) to 64.", "default": 0, "allowedPattern": "^([0-9]|[1-5][0-9]|6[0-4])$"},
+    "AutomationAssumeRole": {"type": "String", "description": "(Optional) The ARN of the role that allows Automation to perform the actions on your behalf.", "default": ""}
+  },
+  "mainSteps": [
+    {"name": "branchOnMetadataAccess", "action": "aws:branch", "inputs": {"Choices": [{"NextStep": "disableMetadataAccess", "Variable": "{{ MetadataAccess }}", "StringEquals": "disabled"}], "Default": "configureMetadataOptions"}},
+    {"name": "configureMetadataOptions", "action": "aws:executeAwsApi", "onFailure": "Abort", "nextStep": "verifyMetadataOptions", "inputs": {"Service": "ec2", "Api": "ModifyInstanceMetadataOptions", "InstanceId": "{{ InstanceId }}", "HttpEndpoint": "enabled", "HttpTokens": "{{ EnforceIMDSv2 }}"}},
+    {"name": "disableMetadataAccess", "action": "aws:executeAwsApi", "onFailure": "Abort", "isEnd": true, "inputs": {"Service": "ec2", "Api": "ModifyInstanceMetadataOptions", "InstanceId": "{{ InstanceId }}", "HttpEndpoint": "disabled"}},
+    {"name": "verifyMetadataOptions", "action": "aws:waitForAwsResourceProperty", "timeoutSeconds": 600, "isEnd": true, "inputs": {"Service": "ec2", "Api": "DescribeInstances", "InstanceIds": ["{{ InstanceId }}"], "PropertySelector": "$.Reservations[0].Instances[0].MetadataOptions.HttpTokens", "DesiredValues": ["{{ EnforceIMDSv2 }}"]}}
+  ]
+}"##;
 
 #[cfg(test)]
 mod tests {

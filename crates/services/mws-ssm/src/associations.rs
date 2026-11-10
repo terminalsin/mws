@@ -286,6 +286,27 @@ impl Ssm {
         Ok(doc_arn)
     }
 
+    /// `iam:PassRole` on the roles an association hands to Systems Manager:
+    /// its dispatch role, and an Automation document's assume role.
+    fn association_pass_roles(&self, ctx: &RequestContext, s: &Spec) -> Result<(), ServiceError> {
+        if let Some(r) = &s.association_dispatch_assume_role {
+            crate::names::pass_role(ctx, r)?;
+        }
+        let Some(found) = self.find_document(ctx, &s.name) else { return Ok(()) };
+        if found.doc.document_type != "Automation" {
+            return Ok(());
+        }
+        let Ok(v) = crate::documents::pick_version(&found.doc, s.document_version.as_deref(), None) else {
+            return Ok(());
+        };
+        let Ok(content) = crate::documents::parse_content(&v.content, &v.format) else { return Ok(()) };
+        let params = s.parameters.clone().unwrap_or_default();
+        if let Some(role) = crate::automation::assume_role_of(&content, &params) {
+            crate::names::pass_role(ctx, &role)?;
+        }
+        Ok(())
+    }
+
     fn describe_spec(
         s: Spec,
         id: &str,
@@ -342,6 +363,7 @@ impl Ssm {
             let arn = format!("arn:{}:ec2:{}:{}:instance/{i}", ctx.partition, ctx.region, ctx.caller.account_id);
             ctx.authorize("ssm:CreateAssociation", &arn, cond)?;
         }
+        self.association_pass_roles(ctx, &s)?;
         let t = now(ctx);
         let mut st = self.lock();
         let region = st.region(&ctx.caller.account_id, &ctx.region);
@@ -558,6 +580,7 @@ impl Ssm {
                 .or_else(|| d.association_dispatch_assume_role.clone()),
         };
         self.check_spec(ctx, &spec)?;
+        self.association_pass_roles(ctx, &spec)?;
         let t = now(ctx);
         let run_now = !spec.apply_only_at_cron_interval;
         let mut description =
@@ -1049,12 +1072,16 @@ impl Ssm {
         }
         let all_ok = a.instance_status.values().all(|i| i.status.as_deref() == Some("Success"));
         let overall = if all_ok { "Success" } else { "Failed" };
-        a.description.overview = Some(overview(overall, overall, latest));
+        a.description.overview = Some(overview(overall, overall, latest.clone()));
         a.description.last_execution_date = Some(at);
         if ok {
             a.description.last_successful_execution_date = Some(at);
         }
+        let reported = a.description.clone();
+        let infos: Vec<types::InstanceAssociationStatusInfo> =
+            results.iter().filter_map(|(n, _, _)| a.instance_status.get(n).cloned()).collect();
         drop(st);
+        self.report_association(account, region, &reported, &infos, overall, &latest);
         if let Some((severity, document, version, name)) = compliance {
             for (node, s, _) in &results {
                 let entry = types::ComplianceItemEntry {
@@ -1082,6 +1109,80 @@ impl Ssm {
                     true,
                 );
             }
+        }
+    }
+
+    /// "EC2 State Manager Association State Change" for the association,
+    /// and "EC2 State Manager Instance Association State Change" for each
+    /// node in `infos`.
+    fn report_association(
+        &self,
+        account: &str,
+        region: &str,
+        d: &types::AssociationDescription,
+        infos: &[types::InstanceAssociationStatusInfo],
+        status: &str,
+        counts: &BTreeMap<String, i32>,
+    ) {
+        let partition = self.partition();
+        let ts = |t: Option<DateTime<Utc>>| t.map(crate::events::iso).unwrap_or_default();
+        let name = d.name.clone().unwrap_or_default();
+        let doc_arn = if name.starts_with("arn:") {
+            name.clone()
+        } else {
+            let owner = if name.starts_with("AWS-") || name.starts_with("Amazon") { "" } else { account };
+            crate::documents::arn(&partition, region, owner, &name)
+        };
+        let targets: Vec<serde_json::Value> =
+            d.targets.iter().flatten().map(|t| serde_json::json!({ "key": t.key, "values": t.values })).collect();
+        let targets = serde_json::Value::Array(targets).to_string();
+        let id = d.association_id.clone().unwrap_or_default();
+        let version = d.document_version.clone().filter(|v| v != "$DEFAULT");
+        self.emit(
+            account,
+            region,
+            "EC2 State Manager Association State Change",
+            vec![doc_arn.clone()],
+            serde_json::json!({
+                "association-id": id,
+                "document-name": name,
+                "association-version": d.association_version.clone().unwrap_or_default(),
+                "document-version": version.clone().unwrap_or_else(|| "Optional.empty".into()),
+                "targets": targets,
+                "creation-date": ts(d.date),
+                "last-successful-execution-date": ts(d.last_successful_execution_date),
+                "last-execution-date": ts(d.last_execution_date),
+                "last-updated-date": ts(d.last_update_association_date),
+                "status": status,
+                "association-status-aggregated-count": counts_json(counts),
+                "schedule-expression": d.schedule_expression.clone().unwrap_or_default(),
+                "association-cwe-version": "1.0",
+            }),
+        );
+        for i in infos {
+            let node = i.instance_id.clone().unwrap_or_default();
+            self.emit(
+                account,
+                region,
+                "EC2 State Manager Instance Association State Change",
+                vec![format!("arn:{partition}:ec2:{region}:{account}:instance/{node}"), doc_arn.clone()],
+                serde_json::json!({
+                    "association-id": id,
+                    "instance-id": node,
+                    "document-name": name,
+                    "document-version": version.clone().unwrap_or_else(|| "Optional.empty".into()),
+                    "targets": targets,
+                    "creation-date": ts(d.date),
+                    "last-successful-execution-date": ts(d.last_successful_execution_date),
+                    "last-execution-date": ts(i.execution_date),
+                    "status": i.status.clone().unwrap_or_default(),
+                    "detailed-status": i.detailed_status.clone().unwrap_or_default(),
+                    "error-code": i.error_code.clone().unwrap_or_default(),
+                    "execution-summary": i.execution_summary.clone().unwrap_or_default(),
+                    "output-url": i.output_url.as_ref().and_then(|o| o.s3_output_url.as_ref()).and_then(|u| u.output_url.clone()).unwrap_or_default(),
+                    "instance-association-cwe-version": "1",
+                }),
+            );
         }
     }
 

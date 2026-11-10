@@ -71,12 +71,12 @@ impl CloudTrail {
         let (channel, policy) = {
             let st = self.lock();
             let account = st.accounts.get(&parsed.account);
-            let channel = account
-                .and_then(|a| a.channels.get(channel_arn))
-                .cloned()
-                .ok_or_else(|| AuditError::ChannelNotFound(format!("Channel {channel_arn} was not found.")))?;
+            let channel = account.and_then(|a| a.channels.get(channel_arn)).cloned();
             (channel, account.and_then(|a| a.resource_policies.get(channel_arn)).cloned())
         };
+        // The caller is authorized before anything about the channel is
+        // reported, so a caller without permission cannot probe for
+        // channels.
         let mut keys = ConditionContext::new();
         if let Some(e) = external_id {
             keys.insert("cloudtrail:ExternalId".into(), vec![e.to_string()]);
@@ -104,6 +104,8 @@ impl CloudTrail {
                 AuditError::Denied(e)
             });
         }
+        let channel =
+            channel.ok_or_else(|| AuditError::ChannelNotFound(format!("Channel {channel_arn} was not found.")))?;
         let mut seen = std::collections::BTreeSet::new();
         for e in &events {
             if !seen.insert(e.id.as_str()) {

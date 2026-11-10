@@ -7,16 +7,19 @@
 //! Management events go into the event history that `LookupEvents`
 //! searches (90 days, per account and Region). Trails that are logging take
 //! the events their (basic or advanced) selectors match ([`selectors`]) and
-//! deliver them every second ([`deliver`]): gzipped log files in their S3
-//! bucket (SSE-KMS when the trail names a key), signed digest files when
-//! log file validation is on, SNS notifications, and CloudWatch Logs
-//! through the trail's role. Write management events (and data events a
+//! deliver them in batches on the emulated clock, as AWS does
+//! ([`deliver`]): a gzipped log file in their S3 bucket (SSE-KMS when the
+//! trail names a key) and its SNS notification about every five minutes,
+//! CloudWatch Logs through the trail's role about every minute, and signed
+//! hourly digest files when log file validation is on. Write management events (and data events a
 //! trail logs) go to the account's default EventBridge bus as "AWS API Call
 //! via CloudTrail". Organization trails and event data stores collect the
 //! organization's member accounts too.
 //!
 //! CloudTrail Lake event data stores keep the events their advanced
-//! selectors match; `StartQuery` runs SQL over them ([`sql`]), and imports
+//! selectors match; `StartQuery` queues SQL that runs over them in the
+//! background (`QUEUED`, `RUNNING`, then `FINISHED` within about a
+//! second, [`sql`]), and imports
 //! read trail log files back from S3. Channels, dashboards, federation,
 //! resource policies, event configuration and Insights selectors are kept
 //! and validated; Insights events are not generated.
@@ -147,7 +150,8 @@ impl CloudTrail {
         });
     }
 
-    /// One round of background work: deliver pending events.
+    /// One round of background work: Insights, EventBridge, Lake queries,
+    /// and the trails' batches that are due.
     pub fn tick(&self) {
         let Some((template, offset)) = self.inner.template.lock().expect("template lock poisoned").clone() else {
             return;
@@ -161,6 +165,7 @@ impl CloudTrail {
                 events.put_service_event(&ctx, e);
             }
         }
+        self.progress_queries(&ctx.partition, None, now);
         self.deliver_trails(&ctx);
     }
 }
@@ -227,5 +232,32 @@ impl Service for CloudTrail {
     fn reset_state(&self) {
         *self.lock() = State::default();
         self.inner.bus.lock().expect("bus lock poisoned").clear();
+    }
+}
+
+/// An event data store's stored events, as another service reads them
+/// (CloudWatch Logs import tasks).
+#[derive(Debug, Clone, Default)]
+pub struct EventDataStoreData {
+    /// `ENABLED`, `STOPPED_INGESTION`, `PENDING_DELETION`, ...
+    pub status: String,
+    pub kms_key_id: Option<String>,
+    /// The event records, oldest first.
+    pub events: Vec<serde_json::Value>,
+}
+
+impl CloudTrail {
+    /// The events of the event data store with this ARN, read by an AWS
+    /// service for the store's account; `None` when there is no such
+    /// store. The caller authorizes the read.
+    pub fn event_data_store_data(&self, arn: &str) -> Option<EventDataStoreData> {
+        let account = arn.split(':').nth(4)?;
+        let st = self.lock();
+        let eds = st.accounts.get(account)?.event_data_stores.get(arn)?;
+        Some(EventDataStoreData {
+            status: eds.status.clone(),
+            kms_key_id: eds.kms_key_id.clone(),
+            events: eds.events.clone(),
+        })
     }
 }

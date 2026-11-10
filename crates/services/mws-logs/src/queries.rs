@@ -52,6 +52,17 @@ pub fn record(g: &GroupRef, stream: &str, e: &Event) -> Record {
     r
 }
 
+/// Concurrent Logs Insights queries an account may run in a Region.
+const MAX_CONCURRENT_QUERIES: usize = 30;
+
+fn active_queries(region: &crate::state::Region) -> usize {
+    region.queries.values().filter(|q| matches!(q.status.as_str(), "Scheduled" | "Running")).count()
+}
+
+fn concurrency_limit() -> ServiceError {
+    errors::limit_exceeded(format!("Account maximum query concurrency limit of [{MAX_CONCURRENT_QUERIES}] reached."))
+}
+
 fn find_event<'a>(st: &'a State, g: &GroupRef, stream: &str, seq: u64) -> Option<(&'a LogGroup, &'a Event)> {
     let group = st.group(g).ok()?;
     let e = group.streams.get(stream)?.events.iter().find(|e| e.seq == seq)?;
@@ -73,6 +84,12 @@ impl Logs {
             (None, None, None) if language == "PPL" && input.query_string.trim_start().starts_with("source") => {
                 Vec::new()
             }
+            (None, None, None)
+                if language == "CWLI"
+                    && input.query_string.trim_start().get(..6).is_some_and(|w| w.eq_ignore_ascii_case("source")) =>
+            {
+                Vec::new()
+            }
             (None, None, None) => {
                 return Err(errors::invalid_parameter(
                     "Either logGroupName, logGroupNames or logGroupIdentifiers must be specified",
@@ -87,7 +104,16 @@ impl Logs {
         if input.end_time < input.start_time {
             return Err(errors::invalid_parameter("End time should not be before the start time"));
         }
-        let id = self.run_query(
+        {
+            let st = self.lock();
+            if st
+                .region_ref(&ctx.caller.account_id, &ctx.region)
+                .is_some_and(|r| active_queries(r) >= MAX_CONCURRENT_QUERIES)
+            {
+                return Err(concurrency_limit());
+            }
+        }
+        let mut q = self.prepare_query(
             ctx,
             &language,
             &input.query_string,
@@ -95,13 +121,49 @@ impl Logs {
             (input.start_time.saturating_mul(1000), input.end_time.saturating_mul(1000) + 999),
             input.limit,
         )?;
+        let id = q.id.clone();
+        // Queries run in the background: `Scheduled`, then `Running`, then
+        // `Complete`, over the events as they were when the query started.
+        let background = tokio::runtime::Handle::try_current().is_ok();
+        if background {
+            q.pending = Some((std::mem::take(&mut q.results), std::mem::take(&mut q.statistics)));
+            q.status = "Scheduled".into();
+        }
+        {
+            let mut st = self.lock();
+            let region = st.region(&ctx.caller.account_id, &ctx.region);
+            if active_queries(region) >= MAX_CONCURRENT_QUERIES {
+                return Err(concurrency_limit());
+            }
+            region.queries.insert(id.clone(), q);
+        }
+        if background {
+            self.spawn_query(ctx.caller.account_id.clone(), ctx.region.clone(), id.clone());
+        }
         Ok(types::StartQueryResponse { query_id: Some(id) })
     }
 
     /// Compile and run a query in any of the three languages over the
     /// events in `[from, to]` (epoch ms), keeping the results for
-    /// `GetQueryResults`. Returns the query id.
+    /// `GetQueryResults`. Returns the query id. The query is `Complete`
+    /// at once (scheduled queries).
     pub(crate) fn run_query(
+        &self,
+        ctx: &RequestContext,
+        language: &str,
+        query_string: &str,
+        ids: Vec<String>,
+        range: (i64, i64),
+        limit: Option<i32>,
+    ) -> Result<String, ServiceError> {
+        let q = self.prepare_query(ctx, language, query_string, ids, range, limit)?;
+        let id = q.id.clone();
+        self.lock().region(&ctx.caller.account_id, &ctx.region).queries.insert(id.clone(), q);
+        Ok(id)
+    }
+
+    /// Compile and run a query, as a `Complete` query not stored yet.
+    fn prepare_query(
         &self,
         ctx: &RequestContext,
         language: &str,
@@ -109,8 +171,36 @@ impl Logs {
         ids: Vec<String>,
         (from, to): (i64, i64),
         limit: Option<i32>,
-    ) -> Result<String, ServiceError> {
+    ) -> Result<Query, ServiceError> {
         let now = now_ms(ctx);
+        insights::with_clock(insights::Clock { now, from, to }, || {
+            self.prepare_at(ctx, language, query_string, ids, (from, to), limit, now)
+        })
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn prepare_at(
+        &self,
+        ctx: &RequestContext,
+        language: &str,
+        query_string: &str,
+        mut ids: Vec<String>,
+        (from, to): (i64, i64),
+        limit: Option<i32>,
+        now: i64,
+    ) -> Result<Query, ServiceError> {
+        // `SOURCE logGroups(...)` picks the log groups.
+        if language == "CWLI" {
+            let (source, _) = insights::split_source(query_string).map_err(errors::malformed_query)?;
+            if let Some(source) = source {
+                if !ids.is_empty() {
+                    return Err(errors::invalid_parameter(
+                        "Log groups cannot be specified in the request when the query uses the SOURCE command.",
+                    ));
+                }
+                ids = self.source_groups(ctx, &source);
+            }
+        }
         // Joins and subqueries load their log groups while compiling.
         let mut fetched: Vec<GroupRef> = Vec::new();
         let mut fetch_error: Option<ServiceError> = None;
@@ -121,7 +211,7 @@ impl Logs {
                 let mut load = || -> Result<Vec<insights::Record>, ServiceError> {
                     let groups: Vec<GroupRef> =
                         ids.iter().map(|i| GroupRef::parse(ctx, i)).collect::<Result<_, _>>()?;
-                    let (records, bytes) = self.load_records(ctx, &groups, now, (from, to))?;
+                    let (records, bytes) = self.load_records(ctx, &groups, now, (from, to), false)?;
                     scanned_bytes += bytes;
                     scanned += records.len();
                     for g in groups {
@@ -158,15 +248,29 @@ impl Logs {
             (_, false) => compiled.log_groups.clone(),
             _ => ids,
         };
-        let query = compiled.query;
+        let mut query = compiled.query;
+        self.fill_lookups(ctx, &mut query)?;
         let started = std::time::Instant::now();
         let (records, groups) = match compiled.rows {
             Some(rows) => (rows, fetched),
             None => {
                 let groups: Vec<GroupRef> = ids.iter().map(|i| GroupRef::parse(ctx, i)).collect::<Result<_, _>>()?;
-                let (records, bytes) = self.load_records(ctx, &groups, now, (from, to))?;
+                let unmask = query.unmasks();
+                let (mut records, bytes) = self.load_records(ctx, &groups, now, (from, to), unmask)?;
                 scanned_bytes += bytes;
                 scanned += records.len();
+                // `diff` also reads the period it compares with.
+                if let Some(offset) = query.diff_offset() {
+                    let offset = if offset == 0 { to - from + 1 } else { offset };
+                    let (mut earlier, bytes) =
+                        self.load_records(ctx, &groups, now, (from - offset, to - offset), unmask)?;
+                    scanned_bytes += bytes;
+                    scanned += earlier.len();
+                    for r in &mut earlier {
+                        r.insert(insights::PERIOD.into(), V::Str("previous".into()));
+                    }
+                    records.extend(earlier);
+                }
                 for g in groups {
                     if !fetched.iter().any(|f| f.arn() == g.arn()) {
                         fetched.push(g);
@@ -189,7 +293,6 @@ impl Logs {
                     .collect()
             })
             .collect();
-        let id = uuid();
         let stats = types::QueryStatistics {
             records_matched: out.records_matched as f64,
             records_scanned: scanned as f64,
@@ -198,8 +301,8 @@ impl Logs {
             result_count: results.len() as f64,
             ..Default::default()
         };
-        let q = Query {
-            id: id.clone(),
+        Ok(Query {
+            id: uuid(),
             language: language.to_string(),
             query_string: query_string.to_string(),
             status: "Complete".into(),
@@ -208,22 +311,67 @@ impl Logs {
             results,
             statistics: stats,
             duration_ms: started.elapsed().as_millis() as i64,
-        };
-        self.lock().region(&ctx.caller.account_id, &ctx.region).queries.insert(id.clone(), q);
-        Ok(id)
+            pending: None,
+        })
+    }
+
+    /// The log groups a `SOURCE` command selects, as ARNs: those of the
+    /// named accounts (the caller's by default) in this Region whose name
+    /// starts with one of the prefixes and whose class matches.
+    fn source_groups(&self, ctx: &RequestContext, source: &insights::Source) -> Vec<String> {
+        let accounts =
+            if source.accounts.is_empty() { vec![ctx.caller.account_id.clone()] } else { source.accounts.clone() };
+        let st = self.lock();
+        let mut out = Vec::new();
+        for account in accounts {
+            let Some(region) = st.region_ref(&account, &ctx.region) else { continue };
+            for (name, g) in &region.log_groups {
+                let prefixed = source.name_prefixes.is_empty()
+                    || source.name_prefixes.iter().any(|p| name.starts_with(p.as_str()));
+                let class_ok = source.class.as_ref().is_none_or(|c| c.eq_ignore_ascii_case(&g.class));
+                if prefixed && class_ok {
+                    out.push(format!("arn:{}:logs:{}:{account}:log-group:{name}", ctx.partition, ctx.region));
+                }
+            }
+        }
+        out
+    }
+
+    /// Load the rows of the lookup tables `lookup` commands read.
+    fn fill_lookups(&self, ctx: &RequestContext, query: &mut insights::Query) -> Result<(), ServiceError> {
+        let st = self.lock();
+        let region = st.region_ref(&ctx.caller.account_id, &ctx.region);
+        for l in query.lookups_mut() {
+            let table = region
+                .and_then(|r| r.lookup_tables.get(&l.table))
+                .ok_or_else(|| errors::resource_not_found(format!("Lookup table {} does not exist.", l.table)))?;
+            let mut lines = table.body.lines().filter(|x| !x.trim().is_empty());
+            let header: Vec<String> =
+                lines.next().map(|h| h.split(',').map(|c| c.trim().to_string()).collect()).unwrap_or_default();
+            l.rows = lines
+                .map(|line| header.iter().cloned().zip(line.split(',').map(|c| c.trim().to_string())).collect())
+                .collect();
+        }
+        Ok(())
     }
 
     /// The events of `groups` in `[from, to]` as query records, after
-    /// authorizing `StartQuery` on each; and the bytes scanned.
+    /// authorizing `StartQuery` on each (and `Unmask` when `unmask`); and
+    /// the bytes scanned. Data protection policies mask the records
+    /// unless `unmask`.
     fn load_records(
         &self,
         ctx: &RequestContext,
         groups: &[GroupRef],
         now: i64,
         (from, to): (i64, i64),
+        unmask: bool,
     ) -> Result<(Vec<insights::Record>, i64), ServiceError> {
         for g in groups {
             self.authorize_group(ctx, "StartQuery", g, None, ConditionContext::new())?;
+            if unmask {
+                self.authorize_group(ctx, "Unmask", g, None, ConditionContext::new())?;
+            }
         }
         let mut records = Vec::new();
         let mut bytes = 0i64;
@@ -235,11 +383,16 @@ impl Logs {
                     g.name, g.account
                 ))
             })?;
+            let masks = if unmask { Vec::new() } else { crate::policies::masks_for(&st, g) };
             let floor = cutoff(group, now).max(from);
             for s in group.streams.values() {
                 for e in s.events.iter().filter(|e| e.timestamp >= floor && e.timestamp <= to) {
                     bytes += e.size();
-                    records.push(record(g, &s.name, e));
+                    if masks.is_empty() {
+                        records.push(record(g, &s.name, e));
+                    } else {
+                        records.push(record(g, &s.name, &crate::policies::mask_event(&masks, e)));
+                    }
                 }
             }
         }

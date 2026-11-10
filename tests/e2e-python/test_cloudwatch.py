@@ -5,6 +5,7 @@ import copy
 import datetime as dt
 import json
 import time
+import urllib.request
 import uuid
 
 import pytest
@@ -49,6 +50,13 @@ def cbor(endpoint, session_for):
 
 def now():
     return dt.datetime.now(dt.timezone.utc).replace(microsecond=0)
+
+
+def clock(endpoint, body=None):
+    data = json.dumps(body).encode() if body is not None else None
+    req = urllib.request.Request(f"{endpoint}/_mws/clock", data=data, method="POST" if data else "GET")
+    with urllib.request.urlopen(req) as resp:
+        return json.loads(resp.read())
 
 
 def test_metrics_round_trip_on_every_protocol(cw):
@@ -155,12 +163,19 @@ def test_alarm_actions_reach_sns_and_sqs(cbor, endpoint, session_for):
         AlarmActions=[topic],
     )
     cbor.put_metric_data(Namespace=f"App-{suffix}", MetricData=[{"MetricName": "Errors", "Value": 12}])
-    for _ in range(100):
-        if cbor.describe_alarms(AlarmNames=[name])["MetricAlarms"][0]["StateValue"] == "ALARM":
-            break
-        time.sleep(0.1)
-    else:
-        pytest.fail("the alarm never fired")
+    # Alarms evaluate completed periods, about once a minute: move the
+    # emulated clock past the datapoint's minute, and put it back after.
+    before = clock(endpoint)["offsetSeconds"]
+    clock(endpoint, {"advanceSeconds": 61})
+    try:
+        for _ in range(100):
+            if cbor.describe_alarms(AlarmNames=[name])["MetricAlarms"][0]["StateValue"] == "ALARM":
+                break
+            time.sleep(0.1)
+        else:
+            pytest.fail("the alarm never fired")
+    finally:
+        clock(endpoint, {"offsetSeconds": before})
     msgs = sqs.receive_message(QueueUrl=queue, WaitTimeSeconds=5)["Messages"]
     body = json.loads(msgs[0]["Body"])
     assert body["AlarmName"] == name
