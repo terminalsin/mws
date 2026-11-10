@@ -130,13 +130,33 @@ impl SsoAdmin {
         action: &str,
         resource: Option<&str>,
     ) -> Result<InstanceRef, ServiceError> {
+        let resource = resource.unwrap_or(instance_arn);
+        self.instance_on(ctx, instance_arn, action, &[resource], ConditionContext::new())
+    }
+
+    /// Find the instance, check the caller manages it, then authorize
+    /// `action` on each of `resources` (AWS evaluates an action on every
+    /// resource type the Service Authorization Reference lists for it), each
+    /// with its own `aws:ResourceTag/...` keys and `extra` (request tags).
+    pub(crate) fn instance_on(
+        &self,
+        ctx: &RequestContext,
+        instance_arn: &str,
+        action: &str,
+        resources: &[&str],
+        extra: ConditionContext,
+    ) -> Result<InstanceRef, ServiceError> {
         let found = {
             let st = self.lock();
-            st.instances.get(instance_arn).map(|i| (self.manages(&ctx.caller.account_id, i), i.clone()))
+            st.instances.get(instance_arn).map(|i| {
+                let tags: Vec<Tags> =
+                    resources.iter().map(|r| resource_tags(i, r).cloned().unwrap_or_default()).collect();
+                (self.manages(&ctx.caller.account_id, i), i.clone(), tags)
+            })
         };
-        let (delegated, inst) = match found {
-            Some((Some(d), i)) => (d, i),
-            Some((None, _)) => {
+        let (delegated, inst, tags) = match found {
+            Some((Some(d), i, t)) => (d, i, t),
+            Some((None, _, _)) => {
                 return Err(errors::access_denied(format!(
                     "User: {} is not authorized to perform: {action} on resource: {instance_arn}",
                     ctx.caller.arn
@@ -144,7 +164,13 @@ impl SsoAdmin {
             }
             None => return Err(instance_not_found(instance_arn)),
         };
-        ctx.authorize(action, resource.unwrap_or(instance_arn), ConditionContext::new())?;
+        for (resource, tags) in resources.iter().zip(&tags) {
+            let mut cond = extra.clone();
+            for (k, v) in tags {
+                cond.insert(format!("aws:ResourceTag/{k}"), vec![v.clone()]);
+            }
+            ctx.authorize(action, resource, cond)?;
+        }
         Ok(InstanceRef {
             arn: inst.arn,
             owner: inst.owner,
@@ -171,4 +197,37 @@ impl SsoAdmin {
         let id = instance_id_in(arn)?;
         st.instances.values().find(|i| i.id == id).map(|i| i.arn.clone())
     }
+}
+
+/// The tags of an instance, permission set, application or trusted token
+/// issuer of `i`.
+pub fn resource_tags<'a>(i: &'a Instance, arn: &str) -> Option<&'a Tags> {
+    if i.arn == arn {
+        return Some(&i.tags);
+    }
+    if let Some(p) = i.permission_sets.get(arn) {
+        return Some(&p.tags);
+    }
+    if let Some(a) = i.applications.get(arn) {
+        return Some(&a.tags);
+    }
+    i.token_issuers.get(arn).map(|t| &t.tags)
+}
+
+/// `aws:RequestTag/...` and `aws:TagKeys` for tags a request sets.
+pub fn request_tag_context(tags: &Tags) -> ConditionContext {
+    let mut ctx = ConditionContext::new();
+    if tags.is_empty() {
+        return ctx;
+    }
+    for (k, v) in tags {
+        ctx.insert(format!("aws:RequestTag/{k}"), vec![v.clone()]);
+    }
+    ctx.insert("aws:TagKeys".into(), tags.keys().cloned().collect());
+    ctx
+}
+
+/// The ARN IAM policies use for an AWS account in Identity Center actions.
+pub fn account_resource(partition: &str, account: &str) -> String {
+    format!("arn:{partition}:sso:::account/{account}")
 }

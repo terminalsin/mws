@@ -48,7 +48,24 @@ impl SsoAdmin {
         ps_arn: &str,
         action: &str,
     ) -> Result<InstanceRef, ServiceError> {
-        let r = self.instance(ctx, instance_arn, action, Some(ps_arn))?;
+        self.permission_set_for(ctx, instance_arn, ps_arn, action, &[])
+    }
+
+    /// Like [`Self::permission_set`], also authorizing `action` on the
+    /// accounts it targets (`arn:aws:sso:::account/<id>`), as AWS does for
+    /// account assignments and provisioning.
+    pub(crate) fn permission_set_for(
+        &self,
+        ctx: &RequestContext,
+        instance_arn: &str,
+        ps_arn: &str,
+        action: &str,
+        accounts: &[String],
+    ) -> Result<InstanceRef, ServiceError> {
+        let account_arns: Vec<String> = accounts.iter().map(|a| account_resource(&ctx.partition, a)).collect();
+        let mut resources = vec![instance_arn, ps_arn];
+        resources.extend(account_arns.iter().map(String::as_str));
+        let r = self.instance_on(ctx, instance_arn, action, &resources, mws_core::ConditionContext::new())?;
         self.with_instance(&r.arn, |i| ps_mut(i, ps_arn).map(|_| ()))?;
         Ok(r)
     }
@@ -75,10 +92,16 @@ impl SsoAdmin {
         ctx: &RequestContext,
         input: types::CreatePermissionSetRequest,
     ) -> Result<types::CreatePermissionSetResponse, ServiceError> {
-        let r = self.instance(ctx, &input.instance_arn, "sso:CreatePermissionSet", None)?;
+        let tags = tags_from(input.tags)?;
+        let r = self.instance_on(
+            ctx,
+            &input.instance_arn,
+            "sso:CreatePermissionSet",
+            &[&input.instance_arn],
+            request_tag_context(&tags),
+        )?;
         let session_duration = input.session_duration.unwrap_or_else(|| "PT1H".into());
         check_session_duration(&session_duration)?;
-        let tags = tags_from(input.tags)?;
         self.with_instance(&r.arn, |i| {
             if !i.permission_sets_enabled {
                 return Err(errors::validation("Permission sets are not enabled for this instance."));

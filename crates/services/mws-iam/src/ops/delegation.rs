@@ -7,7 +7,7 @@
 //! SendDelegationToken finalizes an accepted one (FINALIZED). Requests not
 //! finalized within 7 days become EXPIRED.
 
-use chrono::{Duration, Utc};
+use chrono::{DateTime, Duration, Utc};
 use mws_core::{RequestContext, ServiceError};
 
 use crate::common::*;
@@ -22,16 +22,18 @@ fn no_such_request(id: &str) -> ServiceError {
     errors::no_such_entity(format!("The delegation request with id {id} cannot be found."))
 }
 
-fn state_of(r: &types::DelegationRequest) -> String {
+/// The request's state at `now` (the emulated clock): requests not
+/// finalized or rejected by their expiration time are EXPIRED.
+fn state_of(r: &types::DelegationRequest, now: DateTime<Utc>) -> String {
     let live = !matches!(r.state.as_deref(), Some("FINALIZED" | "REJECTED"));
-    if live && r.expiration_time.is_some_and(|t| t <= Utc::now()) {
+    if live && r.expiration_time.is_some_and(|t| t <= now) {
         return "EXPIRED".into();
     }
     r.state.clone().unwrap_or_default()
 }
 
-fn wire(d: &DelegationRequest) -> types::DelegationRequest {
-    types::DelegationRequest { state: Some(state_of(&d.request)), notes: d.notes.clone(), ..d.request.clone() }
+fn wire(d: &DelegationRequest, now: DateTime<Utc>) -> types::DelegationRequest {
+    types::DelegationRequest { state: Some(state_of(&d.request, now)), notes: d.notes.clone(), ..d.request.clone() }
 }
 
 impl Iam {
@@ -41,13 +43,14 @@ impl Iam {
 
     fn with_request<T>(
         &self,
+        ctx: &RequestContext,
         id: &str,
         f: impl FnOnce(&mut DelegationRequest, &mut State) -> Result<T, ServiceError>,
     ) -> Result<T, ServiceError> {
         let mut state = self.write();
         let mut req = state.delegation_requests.get(id).cloned().ok_or_else(|| no_such_request(id))?;
         let out = f(&mut req, &mut state)?;
-        req.request.updated_time = Some(Utc::now());
+        req.request.updated_time = Some(ctx.received_at);
         state.delegation_requests.insert(id.to_string(), req);
         Ok(out)
     }
@@ -73,7 +76,7 @@ impl Iam {
             )));
         }
         let id = uuid::Uuid::new_v4().simple().to_string();
-        let now = Utc::now();
+        let now = ctx.received_at;
         let request = types::DelegationRequest {
             delegation_request_id: Some(id.clone()),
             owner_account_id: input.owner_account_id,
@@ -116,7 +119,7 @@ impl Iam {
             .ok_or_else(|| no_such_request(&input.delegation_request_id))?;
         let check = input.delegation_permission_check;
         Ok(types::GetDelegationRequestResponse {
-            delegation_request: Some(wire(d)),
+            delegation_request: Some(wire(d, ctx.received_at)),
             permission_check_status: check.then(|| "COMPLETE".into()),
             permission_check_result: check.then(|| "ALLOWED".into()),
         })
@@ -134,7 +137,7 @@ impl Iam {
             .delegation_requests
             .values()
             .filter(|d| d.request.owner_id.as_deref() == Some(owner.as_str()))
-            .map(wire)
+            .map(|d| wire(d, ctx.received_at))
             .collect();
         let (page, truncated, marker) = paginate(
             &all,
@@ -153,9 +156,10 @@ impl Iam {
         self.authorize(ctx, "AssociateDelegationRequest", &self.delegation_arn(&input.delegation_request_id))?;
         let caller = ctx.caller.arn.clone();
         let account = self.account_id().to_string();
-        self.with_request(&input.delegation_request_id, |d, _| {
+        let now = ctx.received_at;
+        self.with_request(ctx, &input.delegation_request_id, |d, _| {
             let r = &mut d.request;
-            if state_of(r) != "UNASSIGNED" {
+            if state_of(r, now) != "UNASSIGNED" {
                 return Err(errors::invalid_input("The delegation request is already associated with an owner."));
             }
             if r.owner_account_id.as_deref().is_some_and(|a| a != account) {
@@ -177,11 +181,12 @@ impl Iam {
         if input.notes.as_ref().is_some_and(|n| n.len() > MAX_NOTES) {
             return Err(errors::invalid_input(format!("Notes cannot exceed {MAX_NOTES} characters.")));
         }
-        self.with_request(&input.delegation_request_id, |d, _| {
-            if !matches!(state_of(&d.request).as_str(), "ASSIGNED" | "PENDING_APPROVAL") {
+        let now = ctx.received_at;
+        self.with_request(ctx, &input.delegation_request_id, |d, _| {
+            if !matches!(state_of(&d.request, now).as_str(), "ASSIGNED" | "PENDING_APPROVAL") {
                 return Err(errors::invalid_input(format!(
                     "The delegation request cannot be updated in state {}.",
-                    state_of(&d.request)
+                    state_of(&d.request, now)
                 )));
             }
             d.notes = input.notes;
@@ -197,11 +202,12 @@ impl Iam {
     ) -> Result<(), ServiceError> {
         self.authorize(ctx, "AcceptDelegationRequest", &self.delegation_arn(&input.delegation_request_id))?;
         let caller = ctx.caller.arn.clone();
-        self.with_request(&input.delegation_request_id, |d, _| {
-            if !matches!(state_of(&d.request).as_str(), "ASSIGNED" | "PENDING_APPROVAL") {
+        let now = ctx.received_at;
+        self.with_request(ctx, &input.delegation_request_id, |d, _| {
+            if !matches!(state_of(&d.request, now).as_str(), "ASSIGNED" | "PENDING_APPROVAL") {
                 return Err(errors::concurrent_modification(format!(
                     "The delegation request cannot be accepted in state {}.",
-                    state_of(&d.request)
+                    state_of(&d.request, now)
                 )));
             }
             d.request.state = Some("ACCEPTED".into());
@@ -216,11 +222,15 @@ impl Iam {
         input: types::RejectDelegationRequestRequest,
     ) -> Result<(), ServiceError> {
         self.authorize(ctx, "RejectDelegationRequest", &self.delegation_arn(&input.delegation_request_id))?;
-        self.with_request(&input.delegation_request_id, |d, _| {
-            if !matches!(state_of(&d.request).as_str(), "UNASSIGNED" | "ASSIGNED" | "PENDING_APPROVAL" | "ACCEPTED") {
+        let now = ctx.received_at;
+        self.with_request(ctx, &input.delegation_request_id, |d, _| {
+            if !matches!(
+                state_of(&d.request, now).as_str(),
+                "UNASSIGNED" | "ASSIGNED" | "PENDING_APPROVAL" | "ACCEPTED"
+            ) {
                 return Err(errors::invalid_input(format!(
                     "The delegation request cannot be rejected in state {}.",
-                    state_of(&d.request)
+                    state_of(&d.request, now)
                 )));
             }
             d.request.state = Some("REJECTED".into());
@@ -235,8 +245,9 @@ impl Iam {
         input: types::SendDelegationTokenRequest,
     ) -> Result<(), ServiceError> {
         self.authorize(ctx, "SendDelegationToken", &self.delegation_arn(&input.delegation_request_id))?;
-        self.with_request(&input.delegation_request_id, |d, _| {
-            if state_of(&d.request) != "ACCEPTED" {
+        let now = ctx.received_at;
+        self.with_request(ctx, &input.delegation_request_id, |d, _| {
+            if state_of(&d.request, now) != "ACCEPTED" {
                 return Err(errors::invalid_input("The delegation request must be in the ACCEPTED state."));
             }
             d.request.state = Some("FINALIZED".into());

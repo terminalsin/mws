@@ -53,6 +53,25 @@ pub fn arn_account(arn: &str) -> Option<&str> {
 }
 
 impl Iam {
+    /// The applied value of a Service Quotas quota of any service for
+    /// `account`, for services that read their quotas through IAM rather
+    /// than holding a Service Quotas link of their own. `None` when Service
+    /// Quotas does not know the quota.
+    pub fn applied_service_quota(
+        &self,
+        account: &str,
+        region: &str,
+        service: &str,
+        code: &str,
+        now: chrono::DateTime<chrono::Utc>,
+    ) -> Option<f64> {
+        let def = mws_servicequotas::catalog::quota(service, code)?;
+        Some(match self.inner.quotas.get() {
+            Some(q) => q.applied_value(account, region, service, code, now),
+            None => def.value,
+        })
+    }
+
     /// The configured account. Requests work in their caller's account; see
     /// [`Iam::in_account`].
     pub fn account_id_str(&self) -> &str {

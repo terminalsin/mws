@@ -118,7 +118,6 @@ impl Iam {
 
     /// Whether IAM knows the AWS managed policy `arn`.
     pub fn aws_managed_policy_exists(&self, arn: &str) -> bool {
-        let account = self.primary_account_id().to_string();
-        self.inner.read_account(&account).policies.get(arn).is_some_and(|p| p.aws_managed)
+        crate::managed::catalog(&self.inner.config.partition).get(arn).is_some()
     }
 }

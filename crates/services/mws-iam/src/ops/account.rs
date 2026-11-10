@@ -2,7 +2,6 @@
 
 use std::collections::BTreeMap;
 
-use chrono::Utc;
 use mws_core::{RequestContext, ServiceError};
 
 use crate::common::*;
@@ -27,9 +26,14 @@ impl Iam {
         let arn = self.arn(&format!("oidc-provider/{url}"));
         let tags = tags_from_wire(input.tags)?;
         self.authorize_with(ctx, "CreateOpenIDConnectProvider", &arn, request_tag_context(&tags))?;
+        self.authorize_tagging(ctx, "TagOpenIDConnectProvider", &arn, &tags)?;
+        let limit = self.limit(ctx, &OIDC_PROVIDERS_PER_ACCOUNT);
         let mut state = self.write();
         if state.oidc_providers.contains_key(&arn) {
             return Err(errors::entity_already_exists(format!("Provider with url {} already exists.", input.url)));
+        }
+        if state.oidc_providers.len() >= limit {
+            return Err(quota_exceeded(OIDC_PROVIDERS_PER_ACCOUNT.name, limit));
         }
         let out_tags = tags_to_wire(&tags);
         state.oidc_providers.insert(
@@ -39,7 +43,7 @@ impl Iam {
                 url,
                 client_ids: input.client_id_list.unwrap_or_default(),
                 thumbprints: input.thumbprint_list.unwrap_or_default(),
-                created: Utc::now(),
+                created: ctx.received_at,
                 tags,
             },
         );
@@ -227,25 +231,33 @@ impl Iam {
         _input: (),
     ) -> Result<types::GetAccountSummaryResponse, ServiceError> {
         self.authorize(ctx, "GetAccountSummary", "*")?;
+        let quotas = [
+            self.limit(ctx, &USERS_PER_ACCOUNT),
+            self.limit(ctx, &GROUPS_PER_ACCOUNT),
+            self.limit(ctx, &ROLES_PER_ACCOUNT),
+            self.limit(ctx, &POLICIES_PER_ACCOUNT),
+            self.limit(ctx, &INSTANCE_PROFILES_PER_ACCOUNT),
+            self.quota(ctx, "L-0DA4ABF3", MAX_MANAGED_POLICIES_PER_ENTITY),
+        ];
         let s = self.read();
-        let local_policies = s.policies.values().filter(|p| !p.aws_managed).count();
-        let versions: usize = s.policies.values().filter(|p| !p.aws_managed).map(|p| p.versions.len()).sum();
+        let local_policies = s.policies.local().count();
+        let versions: usize = s.policies.local().map(|p| p.versions.len()).sum();
         let mut m = BTreeMap::new();
         let mut put = |k: &str, v: usize| {
-            m.insert(k.to_string(), v as i32);
+            m.insert(k.to_string(), v.min(i32::MAX as usize) as i32);
         };
         put("Users", s.users.len());
-        put("UsersQuota", 5000);
+        put("UsersQuota", quotas[0]);
         put("Groups", s.groups.len());
-        put("GroupsQuota", 300);
+        put("GroupsQuota", quotas[1]);
         put("Roles", s.roles.len());
-        put("RolesQuota", 1000);
+        put("RolesQuota", quotas[2]);
         put("Policies", local_policies);
-        put("PoliciesQuota", 1500);
+        put("PoliciesQuota", quotas[3]);
         put("PolicyVersionsInUse", versions);
-        put("PolicyVersionsInUseQuota", 10000);
+        put("PolicyVersionsInUseQuota", POLICY_VERSIONS_IN_USE);
         put("InstanceProfiles", s.instance_profiles.len());
-        put("InstanceProfilesQuota", 1000);
+        put("InstanceProfilesQuota", quotas[4]);
         put("Providers", s.oidc_providers.len() + s.saml_providers.len());
         put("AccountAccessKeysPresent", usize::from(!s.keys_for(None).is_empty()));
         put("AccountMFAEnabled", 0);
@@ -262,8 +274,8 @@ impl Iam {
         put("AccessKeysPerUserQuota", 2);
         put("AttachedPoliciesPerUserQuota", MAX_MANAGED_POLICIES_PER_ENTITY);
         put("AttachedPoliciesPerGroupQuota", MAX_MANAGED_POLICIES_PER_ENTITY);
-        put("AttachedPoliciesPerRoleQuota", MAX_MANAGED_POLICIES_PER_ENTITY);
-        put("GroupsPerUserQuota", 10);
+        put("AttachedPoliciesPerRoleQuota", quotas[5]);
+        put("GroupsPerUserQuota", GROUPS_PER_USER);
         put("PolicySizeQuota", MANAGED_POLICY_MAX_SIZE);
         put("UserPolicySizeQuota", 2048);
         put("GroupPolicySizeQuota", 5120);
@@ -358,14 +370,18 @@ impl Iam {
             }));
         }
         if want("LocalManagedPolicy") || want("AWSManagedPolicy") {
+            // Only the AWS managed policies that something attaches, as in
+            // AWS (every account sees 1,300+).
+            let attached = s.attached_policy_arns();
             entries.extend(
                 s.policies
-                    .iter()
-                    .filter(|(_, p)| {
-                        (p.aws_managed && want("AWSManagedPolicy") && s.attachment_count(&p.arn) > 0)
+                    .values()
+                    .filter(|p| {
+                        (p.aws_managed && want("AWSManagedPolicy") && attached.contains(p.arn.as_str()))
                             || (!p.aws_managed && want("LocalManagedPolicy"))
                     })
-                    .map(|(k, p)| {
+                    .map(|p| {
+                        let k = &p.arn;
                         let d = types::ManagedPolicyDetail {
                             policy_name: Some(p.name.clone()),
                             policy_id: Some(p.id.clone()),
@@ -374,7 +390,7 @@ impl Iam {
                             default_version_id: Some(p.default_version.clone()),
                             attachment_count: Some(s.attachment_count(&p.arn) as i32),
                             permissions_boundary_usage_count: Some(s.boundary_usage_count(&p.arn) as i32),
-                            is_attachable: true,
+                            is_attachable: p.attachable,
                             description: p.description.clone(),
                             create_date: Some(p.created),
                             update_date: Some(p.updated),

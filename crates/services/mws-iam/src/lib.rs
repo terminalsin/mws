@@ -33,6 +33,7 @@ use chrono::{DateTime, Utc};
 use mws_core::{HttpRequest, HttpResponse, RequestContext, Service, ServiceError, SessionKind};
 
 pub use api::{arn_account, DelegationGrant, InstanceProfileView, OidcProviderView, OutboundKey, RoleView, UserView};
+pub use ops::service_roles::{RoleUsage, ServiceLinkedRoleUsage};
 pub use org::{AccountOrganization, OrganizationView};
 pub use reserved::ReservedRoleSpec;
 pub use state::State;
@@ -81,6 +82,9 @@ pub(crate) struct Inner {
     pub quotas: OnceLock<mws_servicequotas::ServiceQuotas>,
     /// Activity the authorizer noted and IAM has yet to fold into `accounts`.
     pub activity: Mutex<activity::Pending>,
+    /// Services that report which of their resources use a service-linked
+    /// role (DeleteServiceLinkedRole fails while any does).
+    pub slr_usage: RwLock<Vec<Arc<dyn ServiceLinkedRoleUsage>>>,
 }
 
 /// Saved IAM state: the configured account's namespace at the top level (the
@@ -103,6 +107,7 @@ impl Iam {
                 organizations: OnceLock::new(),
                 quotas: OnceLock::new(),
                 activity: Mutex::new(activity::Pending::default()),
+                slr_usage: RwLock::new(Vec::new()),
             }),
         };
         iam.reset_state();
@@ -132,9 +137,19 @@ impl Iam {
         let _ = self.inner.quotas.set(quotas);
     }
 
-    /// The applied value of an IAM quota for the current account. Never
-    /// call with the IAM state lock held.
-    pub(crate) fn quota(&self, ctx: &RequestContext, code: &str) -> usize {
+    /// Let a service report which of its resources still use a
+    /// service-linked role, so `DeleteServiceLinkedRole` fails while they do.
+    pub fn register_service_linked_role_usage(&self, usage: Arc<dyn ServiceLinkedRoleUsage>) {
+        self.inner.slr_usage.write().expect("IAM SLR usage lock poisoned").push(usage);
+    }
+
+    /// The applied value of an IAM quota for the current account: the
+    /// Service Quotas value when its catalog has `code`, `default`
+    /// otherwise. Never call with the IAM state lock held.
+    pub(crate) fn quota(&self, ctx: &RequestContext, code: &str, default: usize) -> usize {
+        if mws_servicequotas::catalog::quota("iam", code).is_none() {
+            return default;
+        }
         let value = match self.inner.quotas.get() {
             Some(q) => q.applied_value(&self.current_account(), "us-east-1", "iam", code, ctx.received_at),
             None => mws_servicequotas::catalog::quota("iam", code).map_or(f64::INFINITY, |d| d.value),
@@ -183,6 +198,7 @@ impl Service for Iam {
             return self.render_error(&ctx.request_id, &ServiceError::invalid_client_token_id());
         }
         self.inner.flush_activity();
+        self.settle_deletion_tasks(ctx.received_at);
         let params = mws_proto_query::read_params(&request);
         let account = ctx.caller.account_id.clone();
         self.in_account(account, generated::dispatch(self, &ctx, &params)).await
@@ -199,6 +215,7 @@ impl Service for Iam {
         input: serde_json::Value,
     ) -> Result<serde_json::Value, ServiceError> {
         self.inner.flush_activity();
+        self.settle_deletion_tasks(ctx.received_at);
         let account = ctx.caller.account_id.clone();
         self.in_account(account, generated::invoke(self, &ctx, operation, input)).await
     }
@@ -215,8 +232,9 @@ impl Service for Iam {
         let saved: SavedState = serde_json::from_value(state).map_err(|e| format!("invalid IAM state: {e}"))?;
         let mut accounts = saved.member_accounts;
         accounts.insert(self.inner.config.account_id.clone(), saved.primary);
-        for state in accounts.values_mut() {
+        for (account, state) in accounts.iter_mut() {
             self.seed_aws_managed_policies(state);
+            ops::service_roles::migrate_role_names(&self.inner.config.partition, account, state);
         }
         *self.inner.accounts.write().expect("IAM state lock poisoned") = accounts;
         self.inner.clear_activity();

@@ -271,7 +271,7 @@ impl Iam {
         let id = uuid::Uuid::new_v4().to_string();
         state.report_jobs.insert(
             id.clone(),
-            ReportJob { id: id.clone(), kind: "service".into(), arn: input.arn, granularity, created: Utc::now() },
+            ReportJob { id: id.clone(), kind: "service".into(), arn: input.arn, granularity, created: ctx.received_at },
         );
         Ok(types::GenerateServiceLastAccessedDetailsResponse { job_id: Some(id) })
     }
@@ -385,7 +385,7 @@ impl Iam {
                 for r in state.roles.values().filter(|r| r.attached.contains(&arn)) {
                     entities.push(info("ROLE", &r.arn, &r.name, &r.id, &r.path));
                 }
-                if !allowed_namespaces(state.policies[&arn].default_document()).contains(&ns) {
+                if !allowed_namespaces(state.policies.get(&arn).map_or("{}", |p| p.default_document())).contains(&ns) {
                     entities.clear();
                 }
             }
@@ -465,7 +465,7 @@ impl Iam {
                 kind: "organizations".into(),
                 arn: input.entity_path,
                 granularity: String::new(),
-                created: Utc::now(),
+                created: ctx.received_at,
             },
         );
         Ok(types::GenerateOrganizationsAccessReportResponse { job_id: Some(id) })

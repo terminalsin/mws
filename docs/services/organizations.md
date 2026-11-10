@@ -1,6 +1,6 @@
 # AWS Organizations
 
-> Crate: [`mws-organizations`](../../crates/services/mws-organizations) · Tests: [`tests/e2e-rust/tests/e2e/organizations.rs`](../../tests/e2e-rust/tests/e2e/organizations.rs)
+> Crate: [`mws-organizations`](../../crates/services/mws-organizations) · Tests: [`tests/e2e-rust/tests/e2e/organizations.rs`](../../tests/e2e-rust/tests/e2e/organizations.rs), [`organizations_quota.rs`](../../tests/e2e-rust/tests/e2e/organizations_quota.rs)
 
 All 63 operations are generated from the AWS model (awsJson1.1) and implemented. Member accounts are real accounts, and the IAM authorizer enforces the organization's policies.
 
@@ -11,6 +11,7 @@ All 63 operations are generated from the AWS model (awsJson1.1) and implemented.
 | Organizations and roots | ✅ | All features or consolidated billing only. |
 | Organizational units | ✅ | Nested OUs with the depth limit; moving accounts between them. |
 | `CreateAccount` | ✅ | Real member accounts with their own IAM namespace and an `OrganizationAccountAccessRole` you can assume. |
+| Account quota | 🟡 | 10 accounts per organization (AWS's default), counting members and open invitations. Over it, `CreateAccount` ends `FAILED` with `ACCOUNT_LIMIT_EXCEEDED` and `InviteAccountToOrganization` answers `HandshakeConstraintViolationException` (`ACCOUNT_NUMBER_LIMIT_EXCEEDED`). The Service Quotas value `L-29A0C5DF` of the management account is read when Service Quotas' catalog has it (it doesn't yet, so the limit can't be raised). There is no account creation rate limit. |
 | Account lifecycle | ✅ | Removing, leaving and closing accounts. |
 | Handshakes | ✅ | Invitations, enabling all features and billing responsibility transfers. |
 | Policies | ✅ | Every policy type, with per-type validation and attachment limits; `EnablePolicyType`/`DisablePolicyType` attach `FullAWSAccess` and `RCPFullAWSAccess` everywhere. |

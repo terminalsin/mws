@@ -432,6 +432,11 @@ async fn service_linked_roles_and_access_advisor() {
     let task = iam.delete_service_linked_role().role_name(role.role_name()).send().await.unwrap();
     let status =
         iam.get_service_linked_role_deletion_status().deletion_task_id(task.deletion_task_id()).send().await.unwrap();
+    assert_eq!(status.status().as_str(), "IN_PROGRESS");
+    let (code, _) = mws.control("POST", "/_mws/clock", Some(r#"{"advanceSeconds": 10}"#)).await;
+    assert_eq!(code, 200);
+    let status =
+        iam.get_service_linked_role_deletion_status().deletion_task_id(task.deletion_task_id()).send().await.unwrap();
     assert_eq!(status.status().as_str(), "SUCCEEDED");
 
     let user = iam.create_user().user_name("advisor").send().await.unwrap();

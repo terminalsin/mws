@@ -12,7 +12,27 @@ use crate::Organizations;
 /// Days a created account must wait before it can leave its organization.
 const CREATED_ACCOUNT_WAIT_DAYS: i64 = 4;
 
+/// Service Quotas' "Default maximum number of accounts" quota.
+const ACCOUNTS_QUOTA_CODE: &str = "L-29A0C5DF";
+/// AWS's default for a new organization.
+const DEFAULT_ACCOUNT_LIMIT: usize = 10;
+
 impl Organizations {
+    /// How many accounts (members plus open invitations) `org` may have:
+    /// the management account's applied Service Quotas value, else AWS's
+    /// default of 10. Never call with the state lock held.
+    pub(crate) fn account_limit(&self, ctx: &RequestContext, org: &Org) -> usize {
+        self.iam
+            .applied_service_quota(
+                &org.management_account,
+                "us-east-1",
+                "organizations",
+                ACCOUNTS_QUOTA_CODE,
+                ctx.received_at,
+            )
+            .map_or(DEFAULT_ACCOUNT_LIMIT, |v| v.clamp(0.0, usize::MAX as f64) as usize)
+    }
+
     /// The ARN of an account in the caller's organization, and its tags as
     /// `aws:ResourceTag/...` condition keys.
     pub(crate) fn account_arn_for(
@@ -55,6 +75,12 @@ impl Organizations {
             (account, arn)
         };
         self.authorize_tagging(ctx, &arn, &tags)?;
+        let limit = {
+            let state = self.lock();
+            let org = self.caller_org(&state, ctx, "CreateAccount", "*", Need::Management)?.clone();
+            drop(state);
+            self.account_limit(ctx, &org)
+        };
         let mut state = self.lock();
         let org_id = self.caller_org(&state, ctx, "CreateAccount", "*", Need::Management)?.id.clone();
         let now = ctx.received_at;
@@ -69,10 +95,13 @@ impl Organizations {
         };
         let response = types::CreateAccountResponse { create_account_status: Some(status.clone()) };
         status.completed_timestamp = Some(now);
-        if email_taken {
+        let org = state.organizations.get(&org_id).expect("caller's organization exists");
+        let full = crate::handshakes::accounts_toward_limit(&state, org) >= limit;
+        if email_taken || full {
             // AWS accepts the request and fails it asynchronously.
             status.state = Some("FAILED".into());
-            status.failure_reason = Some("EMAIL_ALREADY_EXISTS".into());
+            let reason = if full { "ACCOUNT_LIMIT_EXCEEDED" } else { "EMAIL_ALREADY_EXISTS" };
+            status.failure_reason = Some(reason.into());
             let org = state.organizations.get_mut(&org_id).expect("caller's organization exists");
             org.create_statuses.insert(request_id, status);
             return Ok(response);

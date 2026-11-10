@@ -61,8 +61,8 @@ impl SsoAdmin {
         ctx: &RequestContext,
         input: types::CreateInstanceRequest,
     ) -> Result<types::CreateInstanceResponse, ServiceError> {
-        ctx.authorize("sso:CreateInstance", "*", ConditionContext::new())?;
         let tags = tags_from(input.tags)?;
+        ctx.authorize("sso:CreateInstance", "*", request_tag_context(&tags))?;
         let account = ctx.caller.account_id.clone();
         let org = self.iam.organization_of(&account);
         // AWS enables the organization instance from the console in the
@@ -362,6 +362,7 @@ impl SsoAdmin {
         resource_arn: &str,
         instance_arn: Option<&str>,
         action: &str,
+        extra: ConditionContext,
     ) -> Result<String, ServiceError> {
         let owner = { self.instance_arn_for(&self.lock(), resource_arn) };
         let owner = owner.ok_or_else(|| not_found(format!("Resource {resource_arn} doesn't exist.")))?;
@@ -370,7 +371,7 @@ impl SsoAdmin {
                 return Err(errors::validation("The resource does not belong to the specified instance."));
             }
         }
-        self.instance(ctx, &owner, action, Some(resource_arn))?;
+        self.instance_on(ctx, &owner, action, &[resource_arn], extra)?;
         Ok(owner)
     }
 
@@ -392,8 +393,14 @@ impl SsoAdmin {
         ctx: &RequestContext,
         input: types::TagResourceRequest,
     ) -> Result<types::TagResourceResponse, ServiceError> {
-        let owner = self.taggable(ctx, &input.resource_arn, input.instance_arn.as_deref(), "sso:TagResource")?;
         let new = tags_from(Some(input.tags))?;
+        let owner = self.taggable(
+            ctx,
+            &input.resource_arn,
+            input.instance_arn.as_deref(),
+            "sso:TagResource",
+            request_tag_context(&new),
+        )?;
         self.with_instance(&owner, |i| {
             let tags = Self::tags_mut(i, &input.resource_arn)
                 .ok_or_else(|| not_found(format!("Resource {} doesn't exist.", input.resource_arn)))?;
@@ -412,7 +419,10 @@ impl SsoAdmin {
         ctx: &RequestContext,
         input: types::UntagResourceRequest,
     ) -> Result<types::UntagResourceResponse, ServiceError> {
-        let owner = self.taggable(ctx, &input.resource_arn, input.instance_arn.as_deref(), "sso:UntagResource")?;
+        let mut keys = ConditionContext::new();
+        keys.insert("aws:TagKeys".into(), input.tag_keys.clone());
+        let owner =
+            self.taggable(ctx, &input.resource_arn, input.instance_arn.as_deref(), "sso:UntagResource", keys)?;
         self.with_instance(&owner, |i| {
             let tags = Self::tags_mut(i, &input.resource_arn)
                 .ok_or_else(|| not_found(format!("Resource {} doesn't exist.", input.resource_arn)))?;
@@ -428,8 +438,13 @@ impl SsoAdmin {
         ctx: &RequestContext,
         input: types::ListTagsForResourceRequest,
     ) -> Result<types::ListTagsForResourceResponse, ServiceError> {
-        let owner =
-            self.taggable(ctx, &input.resource_arn, input.instance_arn.as_deref(), "sso:ListTagsForResource")?;
+        let owner = self.taggable(
+            ctx,
+            &input.resource_arn,
+            input.instance_arn.as_deref(),
+            "sso:ListTagsForResource",
+            ConditionContext::new(),
+        )?;
         let tags = self.with_instance(&owner, |i| {
             Self::tags_mut(i, &input.resource_arn)
                 .map(|t| tags_to(t))

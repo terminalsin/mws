@@ -2,7 +2,6 @@
 
 use std::collections::{BTreeMap, BTreeSet};
 
-use chrono::Utc;
 use mws_core::{RequestContext, ServiceError};
 use mws_iam_policy::{policy_size, PolicyKind};
 
@@ -72,6 +71,15 @@ impl Holder {
     }
 }
 
+/// A customer managed policy, to change. AWS managed policies are
+/// read-only.
+fn local_policy_mut<'s>(state: &'s mut State, arn: &str) -> Result<&'s mut ManagedPolicy, ServiceError> {
+    if state.policies.is_aws_managed(arn) {
+        return Err(ServiceError::client("AccessDenied", 403, "AWS managed policies cannot be modified."));
+    }
+    state.policies.get_mut(arn).ok_or_else(|| no_such_policy(arn))
+}
+
 /// Roles IAM Identity Center provisions are only modifiable by AWS.
 fn reserved_guard(h: Holder, state: &State, name: &str) -> Result<(), ServiceError> {
     match (h, state.role(name)) {
@@ -91,41 +99,16 @@ impl Iam {
         }
     }
 
-    /// Add the AWS managed policies MWS knows to `state`, keeping any that
-    /// are already there (restored state keeps their ids).
+    /// Make `state` see the AWS managed policies of this partition.
     pub(crate) fn seed_aws_managed_policies(&self, state: &mut crate::State) {
         seed_aws_managed_policies(&self.inner.config.partition, state)
     }
 }
 
-/// Add every AWS managed policy MWS knows to an account's namespace.
+/// Make an account see the AWS managed policies of `partition` (they are
+/// global, as in AWS, and not copied into the account).
 pub(crate) fn seed_aws_managed_policies(partition: &str, state: &mut crate::State) {
-    {
-        let created = chrono::DateTime::parse_from_rfc3339("2015-02-06T18:39:46Z").unwrap().with_timezone(&Utc);
-        for p in crate::managed::POLICIES {
-            let arn = format!("arn:{partition}:iam::aws:policy{}{}", p.path, p.name);
-            if state.policies.contains_key(&arn) {
-                continue;
-            }
-            state.policies.insert(
-                arn.clone(),
-                ManagedPolicy {
-                    name: p.name.into(),
-                    path: p.path.into(),
-                    id: ids::unique_id("ANPA"),
-                    arn,
-                    created,
-                    updated: created,
-                    description: Some(p.description.into()),
-                    default_version: "v1".into(),
-                    versions: vec![PolicyVersion { id: "v1".into(), document: p.document.into(), created }],
-                    next_version: 2,
-                    tags: vec![],
-                    aws_managed: true,
-                },
-            );
-        }
-    }
+    state.policies.set_partition(partition);
 }
 
 impl Iam {
@@ -140,20 +123,29 @@ impl Iam {
         let arn = self.arn(&format!("policy{path}{}", input.policy_name));
         let tags = tags_from_wire(input.tags)?;
         self.authorize_with(ctx, "CreatePolicy", &arn, request_tag_context(&tags))?;
+        self.authorize_tagging(ctx, "TagPolicy", &arn, &tags)?;
         validate_policy(&input.policy_document, PolicyKind::Identity)?;
         if policy_size(&input.policy_document) > MANAGED_POLICY_MAX_SIZE {
             return Err(errors::limit_exceeded(format!(
                 "Cannot exceed quota for PolicySize: {MANAGED_POLICY_MAX_SIZE}"
             )));
         }
+        let limit = self.limit(ctx, &POLICIES_PER_ACCOUNT);
         let mut state = self.write();
-        if state.policies.values().any(|p| !p.aws_managed && p.name.eq_ignore_ascii_case(&input.policy_name)) {
+        if state.policies.local().any(|p| p.name.eq_ignore_ascii_case(&input.policy_name)) {
             return Err(errors::entity_already_exists(format!(
                 "A policy called {} already exists. Duplicate names are not allowed.",
                 input.policy_name
             )));
         }
-        let now = Utc::now();
+        let customer = state.policies.values().filter(|p| !p.aws_managed);
+        if customer.clone().count() >= limit {
+            return Err(quota_exceeded(POLICIES_PER_ACCOUNT.name, limit));
+        }
+        if customer.map(|p| p.versions.len()).sum::<usize>() >= POLICY_VERSIONS_IN_USE {
+            return Err(quota_exceeded("PolicyVersionsInUse", POLICY_VERSIONS_IN_USE));
+        }
+        let now = ctx.received_at;
         let p = ManagedPolicy {
             name: input.policy_name,
             path,
@@ -167,6 +159,7 @@ impl Iam {
             next_version: 2,
             tags,
             aws_managed: false,
+            attachable: true,
         };
         state.policies.insert(arn, p.clone());
         let mut out = wire::policy(&p, &state);
@@ -194,6 +187,10 @@ impl Iam {
         let state = self.read();
         let scope = input.scope.unwrap_or_else(|| "All".into());
         let prefix = input.path_prefix.unwrap_or_else(|| "/".into());
+        // Every account sees 1,300+ AWS managed policies: find what is in use
+        // once rather than per policy.
+        let attached = state.attached_policy_arns();
+        let boundaries = state.boundary_policy_arns();
         let mut items: Vec<&ManagedPolicy> = state
             .policies
             .values()
@@ -203,14 +200,14 @@ impl Iam {
                 _ => true,
             })
             .filter(|p| p.path.starts_with(&prefix))
-            .filter(|p| !input.only_attached || state.attachment_count(&p.arn) > 0)
+            .filter(|p| !input.only_attached || attached.contains(p.arn.as_str()))
             .filter(|p| match input.policy_usage_filter.as_deref() {
-                Some("PermissionsBoundary") => state.boundary_usage_count(&p.arn) > 0,
-                Some("PermissionsPolicy") => state.attachment_count(&p.arn) > 0,
+                Some("PermissionsBoundary") => boundaries.contains(p.arn.as_str()),
+                Some("PermissionsPolicy") => attached.contains(p.arn.as_str()),
                 _ => true,
             })
             .collect();
-        items.sort_by_key(|p| (p.name.to_lowercase(), p.arn.clone()));
+        items.sort_by_cached_key(|p| (p.name.to_lowercase(), p.arn.clone()));
         let (page, is_truncated, marker) = paginate(
             &items,
             |p| format!("{}|{}", p.name.to_lowercase(), p.arn),
@@ -260,16 +257,17 @@ impl Iam {
             )));
         }
         let mut state = self.write();
-        let p = state.policies.get_mut(&input.policy_arn).ok_or_else(|| no_such_policy(&input.policy_arn))?;
-        if p.aws_managed {
-            return Err(ServiceError::client("AccessDenied", 403, "AWS managed policies cannot be modified."));
+        let in_use: usize = state.policies.local().map(|p| p.versions.len()).sum();
+        let p = local_policy_mut(&mut state, &input.policy_arn)?;
+        if p.versions.len() < MAX_POLICY_VERSIONS && in_use >= POLICY_VERSIONS_IN_USE {
+            return Err(quota_exceeded("PolicyVersionsInUse", POLICY_VERSIONS_IN_USE));
         }
         if p.versions.len() >= MAX_POLICY_VERSIONS {
             return Err(errors::limit_exceeded(
                 "A managed policy can have up to 5 versions. Before you create a new version, you must delete an existing version.",
             ));
         }
-        let now = Utc::now();
+        let now = ctx.received_at;
         let v = PolicyVersion { id: format!("v{}", p.next_version), document: input.policy_document, created: now };
         p.next_version += 1;
         if input.set_as_default {
@@ -327,10 +325,7 @@ impl Iam {
     ) -> Result<(), ServiceError> {
         self.authorize(ctx, "DeletePolicyVersion", &input.policy_arn)?;
         let mut state = self.write();
-        let p = state.policies.get_mut(&input.policy_arn).ok_or_else(|| no_such_policy(&input.policy_arn))?;
-        if p.aws_managed {
-            return Err(ServiceError::client("AccessDenied", 403, "AWS managed policies cannot be modified."));
-        }
+        let p = local_policy_mut(&mut state, &input.policy_arn)?;
         if p.default_version == input.version_id {
             return Err(errors::delete_conflict("Cannot delete the default version of a policy."));
         }
@@ -352,10 +347,7 @@ impl Iam {
     ) -> Result<(), ServiceError> {
         self.authorize(ctx, "SetDefaultPolicyVersion", &input.policy_arn)?;
         let mut state = self.write();
-        let p = state.policies.get_mut(&input.policy_arn).ok_or_else(|| no_such_policy(&input.policy_arn))?;
-        if p.aws_managed {
-            return Err(ServiceError::client("AccessDenied", 403, "AWS managed policies cannot be modified."));
-        }
+        let p = local_policy_mut(&mut state, &input.policy_arn)?;
         if !p.versions.iter().any(|v| v.id == input.version_id) {
             return Err(errors::no_such_entity(format!(
                 "Policy {} version {} does not exist.",
@@ -363,7 +355,7 @@ impl Iam {
             )));
         }
         p.default_version = input.version_id;
-        p.updated = Utc::now();
+        p.updated = ctx.received_at;
         Ok(())
     }
 
@@ -371,14 +363,14 @@ impl Iam {
         let tags = tags_from_wire(Some(input.tags))?;
         self.authorize_with(ctx, "TagPolicy", &input.policy_arn, request_tag_context(&tags))?;
         let mut state = self.write();
-        let p = state.policies.get_mut(&input.policy_arn).ok_or_else(|| no_such_policy(&input.policy_arn))?;
+        let p = local_policy_mut(&mut state, &input.policy_arn)?;
         merge_tags(&mut p.tags, tags, "TagsPerPolicy")
     }
 
     pub fn untag_policy(&self, ctx: &RequestContext, input: types::UntagPolicyRequest) -> Result<(), ServiceError> {
         self.authorize(ctx, "UntagPolicy", &input.policy_arn)?;
         let mut state = self.write();
-        let p = state.policies.get_mut(&input.policy_arn).ok_or_else(|| no_such_policy(&input.policy_arn))?;
+        let p = local_policy_mut(&mut state, &input.policy_arn)?;
         remove_tags(&mut p.tags, &input.tag_keys);
         Ok(())
     }
@@ -464,11 +456,11 @@ impl Iam {
             single("iam:PolicyARN", policy_arn),
         )?;
         let limit = match h {
-            Holder::Role => self.quota(ctx, "L-0DA4ABF3"),
+            Holder::Role => self.quota(ctx, "L-0DA4ABF3", MAX_MANAGED_POLICIES_PER_ENTITY),
             _ => MAX_MANAGED_POLICIES_PER_ENTITY,
         };
         let mut state = self.write();
-        if !state.policies.contains_key(policy_arn) {
+        if !state.policies.get(policy_arn).is_some_and(|p| p.attachable) {
             return Err(errors::no_such_entity(format!("Policy {policy_arn} does not exist or is not attachable.")));
         }
         reserved_guard(h, &state, name)?;
