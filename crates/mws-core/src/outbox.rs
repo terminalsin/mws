@@ -170,6 +170,12 @@ impl Default for Delivery {
 /// How many given-up deliveries are kept for inspection.
 const FAILED_KEPT: usize = 1000;
 
+/// The status of a queued delivery while an attempt at it runs.
+const IN_FLIGHT: &str = "in_flight";
+
+/// How many retries run at once.
+const MAX_CONCURRENT_RETRIES: usize = 64;
+
 /// Whether a failed call is worth retrying: the target erred or throttled,
 /// rather than refusing the call.
 pub fn retryable(e: &ServiceError) -> bool {
@@ -353,7 +359,10 @@ impl ServiceClient {
                 let Some(outbox) = weak.upgrade() else { return };
                 let me = ServiceClient { registry: client.registry.clone(), outbox };
                 let now = me.now();
-                me.retry_due(now, false).await;
+                // Not awaited: a slow attempt (a Lambda function retried
+                // for minutes) must not hold up the next round. Jobs being
+                // retried are `in_flight`, so the next round skips them.
+                tokio::spawn(async move { me.retry_due(now, false).await });
             }
         });
     }
@@ -364,48 +373,79 @@ impl ServiceClient {
     }
 
     /// Retry queued calls that are due at `now` (all pending ones with
-    /// `all`). Returns how many succeeded.
+    /// `all`), concurrently, as AWS retries each delivery on its own.
+    /// Returns how many succeeded once every attempt has finished. While an
+    /// attempt runs its delivery stays in the queue as `in_flight`, so a
+    /// snapshot taken meanwhile keeps it.
     pub async fn retry_due(&self, now: DateTime<Utc>, all: bool) -> usize {
         let due: Vec<Delivery> = match self.outbox.deliveries.lock() {
             Ok(mut q) => {
-                let (due, rest): (Vec<_>, Vec<_>) =
-                    q.drain(..).partition(|d| d.status == "pending" && (all || d.next_attempt_at <= now));
-                *q = rest;
+                let mut due = Vec::new();
+                for d in q.iter_mut().filter(|d| d.status == "pending" && (all || d.next_attempt_at <= now)) {
+                    due.push(d.clone());
+                    d.status = IN_FLIGHT.into();
+                }
                 due
             }
             Err(_) => return 0,
         };
+        let limit = std::sync::Arc::new(tokio::sync::Semaphore::new(MAX_CONCURRENT_RETRIES));
+        let mut set = tokio::task::JoinSet::new();
+        for d in due {
+            let (me, limit) = (self.clone(), limit.clone());
+            set.spawn(async move {
+                let _permit = limit.acquire_owned().await;
+                me.retry_one(d, now).await
+            });
+        }
         let mut delivered = 0;
-        for mut d in due {
-            let ctx = self.retry_context(&d, now);
-            if let Some(handler) = d.handler.clone() {
-                if self.retry_job(&ctx, &handler, d, now).await {
-                    delivered += 1;
-                }
-                continue;
-            }
-            match self.call(&ctx, &d.service, &d.operation, d.input.clone()).await {
-                Ok(_) => delivered += 1,
-                Err(e) => {
-                    d.attempts += 1;
-                    d.last_error = Some(format!("{}: {}", e.code, e.message));
-                    let next = now + backoff(&d.policy, d.attempts);
-                    let too_old = (next - d.first_attempt_at).num_seconds() > d.policy.max_age_secs;
-                    if !retryable(&e) || d.attempts >= d.policy.max_attempts || too_old {
-                        d.status = "failed".into();
-                    } else {
-                        d.next_attempt_at = next;
-                    }
-                    self.keep(d);
-                }
+        while let Some(done) = set.join_next().await {
+            if matches!(done, Ok(true)) {
+                delivered += 1;
             }
         }
         delivered
     }
 
+    /// Make one attempt at a queued delivery; whether it succeeded.
+    async fn retry_one(&self, mut d: Delivery, now: DateTime<Utc>) -> bool {
+        let ctx = self.retry_context(&d, now);
+        if let Some(handler) = d.handler.clone() {
+            return self.retry_job(&ctx, &handler, d, now).await;
+        }
+        match self.call(&ctx, &d.service, &d.operation, d.input.clone()).await {
+            Ok(_) => {
+                self.forget(&d.id);
+                true
+            }
+            Err(e) => {
+                d.attempts += 1;
+                d.last_error = Some(format!("{}: {}", e.code, e.message));
+                let next = now + backoff(&d.policy, d.attempts);
+                let too_old = (next - d.first_attempt_at).num_seconds() > d.policy.max_age_secs;
+                if !retryable(&e) || d.attempts >= d.policy.max_attempts || too_old {
+                    d.status = "failed".into();
+                } else {
+                    d.next_attempt_at = next;
+                }
+                self.keep(d);
+                false
+            }
+        }
+    }
+
+    /// Drop a delivered call or job from the queue.
+    fn forget(&self, id: &str) {
+        if let Ok(mut q) = self.outbox.deliveries.lock() {
+            q.retain(|d| d.id != id);
+        }
+    }
+
     /// Put a delivery back, dropping the oldest given-up ones past the cap.
     fn keep(&self, d: Delivery) {
         if let Ok(mut q) = self.outbox.deliveries.lock() {
+            // A retried delivery replaces its `in_flight` entry.
+            q.retain(|x| x.id != d.id);
             q.push(d);
             let failed = q.iter().filter(|d| d.status == "failed").count();
             if failed > FAILED_KEPT {
@@ -436,8 +476,12 @@ impl ServiceClient {
         let mut job = d.input.take();
         let result = retrier.attempt(ctx, &mut job, d.tries + 1).await;
         d.input = job;
+        let id = d.id.clone();
         match Self::after_attempt(d, result, now) {
-            None => true,
+            None => {
+                self.forget(&id);
+                true
+            }
             Some((d, error, why)) => {
                 let (job, attempts) = (d.input.clone(), d.attempts);
                 self.keep(d);
@@ -545,10 +589,14 @@ impl Service for Deliveries {
     }
 
     fn import_state(&self, state: Value) -> Result<(), String> {
-        let q: Vec<Delivery> = match state.get("deliveries") {
+        let mut q: Vec<Delivery> = match state.get("deliveries") {
             Some(v) => serde_json::from_value(v.clone()).map_err(|e| e.to_string())?,
             None => Vec::new(),
         };
+        // An attempt that was running when the state was saved is due again.
+        for d in q.iter_mut().filter(|d| d.status == IN_FLIGHT) {
+            d.status = "pending".into();
+        }
         let pending = q.iter().any(|d| d.status == "pending");
         if let Ok(mut d) = self.0.outbox.deliveries.lock() {
             *d = q;
