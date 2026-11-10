@@ -54,6 +54,7 @@ mod public;
 mod query;
 mod references;
 pub mod secure;
+mod sessions;
 mod settings;
 mod sharing;
 mod state;
@@ -70,6 +71,7 @@ pub use commands::{ManagedNode, ManagedNodes, ShellOutput};
 pub use maintenance::{TaskInvoker, WindowEvent};
 pub use nodes::DataSyncDestination;
 pub use references::{ReferencedSecret, SecretsManagerReferences};
+pub use sessions::{SessionIo, SessionKind};
 
 use names::{now, resource_tag_conditions, ParamRef};
 use state::{Parameter, State};
@@ -85,6 +87,7 @@ pub struct Ssm {
     invoker: Arc<RwLock<Option<Arc<dyn TaskInvoker>>>>,
     data_sync: Arc<RwLock<Option<Arc<dyn DataSyncDestination>>>>,
     automation: Arc<RwLock<Option<Arc<dyn AutomationRuntime>>>>,
+    sessions: Arc<sessions::SessionHub>,
     /// The most recent request, as a template for work the clock starts
     /// (maintenance window Lambda tasks).
     template: Arc<RwLock<Option<RequestContext>>>,
@@ -106,6 +109,7 @@ impl Ssm {
             invoker: Arc::default(),
             data_sync: Arc::default(),
             automation: Arc::default(),
+            sessions: Arc::default(),
             template: Arc::default(),
             clock_offset_ms: Arc::default(),
             ticking: Arc::default(),

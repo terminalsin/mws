@@ -41,7 +41,7 @@ use std::sync::{Arc, Mutex, MutexGuard, OnceLock, RwLock};
 use mws_core::{HttpRequest, HttpResponse, RequestContext, Service, ServiceError};
 
 pub use backend::{
-    BackendChoice, CommandOutput, ComputeBackend, DockerBackend, HostMount, LaunchExtension, LaunchExtras,
+    BackendChoice, CommandOutput, ComputeBackend, DockerBackend, ExecStream, HostMount, LaunchExtension, LaunchExtras,
     MetadataBackend, VolumeMount,
 };
 pub use ops::launch_template::ResolvedLaunchTemplate;
@@ -193,6 +193,30 @@ impl Ec2 {
             inst.handle.clone().ok_or_else(|| format!("instance {instance_id} has not started"))?
         };
         self.backend().exec(&handle, script).await.map_err(|e| e.to_string())
+    }
+
+    /// Start `script` on a running instance with its input and output
+    /// streamed (Session Manager). `None` when the backend runs nothing.
+    pub async fn stream_on_instance(
+        &self,
+        account: &str,
+        region: &str,
+        instance_id: &str,
+        script: &str,
+    ) -> Result<Option<ExecStream>, String> {
+        let handle = {
+            let state = self.lock();
+            let inst = state
+                .regions
+                .get(&State::key(account, region))
+                .and_then(|r| r.instances.get(instance_id))
+                .ok_or_else(|| format!("instance {instance_id} does not exist"))?;
+            if inst.instance.state.as_ref().and_then(|s| s.name.as_deref()) != Some("running") {
+                return Err(format!("instance {instance_id} is not running"));
+            }
+            inst.handle.clone().ok_or_else(|| format!("instance {instance_id} has not started"))?
+        };
+        self.backend().exec_stream(&handle, script).await.map_err(|e| e.to_string())
     }
 
     /// Build a container image on a running instance (`docker build` with

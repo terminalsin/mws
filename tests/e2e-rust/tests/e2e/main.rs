@@ -106,6 +106,7 @@ mod sqs;
 mod ssm;
 mod ssm_automation;
 mod ssm_run_command;
+mod ssm_sessions;
 mod ssm_state_manager;
 mod state;
 mod sts;

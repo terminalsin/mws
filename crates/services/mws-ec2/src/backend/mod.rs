@@ -177,6 +177,14 @@ pub struct CommandOutput {
     pub stderr: String,
 }
 
+/// A script running in an instance with its input and output streamed
+/// (Session Manager shells and port forwarding). Output carries stdout
+/// and stderr together.
+pub struct ExecStream {
+    pub output: std::pin::Pin<Box<dyn tokio::io::AsyncRead + Send>>,
+    pub input: std::pin::Pin<Box<dyn tokio::io::AsyncWrite + Send>>,
+}
+
 /// A running instance, as the backend knows it.
 #[derive(Debug, Clone)]
 pub struct Launched {
@@ -284,6 +292,14 @@ pub trait ComputeBackend: Send + Sync {
             None => self.exec(handle, script).await,
             Some(_) => Ok(None),
         }
+    }
+
+    /// Start `script` as root in a running instance with its input and
+    /// output streamed; the script ends when its input closes or the
+    /// streams are dropped. `None` when the backend runs nothing.
+    async fn exec_stream(&self, handle: &str, script: &str) -> Result<Option<ExecStream>, BackendError> {
+        let _ = (handle, script);
+        Ok(None)
     }
 
     /// Make storage for an EBS volume, filled from `snapshot_id` when
