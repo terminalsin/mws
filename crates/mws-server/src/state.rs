@@ -359,14 +359,24 @@ impl Gateway {
 
     /// Flush whenever state may have changed, at most once per
     /// `flush_interval`. Runs until the task is dropped.
+    ///
+    /// Requests mark the state dirty, but work services do in the
+    /// background (retried deliveries, stack deployments, builds, timed
+    /// transitions) changes it with no request. So the loop also flushes
+    /// every [`BACKGROUND_FLUSH`]; only services whose exported state
+    /// changed are written.
     pub(crate) async fn persist_loop(self: Arc<Self>) {
         loop {
-            self.state.notify.notified().await;
+            let _ = tokio::time::timeout(BACKGROUND_FLUSH, self.state.notify.notified()).await;
             tokio::time::sleep(self.state.flush_interval).await;
             self.flush().await;
         }
     }
 }
+
+/// How often state changed by background work is saved when no request
+/// marks it dirty.
+const BACKGROUND_FLUSH: Duration = Duration::from_secs(5);
 
 fn parse_state_doc(doc: &Value) -> Result<Map<String, Value>, String> {
     let obj = doc.as_object().ok_or("state must be a JSON object")?;
