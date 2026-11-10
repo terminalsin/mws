@@ -370,3 +370,12 @@ test("hierarchical names are tidied, also after dropping a reserved prefix", () 
   assert.equal(check("/aws/app/db host", rule)?.code, "reserved");
   assert.deepEqual(values(rule, "/aws/app/db host"), ["/app/db-host"]);
 });
+
+test("separators spelled as literals in the pattern are kept and tidied", () => {
+  // ECR repository names: separators only between lowercase words.
+  const rule: Rule = { pattern: "^[a-z0-9]+((\\.|_|__|-+)[a-z0-9]+)*(\\/[a-z0-9]+((\\.|_|__|-+)[a-z0-9]+)*)*$", maxLength: 256 };
+  assert.deepEqual(values(rule, "Team App"), ["team-app"]);
+  assert.deepEqual(values(rule, "My.Service/API v2"), ["my.service/api-v2"]);
+  assert.deepEqual(values(rule, "team//app/"), ["team/app"]);
+  assert.deepEqual(values({ ...rule, taken: ["team/app"] }, "team/app"), ["team/app-2"]);
+});
