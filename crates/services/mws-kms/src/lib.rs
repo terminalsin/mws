@@ -23,9 +23,10 @@ mod handler;
 mod ops;
 mod public;
 mod state;
+mod xks;
 
 use std::sync::atomic::{AtomicI64, Ordering};
-use std::sync::{Arc, Mutex, MutexGuard};
+use std::sync::{Arc, Mutex, MutexGuard, RwLock};
 
 use chrono::{DateTime, Utc};
 
@@ -33,6 +34,7 @@ use mws_core::{HttpRequest, HttpResponse, RequestContext, Service, ServiceError}
 
 pub use public::ServiceKey;
 use state::State;
+pub use xks::XksTransport;
 
 /// The KMS service. Cheap to clone; clones share state.
 #[derive(Clone, Default)]
@@ -42,11 +44,39 @@ pub struct Kms {
     /// clock, as last seen in a request. Scheduled deletions, automatic
     /// rotations and expiring imported material follow it.
     clock_offset_ms: Arc<AtomicI64>,
+    principals: Arc<RwLock<Option<Arc<dyn PrincipalDirectory>>>>,
+    xks: Arc<RwLock<XksTransport>>,
+}
+
+/// Which IAM principals exist (IAM's users and roles), so key policies
+/// naming principals that don't exist are rejected as KMS rejects them.
+pub trait PrincipalDirectory: Send + Sync {
+    /// Whether `arn` names an existing principal. Principals the directory
+    /// knows nothing about count as existing.
+    fn principal_exists(&self, arn: &str) -> bool;
 }
 
 impl Kms {
     pub fn new() -> Self {
         Self::default()
+    }
+
+    /// Check key policy principals against `directory`.
+    pub fn set_principal_directory(&self, directory: Arc<dyn PrincipalDirectory>) {
+        *self.principals.write().expect("KMS principals lock poisoned") = Some(directory);
+    }
+
+    /// How external key store proxies are reached.
+    pub fn set_xks_transport(&self, transport: XksTransport) {
+        *self.xks.write().expect("KMS XKS lock poisoned") = transport;
+    }
+
+    pub(crate) fn xks_transport(&self) -> XksTransport {
+        self.xks.read().expect("KMS XKS lock poisoned").clone()
+    }
+
+    pub(crate) fn principals(&self) -> Option<Arc<dyn PrincipalDirectory>> {
+        self.principals.read().expect("KMS principals lock poisoned").clone()
     }
 
     /// Note the emulated time of a request, so that time-driven changes

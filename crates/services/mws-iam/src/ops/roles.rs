@@ -47,8 +47,9 @@ impl Iam {
 
     /// Whether an IAM user or role ARN names an entity that exists. Other
     /// principals (accounts, sessions, ids) and accounts MWS knows nothing
-    /// about are taken as given.
-    fn principal_exists(&self, principal: &str) -> bool {
+    /// about are taken as given. Resource policies of other services (KMS
+    /// key policies) are checked with it too.
+    pub fn principal_exists(&self, principal: &str) -> bool {
         let parts: Vec<&str> = principal.splitn(6, ':').collect();
         let [_, _, "iam", _, account, resource] = parts[..] else { return true };
         let Some(kind) = ["user/", "role/"].into_iter().find(|k| resource.starts_with(k)) else { return true };

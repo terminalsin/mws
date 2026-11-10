@@ -63,6 +63,7 @@ mod kinesis;
 mod kinesis_parity;
 mod kinesis_targets;
 mod kms;
+mod kms_xks;
 mod lambda;
 mod lambda_destinations;
 mod lambda_durable;

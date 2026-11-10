@@ -114,7 +114,19 @@ impl Kms {
         }
         for action in actions {
             let e = policy.evaluate(&Request { action, resource: &arn, principal: &principal, context: &context });
-            if e.denied() || !e.allowed() {
+            // A grant to the service principal allows it too (unless the
+            // key policy denies), with no encryption context to match.
+            let op = action.strip_prefix("kms:").unwrap_or(action);
+            let granted = st.grants.values().any(|g| {
+                g.key_arn == arn
+                    && g.grantee_service_principal.as_deref() == Some(service_principal)
+                    && g.operations.iter().any(|o| o == op)
+                    && g.constraints.as_ref().is_none_or(|c| {
+                        c.encryption_context_equals.as_ref().is_none_or(|m| m.is_empty())
+                            && c.encryption_context_subset.as_ref().is_none_or(|m| m.is_empty())
+                    })
+            });
+            if e.denied() || !(e.allowed() || granted) {
                 return Err(ServiceError::client(
                     "AccessDeniedException",
                     400,
@@ -151,7 +163,7 @@ impl Kms {
             key.clone()
         };
         let plaintext = crypto::random_bytes(number_of_bytes);
-        let out = ops::cryptographic::encrypt_with(&key, &plaintext, context, None)?;
+        let out = self.encrypt_key(None, "GenerateDataKey", &key, &plaintext, context, None)?;
         Ok(DataKey { key_arn: key.arn, plaintext, ciphertext: out.ciphertext })
     }
 
@@ -242,7 +254,7 @@ impl Kms {
                 .condition("kms:ViaService", vec![via(service, &ctx.region)])
                 .condition("aws:ViaAWSService", vec!["true".into()]),
         )?;
-        let out = ops::cryptographic::encrypt_with(&key, plaintext, context, None)?;
+        let out = self.encrypt_key(Some(ctx), "Encrypt", &key, plaintext, context, None)?;
         self.record_use(ctx, &key.arn, "Encrypt");
         Ok((key.arn, out.ciphertext))
     }
@@ -266,7 +278,7 @@ impl Kms {
                 .condition("kms:ViaService", vec![via(service, &ctx.region)])
                 .condition("aws:ViaAWSService", vec!["true".into()]),
         )?;
-        let out = ops::cryptographic::decrypt_with(&key, ciphertext, context, None)?;
+        let out = self.decrypt_key(Some(ctx), "Decrypt", &key, ciphertext, context, None)?;
         self.record_use(ctx, &key.arn, "Decrypt");
         Ok((out.key_arn, out.plaintext))
     }
@@ -289,7 +301,7 @@ impl Kms {
                 .condition("aws:ViaAWSService", vec!["true".into()]),
         )?;
         let plaintext = crypto::random_bytes(number_of_bytes);
-        let out = ops::cryptographic::encrypt_with(&key, &plaintext, context, None)?;
+        let out = self.encrypt_key(Some(ctx), "GenerateDataKey", &key, &plaintext, context, None)?;
         self.record_use(ctx, &key.arn, "GenerateDataKey");
         Ok(DataKey { key_arn: key.arn, plaintext, ciphertext: out.ciphertext })
     }

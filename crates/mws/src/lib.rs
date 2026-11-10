@@ -149,6 +149,11 @@ pub struct Config {
     /// (`MWS_ECR_UPSTREAM_ENDPOINTS=host=url,...`, e.g.
     /// `quay.io=http://127.0.0.1:5000/v2`), in place of `https://<host>/v2`.
     pub ecr_upstream_endpoints: std::collections::BTreeMap<String, String>,
+    /// Where KMS reaches external key store proxies: `host=address`
+    /// pairs (`MWS_KMS_XKS_CONNECT_TO=xks.example.com=127.0.0.1:8443`)
+    /// override `https://<host>`'s port 443, and extra trusted CA
+    /// certificates (`MWS_KMS_XKS_CA_FILE`, PEM).
+    pub kms_xks: mws_kms::XksTransport,
 }
 
 impl Config {
@@ -242,6 +247,15 @@ impl Config {
                 .filter_map(|pair| pair.split_once('='))
                 .map(|(h, u)| (h.trim().to_string(), u.trim().trim_end_matches('/').to_string()))
                 .collect(),
+            kms_xks: mws_kms::XksTransport {
+                connect_to: std::env::var("MWS_KMS_XKS_CONNECT_TO")
+                    .unwrap_or_default()
+                    .split(',')
+                    .filter_map(|pair| pair.split_once('='))
+                    .map(|(h, a)| (h.trim().to_string(), a.trim().to_string()))
+                    .collect(),
+                ca_pem: var("MWS_KMS_XKS_CA_FILE").and_then(|f| std::fs::read_to_string(f).ok()),
+            },
         }
     }
 }
@@ -339,6 +353,8 @@ fn build_with_store(config: Config, store: Option<Arc<Store>>) -> Mws {
         Sts::new(iam.clone())
     };
     let kms = Kms::new();
+    kms.set_principal_directory(Arc::new(wiring::IamPrincipals(iam.clone())));
+    kms.set_xks_transport(config.kms_xks.clone());
     let organizations = Organizations::new(iam.clone());
     iam.set_organizations(organizations.view());
     let ram = Ram::new(iam.clone(), organizations.clone());
