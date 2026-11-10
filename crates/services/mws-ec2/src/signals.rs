@@ -48,6 +48,9 @@ pub(crate) struct Signals {
     /// terminated), in milliseconds. 0 settles at once.
     transition_ms: AtomicU64,
     pub(crate) meter: crate::metrics::Meter,
+    /// A request's context, for the state changes the background tick
+    /// reports.
+    template: std::sync::Mutex<Option<RequestContext>>,
 }
 
 /// Every instance's state, by id.
@@ -89,6 +92,18 @@ impl Ec2 {
         std::time::Duration::from_millis(self.inner.signals.transition_ms.load(Ordering::Relaxed))
     }
 
+    /// Keep `ctx` for the state changes settled with no request.
+    pub(crate) fn remember_context(&self, ctx: &RequestContext) {
+        let mut t = self.inner.signals.template.lock().unwrap_or_else(|e| e.into_inner());
+        if t.is_none() {
+            *t = Some(ctx.clone());
+        }
+    }
+
+    pub(crate) fn remembered_context(&self) -> Option<RequestContext> {
+        self.inner.signals.template.lock().unwrap_or_else(|e| e.into_inner()).clone()
+    }
+
     /// The emulated clock's current time, as last seen on a request.
     pub(crate) fn clock_now(&self) -> DateTime<Utc> {
         Utc::now() + Duration::milliseconds(self.inner.signals.offset_ms.load(Ordering::Relaxed))
@@ -115,6 +130,7 @@ impl Ec2 {
                         me.sample_usage().await;
                     }
                     tick = (tick + 1) % 10;
+                    me.settle_due_everywhere();
                     me.publish_metrics(me.clock_now());
                     tokio::time::sleep(std::time::Duration::from_secs(1)).await;
                 }

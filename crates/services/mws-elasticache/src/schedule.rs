@@ -62,6 +62,8 @@ struct Due {
     /// Replication groups whose pending changes were applied: (id, whether
     /// the nodes move to a new engine version, commands for the nodes).
     maintained: Vec<(String, bool, Vec<Vec<String>>)>,
+    /// Standalone cache clusters whose pending changes were applied.
+    clusters: Vec<(String, crate::ops::clusters::Applied)>,
 }
 
 impl ElastiCache {
@@ -92,6 +94,18 @@ impl ElastiCache {
                     engine::run_everywhere(self, nodes, commands);
                 }
             }
+            for (id, applied) in due.clusters {
+                engine::terminate(self, applied.removed_handles, None);
+                if applied.add_nodes {
+                    engine::add_nodes(self, &ctx, &key, &id);
+                }
+                if applied.upgrade {
+                    engine::upgrade(self, &ctx, &key, None, Some(&id));
+                } else {
+                    let nodes = self.with_key(&key, &ctx, |r| engine::nodes_of(r, None, Some(&id)));
+                    engine::run_everywhere(self, nodes, applied.commands);
+                }
+            }
         }
     }
 }
@@ -118,6 +132,21 @@ fn due(svc: &ElastiCache, ctx: &RequestContext, r: &mut RegionState, now: DateTi
     for id in pending {
         let (upgrade, commands) = apply_pending(svc, r, &id, now);
         out.maintained.push((id, upgrade, commands));
+    }
+    // Pending modifications of standalone cache clusters.
+    let pending: Vec<String> = r
+        .clusters
+        .values()
+        .filter(|c| c.info.replication_group_id.is_none() && c.status() == "available")
+        .filter_map(|c| {
+            let since = c.pending_since?;
+            let start = last_weekly_window_start(c.info.preferred_maintenance_window.as_deref()?, now)?;
+            (start >= since).then(|| c.id().to_string())
+        })
+        .collect();
+    for id in pending {
+        let applied = crate::ops::clusters::apply_pending(svc, r, &id, &ctx.region, now);
+        out.clusters.push((id, applied));
     }
     // Replication groups.
     let groups: Vec<Candidate> = r

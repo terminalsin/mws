@@ -1298,6 +1298,63 @@ async fn deferred_replication_group_changes_wait_for_the_maintenance_window() {
 }
 
 #[tokio::test]
+async fn deferred_cache_cluster_changes_wait_for_the_maintenance_window() {
+    let mws = Mws::start().await;
+    let ec = client(&mws).await;
+    ec.create_cache_cluster()
+        .cache_cluster_id("deferred-mc")
+        .engine("memcached")
+        .cache_node_type("cache.t3.micro")
+        .num_cache_nodes(1)
+        .preferred_maintenance_window("sun:05:00-sun:06:00")
+        .send()
+        .await
+        .unwrap();
+    let describe = |ec: &Client| {
+        let ec = ec.clone();
+        async move {
+            let d = ec
+                .describe_cache_clusters()
+                .cache_cluster_id("deferred-mc")
+                .show_cache_node_info(true)
+                .send()
+                .await
+                .unwrap();
+            d.cache_clusters()[0].clone()
+        }
+    };
+
+    // Without ApplyImmediately the new node count is pending.
+    ec.modify_cache_cluster().cache_cluster_id("deferred-mc").num_cache_nodes(3).send().await.unwrap();
+    let c = describe(&ec).await;
+    assert_eq!(c.num_cache_nodes(), Some(1));
+    assert_eq!(c.cache_nodes().len(), 1);
+    assert_eq!(c.pending_modified_values().and_then(|p| p.num_cache_nodes()), Some(3));
+
+    // A week later the maintenance window has applied it.
+    let (status, _) = mws.control("POST", "/_mws/clock", Some(r#"{"advanceSeconds": 691200}"#)).await;
+    assert_eq!(status, 200);
+    let c = describe(&ec).await;
+    assert_eq!(c.num_cache_nodes(), Some(3));
+    assert_eq!(c.cache_nodes().len(), 3);
+    assert_eq!(c.pending_modified_values().and_then(|p| p.num_cache_nodes()), None);
+
+    // A pending change is applied with the next ApplyImmediately request.
+    ec.modify_cache_cluster().cache_cluster_id("deferred-mc").cache_node_type("cache.t3.small").send().await.unwrap();
+    assert_eq!(describe(&ec).await.cache_node_type(), Some("cache.t3.micro"));
+    ec.modify_cache_cluster()
+        .cache_cluster_id("deferred-mc")
+        .preferred_maintenance_window("mon:05:00-mon:06:00")
+        .apply_immediately(true)
+        .send()
+        .await
+        .unwrap();
+    let c = describe(&ec).await;
+    assert_eq!(c.cache_node_type(), Some("cache.t3.small"));
+    assert_eq!(c.pending_modified_values().and_then(|p| p.cache_node_type()), None);
+}
+
+#[tokio::test]
 async fn kms_keys_for_encryption_at_rest_are_checked() {
     let mws = Mws::start().await;
     let ec = client(&mws).await;

@@ -190,7 +190,7 @@ impl Route53 {
             .ksks
             .insert(input.name.clone(), KeySigningKey { key: key.clone(), caller_reference: input.caller_reference });
         Ok(types::CreateKeySigningKeyResponse {
-            change_info: st.new_change(None),
+            change_info: st.new_change(None, ctx.received_at),
             key_signing_key: key,
             location: format!("https://route53.amazonaws.com/2013-04-01/keysigningkey/{zone_id}/{}", input.name),
         })
@@ -212,7 +212,7 @@ impl Route53 {
             return Err(no_such_ksk(name));
         }
         apply(zone)?;
-        Ok(st.new_change(None))
+        Ok(st.new_change(None, ctx.received_at))
     }
 
     pub(crate) fn activate_key_signing_key(
@@ -289,7 +289,7 @@ impl Route53 {
             ));
         }
         zone.dnssec_signing = true;
-        Ok(types::EnableHostedZoneDNSSECResponse { change_info: st.new_change(None) })
+        Ok(types::EnableHostedZoneDNSSECResponse { change_info: st.new_change(None, ctx.received_at) })
     }
 
     pub(crate) fn disable_hosted_zone_dnssec(
@@ -307,7 +307,7 @@ impl Route53 {
             )));
         }
         zone.dnssec_signing = false;
-        Ok(types::DisableHostedZoneDNSSECResponse { change_info: st.new_change(None) })
+        Ok(types::DisableHostedZoneDNSSECResponse { change_info: st.new_change(None, ctx.received_at) })
     }
 
     pub(crate) fn get_dnssec(

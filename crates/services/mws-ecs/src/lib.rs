@@ -76,6 +76,60 @@ pub(crate) struct Inner {
     low_reservation: Mutex<HashMap<String, chrono::DateTime<chrono::Utc>>>,
 }
 
+/// `(lastStatus, desiredStatus)` of every task, by region key and ARN.
+type TaskStatuses = HashMap<(String, String), (Option<String>, Option<String>)>;
+
+fn task_statuses(st: &State) -> TaskStatuses {
+    st.regions
+        .iter()
+        .flat_map(|(key, r)| {
+            r.tasks.iter().map(move |(arn, t)| {
+                ((key.clone(), arn.clone()), (t.task.last_status.clone(), t.task.desired_status.clone()))
+            })
+        })
+        .collect()
+}
+
+/// The locked ECS state; see [`Ecs::lock`].
+pub(crate) struct StateGuard<'a> {
+    ecs: &'a Ecs,
+    guard: Option<MutexGuard<'a, State>>,
+    before: Option<TaskStatuses>,
+}
+
+impl std::ops::Deref for StateGuard<'_> {
+    type Target = State;
+    fn deref(&self) -> &State {
+        self.guard.as_ref().expect("held")
+    }
+}
+
+impl std::ops::DerefMut for StateGuard<'_> {
+    fn deref_mut(&mut self) -> &mut State {
+        self.guard.as_mut().expect("held")
+    }
+}
+
+impl Drop for StateGuard<'_> {
+    fn drop(&mut self) {
+        let Some(guard) = self.guard.take() else { return };
+        let Some(before) = self.before.take() else { return };
+        let mut changes = Vec::new();
+        for (key, r) in &guard.regions {
+            for (arn, rec) in &r.tasks {
+                let now = (rec.task.last_status.clone(), rec.task.desired_status.clone());
+                if before.get(&(key.clone(), arn.clone())) != Some(&now) {
+                    changes.push((key.clone(), tasks::render(r, rec, false)));
+                }
+            }
+        }
+        drop(guard);
+        if !changes.is_empty() {
+            self.ecs.report_task_changes(changes);
+        }
+    }
+}
+
 /// The ECS service. Cheap to clone; clones share state.
 #[derive(Clone)]
 pub struct Ecs {
@@ -121,8 +175,28 @@ impl Ecs {
         self.inner.platform.get().cloned()
     }
 
-    pub(crate) fn lock(&self) -> MutexGuard<'_, State> {
-        self.inner.state.lock().expect("ECS state lock poisoned")
+    /// The state. Every task whose `lastStatus` or `desiredStatus` changes
+    /// while it is held is reported (`ECS Task State Change`) once it is
+    /// released.
+    pub(crate) fn lock(&self) -> StateGuard<'_> {
+        let guard = self.inner.state.lock().unwrap_or_else(|e| e.into_inner());
+        let before = self.platform().map(|_| task_statuses(&guard));
+        StateGuard { ecs: self, guard: Some(guard), before }
+    }
+
+    /// Report task state changes to the platform (EventBridge).
+    fn report_task_changes(&self, changes: Vec<(String, generated::types::Task)>) {
+        let Some(platform) = self.platform() else { return };
+        let Some((template, offset)) = self.inner.template.lock().expect("ECS template lock poisoned").clone() else {
+            return;
+        };
+        let time = chrono::Utc::now() + offset;
+        for (key, task) in changes {
+            let Some((account, region)) = key.split_once('/') else { continue };
+            let ctx = RequestContext { region: region.to_string(), ..template.clone() };
+            let detail = generated::ser::ser_task(&task);
+            platform.task_state_change(&ctx, account, task.task_arn.as_deref().unwrap_or_default(), detail, time);
+        }
     }
 
     /// Remember `ctx` for background work, and start the scheduler.
@@ -221,13 +295,13 @@ impl Service for Ecs {
 
     fn import_state(&self, state: serde_json::Value) -> Result<(), String> {
         let state: State = serde_json::from_value(state).map_err(|e| format!("invalid ECS state: {e}"))?;
-        let old = std::mem::replace(&mut *self.lock(), state);
+        let old = std::mem::replace(&mut *self.inner.state.lock().unwrap_or_else(|e| e.into_inner()), state);
         self.tear_down(old);
         Ok(())
     }
 
     fn reset_state(&self) {
-        let old = std::mem::take(&mut *self.lock());
+        let old = std::mem::take(&mut *self.inner.state.lock().unwrap_or_else(|e| e.into_inner()));
         self.tear_down(old);
     }
 }

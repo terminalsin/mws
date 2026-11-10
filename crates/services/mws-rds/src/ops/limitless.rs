@@ -4,7 +4,7 @@
 
 use mws_core::{ConditionContext, RequestContext, ServiceError};
 
-use super::{authorize, cluster_arn, invalid_cluster_state};
+use super::{authorize, authorize_create, cluster_arn, invalid_cluster_state};
 use crate::generated::{errors, types as t};
 use crate::util::{
     arn, endpoint_suffix, identifier, invalid_parameter, name_of, opt, paginate, request_tag_context,
@@ -63,7 +63,7 @@ impl Rds {
         let cluster_id = name_of(&input.db_cluster_identifier).to_ascii_lowercase();
         let tags = tags_from(&input.tags)?;
         let garn = arn(ctx, "shard-group", &id);
-        authorize(ctx, "CreateDBShardGroup", &garn, request_tag_context(&tags))?;
+        authorize_create(ctx, "CreateDBShardGroup", &garn, &tags, request_tag_context(&tags))?;
         check_acus(input.min_acu, Some(input.max_acu))?;
         check_redundancy(input.compute_redundancy)?;
         let cluster = self.cluster(ctx, &cluster_id)?;

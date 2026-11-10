@@ -500,10 +500,19 @@ async fn mount_targets_and_access_points() {
     assert_eq!(code(&e), "FileSystemInUse");
     efs.delete_mount_target().mount_target_id(&mt_id).send().await.unwrap();
     efs.delete_mount_target().mount_target_id(mt2.mount_target_id()).send().await.unwrap();
-    let n = ec2.describe_network_interfaces().filters(filter("network-interface-id", &eni)).send().await.unwrap();
-    assert!(n.network_interfaces().is_empty());
+    // They are `deleting` for a while, and still hold the file system.
+    let d = efs.describe_mount_targets().mount_target_id(&mt_id).send().await.unwrap();
+    assert_eq!(d.mount_targets()[0].life_cycle_state().as_str(), "deleting");
+    let e = efs.delete_mount_target().mount_target_id(&mt_id).send().await.unwrap_err().into_service_error();
+    assert_eq!(code(&e), "IncorrectMountTargetState");
+    let e = efs.delete_file_system().file_system_id(&id).send().await.unwrap_err().into_service_error();
+    assert_eq!(code(&e), "FileSystemInUse");
+    let (status, _) = mws.control("POST", "/_mws/clock", Some(r#"{"advanceSeconds": 120}"#)).await;
+    assert_eq!(status, 200);
     let e = efs.describe_mount_targets().mount_target_id(&mt_id).send().await.unwrap_err().into_service_error();
     assert_eq!(code(&e), "MountTargetNotFound");
+    let n = ec2.describe_network_interfaces().filters(filter("network-interface-id", &eni)).send().await.unwrap();
+    assert!(n.network_interfaces().is_empty());
     efs.delete_file_system().file_system_id(&id).send().await.unwrap();
 }
 

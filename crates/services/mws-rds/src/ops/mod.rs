@@ -41,6 +41,23 @@ pub fn authorize(
     ctx.authorize(&format!("rds:{action}"), resource, context)
 }
 
+/// Authorize `rds:<action>` for a request that creates `resource`. With
+/// tags, RDS also authorizes `rds:AddTagsToResource` on the new resource
+/// (tag on create), with the same condition keys.
+pub fn authorize_create(
+    ctx: &RequestContext,
+    action: &str,
+    resource: &str,
+    tags: &[t::Tag],
+    context: ConditionContext,
+) -> Result<(), ServiceError> {
+    if tags.is_empty() {
+        return authorize(ctx, action, resource, context);
+    }
+    authorize(ctx, action, resource, context.clone())?;
+    authorize(ctx, "AddTagsToResource", resource, context)
+}
+
 pub fn cond(pairs: &[(&str, Option<String>)]) -> ConditionContext {
     pairs.iter().filter_map(|(k, v)| v.clone().map(|v| (k.to_string(), vec![v]))).collect()
 }

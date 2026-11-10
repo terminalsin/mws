@@ -9,8 +9,8 @@ use mws_core::{ConditionContext, RequestContext, ServiceError};
 use super::maintenance::operational;
 use super::pitr::Recovery;
 use super::{
-    authorize, check_db_name, check_password, check_username, cond, db_arn, instance_host, instance_not_found,
-    invalid_instance_state,
+    authorize, authorize_create, check_db_name, check_password, check_username, cond, db_arn, instance_host,
+    instance_not_found, invalid_instance_state,
 };
 use crate::catalog::{self, Engine, Version};
 use crate::generated::{errors, types as t};
@@ -421,10 +421,7 @@ impl Rds {
             ("rds:Vpc", Some("true".into())),
             ("rds:ManageMasterUserPassword", input.manage_master_user_password.map(|b| b.to_string())),
         ]));
-        authorize(ctx, "CreateDBInstance", &arn, c.clone())?;
-        if !tags.is_empty() {
-            authorize(ctx, "AddTagsToResource", &arn, c)?;
-        }
+        authorize_create(ctx, "CreateDBInstance", &arn, &tags, c)?;
         if self.with_region(ctx, |r| r.instances.contains_key(&id)) {
             return Err(errors::db_instance_already_exists_fault("DB instance already exists"));
         }
@@ -1514,7 +1511,7 @@ impl Rds {
         let arn = db_arn(ctx, &id);
         let mut c = request_tag_context(&tags);
         c.extend(cond(&[("rds:DatabaseClass", input.db_instance_class.clone())]));
-        authorize(ctx, "CreateDBInstanceReadReplica", &arn, c)?;
+        authorize_create(ctx, "CreateDBInstanceReadReplica", &arn, &tags, c)?;
         let src = &source.db;
         let source_name = src.db_instance_identifier.clone().unwrap_or_default();
         let engine = engine_of(src.engine.as_deref().unwrap_or_default())?;

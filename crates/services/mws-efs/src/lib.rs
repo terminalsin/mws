@@ -59,6 +59,9 @@ struct Inner {
     /// it: lifecycle transitions finish on the emulated clock even for
     /// callers without a request (Lambda mounts).
     clock_skew_ms: AtomicI64,
+    /// Network interfaces of deleted mount targets (region key, id), for
+    /// EC2 to delete once no EFS lock is held.
+    released_interfaces: Mutex<Vec<(String, String)>>,
 }
 
 /// The EFS service. Cheap to clone; clones share state.
@@ -80,6 +83,7 @@ impl Efs {
                 ec2,
                 kms,
                 clock_skew_ms: AtomicI64::new(0),
+                released_interfaces: Mutex::new(Vec::new()),
             }),
         }
     }
@@ -102,11 +106,27 @@ impl Efs {
 
     /// The state, with the lifecycle transitions due by now finished.
     pub(crate) fn lock(&self) -> MutexGuard<'_, State> {
-        let mut st = self.inner.state.lock().expect("EFS state lock poisoned");
-        for id in st.settle(self.now()) {
+        let mut st = self.inner.state.lock().unwrap_or_else(|e| e.into_inner());
+        let (gone, enis) = st.settle(self.now());
+        for id in gone {
             self.storage().delete(&id);
         }
+        if !enis.is_empty() {
+            self.inner.released_interfaces.lock().unwrap_or_else(|e| e.into_inner()).extend(enis);
+        }
         st
+    }
+
+    /// Delete the network interfaces of mount targets that finished
+    /// deleting. Never call with the state lock held.
+    pub(crate) fn release_interfaces(&self, ctx: &RequestContext) {
+        drop(self.lock());
+        let enis = std::mem::take(&mut *self.inner.released_interfaces.lock().unwrap_or_else(|e| e.into_inner()));
+        for (key, eni) in enis {
+            let Some((account, region)) = key.split_once('/') else { continue };
+            let ctx = RequestContext { region: region.to_string(), ..ctx.clone() };
+            self.ec2().delete_service_interface(&ctx, account, &eni);
+        }
     }
 
     /// The emulated time.
@@ -150,6 +170,7 @@ impl Service for Efs {
 
     async fn handle(&self, ctx: RequestContext, request: HttpRequest) -> HttpResponse {
         self.observe(&ctx);
+        self.release_interfaces(&ctx);
         if request.uri().path().starts_with(mount::PREFIX) {
             return mount::serve(self, &ctx, &request);
         }
@@ -167,6 +188,7 @@ impl Service for Efs {
         input: serde_json::Value,
     ) -> Result<serde_json::Value, ServiceError> {
         self.observe(&ctx);
+        self.release_interfaces(&ctx);
         generated::invoke(self, &ctx, operation, input).await
     }
 
@@ -181,12 +203,12 @@ impl Service for Efs {
                 self.storage().create(id);
             }
         }
-        *self.inner.state.lock().expect("EFS state lock poisoned") = state;
+        *self.inner.state.lock().unwrap_or_else(|e| e.into_inner()) = state;
         Ok(())
     }
 
     fn reset_state(&self) {
-        let old = std::mem::take(&mut *self.inner.state.lock().expect("EFS state lock poisoned"));
+        let old = std::mem::take(&mut *self.inner.state.lock().unwrap_or_else(|e| e.into_inner()));
         for r in old.regions.values() {
             for id in r.file_systems.keys() {
                 self.storage().delete(id);

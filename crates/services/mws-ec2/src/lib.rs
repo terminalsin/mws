@@ -57,7 +57,7 @@ pub use public::{
     availability_zones, InstanceInfo, InstanceNetwork, SecurityGroupInfo, ServiceInterface, ServiceInterfaceError,
     ServiceInterfaceRequest, SubnetInfo, VpcInfo,
 };
-pub use service_eni::TaskInterface;
+pub use service_eni::{TaskInterface, TaskInterfaceRequest};
 pub use signals::{InstanceStateChange, StateChangeSink};
 use state::{RegionState, State};
 
@@ -105,6 +105,18 @@ pub(crate) struct Inner {
     extensions: RwLock<Vec<Arc<dyn LaunchExtension>>>,
     load_balancers: OnceLock<Arc<dyn LoadBalancers>>,
     signals: signals::Signals,
+    keys: OnceLock<Arc<dyn EbsKeys>>,
+}
+
+/// The KMS keys EBS encrypts volumes with: MWS wires this to KMS. AWS
+/// couples the two: EC2 uses the key for the caller (through
+/// `kms:ViaService`) with grants and data keys.
+pub trait EbsKeys: Send + Sync {
+    /// Check that `key` (an id, ARN, alias name or alias ARN) is an enabled
+    /// symmetric encryption key the caller may use through EC2
+    /// (`kms:DescribeKey`, `kms:CreateGrant`,
+    /// `kms:GenerateDataKeyWithoutPlaintext`). The error is KMS's.
+    fn check(&self, ctx: &RequestContext, key: &str) -> Result<(), ServiceError>;
 }
 
 /// The load balancers VPC endpoint services front: MWS wires this to
@@ -141,7 +153,24 @@ impl Ec2 {
                 extensions: RwLock::default(),
                 load_balancers: OnceLock::new(),
                 signals: Default::default(),
+                keys: OnceLock::new(),
             }),
+        }
+    }
+
+    /// Check the KMS keys encrypted volumes are created with. Without it
+    /// any key is accepted.
+    pub fn set_ebs_keys(&self, keys: Arc<dyn EbsKeys>) {
+        let _ = self.inner.keys.set(keys);
+    }
+
+    /// Check an EBS encryption key with [`EbsKeys`]. The AWS managed key
+    /// (`alias/aws/ebs`) is always usable. Never call with the state lock
+    /// held.
+    pub(crate) fn check_ebs_key(&self, ctx: &RequestContext, key: &str) -> Result<(), ServiceError> {
+        match self.inner.keys.get() {
+            Some(keys) if !key.ends_with("alias/aws/ebs") => keys.check(ctx, key),
+            _ => Ok(()),
         }
     }
 
@@ -274,7 +303,8 @@ impl Ec2 {
     }
 
     pub(crate) fn lock(&self) -> MutexGuard<'_, State> {
-        self.inner.state.lock().expect("EC2 state lock poisoned")
+        // A panic in one call must not take EC2 down for the process.
+        self.inner.state.lock().unwrap_or_else(|e| e.into_inner())
     }
 
     /// Run `f` on the caller's account and Region, creating the default VPC
@@ -302,13 +332,57 @@ impl Ec2 {
         ops::gateways::expire_deleted(r, ctx.received_at);
         // Every instance state change a call makes is reported.
         let before = self.wants_state_changes().then(|| signals::instance_states(r));
+        let settled = ops::instance::settle_due(r, region, self.clock_now().max(ctx.received_at));
         let out = f(r);
         let changes = before.map(|b| signals::changed_states(&b, r)).unwrap_or_default();
         drop(state);
+        self.after_settle(settled);
         if !changes.is_empty() {
             self.emit_state_changes(ctx, account, region, changes);
         }
         out
+    }
+
+    /// What finishing transitions leaves to do with the state lock released.
+    fn after_settle(&self, deleted_volumes: Option<Vec<String>>) {
+        let Some(volumes) = deleted_volumes else { return };
+        self.sync_firewalls();
+        for v in volumes {
+            self.volume_job(volumes::VolumeJob::Delete(v));
+        }
+    }
+
+    /// Finish the metadata-backend transitions that came due on the
+    /// emulated clock with no request to notice them, reporting their
+    /// state changes.
+    pub(crate) fn settle_due_everywhere(&self) {
+        let Some(template) = self.remembered_context() else { return };
+        let now = self.clock_now();
+        let mut state = self.lock();
+        let mut changes = Vec::new();
+        let mut settled = Vec::new();
+        for (key, r) in state.regions.iter_mut() {
+            if !r.instances.values().any(|i| i.settle.as_ref().is_some_and(|s| s.at <= now)) {
+                continue;
+            }
+            let Some((account, region)) = key.split_once('/') else { continue };
+            let before = signals::instance_states(r);
+            if let Some(v) = ops::instance::settle_due(r, region, now) {
+                settled.extend(v);
+            }
+            changes.push((account.to_string(), region.to_string(), signals::changed_states(&before, r)));
+        }
+        drop(state);
+        if changes.is_empty() {
+            return;
+        }
+        self.after_settle(Some(settled));
+        for (account, region, c) in changes {
+            if !c.is_empty() && self.wants_state_changes() {
+                let ctx = RequestContext { region: region.clone(), received_at: now, ..template.clone() };
+                self.emit_state_changes(&ctx, &account, &region, c);
+            }
+        }
     }
 }
 

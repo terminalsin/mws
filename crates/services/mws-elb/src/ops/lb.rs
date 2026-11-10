@@ -19,6 +19,12 @@ pub(crate) fn find_lb<'a>(r: &'a RegionState, arn: &str) -> Result<&'a LoadBalan
 }
 
 /// Subnets resolved through EC2: `(subnet id, AZ, VPC)` per mapping.
+/// How long a new load balancer is `provisioning` (AWS: a few minutes).
+/// Advancing the emulated clock finishes it, as does `MWS_ASYNC_DELAY_MS=0`.
+fn provisioning_time() -> chrono::Duration {
+    chrono::Duration::milliseconds(mws_core::settle::window_ms(2_000))
+}
+
 struct Placement {
     vpc_id: String,
     zones: Vec<t::AvailabilityZone>,
@@ -125,27 +131,75 @@ impl Elb {
     /// (`net/`, `gwy/`), with the load balancer's security groups and an
     /// address from the subnet (and a public one when internet-facing).
     /// On failure the interfaces made so far are deleted again.
+    ///
+    /// A subnet mapping's `PrivateIPv4Address` becomes the interface's
+    /// address and its `AllocationId` (an Elastic IP) is associated with
+    /// it. A Network or Gateway Load Balancer without security groups gets
+    /// interfaces without any; an Application Load Balancer without them
+    /// gets the VPC's default group.
     fn create_interfaces(
         &self,
         ctx: &RequestContext,
         lb_arn: &str,
+        ty: &str,
         internet_facing: bool,
-        subnets: &[String],
+        zones: &[t::AvailabilityZone],
         groups: &[String],
     ) -> Result<Vec<(String, String)>, ServiceError> {
         let Some(ec2) = self.ec2() else { return Ok(Vec::new()) };
         let account = account_of(ctx);
         let description = format!("ELB {}", names::lb_dimension(lb_arn));
         let mut made = Vec::new();
-        for subnet in subnets {
-            match ec2.create_task_interface(ctx, &account, subnet, groups, internet_facing, &description, "amazon-elb")
-            {
-                Ok(eni) => made.push((subnet.clone(), eni.eni_id)),
+        let mut elastic_ips = Vec::new();
+        for zone in zones {
+            let Some(subnet) = zone.subnet_id.clone() else { continue };
+            let mapping = zone.load_balancer_addresses.iter().flatten().next();
+            let allocation_id = mapping.and_then(|a| a.allocation_id.clone());
+            let req = mws_ec2::TaskInterfaceRequest {
+                subnet_id: subnet.clone(),
+                security_groups: if ty == "application" && groups.is_empty() { None } else { Some(groups.to_vec()) },
+                assign_public: internet_facing,
+                description: description.clone(),
+                requester: "amazon-elb".into(),
+                private_ip: mapping.and_then(|a| a.private_i_pv4_address.clone()),
+                allocation_id: allocation_id.clone(),
+            };
+            match ec2.create_task_interface_with(ctx, &account, &req) {
+                Ok(eni) => {
+                    if allocation_id.is_some() {
+                        if let Some(ip) = eni.public_ip {
+                            elastic_ips.push((subnet.clone(), ip));
+                        }
+                    }
+                    made.push((subnet, eni.eni_id));
+                }
                 Err(e) => {
                     self.delete_interfaces(ctx, made.into_iter().map(|(_, id)| id));
-                    return Err(e);
+                    return Err(match &*e.code {
+                        "InvalidAllocationID.NotFound" | "InvalidAllocationID.Malformed" => {
+                            errors::allocation_id_not_found("The specified allocation ID does not exist.")
+                        }
+                        "Resource.AlreadyAssociated" | "InvalidIPAddress.InUse" | "InvalidParameterValue" => {
+                            errors::invalid_configuration_request(e.message)
+                        }
+                        _ => e,
+                    });
                 }
             }
+        }
+        // The Elastic IPs show in the load balancer's addresses.
+        if !elastic_ips.is_empty() {
+            self.with_region(ctx, |r| {
+                let Some(lb) = r.load_balancers.get_mut(lb_arn) else { return };
+                for z in lb.lb.availability_zones.iter_mut().flatten() {
+                    let Some((_, ip)) = elastic_ips.iter().find(|(s, _)| z.subnet_id.as_ref() == Some(s)) else {
+                        continue;
+                    };
+                    if let Some(a) = z.load_balancer_addresses.iter_mut().flatten().next() {
+                        a.ip_address = Some(ip.clone());
+                    }
+                }
+            });
         }
         Ok(made)
     }
@@ -283,20 +337,27 @@ impl Elb {
                 LoadBalancerRecord {
                     lb: lb.clone(),
                     attributes: catalog::load_balancer_attributes(&ty, &scheme, &ip_type),
+                    active_at: Some(ctx.received_at + provisioning_time()),
                     ..Default::default()
                 },
             );
             if !tags.is_empty() {
                 r.tags.insert(arn.clone(), tags.clone());
             }
-            // A new load balancer is provisioning until its first describe.
+            // A new load balancer is provisioning for a while.
             let mut out = lb;
             out.state = Some(t::LoadBalancerState { code: Some("provisioning".into()), reason: None });
             Ok(out)
         })?;
         if result.load_balancer_arn.as_deref() == Some(arn.as_str()) {
-            let subnets: Vec<String> = placement.zones.iter().filter_map(|z| z.subnet_id.clone()).collect();
-            match self.create_interfaces(ctx, &arn, scheme == "internet-facing", &subnets, &security_groups) {
+            match self.create_interfaces(
+                ctx,
+                &arn,
+                &ty,
+                scheme == "internet-facing",
+                &placement.zones,
+                &security_groups,
+            ) {
                 Ok(enis) => self.with_region(ctx, |r| {
                     if let Some(lb) = r.load_balancers.get_mut(&arn) {
                         lb.network_interfaces = enis.into_iter().collect();
@@ -327,13 +388,13 @@ impl Elb {
         }
         let all: Vec<t::LoadBalancer> = self.with_region(ctx, |r| {
             if !arns.is_empty() {
-                arns.iter().map(|a| find_lb(r, a).map(|l| l.lb.clone())).collect::<Result<Vec<_>, _>>()
+                arns.iter().map(|a| find_lb(r, a).map(|l| l.shown(ctx.received_at))).collect::<Result<Vec<_>, _>>()
             } else if !wanted_names.is_empty() {
                 let mut out = Vec::new();
                 let mut missing = Vec::new();
                 for n in &wanted_names {
                     match r.load_balancers.values().find(|l| l.name() == n) {
-                        Some(l) => out.push(l.lb.clone()),
+                        Some(l) => out.push(l.shown(ctx.received_at)),
                         None => missing.push(format!("'{n}'")),
                     }
                 }
@@ -345,7 +406,7 @@ impl Elb {
                 }
                 Ok(out)
             } else {
-                let mut v: Vec<_> = r.load_balancers.values().map(|l| l.lb.clone()).collect();
+                let mut v: Vec<_> = r.load_balancers.values().map(|l| l.shown(ctx.received_at)).collect();
                 v.sort_by_key(|l| l.created_time);
                 Ok(v)
             }
@@ -429,8 +490,13 @@ impl Elb {
         // Interfaces follow the subnets: new ones for added subnets, the
         // removed subnets' ones go.
         let wanted: Vec<String> = placement.zones.iter().filter_map(|z| z.subnet_id.clone()).collect();
-        let added: Vec<String> = wanted.iter().filter(|s| !enis.contains_key(*s)).cloned().collect();
-        let made = self.create_interfaces(ctx, &input.load_balancer_arn, internet_facing, &added, &groups)?;
+        let added: Vec<t::AvailabilityZone> = placement
+            .zones
+            .iter()
+            .filter(|z| z.subnet_id.as_ref().is_some_and(|s| !enis.contains_key(s)))
+            .cloned()
+            .collect();
+        let made = self.create_interfaces(ctx, &input.load_balancer_arn, &ty, internet_facing, &added, &groups)?;
         let dropped: Vec<String> = enis.iter().filter(|(s, _)| !wanted.contains(s)).map(|(_, id)| id.clone()).collect();
         self.delete_interfaces(ctx, dropped);
         self.with_region(ctx, |r| {

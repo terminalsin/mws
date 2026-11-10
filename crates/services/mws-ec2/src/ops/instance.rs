@@ -10,7 +10,7 @@ use mws_core::{ConditionContext, RequestContext, ServiceError};
 use crate::backend::{LaunchSpec, NetworkSpec};
 use crate::catalog;
 use crate::generated::types as t;
-use crate::state::{InstanceRecord, RegionState};
+use crate::state::{InstanceRecord, PendingSettle, RegionState, SettleOutcome};
 use crate::util::{
     arn, b, err, invalid_parameter, missing_parameter, new_id, paginate, private_dns, request_tag_context,
     resource_tag_context, s, some_tags, tags_for, Filters, Kind,
@@ -40,7 +40,7 @@ pub fn state_name(rec: &InstanceRecord) -> String {
 /// Finish every transition at once: what a restored state's instances do
 /// when nothing is left running them.
 pub fn settle_all(r: &mut RegionState) {
-    for rec in r.instances.values_mut() {
+    for rec in r.instances.values_mut().filter(|rec| rec.settle.is_none()) {
         let next = match state_name(rec).as_str() {
             "pending" => "running",
             "stopping" => "stopped",
@@ -48,6 +48,64 @@ pub fn settle_all(r: &mut RegionState) {
             _ => continue,
         };
         rec.instance.state = Some(state(next));
+    }
+}
+
+/// Finish the metadata-backend transitions due at `now` (emulated clock).
+/// Returns the volumes to delete (with the state lock released), or
+/// `None` when nothing settled.
+pub fn settle_due(r: &mut RegionState, region: &str, now: DateTime<Utc>) -> Option<Vec<String>> {
+    let due: Vec<String> = r
+        .instances
+        .iter()
+        .filter(|(_, rec)| rec.settle.as_ref().is_some_and(|s| s.at <= now))
+        .map(|(id, _)| id.clone())
+        .collect();
+    if due.is_empty() {
+        return None;
+    }
+    let mut deleted = Vec::new();
+    for id in due {
+        let Some(rec) = r.instances.get_mut(&id) else { continue };
+        let Some(settle) = rec.settle.take() else { continue };
+        if settle.generation == rec.generation {
+            deleted.extend(apply_outcome(r, &id, region, settle.outcome, settle.at));
+        }
+    }
+    Some(deleted)
+}
+
+/// Put an instance where a transition ends. Returns the volumes to delete.
+fn apply_outcome(
+    r: &mut RegionState,
+    id: &str,
+    region: &str,
+    outcome: SettleOutcome,
+    now: DateTime<Utc>,
+) -> Vec<String> {
+    let Some(rec) = r.instances.get_mut(id) else { return Vec::new() };
+    match outcome {
+        SettleOutcome::Running { handle } => {
+            rec.handle = handle.or(rec.handle.take());
+            rec.instance.state = Some(state("running"));
+            Vec::new()
+        }
+        SettleOutcome::LaunchFailed { code, message, transition_reason } => {
+            rec.instance.state = Some(state("terminated"));
+            rec.instance.state_transition_reason = Some(transition_reason);
+            rec.instance.state_reason = Some(t::StateReason { code: Some(code), message: Some(message) });
+            rec.terminated_at = Some(now);
+            release_resources(r, id, region)
+        }
+        SettleOutcome::Stopped => {
+            rec.instance.state = Some(state("stopped"));
+            Vec::new()
+        }
+        SettleOutcome::Terminated => {
+            rec.instance.state = Some(state("terminated"));
+            rec.handle = None;
+            Vec::new()
+        }
     }
 }
 
@@ -428,8 +486,17 @@ fn instance_filter(r: &RegionState, i: &t::Instance, rec: &InstanceRecord, name:
 /// What a background task does to an instance through the backend.
 enum Transition {
     Launch(Box<LaunchSpec>),
+    /// A launch EC2 accepted but cannot carry out (an unusable EBS key):
+    /// the instance goes from `pending` to `terminated` with this
+    /// `StateReason` code and message.
+    LaunchRefused {
+        code: String,
+        message: String,
+    },
     Start,
-    Stop { force: bool },
+    Stop {
+        force: bool,
+    },
     Terminate,
     Reboot,
 }
@@ -449,8 +516,9 @@ impl Ec2 {
     /// Run `transition` for an instance in the background, then settle its
     /// state unless something newer changed it meanwhile. The metadata
     /// backend has nothing to wait for: it settles after the configured
-    /// transition delay ([`Ec2::set_transition_delay`]), or inline when
-    /// that is zero.
+    /// transition delay ([`Ec2::set_transition_delay`]) on the emulated
+    /// clock (the next request or background tick at or after it), or
+    /// inline when that is zero.
     async fn transition(
         &self,
         ctx: &RequestContext,
@@ -466,21 +534,18 @@ impl Ec2 {
         let id = instance_id.to_string();
         let backend = self.backend();
         let delay = if backend.name() == "metadata" { Some(self.transition_delay()) } else { None };
-        let inline = delay.is_some_and(|d| d.is_zero());
         let handle =
             self.with_region_of(&account, &region, &ctx, |r| r.instances.get(&id).and_then(|i| i.handle.clone()));
         let task = async move {
             let result = match (&transition, &handle) {
                 (Transition::Launch(spec), _) => backend.launch(spec).await.map(|l| Some(l.handle)),
+                (Transition::LaunchRefused { .. }, _) => Ok(None),
                 (Transition::Start, Some(h)) => backend.start(h).await.map(|_| None),
                 (Transition::Stop { force }, Some(h)) => backend.stop(h, *force).await.map(|_| None),
                 (Transition::Terminate, Some(h)) => backend.terminate(h).await.map(|_| None),
                 (Transition::Reboot, Some(h)) => backend.reboot(h).await.map(|_| None),
                 (_, None) => Ok(None),
             };
-            if let Some(d) = delay.filter(|d| !d.is_zero() && !matches!(transition, Transition::Reboot)) {
-                tokio::time::sleep(d).await;
-            }
             if let Err(e) = &result {
                 tracing::warn!(instance = %id, backend = backend.name(), "instance backend operation failed: {e}");
             }
@@ -491,46 +556,45 @@ impl Ec2 {
                     this.firewall_on_boot(&account, &region, &id, &h).await;
                 }
             }
-            let now = chrono::Utc::now().max(ctx.received_at);
+            let outcome = match (transition, result) {
+                (Transition::Launch(_), Ok(h)) | (Transition::Start, Ok(h)) => SettleOutcome::Running { handle: h },
+                (Transition::Launch(_), Err(e)) | (Transition::Start, Err(e)) => SettleOutcome::LaunchFailed {
+                    code: "Server.InternalError".into(),
+                    message: format!("Server.InternalError: Internal error on launch ({e})"),
+                    transition_reason: "Server.InternalError".into(),
+                },
+                (Transition::LaunchRefused { code, message }, _) => {
+                    SettleOutcome::LaunchFailed { transition_reason: code.clone(), code, message }
+                }
+                (Transition::Stop { .. }, _) => SettleOutcome::Stopped,
+                (Transition::Terminate, _) => SettleOutcome::Terminated,
+                (Transition::Reboot, _) => return,
+            };
             let region_name = region.clone();
-            let deleted = this.with_region_of(&account, &region, &ctx, |r| {
-                let mut deleted = Vec::new();
-                let Some(rec) = r.instances.get_mut(&id) else { return deleted };
-                if rec.generation != generation {
-                    return deleted;
-                }
-                match (transition, result) {
-                    (Transition::Launch(_), Ok(h)) | (Transition::Start, Ok(h)) => {
-                        rec.handle = h.or(rec.handle.take());
-                        rec.instance.state = Some(state("running"));
+            // The metadata backend finishes on the emulated clock: record
+            // when, and let the next look at the Region (or the background
+            // tick) settle it.
+            if let Some(d) = delay.filter(|d| !d.is_zero()) {
+                this.remember_context(&ctx);
+                let at = ctx.received_at + Duration::milliseconds(d.as_millis() as i64);
+                this.with_region_of(&account, &region, &ctx, |r| {
+                    if let Some(rec) = r.instances.get_mut(&id).filter(|rec| rec.generation == generation) {
+                        rec.settle = Some(PendingSettle { at, generation, outcome });
                     }
-                    (Transition::Launch(_), Err(e)) | (Transition::Start, Err(e)) => {
-                        rec.instance.state = Some(state("terminated"));
-                        rec.instance.state_transition_reason = Some("Server.InternalError".into());
-                        rec.instance.state_reason = Some(t::StateReason {
-                            code: Some("Server.InternalError".into()),
-                            message: Some(format!("Server.InternalError: Internal error on launch ({e})")),
-                        });
-                        rec.terminated_at = Some(now);
-                        deleted = release_resources(r, &id, &region_name);
-                    }
-                    (Transition::Stop { .. }, _) => {
-                        rec.instance.state = Some(state("stopped"));
-                    }
-                    (Transition::Terminate, _) => {
-                        rec.instance.state = Some(state("terminated"));
-                        rec.handle = None;
-                    }
-                    (Transition::Reboot, _) => {}
-                }
-                deleted
+                });
+                return;
+            }
+            let now = chrono::Utc::now().max(ctx.received_at);
+            let deleted = this.with_region_of(&account, &region, &ctx, |r| match r.instances.get(&id) {
+                Some(rec) if rec.generation == generation => apply_outcome(r, &id, &region_name, outcome, now),
+                _ => Vec::new(),
             });
             this.sync_firewalls();
             for v in deleted {
                 this.volume_job(crate::volumes::VolumeJob::Delete(v));
             }
         };
-        if inline {
+        if delay.is_some() {
             task.await;
         } else {
             tokio::spawn(task);
@@ -894,6 +958,11 @@ impl Ec2 {
                 )
             })?;
         }
+        // EBS uses each volume's KMS key for the caller. An unusable key does
+        // not fail the call: the instances go from pending to terminated.
+        let mut keys: Vec<&str> = planned_volumes.iter().filter_map(|v| v.kms_key_id.as_deref()).collect();
+        keys.dedup();
+        let key_refused = keys.into_iter().any(|k| self.check_ebs_key(ctx, k).is_err());
         // Idempotency: the same client token and parameters return the same
         // reservation.
         let token = input.client_token.as_deref();
@@ -950,7 +1019,7 @@ impl Ec2 {
                 cidr.size() as usize - 5 - super::vpc::used_ips(r, &subnet_id).len()
             };
             if free < input.min_count as usize {
-                return Err(err("InsufficientFreeAddressesInSubnet", "There are not enough free addresses in subnet '{subnet_id}' to satisfy the requested number of instances."));
+                return Err(err("InsufficientFreeAddressesInSubnet", format!("There are not enough free addresses in subnet '{subnet_id}' to satisfy the requested number of instances.")));
             }
             let count = count.min(free);
             let count = if wants_host {
@@ -1194,6 +1263,7 @@ impl Ec2 {
                     public_ip_on_start: wants_public,
                     role_arn,
                     generation: 1,
+                    settle: None,
                 };
                 let mut env = vec![
                     ("AWS_REGION".to_string(), region.clone()),
@@ -1243,6 +1313,12 @@ impl Ec2 {
             Ok(out)
         })?;
         for (id, gen, mut spec) in launched {
+            if key_refused {
+                let code = "Client.InvalidKMSKey.InvalidState".to_string();
+                let message = format!("{code}: The KMS key provided is in an incorrect state");
+                self.transition(ctx, &account, &id, gen, Transition::LaunchRefused { code, message }).await;
+                continue;
+            }
             self.extend_launch(&mut spec);
             self.transition(ctx, &account, &id, gen, Transition::Launch(Box::new(spec))).await;
         }
@@ -1350,6 +1426,8 @@ impl Ec2 {
             .map(|code| (*code, self.quota(&account, &region, ("ec2", code), ctx.received_at)))
             .collect();
         let (changes, todo) = self.with_region(ctx, |r| {
+            // The instances may have expired since they were authorized.
+            Kind::Instance.check_all(&input.instance_ids, |id| r.instances.contains_key(id))?;
             for id in &input.instance_ids {
                 let st = state_name(&r.instances[id]);
                 if !matches!(st.as_str(), "stopped" | "running" | "pending") {
@@ -1422,6 +1500,8 @@ impl Ec2 {
         let now = ctx.received_at;
         let force = input.force == Some(true);
         let (changes, todo) = self.with_region(ctx, |r| {
+            // The instances may have expired since they were authorized.
+            Kind::Instance.check_all(&input.instance_ids, |id| r.instances.contains_key(id))?;
             for id in &input.instance_ids {
                 let rec = &r.instances[id];
                 let st = state_name(rec);
@@ -1468,6 +1548,8 @@ impl Ec2 {
         self.authorize_instances(ctx, "RebootInstances", &input.instance_ids, input.dry_run)?;
         let account = account_of(ctx);
         let todo = self.with_region(ctx, |r| {
+            // The instances may have expired since they were authorized.
+            Kind::Instance.check_all(&input.instance_ids, |id| r.instances.contains_key(id))?;
             for id in &input.instance_ids {
                 if state_name(&r.instances[id]) == "terminated" {
                     return Err(err(
@@ -1500,6 +1582,8 @@ impl Ec2 {
         let region = ctx.region.clone();
         let mut deleted = Vec::new();
         let (changes, todo) = self.with_region(ctx, |r| {
+            // The instances may have expired since they were authorized.
+            Kind::Instance.check_all(&input.instance_ids, |id| r.instances.contains_key(id))?;
             for id in &input.instance_ids {
                 if r.instances[id].disable_api_termination {
                     return Err(err("OperationNotPermitted", format!("The instance '{id}' may not be terminated. Modify its 'disableApiTermination' instance attribute and try again.")));
@@ -1632,7 +1716,8 @@ impl Ec2 {
             input.dry_run,
         )?;
         self.with_region(ctx, |r| {
-            let rec = &r.instances[&input.instance_id];
+            let rec =
+                r.instances.get(&input.instance_id).ok_or_else(|| Kind::Instance.not_found(&input.instance_id))?;
             let i = render(r, rec);
             let mut out = t::InstanceAttribute { instance_id: Some(input.instance_id.clone()), ..Default::default() };
             let bv = |v: bool| Some(t::AttributeBooleanValue { value: Some(v) });

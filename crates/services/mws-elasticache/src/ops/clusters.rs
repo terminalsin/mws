@@ -535,6 +535,22 @@ pub(crate) async fn modify(
         let mut commands: Vec<Vec<String>> = Vec::new();
         let mut removed_handles = Vec::new();
         let mut pending = c.info.pending_modified_values.clone().unwrap_or_default();
+        // ApplyImmediately also applies the changes already pending, unless
+        // this request replaces them.
+        let mut input = input;
+        if apply_now {
+            let old = std::mem::take(&mut pending);
+            if input.num_cache_nodes.is_none() {
+                input.num_cache_nodes = old.num_cache_nodes;
+                if input.cache_node_ids_to_remove.is_none() {
+                    input.cache_node_ids_to_remove = old.cache_node_ids_to_remove;
+                }
+            }
+            input.cache_node_type = input.cache_node_type.or(old.cache_node_type);
+            if input.engine.is_none() {
+                input.engine_version = input.engine_version.or(old.engine_version);
+            }
+        }
         if let Some(n) = input.num_cache_nodes {
             let cur = c.info.num_cache_nodes.unwrap_or(1);
             if engine.is_redis_like() && n != 1 {
@@ -561,45 +577,14 @@ pub(crate) async fn modify(
                     }
                 }
                 if apply_now {
-                    for node in &remove {
-                        if let Some(rt) = c.nodes.remove(node) {
-                            removed_handles.extend(rt.handle);
-                        }
-                    }
-                    if let Some(list) = c.info.cache_nodes.as_mut() {
-                        list.retain(|x| !remove.contains(x.cache_node_id.as_ref().unwrap_or(&String::new())));
-                    }
-                    c.info.num_cache_nodes = Some(n);
+                    removed_handles.extend(remove_nodes(&mut c, &remove, n));
                 } else {
                     pending.num_cache_nodes = Some(n);
                     pending.cache_node_ids_to_remove = Some(remove);
                 }
             } else if n > cur {
                 if apply_now {
-                    let azs = input
-                        .new_availability_zones
-                        .clone()
-                        .filter(|z| !z.is_empty())
-                        .unwrap_or_else(|| vec![c.info.cache_nodes.iter().flatten().next().and_then(|x| x.customer_availability_zone.clone()).unwrap_or_else(|| format!("{}a", ctx.region))]);
-                    let next = c.nodes.keys().filter_map(|k| k.parse::<u32>().ok()).max().unwrap_or(0);
-                    let at = now(ctx);
-                    for i in 0..(n - cur) as u32 {
-                        let node_id = format!("{:04}", next + i + 1);
-                        let port = alloc_port(svc, c.port);
-                        c.nodes.insert(node_id.clone(), NodeRuntime { handle: None, port, peer: None });
-                        c.info.cache_nodes.get_or_insert_with(Vec::new).push(t::CacheNode {
-                            cache_node_id: Some(node_id),
-                            cache_node_status: Some("creating".into()),
-                            cache_node_create_time: Some(at),
-                            endpoint: Some(endpoint(svc, port)),
-                            parameter_group_status: Some("in-sync".into()),
-                            source_cache_node_id: None,
-                            customer_availability_zone: Some(azs[i as usize % azs.len()].clone()),
-                            customer_outpost_arn: None,
-                        });
-                    }
-                    c.info.num_cache_nodes = Some(n);
-                    c.info.cache_cluster_status = Some("modifying".into());
+                    add_nodes(svc, &mut c, n, input.new_availability_zones.clone(), &ctx.region, now(ctx));
                     after = After::AddNodes;
                 } else {
                     pending.num_cache_nodes = Some(n);
@@ -730,7 +715,7 @@ pub(crate) async fn modify(
         }
         let has_pending = pending != t::PendingModifiedValues::default();
         c.info.pending_modified_values = Some(pending);
-        let _ = has_pending;
+        c.pending_since = if has_pending { c.pending_since.or(Some(now(ctx))) } else { None };
         if !commands.is_empty() {
             after = match after {
                 After::AddNodes => After::AddNodes,
@@ -764,6 +749,124 @@ pub(crate) async fn modify(
         After::Nothing => {}
     }
     Ok(t::ModifyCacheClusterResult { cache_cluster: Some(without_nodes(out)) })
+}
+
+/// Remove `remove` from the cluster's nodes, leaving `n`. Returns the
+/// engine handles to terminate.
+fn remove_nodes(c: &mut Cluster, remove: &[String], n: i32) -> Vec<String> {
+    let mut handles = Vec::new();
+    for node in remove {
+        if let Some(rt) = c.nodes.remove(node) {
+            handles.extend(rt.handle);
+        }
+    }
+    if let Some(list) = c.info.cache_nodes.as_mut() {
+        list.retain(|x| !remove.contains(x.cache_node_id.as_ref().unwrap_or(&String::new())));
+    }
+    c.info.num_cache_nodes = Some(n);
+    handles
+}
+
+/// Grow the cluster to `n` nodes, spread over `azs` (or the first node's
+/// zone); the new nodes are `creating` and the cluster `modifying`.
+fn add_nodes(
+    svc: &ElastiCache,
+    c: &mut Cluster,
+    n: i32,
+    azs: Option<Vec<String>>,
+    region: &str,
+    at: chrono::DateTime<chrono::Utc>,
+) {
+    let cur = c.info.num_cache_nodes.unwrap_or(1);
+    let azs = azs.filter(|z| !z.is_empty()).unwrap_or_else(|| {
+        vec![c
+            .info
+            .cache_nodes
+            .iter()
+            .flatten()
+            .next()
+            .and_then(|x| x.customer_availability_zone.clone())
+            .unwrap_or_else(|| format!("{region}a"))]
+    });
+    let next = c.nodes.keys().filter_map(|k| k.parse::<u32>().ok()).max().unwrap_or(0);
+    for i in 0..(n - cur).max(0) as u32 {
+        let node_id = format!("{:04}", next + i + 1);
+        let port = alloc_port(svc, c.port);
+        c.nodes.insert(node_id.clone(), NodeRuntime { handle: None, port, peer: None });
+        c.info.cache_nodes.get_or_insert_with(Vec::new).push(t::CacheNode {
+            cache_node_id: Some(node_id),
+            cache_node_status: Some("creating".into()),
+            cache_node_create_time: Some(at),
+            endpoint: Some(endpoint(svc, port)),
+            parameter_group_status: Some("in-sync".into()),
+            source_cache_node_id: None,
+            customer_availability_zone: Some(azs[i as usize % azs.len()].clone()),
+            customer_outpost_arn: None,
+        });
+    }
+    c.info.num_cache_nodes = Some(n);
+    c.info.cache_cluster_status = Some("modifying".into());
+}
+
+/// What applying a cluster's pending changes leaves to do outside the
+/// state lock.
+#[derive(Default)]
+pub(crate) struct Applied {
+    pub removed_handles: Vec<String>,
+    pub add_nodes: bool,
+    pub upgrade: bool,
+    pub commands: Vec<Vec<String>>,
+}
+
+/// Apply a standalone cluster's pending node count, node type and engine
+/// version changes in its maintenance window, as `ModifyCacheCluster` with
+/// `ApplyImmediately` would have.
+pub(crate) fn apply_pending(
+    svc: &ElastiCache,
+    r: &mut RegionState,
+    id: &str,
+    region: &str,
+    at: chrono::DateTime<chrono::Utc>,
+) -> Applied {
+    let mut out = Applied::default();
+    let Some(c) = r.clusters.get_mut(id) else { return out };
+    let pending = c.info.pending_modified_values.take().unwrap_or_default();
+    c.info.pending_modified_values = Some(t::PendingModifiedValues::default());
+    c.pending_since = None;
+    let engine = c.engine();
+    if let Some(n) = pending.num_cache_nodes {
+        let cur = c.info.num_cache_nodes.unwrap_or(1);
+        if n < cur {
+            let remove = pending.cache_node_ids_to_remove.clone().unwrap_or_default();
+            out.removed_handles = remove_nodes(c, &remove, n);
+        } else if n > cur {
+            add_nodes(svc, c, n, None, region, at);
+            out.add_nodes = true;
+        }
+    }
+    if let Some(nt) = &pending.cache_node_type {
+        c.info.cache_node_type = Some(nt.clone());
+        if engine.is_redis_like() {
+            let mem = catalog::node_type(nt).map(|n| n.maxmemory()).unwrap_or(0);
+            out.commands.push(vec!["CONFIG".into(), "SET".into(), "maxmemory".into(), mem.to_string()]);
+        }
+    }
+    if let Some(v) = &pending.engine_version {
+        if let Ok(target) = version_of(engine, Some(v)) {
+            out.upgrade = c.info.engine_version.as_deref() != Some(target.version);
+            c.info.engine_version = Some(target.version.into());
+            if let Some(pg) = c.info.cache_parameter_group.as_mut() {
+                if pg.cache_parameter_group_name.as_deref().is_some_and(|n| n.starts_with("default.")) {
+                    pg.cache_parameter_group_name = Some(format!("default.{}", target.family));
+                }
+            }
+            if out.upgrade && svc.runs_engines() {
+                c.set_status("modifying");
+            }
+        }
+    }
+    r.event(id, "cache-cluster", format!("Cache cluster {id} modified"), at);
+    out
 }
 
 fn acl_ok(c: &Cluster) -> bool {

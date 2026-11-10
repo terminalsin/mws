@@ -15,11 +15,16 @@ use crate::EcrEvent;
 
 /// How often an image may be scanned with basic scanning.
 pub(crate) const SCAN_INTERVAL_MS: i64 = 24 * 3600 * 1000;
-/// How long a basic scan is `IN_PROGRESS`.
-pub(crate) const BASIC_SCAN_MS: i64 = 5 * 1000;
+/// How long a basic scan is `IN_PROGRESS` (none with
+/// `MWS_ASYNC_DELAY_MS=0`).
+pub(crate) fn basic_scan_ms() -> i64 {
+    mws_core::settle::window_ms(5 * 1000)
+}
 /// How long an enhanced scan is `PENDING` before Inspector's initial scan
-/// completes.
-pub(crate) const ENHANCED_SCAN_MS: i64 = 30 * 1000;
+/// completes (none with `MWS_ASYNC_DELAY_MS=0`).
+pub(crate) fn enhanced_scan_ms() -> i64 {
+    mws_core::settle::window_ms(30 * 1000)
+}
 
 /// Whether the registry scans with Amazon Inspector.
 pub(crate) fn enhanced(reg: &Registry) -> bool {
@@ -63,8 +68,8 @@ pub(crate) fn settle(
 ) -> Option<EcrEvent> {
     let tags = repo.content.tags_of(digest);
     match scan.status.as_str() {
-        "IN_PROGRESS" if !scan.enhanced && now >= scan.started_at + BASIC_SCAN_MS => {
-            let at = scan.started_at + BASIC_SCAN_MS;
+        "IN_PROGRESS" if !scan.enhanced && now >= scan.started_at + basic_scan_ms() => {
+            let at = scan.started_at + basic_scan_ms();
             scan.status = "COMPLETE".into();
             scan.completed_at = Some(at);
             Some(EcrEvent {
@@ -84,8 +89,8 @@ pub(crate) fn settle(
                 time: dt(at),
             })
         }
-        "PENDING" if scan.enhanced && now >= scan.started_at + ENHANCED_SCAN_MS => {
-            let at = scan.started_at + ENHANCED_SCAN_MS;
+        "PENDING" if scan.enhanced && now >= scan.started_at + enhanced_scan_ms() => {
+            let at = scan.started_at + enhanced_scan_ms();
             scan.status = if scan.frequency == "CONTINUOUS_SCAN" { "ACTIVE" } else { "COMPLETE" }.into();
             scan.completed_at = Some(at);
             // Inspector's "initial scan complete" event; with no findings
@@ -179,8 +184,8 @@ mod tests {
         let r = repo("app", false);
         let mut scan = on_push(&reg, &r, 1000).unwrap();
         assert_eq!((scan.status.as_str(), scan.enhanced), ("IN_PROGRESS", false));
-        assert!(settle("aws", &reg, &r, "sha256:x", &mut scan, 1000 + BASIC_SCAN_MS - 1).is_none());
-        let e = settle("aws", &reg, &r, "sha256:x", &mut scan, 1000 + BASIC_SCAN_MS).unwrap();
+        assert!(settle("aws", &reg, &r, "sha256:x", &mut scan, 1000 + basic_scan_ms() - 1).is_none());
+        let e = settle("aws", &reg, &r, "sha256:x", &mut scan, 1000 + basic_scan_ms()).unwrap();
         assert_eq!((e.source.as_str(), e.detail_type.as_str()), ("aws.ecr", "ECR Image Scan"));
         assert_eq!(scan.status, "COMPLETE");
         assert!(findings(&scan).unwrap().findings.is_some());
@@ -195,7 +200,7 @@ mod tests {
         let mut scan = on_push(&reg, &r, 0).unwrap();
         assert_eq!((scan.status.as_str(), scan.enhanced), ("PENDING", true));
         assert!(findings(&scan).is_none());
-        let e = settle("aws", &reg, &r, "sha256:x", &mut scan, ENHANCED_SCAN_MS).unwrap();
+        let e = settle("aws", &reg, &r, "sha256:x", &mut scan, enhanced_scan_ms()).unwrap();
         assert_eq!((e.source.as_str(), e.detail_type.as_str()), ("aws.inspector2", "Inspector2 Scan"));
         assert_eq!(scan.status, "ACTIVE");
         let f = findings(&scan).unwrap();
@@ -203,7 +208,7 @@ mod tests {
         assert!(on_push(&reg, &repo("other", true), 0).is_none(), "scanOnPush is ignored");
         let reg = registry("ENHANCED", "SCAN_ON_PUSH");
         let mut scan = on_push(&reg, &r, 0).unwrap();
-        settle("aws", &reg, &r, "sha256:x", &mut scan, ENHANCED_SCAN_MS);
+        settle("aws", &reg, &r, "sha256:x", &mut scan, enhanced_scan_ms());
         assert_eq!(scan.status, "COMPLETE");
     }
 }

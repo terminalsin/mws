@@ -2,7 +2,7 @@
 
 use mws_core::{ConditionContext, RequestContext, ServiceError};
 
-use super::{authorize, cluster_not_found};
+use super::{authorize, authorize_create, cluster_not_found};
 use crate::generated::{errors, types as t};
 use crate::state::Tagged;
 use crate::util::{
@@ -55,7 +55,7 @@ impl Rds {
         let cluster = input.db_cluster_identifier.to_ascii_lowercase();
         let earn = arn(ctx, "cluster-endpoint", &id);
         let tags = tags_from(&input.tags)?;
-        authorize(ctx, "CreateDBClusterEndpoint", &earn, request_tag_context(&tags))?;
+        authorize_create(ctx, "CreateDBClusterEndpoint", &earn, &tags, request_tag_context(&tags))?;
         let rec = self.cluster(ctx, &cluster)?;
         if rec.cluster.status.as_deref() != Some("available") {
             return Err(super::invalid_cluster_state(&cluster, rec.cluster.status.as_deref().unwrap_or_default()));

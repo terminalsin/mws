@@ -1913,6 +1913,7 @@ pub(crate) struct EcsPlatform {
     pub elb: mws_elb::Elb,
     pub autoscaling: mws_autoscaling::AutoScaling,
     pub ecr: mws_ecr::Ecr,
+    pub events: mws_events::Events,
 }
 
 impl EcsPlatform {
@@ -2339,6 +2340,29 @@ impl mws_ecs::TaskPlatform for EcsPlatform {
                 tracing::warn!("ECS Express clean-up {op} failed: {} {}", e.code, e.message);
             }
         }
+    }
+
+    fn task_state_change(
+        &self,
+        ctx: &RequestContext,
+        account: &str,
+        task_arn: &str,
+        detail: serde_json::Value,
+        time: chrono::DateTime<chrono::Utc>,
+    ) {
+        self.events.put_service_event(
+            ctx,
+            mws_events::ServiceEvent {
+                partition: ctx.partition.clone(),
+                account: account.to_string(),
+                region: ctx.region.clone(),
+                source: "aws.ecs".into(),
+                detail_type: "ECS Task State Change".into(),
+                resources: vec![task_arn.to_string()],
+                detail,
+                time,
+            },
+        );
     }
 }
 
@@ -2786,5 +2810,34 @@ impl mws_s3::ReplicationRoles for S3ReplicationRoles {
             .ok()
             .flatten()
             .map(|r| r.caller)
+    }
+}
+
+/// EBS encryption keys are KMS keys EC2 uses for the caller.
+pub(crate) struct Ec2EbsKeys(pub mws_kms::Kms);
+
+impl mws_ec2::EbsKeys for Ec2EbsKeys {
+    fn check(&self, ctx: &RequestContext, key: &str) -> Result<(), mws_core::ServiceError> {
+        let k = self.0.key_via(
+            ctx,
+            "ec2",
+            key,
+            &["kms:DescribeKey", "kms:CreateGrant", "kms:GenerateDataKeyWithoutPlaintext"],
+        )?;
+        if k.key_spec != "SYMMETRIC_DEFAULT" || k.key_usage != "ENCRYPT_DECRYPT" {
+            return Err(mws_core::ServiceError::client(
+                "InvalidKMSKey.InvalidState",
+                400,
+                format!("The KMS key {key} is not a symmetric encryption key."),
+            ));
+        }
+        if k.key_state != "Enabled" {
+            return Err(mws_core::ServiceError::client(
+                "InvalidKMSKey.InvalidState",
+                400,
+                "The KMS key provided is in an incorrect state",
+            ));
+        }
+        Ok(())
     }
 }

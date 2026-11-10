@@ -2,7 +2,7 @@
 
 use mws_core::{ConditionContext, RequestContext, ServiceError};
 
-use super::authorize;
+use super::{authorize, authorize_create};
 use crate::catalog;
 use crate::generated::{errors, types as t};
 use crate::state::{RegionState, Tagged};
@@ -93,7 +93,7 @@ impl Rds {
     ) -> Result<t::CreateDBSubnetGroupResult, ServiceError> {
         let name = group_name("DBSubnetGroupName", &input.db_subnet_group_name, &['.', '_', ' '])?;
         let tags = tags_from(&input.tags)?;
-        authorize(ctx, "CreateDBSubnetGroup", &arn(ctx, "subgrp", &name), request_tag_context(&tags))?;
+        authorize_create(ctx, "CreateDBSubnetGroup", &arn(ctx, "subgrp", &name), &tags, request_tag_context(&tags))?;
         if name == "default" {
             return Err(invalid_parameter("DBSubnetGroupName default is reserved and cannot be used."));
         }
@@ -223,7 +223,7 @@ impl Rds {
     ) -> Result<t::CreateOptionGroupResult, ServiceError> {
         let name = group_name("OptionGroupName", &input.option_group_name, &[])?;
         let tags = tags_from(&input.tags)?;
-        authorize(ctx, "CreateOptionGroup", &arn(ctx, "og", &name), request_tag_context(&tags))?;
+        authorize_create(ctx, "CreateOptionGroup", &arn(ctx, "og", &name), &tags, request_tag_context(&tags))?;
         let engine = catalog::engine(&input.engine_name)
             .ok_or_else(|| invalid_parameter(format!("Invalid DB engine: {}", input.engine_name)))?;
         if !engine.versions.iter().any(|v| v.major == input.major_engine_version) {
@@ -260,7 +260,7 @@ impl Rds {
         let source = name_of(&input.source_option_group_identifier);
         let target = group_name("TargetOptionGroupIdentifier", &input.target_option_group_identifier, &[])?;
         let tags = tags_from(&input.tags)?;
-        authorize(ctx, "CopyOptionGroup", &arn(ctx, "og", &target), request_tag_context(&tags))?;
+        authorize_create(ctx, "CopyOptionGroup", &arn(ctx, "og", &target), &tags, request_tag_context(&tags))?;
         let src = self.option_group(ctx, &source)?;
         let g = t::OptionGroup {
             option_group_name: Some(target.clone()),

@@ -561,3 +561,63 @@ async fn account_settings_instance_snapshots_and_root_replacement() {
         .into_service_error();
     assert_eq!(code(&e), "InvalidReplaceRootVolumeTaskId.NotFound");
 }
+
+/// EBS uses a volume's KMS key for the caller. RunInstances with a key
+/// that cannot be used still answers, but the instance goes from pending
+/// to terminated with `Client.InvalidKMSKey.InvalidState`.
+#[tokio::test]
+async fn run_instances_with_an_unusable_ebs_key_terminates() {
+    use aws_sdk_ec2::types::{BlockDeviceMapping, EbsBlockDevice, InstanceStateName};
+    let mws = Mws::start().await;
+    let config = mws.root_sdk_config().await;
+    let ec2 = Client::new(&config);
+    let kms = aws_sdk_kms::Client::new(&config);
+    let ami = alpine_ami(&ec2).await;
+    let good = kms.create_key().send().await.unwrap().key_metadata().unwrap().arn().unwrap().to_string();
+    let disabled = kms.create_key().send().await.unwrap().key_metadata().unwrap().key_id().to_string();
+    kms.disable_key().key_id(&disabled).send().await.unwrap();
+
+    let launch = |key: String| {
+        let ec2 = ec2.clone();
+        let ami = ami.clone();
+        async move {
+            let device = BlockDeviceMapping::builder()
+                .device_name("/dev/sdf")
+                .ebs(EbsBlockDevice::builder().volume_size(1).encrypted(true).kms_key_id(key).build())
+                .build();
+            let run =
+                ec2.run_instances().image_id(ami).min_count(1).max_count(1).block_device_mappings(device).send().await;
+            run.unwrap().instances()[0].instance_id().unwrap().to_string()
+        }
+    };
+    let state = |id: String| {
+        let ec2 = ec2.clone();
+        async move {
+            let d = ec2.describe_instances().instance_ids(id).send().await.unwrap();
+            let i = d.reservations()[0].instances()[0].clone();
+            (i.state().and_then(|s| s.name().cloned()), i.state_reason().and_then(|r| r.code().map(str::to_string)))
+        }
+    };
+    let wait = |id: String, want: InstanceStateName| {
+        let state = &state;
+        async move {
+            for _ in 0..80 {
+                let s = state(id.clone()).await;
+                if s.0.as_ref() == Some(&want) {
+                    return s;
+                }
+                tokio::time::sleep(std::time::Duration::from_millis(250)).await;
+            }
+            panic!("instance {id} never reached {want:?}");
+        }
+    };
+
+    let ok = launch(good).await;
+    wait(ok, InstanceStateName::Running).await;
+
+    for key in [disabled, "arn:aws:kms:us-east-1:123456789012:key/00000000-0000-0000-0000-000000000000".to_string()] {
+        let bad = launch(key).await;
+        let (_, reason) = wait(bad, InstanceStateName::Terminated).await;
+        assert_eq!(reason.as_deref(), Some("Client.InvalidKMSKey.InvalidState"));
+    }
+}
