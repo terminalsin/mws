@@ -105,6 +105,18 @@ pub(crate) struct Inner {
     extensions: RwLock<Vec<Arc<dyn LaunchExtension>>>,
     load_balancers: OnceLock<Arc<dyn LoadBalancers>>,
     signals: signals::Signals,
+    keys: OnceLock<Arc<dyn EbsKeys>>,
+}
+
+/// The KMS keys EBS encrypts volumes with: MWS wires this to KMS. AWS
+/// couples the two: EC2 uses the key for the caller (through
+/// `kms:ViaService`) with grants and data keys.
+pub trait EbsKeys: Send + Sync {
+    /// Check that `key` (an id, ARN, alias name or alias ARN) is an enabled
+    /// symmetric encryption key the caller may use through EC2
+    /// (`kms:DescribeKey`, `kms:CreateGrant`,
+    /// `kms:GenerateDataKeyWithoutPlaintext`). The error is KMS's.
+    fn check(&self, ctx: &RequestContext, key: &str) -> Result<(), ServiceError>;
 }
 
 /// The load balancers VPC endpoint services front: MWS wires this to
@@ -141,7 +153,24 @@ impl Ec2 {
                 extensions: RwLock::default(),
                 load_balancers: OnceLock::new(),
                 signals: Default::default(),
+                keys: OnceLock::new(),
             }),
+        }
+    }
+
+    /// Check the KMS keys encrypted volumes are created with. Without it
+    /// any key is accepted.
+    pub fn set_ebs_keys(&self, keys: Arc<dyn EbsKeys>) {
+        let _ = self.inner.keys.set(keys);
+    }
+
+    /// Check an EBS encryption key with [`EbsKeys`]. The AWS managed key
+    /// (`alias/aws/ebs`) is always usable. Never call with the state lock
+    /// held.
+    pub(crate) fn check_ebs_key(&self, ctx: &RequestContext, key: &str) -> Result<(), ServiceError> {
+        match self.inner.keys.get() {
+            Some(keys) if !key.ends_with("alias/aws/ebs") => keys.check(ctx, key),
+            _ => Ok(()),
         }
     }
 

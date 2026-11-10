@@ -2687,3 +2687,32 @@ impl mws_imagebuilder::InstanceRoles for ImageBuilderInstanceRoles {
         Ok(RequestContext { caller: resolved.caller, ..base.clone() })
     }
 }
+
+/// EBS encryption keys are KMS keys EC2 uses for the caller.
+pub(crate) struct Ec2EbsKeys(pub mws_kms::Kms);
+
+impl mws_ec2::EbsKeys for Ec2EbsKeys {
+    fn check(&self, ctx: &RequestContext, key: &str) -> Result<(), mws_core::ServiceError> {
+        let k = self.0.key_via(
+            ctx,
+            "ec2",
+            key,
+            &["kms:DescribeKey", "kms:CreateGrant", "kms:GenerateDataKeyWithoutPlaintext"],
+        )?;
+        if k.key_spec != "SYMMETRIC_DEFAULT" || k.key_usage != "ENCRYPT_DECRYPT" {
+            return Err(mws_core::ServiceError::client(
+                "InvalidKMSKey.InvalidState",
+                400,
+                format!("The KMS key {key} is not a symmetric encryption key."),
+            ));
+        }
+        if k.key_state != "Enabled" {
+            return Err(mws_core::ServiceError::client(
+                "InvalidKMSKey.InvalidState",
+                400,
+                "The KMS key provided is in an incorrect state",
+            ));
+        }
+        Ok(())
+    }
+}

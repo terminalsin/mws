@@ -428,6 +428,10 @@ fn instance_filter(r: &RegionState, i: &t::Instance, rec: &InstanceRecord, name:
 /// What a background task does to an instance through the backend.
 enum Transition {
     Launch(Box<LaunchSpec>),
+    /// A launch EC2 accepted but cannot carry out (an unusable EBS key):
+    /// the instance goes from `pending` to `terminated` with this
+    /// `StateReason` code and message.
+    LaunchRefused { code: String, message: String },
     Start,
     Stop { force: bool },
     Terminate,
@@ -472,6 +476,7 @@ impl Ec2 {
         let task = async move {
             let result = match (&transition, &handle) {
                 (Transition::Launch(spec), _) => backend.launch(spec).await.map(|l| Some(l.handle)),
+                (Transition::LaunchRefused { .. }, _) => Ok(None),
                 (Transition::Start, Some(h)) => backend.start(h).await.map(|_| None),
                 (Transition::Stop { force }, Some(h)) => backend.stop(h, *force).await.map(|_| None),
                 (Transition::Terminate, Some(h)) => backend.terminate(h).await.map(|_| None),
@@ -511,6 +516,13 @@ impl Ec2 {
                             code: Some("Server.InternalError".into()),
                             message: Some(format!("Server.InternalError: Internal error on launch ({e})")),
                         });
+                        rec.terminated_at = Some(now);
+                        deleted = release_resources(r, &id, &region_name);
+                    }
+                    (Transition::LaunchRefused { code, message }, _) => {
+                        rec.instance.state = Some(state("terminated"));
+                        rec.instance.state_transition_reason = Some(code.clone());
+                        rec.instance.state_reason = Some(t::StateReason { code: Some(code), message: Some(message) });
                         rec.terminated_at = Some(now);
                         deleted = release_resources(r, &id, &region_name);
                     }
@@ -894,6 +906,11 @@ impl Ec2 {
                 )
             })?;
         }
+        // EBS uses each volume's KMS key for the caller. An unusable key does
+        // not fail the call: the instances go from pending to terminated.
+        let mut keys: Vec<&str> = planned_volumes.iter().filter_map(|v| v.kms_key_id.as_deref()).collect();
+        keys.dedup();
+        let key_refused = keys.into_iter().any(|k| self.check_ebs_key(ctx, k).is_err());
         // Idempotency: the same client token and parameters return the same
         // reservation.
         let token = input.client_token.as_deref();
@@ -1243,6 +1260,12 @@ impl Ec2 {
             Ok(out)
         })?;
         for (id, gen, mut spec) in launched {
+            if key_refused {
+                let code = "Client.InvalidKMSKey.InvalidState".to_string();
+                let message = format!("{code}: The KMS key provided is in an incorrect state");
+                self.transition(ctx, &account, &id, gen, Transition::LaunchRefused { code, message }).await;
+                continue;
+            }
             self.extend_launch(&mut spec);
             self.transition(ctx, &account, &id, gen, Transition::Launch(Box::new(spec))).await;
         }

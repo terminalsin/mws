@@ -551,6 +551,7 @@ fn build_with_store(config: Config, store: Option<Arc<Store>>) -> Mws {
         .with_s3(s3.clone());
     elb.set_metric_sink(Arc::new(links::ElbToCloudWatch(cloudwatch.clone())));
     ec2.set_load_balancers(Arc::new(links::Ec2LoadBalancers(elb.clone())));
+    ec2.set_ebs_keys(Arc::new(links::Ec2EbsKeys(kms.clone())));
     globalaccelerator.add_endpoint_directory(Arc::new(links::GlobalAcceleratorElb(elb.clone())));
     route53_links::wire(&route53, &elb, &ec2);
     let autoscaling = AutoScaling::new(ec2.clone());
