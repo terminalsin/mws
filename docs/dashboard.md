@@ -121,7 +121,7 @@ Fields validate in place, and say how to fix what they reject. `Field`
    `email-or-domain`, `dnsName` (wildcards allowed), `url`, `s3url`, `bucket`, `name`, `port`, `ports` (a port or range), `semver`, `cron` (AWS's six fields), `phone`,
    `tags` for `key=value` tag lines, `pairs` for any `key=value` list,
    `branch` for Git branch names, PEM `certificate`, `certificates` and
-   `privateKey`), `taken` (names that exist), `reserved`
+   `privateKey`, `principal` for account IDs, ARNs and service principals), `taken` (names that exist), `reserved`
    (prefixes AWS keeps, offered without them),
    `known` (values the field usually points at), `aliases` (readable names
    for values: an image name offers its ID), `generate` (`name`,

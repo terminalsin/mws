@@ -469,3 +469,12 @@ test("jsonish values are text until they start like JSON", () => {
 test("ResourceExists errors are conflicts", () => {
   assert.ok(CONFLICT.test("ResourceExistsException"));
 });
+
+test("principals: account IDs, ARNs and service principals", () => {
+  const rule: Rule = { format: "principal" };
+  for (const ok of ["111122223333", "arn:aws:iam::111122223333:role/x", "lambda.amazonaws.com"]) assert.equal(check(ok, rule), null, ok);
+  assert.deepEqual(values(rule, "4444-5555-6666"), ["444455556666"]);
+  assert.deepEqual(values(rule, "sns.amazon.com"), ["sns.amazonaws.com"]);
+  // In a list, the bad item is repaired in place.
+  assert.deepEqual(values({ type: "list", item: rule }, "111122223333\n4444-5555-6666")[0], "111122223333\n444455556666");
+});
