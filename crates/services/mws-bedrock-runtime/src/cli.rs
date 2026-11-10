@@ -378,6 +378,7 @@ mod tests {
             temperature: None,
             top_p: None,
             stop: vec![],
+            extra: Default::default(),
         }
     }
 
