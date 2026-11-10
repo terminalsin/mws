@@ -267,9 +267,12 @@ export function repairs(value: string, rule: Rule, code: IssueCode): Repair[] {
       offer(nextFree(value, rule));
       offer(fresh(rule));
       break;
-    case "enum":
-      for (const s of closest(value, rule.enum ?? [])) offer({ value: s, label: `Did you mean ${s}?`, kind: "suggest" });
+    case "enum": {
+      const near = nearestNumbers(value, rule.enum ?? []);
+      if (near) for (const s of near) offer({ value: s, label: `Use ${s}`, kind: "fix" });
+      else for (const s of closest(value, rule.enum ?? [])) offer({ value: s, label: `Did you mean ${s}?`, kind: "suggest" });
       break;
+    }
     case "type":
     case "range":
       offer(numeric(value, rule));
@@ -288,6 +291,18 @@ export function repairs(value: string, rule: Rule, code: IssueCode): Repair[] {
   }
   if (out.length === 0 && code !== "taken") for (const r of didYouMean(value, rule)) offer(r);
   return out.slice(0, MAX_REPAIRS);
+}
+
+/** For a number outside a set of allowed numbers (Fargate memory sizes,
+ * instance counts): the allowed values just below and above it, nearest
+ * first. Null when the value or the set is not numeric. */
+export function nearestNumbers(value: string, allowed: string[]): string[] | null {
+  const n = Number(value.trim().replace(/[,_\s]/g, ""));
+  const nums = allowed.map(Number);
+  if (value.trim() === "" || Number.isNaN(n) || nums.length === 0 || nums.some(Number.isNaN)) return null;
+  const below = allowed.filter((_, i) => nums[i] < n).sort((a, b) => Number(b) - Number(a))[0];
+  const above = allowed.filter((_, i) => nums[i] > n).sort((a, b) => Number(a) - Number(b))[0];
+  return [below, above].filter((x): x is string => x !== undefined).sort((a, b) => Math.abs(Number(a) - n) - Math.abs(Number(b) - n));
 }
 
 /** Close matches among the values a field usually refers to. */
