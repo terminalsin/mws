@@ -105,6 +105,18 @@ impl Ec2 {
                 continue;
             }
             let owner_id = img.owner_id.clone().unwrap_or_default();
+            // Disabled images are hidden unless asked for; deprecated ones
+            // are hidden from other accounts unless asked for by id.
+            if img.state.as_deref() == Some("disabled") && input.include_disabled != Some(true) {
+                continue;
+            }
+            if owner_id != caller
+                && ids.is_empty()
+                && input.include_deprecated != Some(true)
+                && deprecated(img, ctx.received_at)
+            {
+                continue;
+            }
             if !owners.is_empty() {
                 let matches = owners.iter().any(|o| match o.as_str() {
                     "self" => owner_id == caller,
@@ -541,7 +553,20 @@ impl Ec2 {
             &[(image_arn(ctx, &ctx.region, &input.image_id), resource_tag_context(tags.as_ref()))],
             input.dry_run,
         )?;
-        let removed = self.with_region(ctx, |r| r.images.remove(&input.image_id));
+        let now = ctx.received_at;
+        let removed = self.with_region(ctx, |r| {
+            let protection = r.images.get(&input.image_id).and_then(|i| deregistration_protection(&i.image, now));
+            if protection.as_deref().is_some_and(|p| p != "disabled") {
+                return Err(err(
+                    "InvalidParameterValue",
+                    format!(
+                        "Image {} is protected from deregistration. Disable deregistration protection, and try again.",
+                        input.image_id
+                    ),
+                ));
+            }
+            Ok(r.images.remove(&input.image_id))
+        })?;
         if let Some(rec) = removed.filter(|r| r.owned_container_image) {
             let backend = self.backend();
             tokio::spawn(async move {
@@ -590,7 +615,9 @@ impl Ec2 {
             "bootMode" => out.boot_mode = v(&img.boot_mode),
             "imdsSupport" => out.imds_support = v(&img.imds_support),
             "deregistrationProtection" => {
-                out.deregistration_protection = Some(t::AttributeValue { value: Some("disabled".into()) })
+                out.deregistration_protection = Some(t::AttributeValue {
+                    value: Some(deregistration_protection(img, ctx.received_at).unwrap_or_else(|| "disabled".into())),
+                })
             }
             "lastLaunchedTime" => out.last_launched_time = v(&img.last_launched_time),
             "tpmSupport" => out.tpm_support = v(&img.tpm_support),
@@ -617,6 +644,7 @@ impl Ec2 {
             input.dry_run,
         )?;
         self.with_region(ctx, |r| {
+            let block_public = r.image_block_public_access.as_deref() != Some("unblocked");
             let rec = r.images.get_mut(&input.image_id).ok_or_else(|| Kind::Image.not_found(&input.image_id))?;
             if let Some(d) = input.description.as_ref().and_then(|d| d.value.clone()) {
                 rec.image.description = Some(d);
@@ -624,6 +652,7 @@ impl Ec2 {
             if let Some(v) = input.imds_support.as_ref().and_then(|d| d.value.clone()) {
                 rec.image.imds_support = Some(v);
             }
+            let disabled = rec.image.state.as_deref() == Some("disabled");
             let mut add: Vec<t::LaunchPermission> = Vec::new();
             let mut remove: Vec<t::LaunchPermission> = Vec::new();
             if let Some(lp) = &input.launch_permission {
@@ -646,6 +675,15 @@ impl Ec2 {
             match input.operation_type.as_deref() {
                 Some("remove") => remove.extend(legacy),
                 _ => add.extend(legacy),
+            }
+            if disabled && !add.is_empty() {
+                return Err(err("OperationNotPermitted", format!("You can't share image {} because it is disabled.", input.image_id)));
+            }
+            if block_public && add.iter().any(|p| p.group.as_deref() == Some("all")) {
+                return Err(err(
+                    "OperationNotPermitted",
+                    "You can't publicly share this image because block public access for AMIs is enabled for this account. To publicly share the image, you must call the DisableImageBlockPublicAccess API.",
+                ));
             }
             for p in add {
                 if p.group.as_deref() == Some("all") {
@@ -675,4 +713,21 @@ impl Ec2 {
             Ok(())
         })
     }
+}
+
+/// Whether an image's deprecation time has passed.
+pub(crate) fn deprecated(img: &t::Image, now: chrono::DateTime<chrono::Utc>) -> bool {
+    img.deprecation_time.as_deref().and_then(|d| chrono::DateTime::parse_from_rfc3339(d).ok()).is_some_and(|d| d <= now)
+}
+
+/// An image's deregistration protection as AWS reports it: a
+/// `disabled-until` cooldown that has passed reads `disabled`.
+pub(crate) fn deregistration_protection(img: &t::Image, now: chrono::DateTime<chrono::Utc>) -> Option<String> {
+    let p = img.deregistration_protection.clone()?;
+    if let Some(until) = p.strip_prefix("disabled-until ") {
+        if chrono::DateTime::parse_from_rfc3339(until).is_ok_and(|u| u <= now) {
+            return Some("disabled".into());
+        }
+    }
+    Some(p)
 }
