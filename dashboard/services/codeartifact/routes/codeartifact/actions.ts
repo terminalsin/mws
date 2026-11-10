@@ -19,7 +19,7 @@ export async function createDomain(_: ActionResult | null, form: FormData) {
   return act(async () => {
     await (await codeartifact()).send(new CreateDomainCommand({ domain: required(form, "name", "Domain name") }));
     return "Created";
-  }, "/codeartifact");
+  }, { revalidate: ["/codeartifact"], fields: { domain: "name" } });
 }
 
 export async function deleteDomain(domain: string) {
@@ -46,7 +46,7 @@ export async function createRepository(_: ActionResult | null, form: FormData) {
     const external = text(form, "external");
     if (external) await client.send(new AssociateExternalConnectionCommand({ domain, repository, externalConnection: external }));
     redirect(`/codeartifact/repo?domain=${encodeURIComponent(domain)}&name=${encodeURIComponent(repository)}`);
-  });
+  }, { fields: { repository: "name", domain: "domain", description: "description", repositoryName: "upstream", externalConnection: "external" } });
 }
 
 export async function deleteRepository(domain: string, repository: string) {
