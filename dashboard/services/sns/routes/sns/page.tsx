@@ -7,6 +7,7 @@ import type { Metadata } from "next";
 
 import { ICONS, sns } from "../../lib/clients";
 import { snsEmails, snsSms } from "../../lib/outbox";
+import { TOPIC_NAME } from "../../lib/rules";
 import { clearOutbox, createTopic } from "./actions";
 
 export const metadata: Metadata = { title: "SNS" };
@@ -18,12 +19,12 @@ const TOPIC_KINDS = [
   { id: "events", title: "Domain events", prototype: "events created updated deleted orders users payments changes", rule: /(event|created|updated|deleted|changed)/i },
 ];
 
-function CreateTopic() {
+function CreateTopic({ names = [] }: { names?: string[] }) {
   return (
     <Sheet title="New topic" label="Create topic" testId="create-topic">
       <ActionForm action={createTopic} submit="Create" testId="create-topic">
-        <Field label="Name">
-          <input name="name" required maxLength={256} pattern="[A-Za-z0-9_\-]+(\.fifo)?" autoFocus />
+        <Field label="Name" rule={TOPIC_NAME} taken={names} unique>
+          <input name="name" required maxLength={256} autoFocus />
         </Field>
         <label className="check">
           <input type="checkbox" name="fifo" /> FIFO
@@ -33,14 +34,19 @@ function CreateTopic() {
   );
 }
 
+async function topicArns() {
+  const client = await sns();
+  return collect(
+    (NextToken) => client.send(new ListTopicsCommand({ NextToken })),
+    (r) => r.Topics?.map((t) => t.TopicArn!),
+    (r) => r.NextToken,
+  );
+}
+
 async function Topics() {
   const topics = await load(async () => {
     const client = await sns();
-    const arns = await collect(
-      (NextToken) => client.send(new ListTopicsCommand({ NextToken })),
-      (r) => r.Topics?.map((t) => t.TopicArn!),
-      (r) => r.NextToken,
-    );
+    const arns = await topicArns();
     const list = await Promise.all(
       arns.map(async (arn) => ({ arn, text: shortName(arn), attrs: (await client.send(new GetTopicAttributesCommand({ TopicArn: arn }))).Attributes ?? {} })),
     );
@@ -135,8 +141,9 @@ async function Outbox() {
 
 export default async function Sns({ searchParams }: Props) {
   const tab = (await searchParams).tab ?? "topics";
+  const names = tab === "topics" ? await topicArns().then((arns) => arns.map((a) => shortName(a)), () => []) : [];
   return (
-    <Page title={tab === "outbox" ? "Deliveries" : "Topics"} actions={tab === "topics" ? <CreateTopic /> : undefined}>
+    <Page title={tab === "outbox" ? "Deliveries" : "Topics"} actions={tab === "topics" ? <CreateTopic names={names} /> : undefined}>
       {tab === "outbox" ? <Outbox /> : <Topics />}
     </Page>
   );
