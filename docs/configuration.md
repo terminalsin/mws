@@ -32,9 +32,12 @@ See [State, scenarios and snapshots](state.md) for how the two interact.
 | Variable | Default | Description |
 | --- | --- | --- |
 | `MWS_DNS_LISTEN` | unset | An address such as `127.0.0.1:5353` starts the Route 53 DNS responder (UDP and TCP), which answers queries from the emulated hosted zones. |
-| `MWS_LAMBDA_PYTHON` | `python3.x`, then `python3` from `PATH` | Interpreter that runs Python Lambda functions. |
-| `MWS_LAMBDA_NODE` | `node` from `PATH` | Interpreter that runs Node.js Lambda functions. |
-| `MWS_LAMBDA_DOCKER` | `docker` | The Docker-compatible CLI that runs container image Lambda functions (for example `podman`). |
+| `MWS_LAMBDA_RUNTIME_EXECUTOR` | `auto` | What runs Lambda functions of managed runtimes (`nodejs*`, `python*`, `java*`, `dotnet*`, `ruby*`, `provided*`). `docker` runs each execution environment as a container of AWS's own Lambda base image for the runtime (`public.ecr.aws/lambda/nodejs:22`, ...), pulled on first use; `local` runs Python and Node.js functions on local interpreters and custom runtimes' `bootstrap` directly (Java, .NET and Ruby need `docker`); `auto` uses Docker when a daemon answers and local interpreters otherwise, or when the image cannot be pulled. |
+| `MWS_LAMBDA_IMAGE_REPOSITORY` | `public.ecr.aws/lambda` | Where the base images come from (a mirror with the same repository names and tags). |
+| `MWS_LAMBDA_DOCKER_NETWORK` | `host` on Linux, `bridge` elsewhere | How Lambda containers reach MWS. `host` shares the host's network; `bridge` points the Runtime API and `AWS_ENDPOINT_URL` at `host.docker.internal`, which Docker Desktop routes to the host. |
+| `MWS_LAMBDA_PYTHON` | `python3.x`, then `python3` from `PATH` | Interpreter that runs Python Lambda functions as local processes. |
+| `MWS_LAMBDA_NODE` | `node` from `PATH` | Interpreter that runs Node.js Lambda functions as local processes. |
+| `MWS_LAMBDA_DOCKER` | `docker` | The Docker-compatible CLI that runs Lambda containers (for example `podman`). |
 | `MWS_EC2_BACKEND` | `auto` | How EC2 instances run. `docker` runs each instance as a container, `metadata` runs nothing (instances only change state), and `auto` uses Docker when a daemon answers and `metadata` otherwise. `auto` keeps checking in the background, so a daemon started after MWS (Docker Desktop, colima, OrbStack) is picked up for later launches. |
 | `MWS_EC2_DOCKER` | `docker` | The Docker-compatible CLI the EC2 backend drives (for example `podman`). |
 | `MWS_QUOTA_PROFILE` | `established` | Which [Service Quotas](services/servicequotas.md) values accounts start with. `established` uses AWS's defaults except EC2 vCPU quotas of 1152 per instance class, so many instances can run without increases; `new-account` uses AWS's exact new-account defaults (5 standard vCPUs). |

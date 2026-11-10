@@ -67,6 +67,7 @@ mod lambda;
 mod lambda_destinations;
 mod lambda_durable;
 mod lambda_images;
+mod lambda_runtimes_docker;
 mod lambda_sqs;
 mod lambda_urls;
 mod logs;

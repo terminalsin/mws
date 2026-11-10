@@ -10,13 +10,16 @@
 //! deleted function, and ones idle for a while, are shut down.
 //!
 //! Container image functions run the same way, as containers (see
-//! [`container`]).
+//! [`container`]), and so do functions of managed runtimes when Docker is
+//! available: in AWS's own Lambda base images (see [`managed`]).
 
 mod container;
+mod managed;
 
 use std::collections::{BTreeMap, HashMap, HashSet};
 
 pub use container::{image_tag, ContainerLaunch};
+pub use managed::{base_image, ManagedLaunch, RuntimeExecutor};
 use std::convert::Infallible;
 use std::path::{Path, PathBuf};
 use std::process::Stdio;
@@ -57,6 +60,10 @@ pub struct LaunchSpec {
     pub memory_mb: i32,
     /// Set for container image functions, which run as containers.
     pub container: Option<ContainerLaunch>,
+    /// Set for functions of managed runtimes that run in AWS's base image.
+    pub managed: Option<ManagedLaunch>,
+    /// `/tmp`'s size (`EphemeralStorage`).
+    pub ephemeral_mb: i32,
 }
 
 /// One invocation to run.
@@ -146,8 +153,14 @@ pub struct Runtimes {
     pools: Mutex<HashMap<String, Vec<Arc<Env>>>>,
     /// Container images loaded into the engine by this process.
     images: Mutex<HashSet<String>>,
-    /// Serializes image loads.
+    /// Serializes image loads and pulls.
     loading: tokio::sync::Mutex<()>,
+    /// What runs functions of managed runtimes.
+    executor: Mutex<RuntimeExecutor>,
+    /// The last Docker probe: whether a daemon answered, and when.
+    docker_probe: Mutex<Option<(bool, Instant)>>,
+    /// Base images that could not be pulled, with why.
+    pull_failures: Mutex<HashMap<String, String>>,
 }
 
 impl Default for Runtimes {
@@ -158,6 +171,9 @@ impl Default for Runtimes {
             pools: Mutex::new(HashMap::new()),
             images: Mutex::new(HashSet::new()),
             loading: tokio::sync::Mutex::new(()),
+            executor: Mutex::new(RuntimeExecutor::default()),
+            docker_probe: Mutex::new(None),
+            pull_failures: Mutex::new(HashMap::new()),
         }
     }
 }
@@ -296,8 +312,18 @@ impl Runtimes {
         let mut env_vars = spec.env.clone();
         env_vars.insert("AWS_LAMBDA_RUNTIME_API".into(), addr.to_string());
         let mut container_name = None;
-        let mut cmd = match &spec.container {
-            Some(c) => {
+        let mut cmd = match (&spec.container, &spec.managed) {
+            (None, Some(m)) => {
+                env_vars.insert("LAMBDA_RUNTIME_DIR".into(), "/var/runtime".into());
+                env_vars.insert("LAMBDA_TASK_ROOT".into(), "/var/task".into());
+                let name = format!("mws-lambda-{}", uuid::Uuid::new_v4().simple());
+                let run = managed::command(self, m, spec, &name, &env_vars).inspect_err(|_| server.abort())?;
+                container_name = Some(name);
+                let mut cmd = tokio::process::Command::new(run.program);
+                cmd.args(&run.args).envs(&run.env);
+                cmd
+            }
+            (Some(c), _) => {
                 env_vars.insert("LAMBDA_RUNTIME_DIR".into(), "/var/runtime".into());
                 env_vars.insert("LAMBDA_TASK_ROOT".into(), "/var/task".into());
                 let name = format!("mws-lambda-{}", uuid::Uuid::new_v4().simple());
@@ -310,7 +336,7 @@ impl Runtimes {
                 cmd.args(&run.args).envs(&run.env);
                 cmd
             }
-            None => {
+            (None, None) => {
                 let (program, args) = command_for(spec, &runtime_dir).inspect_err(|_| server.abort())?;
                 env_vars.insert("LAMBDA_RUNTIME_DIR".into(), runtime_dir.display().to_string());
                 env_vars.insert("LAMBDA_TASK_ROOT".into(), spec.code_dir.display().to_string());
@@ -382,7 +408,7 @@ fn command_for(spec: &LaunchSpec, runtime_dir: &Path) -> Result<(PathBuf, Vec<St
             .filter(|p| !p.is_empty())
             .map(PathBuf::from)
             .or_else(|| find_program(&[&format!("python{version}"), "python3"]))
-            .ok_or_else(|| LaunchError::Unsupported(format!("no Python interpreter found for {r}")))?;
+            .ok_or_else(|| LaunchError::Unsupported(missing(r, &format!("no Python interpreter found for {r}"))))?;
         return Ok((python, vec![runtime_dir.join("bootstrap.py").display().to_string()]));
     }
     if r.starts_with("nodejs") {
@@ -390,7 +416,7 @@ fn command_for(spec: &LaunchSpec, runtime_dir: &Path) -> Result<(PathBuf, Vec<St
             .filter(|p| !p.is_empty())
             .map(PathBuf::from)
             .or_else(|| find_program(&["node"]))
-            .ok_or_else(|| LaunchError::Unsupported(format!("no node binary found for {r}")))?;
+            .ok_or_else(|| LaunchError::Unsupported(missing(r, &format!("no node binary found for {r}"))))?;
         return Ok((node, vec![runtime_dir.join("bootstrap.mjs").display().to_string()]));
     }
     if r.starts_with("provided") || r == "go1.x" {
@@ -401,7 +427,18 @@ fn command_for(spec: &LaunchSpec, runtime_dir: &Path) -> Result<(PathBuf, Vec<St
         make_executable(&bootstrap);
         return Ok((bootstrap, Vec::new()));
     }
-    Err(LaunchError::Unsupported(format!("MWS cannot run the {r} runtime locally")))
+    Err(LaunchError::Unsupported(missing(r, &format!("MWS cannot run the {r} runtime as a local process"))))
+}
+
+/// Why `runtime` cannot run locally, and how to make it run.
+fn missing(runtime: &str, why: &str) -> String {
+    match base_image(runtime) {
+        Some(image) => format!(
+            "{why}. MWS runs {runtime} functions in AWS's Lambda base image ({image}) when Docker is available \
+             (MWS_LAMBDA_RUNTIME_EXECUTOR=auto or docker), or on a local interpreter otherwise"
+        ),
+        None => why.to_string(),
+    }
 }
 
 #[cfg(unix)]

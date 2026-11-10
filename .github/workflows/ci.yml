@@ -185,6 +185,7 @@ jobs:
       - run: pytest -q tests/e2e-python tests/parity/tests
         env:
           MWS_LAMBDA_PYTHON: ${{ steps.python.outputs.python-path }}
+          MWS_LAMBDA_RUNTIME_EXECUTOR: local
 
   # Example applications written against the AWS SDK for JavaScript v3
   # (tests/e2e-ts), run against the MWS binary.
@@ -208,9 +209,10 @@ jobs:
         working-directory: tests/e2e-ts
       - run: npm run typecheck
         working-directory: tests/e2e-ts
-      # Lambda functions in the examples run on this job's `node`.
+      # Lambda functions in the examples run on this job's `node` (not in
+      # AWS's base images, which the binary would otherwise pull).
       - run: |
-          RUST_LOG=warn MWS_LISTEN=127.0.0.1:4566 nohup target/debug/mws > mws.log 2>&1 &
+          RUST_LOG=warn MWS_LISTEN=127.0.0.1:4566 MWS_LAMBDA_RUNTIME_EXECUTOR=local nohup target/debug/mws > mws.log 2>&1 &
           for _ in $(seq 100); do curl -sf http://127.0.0.1:4566/_mws/health > /dev/null && exit 0; sleep 0.1; done
           cat mws.log; exit 1
       - run: npm test

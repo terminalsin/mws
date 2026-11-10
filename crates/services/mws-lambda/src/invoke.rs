@@ -112,7 +112,26 @@ impl Lambda {
                 layer_dirs.push(self.extracted("layers", &hex)?);
             }
         }
-        let env = self.environment(ctx, f, config, &executed_version, container.is_some())?;
+        let architecture = architecture(config.architectures.as_deref());
+        let managed = match &container {
+            Some(_) => None,
+            None => {
+                let runtime = config.runtime.as_deref().unwrap_or_default();
+                match self.inner.runtimes.plan_managed(runtime, architecture).await {
+                    Ok(m) => m,
+                    Err(e) => {
+                        self.publish_invocation_metrics(ctx, f, crate::metrics::Result::Failed);
+                        return Err(launch_error(e));
+                    }
+                }
+            }
+        };
+        let kind = match (&container, &managed) {
+            (Some(_), _) => EnvKind::Image,
+            (None, Some(_)) => EnvKind::BaseImage,
+            (None, None) => EnvKind::Process,
+        };
+        let env = self.environment(ctx, f, config, &executed_version, kind)?;
         let log_target = (
             env.get("AWS_LAMBDA_LOG_GROUP_NAME").cloned(),
             env.get("AWS_LAMBDA_LOG_STREAM_NAME").cloned(),
@@ -131,6 +150,8 @@ impl Lambda {
             timeout: Duration::from_secs(timeout),
             memory_mb: config.memory_size.unwrap_or(crate::functions::DEFAULT_MEMORY),
             container,
+            managed,
+            ephemeral_mb: config.ephemeral_storage.as_ref().map_or(512, |e| e.size),
         };
         let job = Job {
             request_id: uuid::Uuid::new_v4().to_string(),
@@ -208,11 +229,11 @@ impl Lambda {
         f: &FunctionRef,
         config: &types::FunctionConfiguration,
         version: &str,
-        container: bool,
+        kind: EnvKind,
     ) -> Result<BTreeMap<String, String>, ServiceError> {
         let mut env = BTreeMap::new();
         // A container keeps its image's own variables (PATH, ...).
-        for key in ["PATH", "HOME", "SYSTEMROOT", "TMPDIR", "TEMP", "TMP"].iter().filter(|_| !container) {
+        for key in ["PATH", "HOME", "SYSTEMROOT", "TMPDIR", "TEMP", "TMP"].iter().filter(|_| kind == EnvKind::Process) {
             if let Ok(v) = std::env::var(key) {
                 env.insert(key.to_string(), v);
             }
@@ -250,7 +271,7 @@ impl Lambda {
         ];
         for (k, v) in reserved {
             // Images name their handler and execution environment themselves.
-            if !(container && matches!(k, "_HANDLER" | "AWS_EXECUTION_ENV")) {
+            if !(kind == EnvKind::Image && matches!(k, "_HANDLER" | "AWS_EXECUTION_ENV")) {
                 env.insert(k.into(), v);
             }
         }
@@ -607,6 +628,47 @@ pub fn log_tail(logs: &str) -> String {
     let bytes = logs.as_bytes();
     let start = bytes.len().saturating_sub(LOG_TAIL);
     base64::engine::general_purpose::STANDARD.encode(&bytes[start..])
+}
+
+/// Where an execution environment runs, which decides its variables.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum EnvKind {
+    /// A local process, which needs the host's `PATH` and friends.
+    Process,
+    /// A container image function's own image, which names its handler.
+    Image,
+    /// A managed runtime's AWS base image.
+    BaseImage,
+}
+
+/// The function's architecture (`x86_64` unless it says `arm64`).
+pub(crate) fn architecture(architectures: Option<&[String]>) -> &'static str {
+    match architectures.and_then(<[_]>::first).map(String::as_str) {
+        Some("arm64") => "arm64",
+        _ => "x86_64",
+    }
+}
+
+impl Lambda {
+    /// Start pulling the base image a function's runtime runs in, so its
+    /// first invocation does not wait for the pull.
+    pub(crate) fn prefetch_runtime(&self, config: &types::FunctionConfiguration) {
+        let (Some(runtime), None) = (config.runtime.clone(), config.package_type.as_deref().filter(|p| *p == "Image"))
+        else {
+            return;
+        };
+        if self.inner.runtimes.executor() == crate::runtime::RuntimeExecutor::Local
+            || crate::runtime::base_image(&runtime).is_none()
+        {
+            return;
+        }
+        let Ok(handle) = tokio::runtime::Handle::try_current() else { return };
+        let me = self.clone();
+        let arch = architecture(config.architectures.as_deref());
+        handle.spawn(async move {
+            let _ = me.inner.runtimes.plan_managed(&runtime, arch).await;
+        });
+    }
 }
 
 fn launch_error(e: LaunchError) -> ServiceError {
