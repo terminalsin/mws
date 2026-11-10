@@ -710,6 +710,40 @@
   .field-hint {
     @apply text-xs text-helper;
   }
+  /* The label wraps the control; the hint or issue sits under both. */
+  .field-control {
+    @apply grid gap-2;
+  }
+  /* Validation in place: the control takes Carbon's error outline and the
+     issue replaces the hint, with its repairs as chips. */
+  .field[data-invalid] :is(input, select, textarea) {
+    outline: 2px solid var(--bad);
+    outline-offset: -2px;
+  }
+  .field-issue {
+    @apply flex flex-wrap items-center gap-x-3 gap-y-1.5 text-xs text-bad;
+  }
+  .field-issue-text {
+    @apply inline-flex items-center gap-1.5;
+  }
+  .field-issue-text svg {
+    @apply shrink-0;
+  }
+  .repairs {
+    @apply inline-flex flex-wrap gap-1;
+  }
+  .repair {
+    @apply inline-flex h-6 max-w-full cursor-pointer items-center gap-1.5 border-0 bg-[var(--tag)] px-2 text-xs text-primary hover:bg-hover;
+  }
+  .repair svg {
+    @apply shrink-0 text-interactive;
+  }
+  .repair[data-kind="generate"] svg {
+    @apply text-interactive;
+  }
+  .repair-value {
+    @apply truncate font-mono;
+  }
   .check {
     @apply inline-flex items-center gap-2;
   }
@@ -1534,6 +1568,24 @@
   }
   form[data-state="failed"] > .form-actions {
     animation: shake 280ms both;
+  }
+  /* A field that stopped a submission shakes once; its outline eases away
+     as the value becomes valid, and the issue fades out (it appeared at
+     once, as an answer to what was typed). */
+  .field[data-shake] {
+    animation: shake 280ms both;
+  }
+  .field :is(input, select, textarea) {
+    transition: outline-color var(--fast-02) var(--ease-standard);
+  }
+  .field-issue[data-state="leaving"] {
+    animation: fade-out 160ms var(--ease-standard) both;
+  }
+  .repair {
+    transition: background-color var(--fast-02) var(--ease-standard), transform var(--fast-02) var(--ease-standard);
+  }
+  .repair:active {
+    transform: scale(0.96);
   }
   /* A row being deleted fades back while its action runs, so its removal is
      the end of a motion that already started. */

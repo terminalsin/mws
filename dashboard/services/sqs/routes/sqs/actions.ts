@@ -36,7 +36,7 @@ export async function createQueue(_: ActionResult | null, form: FormData) {
     }
     await (await sqs()).send(new CreateQueueCommand({ QueueName: name, Attributes: attributes }));
     return `Created queue ${name}`;
-  }, "/sqs");
+  }, { revalidate: ["/sqs"], fields: { QueueName: "name" } });
 }
 
 export async function sendMessage(name: string, _: ActionResult | null, form: FormData) {
