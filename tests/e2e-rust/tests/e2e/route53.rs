@@ -67,6 +67,11 @@ async fn hosted_zone_lifecycle() {
     assert_eq!(r53.get_hosted_zone_count().send().await.unwrap().hosted_zone_count(), 1);
 
     let change_id = out.change_info().unwrap().id();
+    // PENDING until the change has propagated (on the emulated clock).
+    let change = r53.get_change().id(change_id).send().await.unwrap();
+    assert_eq!(change.change_info().unwrap().status().as_str(), "PENDING");
+    let (status, _) = mws.control("POST", "/_mws/clock", Some(r#"{"advanceSeconds": 60}"#)).await;
+    assert_eq!(status, 200);
     let change = r53.get_change().id(change_id).send().await.unwrap();
     assert_eq!(change.change_info().unwrap().status().as_str(), "INSYNC");
 

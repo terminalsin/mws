@@ -478,7 +478,7 @@ impl Route53 {
             return Err(errors::invalid_change_batch_with_messages(format!("[{}]", msgs.join(", ")), msgs));
         }
         st.zone_mut(&id)?.records = records;
-        let change_info = st.new_change(input.change_batch.comment);
+        let change_info = st.new_change(input.change_batch.comment, ctx.received_at);
         Ok(types::ChangeResourceRecordSetsResponse { change_info })
     }
 

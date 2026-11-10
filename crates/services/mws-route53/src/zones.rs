@@ -181,7 +181,7 @@ impl Route53 {
         let hosted_zone = zone.wire();
         let delegation_set = zone.delegation_set();
         st.zones.insert(id.clone(), zone);
-        let change_info = st.new_change(None);
+        let change_info = st.new_change(None, ctx.received_at);
         Ok(types::CreateHostedZoneResponse {
             hosted_zone,
             change_info,
@@ -328,7 +328,7 @@ impl Route53 {
         }
         st.zones.remove(id);
         st.query_logging.retain(|_, q| q.hosted_zone_id != id);
-        Ok(types::DeleteHostedZoneResponse { change_info: st.new_change(None) })
+        Ok(types::DeleteHostedZoneResponse { change_info: st.new_change(None, ctx.received_at) })
     }
 
     pub(crate) fn get_change(
@@ -342,11 +342,14 @@ impl Route53 {
         let c = st.changes.get(id).ok_or_else(|| {
             errors::no_such_change(format!("A change with the specified change ID does not exist: {id}"))
         })?;
-        // MWS applies changes immediately, so they are in sync once queried.
+        // MWS applies changes at once; they report PENDING until they would
+        // have propagated.
+        let in_sync =
+            ctx.received_at < c.submitted_at || ctx.received_at - c.submitted_at >= crate::state::change_propagation();
         Ok(types::GetChangeResponse {
             change_info: types::ChangeInfo {
                 id: format!("/change/{id}"),
-                status: "INSYNC".into(),
+                status: if in_sync { "INSYNC" } else { "PENDING" }.into(),
                 submitted_at: c.submitted_at,
                 comment: c.comment.clone(),
             },
@@ -397,7 +400,7 @@ impl Route53 {
             z.vpc_accounts.insert(vpc_key(&input.vpc), caller.to_string());
         }
         z.vpcs.push(input.vpc);
-        Ok(types::AssociateVPCWithHostedZoneResponse { change_info: state.new_change(input.comment) })
+        Ok(types::AssociateVPCWithHostedZoneResponse { change_info: state.new_change(input.comment, ctx.received_at) })
     }
 
     pub(crate) fn disassociate_vpc_from_hosted_zone(
@@ -432,7 +435,9 @@ impl Route53 {
         }
         z.vpcs.remove(pos);
         z.vpc_accounts.remove(&key);
-        Ok(types::DisassociateVPCFromHostedZoneResponse { change_info: state.new_change(input.comment) })
+        Ok(types::DisassociateVPCFromHostedZoneResponse {
+            change_info: state.new_change(input.comment, ctx.received_at),
+        })
     }
 
     pub(crate) fn list_hosted_zones_by_vpc(
