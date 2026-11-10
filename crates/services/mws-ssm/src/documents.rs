@@ -262,7 +262,7 @@ fn catalogue() -> &'static BTreeMap<String, Document> {
     static DOCS: OnceLock<BTreeMap<String, Document>> = OnceLock::new();
     DOCS.get_or_init(|| {
         let created = DateTime::parse_from_rfc3339("2017-08-28T16:00:00Z").expect("valid date").with_timezone(&Utc);
-        let docs: [(&str, &str, &str); 8] = [
+        let docs: [(&str, &str, &str); 12] = [
             ("AWS-RunShellScript", "Command", RUN_SHELL_SCRIPT),
             ("AWS-RunPowerShellScript", "Command", RUN_POWERSHELL_SCRIPT),
             ("AWS-RunPatchBaseline", "Command", RUN_PATCH_BASELINE),
@@ -271,6 +271,10 @@ fn catalogue() -> &'static BTreeMap<String, Document> {
             ("AWS-ConfigureAWSPackage", "Command", CONFIGURE_PACKAGE),
             ("AWS-StartPortForwardingSession", "Session", PORT_FORWARDING),
             ("AWS-StartInteractiveCommand", "Session", INTERACTIVE_COMMAND),
+            ("AWS-StopEC2Instance", "Automation", STOP_EC2_INSTANCE),
+            ("AWS-StartEC2Instance", "Automation", START_EC2_INSTANCE),
+            ("AWS-RestartEC2Instance", "Automation", RESTART_EC2_INSTANCE),
+            ("AWS-CreateImage", "Automation", CREATE_IMAGE),
         ];
         docs.into_iter()
             .map(|(name, doc_type, content)| {
@@ -954,6 +958,70 @@ const RUN_PATCH_BASELINE: &str = r#"{
       "inputs": {"Operation": "{{ Operation }}", "SnapshotId": "{{ SnapshotId }}", "RebootOption": "{{ RebootOption }}"}
     }
   ]
+}"#;
+
+const STOP_EC2_INSTANCE: &str = r#"{
+  "schemaVersion": "0.3",
+  "description": "Stop EC2 instances",
+  "assumeRole": "{{ AutomationAssumeRole }}",
+  "parameters": {
+    "InstanceId": { "type": "StringList", "description": "(Required) EC2 Instance(s) to stop" },
+    "AutomationAssumeRole": { "type": "String", "description": "(Optional) The ARN of the role that allows Automation to perform the actions on your behalf.", "default": "" }
+  },
+  "mainSteps": [
+    { "name": "stopInstances", "action": "aws:changeInstanceState", "inputs": { "InstanceIds": "{{ InstanceId }}", "DesiredState": "stopped" } }
+  ]
+}"#;
+
+const START_EC2_INSTANCE: &str = r#"{
+  "schemaVersion": "0.3",
+  "description": "Start EC2 instances",
+  "assumeRole": "{{ AutomationAssumeRole }}",
+  "parameters": {
+    "InstanceId": { "type": "StringList", "description": "(Required) EC2 Instance(s) to start" },
+    "AutomationAssumeRole": { "type": "String", "description": "(Optional) The ARN of the role that allows Automation to perform the actions on your behalf.", "default": "" }
+  },
+  "mainSteps": [
+    { "name": "startInstances", "action": "aws:changeInstanceState", "inputs": { "InstanceIds": "{{ InstanceId }}", "DesiredState": "running" } }
+  ]
+}"#;
+
+const RESTART_EC2_INSTANCE: &str = r#"{
+  "schemaVersion": "0.3",
+  "description": "Restart EC2 instances",
+  "assumeRole": "{{ AutomationAssumeRole }}",
+  "parameters": {
+    "InstanceId": { "type": "StringList", "description": "(Required) EC2 Instance(s) to restart" },
+    "AutomationAssumeRole": { "type": "String", "description": "(Optional) The ARN of the role that allows Automation to perform the actions on your behalf.", "default": "" }
+  },
+  "mainSteps": [
+    { "name": "stopInstances", "action": "aws:changeInstanceState", "inputs": { "InstanceIds": "{{ InstanceId }}", "DesiredState": "stopped" } },
+    { "name": "startInstances", "action": "aws:changeInstanceState", "inputs": { "InstanceIds": "{{ InstanceId }}", "DesiredState": "running" } }
+  ]
+}"#;
+
+const CREATE_IMAGE: &str = r#"{
+  "schemaVersion": "0.3",
+  "description": "Creates a new Amazon Machine Image (AMI) from an Amazon EC2 instance",
+  "assumeRole": "{{ AutomationAssumeRole }}",
+  "parameters": {
+    "InstanceId": { "type": "String", "description": "(Required) The ID of the Amazon EC2 instance." },
+    "NoReboot": { "type": "Boolean", "description": "(Optional) Do not reboot the instance before creating the image.", "default": false },
+    "AutomationAssumeRole": { "type": "String", "description": "(Optional) The ARN of the role that allows Automation to perform the actions on your behalf.", "default": "" }
+  },
+  "mainSteps": [
+    {
+      "name": "createImage",
+      "action": "aws:createImage",
+      "onFailure": "Abort",
+      "inputs": {
+        "InstanceId": "{{ InstanceId }}",
+        "ImageName": "{{ InstanceId }}_{{automation:EXECUTION_ID}}",
+        "NoReboot": "{{ NoReboot }}"
+      }
+    }
+  ],
+  "outputs": ["createImage.ImageId"]
 }"#;
 
 const UPDATE_SSM_AGENT: &str = r#"{

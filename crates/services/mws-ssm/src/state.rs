@@ -130,6 +130,12 @@ pub struct Region {
     pub data_syncs: BTreeMap<String, crate::nodes::SyncRecord>,
     /// Document reviews, by `"{name}#{version}"`.
     pub document_reviews: BTreeMap<String, crate::nodes::ReviewRecord>,
+    /// Automation executions, by id.
+    pub automations: BTreeMap<String, crate::automation::AutomationRecord>,
+    /// Execution previews, by id.
+    pub previews: BTreeMap<String, crate::automation::PreviewRecord>,
+    /// OpsCenter and Application Manager.
+    pub ops: crate::ops::OpsState,
     /// Run Command commands, newest first.
     pub commands: Vec<crate::commands::CommandRecord>,
     /// `Expiration` events of parameters deleted since they were last

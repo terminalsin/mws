@@ -589,7 +589,7 @@ fn build_with_store(config: Config, store: Option<Arc<Store>>) -> Mws {
         [iam.credential_store(), sts.credential_store(), s3.credential_store(), s3.object_lambda_credential_store()];
     let services: Vec<Arc<dyn Service>> = vec![
         Arc::new(iam),
-        Arc::new(sts),
+        Arc::new(sts.clone()),
         Arc::new(route53.clone()),
         Arc::new(pca),
         Arc::new(acm.clone()),
@@ -651,6 +651,8 @@ fn build_with_store(config: Config, store: Option<Arc<Store>>) -> Mws {
     ];
     // CloudFormation deploys resources through the other services' APIs.
     cloudformation.set_services(services.iter().cloned());
+    // Automation runbooks call the other services' APIs too.
+    ssm.set_automation_runtime(Arc::new(ssm::SsmAutomation::new(sts.clone(), &services)));
     let mut gateway = Gateway::builder();
     if let Some(store) = store {
         gateway = gateway.store(store);

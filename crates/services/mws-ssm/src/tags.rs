@@ -52,6 +52,8 @@ impl Ssm {
             "PatchBaseline" => "patchbaseline",
             "Activation" => "activation",
             "Association" => "association",
+            "OpsItem" => "opsitem",
+            "OpsMetadata" => "opsmetadata",
             _ => return Err(errors::invalid_resource_type("The resource type isn't valid.")),
         };
         let arn = format!("arn:{}:ssm:{}:{}:{kind}/{id}", ctx.partition, ctx.region, ctx.caller.account_id);
@@ -91,6 +93,8 @@ impl Ssm {
             "PatchBaseline" => Self::baseline_tags_mut(r, id),
             "Activation" => r.activations.get_mut(id).map(|a| &mut a.tags),
             "Association" => Self::association_tags_mut(r, id),
+            "OpsItem" => Self::ops_item_tags_mut(r, id),
+            "OpsMetadata" => Self::ops_metadata_tags_mut(r, id),
             _ => None,
         }
     }

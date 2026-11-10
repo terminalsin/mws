@@ -708,8 +708,8 @@ async fn secrets_manager_references_and_other_operations() {
     let e =
         ssm.get_parameter().name("/aws/reference/secretsmanager/db").with_decryption(true).send().await.unwrap_err();
     assert_eq!(code(e.into_service_error()), "ParameterNotFound");
-    // Automation isn't emulated yet.
-    let e = ssm.describe_automation_executions().send().await.unwrap_err();
+    // Session Manager isn't emulated yet.
+    let e = ssm.describe_sessions().state(aws_sdk_ssm::types::SessionState::Active).send().await.unwrap_err();
     assert_eq!(code(e.into_service_error()), "NotImplemented");
 }
 
