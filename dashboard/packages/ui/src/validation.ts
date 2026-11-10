@@ -455,6 +455,7 @@ function reshape(value: string, rule: Rule): Repair[] {
     ["Uppercase", (v) => v.trim().replace(/\s+/g, sep).toUpperCase()],
     ["Remove unsupported characters", (v) => clean(v, allowed, sep, false)],
     ["Remove unsupported characters", (v) => clean(v, allowed, sep, true)],
+    ["Tidy separators", (v) => tidy(clean(v, allowed, sep, true))],
   ];
   const out: Repair[] = [];
   const seen = new Set<string>([value]);
@@ -512,6 +513,12 @@ function clean(value: string, allowed: RegExp | null, sep: string, lower: boolea
   return v;
 }
 
+/** Separators doubled up or at the ends ("team//app-") reduced to single
+ * ones between words, for patterns that only allow them there. */
+function tidy(value: string): string {
+  return value.replace(/([^\p{L}\p{N}])[^\p{L}\p{N}]+/gu, "$1").replace(/^[^\p{L}\p{N}]+|[^\p{L}\p{N}]+$/gu, "");
+}
+
 function cut(value: string, max: number, sep: string): string {
   const chars = [...value].slice(0, max).join("");
   return sep ? chars.replace(new RegExp(`[${sep.replace(/[-\]\\^]/g, "\\$&")}]+$`), "") : chars;
@@ -528,6 +535,10 @@ export function allowedChars(rule: Rule): RegExp | null {
   if (rule.format === "name") return /[A-Za-z0-9_-]/;
   if (!rule.pattern) return null;
   const classes = [...rule.pattern.matchAll(/\[((?:\\.|[^\]\\])+)\]/g)].map((m) => m[1]).filter((c) => !c.startsWith("^"));
+  // Separators spelled as literals between classes, as in ECR's
+  // `[a-z0-9]+((\.|_|-+)[a-z0-9]+)*(\/...)*`.
+  const literals = separatorLiterals(rule.pattern);
+  if (classes.length > 0 && literals) classes.push(literals);
   if (classes.length === 0) {
     const shorthand = rule.pattern.match(/\\[wd]/g);
     if (!shorthand) return null;
@@ -546,6 +557,12 @@ function schemes(pattern: string | undefined, value: string): string[] {
   // (bucket/key) keeps the pattern's order.
   const web = /^[\w-]+(\.[\w-]+)*\.[a-z]{2,}(:\d+)?(\/|$)/i.test(value.trim());
   return m[1].split("|").sort((a, b) => (web ? Number(b === "https") - Number(a === "https") : 0));
+}
+
+function separatorLiterals(pattern: string): string {
+  const outside = pattern.replace(/\[(?:\\.|[^\]\\])+\]/g, "").replace(/\{\d*,?\d*\}/g, "");
+  const chars = new Set([...outside.matchAll(/\\([./:@=+,-])|(?<!\\)([_/:@=,-])/g)].map((m) => m[1] ?? m[2]));
+  return [...chars].map((c) => (c === "-" ? "\\-" : c)).join("");
 }
 
 function literalEnds(pattern: string | undefined): { prefix?: string; suffix?: string } {
