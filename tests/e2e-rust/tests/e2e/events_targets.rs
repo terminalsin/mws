@@ -113,6 +113,9 @@ async fn ssm_document_targets_send_run_commands() {
     let eb = aws_sdk_eventbridge::Client::new(&cfg);
     let trust = r#"{"Version":"2012-10-17","Statement":[{"Effect":"Allow","Principal":{"Service":"ec2.amazonaws.com"},"Action":"sts:AssumeRole"}]}"#;
     iam.create_role().role_name("node").assume_role_policy_document(trust).send().await.unwrap();
+    // The agent registers only when the role may call ssm:UpdateInstanceInformation.
+    let core = r#"{"Version":"2012-10-17","Statement":[{"Effect":"Allow","Action":["ssm:UpdateInstanceInformation","ssmmessages:*","ec2messages:*"],"Resource":"*"}]}"#;
+    iam.put_role_policy().role_name("node").policy_name("ssm-core").policy_document(core).send().await.unwrap();
     iam.create_instance_profile().instance_profile_name("node").send().await.unwrap();
     iam.add_role_to_instance_profile().instance_profile_name("node").role_name("node").send().await.unwrap();
     let images = ec2

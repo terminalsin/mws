@@ -493,8 +493,22 @@ impl Ssm {
         self.nodes.read().expect("SSM nodes lock poisoned").clone()
     }
 
+    /// The managed nodes in `account` and `region`: instances whose agent
+    /// has registered. As in AWS, the agent registers only when the
+    /// instance profile's role may call `ssm:UpdateInstanceInformation`;
+    /// other instances are not managed nodes (`SendCommand` to them fails
+    /// with `InvalidInstanceId`).
     pub(crate) fn nodes_of(&self, account: &str, region: &str) -> Vec<ManagedNode> {
-        self.managed().map(|m| m.nodes(account, region)).unwrap_or_default()
+        let nodes = self.managed().map(|m| m.nodes(account, region)).unwrap_or_default();
+        let (Some(outputs), Some(ctx)) = (self.command_outputs(), self.template()) else { return nodes };
+        nodes
+            .into_iter()
+            .filter(|n| {
+                outputs
+                    .missing_node_permissions(&ctx, account, region, &n.instance_id, &["ssm:UpdateInstanceInformation"])
+                    .is_ok_and(|missing| missing.is_empty())
+            })
+            .collect()
     }
 
     pub(crate) fn describe_instance_information(
@@ -856,7 +870,7 @@ impl Ssm {
         rate: RateControl,
     ) {
         // Invocations appear a moment after SendCommand returns.
-        tokio::time::sleep(std::time::Duration::from_millis(DELIVERY_DELAY_MS)).await;
+        tokio::time::sleep(mws_core::settle::window(std::time::Duration::from_millis(DELIVERY_DELAY_MS))).await;
         let ids: Vec<String> = runs.iter().map(|(id, _, _)| id.clone()).collect();
         {
             let mut st = self.lock();

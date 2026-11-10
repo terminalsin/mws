@@ -108,6 +108,9 @@ pub struct Ssm {
     calendar_states: Arc<Mutex<std::collections::HashMap<String, bool>>>,
     /// Where command output and notifications go (S3, Logs, SNS).
     outputs: Arc<RwLock<Option<Arc<dyn CommandOutputs>>>>,
+    /// The authorizer clock-driven work uses before SSM has seen a request
+    /// (after restoring saved state).
+    authorizer: Arc<std::sync::OnceLock<Arc<dyn mws_core::Authorizer>>>,
 }
 
 impl Ssm {
@@ -129,7 +132,37 @@ impl Ssm {
             events: Arc::default(),
             calendar_states: Arc::default(),
             outputs: Arc::default(),
+            authorizer: Arc::default(),
         }
+    }
+
+    /// The authorizer clock-driven work (maintenance windows,
+    /// associations) uses before SSM has seen a request, as after
+    /// restoring saved state.
+    pub fn set_authorizer(&self, authorizer: Arc<dyn mws_core::Authorizer>) {
+        let _ = self.authorizer.set(authorizer);
+    }
+
+    /// Start the ticker that runs maintenance windows, associations, data
+    /// syncs and change calendars on the emulated clock (once).
+    fn start_ticking(&self) {
+        if tokio::runtime::Handle::try_current().is_err()
+            || self.ticking.swap(true, std::sync::atomic::Ordering::SeqCst)
+        {
+            return;
+        }
+        let ssm = self.clone();
+        tokio::spawn(async move {
+            loop {
+                tokio::time::sleep(std::time::Duration::from_secs(1)).await;
+                let offset = ssm.clock_offset_ms.load(std::sync::atomic::Ordering::Relaxed);
+                let at = chrono::Utc::now() + chrono::Duration::milliseconds(offset);
+                ssm.run_windows(at, false);
+                ssm.run_associations(at);
+                ssm.run_data_syncs(at);
+                ssm.check_calendars(at);
+            }
+        });
     }
 
     /// Resolve `/aws/reference/secretsmanager/...` names through `secrets`.
@@ -143,8 +176,25 @@ impl Ssm {
         *self.nodes.write().expect("SSM nodes lock poisoned") = Some(nodes);
     }
 
+    /// The last request's context, or (before any request) one made from
+    /// the authorizer set with [`Ssm::set_authorizer`].
     pub(crate) fn template(&self) -> Option<RequestContext> {
-        self.template.read().expect("SSM template lock poisoned").clone()
+        if let Some(t) = self.template.read().expect("SSM template lock poisoned").clone() {
+            return Some(t);
+        }
+        let authorizer = self.authorizer.get()?.clone();
+        let offset = self.clock_offset_ms.load(std::sync::atomic::Ordering::Relaxed);
+        Some(RequestContext {
+            request_id: String::new(),
+            region: String::new(),
+            partition: "aws".into(),
+            received_at: chrono::Utc::now() + chrono::Duration::milliseconds(offset),
+            caller: mws_core::Caller::anonymous(),
+            source_ip: None,
+            secure_transport: true,
+            authorizer,
+            endpoint: None,
+        })
     }
 
     fn lock(&self) -> MutexGuard<'_, State> {
@@ -256,21 +306,8 @@ impl Service for Ssm {
         *self.template.write().expect("SSM template lock poisoned") = Some(ctx.clone());
         let offset = (ctx.received_at - chrono::Utc::now()).num_milliseconds().max(0);
         self.clock_offset_ms.store(offset, std::sync::atomic::Ordering::Relaxed);
-        if !self.ticking.swap(true, std::sync::atomic::Ordering::SeqCst) {
-            // Maintenance windows come due on the emulated clock.
-            let ssm = self.clone();
-            tokio::spawn(async move {
-                loop {
-                    tokio::time::sleep(std::time::Duration::from_secs(1)).await;
-                    let offset = ssm.clock_offset_ms.load(std::sync::atomic::Ordering::Relaxed);
-                    let at = chrono::Utc::now() + chrono::Duration::milliseconds(offset);
-                    ssm.run_windows(at, false);
-                    ssm.run_associations(at);
-                    ssm.run_data_syncs(at);
-                    ssm.check_calendars(at);
-                }
-            });
-        }
+        // Maintenance windows come due on the emulated clock.
+        self.start_ticking();
         generated::dispatch(self, &ctx, &request).await
     }
 
@@ -284,6 +321,15 @@ impl Service for Ssm {
         operation: &str,
         input: serde_json::Value,
     ) -> Result<serde_json::Value, ServiceError> {
+        // What CloudFormation or a scenario file makes ticks too. Only
+        // HTTP requests move the clock.
+        {
+            let mut t = self.template.write().expect("SSM template lock poisoned");
+            if t.is_none() {
+                *t = Some(ctx.clone());
+            }
+        }
+        self.start_ticking();
         generated::invoke(self, &ctx, operation, input).await
     }
 
@@ -295,6 +341,8 @@ impl Service for Ssm {
     fn import_state(&self, state: serde_json::Value) -> Result<(), String> {
         let state: State = serde_json::from_value(state).map_err(|e| format!("invalid SSM state: {e}"))?;
         *self.lock() = state;
+        // Restored windows, associations and calendars keep running.
+        self.start_ticking();
         Ok(())
     }
 

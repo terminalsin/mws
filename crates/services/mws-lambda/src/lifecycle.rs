@@ -21,15 +21,15 @@ use crate::names::FunctionRef;
 use crate::state::{Function, Version};
 use crate::Lambda;
 
-/// How long a create or an update takes to complete.
+/// How long a create or an update takes to complete (read each time, so
+/// `mws_core::settle::set_delay` takes effect after first use).
 pub(crate) fn transition() -> Duration {
-    static MS: std::sync::OnceLock<u64> = std::sync::OnceLock::new();
-    Duration::from_millis(*MS.get_or_init(|| {
+    Duration::from_millis(
         std::env::var("MWS_LAMBDA_STATE_TRANSITION_MS")
             .ok()
             .and_then(|v| v.trim().parse().ok())
-            .unwrap_or_else(|| mws_core::settle::window(Duration::from_millis(1000)).as_millis() as u64)
-    }))
+            .unwrap_or_else(|| mws_core::settle::window(Duration::from_millis(1000)).as_millis() as u64),
+    )
 }
 
 /// The longest a service-initiated invocation waits for a `Pending`
@@ -86,8 +86,9 @@ pub(crate) fn settle_if_due(func: &mut Function, now: DateTime<Utc>) {
 
 /// Fails like Lambda when the function cannot be updated now: it is still
 /// being created, or an earlier update is in progress.
-pub(crate) fn check_updatable(func: &Function) -> Result<(), ServiceError> {
-    if in_flight(func, Utc::now()) {
+/// `now` is the emulated time.
+pub(crate) fn check_updatable(func: &Function, now: DateTime<Utc>) -> Result<(), ServiceError> {
+    if in_flight(func, now) {
         return Err(errors::resource_conflict(format!(
             "The operation cannot be performed at this time. An update is in progress for resource: {}",
             func.arn
@@ -97,9 +98,13 @@ pub(crate) fn check_updatable(func: &Function) -> Result<(), ServiceError> {
 }
 
 /// Fails like Lambda's `Invoke` when the version is not yet `Active`.
-pub(crate) fn check_invocable(func: &Function, qualifier: Option<&str>) -> Result<(), ServiceError> {
+pub(crate) fn check_invocable(
+    func: &Function,
+    qualifier: Option<&str>,
+    now: DateTime<Utc>,
+) -> Result<(), ServiceError> {
     let Some(v) = func.version_for(qualifier) else { return Ok(()) };
-    if in_flight(func, Utc::now()) && v.config.state.as_deref() == Some("Pending") {
+    if in_flight(func, now) && v.config.state.as_deref() == Some("Pending") {
         return Err(errors::resource_conflict(
             "The operation cannot be performed at this time. The function is currently in the following state: Pending",
         ));
@@ -109,8 +114,8 @@ pub(crate) fn check_invocable(func: &Function, qualifier: Option<&str>) -> Resul
 
 /// The version an invocation of `version` runs: during an update of
 /// `$LATEST`, the one from before the update.
-pub(crate) fn running_version<'a>(func: &'a Function, version: &str) -> Option<&'a Version> {
-    if version == "$LATEST" && in_flight(func, Utc::now()) {
+pub(crate) fn running_version<'a>(func: &'a Function, version: &str, now: DateTime<Utc>) -> Option<&'a Version> {
+    if version == "$LATEST" && in_flight(func, now) {
         if let Some(p) = &func.previous {
             return Some(p);
         }
@@ -119,11 +124,17 @@ pub(crate) fn running_version<'a>(func: &'a Function, version: &str) -> Option<&
 }
 
 impl Lambda {
+    /// The emulated time now, for function states: the wall clock shifted
+    /// as the last request's clock was, so `/_mws/clock` settles them.
+    pub(crate) fn lifecycle_now(&self) -> DateTime<Utc> {
+        Utc::now() + self.clock_skew()
+    }
+
     /// Start a create or an update of `function_arn`: it completes after
-    /// [`transition`].
+    /// [`transition`] on the emulated clock.
     pub(crate) fn begin_transition(&self, func: &mut Function) {
         let delay = transition();
-        func.settles_at = Some(Utc::now() + chrono::Duration::from_std(delay).unwrap_or_default());
+        func.settles_at = Some(self.lifecycle_now() + chrono::Duration::from_std(delay).unwrap_or_default());
         let arn = func.arn.clone();
         let handle = match tokio::runtime::Handle::try_current() {
             Ok(h) if !delay.is_zero() => h,
@@ -139,7 +150,7 @@ impl Lambda {
             let lambda = Lambda { inner };
             let mut st = lambda.write();
             if let Some(func) = st.functions.get_mut(&arn) {
-                settle_if_due(func, Utc::now());
+                settle_if_due(func, lambda.lifecycle_now());
             }
         });
     }
@@ -150,8 +161,11 @@ impl Lambda {
         let started = std::time::Instant::now();
         loop {
             let pending = {
+                let now = self.lifecycle_now();
                 let st = self.read();
-                st.functions.get(&f.arn()).is_some_and(|func| check_invocable(func, f.qualifier.as_deref()).is_err())
+                st.functions
+                    .get(&f.arn())
+                    .is_some_and(|func| check_invocable(func, f.qualifier.as_deref(), now).is_err())
             };
             if !pending || started.elapsed() > WAIT_FOR_ACTIVE {
                 return;

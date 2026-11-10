@@ -84,6 +84,39 @@ impl Firehose {
     pub(crate) fn observe(&self, ctx: &RequestContext) {
         let offset = ctx.received_at - chrono::Utc::now();
         *self.inner.template.lock().expect("Firehose template lock poisoned") = Some((ctx.clone(), offset));
+        self.start_rounds();
+    }
+
+    /// The authorizer background deliveries use before Firehose has seen
+    /// a request, as after restoring saved state.
+    pub fn set_authorizer(&self, authorizer: std::sync::Arc<dyn mws_core::Authorizer>) {
+        let _ = self.inner.authorizer.set(authorizer);
+    }
+
+    /// The last request's context and clock offset, or (before any
+    /// request) a context made from the authorizer set with
+    /// [`Firehose::set_authorizer`].
+    fn template(&self) -> Option<(RequestContext, chrono::Duration)> {
+        if let Some(t) = self.inner.template.lock().expect("Firehose template lock poisoned").clone() {
+            return Some(t);
+        }
+        let authorizer = self.inner.authorizer.get()?.clone();
+        let ctx = RequestContext {
+            request_id: String::new(),
+            region: String::new(),
+            partition: "aws".into(),
+            received_at: chrono::Utc::now(),
+            caller: mws_core::Caller::anonymous(),
+            source_ip: None,
+            secure_transport: true,
+            authorizer,
+            endpoint: None,
+        };
+        Some((ctx, chrono::Duration::zero()))
+    }
+
+    /// Start the delivery rounds (once).
+    pub(crate) fn start_rounds(&self) {
         if tokio::runtime::Handle::try_current().is_err() {
             return;
         }
@@ -102,7 +135,7 @@ impl Firehose {
     /// A context for background work in `region`, at the emulated time
     /// now.
     pub(crate) fn background_context(&self, region: &str) -> Option<RequestContext> {
-        let (mut ctx, offset) = self.inner.template.lock().expect("Firehose template lock poisoned").clone()?;
+        let (mut ctx, offset) = self.template()?;
         ctx.request_id = uuid::Uuid::new_v4().to_string();
         ctx.region = region.to_string();
         ctx.received_at = chrono::Utc::now() + offset;
@@ -146,8 +179,7 @@ impl Firehose {
         self.poll_sources().await;
         let mut jobs = Vec::new();
         {
-            let template = self.inner.template.lock().expect("Firehose template lock poisoned").clone();
-            let Some((_, offset)) = template else { return };
+            let Some((_, offset)) = self.template() else { return };
             let now = (chrono::Utc::now() + offset).timestamp_millis();
             let mut st = self.lock();
             st.settle(now);

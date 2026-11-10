@@ -211,6 +211,9 @@ impl Logs {
             return Err(errors::invalid_parameter(format!("Invalid destination ARN: {}", input.destination_arn)));
         }
         self.check_destination(ctx, &input.destination_arn)?;
+        if let Some(role) = &input.role_arn {
+            pass_role(ctx, role)?;
+        }
         self.check_subscription_target(ctx, &g, &input.destination_arn, input.role_arn.as_deref())?;
         let now = now_ms(ctx);
         let mut st = self.lock();
@@ -295,6 +298,7 @@ impl Logs {
                 return Err(errors::invalid_parameter(format!("Invalid {what}: {a}")));
             }
         }
+        pass_role(ctx, &input.role_arn)?;
         let now = now_ms(ctx);
         let mut st = self.lock();
         let region = st.region(&ctx.caller.account_id, &ctx.region);
@@ -372,4 +376,12 @@ impl Logs {
             .ok_or_else(|| errors::resource_not_found("The specified destination does not exist."))?;
         Ok(())
     }
+}
+
+/// `iam:PassRole`, which `PutSubscriptionFilter` and `PutDestination` need
+/// on the role they hand CloudWatch Logs.
+fn pass_role(ctx: &RequestContext, role: &str) -> Result<(), ServiceError> {
+    let mut c = ConditionContext::new();
+    c.insert("iam:PassedToService".into(), vec!["logs.amazonaws.com".into()]);
+    ctx.authorize("iam:PassRole", role, c)
 }

@@ -28,6 +28,9 @@ async fn profile(mws: &Mws, name: &str) {
     let iam = aws_sdk_iam::Client::new(&mws.root_sdk_config().await);
     let trust = r#"{"Version":"2012-10-17","Statement":[{"Effect":"Allow","Principal":{"Service":"ec2.amazonaws.com"},"Action":"sts:AssumeRole"}]}"#;
     iam.create_role().role_name(name).assume_role_policy_document(trust).send().await.unwrap();
+    // The agent registers only when the role may call ssm:UpdateInstanceInformation.
+    let core = r#"{"Version":"2012-10-17","Statement":[{"Effect":"Allow","Action":["ssm:UpdateInstanceInformation","ssmmessages:*","ec2messages:*"],"Resource":"*"}]}"#;
+    iam.put_role_policy().role_name(name).policy_name("ssm-core").policy_document(core).send().await.unwrap();
     iam.create_instance_profile().instance_profile_name(name).send().await.unwrap();
     iam.add_role_to_instance_profile().instance_profile_name(name).role_name(name).send().await.unwrap();
 }
@@ -222,8 +225,17 @@ async fn run_command_on_managed_instances() {
     let image = ami(&ec2, "al2023-ami-2023*-x86_64").await;
     let managed = launch(&ec2, &image, Some("ssm-node"), "web").await;
     let unmanaged = launch(&ec2, &image, None, "web").await;
+    // A role that may not call ssm:UpdateInstanceInformation: the agent
+    // never registers.
+    let iam = aws_sdk_iam::Client::new(&cfg);
+    let trust = r#"{"Version":"2012-10-17","Statement":[{"Effect":"Allow","Principal":{"Service":"ec2.amazonaws.com"},"Action":"sts:AssumeRole"}]}"#;
+    iam.create_role().role_name("bare").assume_role_policy_document(trust).send().await.unwrap();
+    iam.create_instance_profile().instance_profile_name("bare").send().await.unwrap();
+    iam.add_role_to_instance_profile().instance_profile_name("bare").role_name("bare").send().await.unwrap();
+    let unregistered = launch(&ec2, &image, Some("bare"), "db").await;
 
-    // Only instances with an instance profile are managed nodes.
+    // Only instances whose instance profile lets the agent register are
+    // managed nodes.
     let info = ssm.describe_instance_information().send().await.unwrap();
     let nodes = info.instance_information_list();
     assert_eq!(nodes.len(), 1);
@@ -237,6 +249,15 @@ async fn run_command_on_managed_instances() {
         .send_command()
         .document_name("AWS-RunShellScript")
         .instance_ids(&unmanaged)
+        .parameters("commands", vec!["true".into()])
+        .send()
+        .await
+        .unwrap_err();
+    assert_eq!(code(e.into_service_error()), "InvalidInstanceId");
+    let e = ssm
+        .send_command()
+        .document_name("AWS-RunShellScript")
+        .instance_ids(&unregistered)
         .parameters("commands", vec!["true".into()])
         .send()
         .await

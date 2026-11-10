@@ -39,8 +39,15 @@ pub struct QueueMessageAttribute {
 #[async_trait::async_trait]
 pub trait QueueDelivery: Send + Sync {
     /// Send a message as the service principal, judged by the queue policy.
-    /// `ctx` is the request the delivery comes from. Returns the message id.
-    async fn send(&self, ctx: &mws_core::RequestContext, message: QueueMessage) -> Result<String, String>;
+    /// `ctx` is the request the delivery comes from. Returns the message id,
+    /// or SQS's error. A retryable error (throttling, a server error) means
+    /// the send was queued to be retried, as SNS retries deliveries to
+    /// AWS-managed endpoints.
+    async fn send(
+        &self,
+        ctx: &mws_core::RequestContext,
+        message: QueueMessage,
+    ) -> Result<String, mws_core::ServiceError>;
 }
 
 /// A service principal publishing to a topic.

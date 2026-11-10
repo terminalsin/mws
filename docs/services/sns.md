@@ -26,7 +26,7 @@ As in SNS, delivery is asynchronous: `Publish` returns once the message is accep
 | --- | :---: | --- |
 | Signatures | ✅ | `SignatureVersion` 1 or 2, with a certificate served at `SigningCertURL`. |
 | Lambda | ✅ | The SNS event, invoked asynchronously as `sns.amazonaws.com` when the function policy allows it. |
-| SQS | ✅ | The envelope or the raw message (with attributes, FIFO group and deduplication ids) when the queue policy allows it; also for dead-letter queues. |
+| SQS | ✅ | The envelope or the raw message (with attributes, FIFO group and deduplication ids) when the queue policy allows it; also for dead-letter queues. Throttles and server errors from SQS are retried (SNS's policy for AWS-managed endpoints); client errors go to the subscription's dead-letter queue, and delivery status logs carry SQS's error code and status. |
 | HTTP and HTTPS | ✅ | Signed `SubscriptionConfirmation`, `Notification` (raw or enveloped, retried per the delivery policy) and `UnsubscribeConfirmation` POSTs; `SubscribeURL` and `UnsubscribeURL` work. |
 | Email, SMS and push | ✅ | Land in an outbox at `/_aws/sns/email-messages`, `/sms-messages` and `/platform-endpoint-messages` for tests to read. |
 | Firehose | ✅ | Written as the subscription's `SubscriptionRoleArn` (raw or enveloped). |

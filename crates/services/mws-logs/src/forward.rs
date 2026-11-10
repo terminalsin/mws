@@ -169,7 +169,7 @@ impl Logs {
         let ctx = match ctx {
             Some(c) => c.clone(),
             None => {
-                let Some((mut c, offset)) = self.template.lock().expect("Logs template lock poisoned").clone() else {
+                let Some((mut c, offset)) = self.background_template() else {
                     return;
                 };
                 c.received_at = chrono::Utc::now() + offset;
