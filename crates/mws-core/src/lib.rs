@@ -9,6 +9,7 @@ mod auth;
 mod error;
 pub mod eventstream;
 pub mod ids;
+pub mod metrics;
 mod observe;
 mod service;
 pub mod shell;

@@ -90,6 +90,8 @@ pub struct AlarmAction {
     pub threshold: Option<f64>,
     /// The newest datapoint the alarm evaluated.
     pub metric_value: Option<f64>,
+    /// The alarm's metric dimensions (`InstanceId` for EC2 actions).
+    pub dimensions: Vec<(String, String)>,
 }
 
 /// A service that alarm actions can name (`arn:aws:autoscaling:...`).

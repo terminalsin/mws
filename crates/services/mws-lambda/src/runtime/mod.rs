@@ -199,6 +199,17 @@ impl Runtimes {
         pools.values().flatten().filter(|e| e.function_arn == function_arn && *e.busy.lock().expect("lock")).count()
     }
 
+    /// How many environments are running an invocation: of
+    /// `function_arn`, or of every function.
+    pub fn concurrent(&self, function_arn: Option<&str>) -> usize {
+        let pools = self.pools.lock().expect("lock");
+        pools
+            .values()
+            .flatten()
+            .filter(|e| function_arn.is_none_or(|f| e.function_arn == f) && *e.busy.lock().expect("lock"))
+            .count()
+    }
+
     /// Run `job` in a warm environment, starting one if none is free.
     /// `reserved` is the function's reserved concurrency.
     pub async fn invoke(&self, spec: &LaunchSpec, job: Job, reserved: Option<i32>) -> Result<Outcome, LaunchError> {

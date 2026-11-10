@@ -296,6 +296,9 @@ impl Events {
             }
             matched
         };
+        if replay.is_none() {
+            self.publish_match_metrics(bus, &matched, now);
+        }
         for rule in matched {
             for target in &rule.targets {
                 self.spawn_delivery(ctx, bus, &rule, target.clone(), event.clone(), now, hops);

@@ -280,6 +280,8 @@ impl Sns {
             }
         }
         self.write_audit(ctx, &topic, &inbound, &message_id);
+        self.topic_metric(ctx, topic_arn, "NumberOfMessagesPublished", "Count", 1.0);
+        self.topic_metric(ctx, topic_arn, "PublishSize", "Bytes", r.message.len() as f64);
         self.fan_out(ctx, &topic, out);
         Ok(types::PublishResponse { message_id: Some(message_id), sequence_number: sequence })
     }

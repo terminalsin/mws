@@ -32,7 +32,13 @@ All 57 operations are generated from the AWS model (awsJson1.1) and implemented.
 | Other event buses | ✅ | In any account or Region, through a target role or the receiving bus policy. |
 | Kinesis and Firehose | ✅ | Written as the target's role; the partition key comes from `KinesisParameters.PartitionKeyPath`, else the event id. |
 | API destinations | ✅ | Real HTTP requests with basic, API key or OAuth client credentials auth from the connection, and path, header and query parameters. |
-| Other targets | ❌ | Step Functions, ECS and the rest are accepted but not delivered. |
+| ECS tasks | ✅ | Each event runs `EcsParameters`' task definition on the target cluster with `RunTask` as the target's role (launch type, capacity providers, network configuration, placement, tags), started by `events-rule/<rule>`; a JSON input with `containerOverrides` becomes the task's overrides. |
+| Run Command | ✅ | Systems Manager document targets send the document to `RunCommandParameters`' targets with `SendCommand` as the target's role; the input supplies the document parameters. |
+| Other targets | ❌ | Step Functions, Batch, CodeBuild and the rest are accepted but not delivered. |
+
+## Metrics
+
+`AWS/Events` metrics go to [CloudWatch](cloudwatch.md): `MatchedEvents`, `TriggeredRules`, `Invocations`, `FailedInvocations`, `InvocationAttempts`, `SuccessfulInvocationAttempts`, `RetryInvocationAttempts` and `IngestionToInvocationSuccessLatency`, by `RuleName` and by `EventBusName` and `RuleName`.
 
 ## Events from other services
 

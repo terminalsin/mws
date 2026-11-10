@@ -31,6 +31,15 @@ pub struct DestinationMessage {
     /// The function (qualified with the version that ran), for event
     /// `resources`.
     pub function_arn: String,
+    /// The object key for S3 bucket destinations; `None` for the
+    /// asynchronous invocation key (`aws/lambda/async/<function>/...`).
+    pub s3_key: Option<String>,
+}
+
+/// The time part of the keys Lambda writes S3 destination records under:
+/// `YYYY/MM/DD/YYYY-MM-DDTHH.MM.SS-<uuid>`.
+pub(crate) fn s3_key_suffix(now: chrono::DateTime<chrono::Utc>) -> String {
+    format!("{}-{}", now.format("%Y/%m/%d/%Y-%m-%dT%H.%M.%S"), uuid::Uuid::new_v4())
 }
 
 /// A service Lambda can send destination records to.
@@ -97,11 +106,49 @@ impl Lambda {
             self.enqueue(&role_ctx, &target, message.body.clone().into_bytes());
             return Ok(());
         }
+        if service == "s3" {
+            return self.send_to_bucket(&role_ctx, function_arn, destination, message);
+        }
         let Some(sink) = self.inner.destinations.get(service) else {
             return Err(crate::generated::errors::service(format!(
                 "MWS cannot deliver to {service} destinations: {destination}"
             )));
         };
         sink.send(&role_ctx, destination, message).await
+    }
+
+    /// Write a record to an S3 bucket destination as the execution role
+    /// (which needs `s3:PutObject`), under Lambda's key layout.
+    fn send_to_bucket(
+        &self,
+        role_ctx: &RequestContext,
+        function_arn: &str,
+        destination: &str,
+        message: &DestinationMessage,
+    ) -> Result<(), ServiceError> {
+        let Some(s3) = &self.inner.s3 else {
+            return Err(crate::generated::errors::service("S3 is not available."));
+        };
+        let bucket = destination.splitn(6, ':').nth(5).unwrap_or_default().split('/').next().unwrap_or_default();
+        let key = match &message.s3_key {
+            Some(k) => k.clone(),
+            None => {
+                let name = function_arn.split(':').nth(6).unwrap_or(function_arn);
+                format!("aws/lambda/async/{name}/{}", s3_key_suffix(role_ctx.received_at))
+            }
+        };
+        let body = message.body.clone().into_bytes();
+        s3.put_object_as_caller(
+            role_ctx,
+            mws_s3::generated::types::PutObjectRequest {
+                bucket: bucket.to_string(),
+                key,
+                content_length: Some(body.len() as i64),
+                content_type: Some("application/json".into()),
+                body,
+                ..Default::default()
+            },
+        )
+        .map(|_| ())
     }
 }

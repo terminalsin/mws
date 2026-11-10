@@ -38,6 +38,10 @@ pub struct TargetInvocation<'a> {
     /// The Kinesis partition key: `KinesisParameters.PartitionKeyPath`
     /// applied to the event, or the event id.
     pub partition_key: Option<&'a str>,
+    /// The whole target definition, for parameters specific to one kind
+    /// of target (`EcsParameters`, `RunCommandParameters`, ...). `None`
+    /// for dead-letter messages.
+    pub definition: Option<&'a types::Target>,
     pub(crate) sts: Option<&'a mws_sts::Sts>,
 }
 
@@ -129,8 +133,19 @@ impl Events {
         let started = std::time::Instant::now();
         let mut attempt = 0u32;
         let (error, condition) = loop {
-            match self.deliver_once(&d).await {
-                Ok(()) => return,
+            let result = self.deliver_once(&d).await;
+            self.publish_rule_metric(&d, "InvocationAttempts", 1.0);
+            if attempt > 0 {
+                self.publish_rule_metric(&d, "RetryInvocationAttempts", 1.0);
+            }
+            match result {
+                Ok(()) => {
+                    self.publish_rule_metric(&d, "SuccessfulInvocationAttempts", 1.0);
+                    self.publish_rule_metric(&d, "Invocations", 1.0);
+                    let latency = (self.now() - d.ingested).num_milliseconds().max(0) as f64;
+                    self.publish_rule_metric(&d, "IngestionToInvocationSuccessLatency", latency);
+                    return;
+                }
                 Err(e) if !e.retryable => break (e, "RetriesExhausted"),
                 Err(e) => {
                     if attempt >= max_retries {
@@ -149,7 +164,63 @@ impl Events {
             rule = %d.rule_arn, target = %d.target.arn, code = %error.code,
             "EventBridge could not deliver an event: {}", error.message
         );
+        self.publish_rule_metric(&d, "Invocations", 1.0);
+        self.publish_rule_metric(&d, "FailedInvocations", 1.0);
         self.dead_letter(&d, &error, condition, attempt).await;
+    }
+
+    /// One `AWS/Events` data point for a rule's delivery, by rule name and
+    /// by bus and rule name.
+    fn publish_rule_metric(&self, d: &Delivery, name: &'static str, value: f64) {
+        if !self.inner.metrics.connected() {
+            return;
+        }
+        let unit = if name.ends_with("Latency") { "Milliseconds" } else { "Count" };
+        let now = self.now().max(d.ctx.received_at);
+        let point = |dims: Vec<(String, String)>| {
+            mws_core::metrics::MetricDatum::new(
+                &d.bus.account,
+                &d.bus.region,
+                "AWS/Events",
+                name,
+                dims,
+                unit,
+                now,
+                value,
+            )
+        };
+        let mut data = vec![
+            point(vec![("RuleName".into(), d.rule_name.clone())]),
+            point(vec![("EventBusName".into(), d.bus.name.clone()), ("RuleName".into(), d.rule_name.clone())]),
+        ];
+        if matches!(name, "Invocations" | "FailedInvocations") {
+            data.push(point(Vec::new()));
+        }
+        self.inner.metrics.publish(data);
+    }
+
+    /// `MatchedEvents` and `TriggeredRules` for one ingested event.
+    pub(crate) fn publish_match_metrics(&self, bus: &BusRef, rules: &[Rule], now: chrono::DateTime<chrono::Utc>) {
+        if !self.inner.metrics.connected() || rules.is_empty() {
+            return;
+        }
+        let point = |name: &'static str, dims: Vec<(String, String)>| {
+            mws_core::metrics::MetricDatum::new(&bus.account, &bus.region, "AWS/Events", name, dims, "Count", now, 1.0)
+        };
+        let mut data = vec![
+            point("MatchedEvents", Vec::new()),
+            point("MatchedEvents", vec![("EventBusName".into(), bus.name.clone())]),
+        ];
+        for r in rules {
+            data.push(point("TriggeredRules", vec![("RuleName".into(), r.name.clone())]));
+            data.push(point(
+                "TriggeredRules",
+                vec![("EventBusName".into(), bus.name.clone()), ("RuleName".into(), r.name.clone())],
+            ));
+            data.push(point("MatchedEvents", vec![("RuleName".into(), r.name.clone())]));
+        }
+        data.push(point("TriggeredRules", Vec::new()));
+        self.inner.metrics.publish(data);
     }
 
     /// Send a failed event to the target's dead-letter queue, with the
@@ -182,6 +253,7 @@ impl Events {
                 message_group_id: None,
                 message_attributes: &attributes,
                 partition_key: None,
+                definition: None,
                 sts: self.inner.sts.get(),
             })
             .await;
@@ -240,6 +312,7 @@ impl Events {
                         message_group_id: d.target.sqs_parameters.as_ref().and_then(|p| p.message_group_id.as_deref()),
                         message_attributes: &attributes,
                         partition_key: partition_key.as_deref(),
+                        definition: Some(&d.target),
                         sts: self.inner.sts.get(),
                     })
                     .await

@@ -71,6 +71,8 @@ pub(crate) struct Inner {
     /// Emulated clock minus wall clock, in milliseconds, as last seen.
     clock_offset_ms: AtomicI64,
     scheduler: AtomicBool,
+    /// Where the `AWS/Events` metrics go.
+    pub(crate) metrics: mws_core::metrics::MetricOutlet,
 }
 
 /// The EventBridge service. Cheap to clone; clones share state.
@@ -99,6 +101,7 @@ impl Events {
                 template: Mutex::new(None),
                 clock_offset_ms: AtomicI64::new(0),
                 scheduler: AtomicBool::new(false),
+                metrics: Default::default(),
             }),
         }
     }
@@ -131,6 +134,12 @@ impl Events {
     /// reaches them.
     pub fn register_clock_source(&self, source: Arc<dyn ClockSource>) {
         self.inner.clock_sources.write().expect("clock source lock poisoned").push(source);
+    }
+
+    /// Publish the `AWS/Events` metrics (`MatchedEvents`, `TriggeredRules`,
+    /// `Invocations`, `FailedInvocations`, ...) through `publisher`.
+    pub fn set_metric_publisher(&self, publisher: Arc<dyn mws_core::metrics::MetricPublisher>) {
+        self.inner.metrics.connect(publisher);
     }
 
     /// Route global endpoints on these health checks.

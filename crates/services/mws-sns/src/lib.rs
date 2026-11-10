@@ -58,6 +58,8 @@ pub(crate) struct Inner {
     /// Where delivery status logs go, and how feedback roles are assumed.
     status_logs: OnceLock<(mws_logs::Logs, mws_sts::Sts)>,
     signer: signing::Signer,
+    /// Where the `AWS/SNS` metrics go.
+    metrics: mws_core::metrics::MetricOutlet,
 }
 
 /// The SNS service. Cheap to clone; clones share state.
@@ -84,8 +86,40 @@ impl Sns {
                 kms: OnceLock::new(),
                 status_logs: OnceLock::new(),
                 signer: signing::Signer::default(),
+                metrics: Default::default(),
             }),
         }
+    }
+
+    /// Publish the `AWS/SNS` metrics through `publisher`.
+    pub fn set_metric_publisher(&self, publisher: Arc<dyn mws_core::metrics::MetricPublisher>) {
+        self.inner.metrics.connect(publisher);
+    }
+
+    /// One `AWS/SNS` data point for a topic (dimension `TopicName`).
+    pub(crate) fn topic_metric(
+        &self,
+        ctx: &RequestContext,
+        topic_arn: &str,
+        name: &'static str,
+        unit: &'static str,
+        value: f64,
+    ) {
+        if !self.inner.metrics.connected() {
+            return;
+        }
+        let parts: Vec<&str> = topic_arn.splitn(6, ':').collect();
+        let [_, _, _, region, account, topic] = parts[..] else { return };
+        self.inner.metrics.publish(vec![mws_core::metrics::MetricDatum::new(
+            account,
+            region,
+            "AWS/SNS",
+            name,
+            vec![("TopicName".into(), topic.to_string())],
+            unit,
+            ctx.received_at,
+            value,
+        )]);
     }
 
     /// Deliver to `lambda` subscriptions through Lambda.
