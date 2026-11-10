@@ -39,7 +39,7 @@ fn service_ctx(template: &RequestContext, account: &str, region: &str, role: &st
         caller: Caller {
             account_id: account.to_string(),
             arn: format!("arn:{}:sts::{account}:assumed-role/{role}/{session}", template.partition),
-            user_id: format!("AROA{}:{session}", &uuid::Uuid::new_v4().simple().to_string()[..17].to_uppercase()),
+            user_id: format!("AROA{}:{session}", uuid::Uuid::new_v4().simple().to_string()[..17].to_uppercase()),
             access_key_id: String::new(),
             kind: CallerKind::AssumedRole { role_name: role.to_string(), session_name: session.to_string() },
             session: None,
