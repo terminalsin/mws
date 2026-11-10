@@ -658,6 +658,7 @@ fn build_with_store(config: Config, store: Option<Arc<Store>>) -> Mws {
         elb: elb.clone(),
         autoscaling: autoscaling.clone(),
         ecr: ecr.clone(),
+        events: events.clone(),
     }));
     events.register_target_sink("ecs", Arc::new(wiring::EcsTarget(ecs.clone())));
     // Cost Explorer bills running resources, Bedrock tokens and Marketplace metering.

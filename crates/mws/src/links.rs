@@ -1844,6 +1844,7 @@ pub(crate) struct EcsPlatform {
     pub elb: mws_elb::Elb,
     pub autoscaling: mws_autoscaling::AutoScaling,
     pub ecr: mws_ecr::Ecr,
+    pub events: mws_events::Events,
 }
 
 impl EcsPlatform {
@@ -2270,6 +2271,29 @@ impl mws_ecs::TaskPlatform for EcsPlatform {
                 tracing::warn!("ECS Express clean-up {op} failed: {} {}", e.code, e.message);
             }
         }
+    }
+
+    fn task_state_change(
+        &self,
+        ctx: &RequestContext,
+        account: &str,
+        task_arn: &str,
+        detail: serde_json::Value,
+        time: chrono::DateTime<chrono::Utc>,
+    ) {
+        self.events.put_service_event(
+            ctx,
+            mws_events::ServiceEvent {
+                partition: ctx.partition.clone(),
+                account: account.to_string(),
+                region: ctx.region.clone(),
+                source: "aws.ecs".into(),
+                detail_type: "ECS Task State Change".into(),
+                resources: vec![task_arn.to_string()],
+                detail,
+                time,
+            },
+        );
     }
 }
 

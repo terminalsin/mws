@@ -849,3 +849,74 @@ async fn iam_policies_apply() {
     assert_eq!(user_run.into_service_error().meta().code(), Some("AccessDeniedException"));
     mws.stop().await;
 }
+
+/// Each `lastStatus`/`desiredStatus` change of a task is an
+/// `ECS Task State Change` event on the default bus, with the task as the
+/// detail.
+#[tokio::test]
+async fn task_state_changes_reach_eventbridge() {
+    let mws = Mws::start().await;
+    let (ecs, ec2, _) = clients(&mws).await;
+    let cfg = mws.root_sdk_config().await;
+    let eb = aws_sdk_eventbridge::Client::new(&cfg);
+    let sqs = aws_sdk_sqs::Client::new(&cfg);
+    let url = sqs.create_queue().queue_name("ecs-tasks").send().await.unwrap().queue_url.unwrap();
+    let queue_arn = "arn:aws:sqs:us-east-1:123456789012:ecs-tasks";
+    let policy = serde_json::json!({"Version":"2012-10-17","Statement":[{
+        "Effect":"Allow","Principal":{"Service":"events.amazonaws.com"},
+        "Action":"sqs:SendMessage","Resource":queue_arn}]});
+    sqs.set_queue_attributes()
+        .queue_url(&url)
+        .attributes(aws_sdk_sqs::types::QueueAttributeName::Policy, policy.to_string())
+        .send()
+        .await
+        .unwrap();
+    eb.put_rule()
+        .name("task-stopped")
+        .event_pattern(
+            r#"{"source":["aws.ecs"],"detail-type":["ECS Task State Change"],"detail":{"lastStatus":["STOPPED"]}}"#,
+        )
+        .send()
+        .await
+        .unwrap();
+    eb.put_targets()
+        .rule("task-stopped")
+        .targets(aws_sdk_eventbridge::types::Target::builder().id("q").arn(queue_arn).build().unwrap())
+        .send()
+        .await
+        .unwrap();
+
+    let subnet = default_subnet(&ec2).await;
+    ecs.create_cluster().send().await.unwrap();
+    let td = web_task_definition(&ecs, "evented", "nginx").await;
+    let run = ecs
+        .run_task()
+        .task_definition(&td)
+        .launch_type(LaunchType::Fargate)
+        .network_configuration(awsvpc(&subnet))
+        .send()
+        .await
+        .unwrap();
+    let arn = run.tasks()[0].task_arn().unwrap().to_string();
+    wait_task(&ecs, "default", &arn, "RUNNING").await;
+    ecs.stop_task().task(&arn).reason("done").send().await.unwrap();
+    wait_task(&ecs, "default", &arn, "STOPPED").await;
+
+    let mut event = None;
+    for _ in 0..100 {
+        let r = sqs.receive_message().queue_url(&url).send().await.unwrap();
+        if let Some(m) = r.messages().first() {
+            event = Some(serde_json::from_str::<serde_json::Value>(m.body().unwrap()).unwrap());
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(100)).await;
+    }
+    let event = event.expect("an ECS Task State Change event");
+    assert_eq!(event["source"], "aws.ecs");
+    assert_eq!(event["detail-type"], "ECS Task State Change");
+    assert_eq!(event["resources"][0], arn.as_str());
+    assert_eq!(event["detail"]["taskArn"], arn.as_str());
+    assert_eq!(event["detail"]["lastStatus"], "STOPPED");
+    assert_eq!(event["detail"]["desiredStatus"], "STOPPED");
+    assert_eq!(event["detail"]["stoppedReason"], "done");
+}

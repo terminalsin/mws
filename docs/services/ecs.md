@@ -86,7 +86,7 @@ Requests are SigV4 signed like any AWS call. Each one runs a short `sh` script i
 
 - With Docker, containers outside the host network reach the credentials endpoint at `169.254.170.2` through the internal Docker network `mws-ecs-credentials` (its gateway is the host), so MWS must listen on that address (all interfaces). ECS sets `AWS_CONTAINER_CREDENTIALS_RELATIVE_URI` (port 80); MWS sets `AWS_CONTAINER_CREDENTIALS_FULL_URI` with its own port instead.
 - EC2 launch type tasks without an execution role pull ECR images without a permission check: the container instance role is not modelled.
-- No `aws.ecs` events reach EventBridge (`ECS Task State Change`, `ECS Service Action`, `ECS Deployment State Change`) and no `AWS/ECS` metrics reach CloudWatch.
+- Each `lastStatus`/`desiredStatus` change of a task is an `ECS Task State Change` event (`aws.ecs`, the task as the detail) on the default bus. `ECS Service Action`, `ECS Deployment State Change` and `ECS Container Instance State Change` events are not sent, and no `AWS/ECS` metrics reach CloudWatch.
 - Stopping tasks do not wait for target deregistration (`deregistration_delay`).
 
 See also: [all services](README.md) · [EC2 and VPC](ec2.md) · [configuration](../configuration.md).
