@@ -303,7 +303,8 @@ impl Ec2 {
     }
 
     pub(crate) fn lock(&self) -> MutexGuard<'_, State> {
-        self.inner.state.lock().expect("EC2 state lock poisoned")
+        // A panic in one call must not take EC2 down for the process.
+        self.inner.state.lock().unwrap_or_else(|e| e.into_inner())
     }
 
     /// Run `f` on the caller's account and Region, creating the default VPC

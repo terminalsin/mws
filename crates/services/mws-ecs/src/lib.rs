@@ -179,7 +179,7 @@ impl Ecs {
     /// while it is held is reported (`ECS Task State Change`) once it is
     /// released.
     pub(crate) fn lock(&self) -> StateGuard<'_> {
-        let guard = self.inner.state.lock().expect("ECS state lock poisoned");
+        let guard = self.inner.state.lock().unwrap_or_else(|e| e.into_inner());
         let before = self.platform().map(|_| task_statuses(&guard));
         StateGuard { ecs: self, guard: Some(guard), before }
     }
@@ -295,13 +295,13 @@ impl Service for Ecs {
 
     fn import_state(&self, state: serde_json::Value) -> Result<(), String> {
         let state: State = serde_json::from_value(state).map_err(|e| format!("invalid ECS state: {e}"))?;
-        let old = std::mem::replace(&mut *self.inner.state.lock().expect("ECS state lock poisoned"), state);
+        let old = std::mem::replace(&mut *self.inner.state.lock().unwrap_or_else(|e| e.into_inner()), state);
         self.tear_down(old);
         Ok(())
     }
 
     fn reset_state(&self) {
-        let old = std::mem::take(&mut *self.inner.state.lock().expect("ECS state lock poisoned"));
+        let old = std::mem::take(&mut *self.inner.state.lock().unwrap_or_else(|e| e.into_inner()));
         self.tear_down(old);
     }
 }

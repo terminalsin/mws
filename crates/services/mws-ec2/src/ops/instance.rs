@@ -1019,7 +1019,7 @@ impl Ec2 {
                 cidr.size() as usize - 5 - super::vpc::used_ips(r, &subnet_id).len()
             };
             if free < input.min_count as usize {
-                return Err(err("InsufficientFreeAddressesInSubnet", "There are not enough free addresses in subnet '{subnet_id}' to satisfy the requested number of instances."));
+                return Err(err("InsufficientFreeAddressesInSubnet", format!("There are not enough free addresses in subnet '{subnet_id}' to satisfy the requested number of instances.")));
             }
             let count = count.min(free);
             let count = if wants_host {
@@ -1426,6 +1426,8 @@ impl Ec2 {
             .map(|code| (*code, self.quota(&account, &region, ("ec2", code), ctx.received_at)))
             .collect();
         let (changes, todo) = self.with_region(ctx, |r| {
+            // The instances may have expired since they were authorized.
+            Kind::Instance.check_all(&input.instance_ids, |id| r.instances.contains_key(id))?;
             for id in &input.instance_ids {
                 let st = state_name(&r.instances[id]);
                 if !matches!(st.as_str(), "stopped" | "running" | "pending") {
@@ -1498,6 +1500,8 @@ impl Ec2 {
         let now = ctx.received_at;
         let force = input.force == Some(true);
         let (changes, todo) = self.with_region(ctx, |r| {
+            // The instances may have expired since they were authorized.
+            Kind::Instance.check_all(&input.instance_ids, |id| r.instances.contains_key(id))?;
             for id in &input.instance_ids {
                 let rec = &r.instances[id];
                 let st = state_name(rec);
@@ -1544,6 +1548,8 @@ impl Ec2 {
         self.authorize_instances(ctx, "RebootInstances", &input.instance_ids, input.dry_run)?;
         let account = account_of(ctx);
         let todo = self.with_region(ctx, |r| {
+            // The instances may have expired since they were authorized.
+            Kind::Instance.check_all(&input.instance_ids, |id| r.instances.contains_key(id))?;
             for id in &input.instance_ids {
                 if state_name(&r.instances[id]) == "terminated" {
                     return Err(err(
@@ -1576,6 +1582,8 @@ impl Ec2 {
         let region = ctx.region.clone();
         let mut deleted = Vec::new();
         let (changes, todo) = self.with_region(ctx, |r| {
+            // The instances may have expired since they were authorized.
+            Kind::Instance.check_all(&input.instance_ids, |id| r.instances.contains_key(id))?;
             for id in &input.instance_ids {
                 if r.instances[id].disable_api_termination {
                     return Err(err("OperationNotPermitted", format!("The instance '{id}' may not be terminated. Modify its 'disableApiTermination' instance attribute and try again.")));
@@ -1708,7 +1716,8 @@ impl Ec2 {
             input.dry_run,
         )?;
         self.with_region(ctx, |r| {
-            let rec = &r.instances[&input.instance_id];
+            let rec =
+                r.instances.get(&input.instance_id).ok_or_else(|| Kind::Instance.not_found(&input.instance_id))?;
             let i = render(r, rec);
             let mut out = t::InstanceAttribute { instance_id: Some(input.instance_id.clone()), ..Default::default() };
             let bv = |v: bool| Some(t::AttributeBooleanValue { value: Some(v) });

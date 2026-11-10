@@ -106,7 +106,7 @@ impl Efs {
 
     /// The state, with the lifecycle transitions due by now finished.
     pub(crate) fn lock(&self) -> MutexGuard<'_, State> {
-        let mut st = self.inner.state.lock().expect("EFS state lock poisoned");
+        let mut st = self.inner.state.lock().unwrap_or_else(|e| e.into_inner());
         let (gone, enis) = st.settle(self.now());
         for id in gone {
             self.storage().delete(&id);
@@ -203,12 +203,12 @@ impl Service for Efs {
                 self.storage().create(id);
             }
         }
-        *self.inner.state.lock().expect("EFS state lock poisoned") = state;
+        *self.inner.state.lock().unwrap_or_else(|e| e.into_inner()) = state;
         Ok(())
     }
 
     fn reset_state(&self) {
-        let old = std::mem::take(&mut *self.inner.state.lock().expect("EFS state lock poisoned"));
+        let old = std::mem::take(&mut *self.inner.state.lock().unwrap_or_else(|e| e.into_inner()));
         for r in old.regions.values() {
             for id in r.file_systems.keys() {
                 self.storage().delete(id);

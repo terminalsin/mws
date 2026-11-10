@@ -412,7 +412,7 @@ impl Elb {
     }
 
     pub(crate) fn lock(&self) -> MutexGuard<'_, State> {
-        self.inner.state.lock().expect("ELB state lock poisoned")
+        self.inner.state.lock().unwrap_or_else(|e| e.into_inner())
     }
 
     pub(crate) fn ec2(&self) -> Option<&mws_ec2::Ec2> {
