@@ -144,6 +144,24 @@ test("local URLs get http://, key=value lists are rewritten", () => {
   assert.deepEqual(values({ format: "pairs" }, '{"x-team": "ml", "n": 2,}'), ["x-team=ml\nn=2"]);
 });
 
+test("semantic versions are completed and bumped", () => {
+  const rule: Rule = { pattern: "^[0-9]+\\.[0-9]+\\.[0-9]+$", format: "semver" };
+  assert.deepEqual(values(rule, "1.0"), ["1.0.0"]);
+  assert.deepEqual(values(rule, "v2"), ["2.0.0"]);
+  assert.deepEqual(values(rule, "1.2.3-beta"), ["1.2.3"]);
+  assert.deepEqual(values({ ...rule, taken: ["1.0.0", "1.0.1"] }, "1.0.1"), ["1.0.2"]);
+});
+
+test("cron expressions are converted to AWS's six fields", () => {
+  const rule: Rule = { format: "cron" };
+  assert.equal(check("0 9 ? * MON-FRI *", rule), null);
+  assert.deepEqual(values(rule, "0 9 * * 1-5"), ["0 9 ? * MON-FRI *"]);
+  assert.deepEqual(values(rule, "0 0 * * *"), ["0 0 * * ? *"]);
+  assert.deepEqual(values(rule, "cron(0 0 * * ? *)"), ["0 0 * * ? *"]);
+  assert.deepEqual(values(rule, "0 0 1 * * *"), ["0 0 1 * ? *"]);
+  assert.deepEqual(values(rule, "rate(1 day)"), []);
+});
+
 test("JSON repair handles hand-written JSON", () => {
   assert.equal(repairJson("{'Version': '2012-10-17', Statement: [],}"), '{\n  "Version": "2012-10-17",\n  "Statement": []\n}');
   assert.equal(repairJson('"a": 1'), '{\n  "a": 1\n}');

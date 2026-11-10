@@ -115,6 +115,8 @@ export type Format =
   | "bucket"
   | "name"
   | "port"
+  | "semver"
+  | "cron"
   | "country"
   | "csr"
   | "phone"
@@ -378,7 +380,7 @@ export function repairs(value: string, rule: Rule, code: IssueCode): Repair[] {
       if (rule.enum?.length) for (const e of rule.enum.slice(0, MAX_REPAIRS)) offer({ value: e, label: `Use ${e}`, kind: "suggest" });
       break;
     case "taken":
-      offer(nextFree(value, rule));
+      offer(rule.format === "semver" ? bump(value, rule) : nextFree(value, rule));
       offer(fresh(rule));
       break;
     case "reserved": {
@@ -651,6 +653,17 @@ function isTaken(value: string, rule: Rule): boolean {
   return rule.taken.some((t) => t.toLowerCase() === v);
 }
 
+/** The next free patch version of a taken one: 1.0.0 → 1.0.1. */
+function bump(value: string, rule: Rule): Repair | null {
+  const [major, minor, patch, ...rest] = value.split(".");
+  if (rest.length || !/^\d+$/.test(patch ?? "")) return null;
+  for (let n = Number(patch) + 1; n < Number(patch) + 50; n++) {
+    const v = `${major}.${minor}.${n}`;
+    if (!isTaken(v, rule)) return { value: v, label: `Use ${v}`, kind: "fix" };
+  }
+  return null;
+}
+
 /** The next free variant of a taken name: queue → queue-2 → queue-3. */
 function nextFree(value: string, rule: Rule): Repair | null {
   // A taken email address: plus-address it (owner+2@example.com).
@@ -859,6 +872,8 @@ export function countryCodes(value: string): string[] {
 const PEM_BLOCK = /-----BEGIN ([A-Z0-9 ]+)-----([\s\S]*?)-----END \1-----/;
 const CSR_LABEL = /^(NEW )?CERTIFICATE REQUEST$/;
 const pem = (label: string, body: string) => `-----BEGIN ${label}-----\n${body.replace(/\s+/g, "").match(/.{1,64}/g)?.join("\n") ?? ""}\n-----END ${label}-----`;
+
+const DAYS = ["SUN", "MON", "TUE", "WED", "THU", "FRI", "SAT"];
 
 export const FORMATS: Record<Format, FormatSpec> = {
   ...CERT_FORMATS,
@@ -1154,6 +1169,46 @@ export const FORMATS: Record<Format, FormatSpec> = {
   port: {
     check() {
       return null;
+    },
+  },
+  semver: {
+    check(value) {
+      return /^(\d+|x)\.(\d+|x)\.(\d+|x)$/.test(value) ? null : "Like 1.0.0";
+    },
+    repair(value) {
+      // "v1.2", "1,2,3", "1.2.3-beta": the numbers it has, padded to three.
+      const parts = (value.trim().replace(/^v(?=\d)/i, "").match(/\d+|\bx\b/gi) ?? []).slice(0, 3).map((p) => p.toLowerCase());
+      if (!parts.length) return [];
+      while (parts.length < 3) parts.push("0");
+      return [{ value: parts.join("."), label: "Use a semantic version", kind: "fix" }];
+    },
+  },
+  cron: {
+    // AWS cron fields, without the cron( ) around them.
+    check(value) {
+      if (/^\s*(cron|rate)\(/.test(value)) return "Just the fields, without cron( )";
+      const f = value.trim().split(/\s+/);
+      if (f.length !== 6) return "Six fields: minute hour day month weekday year";
+      if (f.some((x) => !/^[\w*?,/#-]+$/.test(x))) return "Unsupported characters";
+      if ((f[2] === "?") === (f[4] === "?")) return "Day or weekday must be ?";
+      return null;
+    },
+    repair(value) {
+      const inner = value.trim().replace(/^cron\((.*)\)$/s, "$1").trim();
+      let f = inner.split(/\s+/);
+      let label = inner !== value.trim() ? "Remove cron( )" : "";
+      if (f.length === 5) {
+        // Unix cron: no year, and weekdays count from Sunday = 0.
+        const day = (d: string) => DAYS[Number(d) % 7];
+        f = [...f.slice(0, 4), f[4].replace(/(^|[,-])([0-7])(?=$|[,-])/g, (_, sep, d) => sep + day(d)), "*"];
+        label = "Convert from Unix cron";
+      }
+      if (f.length !== 6) return [];
+      if (f[2] !== "?" && f[4] !== "?") {
+        if (f[4] === "*") [f[4], label] = ["?", label || "Use ? for the weekday"];
+        else if (f[2] === "*") [f[2], label] = ["?", label || "Use ? for the day"];
+      } else if (f[2] === "?" && f[4] === "?") [f[2], label] = ["*", label || "Run every day"];
+      return label ? [{ value: f.join(" "), label, kind: "fix" }] : [];
     },
   },
   country: {
