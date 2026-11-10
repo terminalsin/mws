@@ -189,3 +189,23 @@ test("paths start and end with a slash", () => {
   assert.equal(check("team", rule)?.repairs[0].value, "/team/");
   assert.equal(check("/a//b", rule)?.repairs[0].value, "/a/b/");
 });
+
+test("email addresses, lists and domains are cleaned up", () => {
+  assert.deepEqual(values({ format: "email" }, "mailto:Dev@Example.COM"), ["Dev@example.com"]);
+  assert.deepEqual(values({ format: "email" }, "ops@company.con"), ["ops@company.com"]);
+  assert.deepEqual(values({ format: "email" }, "Jane Doe <jane@example.com>"), ["jane@example.com"]);
+  assert.equal(check("a@example.com, b@example.com", { format: "emails" }), null);
+  assert.deepEqual(values({ format: "emails" }, "a@example.com; b@example.con\nA@example.com"), ["a@example.com, b@example.com"]);
+  assert.match(check("a@example.com, a@example.com", { format: "emails" })!.message, /twice/);
+  assert.deepEqual(values({ format: "domain" }, "https://Mail.Example.com/path"), ["mail.example.com"]);
+  assert.deepEqual(values({ format: "domain" }, "example.con"), ["example.com"]);
+  assert.equal(check("example.com", { format: "email-or-domain" }), null);
+  assert.equal(check("me@example.com", { format: "email-or-domain" }), null);
+  assert.deepEqual(values({ format: "email-or-domain" }, "https://example.com/"), ["example.com"]);
+  assert.deepEqual(values({ format: "email-or-domain" }, "me@exmaple.com"), ["me@example.com"]);
+});
+
+test("a few known values are all offered when none is close", () => {
+  const rule: Rule = { pattern: "^(a@example\\.com|b@example\\.com)$", known: ["a@example.com", "b@example.com"] };
+  assert.deepEqual(values(rule, "zz@other.org"), ["a@example.com", "b@example.com"]);
+});

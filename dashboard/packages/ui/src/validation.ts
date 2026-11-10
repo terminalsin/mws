@@ -71,7 +71,23 @@ export interface Rule {
 
 export type Rules = Record<string, Rule>;
 
-export type Format = "json" | "policy" | "path" | "arn" | "cidr" | "ipv4" | "email" | "url" | "bucket" | "name" | "port" | "country" | "csr";
+export type Format =
+  | "json"
+  | "policy"
+  | "path"
+  | "arn"
+  | "cidr"
+  | "ipv4"
+  | "email"
+  | "emails"
+  | "domain"
+  | "email-or-domain"
+  | "url"
+  | "bucket"
+  | "name"
+  | "port"
+  | "country"
+  | "csr";
 
 /** "name": a readable resource name; "token": random letters and digits;
  * "password": meets the usual complexity rules; or a fixed prefix/suffix
@@ -321,7 +337,11 @@ export function nearestNumbers(value: string, allowed: string[]): string[] | nul
 
 /** Close matches among the values a field usually refers to. */
 export function didYouMean(value: string, rule: Rule): Repair[] {
-  return closest(value, rule.known ?? []).map((s) => ({ value: s, label: `Did you mean ${s}?`, kind: "suggest" as const }));
+  const known = rule.known ?? [];
+  const near = closest(value, known).map((s) => ({ value: s, label: `Did you mean ${s}?`, kind: "suggest" as const }));
+  if (near.length || known.length > MAX_REPAIRS) return near;
+  // Only a few to choose from: offer them all.
+  return known.filter((k) => k !== value).map((s) => ({ value: s, label: `Use ${s}`, kind: "suggest" as const }));
 }
 
 /** Cleanups tried in order of how much they change, each checked against
@@ -737,17 +757,50 @@ export const FORMATS: Record<Format, FormatSpec> = {
   },
   email: {
     check(value) {
-      if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(value)) return "Like name@example.com";
-      // A near miss of a common domain is almost always a typo.
-      const domain = value.split("@")[1].toLowerCase();
-      const near = DOMAINS.includes(domain) ? [] : closest(domain, DOMAINS, 1).filter((d) => distance(domain, d) <= 2);
-      return near.length ? `Did you mean ${near[0]}?` : null;
+      return emailProblem(value);
     },
     repair(value) {
-      const v = value.trim().replace(/\s+/g, "");
-      const [user, domain] = v.split("@");
-      if (!user || domain === undefined) return [];
-      return closest(domain, DOMAINS, 1).map((d) => ({ value: `${user}@${d}`, label: `Did you mean ${d}?`, kind: "suggest" as const }));
+      return emailRepairs(value);
+    },
+  },
+  emails: {
+    check(value) {
+      const list = value.split(",").map((s) => s.trim());
+      if (list.some((s) => !s)) return "Separate addresses with one comma";
+      const seen = new Set<string>();
+      for (const a of list) {
+        const message = emailProblem(a.match(/<([^<>]+)>$/)?.[1] ?? a);
+        if (message) return list.length > 1 ? `${a}: ${message}` : message;
+        if (seen.has(a.toLowerCase())) return `${a} is listed twice`;
+        seen.add(a.toLowerCase());
+      }
+      return null;
+    },
+    repair(value) {
+      // Pull the addresses out of whatever was pasted (semicolons, new
+      // lines, "Name <a@b>"), fix each one, drop repeats.
+      const found = value.match(/[^\s<>,;:"'()[\]]+@[^\s<>,;:"'()[\]]+/g) ?? [];
+      const fixed = new Map<string, string>();
+      for (const a of found.map((a) => cleanEmail(a)).map((a) => (emailProblem(a) ? (emailRepairs(a)[0]?.value ?? a) : a))) {
+        if (!fixed.has(a.toLowerCase())) fixed.set(a.toLowerCase(), a);
+      }
+      return fixed.size ? [{ value: [...fixed.values()].join(", "), label: "Clean up the list", kind: "fix" }] : [];
+    },
+  },
+  domain: {
+    check(value) {
+      return domainProblem(value);
+    },
+    repair(value) {
+      return domainRepairs(value);
+    },
+  },
+  "email-or-domain": {
+    check(value) {
+      return value.includes("@") ? emailProblem(value) : domainProblem(value) && "An email address or a domain";
+    },
+    repair(value) {
+      return value.includes("@") && !/^[a-z][\w+.-]*:\/\//i.test(value.trim()) ? emailRepairs(value) : domainRepairs(value);
     },
   },
   url: {
@@ -814,6 +867,71 @@ export const FORMATS: Record<Format, FormatSpec> = {
     },
   },
 };
+
+const DOMAIN = /^(?=.{1,253}$)(?:[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\.)+[a-z]{2,63}$/i;
+/** Top-level domains people mistype, and what they meant. */
+const TLD_TYPOS: Record<string, string> = { con: "com", cmo: "com", ocm: "com", vom: "com", xom: "com", comm: "com", ogr: "org", rog: "org", nte: "net", ent: "net" };
+
+function tldTypo(domain: string): string | null {
+  const tld = domain.split(".").pop()?.toLowerCase() ?? "";
+  return TLD_TYPOS[tld] ?? null;
+}
+
+function domainProblem(value: string): string | null {
+  if (!DOMAIN.test(value)) return "Like example.com";
+  const tld = tldTypo(value);
+  return tld ? `Did you mean .${tld}?` : null;
+}
+
+/** A pasted URL or host reduced to its domain: no scheme, path, port,
+ * trailing dot, spaces or capitals, and a mistyped TLD corrected. */
+function cleanDomain(value: string): string {
+  const host = value.trim().replace(/^[a-z][\w+.-]*:\/\//i, "").replace(/^[^@/]*@/, "").split(/[/?#:]/)[0];
+  const d = host.replace(/\s+/g, "").replace(/\.+$/, "").toLowerCase();
+  const tld = tldTypo(d);
+  return tld ? d.replace(/[^.]+$/, tld) : d;
+}
+
+function domainRepairs(value: string): Repair[] {
+  const d = cleanDomain(value);
+  if (!d || d === value) return [];
+  const tld = tldTypo(value.trim().replace(/\.+$/, ""));
+  return [{ value: d, label: tld ? `Did you mean .${tld}?` : "Use the domain", kind: "fix" }];
+}
+
+function emailProblem(value: string): string | null {
+  if (!/^[^\s@<>,;:]+@[^\s@<>,;:]+\.[^\s@<>,;:]+$/.test(value)) return "Like name@example.com";
+  const domain = value.split("@")[1].toLowerCase();
+  const tld = tldTypo(domain);
+  if (tld) return `Did you mean .${tld}?`;
+  // A near miss of a common domain is almost always a typo.
+  const near = DOMAINS.includes(domain) ? [] : closest(domain, DOMAINS, 1).filter((d) => distance(domain, d) <= 2);
+  return near.length ? `Did you mean ${near[0]}?` : null;
+}
+
+/** "mailto:", "Name <a@b>", spaces and a trailing period removed. */
+function cleanEmail(value: string): string {
+  let v = value.trim().replace(/^mailto:/i, "");
+  v = v.match(/<([^<>]+)>/)?.[1] ?? v;
+  v = v.replace(/\s+/g, "").replace(/[.,;]+$/, "");
+  const at = v.lastIndexOf("@");
+  return at < 0 ? v : `${v.slice(0, at)}@${v.slice(at + 1).toLowerCase()}`;
+}
+
+function emailRepairs(value: string): Repair[] {
+  const v = cleanEmail(value);
+  const at = v.lastIndexOf("@");
+  if (at <= 0 || at === v.length - 1) return [];
+  const user = v.slice(0, at);
+  const domain = cleanDomain(v.slice(at + 1));
+  const out: Repair[] = [];
+  const tld = tldTypo(v.slice(at + 1));
+  out.push({ value: `${user}@${domain}`, label: tld ? `Did you mean .${tld}?` : "Clean up the address", kind: "fix" });
+  for (const d of closest(domain, DOMAINS, 1).filter((d) => distance(domain, d) <= 2)) {
+    out.push({ value: `${user}@${d}`, label: `Did you mean ${d}?`, kind: "suggest" });
+  }
+  return out;
+}
 
 function network(o: number[], bits: number): string {
   const n = ((o[0] << 24) | (o[1] << 16) | (o[2] << 8) | o[3]) >>> 0;

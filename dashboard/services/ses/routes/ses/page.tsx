@@ -1,6 +1,7 @@
-import { GetAccountCommand, ListEmailIdentitiesCommand } from "@aws-sdk/client-sesv2";
-import { ago, collect, load } from "@mws-dashboard/aws";
-import { ActionForm, AwsIcon, Empty, ErrorNotice, Field, List, Metric, Metrics, Page, Pill, Section, Sheet, Status } from "@mws-dashboard/ui";
+import { GetAccountCommand, ListEmailIdentitiesCommand, type GetAccountCommandOutput, type IdentityInfo } from "@aws-sdk/client-sesv2";
+import { ago, collect, load, type Loaded } from "@mws-dashboard/aws";
+import { ActionForm, AwsIcon, Empty, ErrorNotice, Field, List, Metric, Metrics, Page, Pill, Section, Sheet, Status, type Rule } from "@mws-dashboard/ui";
+import { CreateEmailIdentity, SendEmail } from "@mws-dashboard/ui/model/sesv2";
 import { BadgeCheck, Eraser, Globe, Mail, Send, Trash2 } from "lucide-react";
 import type { Metadata } from "next";
 
@@ -12,18 +13,68 @@ export const metadata: Metadata = { title: "SES" };
 
 type Props = { searchParams: Promise<{ tab?: string }> };
 
-async function Identities() {
-  const [identities, account] = await Promise.all([
-    load(async () => {
-      const client = await ses();
-      return collect(
-        (NextToken) => client.send(new ListEmailIdentitiesCommand({ NextToken })),
-        (r) => r.EmailIdentities,
-        (r) => r.NextToken,
-      );
-    }),
-    load(async () => (await ses()).send(new GetAccountCommand({}))),
-  ]);
+const listIdentities = () =>
+  load(async () => {
+    const client = await ses();
+    return collect(
+      (NextToken) => client.send(new ListEmailIdentitiesCommand({ NextToken })),
+      (r) => r.EmailIdentities,
+      (r) => r.NextToken,
+    );
+  });
+
+const escape = (s: string) => s.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+const SIMULATOR = "simulator.amazonses.com";
+
+/** A pattern for one address SES accepts as verified: a verified address,
+ * or any address on a verified domain. */
+function verifiedAddress(emails: string[], domains: string[]): string {
+  return [...emails.map(escape), ...(domains.length ? [`[^@\\s,]+@(?:${domains.map(escape).join("|")})`] : [])].join("|");
+}
+
+/** The send sheet's rules: SES sends only from verified identities and, in
+ * the sandbox, only to verified addresses (or the mailbox simulator). */
+function sendRules(identities: Loaded<IdentityInfo[]>, sandbox: boolean): { from: Rule; to: Rule } {
+  const verified = identities.ok ? identities.value.filter((i) => i.VerificationStatus === "SUCCESS") : [];
+  const emails = verified.filter((i) => i.IdentityType === "EMAIL_ADDRESS").map((i) => i.IdentityName!);
+  const domains = verified.filter((i) => i.IdentityType === "DOMAIN").map((i) => i.IdentityName!);
+  const senders = [...emails, ...domains.map((d) => `no-reply@${d}`)];
+  const from: Rule = { ...SendEmail.FromEmailAddress, required: true, format: "email" };
+  const to: Rule = { required: true, format: "emails" };
+  if (!identities.ok) return { from, to };
+  const one = verifiedAddress(emails, domains);
+  const recipient = verifiedAddress(emails, [...domains, SIMULATOR]);
+  return {
+    from: one ? { ...from, pattern: `^(?:${one})$`, hint: "Not a verified identity", known: senders } : from,
+    to: sandbox
+      ? { ...to, pattern: `^(?:${recipient})(?:,\\s*(?:${recipient}))*$`, hint: "Sandbox: verified addresses only", known: [...emails, `success@${SIMULATOR}`] }
+      : { ...to, known: emails },
+  };
+}
+
+function SendEmailSheet({ identities, sandbox }: { identities: Loaded<IdentityInfo[]>; sandbox: boolean }) {
+  const rules = sendRules(identities, sandbox);
+  return (
+    <Sheet title="Send email" label="Send email" icon={<Send size={15} aria-hidden />} testId="send-email">
+      <ActionForm action={sendEmail} submit="Send" testId="send-email">
+        <div className="form-row">
+          <Field label="From" rule={rules.from} member="FromEmailAddress">
+            <input name="from" required autoComplete="email" />
+          </Field>
+          <Field label="To" rule={rules.to} member="ToAddresses">
+            <input name="to" required />
+          </Field>
+        </div>
+        <Field label="Subject">
+          <input name="subject" />
+        </Field>
+        <textarea name="body" aria-label="Body" />
+      </ActionForm>
+    </Sheet>
+  );
+}
+
+function Identities({ identities, account }: { identities: Loaded<IdentityInfo[]>; account: Loaded<GetAccountCommandOutput> }) {
   return (
     <>
       {account.ok && (
@@ -39,8 +90,15 @@ async function Identities() {
         actions={
           <Sheet title="New identity" label="Create identity" testId="create-identity">
             <ActionForm action={createIdentity} submit="Create" testId="create-identity">
-              <Field label="Email address or domain">
-                <input name="identity" required />
+              <Field
+                label="Email address or domain"
+                rule={CreateEmailIdentity.EmailIdentity}
+                format="email-or-domain"
+                taken={identities.ok ? identities.value.map((i) => i.IdentityName!) : undefined}
+                member="EmailIdentity"
+                unique
+              >
+                <input name="identity" required autoComplete="off" />
               </Field>
             </ActionForm>
           </Sheet>
@@ -125,29 +183,11 @@ async function Outbox() {
 
 export default async function Ses({ searchParams }: Props) {
   const tab = (await searchParams).tab ?? "identities";
+  const [identities, account] = await Promise.all([listIdentities(), load(async () => (await ses()).send(new GetAccountCommand({})))]);
+  const sandbox = !(account.ok && account.value.ProductionAccessEnabled);
   return (
-    <Page
-      title={tab === "outbox" ? "Sent mail" : "Identities"}
-      actions={
-        <Sheet title="Send email" label="Send email" icon={<Send size={15} aria-hidden />} testId="send-email">
-          <ActionForm action={sendEmail} submit="Send" testId="send-email">
-            <div className="form-row">
-              <Field label="From">
-                <input name="from" required />
-              </Field>
-              <Field label="To">
-                <input name="to" required />
-              </Field>
-            </div>
-            <Field label="Subject">
-              <input name="subject" />
-            </Field>
-            <textarea name="body" aria-label="Body" />
-          </ActionForm>
-        </Sheet>
-      }
-    >
-      {tab === "outbox" ? <Outbox /> : <Identities />}
+    <Page title={tab === "outbox" ? "Sent mail" : "Identities"} actions={<SendEmailSheet identities={identities} sandbox={sandbox} />}>
+      {tab === "outbox" ? <Outbox /> : <Identities identities={identities} account={account} />}
     </Page>
   );
 }
