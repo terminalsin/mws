@@ -20,7 +20,7 @@ use std::path::{Path, PathBuf};
 use std::process::Stdio;
 use std::time::{Duration, Instant};
 
-use super::container::{docker, push_env, run_args, RunArgs};
+use super::container::{docker, push_env, run_args, CodeDelivery, RunArgs};
 use super::{find_program, make_executable, LaunchError, LaunchSpec, Runtimes};
 
 /// Where the base images come from, unless `MWS_LAMBDA_IMAGE_REPOSITORY`
@@ -61,6 +61,9 @@ pub struct ManagedLaunch {
     /// `linux/amd64` or `linux/arm64` when the function's architecture is
     /// not the host's.
     pub platform: Option<String>,
+    /// Whether `image` already holds the package and layers (see
+    /// [`Runtimes::package`]), so nothing is mounted.
+    pub packaged: bool,
 }
 
 /// The base image AWS publishes for `runtime`, by tag.
@@ -196,7 +199,7 @@ impl Runtimes {
         let arch = docker_arch(architecture);
         let platform = (arch != host_arch()).then(|| format!("linux/{arch}"));
         match self.ensure_base_image(&image, platform.as_deref()).await {
-            Ok(()) => Ok(Some(ManagedLaunch { image, platform })),
+            Ok(()) => Ok(Some(ManagedLaunch { image, platform, packaged: false })),
             Err(e) if executor == RuntimeExecutor::Auto && runs_locally(runtime) => {
                 tracing::warn!("cannot use {image} ({e}); running {runtime} functions as local processes");
                 Ok(None)
@@ -249,6 +252,52 @@ impl Runtimes {
         Ok(())
     }
 
+    /// When the Docker daemon cannot see MWS's files (MWS runs in a
+    /// container, or the daemon is remote), copy the package to
+    /// `/var/task` and the layers to `/opt` of an image of their own, made
+    /// once per package, layers and base image, and run that instead.
+    pub async fn package(&self, m: &mut ManagedLaunch, code_dir: &Path, layers: &[PathBuf]) -> Result<(), LaunchError> {
+        if m.packaged || CodeDelivery::current() != CodeDelivery::Copy {
+            return Ok(());
+        }
+        let io = |e: std::io::Error| LaunchError::Io(e.to_string());
+        let opt = self.merged_layers(layers).map_err(io)?;
+        let key = format!(
+            "{}\n{}\n{}\n{}",
+            m.image,
+            m.platform.as_deref().unwrap_or_default(),
+            code_dir.display(),
+            opt.as_ref().map(|o| o.display().to_string()).unwrap_or_default()
+        );
+        let hex = hex::encode(<sha2::Sha256 as sha2::Digest>::digest(key.as_bytes()));
+        let tag = format!("mws-lambda-package:{}", &hex[..32]);
+        let ready = |m: &mut ManagedLaunch| {
+            m.image = tag.clone();
+            m.packaged = true;
+        };
+        if self.images.lock().expect("lock").contains(&tag) {
+            ready(m);
+            return Ok(());
+        }
+        let _guard = self.loading.lock().await;
+        if !self.images.lock().expect("lock").contains(&tag) {
+            // The package's `bootstrap` (custom runtimes) must be
+            // executable in the copy.
+            for dir in std::iter::once(code_dir).chain(opt.as_deref()) {
+                let bootstrap = dir.join("bootstrap");
+                if bootstrap.is_file() {
+                    make_executable(&bootstrap);
+                }
+            }
+            build_package(&m.image, m.platform.as_deref(), code_dir, opt.as_deref(), &tag)
+                .await
+                .map_err(|e| LaunchError::Io(format!("copying the function's code into {tag}: {e}")))?;
+            self.images.lock().expect("lock").insert(tag.clone());
+        }
+        ready(m);
+        Ok(())
+    }
+
     /// The layers merged into one directory for `/opt`, later layers over
     /// earlier ones as Lambda extracts them.
     fn merged_layers(&self, layers: &[PathBuf]) -> std::io::Result<Option<PathBuf>> {
@@ -269,6 +318,48 @@ impl Runtimes {
             }
         }
     }
+}
+
+/// Make `tag`: `base` with `code` at `/var/task` and `opt` at `/opt`.
+async fn build_package(
+    base: &str,
+    platform: Option<&str>,
+    code: &Path,
+    opt: Option<&Path>,
+    tag: &str,
+) -> Result<(), String> {
+    async fn docker_cmd(args: &[&str]) -> Result<(), String> {
+        let out = tokio::process::Command::new(docker())
+            .args(args)
+            .stdin(Stdio::null())
+            .output()
+            .await
+            .map_err(|e| e.to_string())?;
+        if out.status.success() {
+            Ok(())
+        } else {
+            Err(format!("docker {}: {}", args[0], String::from_utf8_lossy(&out.stderr).trim()))
+        }
+    }
+    let name = format!("mws-lambda-package-{}", uuid::Uuid::new_v4().simple());
+    let mut create = vec!["create", "--pull", "never", "--name", &name, "--label", "mws.lambda.package=1"];
+    if let Some(p) = platform {
+        create.extend(["--platform", p]);
+    }
+    create.push(base);
+    docker_cmd(&create).await?;
+    let result = async {
+        let code_src = format!("{}/.", code.display());
+        docker_cmd(&["cp", &code_src, &format!("{name}:/var/task")]).await?;
+        if let Some(opt) = opt {
+            let opt_src = format!("{}/.", opt.display());
+            docker_cmd(&["cp", &opt_src, &format!("{name}:/opt")]).await?;
+        }
+        docker_cmd(&["commit", &name, tag]).await
+    }
+    .await;
+    let _ = docker_cmd(&["rm", "-f", &name]).await;
+    result
 }
 
 fn copy_tree(from: &Path, to: &Path) -> std::io::Result<()> {
@@ -331,11 +422,13 @@ pub(super) fn command(
         ephemeral_mb: spec.ephemeral_mb,
         platform: m.platform.as_deref(),
     });
-    args.push("-v".into());
-    args.push(format!("{}:/var/task:ro", spec.code_dir.display()));
-    if let Some(opt) = &opt {
+    if !m.packaged {
         args.push("-v".into());
-        args.push(format!("{}:/opt:ro", opt.display()));
+        args.push(format!("{}:/var/task:ro", spec.code_dir.display()));
+        if let Some(opt) = &opt {
+            args.push("-v".into());
+            args.push(format!("{}:/opt:ro", opt.display()));
+        }
     }
     if let Some(e) = &entrypoint {
         args.push("--entrypoint".into());

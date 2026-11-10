@@ -186,6 +186,9 @@ jobs:
         env:
           MWS_LAMBDA_PYTHON: ${{ steps.python.outputs.python-path }}
           MWS_LAMBDA_RUNTIME_EXECUTOR: local
+          # test_lambda_in_container.py: MWS in a container runs functions
+          # in AWS's base images through the runner's Docker.
+          MWS_TEST_DOCKER_IN_CONTAINER: "1"
 
   # Example applications written against the AWS SDK for JavaScript v3
   # (tests/e2e-ts), run against the MWS binary.

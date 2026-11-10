@@ -171,6 +171,7 @@ pub(super) fn run_args(a: &RunArgs) -> Vec<String> {
     match Network::current() {
         Network::Host => args.extend(["--network".into(), "host".into()]),
         Network::Bridge => args.extend(["--add-host".into(), format!("{HOST_ALIAS}:host-gateway")]),
+        Network::Container(id) => args.extend(["--network".into(), format!("container:{id}")]),
     }
     if let Some(p) = a.platform {
         args.extend(["--platform".into(), p.to_string()]);
@@ -182,8 +183,8 @@ pub(super) fn run_args(a: &RunArgs) -> Vec<String> {
 const HOST_ALIAS: &str = "host.docker.internal";
 
 /// How containers reach MWS (its Runtime API and `AWS_ENDPOINT_URL`), which
-/// listens on the host's loopback interface: `MWS_LAMBDA_DOCKER_NETWORK`.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+/// listens on a loopback interface: `MWS_LAMBDA_DOCKER_NETWORK`.
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub(super) enum Network {
     /// The host's network: loopback addresses are the host's. The default
     /// on Linux.
@@ -192,16 +193,99 @@ pub(super) enum Network {
     /// `host.docker.internal`, which Docker Desktop routes to the host's
     /// loopback interface. The default elsewhere (macOS, Windows).
     Bridge,
+    /// The network namespace of a container (`container:<name or id>`):
+    /// MWS's own when MWS itself runs in a container, so loopback addresses
+    /// are MWS's. The default there.
+    Container(String),
 }
 
 impl Network {
     pub fn current() -> Self {
-        match std::env::var("MWS_LAMBDA_DOCKER_NETWORK").unwrap_or_default().to_ascii_lowercase().as_str() {
+        static CURRENT: std::sync::OnceLock<Network> = std::sync::OnceLock::new();
+        CURRENT
+            .get_or_init(|| {
+                let set = std::env::var("MWS_LAMBDA_DOCKER_NETWORK").unwrap_or_default();
+                Self::choose(set.trim(), in_container().then(own_container_id).flatten())
+            })
+            .clone()
+    }
+
+    /// The network for an `MWS_LAMBDA_DOCKER_NETWORK` value, given MWS's own
+    /// container (when it runs in one).
+    fn choose(setting: &str, own_container: Option<String>) -> Self {
+        if let Some(name) = setting.strip_prefix("container:").filter(|n| !n.is_empty()) {
+            return Self::Container(name.to_string());
+        }
+        match setting.to_ascii_lowercase().as_str() {
             "host" => Self::Host,
             "bridge" => Self::Bridge,
-            _ if cfg!(target_os = "linux") => Self::Host,
-            _ => Self::Bridge,
+            _ => match own_container {
+                Some(id) => Self::Container(id),
+                None if cfg!(target_os = "linux") => Self::Host,
+                None => Self::Bridge,
+            },
         }
+    }
+}
+
+/// Whether MWS itself runs in a container (Docker's `/.dockerenv`, Podman's
+/// `/run/.containerenv`).
+pub(super) fn in_container() -> bool {
+    std::path::Path::new("/.dockerenv").exists() || std::path::Path::new("/run/.containerenv").exists()
+}
+
+/// The id of the container MWS runs in: from the engine's bind mounts of
+/// `/etc/hostname` and friends, or else the host name (the short id unless
+/// the container was given one).
+fn own_container_id() -> Option<String> {
+    let mountinfo = std::fs::read_to_string("/proc/self/mountinfo").unwrap_or_default();
+    container_id_from_mountinfo(&mountinfo).or_else(|| {
+        let host = std::fs::read_to_string("/etc/hostname").ok()?.trim().to_string();
+        (!host.is_empty()).then_some(host)
+    })
+}
+
+fn container_id_from_mountinfo(mountinfo: &str) -> Option<String> {
+    for marker in ["/containers/", "/overlay-containers/"] {
+        for line in mountinfo.lines().filter(|l| l.contains("/hostname ") || l.contains("/resolv.conf ")) {
+            let Some(at) = line.find(marker) else { continue };
+            let id: String = line[at + marker.len()..].chars().take_while(char::is_ascii_hexdigit).collect();
+            if id.len() == 64 {
+                return Some(id);
+            }
+        }
+    }
+    None
+}
+
+/// How a `.zip` function's package and layers reach its container
+/// (`MWS_LAMBDA_DOCKER_CODE`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(super) enum CodeDelivery {
+    /// Bind mounts of MWS's extracted directories: the daemon must see
+    /// MWS's file system. The default when MWS runs on the daemon's host.
+    Mount,
+    /// Copied into an image of their own (`docker create`, `docker cp`,
+    /// `docker commit`), so the daemon needs no access to MWS's files. The
+    /// default when MWS runs in a container or talks to a remote daemon.
+    Copy,
+}
+
+impl CodeDelivery {
+    pub fn current() -> Self {
+        static CURRENT: std::sync::OnceLock<CodeDelivery> = std::sync::OnceLock::new();
+        *CURRENT.get_or_init(|| match std::env::var("MWS_LAMBDA_DOCKER_CODE").unwrap_or_default().as_str() {
+            "mount" => Self::Mount,
+            "copy" => Self::Copy,
+            _ => {
+                let remote = std::env::var("DOCKER_HOST").is_ok_and(|h| !h.is_empty() && !h.starts_with("unix://"));
+                if in_container() || remote {
+                    Self::Copy
+                } else {
+                    Self::Mount
+                }
+            }
+        })
     }
 }
 
@@ -336,7 +420,7 @@ impl Tar {
 
 #[cfg(test)]
 mod tests {
-    use super::via_host_alias;
+    use super::{container_id_from_mountinfo, via_host_alias, Network};
 
     #[test]
     fn loopback_addresses_go_through_the_host_alias() {
@@ -344,5 +428,29 @@ mod tests {
         assert_eq!(via_host_alias("http://localhost:4566"), "http://host.docker.internal:4566");
         assert_eq!(via_host_alias("http://localhost.example:4566"), "http://localhost.example:4566");
         assert_eq!(via_host_alias("https://mws.internal"), "https://mws.internal");
+    }
+
+    #[test]
+    fn networks() {
+        let own = || Some("abc".to_string());
+        assert_eq!(Network::choose("", own()), Network::Container("abc".into()));
+        assert_eq!(Network::choose("host", own()), Network::Host);
+        assert_eq!(Network::choose("container:mws", None), Network::Container("mws".into()));
+        let default = if cfg!(target_os = "linux") { Network::Host } else { Network::Bridge };
+        assert_eq!(Network::choose("", None), default);
+    }
+
+    #[test]
+    fn own_container_ids_come_from_mountinfo() {
+        let id = "0123456789abcdef".repeat(4);
+        let docker = format!(
+            "650 641 254:1 /var/lib/docker/containers/{id}/hostname /etc/hostname rw,relatime - ext4 /dev/vda1 rw\n"
+        );
+        assert_eq!(container_id_from_mountinfo(&docker), Some(id.clone()));
+        let podman = format!(
+            "1 2 0:1 /containers/storage/overlay-containers/{id}/userdata/resolv.conf /etc/resolv.conf rw - tmpfs tmpfs rw\n"
+        );
+        assert_eq!(container_id_from_mountinfo(&podman), Some(id));
+        assert_eq!(container_id_from_mountinfo("22 27 0:21 / /proc rw - proc proc rw\n"), None);
     }
 }
