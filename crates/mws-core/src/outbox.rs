@@ -520,6 +520,13 @@ impl Service for Deliveries {
     /// now (at `ctx`'s emulated time).
     async fn handle(&self, ctx: RequestContext, request: HttpRequest) -> HttpResponse {
         self.0.learn_clock(ctx.received_at);
+        // Restored jobs have no live context: they take the emulator's URL
+        // from the queue, so a drain right after a load must record it.
+        if ctx.endpoint.is_some() {
+            if let Ok(mut e) = self.0.outbox.endpoint.lock() {
+                e.clone_from(&ctx.endpoint);
+            }
+        }
         if request.method() == http::Method::POST && request.uri().path().trim_end_matches('/').ends_with("/drain") {
             let delivered = self.0.retry_due(ctx.received_at, true).await;
             let left = self.0.deliveries().iter().filter(|d| d.status == "pending").count();
