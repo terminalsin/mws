@@ -1,6 +1,6 @@
 # EC2 Auto Scaling
 
-> Crate: [`mws-autoscaling`](../../crates/services/mws-autoscaling) · Tests: [`autoscaling.rs`](../../tests/e2e-rust/tests/e2e/autoscaling.rs)
+> Crate: [`mws-autoscaling`](../../crates/services/mws-autoscaling) · Tests: [`autoscaling.rs`](../../tests/e2e-rust/tests/e2e/autoscaling.rs), [`autoscaling_elb.rs`](../../tests/e2e-rust/tests/e2e/autoscaling_elb.rs), [`autoscaling_iam.rs`](../../tests/e2e-rust/tests/e2e/autoscaling_iam.rs)
 
 All 68 operations of EC2 Auto Scaling (API version 2011-01-01, awsQuery).
 Groups are reconciled on the emulated clock: they launch, start, stop and
@@ -26,8 +26,8 @@ and send notifications through [SNS](sns.md), [SQS](sqs.md) and
 | Account limits, catalogues | ✅ | `DescribeAccountLimits`, adjustment types, metric collection types, lifecycle hook and termination policy types, notification types, scaling process types. |
 | Mixed instances, Spot | 🟡 | Mixed instances policies' launch template and overrides (instance type, image) are used, and the instances distribution splits launches: the on-demand base capacity first, then the on-demand percentage above it (rounded up), the rest launched as Spot instances. Allocation strategies, Spot prices and interruptions are not modelled. |
 | Weighted capacity | 🟡 | Overrides' `WeightedCapacity` is kept on the instance, but capacity counts instances, not weights. |
-| ELB health checks | 🟡 | `HealthCheckType` `ELB`/`VPC_LATTICE`/`EBS` is accepted; only EC2 status and `SetInstanceHealth` mark instances unhealthy. |
-| Authorization | ✅ | `autoscaling:*` actions on group and launch configuration ARNs with AWS's condition keys (`autoscaling:MinSize`, `MaxSize`, `LaunchConfigurationName`, `LaunchTemplateVersionSpecified`, `VPCZoneIdentifiers`, resource tags). |
+| ELB health checks | ✅ | With `HealthCheckType` `ELB`, once `HealthCheckGracePeriod` has passed since an instance went in service, an instance that is `unhealthy` in any attached target group (or `OutOfService` after failing a Classic Load Balancer's health checks) is marked `Unhealthy` and replaced, with AWS's "ELB system health check failure" cause. `VPC_LATTICE` and `EBS` are accepted but only EC2 status and `SetInstanceHealth` count for them. |
+| Authorization | ✅ | `autoscaling:*` actions on group and launch configuration ARNs with AWS's condition keys (`autoscaling:MinSize`, `MaxSize`, `LaunchConfigurationName`, `LaunchTemplateVersionSpecified`, `VPCZoneIdentifiers`, resource tags). Tags on `CreateAutoScalingGroup` also need `autoscaling:CreateOrUpdateTags` (with `aws:RequestTag`/`aws:TagKeys`). The caller needs `iam:PassRole` (with `iam:PassedToService` `ec2.amazonaws.com`) on the role of a launch template's or launch configuration's instance profile (`AccessDenied` "You are not authorized to use launch template: ..." for templates, the IAM denial for configurations) and on a custom `ServiceLinkedRoleARN` (passed to `autoscaling.amazonaws.com`). |
 
 ## Lifecycle hooks and notifications
 
@@ -46,9 +46,8 @@ and send notifications through [SNS](sns.md), [SQS](sqs.md) and
 | --- | :---: | --- |
 | Simple and step scaling | ✅ | `ChangeInCapacity`, `ExactCapacity`, `PercentChangeInCapacity` with `MinAdjustmentMagnitude`, step intervals checked for gaps and overlaps, cooldowns (`HonorCooldown`, `ScalingActivityInProgress`), `ExecutePolicy` with metric value and breach threshold. |
 | CloudWatch alarms | ✅ | Alarms whose actions name a scaling policy ARN run it when they go to `ALARM` (the cause names the alarm), unless `AlarmNotification` is suspended or the group is in cooldown. |
-| Target tracking | ✅ | `PutScalingPolicy` creates the two `TargetTracking-<group>-AlarmHigh/AlarmLow-<uuid>` alarms in CloudWatch for predefined (`ASGAverageCPUUtilization`, `ASGAverageNetworkIn/Out`, `ALBRequestCountPerTarget`) and customized metrics, deleted with the policy; their alarms scale to bring the metric to the target. |
+| Target tracking | ✅ | `PutScalingPolicy` creates the two `TargetTracking-<group>-AlarmHigh/AlarmLow-<uuid>` alarms in CloudWatch for predefined (`ASGAverageCPUUtilization`, `ASGAverageNetworkIn/Out`, `ALBRequestCountPerTarget`) and customized metrics, including metric math (`CustomizedMetricSpecification.Metrics`, exactly one query returning data) as metric math alarms, deleted with the policy; their alarms scale to bring the metric to the target. |
 | Predictive scaling | 🟡 | Policies are stored and `GetPredictiveScalingForecast` answers, but the forecast is flat (today's capacity) and `ForecastAndScale` does not act on it. |
-| Metric math target tracking | 🟡 | Accepted and stored; the alarms watch the first metric only. |
 | Scheduled actions | ✅ | One-time and recurring (cron) actions run on the emulated clock and change min/max/desired, `BatchPutScheduledUpdateGroupAction`/`BatchDeleteScheduledAction` with per-action failures; one-time actions are removed once run. |
 | Time zones | 🟡 | `TimeZone` is stored, but recurrences are evaluated in UTC. |
 
@@ -64,7 +63,8 @@ and send notifications through [SNS](sns.md), [SQS](sqs.md) and
 
 | Feature | Status | Details |
 | --- | :---: | --- |
-| Classic and target groups | ✅ | `AttachLoadBalancers`/`AttachLoadBalancerTargetGroups`/`AttachTrafficSources` (and their detach and describe operations) register every in-service instance with the load balancer or target group, newly in-service instances are registered, and terminating, standby and detached ones are deregistered first; the state moves `Adding` → `Added` → `InService`, `Removing` → `Removed`. |
+| Classic and target groups | ✅ | `AttachLoadBalancers`/`AttachLoadBalancerTargetGroups`/`AttachTrafficSources` (and their detach and describe operations) register every in-service instance with the load balancer or target group, newly in-service instances are registered, and terminating, standby and detached ones are deregistered first; the state moves `Adding` → `Added` → `InService`, `Removing` → `Removed`. Target groups and Classic Load Balancers are checked when attached (on create, attach, and when an update changes the group's subnets): they must exist, take `instance` targets and be in the group's VPC, else `ValidationError` "Provided Target Groups may not be valid. Please ensure they exist and try again." (or "Provided Load Balancers ..."). |
+| Connection draining | ✅ | A terminating instance is deregistered first and stays `Terminating` for the longest deregistration delay (`deregistration_delay.timeout_seconds`, 300 s by default; a Classic Load Balancer's connection draining timeout when enabled) of the sources that receive traffic, on the emulated clock, before terminate hooks run and EC2 terminates it. |
 | VPC Lattice | ❌ | MWS has no VPC Lattice, so `vpc-lattice` traffic sources get no targets. |
 
 ## Known gaps
@@ -72,7 +72,7 @@ and send notifications through [SNS](sns.md), [SQS](sqs.md) and
 - Capacity counts instances, not weights; Spot allocation strategies, prices
   and interruptions are not modelled, and scale-in does not rebalance the
   On-Demand/Spot split.
-- Health checks other than EC2 status do not mark instances unhealthy.
+- VPC Lattice and EBS health checks do not mark instances unhealthy.
 - Predictive scaling forecasts are flat and never scale the group.
 - Recurring scheduled actions are evaluated in UTC whatever their `TimeZone`.
 - Lifecycle hook roles' permissions are not checked.

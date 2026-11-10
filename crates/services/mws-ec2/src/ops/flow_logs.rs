@@ -9,8 +9,8 @@ use mws_core::{ConditionContext, RequestContext, ServiceError};
 
 use crate::generated::types as t;
 use crate::util::{
-    arn, authorize, err, invalid_parameter, missing_parameter, new_id, paginate, request_tag_context,
-    resource_tag_context, s, some_tags, tags_for, Filters, Kind,
+    arn, err, invalid_parameter, missing_parameter, new_id, paginate, request_tag_context, resource_tag_context, s,
+    some_tags, tags_for, Filters, Kind,
 };
 use crate::{account_of, Ec2};
 
@@ -119,7 +119,7 @@ impl Ec2 {
         }
         let format = input.log_format.clone().unwrap_or_else(|| DEFAULT_FORMAT.into());
         let account = account_of(ctx);
-        authorize(
+        self.authorize_known(
             ctx,
             "CreateFlowLogs",
             &[(arn(ctx, &account, "vpc-flow-log/*"), request_tag_context(&tags))],
@@ -134,7 +134,19 @@ impl Ec2 {
             })?;
         }
         let now = ctx.received_at;
+        let fp = crate::idempotency::fingerprint(&input);
+        let token = input.client_token.as_deref();
         self.with_region(ctx, |r| {
+            // A replay returns the flow logs the first call made.
+            if let Some(ids) = crate::idempotency::replay(r, "CreateFlowLogs", token, &fp, |ids| {
+                ids.split(',').any(|id| r.flow_logs.contains_key(id))
+            })? {
+                return Ok(t::CreateFlowLogsResult {
+                    client_token: input.client_token.clone(),
+                    flow_log_ids: Some(ids.split(',').filter(|id| !id.is_empty()).map(String::from).collect()),
+                    unsuccessful: Some(Vec::new()),
+                });
+            }
             let mut ids = Vec::new();
             let mut failed = Vec::new();
             for rid in &input.resource_ids {
@@ -203,6 +215,9 @@ impl Ec2 {
                 );
                 ids.push(id);
             }
+            if !ids.is_empty() {
+                crate::idempotency::remember(r, "CreateFlowLogs", token, &fp, &ids.join(","));
+            }
             Ok(t::CreateFlowLogsResult {
                 client_token: input.client_token.clone(),
                 flow_log_ids: Some(ids),
@@ -236,7 +251,7 @@ impl Ec2 {
         } else {
             resources
         };
-        authorize(ctx, "DeleteFlowLogs", &resources, input.dry_run)?;
+        self.authorize_known(ctx, "DeleteFlowLogs", &resources, input.dry_run)?;
         self.with_region(ctx, |r| {
             let mut failed = Vec::new();
             for id in &input.flow_log_ids {
@@ -253,7 +268,7 @@ impl Ec2 {
         ctx: &RequestContext,
         input: t::DescribeFlowLogsRequest,
     ) -> Result<t::DescribeFlowLogsResult, ServiceError> {
-        authorize(ctx, "DescribeFlowLogs", &[("*".into(), ConditionContext::new())], input.dry_run)?;
+        self.authorize_known(ctx, "DescribeFlowLogs", &[("*".into(), ConditionContext::new())], input.dry_run)?;
         let filters = Filters::new(&input.filter);
         let ids = input.flow_log_ids.clone().unwrap_or_default();
         self.with_region(ctx, |r| {
@@ -290,7 +305,7 @@ impl Ec2 {
         ctx: &RequestContext,
         input: t::DescribeInstanceCreditSpecificationsRequest,
     ) -> Result<t::DescribeInstanceCreditSpecificationsResult, ServiceError> {
-        authorize(
+        self.authorize_known(
             ctx,
             "DescribeInstanceCreditSpecifications",
             &[("*".into(), ConditionContext::new())],
@@ -352,7 +367,7 @@ impl Ec2 {
             .iter()
             .map(|s| (arn(ctx, &account, &format!("instance/{}", s.instance_id)), ConditionContext::new()))
             .collect();
-        authorize(ctx, "ModifyInstanceCreditSpecification", &resources, input.dry_run)?;
+        self.authorize_known(ctx, "ModifyInstanceCreditSpecification", &resources, input.dry_run)?;
         self.with_region(ctx, |r| {
             let mut ok = Vec::new();
             let mut failed = Vec::new();
@@ -409,7 +424,7 @@ impl Ec2 {
         let account = account_of(ctx);
         let found = self.with_region(ctx, |r| r.instances.get(id).map(|i| i.instance.clone()));
         let inst = found.ok_or_else(|| Kind::Instance.not_found(id))?;
-        authorize(
+        self.authorize_known(
             ctx,
             action,
             &[(arn(ctx, &account, &format!("instance/{id}")), resource_tag_context(inst.tags.as_ref()))],

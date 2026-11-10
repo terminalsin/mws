@@ -143,6 +143,7 @@ async fn instance_settings() {
         .unwrap();
     let id = run.instances()[0].instance_id().unwrap().to_string();
     assert_eq!(run.instances()[0].private_dns_name(), Some(format!("{id}.ec2.internal").as_str()));
+    crate::ec2::wait_state(&ec2, &id, InstanceStateName::Running).await;
 
     // Detailed monitoring: the change shows in progress, then done.
     let m = ec2.monitor_instances().instance_ids(&id).send().await.unwrap();
@@ -166,7 +167,7 @@ async fn instance_settings() {
         ec2.modify_instance_cpu_options().instance_id(&id).core_count(1).threads_per_core(1).send().await.unwrap_err();
     assert_eq!(code(&e.into_service_error()), "IncorrectInstanceState");
     ec2.stop_instances().instance_ids(&id).send().await.unwrap();
-    assert_eq!(instance(&ec2, &id).await.state().unwrap().name(), Some(&InstanceStateName::Stopped));
+    crate::ec2::wait_state(&ec2, &id, InstanceStateName::Stopped).await;
     let c = ec2.modify_instance_cpu_options().instance_id(&id).core_count(1).threads_per_core(1).send().await.unwrap();
     assert_eq!(c.core_count(), Some(1));
     let e =
@@ -209,6 +210,7 @@ async fn instance_settings() {
     let e = ec2.send_diagnostic_interrupt().instance_id(&id).send().await.unwrap_err();
     assert_eq!(code(&e.into_service_error()), "IncorrectInstanceState");
     ec2.start_instances().instance_ids(&id).send().await.unwrap();
+    crate::ec2::wait_state(&ec2, &id, InstanceStateName::Running).await;
     ec2.send_diagnostic_interrupt().instance_id(&id).send().await.unwrap();
 
     // Topology covers only the families that have it.
@@ -331,7 +333,10 @@ async fn placement_groups() {
     let e = ec2.delete_placement_group().group_name("parts").send().await.unwrap_err();
     assert_eq!(code(&e.into_service_error()), "InvalidPlacementGroup.InUse");
     let ids: Vec<String> = run.instances().iter().map(|i| i.instance_id().unwrap().to_string()).collect();
-    ec2.terminate_instances().set_instance_ids(Some(ids)).send().await.unwrap();
+    ec2.terminate_instances().set_instance_ids(Some(ids.clone())).send().await.unwrap();
+    for id in &ids {
+        crate::ec2::wait_state(&ec2, id, InstanceStateName::Terminated).await;
+    }
     ec2.delete_placement_group().group_name("parts").send().await.unwrap();
 
     // Spread groups hold at most seven instances per zone.
@@ -404,6 +409,7 @@ async fn capacity_reservations() {
     // Growing it makes room; stopping an instance frees its slot.
     ec2.modify_capacity_reservation().capacity_reservation_id(&cr_id).instance_count(3).send().await.unwrap();
     let first = run.instances()[0].instance_id().unwrap().to_string();
+    crate::ec2::wait_state(&ec2, &first, InstanceStateName::Running).await;
     ec2.stop_instances().instance_ids(&first).send().await.unwrap();
     let d = ec2.describe_capacity_reservations().capacity_reservation_ids(&cr_id).send().await.unwrap();
     assert_eq!(d.capacity_reservations()[0].available_instance_count(), Some(2));

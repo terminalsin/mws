@@ -65,6 +65,12 @@ pub(crate) struct Context<'a> {
     /// Alias targets outside Route 53 (hosted zone id, DNS name, record
     /// type) to their values; `None` when nothing knows the target.
     pub external: &'a ExternalAliases<'a>,
+    /// Whether an alias target outside Route 53 (hosted zone id, DNS name)
+    /// is healthy; `None` when nothing knows the target.
+    pub external_healthy: &'a dyn Fn(&str, &str) -> Option<bool>,
+    /// The zone owner's other hosted zones, by id, for aliases to their
+    /// records.
+    pub zones: &'a dyn Fn(&str) -> Option<&'a Zone>,
 }
 
 fn ttl_of(r: &ResourceRecordSet) -> u32 {
@@ -211,13 +217,20 @@ fn usable(zone: &Zone, r: &ResourceRecordSet, cx: &Context<'_>, depth: usize) ->
         return false;
     }
     match &r.alias_target {
-        Some(a) if a.evaluate_target_health => !alias_records(zone, r, cx, depth).is_empty(),
+        Some(a) if a.evaluate_target_health => {
+            let target_zone = crate::strip_id(&a.hosted_zone_id);
+            let external = target_zone != zone.id && (cx.zones)(target_zone).is_none();
+            match external.then(|| (cx.external_healthy)(target_zone, &a.dns_name)).flatten() {
+                Some(healthy) => healthy,
+                None => !alias_records(zone, r, cx, depth).is_empty(),
+            }
+        }
         _ => true,
     }
 }
 
 /// The records an alias resolves to: the target record sets of the same
-/// type in the zone, routed in turn, or the values of a target outside
+/// type in the zone (or another of the owner's zones), routed in turn, or the values of a target outside
 /// Route 53 that another service resolves (such as an accelerator's
 /// static IPs). Other targets resolve to nothing.
 fn alias_records(zone: &Zone, r: &ResourceRecordSet, cx: &Context<'_>, depth: usize) -> Vec<Record> {
@@ -226,18 +239,23 @@ fn alias_records(zone: &Zone, r: &ResourceRecordSet, cx: &Context<'_>, depth: us
         return Vec::new();
     }
     let target_zone = crate::strip_id(&alias.hosted_zone_id);
-    if target_zone != zone.id {
-        let values = (cx.external)(target_zone, &alias.dns_name, &r.r#type).unwrap_or_default();
-        // Alias records take the target's TTL; AWS resource targets use 60.
-        return values
-            .into_iter()
-            .map(|value| Record { name: r.name.clone(), ty: r.r#type.clone(), ttl: 60, value })
-            .collect();
-    }
+    let zone = match (target_zone != zone.id).then(|| (cx.zones)(target_zone)) {
+        // A record in another of the owner's zones.
+        Some(Some(other)) => other,
+        Some(None) => return external_alias_records(r, target_zone, &alias.dns_name, cx),
+        None => zone,
+    };
     let Some(target) = names::normalize(&alias.dns_name) else { return Vec::new() };
     let group: Vec<&ResourceRecordSet> =
         zone.records.values().filter(|t| t.name == target && t.r#type == r.r#type).collect();
     select(zone, &group, cx, depth + 1)
+}
+
+/// The records of an alias whose target another service resolves.
+fn external_alias_records(r: &ResourceRecordSet, target_zone: &str, dns_name: &str, cx: &Context<'_>) -> Vec<Record> {
+    let values = (cx.external)(target_zone, dns_name, &r.r#type).unwrap_or_default();
+    // Alias records take the target's TTL; AWS resource targets use 60.
+    values.into_iter().map(|value| Record { name: r.name.clone(), ty: r.r#type.clone(), ttl: 60, value }).collect()
 }
 
 fn expand(zone: &Zone, r: &ResourceRecordSet, cx: &Context<'_>, depth: usize) -> Vec<Record> {

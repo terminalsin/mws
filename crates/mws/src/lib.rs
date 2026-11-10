@@ -1,11 +1,13 @@
 //! Composition root. This is the only crate that knows which services exist.
 
 mod autoscaling;
+mod ec2_signals;
 mod eks;
 mod links;
 mod platform_amplify;
 mod platform_bedrock;
 mod platform_costs;
+mod route53_links;
 mod ses;
 mod sinks;
 mod ssm;
@@ -479,6 +481,7 @@ fn build_with_store(config: Config, store: Option<Arc<Store>>) -> Mws {
     }));
     tracing::info!(backend = ec2.backend_name(), "EC2 compute backend");
     cloudwatch.register_action_target("automate", Arc::new(wiring::Ec2AlarmActions(ec2.clone())));
+    let ec2_clock = ec2_signals::wire(&ec2, &events, &cloudwatch);
     ec2.set_instance_roles(Arc::new(links::Ec2InstanceRoles { iam: iam.clone(), sts: sts.clone() }));
     guardduty.set_event_sink(Arc::new(sinks::GuardDutyToEvents(events.clone())));
     guardduty.set_finding_exporter(Arc::new(links::GuardDutyToS3(s3.clone())));
@@ -538,6 +541,7 @@ fn build_with_store(config: Config, store: Option<Arc<Store>>) -> Mws {
     elb.set_metric_sink(Arc::new(links::ElbToCloudWatch(cloudwatch.clone())));
     ec2.set_load_balancers(Arc::new(links::Ec2LoadBalancers(elb.clone())));
     globalaccelerator.add_endpoint_directory(Arc::new(links::GlobalAcceleratorElb(elb.clone())));
+    route53_links::wire(&route53, &elb, &ec2);
     let autoscaling = AutoScaling::new(ec2.clone());
     autoscaling::wire(&autoscaling, &sns, &sqs, &events, &cloudwatch, &elb);
     let ses = if config.ses_auto_verify { Ses::with_auto_verify() } else { Ses::new() };
@@ -739,6 +743,7 @@ fn build_with_store(config: Config, store: Option<Arc<Store>>) -> Mws {
         .environment(Environment { partition: config.iam.partition.clone(), ..Environment::default() })
         .request_observer(Arc::new(servicequotas.clone()))
         .request_observer(Arc::new(ce.clone()))
+        .request_observer(ec2_clock)
         // CloudTrail records every API call the gateway dispatches.
         .observer(Arc::new(cloudtrail.clone()))
         .authorizer(authorizer);

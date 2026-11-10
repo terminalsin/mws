@@ -45,6 +45,7 @@ All 57 operations are generated from the AWS model (awsJson1.1) and implemented.
 | Feature | Status | Details |
 | --- | :---: | --- |
 | S3 | ✅ | Buckets with EventBridge notifications put `aws.s3` events (object created and deleted, restores, tags, ACLs, storage class changes) on the owner's default bus. |
+| EC2 | ✅ | `aws.ec2` `EC2 Instance State-change Notification` events for every instance transition (see [EC2](ec2.md)). |
 | SSM, ACM, CloudWatch | ✅ | Parameter Store policy actions and changes, certificate expiry warnings, and alarm state changes. |
 
 See also: [all services](README.md) · [authentication and authorization](../security.md).

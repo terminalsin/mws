@@ -289,6 +289,7 @@ async fn endpoint_groups_follow_ec2_endpoints() {
     // A stopped instance fails its health checks, through the Elastic IP
     // too.
     ec2.stop_instances().instance_ids(&instance_id).send().await.unwrap();
+    crate::ec2::wait_state(&ec2, &instance_id, InstanceStateName::Stopped).await;
     let d = ga.describe_endpoint_group().endpoint_group_arn(&group_arn).send().await.unwrap();
     let endpoints = d.endpoint_group().unwrap().endpoint_descriptions();
     assert!(endpoints.iter().all(|e| e.health_state() == Some(&HealthState::Unhealthy)), "{endpoints:?}");

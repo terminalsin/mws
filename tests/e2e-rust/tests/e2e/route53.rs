@@ -23,6 +23,15 @@ fn change(action: ChangeAction, set: ResourceRecordSet) -> Change {
     Change::builder().action(action).resource_record_set(set).build().unwrap()
 }
 
+/// A new VPC in `region` of the account `conf` signs for: private hosted
+/// zones only take VPCs that exist.
+pub(crate) async fn real_vpc(conf: &aws_config::SdkConfig, region: &'static str) -> String {
+    let conf = conf.to_builder().region(aws_config::Region::from_static(region)).build();
+    let ec2 = aws_sdk_ec2::Client::new(&conf);
+    let vpc = ec2.create_vpc().cidr_block("10.42.0.0/16").send().await.unwrap();
+    vpc.vpc().unwrap().vpc_id().unwrap().to_string()
+}
+
 async fn create_zone(r53: &Client, name: &str) -> String {
     let out = r53
         .create_hosted_zone()
@@ -218,20 +227,21 @@ async fn pagination_and_validation() {
 async fn private_zones_health_checks_and_tags() {
     let mws = Mws::start().await;
     let r53 = client(&mws).await;
-    let vpc = Vpc::builder().vpc_id("vpc-0abc1234").vpc_region(VpcRegion::UsEast1).build();
+    let conf = mws.root_sdk_config().await;
+    let (east, west) = (real_vpc(&conf, "us-east-1").await, real_vpc(&conf, "us-west-2").await);
+    let vpc = Vpc::builder().vpc_id(&east).vpc_region(VpcRegion::UsEast1).build();
     let out =
         r53.create_hosted_zone().name("internal.corp").caller_reference("p1").vpc(vpc.clone()).send().await.unwrap();
     let zone_id = out.hosted_zone().unwrap().id().trim_start_matches("/hostedzone/").to_string();
     assert!(out.hosted_zone().unwrap().config().unwrap().private_zone());
-    let by_vpc =
-        r53.list_hosted_zones_by_vpc().vpc_id("vpc-0abc1234").vpc_region(VpcRegion::UsEast1).send().await.unwrap();
+    let by_vpc = r53.list_hosted_zones_by_vpc().vpc_id(&east).vpc_region(VpcRegion::UsEast1).send().await.unwrap();
     assert_eq!(by_vpc.hosted_zone_summaries()[0].hosted_zone_id(), zone_id);
     let err =
         r53.disassociate_vpc_from_hosted_zone().hosted_zone_id(&zone_id).vpc(vpc.clone()).send().await.unwrap_err();
     assert!(err.into_service_error().is_last_vpc_association());
 
     // A second VPC can be associated and disassociated again.
-    let second = Vpc::builder().vpc_id("vpc-0def5678").vpc_region(VpcRegion::UsWest2).build();
+    let second = Vpc::builder().vpc_id(&west).vpc_region(VpcRegion::UsWest2).build();
     let change = r53
         .associate_vpc_with_hosted_zone()
         .hosted_zone_id(&zone_id)
@@ -245,8 +255,7 @@ async fn private_zones_health_checks_and_tags() {
     assert!(dup.unwrap_err().into_service_error().is_conflicting_domain_exists());
     let zone = r53.get_hosted_zone().id(&zone_id).send().await.unwrap();
     assert_eq!(zone.vpcs().len(), 2);
-    let by_vpc =
-        r53.list_hosted_zones_by_vpc().vpc_id("vpc-0def5678").vpc_region(VpcRegion::UsWest2).send().await.unwrap();
+    let by_vpc = r53.list_hosted_zones_by_vpc().vpc_id(&west).vpc_region(VpcRegion::UsWest2).send().await.unwrap();
     assert_eq!(by_vpc.hosted_zone_summaries().len(), 1);
     r53.disassociate_vpc_from_hosted_zone().hosted_zone_id(&zone_id).vpc(second.clone()).send().await.unwrap();
     let not_associated = r53.disassociate_vpc_from_hosted_zone().hosted_zone_id(&zone_id).vpc(second).send().await;

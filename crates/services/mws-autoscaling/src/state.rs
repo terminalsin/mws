@@ -105,6 +105,9 @@ pub struct Member {
     pub decrement_on_terminate: bool,
     /// When termination finishes, return to the warm pool instead.
     pub return_to_warm_pool: bool,
+    /// When it was deregistered from the group's load balancers;
+    /// termination waits for the deregistration delay.
+    pub deregistered_at: Option<DateTime<Utc>>,
     /// `TerminateInstances` has been sent.
     pub terminate_sent: bool,
     /// Where to go after a launch hook (`InService`, `Standby` or a

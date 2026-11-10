@@ -1,6 +1,7 @@
 //! Service Quotas: the limits EC2 enforces (On-Demand vCPUs by instance
-//! class, Elastic IPs, VPCs, security group rules) and the usage it reports
-//! back.
+//! class, Elastic IPs, VPCs, subnets, internet and NAT gateways, security
+//! groups and their rules, routes, network ACL rules) and the usage it
+//! reports back.
 
 use chrono::{DateTime, Utc};
 
@@ -11,6 +12,13 @@ use crate::{catalog, Ec2, State};
 pub(crate) const ELASTIC_IPS: (&str, &str) = ("ec2", "L-0263D0A3");
 pub(crate) const VPCS: (&str, &str) = ("vpc", "L-F678F1CE");
 pub(crate) const RULES_PER_GROUP: (&str, &str) = ("vpc", "L-0EA8095F");
+pub(crate) const SUBNETS_PER_VPC: (&str, &str) = ("vpc", "L-407747CB");
+pub(crate) const INTERNET_GATEWAYS: (&str, &str) = ("vpc", "L-A4707A72");
+pub(crate) const SECURITY_GROUPS: (&str, &str) = ("vpc", "L-E79EC296");
+pub(crate) const GROUPS_PER_INTERFACE: (&str, &str) = ("vpc", "L-2AFB9258");
+pub(crate) const NAT_GATEWAYS_PER_AZ: (&str, &str) = ("vpc", "L-FE5A380F");
+pub(crate) const ROUTES_PER_TABLE: (&str, &str) = ("vpc", "L-93826ACB");
+pub(crate) const RULES_PER_ACL: (&str, &str) = ("vpc", "L-2AEEBF1A");
 
 /// Every Running On-Demand vCPU quota.
 pub(crate) const VCPU_QUOTAS: &[&str] = &[

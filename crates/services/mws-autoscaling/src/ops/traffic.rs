@@ -81,6 +81,14 @@ impl AutoScaling {
         sources: Vec<t::TrafficSourceIdentifier>,
     ) -> Result<(), ServiceError> {
         let account = crate::account_of(ctx);
+        // Authorize and find the group's VPC first, then check the sources
+        // (outside the state lock: ELB answers).
+        let subnets =
+            self.with_region(ctx, |r| authorized_group(ctx, r, action, group).map(|g| g.subnet_zones.clone()))?;
+        let vpc = self.subnets_vpc(ctx, &subnets);
+        let new: Vec<t::TrafficSourceIdentifier> =
+            sources.iter().filter(|s| !s.identifier.is_empty()).cloned().collect();
+        self.check_traffic_sources(ctx, vpc.as_deref(), &new)?;
         let ops = self.with_region(ctx, |r| {
             let g = authorized_group(ctx, r, action, group)?;
             if g.traffic_sources.len() + sources.len() > 50 {

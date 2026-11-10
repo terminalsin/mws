@@ -12,8 +12,8 @@ use mws_core::{ConditionContext, RequestContext, ServiceError};
 use crate::generated::types as t;
 use crate::state::EndpointServiceRecord;
 use crate::util::{
-    arn, authorize, err, invalid_parameter, missing_parameter, new_id, paginate, request_tag_context,
-    resource_tag_context, s, some_tags, tags_for, Filters, Kind,
+    arn, err, invalid_parameter, missing_parameter, new_id, paginate, request_tag_context, resource_tag_context, s,
+    some_tags, tags_for, Filters, Kind,
 };
 use crate::{account_of, Ec2};
 
@@ -157,7 +157,7 @@ impl Ec2 {
                 })
                 .collect()
         });
-        authorize(ctx, action, &resources, dry_run)
+        self.authorize_known(ctx, action, &resources, dry_run)
     }
 
     /// Check load balancer ARNs: they must exist (when ELB is wired in) and
@@ -242,7 +242,7 @@ impl Ec2 {
             }
         }
         let account = account_of(ctx);
-        authorize(
+        self.authorize_known(
             ctx,
             "CreateVpcEndpointServiceConfiguration",
             &[(arn(ctx, &account, "vpc-endpoint-service/*"), request_tag_context(&tags))],
@@ -250,7 +250,19 @@ impl Ec2 {
         )?;
         let zones = self.balancer_zones(ctx, &arns, lb_type)?;
         let region = ctx.region.clone();
+        let fp = crate::idempotency::fingerprint(&input);
+        let token = input.client_token.as_deref();
         self.with_region(ctx, |r| {
+            if let Some(id) =
+                crate::idempotency::replay(r, "CreateVpcEndpointServiceConfiguration", token, &fp, |id| {
+                    r.endpoint_services.contains_key(id)
+                })?
+            {
+                return Ok(t::CreateVpcEndpointServiceConfigurationResult {
+                    service_configuration: r.endpoint_services.get(&id).map(|s| s.config.clone()),
+                    client_token: input.client_token.clone(),
+                });
+            }
             let id = new_id("vpce-svc");
             let pdns = input.private_dns_name.as_ref().map(|name| {
                 let token = new_id("x")[2..14].to_string();
@@ -294,6 +306,7 @@ impl Ec2 {
                 supported_regions: Some(regions),
                 remote_access_enabled: Some(false),
             };
+            crate::idempotency::remember(r, "CreateVpcEndpointServiceConfiguration", token, &fp, &id);
             r.endpoint_services.insert(
                 id,
                 EndpointServiceRecord {
@@ -314,7 +327,7 @@ impl Ec2 {
         ctx: &RequestContext,
         input: t::DescribeVpcEndpointServiceConfigurationsRequest,
     ) -> Result<t::DescribeVpcEndpointServiceConfigurationsResult, ServiceError> {
-        authorize(
+        self.authorize_known(
             ctx,
             "DescribeVpcEndpointServiceConfigurations",
             &[("*".into(), ConditionContext::new())],
@@ -632,7 +645,12 @@ impl Ec2 {
         ctx: &RequestContext,
         input: t::DescribeVpcEndpointConnectionsRequest,
     ) -> Result<t::DescribeVpcEndpointConnectionsResult, ServiceError> {
-        authorize(ctx, "DescribeVpcEndpointConnections", &[("*".into(), ConditionContext::new())], input.dry_run)?;
+        self.authorize_known(
+            ctx,
+            "DescribeVpcEndpointConnections",
+            &[("*".into(), ConditionContext::new())],
+            input.dry_run,
+        )?;
         let filters = Filters::new(&input.filters);
         self.with_region(ctx, |r| {
             let mut out = Vec::new();
@@ -872,7 +890,9 @@ impl Ec2 {
                 ep.dns_entries = Some(Vec::new());
                 ep.groups = None;
             }
-            r.vpc_endpoints.insert(id, ep.clone());
+            r.vpc_endpoints.insert(id.clone(), ep.clone());
+            let fp = crate::idempotency::fingerprint(input);
+            crate::idempotency::remember(r, "CreateVpcEndpoint", input.client_token.as_deref(), &fp, &id);
             Ok(ep)
         })?;
         let connection = t::VpcEndpointConnection {

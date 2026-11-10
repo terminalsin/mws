@@ -147,11 +147,14 @@ async fn accounts_keep_their_route53_resources_apart() {
     let owner = Client::new(&root);
 
     let vpc = |id: &str| Vpc::builder().vpc_id(id).vpc_region(VpcRegion::UsEast1).build();
+    // Each VPC is in its own account.
+    let owner_vpc = crate::route53::real_vpc(&root, "us-east-1").await;
+    let member_vpc = crate::route53::real_vpc(&sts_config(&mws, creds.credentials().unwrap()).await, "us-east-1").await;
     let private = owner
         .create_hosted_zone()
         .name("corp.internal")
         .caller_reference("corp")
-        .vpc(vpc("vpc-0aaaaaaa"))
+        .vpc(vpc(&owner_vpc))
         .hosted_zone_config(HostedZoneConfig::builder().private_zone(true).build())
         .send()
         .await
@@ -197,7 +200,7 @@ async fn accounts_keep_their_route53_resources_apart() {
     let unauthorized = member
         .associate_vpc_with_hosted_zone()
         .hosted_zone_id(&private_id)
-        .vpc(vpc("vpc-0bbbbbbb"))
+        .vpc(vpc(&member_vpc))
         .send()
         .await
         .unwrap_err()
@@ -206,28 +209,22 @@ async fn accounts_keep_their_route53_resources_apart() {
     owner
         .create_vpc_association_authorization()
         .hosted_zone_id(&private_id)
-        .vpc(vpc("vpc-0bbbbbbb"))
+        .vpc(vpc(&member_vpc))
         .send()
         .await
         .unwrap();
-    member.associate_vpc_with_hosted_zone().hosted_zone_id(&private_id).vpc(vpc("vpc-0bbbbbbb")).send().await.unwrap();
+    member.associate_vpc_with_hosted_zone().hosted_zone_id(&private_id).vpc(vpc(&member_vpc)).send().await.unwrap();
     let listed =
-        member.list_hosted_zones_by_vpc().vpc_id("vpc-0bbbbbbb").vpc_region(VpcRegion::UsEast1).send().await.unwrap();
+        member.list_hosted_zones_by_vpc().vpc_id(&member_vpc).vpc_region(VpcRegion::UsEast1).send().await.unwrap();
     let summary = &listed.hosted_zone_summaries()[0];
     assert_eq!(summary.hosted_zone_id(), private_id);
     assert_eq!(summary.owner().unwrap().owning_account(), Some("123456789012"));
-    member
-        .disassociate_vpc_from_hosted_zone()
-        .hosted_zone_id(&private_id)
-        .vpc(vpc("vpc-0bbbbbbb"))
-        .send()
-        .await
-        .unwrap();
+    member.disassociate_vpc_from_hosted_zone().hosted_zone_id(&private_id).vpc(vpc(&member_vpc)).send().await.unwrap();
     // The member may not remove the owner's own VPC.
     let denied = member
         .disassociate_vpc_from_hosted_zone()
         .hosted_zone_id(&private_id)
-        .vpc(vpc("vpc-0aaaaaaa"))
+        .vpc(vpc(&owner_vpc))
         .send()
         .await
         .unwrap_err()

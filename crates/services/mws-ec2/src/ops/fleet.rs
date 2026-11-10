@@ -13,8 +13,8 @@ use crate::generated::types as t;
 use crate::pricing::{fmt_price, on_demand_price, spot_price};
 use crate::state::{FleetMember, FleetRecord, RegionState, SpotFleetRecord};
 use crate::util::{
-    arn, authorize, err, invalid_parameter, missing_parameter, new_id, paginate, request_tag_context,
-    resource_tag_context, s, some_tags, tags_for, Filters,
+    arn, err, invalid_parameter, missing_parameter, new_id, paginate, request_tag_context, resource_tag_context, s,
+    some_tags, tags_for, Filters,
 };
 use crate::{account_of, Ec2};
 
@@ -437,7 +437,7 @@ impl Ec2 {
         };
         let pools = self.spot_fleet_pools(ctx, &cfg)?;
         let account = account_of(ctx);
-        authorize(
+        self.authorize_known(
             ctx,
             "RequestSpotFleet",
             &[(arn(ctx, &account, "spot-fleet-request/*"), request_tag_context(&tags))],
@@ -724,7 +724,12 @@ impl Ec2 {
         ctx: &RequestContext,
         input: t::DescribeSpotFleetRequestsRequest,
     ) -> Result<t::DescribeSpotFleetRequestsResponse, ServiceError> {
-        authorize(ctx, "DescribeSpotFleetRequests", &[("*".into(), ConditionContext::new())], input.dry_run)?;
+        self.authorize_known(
+            ctx,
+            "DescribeSpotFleetRequests",
+            &[("*".into(), ConditionContext::new())],
+            input.dry_run,
+        )?;
         let ids = input.spot_fleet_request_ids.clone().unwrap_or_default();
         for id in &ids {
             self.find_spot_fleet(ctx, id)?;
@@ -749,7 +754,12 @@ impl Ec2 {
         ctx: &RequestContext,
         input: t::DescribeSpotFleetInstancesRequest,
     ) -> Result<t::DescribeSpotFleetInstancesResponse, ServiceError> {
-        authorize(ctx, "DescribeSpotFleetInstances", &[("*".into(), ConditionContext::new())], input.dry_run)?;
+        self.authorize_known(
+            ctx,
+            "DescribeSpotFleetInstances",
+            &[("*".into(), ConditionContext::new())],
+            input.dry_run,
+        )?;
         let id = input.spot_fleet_request_id.clone();
         self.find_spot_fleet(ctx, &id)?;
         self.evaluate_spot_fleet(ctx, &id).await;
@@ -778,7 +788,12 @@ impl Ec2 {
         ctx: &RequestContext,
         input: t::DescribeSpotFleetRequestHistoryRequest,
     ) -> Result<t::DescribeSpotFleetRequestHistoryResponse, ServiceError> {
-        authorize(ctx, "DescribeSpotFleetRequestHistory", &[("*".into(), ConditionContext::new())], input.dry_run)?;
+        self.authorize_known(
+            ctx,
+            "DescribeSpotFleetRequestHistory",
+            &[("*".into(), ConditionContext::new())],
+            input.dry_run,
+        )?;
         let id = input.spot_fleet_request_id.clone();
         self.find_spot_fleet(ctx, &id)?;
         if let Some(e) = &input.event_type {
@@ -814,7 +829,12 @@ impl Ec2 {
     ) -> Result<t::ModifySpotFleetRequestResponse, ServiceError> {
         let id = input.spot_fleet_request_id.clone();
         self.find_spot_fleet(ctx, &id)?;
-        authorize(ctx, "ModifySpotFleetRequest", &self.spot_fleet_resources(ctx, std::slice::from_ref(&id)), None)?;
+        self.authorize_known(
+            ctx,
+            "ModifySpotFleetRequest",
+            &self.spot_fleet_resources(ctx, std::slice::from_ref(&id)),
+            None,
+        )?;
         self.evaluate_spot_fleet(ctx, &id).await;
         let now = ctx.received_at;
         let excess = self.with_region(ctx, |r| {
@@ -893,7 +913,7 @@ impl Ec2 {
         if input.spot_fleet_request_ids.is_empty() {
             return Err(missing_parameter("SpotFleetRequestIds"));
         }
-        authorize(
+        self.authorize_known(
             ctx,
             "CancelSpotFleetRequests",
             &self.spot_fleet_resources(ctx, &input.spot_fleet_request_ids),
@@ -1088,7 +1108,48 @@ impl Ec2 {
         }
         let pools = self.ec2_fleet_pools(ctx, &input.launch_template_configs)?;
         let account = account_of(ctx);
-        authorize(ctx, "CreateFleet", &[(arn(ctx, &account, "fleet/*"), request_tag_context(&tags))], input.dry_run)?;
+        self.authorize_known(
+            ctx,
+            "CreateFleet",
+            &[(arn(ctx, &account, "fleet/*"), request_tag_context(&tags))],
+            input.dry_run,
+        )?;
+        let fp = crate::idempotency::fingerprint(&input);
+        let token = input.client_token.as_deref();
+        let replayed = self.with_region(ctx, |r| {
+            let id = crate::idempotency::replay(r, "CreateFleet", token, &fp, |id| r.fleets.contains_key(id))?;
+            Ok::<_, ServiceError>(id.and_then(|id| r.fleets.get(&id).map(|f| (id, f.kind.clone(), f.fleet.clone()))))
+        })?;
+        if let Some((id, kind, fleet)) = replayed {
+            if kind != "instant" {
+                return Ok(t::CreateFleetResult { fleet_id: Some(id), errors: None, instances: None });
+            }
+            let instances = fleet
+                .instances
+                .unwrap_or_default()
+                .into_iter()
+                .map(|i| t::CreateFleetInstance {
+                    launch_template_and_overrides: i.launch_template_and_overrides,
+                    lifecycle: i.lifecycle,
+                    instance_ids: i.instance_ids,
+                    instance_type: i.instance_type,
+                    platform: i.platform,
+                    ..Default::default()
+                })
+                .collect();
+            let errors = fleet
+                .errors
+                .unwrap_or_default()
+                .into_iter()
+                .map(|e| t::CreateFleetError {
+                    launch_template_and_overrides: e.launch_template_and_overrides,
+                    lifecycle: e.lifecycle,
+                    error_code: e.error_code,
+                    error_message: e.error_message,
+                })
+                .collect();
+            return Ok(t::CreateFleetResult { fleet_id: Some(id), errors: Some(errors), instances: Some(instances) });
+        }
         let id = format!("fleet-{}", uuid());
         let fleet_tags: Vec<t::Tag> = input
             .tag_specifications
@@ -1278,8 +1339,11 @@ impl Ec2 {
             );
         }
         self.with_region(ctx, |r| {
-            r.fleets
-                .insert(id.clone(), FleetRecord { fleet, kind: kind.clone(), members, history, request: input.clone() })
+            r.fleets.insert(
+                id.clone(),
+                FleetRecord { fleet, kind: kind.clone(), members, history, request: input.clone() },
+            );
+            crate::idempotency::remember(r, "CreateFleet", input.client_token.as_deref(), &fp, &id);
         });
         if kind == "instant" {
             Ok(t::CreateFleetResult { fleet_id: Some(id), errors: Some(errs), instances: Some(instances) })
@@ -1449,7 +1513,7 @@ impl Ec2 {
         ctx: &RequestContext,
         input: t::DescribeFleetsRequest,
     ) -> Result<t::DescribeFleetsResult, ServiceError> {
-        authorize(ctx, "DescribeFleets", &[("*".into(), ConditionContext::new())], input.dry_run)?;
+        self.authorize_known(ctx, "DescribeFleets", &[("*".into(), ConditionContext::new())], input.dry_run)?;
         let ids = input.fleet_ids.clone().unwrap_or_default();
         for id in &ids {
             self.find_fleet(ctx, id)?;
@@ -1495,7 +1559,7 @@ impl Ec2 {
         ctx: &RequestContext,
         input: t::DescribeFleetInstancesRequest,
     ) -> Result<t::DescribeFleetInstancesResult, ServiceError> {
-        authorize(ctx, "DescribeFleetInstances", &[("*".into(), ConditionContext::new())], input.dry_run)?;
+        self.authorize_known(ctx, "DescribeFleetInstances", &[("*".into(), ConditionContext::new())], input.dry_run)?;
         let id = input.fleet_id.clone();
         self.find_fleet(ctx, &id)?;
         self.evaluate_fleet(ctx, &id).await;
@@ -1530,7 +1594,7 @@ impl Ec2 {
         ctx: &RequestContext,
         input: t::DescribeFleetHistoryRequest,
     ) -> Result<t::DescribeFleetHistoryResult, ServiceError> {
-        authorize(ctx, "DescribeFleetHistory", &[("*".into(), ConditionContext::new())], input.dry_run)?;
+        self.authorize_known(ctx, "DescribeFleetHistory", &[("*".into(), ConditionContext::new())], input.dry_run)?;
         let id = input.fleet_id.clone();
         self.find_fleet(ctx, &id)?;
         if let Some(e) = &input.event_type {
@@ -1566,7 +1630,7 @@ impl Ec2 {
     ) -> Result<t::ModifyFleetResult, ServiceError> {
         let id = input.fleet_id.clone();
         self.find_fleet(ctx, &id)?;
-        authorize(ctx, "ModifyFleet", &self.fleet_resources(ctx, std::slice::from_ref(&id)), input.dry_run)?;
+        self.authorize_known(ctx, "ModifyFleet", &self.fleet_resources(ctx, std::slice::from_ref(&id)), input.dry_run)?;
         self.evaluate_fleet(ctx, &id).await;
         let now = ctx.received_at;
         let excess = self.with_region(ctx, |r| {
@@ -1631,7 +1695,7 @@ impl Ec2 {
         if input.fleet_ids.is_empty() {
             return Err(missing_parameter("FleetIds"));
         }
-        authorize(ctx, "DeleteFleets", &self.fleet_resources(ctx, &input.fleet_ids), input.dry_run)?;
+        self.authorize_known(ctx, "DeleteFleets", &self.fleet_resources(ctx, &input.fleet_ids), input.dry_run)?;
         let now = ctx.received_at;
         let mut ok = Vec::new();
         let mut failed = Vec::new();

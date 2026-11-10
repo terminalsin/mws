@@ -8,8 +8,8 @@ use mws_core::{ConditionContext, RequestContext, ServiceError};
 use crate::generated::types as t;
 use crate::state::{PrefixListRecord, RegionState};
 use crate::util::{
-    arn, authorize, b, err, invalid_parameter, missing_parameter, new_id, paginate, request_tag_context,
-    resource_tag_context, s, some_tags, tags_for, Cidr, Filters, Kind,
+    arn, b, err, invalid_parameter, missing_parameter, new_id, paginate, request_tag_context, resource_tag_context, s,
+    some_tags, tags_for, Cidr, Filters, Kind,
 };
 use crate::{account_of, Ec2};
 
@@ -254,7 +254,17 @@ impl Ec2 {
         for id in input.security_group_ids.iter().flatten() {
             resources.push((arn(ctx, &account, &format!("security-group/{id}")), ConditionContext::new()));
         }
-        authorize(ctx, "CreateVpcEndpoint", &resources, input.dry_run)?;
+        self.authorize_known(ctx, "CreateVpcEndpoint", &resources, input.dry_run)?;
+        let fp = crate::idempotency::fingerprint(&input);
+        let token = input.client_token.as_deref();
+        let replayed = self.with_region(ctx, |r| {
+            let id =
+                crate::idempotency::replay(r, "CreateVpcEndpoint", token, &fp, |id| r.vpc_endpoints.contains_key(id))?;
+            Ok::<_, ServiceError>(id.and_then(|id| r.vpc_endpoints.get(&id).cloned()))
+        })?;
+        if let Some(ep) = replayed {
+            return Ok(t::CreateVpcEndpointResult { vpc_endpoint: Some(ep), client_token: input.client_token.clone() });
+        }
         if super::endpoint_service::custom_service_id(&name).is_some() {
             let service = self
                 .visible_endpoint_services(ctx)
@@ -379,7 +389,8 @@ impl Ec2 {
                 }
                 ep.dns_entries = Some(dns_entries(r, &region, &ep, service));
             }
-            r.vpc_endpoints.insert(id, ep.clone());
+            r.vpc_endpoints.insert(id.clone(), ep.clone());
+            crate::idempotency::remember(r, "CreateVpcEndpoint", token, &fp, &id);
             let mut shown = ep;
             shown.state = Some("pending".into());
             Ok(t::CreateVpcEndpointResult { vpc_endpoint: Some(shown), client_token: input.client_token.clone() })
@@ -397,7 +408,7 @@ impl Ec2 {
         let account = account_of(ctx);
         let tags = self.with_region(ctx, |r| r.vpc_endpoints.get(id).map(|e| e.tags.clone()));
         let tags = tags.ok_or_else(|| Kind::VpcEndpoint.not_found(id))?;
-        authorize(
+        self.authorize_known(
             ctx,
             action,
             &[(arn(ctx, &account, &format!("vpc-endpoint/{id}")), resource_tag_context(tags.as_ref()))],
@@ -572,7 +583,7 @@ impl Ec2 {
             .iter()
             .map(|id| (arn(ctx, &account, &format!("vpc-endpoint/{id}")), ConditionContext::new()))
             .collect();
-        authorize(ctx, "DeleteVpcEndpoints", &resources, input.dry_run)?;
+        self.authorize_known(ctx, "DeleteVpcEndpoints", &resources, input.dry_run)?;
         let mut deleted = Vec::new();
         let result = self.with_region(ctx, |r| {
             let mut unsuccessful = Vec::new();
@@ -612,7 +623,7 @@ impl Ec2 {
         ctx: &RequestContext,
         input: t::DescribeVpcEndpointsRequest,
     ) -> Result<t::DescribeVpcEndpointsResult, ServiceError> {
-        authorize(ctx, "DescribeVpcEndpoints", &[("*".into(), ConditionContext::new())], input.dry_run)?;
+        self.authorize_known(ctx, "DescribeVpcEndpoints", &[("*".into(), ConditionContext::new())], input.dry_run)?;
         let filters = Filters::new(&input.filters);
         let ids = input.vpc_endpoint_ids.clone().unwrap_or_default();
         self.with_region(ctx, |r| {
@@ -636,7 +647,12 @@ impl Ec2 {
         ctx: &RequestContext,
         input: t::DescribeVpcEndpointServicesRequest,
     ) -> Result<t::DescribeVpcEndpointServicesResult, ServiceError> {
-        authorize(ctx, "DescribeVpcEndpointServices", &[("*".into(), ConditionContext::new())], input.dry_run)?;
+        self.authorize_known(
+            ctx,
+            "DescribeVpcEndpointServices",
+            &[("*".into(), ConditionContext::new())],
+            input.dry_run,
+        )?;
         let region = ctx.region.clone();
         let zones: Vec<String> = crate::catalog::zones(&region).into_iter().map(|z| z.0).collect();
         let filters = Filters::new(&input.filters);
@@ -712,7 +728,7 @@ impl Ec2 {
         ctx: &RequestContext,
         input: t::DescribePrefixListsRequest,
     ) -> Result<t::DescribePrefixListsResult, ServiceError> {
-        authorize(ctx, "DescribePrefixLists", &[("*".into(), ConditionContext::new())], input.dry_run)?;
+        self.authorize_known(ctx, "DescribePrefixLists", &[("*".into(), ConditionContext::new())], input.dry_run)?;
         let filters = Filters::new(&input.filters);
         let ids = input.prefix_list_ids.clone().unwrap_or_default();
         let lists = aws_prefix_lists(&ctx.region);
@@ -746,7 +762,12 @@ impl Ec2 {
         ctx: &RequestContext,
         input: t::DescribeManagedPrefixListsRequest,
     ) -> Result<t::DescribeManagedPrefixListsResult, ServiceError> {
-        authorize(ctx, "DescribeManagedPrefixLists", &[("*".into(), ConditionContext::new())], input.dry_run)?;
+        self.authorize_known(
+            ctx,
+            "DescribeManagedPrefixLists",
+            &[("*".into(), ConditionContext::new())],
+            input.dry_run,
+        )?;
         let filters = Filters::new(&input.filters);
         let ids = input.prefix_list_ids.clone().unwrap_or_default();
         let region = ctx.region.clone();
@@ -796,7 +817,7 @@ impl Ec2 {
     ) -> Result<t::GetManagedPrefixListEntriesResult, ServiceError> {
         let account = account_of(ctx);
         Kind::PrefixList.check(&input.prefix_list_id)?;
-        authorize(
+        self.authorize_known(
             ctx,
             "GetManagedPrefixListEntries",
             &[(arn(ctx, &account, &format!("prefix-list/{}", input.prefix_list_id)), ConditionContext::new())],
@@ -834,7 +855,7 @@ impl Ec2 {
     ) -> Result<t::CreateManagedPrefixListResult, ServiceError> {
         let account = account_of(ctx);
         let tags = tags_for(&input.tag_specifications, "prefix-list", &["prefix-list"])?;
-        authorize(
+        self.authorize_known(
             ctx,
             "CreateManagedPrefixList",
             &[(arn(ctx, &account, "prefix-list/*"), request_tag_context(&tags))],
@@ -853,6 +874,17 @@ impl Ec2 {
             return Err(invalid_parameter("The maximum number of entries must be between 1 and 1000."));
         }
         let entries = check_entries(&input.address_family, input.entries.iter().flatten(), input.max_entries)?;
+        let fp = crate::idempotency::fingerprint(&input);
+        let token = input.client_token.as_deref();
+        let replayed = self.with_region(ctx, |r| {
+            let id = crate::idempotency::replay(r, "CreateManagedPrefixList", token, &fp, |id| {
+                r.prefix_lists.contains_key(id)
+            })?;
+            Ok::<_, ServiceError>(id.and_then(|id| r.prefix_lists.get(&id).map(|p| p.list.clone())))
+        })?;
+        if let Some(list) = replayed {
+            return Ok(t::CreateManagedPrefixListResult { prefix_list: Some(list) });
+        }
         let id = new_id("pl");
         let list = t::ManagedPrefixList {
             prefix_list_id: Some(id.clone()),
@@ -867,7 +899,8 @@ impl Ec2 {
             ..Default::default()
         };
         self.with_region(ctx, |r| {
-            r.prefix_lists.insert(id, PrefixListRecord { list: list.clone(), versions: vec![entries] });
+            r.prefix_lists.insert(id.clone(), PrefixListRecord { list: list.clone(), versions: vec![entries] });
+            crate::idempotency::remember(r, "CreateManagedPrefixList", token, &fp, &id);
         });
         let mut shown = list;
         shown.state = Some("create-in-progress".into());
@@ -892,7 +925,7 @@ impl Ec2 {
             )),
             None => Err(Kind::PrefixList.not_found(id)),
         })?;
-        authorize(
+        self.authorize_known(
             ctx,
             action,
             &[(arn(ctx, &account, &format!("prefix-list/{id}")), resource_tag_context(tags.as_ref()))],

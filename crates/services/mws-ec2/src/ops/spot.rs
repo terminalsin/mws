@@ -16,8 +16,8 @@ use crate::generated::types as t;
 use crate::pricing::{fmt_price, spot_price};
 use crate::state::{InstanceRecord, RegionState, SpotRequestRecord};
 use crate::util::{
-    arn, authorize, err, invalid_parameter, missing_parameter, new_id, paginate, request_tag_context,
-    resource_tag_context, s, tags_for, Filters, Kind,
+    arn, err, invalid_parameter, missing_parameter, new_id, paginate, request_tag_context, resource_tag_context, s,
+    tags_for, Filters, Kind,
 };
 use crate::{account_of, Ec2};
 
@@ -358,12 +358,16 @@ impl Ec2 {
             None => fmt_price(od),
         };
         let account = account_of(ctx);
-        authorize(
+        self.authorize_known(
             ctx,
             "RequestSpotInstances",
             &[(arn(ctx, &account, "spot-instances-request/*"), request_tag_context(&tags))],
             input.dry_run,
         )?;
+        let fp = crate::idempotency::fingerprint(&input);
+        self.with_region(ctx, |r| {
+            crate::idempotency::replay(r, "RequestSpotInstances", input.client_token.as_deref(), &fp, |_| true)
+        })?;
         if let Some(token) = &input.client_token {
             let existing: Vec<t::SpotInstanceRequest> = self.with_region(ctx, |r| {
                 r.spot_requests
@@ -446,6 +450,9 @@ impl Ec2 {
                 })
                 .collect()
         });
+        self.with_region(ctx, |r| {
+            crate::idempotency::remember(r, "RequestSpotInstances", input.client_token.as_deref(), &fp, &ids.join(","))
+        });
         if let Err(e) = self.evaluate_spot_requests(ctx, Some(&ids), true).await {
             self.with_region(ctx, |r| {
                 for id in &ids {
@@ -462,7 +469,12 @@ impl Ec2 {
         ctx: &RequestContext,
         input: t::DescribeSpotInstanceRequestsRequest,
     ) -> Result<t::DescribeSpotInstanceRequestsResult, ServiceError> {
-        authorize(ctx, "DescribeSpotInstanceRequests", &[("*".into(), ConditionContext::new())], input.dry_run)?;
+        self.authorize_known(
+            ctx,
+            "DescribeSpotInstanceRequests",
+            &[("*".into(), ConditionContext::new())],
+            input.dry_run,
+        )?;
         let ids = input.spot_instance_request_ids.clone().unwrap_or_default();
         self.with_region(ctx, |r| Kind::SpotInstanceRequest.check_all(&ids, |id| r.spot_requests.contains_key(id)))?;
         self.evaluate_spot_requests(ctx, None, false).await?;
@@ -532,7 +544,7 @@ impl Ec2 {
                     .collect::<Vec<_>>(),
             )
         })?;
-        authorize(ctx, "CancelSpotInstanceRequests", &resources, input.dry_run)?;
+        self.authorize_known(ctx, "CancelSpotInstanceRequests", &resources, input.dry_run)?;
         self.evaluate_spot_requests(ctx, Some(&ids), false).await?;
         let now = ctx.received_at;
         self.with_region(ctx, |r| {
@@ -578,7 +590,7 @@ impl Ec2 {
         ctx: &RequestContext,
         input: t::DescribeSpotPriceHistoryRequest,
     ) -> Result<t::DescribeSpotPriceHistoryResult, ServiceError> {
-        authorize(ctx, "DescribeSpotPriceHistory", &[("*".into(), ConditionContext::new())], input.dry_run)?;
+        self.authorize_known(ctx, "DescribeSpotPriceHistory", &[("*".into(), ConditionContext::new())], input.dry_run)?;
         let now = ctx.received_at;
         let end = input.end_time.unwrap_or(now).min(now);
         let start = input.start_time.unwrap_or(end - chrono::Duration::days(1));

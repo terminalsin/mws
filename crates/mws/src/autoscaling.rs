@@ -1,13 +1,14 @@
 //! EC2 Auto Scaling's links to other services: notifications to SNS and
 //! SQS, events to EventBridge, group metrics and target tracking alarms in
 //! CloudWatch, alarm actions back into Auto Scaling, and load balancer
-//! registrations in Elastic Load Balancing.
+//! registrations, attachment checks, deregistration delays and health
+//! checks from Elastic Load Balancing.
 
 use std::sync::Arc;
 
 use mws_autoscaling::{
     AlarmManager, AlarmTrigger, AutoScaling, AutoScalingEvent, EventSink, GroupMetric, ManagedAlarm, MetricSink,
-    NotificationSink, TrafficSink, TrafficTarget,
+    NotificationSink, TrafficSink, TrafficSourceInfo, TrafficTarget,
 };
 use mws_cloudwatch::CloudWatch;
 use mws_core::{RequestContext, Service};
@@ -155,6 +156,49 @@ impl AlarmManager for Alarms {
         if let Some(u) = &a.unit {
             request["Unit"] = json!(u);
         }
+        if !a.metrics.is_empty() {
+            // A metric math alarm: the queries replace the single metric.
+            let queries: Vec<serde_json::Value> = a
+                .metrics
+                .iter()
+                .map(|q| {
+                    let mut v = json!({ "Id": q.id });
+                    if let Some(e) = &q.expression {
+                        v["Expression"] = json!(e);
+                    }
+                    if let Some(l) = &q.label {
+                        v["Label"] = json!(l);
+                    }
+                    if let Some(r) = q.return_data {
+                        v["ReturnData"] = json!(r);
+                    }
+                    if let Some(m) = &q.metric {
+                        let mut stat = json!({
+                            "Metric": {
+                                "Namespace": m.namespace,
+                                "MetricName": m.metric_name,
+                                "Dimensions": m.dimensions.iter().map(|(n, v)| json!({"Name": n, "Value": v})).collect::<Vec<_>>(),
+                            },
+                            "Stat": m.stat,
+                            "Period": m.period,
+                        });
+                        if let Some(u) = &m.unit {
+                            stat["Unit"] = json!(u);
+                        }
+                        v["MetricStat"] = stat;
+                    } else {
+                        v["Period"] = json!(a.period);
+                    }
+                    v
+                })
+                .collect();
+            if let Some(o) = request.as_object_mut() {
+                for k in ["Namespace", "MetricName", "Dimensions", "Statistic", "Period", "Unit"] {
+                    o.remove(k);
+                }
+            }
+            request["Metrics"] = json!(queries);
+        }
         self.0.invoke(ctx.clone(), "PutMetricAlarm", request).await.map_err(|e| e.message)?;
         Ok(format!("arn:{}:cloudwatch:{}:{}:alarm:{}", ctx.partition, ctx.region, ctx.caller.account_id, a.name))
     }
@@ -242,5 +286,39 @@ impl TrafficSink for Traffic {
 
     fn deregister(&self, ctx: &RequestContext, target: &TrafficTarget, ids: &[String]) -> Result<(), String> {
         self.call(ctx, target, ids, false)
+    }
+
+    /// Target groups and Classic Load Balancers with their health, read
+    /// from ELB's state.
+    fn describe(&self, account: &str, region: &str, target: &TrafficTarget) -> Option<TrafficSourceInfo> {
+        match target {
+            TrafficTarget::TargetGroup(arn) => {
+                let tg = self.0.target_group(account, region, arn)?;
+                Some(TrafficSourceInfo {
+                    vpc_id: tg.vpc_id,
+                    instance_targets: tg.target_type == "instance",
+                    in_use: !tg.load_balancer_arns.is_empty(),
+                    drain_seconds: tg.deregistration_delay_seconds,
+                    unhealthy: tg.targets.into_iter().filter(|t| t.state == "unhealthy").map(|t| t.id).collect(),
+                })
+            }
+            TrafficTarget::ClassicLoadBalancer(name) => {
+                let lb = self.0.classic_load_balancer(account, region, name)?;
+                Some(TrafficSourceInfo {
+                    vpc_id: lb.vpc_id,
+                    instance_targets: true,
+                    in_use: true,
+                    drain_seconds: lb.connection_draining_seconds.unwrap_or(0),
+                    // Still registering is not a failure.
+                    unhealthy: lb
+                        .instances
+                        .into_iter()
+                        .filter(|i| i.state == "OutOfService" && i.reason_code == "Instance")
+                        .map(|i| i.instance_id)
+                        .collect(),
+                })
+            }
+            TrafficTarget::LatticeTargetGroup(_) => None,
+        }
     }
 }

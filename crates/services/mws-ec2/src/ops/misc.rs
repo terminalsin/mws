@@ -8,8 +8,8 @@ use crate::generated::types as t;
 use crate::keys;
 use crate::state::{KeyPairRecord, RegionState};
 use crate::util::{
-    arn, authorize, err, invalid_parameter, new_id, paginate, request_tag_context, resource_tag_context, s, some_tags,
-    tags_for, validate_tags, Filters, Kind,
+    arn, err, invalid_parameter, new_id, paginate, request_tag_context, resource_tag_context, s, some_tags, tags_for,
+    validate_tags, Filters, Kind,
 };
 use crate::{account_of, Ec2};
 
@@ -24,7 +24,7 @@ impl Ec2 {
         ctx: &RequestContext,
         input: t::DescribeRegionsRequest,
     ) -> Result<t::DescribeRegionsResult, ServiceError> {
-        authorize(ctx, "DescribeRegions", &[("*".into(), ConditionContext::new())], input.dry_run)?;
+        self.authorize_known(ctx, "DescribeRegions", &[("*".into(), ConditionContext::new())], input.dry_run)?;
         let filters = Filters::new(&input.filters);
         let names = input.region_names.clone().unwrap_or_default();
         for n in &names {
@@ -67,7 +67,12 @@ impl Ec2 {
         ctx: &RequestContext,
         input: t::DescribeAvailabilityZonesRequest,
     ) -> Result<t::DescribeAvailabilityZonesResult, ServiceError> {
-        authorize(ctx, "DescribeAvailabilityZones", &[("*".into(), ConditionContext::new())], input.dry_run)?;
+        self.authorize_known(
+            ctx,
+            "DescribeAvailabilityZones",
+            &[("*".into(), ConditionContext::new())],
+            input.dry_run,
+        )?;
         let filters = Filters::new(&input.filters);
         let names = input.zone_names.clone().unwrap_or_default();
         let ids = input.zone_ids.clone().unwrap_or_default();
@@ -125,7 +130,12 @@ impl Ec2 {
         ctx: &RequestContext,
         input: t::DescribeAccountAttributesRequest,
     ) -> Result<t::DescribeAccountAttributesResult, ServiceError> {
-        authorize(ctx, "DescribeAccountAttributes", &[("*".into(), ConditionContext::new())], input.dry_run)?;
+        self.authorize_known(
+            ctx,
+            "DescribeAccountAttributes",
+            &[("*".into(), ConditionContext::new())],
+            input.dry_run,
+        )?;
         let default_vpc = self
             .with_region(ctx, |r| {
                 r.vpcs.values().find(|v| v.vpc.is_default == Some(true)).and_then(|v| v.vpc.vpc_id.clone())
@@ -158,7 +168,7 @@ impl Ec2 {
         ctx: &RequestContext,
         input: t::DescribeInstanceTypesRequest,
     ) -> Result<t::DescribeInstanceTypesResult, ServiceError> {
-        authorize(ctx, "DescribeInstanceTypes", &[("*".into(), ConditionContext::new())], input.dry_run)?;
+        self.authorize_known(ctx, "DescribeInstanceTypes", &[("*".into(), ConditionContext::new())], input.dry_run)?;
         let filters = Filters::new(&input.filters);
         let wanted = input.instance_types.clone().unwrap_or_default();
         for w in &wanted {
@@ -201,7 +211,12 @@ impl Ec2 {
         ctx: &RequestContext,
         input: t::DescribeInstanceTypeOfferingsRequest,
     ) -> Result<t::DescribeInstanceTypeOfferingsResult, ServiceError> {
-        authorize(ctx, "DescribeInstanceTypeOfferings", &[("*".into(), ConditionContext::new())], input.dry_run)?;
+        self.authorize_known(
+            ctx,
+            "DescribeInstanceTypeOfferings",
+            &[("*".into(), ConditionContext::new())],
+            input.dry_run,
+        )?;
         let filters = Filters::new(&input.filters);
         let location_type = input.location_type.clone().unwrap_or_else(|| "region".into());
         let locations: Vec<String> = match location_type.as_str() {
@@ -242,7 +257,7 @@ impl Ec2 {
     ) -> Result<t::KeyPair, ServiceError> {
         let account = account_of(ctx);
         let tags = tags_for(&input.tag_specifications, "key-pair", &["key-pair"])?;
-        authorize(
+        self.authorize_known(
             ctx,
             "CreateKeyPair",
             &[(arn(ctx, &account, &format!("key-pair/{}", input.key_name)), request_tag_context(&tags))],
@@ -304,7 +319,7 @@ impl Ec2 {
     ) -> Result<t::ImportKeyPairResult, ServiceError> {
         let account = account_of(ctx);
         let tags = tags_for(&input.tag_specifications, "key-pair", &["key-pair"])?;
-        authorize(
+        self.authorize_known(
             ctx,
             "ImportKeyPair",
             &[(arn(ctx, &account, &format!("key-pair/{}", input.key_name)), request_tag_context(&tags))],
@@ -371,7 +386,7 @@ impl Ec2 {
             })
         })?;
         let name = found.as_ref().map(|f| f.0.clone()).or_else(|| input.key_name.clone()).unwrap_or_default();
-        authorize(
+        self.authorize_known(
             ctx,
             "DeleteKeyPair",
             &[(arn(ctx, &account, &format!("key-pair/{name}")), ConditionContext::new())],
@@ -389,7 +404,7 @@ impl Ec2 {
         ctx: &RequestContext,
         input: t::DescribeKeyPairsRequest,
     ) -> Result<t::DescribeKeyPairsResult, ServiceError> {
-        authorize(ctx, "DescribeKeyPairs", &[("*".into(), ConditionContext::new())], input.dry_run)?;
+        self.authorize_known(ctx, "DescribeKeyPairs", &[("*".into(), ConditionContext::new())], input.dry_run)?;
         let filters = Filters::new(&input.filters);
         let names = input.key_names.clone().unwrap_or_default();
         let ids = input.key_pair_ids.clone().unwrap_or_default();
@@ -460,7 +475,7 @@ impl Ec2 {
             c.extend(resource_tag_context(existing.as_ref()));
             resources.push((resource_arn(ctx, &account, id), c));
         }
-        authorize(ctx, "CreateTags", &resources, input.dry_run)?;
+        self.authorize_known(ctx, "CreateTags", &resources, input.dry_run)?;
         self.with_region(ctx, |r| {
             for id in &input.resources {
                 if let Some(slot) = r.tags_mut(id) {
@@ -498,7 +513,7 @@ impl Ec2 {
             }
             resources.push((resource_arn(ctx, &account, id), c));
         }
-        authorize(ctx, "DeleteTags", &resources, input.dry_run)?;
+        self.authorize_known(ctx, "DeleteTags", &resources, input.dry_run)?;
         self.with_region(ctx, |r| {
             for id in &input.resources {
                 if let Some(slot) = r.tags_mut(id) {
@@ -523,7 +538,7 @@ impl Ec2 {
         ctx: &RequestContext,
         input: t::DescribeTagsRequest,
     ) -> Result<t::DescribeTagsResult, ServiceError> {
-        authorize(ctx, "DescribeTags", &[("*".into(), ConditionContext::new())], input.dry_run)?;
+        self.authorize_known(ctx, "DescribeTags", &[("*".into(), ConditionContext::new())], input.dry_run)?;
         let filters = Filters::new(&input.filters);
         self.with_region(ctx, |r| {
             let mut out = Vec::new();

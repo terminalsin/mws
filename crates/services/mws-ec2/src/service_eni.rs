@@ -77,6 +77,26 @@ impl Ec2 {
         });
     }
 
+    /// Replace the security groups of an interface
+    /// [`Ec2::create_task_interface`] made (the VPC's default group when
+    /// empty).
+    pub fn set_task_interface_groups(
+        &self,
+        ctx: &RequestContext,
+        account: &str,
+        eni_id: &str,
+        security_groups: &[String],
+    ) -> Result<(), ServiceError> {
+        self.with_region_of(account, &ctx.region, ctx, |r| {
+            let vpc_id = r.network_interfaces.get(eni_id).and_then(|n| n.vpc_id.clone()).unwrap_or_default();
+            let groups = resolve_groups(r, &vpc_id, (!security_groups.is_empty()).then_some(security_groups))?;
+            if let Some(eni) = r.network_interfaces.get_mut(eni_id) {
+                eni.groups = Some(groups);
+            }
+            Ok(())
+        })
+    }
+
     /// The default VPC's subnets in `account` and `ctx`'s Region.
     pub fn default_subnets(&self, ctx: &RequestContext, account: &str) -> Vec<String> {
         self.with_region_of(account, &ctx.region, ctx, |r| {

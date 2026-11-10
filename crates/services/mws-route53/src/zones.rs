@@ -64,6 +64,15 @@ pub(crate) fn check_vpc(vpc: &types::VPC) -> Result<(), ServiceError> {
     Ok(())
 }
 
+/// Route 53's answer for a VPC the caller's account doesn't have in that
+/// Region.
+pub(crate) fn unknown_vpc(vpc: &types::VPC) -> ServiceError {
+    errors::invalid_vpc_id(format!(
+        "The VPC: {} you provided is not authorized to make the association.",
+        vpc.vpc_id.as_deref().unwrap_or_default()
+    ))
+}
+
 fn same_vpc(a: &types::VPC, b: &types::VPC) -> bool {
     a.vpc_id == b.vpc_id && a.vpc_region == b.vpc_region
 }
@@ -88,6 +97,9 @@ impl Route53 {
         }
         if let Some(vpc) = &input.vpc {
             check_vpc(vpc)?;
+            if !self.vpc_exists(ctx, vpc) {
+                return Err(unknown_vpc(vpc));
+            }
         }
         let mut st = self.lock(ctx);
         let delegation_set_id = input.delegation_set_id.as_deref().map(|d| strip_id(d).to_string());
@@ -349,6 +361,11 @@ impl Route53 {
         let id = strip_id(&input.hosted_zone_id);
         self.authorize(ctx, "AssociateVPCWithHostedZone", &arn(ctx, "hostedzone", id))?;
         check_vpc(&input.vpc)?;
+        // The VPC must be the caller's (for another account's zone, the
+        // VPC owner associates it after the zone owner authorizes it).
+        if !self.vpc_exists(ctx, &input.vpc) {
+            return Err(unknown_vpc(&input.vpc));
+        }
         let caller = ctx.caller.account_id.as_str();
         let mut all = self.lock_all();
         // Another account's zone takes an authorization from its owner.

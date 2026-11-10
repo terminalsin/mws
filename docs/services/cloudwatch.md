@@ -14,7 +14,7 @@ All 55 operations are generated from the AWS model and implemented. MWS answers 
 | `GetMetricStatistics` | ✅ | `SampleCount`, `Sum`, `Average`, `Minimum`, `Maximum` and extended statistics (`pNN`, `tmNN`, `wmNN`, `tcNN`, `tsNN`, `PR(a:b)`, `IQM`) with the 1,440-datapoint limit. |
 | `ListMetrics` | ✅ | By namespace, name, dimensions and `RecentlyActive`. |
 | Metric math | ✅ | `GetMetricData` with arithmetic and logic, `SEARCH`, `METRICS()`, `FILL`, `IF`, `RATE`, `DIFF`, `RUNNING_SUM`, `SORT`, `SLICE`, time functions, `ANOMALY_DETECTION_BAND`, `INSIGHT_RULE_METRIC` and label templates, with pagination and `PartialData`. |
-| AWS service metrics | 🟡 | Published by Lambda (`Invocations`, `Errors`, `Duration`, `Throttles`, `ConcurrentExecutions`, `IteratorAge`), SNS (published, delivered, failed and filtered-out notifications, `PublishSize`), EventBridge (matched events, triggered rules, invocations and attempts), SQS, Kinesis, Firehose, Logs, Elastic Load Balancing, Auto Scaling, ElastiCache, ACM and Service Quotas usage; other `AWS/*` namespaces stay empty. |
+| AWS service metrics | 🟡 | Published by Lambda (`Invocations`, `Errors`, `Duration`, `Throttles`, `ConcurrentExecutions`, `IteratorAge`), SNS (published, delivered, failed and filtered-out notifications, `PublishSize`), EventBridge (matched events, triggered rules, invocations and attempts), SQS, Kinesis, Firehose, Logs, Elastic Load Balancing, Auto Scaling, EC2 (`AWS/EC2` instance metrics, see [EC2](ec2.md)), ElastiCache, ACM and Service Quotas usage; other `AWS/*` namespaces stay empty. |
 
 ## Alarms
 

@@ -168,7 +168,7 @@ impl Efs {
             mount_target_id: id.clone(),
             file_system_id: fs.id().to_string(),
             subnet_id: subnet.subnet_id.clone(),
-            life_cycle_state: "available".into(),
+            life_cycle_state: "creating".into(),
             ip_address: (ip_type != "IPV6_ONLY").then(|| eni.ip_address.clone()),
             ipv6_address: ipv6,
             network_interface_id: Some(eni.network_interface_id.clone()),
@@ -177,12 +177,15 @@ impl Efs {
             vpc_id: Some(subnet.vpc_id.clone()),
         };
         let mut st = self.lock();
-        st.region(&account, &ctx.region)
-            .mount_targets
-            .insert(id, MountTarget { description: description.clone(), security_groups: eni.security_groups });
-        let mut out = description;
-        out.life_cycle_state = "creating".into();
-        Ok(out)
+        st.region(&account, &ctx.region).mount_targets.insert(
+            id,
+            MountTarget {
+                description: description.clone(),
+                security_groups: eni.security_groups,
+                transition_ends: Some(ctx.received_at + crate::state::MOUNT_TARGET_CREATE),
+            },
+        );
+        Ok(description)
     }
 
     pub(crate) async fn describe_mount_targets(
