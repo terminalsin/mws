@@ -64,6 +64,9 @@ pub struct LaunchSpec {
     pub managed: Option<ManagedLaunch>,
     /// `/tmp`'s size (`EphemeralStorage`).
     pub ephemeral_mb: i32,
+    /// Host directories bind-mounted into the container (EFS file
+    /// systems at their `LocalMountPath`): host, path inside, read-only.
+    pub mounts: Vec<(PathBuf, String, bool)>,
 }
 
 /// One invocation to run.
@@ -327,8 +330,8 @@ impl Runtimes {
                 env_vars.insert("LAMBDA_RUNTIME_DIR".into(), "/var/runtime".into());
                 env_vars.insert("LAMBDA_TASK_ROOT".into(), "/var/task".into());
                 let name = format!("mws-lambda-{}", uuid::Uuid::new_v4().simple());
-                let run =
-                    container::command(c, &name, &spec.function_arn, spec.memory_mb, &env_vars).inspect_err(|_| {
+                let run = container::command(c, &name, &spec.function_arn, spec.memory_mb, &env_vars, &spec.mounts)
+                    .inspect_err(|_| {
                         server.abort();
                     })?;
                 container_name = Some(name);

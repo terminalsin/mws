@@ -117,12 +117,14 @@ pub(super) fn command(
     function_arn: &str,
     memory_mb: i32,
     env: &BTreeMap<String, String>,
+    mounts: &[(std::path::PathBuf, String, bool)],
 ) -> Result<Command, LaunchError> {
     let argv: Vec<&String> = c.entrypoint.iter().chain(&c.command).collect();
     let Some((program, rest)) = argv.split_first() else {
         return Err(LaunchError::InvalidEntrypoint("No command specified".into()));
     };
     let mut args = run_args(&RunArgs { name, function_arn, memory_mb, ephemeral_mb: c.ephemeral_mb, platform: None });
+    push_mounts(&mut args, mounts);
     args.push("--entrypoint".into());
     args.push(program.to_string());
     if let Some(w) = c.working_dir.as_ref().filter(|w| !w.is_empty()) {
@@ -134,6 +136,14 @@ pub(super) fn command(
     args.push(c.image.clone());
     args.extend(rest.iter().map(|s| s.to_string()));
     Ok(Command { program: docker(), args, env: by_name })
+}
+
+/// `-v host:path[:ro]` for each mounted file system.
+pub(super) fn push_mounts(args: &mut Vec<String>, mounts: &[(std::path::PathBuf, String, bool)]) {
+    for (host, path, read_only) in mounts {
+        args.push("-v".into());
+        args.push(format!("{}:{path}{}", host.display(), if *read_only { ":ro" } else { "" }));
+    }
 }
 
 /// What every Lambda container gets.

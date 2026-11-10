@@ -50,8 +50,9 @@ helper asks MWS (`GET /_aws/efs/mount`) and then bind-mounts the directory
 
 ## Known gaps
 
-No NFS server: only instances MWS runs in Docker can mount, through the helper.
-Lambda `FileSystemConfigs` do not mount. Backups, storage classes and
+No NFS server: only instances MWS runs in Docker can mount, through the helper,
+and [Lambda](lambda.md) functions with `FileSystemConfigs` that run in containers.
+Access point POSIX users are not enforced. Backups, storage classes and
 throughput limits have no effect.
 
 See also: [all services](README.md) · [EC2](ec2.md) · [authentication and authorization](../security.md).

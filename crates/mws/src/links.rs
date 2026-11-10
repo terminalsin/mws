@@ -2387,3 +2387,32 @@ impl mws_ec2::LoadBalancers for Ec2LoadBalancers {
         self.0.load_balancer(account, region, arn).map(|lb| (lb.lb_type, lb.availability_zones))
     }
 }
+
+/// Lambda `FileSystemConfigs` mount EFS access points.
+pub(crate) struct LambdaFileSystems(pub mws_efs::Efs);
+
+impl mws_lambda::FileSystems for LambdaFileSystems {
+    fn mount(
+        &self,
+        req: &mws_lambda::FileSystemMountRequest,
+    ) -> Result<mws_lambda::MountedFileSystem, mws_lambda::FileSystemMountError> {
+        let m = mws_efs::service_mount::ServiceMount {
+            account: req.account.clone(),
+            region: req.region.clone(),
+            access_point_arn: req.access_point_arn.clone(),
+            subnet_ids: req.subnet_ids.clone(),
+            security_group_ids: req.security_group_ids.clone(),
+            role_arn: req.role_arn.clone(),
+            session_name: req.session_name.clone(),
+        };
+        match self.0.mount_for_service(&m) {
+            Ok(m) => Ok(mws_lambda::MountedFileSystem { dir: m.dir, read_only: m.read_only }),
+            Err(mws_efs::service_mount::ServiceMountError::Connectivity(e)) => {
+                Err(mws_lambda::FileSystemMountError::Connectivity(e))
+            }
+            Err(mws_efs::service_mount::ServiceMountError::Failure(e)) => {
+                Err(mws_lambda::FileSystemMountError::Failure(e))
+            }
+        }
+    }
+}

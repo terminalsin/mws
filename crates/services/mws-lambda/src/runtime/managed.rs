@@ -337,6 +337,7 @@ pub(super) fn command(
         args.push("-v".into());
         args.push(format!("{}:/opt:ro", opt.display()));
     }
+    super::container::push_mounts(&mut args, &spec.mounts);
     if let Some(e) = &entrypoint {
         args.push("--entrypoint".into());
         args.push(e.clone());
