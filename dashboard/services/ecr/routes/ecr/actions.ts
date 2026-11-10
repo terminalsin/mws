@@ -27,7 +27,7 @@ export async function createRepository(_: ActionResult | null, form: FormData) {
       );
     }
     redirect(`/ecr/repo?name=${encodeURIComponent(name)}`);
-  });
+  }, { revalidate: ["/ecr"], fields: { repositoryName: "name", LifecyclePolicyValidationException: "keep" } });
 }
 
 export async function deleteRepository(name: string) {

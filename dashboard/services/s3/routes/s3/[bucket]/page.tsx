@@ -26,13 +26,43 @@ import {
   Sheet,
   Status,
   Tags,
+  type Rule,
 } from "@mws-dashboard/ui";
+import { PutObject } from "@mws-dashboard/ui/model/s3";
 import { Download, FilePlus, FolderPlus, Pencil, Trash2, Upload } from "lucide-react";
 import type { Metadata } from "next";
 import Link from "next/link";
 
 import { BUCKET_ICON, bucketHref, objectHref, s3 } from "../../../lib/s3";
 import { createFolder, deleteBucket, deleteObject, putTextObject, savePolicy, saveTags, setVersioning, uploadObject } from "../actions";
+
+// S3 keys are at most 1,024 bytes; the model leaves that to the docs.
+const KEY: Rule = { ...PutObject.Key, maxLength: 1024 };
+// Folders may nest (a/b), but no segment may be empty.
+const FOLDER: Rule = { pattern: "^[^/]+(/[^/]+)*/?$", hint: "No empty segments (//)" };
+const CONTENT_TYPE: Rule = { pattern: "^[\\w.+-]+/[\\w.+-]+(\\s*;.*)?$", hint: "Like text/plain" };
+const CONTENT_TYPES = [
+  "text/plain",
+  "text/html",
+  "text/css",
+  "text/csv",
+  "text/markdown",
+  "application/json",
+  "application/xml",
+  "application/javascript",
+  "application/x-ndjson",
+  "application/yaml",
+  "application/octet-stream",
+  "image/svg+xml",
+];
+
+type Listing = Awaited<ReturnType<typeof listObjects>>;
+
+function listObjects(bucket: string, prefix: string) {
+  return load(async () =>
+    (await s3()).send(new ListObjectsV2Command({ Bucket: bucket, Prefix: prefix || undefined, Delimiter: "/", MaxKeys: 1000 })),
+  );
+}
 
 type Props = { params: Promise<{ bucket: string }>; searchParams: Promise<{ prefix?: string; tab?: string }> };
 
@@ -52,10 +82,7 @@ async function optional<T>(read: () => Promise<T>): Promise<T | null> {
 
 const download = (bucket: string, key: string) => `/api/s3/object?bucket=${encodeURIComponent(bucket)}&key=${encodeURIComponent(key)}`;
 
-async function Objects({ bucket, prefix }: { bucket: string; prefix: string }) {
-  const listing = await load(async () =>
-    (await s3()).send(new ListObjectsV2Command({ Bucket: bucket, Prefix: prefix || undefined, Delimiter: "/", MaxKeys: 1000 })),
-  );
+function Objects({ bucket, prefix, listing }: { bucket: string; prefix: string; listing: Listing }) {
   if (!listing.ok) return <ErrorNotice error={listing.error} />;
   const parts = prefix.split("/").filter(Boolean);
   const folders = (listing.value.CommonPrefixes ?? []).map((p) => p.Prefix!);
@@ -163,9 +190,9 @@ async function Properties({ bucket }: { bucket: string }) {
       <Section
         title="Tags"
         actions={
-          <Sheet title="Tags" label="Edit tags" icon={<Pencil size={15} aria-hidden />}>
-            <ActionForm action={saveTags.bind(null, bucket)} submit="Save">
-              <Field label="One Key=Value per line">
+          <Sheet title="Tags" label="Edit tags" icon={<Pencil size={15} aria-hidden />} testId="edit-tags">
+            <ActionForm action={saveTags.bind(null, bucket)} submit="Save" testId="edit-tags">
+              <Field label="One Key=Value per line" format="tags">
                 <textarea name="tags" defaultValue={(tags?.TagSet ?? []).map((t) => `${t.Key}=${t.Value}`).join("\n")} />
               </Field>
             </ActionForm>
@@ -179,7 +206,7 @@ async function Properties({ bucket }: { bucket: string }) {
         actions={
           <Sheet title="Bucket policy" label="Edit policy" icon={<Pencil size={15} aria-hidden />} testId="edit-policy">
             <ActionForm action={savePolicy.bind(null, bucket)} submit="Save" testId="edit-policy">
-              <Field label="Policy JSON" hint="Empty removes the policy">
+              <Field label="Policy JSON" hint="Empty removes the policy" format="policy">
                 <textarea name="policy" rows={14} defaultValue={policy?.Policy ? JSON.stringify(JSON.parse(policy.Policy), null, 2) : ""} />
               </Field>
             </ActionForm>
@@ -201,6 +228,9 @@ export default async function Bucket({ params, searchParams }: Props) {
   const bucket = decodeURIComponent((await params).bucket);
   const { prefix = "", tab = "objects" } = await searchParams;
   const base = bucketHref(bucket);
+  const listing = tab === "properties" ? null : await listObjects(bucket, prefix);
+  // Folders already here, for flagging a name that exists.
+  const folders = listing?.ok ? (listing.value.CommonPrefixes ?? []).map((p) => p.Prefix!.slice(prefix.length).replace(/\/$/, "")) : [];
   return (
     <Page
       title={bucket}
@@ -213,15 +243,17 @@ export default async function Bucket({ params, searchParams }: Props) {
               <Sheet title="Upload" label="Upload" icon={<Upload size={15} aria-hidden />} testId="upload-object">
                 <ActionForm action={uploadObject.bind(null, bucket)} submit="Upload" testId="upload-object">
                   <input type="hidden" name="prefix" value={prefix} />
-                  <input type="file" name="file" multiple required />
-                  <Field label="Key" hint="Single file only; defaults to the file name">
+                  <Field label="Files">
+                    <input type="file" name="file" multiple required />
+                  </Field>
+                  <Field label="Key" hint="Single file only; defaults to the file name" rule={{ maxLength: KEY.maxLength }}>
                     <input name="key" placeholder={prefix + "…"} />
                   </Field>
                 </ActionForm>
               </Sheet>
-              <Sheet title="New folder" label="New folder" icon={<FolderPlus size={15} aria-hidden />}>
-                <ActionForm action={createFolder.bind(null, bucket, prefix)} submit="Create">
-                  <Field label="Name">
+              <Sheet title="New folder" label="New folder" icon={<FolderPlus size={15} aria-hidden />} testId="create-folder">
+                <ActionForm action={createFolder.bind(null, bucket, prefix)} submit="Create" testId="create-folder">
+                  <Field label="Name" rule={{ ...FOLDER, maxLength: 1023 - prefix.length }} taken={folders} unique>
                     <input name="name" required />
                   </Field>
                 </ActionForm>
@@ -229,10 +261,10 @@ export default async function Bucket({ params, searchParams }: Props) {
               <Sheet title="New text object" label="New text object" icon={<FilePlus size={15} aria-hidden />} testId="put-text-object">
                 <ActionForm action={putTextObject.bind(null, bucket)} submit="Save" testId="put-text-object">
                   <div className="form-row">
-                    <Field label="Key">
+                    <Field label="Key" rule={KEY}>
                       <input name="key" defaultValue={prefix} required />
                     </Field>
-                    <Field label="Content type">
+                    <Field label="Content type" rule={CONTENT_TYPE} known={CONTENT_TYPES}>
                       <input name="contentType" defaultValue="text/plain" />
                     </Field>
                   </div>
@@ -257,7 +289,7 @@ export default async function Bucket({ params, searchParams }: Props) {
           { label: "Properties", href: bucketHref(bucket, { tab: "properties" }), active: tab === "properties" },
         ]}
       />
-      {tab === "properties" ? <Properties bucket={bucket} /> : <Objects bucket={bucket} prefix={prefix} />}
+      {tab === "properties" ? <Properties bucket={bucket} /> : <Objects bucket={bucket} prefix={prefix} listing={listing!} />}
     </Page>
   );
 }

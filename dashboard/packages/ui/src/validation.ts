@@ -19,6 +19,8 @@
 // Pure functions only: this module is shared by server actions and the
 // browser.
 
+import { CERT_FORMATS } from "./certs.ts";
+
 /** A member's constraints, as generated from the model or written by hand. */
 export interface Rule {
   type?:
@@ -52,6 +54,10 @@ export interface Rule {
   /** For `format: "arn"`: the ARN a bare name expands to, with `{}` where
    * the name goes, e.g. `arn:aws:iam::123456789012:role/{}`. */
   arn?: string;
+  /** For `format: "cidr"`: the prefix lengths allowed (`[16, 28]` for a
+   * VPC), the blocks a value must fit inside (its VPC) and the blocks it
+   * must not overlap (sibling subnets). Repairs then offer free blocks. */
+  cidr?: CidrRule;
   /** Values that already exist (a create form's name field). */
   taken?: string[];
   /** `taken` ignores case (the service treats `Alice` and `alice` as the
@@ -79,8 +85,19 @@ export type Rules = Record<string, Rule>;
 
 export type Unit = "seconds" | "bytes";
 
+export interface CidrRule {
+  prefix?: [number, number];
+  within?: string[];
+  avoid?: string[];
+}
+
+
 export type Format =
   | "json"
+  | "dnsName"
+  | "certificate"
+  | "certificates"
+  | "privateKey"
   | "list"
   | "yaml"
   | "keyvalue"
@@ -238,6 +255,7 @@ const isNumeric = (r: Rule) => r.type === "integer" || r.type === "number" || r.
 
 /** The first problem with `value` under `rule`, with repairs, or null. */
 export function check(value: string, rule: Rule, options: Options = {}): Issue | null {
+  if (isList(rule)) return checkList(value, rule, options);
   const issue = problem(value, rule, options);
   if (!issue) return null;
   return { ...issue, repairs: repairs(value, rule, issue.code) };
@@ -245,7 +263,60 @@ export function check(value: string, rule: Rule, options: Options = {}): Issue |
 
 /** Is `value` acceptable (no issue at all)? */
 export function valid(value: string, rule: Rule): boolean {
-  return problem(value, rule, {}) === null;
+  return isList(rule) ? checkList(value, rule, {}) === null : problem(value, rule, {}) === null;
+}
+
+// ---------------------------------------------------------------------------
+// Lists typed into one control (names one per line or comma separated).
+
+/** A list of scalars: checked item by item. JSON-typed lists are not. */
+const isList = (r: Rule) => (r.type === "list" || r.type === "set") && !!r.item && !r.format && !r.item.fields && r.item.type !== "map";
+
+const LIST_SEP = /([\s,]+)/;
+
+
+/** The value with each item mapped, keeping the person's separators. */
+function mapItems(value: string, f: (item: string) => string): string {
+  return value
+    .split(LIST_SEP)
+    .map((t, i) => (i % 2 === 0 && t !== "" ? f(t) : t))
+    .join("");
+}
+
+const joiner = (value: string) => (value.includes("\n") ? "\n" : value.includes(",") ? ", " : " ");
+
+function checkList(value: string, rule: Rule, options: Options): Issue | null {
+  const items = listItems(value);
+  if (items.length === 0) return rule.required && !options.partial ? { code: "required", message: "Required", repairs: [] } : null;
+  const bad = items.flatMap((item) => {
+    const issue = check(item, rule.item!);
+    return issue ? [{ item, issue }] : [];
+  });
+  if (bad.length > 0) {
+    const [first] = bad;
+    const more = bad.length > 1 ? ` (+${bad.length - 1} more)` : "";
+    const out: Repair[] = [];
+    const offer = (r: Repair) => {
+      if (r.value !== value && !out.some((o) => o.value === r.value) && valid(r.value, rule)) out.push(r);
+    };
+    // Every bad item replaced by its first repair, then the first one's
+    // alternatives when it is the only problem.
+    const fixes = new Map(bad.map((b) => [b.item, b.issue.repairs[0]?.value]));
+    if (bad.every((b) => b.issue.repairs.length > 0)) {
+      offer({ value: mapItems(value, (t) => fixes.get(t) ?? t), label: bad.length > 1 ? `Fix ${bad.length} values` : first.issue.repairs[0].label, kind: first.issue.repairs[0].kind });
+    }
+    if (bad.length === 1) for (const r of first.issue.repairs.slice(1)) offer({ ...r, value: mapItems(value, (t) => (t === first.item ? r.value : t)) });
+    const kept = items.filter((t) => !fixes.has(t));
+    if (kept.length > 0) offer({ value: kept.join(joiner(value)), label: bad.length > 1 ? `Remove ${bad.length} values` : `Remove ${first.item}`, kind: "fix" });
+    return { code: first.issue.code, message: `${first.item}: ${first.issue.message}${more}`, repairs: out.slice(0, MAX_REPAIRS) };
+  }
+  const { minLength: min, maxLength: max } = rule;
+  if (max !== undefined && items.length > max) {
+    const kept = items.slice(0, max).join(joiner(value));
+    return { code: "tooLong", message: `${items.length - max} over the limit of ${max}`, repairs: [{ value: kept, label: `Keep the first ${max}`, kind: "fix" }] };
+  }
+  if (min !== undefined && items.length < min) return { code: "tooShort", message: `At least ${min}`, repairs: [] };
+  return null;
 }
 
 function problem(value: string, rule: Rule, options: Options): Omit<Issue, "repairs"> | null {
@@ -314,7 +385,8 @@ export function repairs(value: string, rule: Rule, code: IssueCode): Repair[] {
       break;
     case "reserved": {
       const prefix = rule.reserved!.filter((p) => value.startsWith(p)).sort((a, b) => b.length - a.length)[0];
-      offer({ value: value.slice(prefix.length), label: `Drop ${prefix}`, kind: "fix" });
+      const rest = value.slice(prefix.length);
+      offer({ value: valid(rest, rule) ? rest : (reshape(rest, rule)[0]?.value ?? rest), label: `Drop ${prefix}`, kind: "fix" });
       offer(fresh(rule));
       break;
     }
@@ -322,6 +394,9 @@ export function repairs(value: string, rule: Rule, code: IssueCode): Repair[] {
       const near = nearestNumbers(value, rule.enum ?? []);
       if (near) for (const s of near) offer({ value: s, label: `Use ${s}`, kind: "fix" });
       else for (const s of closest(value, rule.enum ?? [])) offer({ value: s, label: `Did you mean ${s}?`, kind: "suggest" });
+      // Nothing close: the allowed values that start the same way
+      // ("db.t4g.micro" where only larger sizes exist).
+      if (out.length === 0) for (const s of sharedPrefix(value, rule.enum ?? [])) offer({ value: s, label: `Use ${s}`, kind: "suggest" });
       break;
     }
     case "type":
@@ -396,6 +471,7 @@ function reshape(value: string, rule: Rule): Repair[] {
     ["Uppercase", (v) => v.trim().replace(/\s+/g, sep).toUpperCase()],
     ["Remove unsupported characters", (v) => clean(v, allowed, sep, false)],
     ["Remove unsupported characters", (v) => clean(v, allowed, sep, true)],
+    ["Tidy separators", (v) => tidy(clean(v, allowed, sep, true))],
   ];
   const out: Repair[] = [];
   const seen = new Set<string>([value]);
@@ -430,6 +506,11 @@ function reshape(value: string, rule: Rule): Repair[] {
       if (i > 0) push(label, chars.slice(i).join(""));
     }
   }
+  // Hierarchical names (/app/prod/db-host): a missing leading slash, doubled
+  // or trailing ones.
+  if (allowed?.test("/")) {
+    for (const v of [...seen]) push(v.startsWith("/") ? "Tidy the slashes" : "Start with /", "/" + v.split("/").filter(Boolean).join("/"));
+  }
   return out;
 }
 
@@ -448,6 +529,12 @@ function clean(value: string, allowed: RegExp | null, sep: string, lower: boolea
   return v;
 }
 
+/** Separators doubled up or at the ends ("team//app-") reduced to single
+ * ones between words, for patterns that only allow them there. */
+function tidy(value: string): string {
+  return value.replace(/([^\p{L}\p{N}])[^\p{L}\p{N}]+/gu, "$1").replace(/^[^\p{L}\p{N}]+|[^\p{L}\p{N}]+$/gu, "");
+}
+
 function cut(value: string, max: number, sep: string): string {
   const chars = [...value].slice(0, max).join("");
   return sep ? chars.replace(new RegExp(`[${sep.replace(/[-\]\\^]/g, "\\$&")}]+$`), "") : chars;
@@ -464,6 +551,10 @@ export function allowedChars(rule: Rule): RegExp | null {
   if (rule.format === "name") return /[A-Za-z0-9_-]/;
   if (!rule.pattern) return null;
   const classes = [...rule.pattern.matchAll(/\[((?:\\.|[^\]\\])+)\]/g)].map((m) => m[1]).filter((c) => !c.startsWith("^"));
+  // Separators spelled as literals between classes, as in ECR's
+  // `[a-z0-9]+((\.|_|-+)[a-z0-9]+)*(\/...)*`.
+  const literals = separatorLiterals(rule.pattern);
+  if (classes.length > 0 && literals) classes.push(literals);
   if (classes.length === 0) {
     const shorthand = rule.pattern.match(/\\[wd]/g);
     if (!shorthand) return null;
@@ -482,6 +573,12 @@ function schemes(pattern: string | undefined, value: string): string[] {
   // (bucket/key) keeps the pattern's order.
   const web = /^[\w-]+(\.[\w-]+)*\.[a-z]{2,}(:\d+)?(\/|$)/i.test(value.trim());
   return m[1].split("|").sort((a, b) => (web ? Number(b === "https") - Number(a === "https") : 0));
+}
+
+function separatorLiterals(pattern: string): string {
+  const outside = pattern.replace(/\[(?:\\.|[^\]\\])+\]/g, "").replace(/\{\d*,?\d*\}/g, "");
+  const chars = new Set([...outside.matchAll(/\\([./:@=+,-])|(?<!\\)([_/:@=,-])/g)].map((m) => m[1] ?? m[2]));
+  return [...chars].map((c) => (c === "-" ? "\\-" : c)).join("");
 }
 
 function literalEnds(pattern: string | undefined): { prefix?: string; suffix?: string } {
@@ -608,6 +705,20 @@ const squash = (s: string) => s.toLowerCase().replace(/[^\p{L}\p{N}]+/gu, "");
 
 /** The candidates closest to `value`, best first: same letters ignoring case
  * and separators, then prefixes and substrings, then small edit distances. */
+/** The candidates sharing the longest start with `value` (at least half of
+ * it, and three characters). */
+export function sharedPrefix(value: string, candidates: string[], limit = MAX_REPAIRS): string[] {
+  const common = (c: string) => {
+    let i = 0;
+    while (i < c.length && i < value.length && c[i].toLowerCase() === value[i].toLowerCase()) i++;
+    return i;
+  };
+  const scored = [...new Set(candidates)].filter((c) => c !== value).map((c) => [common(c), c] as const);
+  const best = Math.max(0, ...scored.map(([n]) => n));
+  if (best < 3 || best < value.length / 2) return [];
+  return scored.filter(([n]) => n === best).map(([, c]) => c).slice(0, limit);
+}
+
 export function closest(value: string, candidates: string[], limit = MAX_REPAIRS): string[] {
   const v = squash(value);
   if (!v) return [];
@@ -687,7 +798,7 @@ function password(rule: Rule): string {
 // ---------------------------------------------------------------------------
 // Formats.
 
-interface FormatSpec {
+export interface FormatSpec {
   check: (value: string, rule: Rule) => string | null;
   repair?: (value: string, rule: Rule) => Repair[];
 }
@@ -752,6 +863,7 @@ const CSR_LABEL = /^(NEW )?CERTIFICATE REQUEST$/;
 const pem = (label: string, body: string) => `-----BEGIN ${label}-----\n${body.replace(/\s+/g, "").match(/.{1,64}/g)?.join("\n") ?? ""}\n-----END ${label}-----`;
 
 export const FORMATS: Record<Format, FormatSpec> = {
+  ...CERT_FORMATS,
   json: {
     check(value) {
       try {
@@ -860,25 +972,47 @@ export const FORMATS: Record<Format, FormatSpec> = {
     },
   },
   cidr: {
-    check(value) {
+    check(value, rule) {
       const [ip, bits, ...rest] = value.trim().split("/");
       if (rest.length || bits === undefined) return "Like 10.0.0.0/16";
       const o = octets(ip);
       const n = Number(bits);
       if (!ipOk(o) || !/^\d{1,2}$/.test(bits) || n > 32) return "Like 10.0.0.0/16";
       const base = network(o!, n);
-      return base !== ip ? `Host bits set; the network is ${base}/${n}` : null;
+      if (base !== ip) return `Host bits set; the network is ${base}/${n}`;
+      const c = rule.cidr;
+      if (!c) return null;
+      const [lo, hi] = c.prefix ?? [0, 32];
+      if (n < lo || n > hi) return lo === hi ? `Netmask /${lo}` : `Netmask /${lo} to /${hi}`;
+      const block = toBlock(value.trim())!;
+      const within = blocks(c.within);
+      if (within.length && !within.some((w) => inside(block, w))) return `Outside ${c.within!.join(", ")}`;
+      const clash = blocks(c.avoid).find((a) => overlap(block, a));
+      return clash ? `Overlaps ${blockText(clash)}` : null;
     },
-    repair(value) {
+    repair(value, rule) {
       const v = value.trim().replace(/\s+/g, "");
       const [ip, bits] = v.split("/");
       const o = octets(ip);
       if (!ipOk(o)) return [];
+      const [lo, hi] = rule.cidr?.prefix ?? [0, 32];
+      const clamp = (n: number) => Math.min(hi, Math.max(lo, n));
+      const out: Repair[] = [];
       if (bits === undefined || bits === "") {
-        return [16, 24].map((n) => ({ value: `${network(o!, n)}/${n}`, label: `Use /${n}`, kind: "fix" as const }));
+        for (const n of new Set([16, 24].map(clamp))) out.push({ value: `${network(o!, n)}/${n}`, label: `Use /${n}`, kind: "fix" });
+      } else {
+        const asked = Math.min(32, Number(bits) || 0);
+        const n = clamp(asked);
+        out.push({ value: `${network(o!, n)}/${n}`, label: n === asked ? "Use the network address" : `Use /${n}`, kind: "fix" });
+        // Somewhere it fits: the first free blocks of that size, or of the
+        // next size down when none is left.
+        for (let size = n; size <= hi; size++) {
+          const free = freeBlocks(size, rule.cidr);
+          for (const f of free) out.push({ value: f, label: `Free /${size}`, kind: "suggest" });
+          if (free.length || !rule.cidr?.within?.length) break;
+        }
       }
-      const n = Math.min(32, Number(bits) || 0);
-      return [{ value: `${network(o!, n)}/${n}`, label: "Use the network address", kind: "fix" }];
+      return out;
     },
   },
   ipv4: {
@@ -1387,6 +1521,39 @@ export function listItems(value: string): string[] {
   return value.split(/[\s,]+/).filter(Boolean);
 }
 
+// CIDR blocks as [first address, prefix length].
+type Block = [number, number];
+const ipNumber = (o: number[]) => ((o[0] << 24) | (o[1] << 16) | (o[2] << 8) | o[3]) >>> 0;
+const sizeOf = (bits: number) => 2 ** (32 - bits);
+function toBlock(cidr: string): Block | null {
+  const [ip, bits] = cidr.split("/");
+  const o = octets(ip);
+  const n = Number(bits);
+  if (!ipOk(o) || !/^\d{1,2}$/.test(bits ?? "") || n > 32) return null;
+  return [ipNumber(o!) - (ipNumber(o!) % sizeOf(n)), n];
+}
+const blocks = (list: string[] | undefined) => (list ?? []).map(toBlock).filter((b): b is Block => b !== null);
+const blockText = ([start, bits]: Block) => `${[start >>> 24, (start >>> 16) & 255, (start >>> 8) & 255, start & 255].join(".")}/${bits}`;
+const inside = ([s, b]: Block, [ws, wb]: Block) => b >= wb && s >= ws && s + sizeOf(b) <= ws + sizeOf(wb);
+const overlap = ([s, b]: Block, [os, ob]: Block) => s < os + sizeOf(ob) && os < s + sizeOf(b);
+
+/** The first free blocks of a prefix length inside `within`, clear of
+ * `avoid`, in address order. */
+export function freeBlocks(bits: number, rule: CidrRule | undefined, limit = 2): string[] {
+  const avoid = blocks(rule?.avoid);
+  const out: string[] = [];
+  for (const [ws, wb] of blocks(rule?.within)) {
+    if (bits < wb) continue;
+    for (let s = ws; s < ws + sizeOf(wb) && out.length < limit; s += sizeOf(bits)) {
+      const hit = avoid.find((a) => overlap([s, bits], a));
+      if (!hit) out.push(blockText([s, bits]));
+      // Skip past what is in use rather than stepping through it.
+      else if (hit[1] < bits) s = hit[0] + sizeOf(hit[1]) - sizeOf(bits);
+    }
+  }
+  return out;
+}
+
 function network(o: number[], bits: number): string {
   const n = ((o[0] << 24) | (o[1] << 16) | (o[2] << 8) | o[3]) >>> 0;
   const mask = bits === 0 ? 0 : (0xffffffff << (32 - bits)) >>> 0;
@@ -1566,6 +1733,9 @@ export function parseServerIssues(message: string): FieldIssue[] {
   // "Value (x) for parameter QueueName is invalid. Reason: ..."
   const param = message.match(/Value \(?'?([^)']*)'?\)? for parameter (\w+) is invalid\.?\s*(?:Reason: )?(.*)$/);
   if (param) out.push({ member: param[2], value: param[1], code: "server", message: sentence(param[3] || "Invalid value") });
+  // "The parameter MasterUserPassword is not a valid password because it is shorter than 8 characters."
+  const notValid = message.match(/The parameter (\w+) is (not a valid \w+)(?: because (?:it is )?([^.]*))?/);
+  if (!param && notValid) return [{ member: notValid[1], code: "server", message: sentence(notValid[3] ? `${notValid[2]}: ${notValid[3]}` : notValid[2]) }];
   // "1 validation error detected: The parameter X ..." / "X is required" / "Missing required parameter X"
   const missing = message.match(/(?:Missing required (?:parameter|key|field)|The parameter|Parameter) '?([A-Za-z][\w.]*)'? (?:is (?:required|missing)|must be specified)/i) ??
     message.match(/^(?:\w+: )?'?([A-Za-z][\w.]*)'? (?:is required|must be specified|cannot be empty)/);

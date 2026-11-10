@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 
-import { amount, check, closest, describePattern, fresh, listItems, parseServerIssues, repairJson, repairPolicy, ruleAt, sameMember, valid, type Rule } from "./validation.ts";
+import { amount, check, closest, describePattern, fresh, listItems, parseServerIssues, repairJson, repairPolicy, ruleAt, sameMember, sharedPrefix, valid, type Rule } from "./validation.ts";
 
 const values = (r: Rule, v: string) => check(v, r)?.repairs.map((x) => x.value) ?? [];
 
@@ -385,3 +385,53 @@ test("event patterns wrap bare values in lists", () => {
   assert.equal(check("[]", rule)?.message, "Must be a JSON object");
 });
 
+
+
+test("hierarchical names are tidied, also after dropping a reserved prefix", () => {
+  // Parameter Store's names: a/b needs a leading slash; /aws and /ssm are reserved.
+  const rule: Rule = { pattern: "^(?:[A-Za-z0-9_.-]+|(?:[/][A-Za-z0-9_.-]+){1,15})$", reserved: ["/aws", "/ssm", "aws", "ssm"] };
+  assert.deepEqual(values(rule, "app/prod/db"), ["/app/prod/db"]);
+  assert.deepEqual(values(rule, "/app//prod/db host/"), ["/app/prod/db-host"]);
+  assert.equal(check("/aws/app/db host", rule)?.code, "reserved");
+  assert.deepEqual(values(rule, "/aws/app/db host"), ["/app/db-host"]);
+});
+
+test("CIDR rules: netmask range, inside the VPC, clear of siblings", () => {
+  const vpc: Rule = { format: "cidr", cidr: { prefix: [16, 28] } };
+  assert.equal(check("10.0.0.0/8", vpc)?.message, "Netmask /16 to /28");
+  assert.deepEqual(values(vpc, "10.0.0.0/8"), ["10.0.0.0/16"]);
+  assert.deepEqual(values(vpc, "10.9.9.9"), ["10.9.0.0/16", "10.9.9.0/24"]);
+
+  const subnet: Rule = { format: "cidr", cidr: { prefix: [16, 28], within: ["10.0.0.0/16"], avoid: ["10.0.0.0/20", "10.0.32.0/24"] } };
+  assert.equal(check("10.0.16.0/20", subnet), null);
+  assert.equal(check("10.1.0.0/20", subnet)?.message, "Outside 10.0.0.0/16");
+  assert.deepEqual(values(subnet, "10.1.0.0/20"), ["10.0.16.0/20", "10.0.48.0/20"]);
+  assert.equal(check("10.0.0.0/24", subnet)?.message, "Overlaps 10.0.0.0/20");
+  assert.deepEqual(values(subnet, "10.0.0.0/24"), ["10.0.16.0/24", "10.0.17.0/24"]);
+  // A full VPC: the next smaller size that still fits.
+  assert.deepEqual(values({ format: "cidr", cidr: { prefix: [16, 28], within: ["10.0.0.0/16"], avoid: ["10.0.0.0/17", "10.0.128.0/18"] } }, "10.0.0.0/17"), ["10.0.192.0/18"]);
+});
+
+test("separators spelled as literals in the pattern are kept and tidied", () => {
+  // ECR repository names: separators only between lowercase words.
+  const rule: Rule = { pattern: "^[a-z0-9]+((\\.|_|__|-+)[a-z0-9]+)*(\\/[a-z0-9]+((\\.|_|__|-+)[a-z0-9]+)*)*$", maxLength: 256 };
+  assert.deepEqual(values(rule, "Team App"), ["team-app"]);
+  assert.deepEqual(values(rule, "My.Service/API v2"), ["my.service/api-v2"]);
+  assert.deepEqual(values(rule, "team//app/"), ["team/app"]);
+  assert.deepEqual(values({ ...rule, taken: ["team/app"] }, "team/app"), ["team/app-2"]);
+});
+
+test("enums without a close match offer values that start the same way", () => {
+  const classes = ["db.t4g.medium", "db.t4g.large", "db.r7g.large"];
+  assert.deepEqual(sharedPrefix("db.t4g.micro", classes), ["db.t4g.medium"]);
+  assert.deepEqual(sharedPrefix("cache.m5", classes), []);
+  assert.deepEqual(check("db.t4g.micro", { enum: classes })?.repairs.map((r) => r.value), ["db.t4g.medium"]);
+});
+
+test("'The parameter X is not a valid ...' messages name their member", () => {
+  const [pw] = parseServerIssues("The parameter MasterUserPassword is not a valid password because it is shorter than 8 characters.");
+  assert.equal(pw.member, "MasterUserPassword");
+  assert.equal(pw.message, "Not a valid password: shorter than 8 characters");
+  const [id] = parseServerIssues("The parameter DBInstanceIdentifier is not a valid identifier. Identifiers must begin with a letter; must contain only ASCII letters, digits, and hyphens.");
+  assert.deepEqual([id.member, id.message], ["DBInstanceIdentifier", "Not a valid identifier"]);
+});

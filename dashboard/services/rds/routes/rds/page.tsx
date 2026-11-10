@@ -1,65 +1,46 @@
-import { DescribeDBClusterSnapshotsCommand, DescribeDBClustersCommand, DescribeDBInstancesCommand, DescribeDBSnapshotsCommand } from "@aws-sdk/client-rds";
+import {
+  DescribeDBClusterSnapshotsCommand,
+  DescribeDBClustersCommand,
+  DescribeDBInstancesCommand,
+  DescribeDBSnapshotsCommand,
+  DescribeOrderableDBInstanceOptionsCommand,
+} from "@aws-sdk/client-rds";
 import { ago, load } from "@mws-dashboard/aws";
-import { ActionForm, AwsIcon, Curated, Empty, ErrorNotice, Field, List, Page, Pill, Sheet, Status } from "@mws-dashboard/ui";
+import { ActionForm, AwsIcon, Curated, Empty, ErrorNotice, Page, Pill, Sheet, Status } from "@mws-dashboard/ui";
 import { Trash2 } from "lucide-react";
 import type { Metadata } from "next";
 
 import { ICONS, STATUS_TONE, engineIcon, rds } from "../../lib/clients";
-import { createDatabase, deleteSnapshot } from "./actions";
+import { deleteSnapshot } from "./actions";
+import { ENGINES } from "../../lib/rules";
+import { CreateDatabaseForm } from "./create-database.tsx";
 
 export const metadata: Metadata = { title: "RDS" };
 
 type Props = { searchParams: Promise<{ tab?: string }> };
 
-const ENGINES = [
-  { value: "postgres", label: "PostgreSQL" },
-  { value: "mysql", label: "MySQL" },
-  { value: "mariadb", label: "MariaDB" },
-  { value: "aurora-postgresql", label: "Aurora PostgreSQL" },
-  { value: "aurora-mysql", label: "Aurora MySQL" },
-];
+/** The classes RDS offers each engine, from the orderable options. */
+async function orderableClasses() {
+  const client = await rds();
+  const entries = await Promise.all(
+    ENGINES.map(async ({ value }) => {
+      const out = new Set<string>();
+      let Marker: string | undefined;
+      do {
+        const page = await client.send(new DescribeOrderableDBInstanceOptionsCommand({ Engine: value, MaxRecords: 100, Marker }));
+        for (const o of page.OrderableDBInstanceOptions ?? []) if (o.DBInstanceClass) out.add(o.DBInstanceClass);
+        Marker = page.Marker;
+      } while (Marker);
+      return [value, [...out].sort()] as const;
+    }),
+  );
+  return Object.fromEntries(entries);
+}
 
-function CreateDatabase() {
+function CreateDatabase({ classes, taken }: { classes: Record<string, string[]>; taken: string[] }) {
   return (
     <Sheet title="Create database" label="Create database" testId="create-database">
-      <ActionForm action={createDatabase} submit="Create database" testId="create-database">
-        <Field label="Engine">
-          <select name="engine" defaultValue="postgres">
-            {ENGINES.map((e) => (
-              <option key={e.value} value={e.value}>
-                {e.label}
-              </option>
-            ))}
-          </select>
-        </Field>
-        <Field label="DB identifier">
-          <input name="id" required pattern="[a-zA-Z][a-zA-Z0-9\-]*" maxLength={63} autoFocus />
-        </Field>
-        <div className="form-row">
-          <Field label="Master username">
-            <input name="username" required defaultValue="postgres" />
-          </Field>
-          <Field label="Master password">
-            <input name="password" type="password" required minLength={8} />
-          </Field>
-        </div>
-        <div className="form-row">
-          <Field label="Instance class">
-            <input name="class" defaultValue="db.t4g.micro" list="db-classes" />
-          </Field>
-          <Field label="Storage (GiB)">
-            <input name="storage" type="number" min={20} defaultValue={20} />
-          </Field>
-        </div>
-        <datalist id="db-classes">
-          {["db.t4g.micro", "db.t4g.small", "db.t4g.medium", "db.m7g.large", "db.r7g.large", "db.serverless"].map((c) => (
-            <option key={c} value={c} />
-          ))}
-        </datalist>
-        <label className="check">
-          <input type="checkbox" name="multiAz" /> Multi-AZ
-        </label>
-      </ActionForm>
+      <CreateDatabaseForm classes={classes} taken={taken} />
     </Sheet>
   );
 }
@@ -110,6 +91,7 @@ export default async function Databases({ searchParams }: Props) {
       </Page>
     );
   }
+  const classes = await load(orderableClasses);
   const data = await load(async () => {
     const [instances, clusters] = await Promise.all([
       client.send(new DescribeDBInstancesCommand({})).then((r) => r.DBInstances ?? []),
@@ -144,9 +126,10 @@ export default async function Databases({ searchParams }: Props) {
         })),
     ];
   });
+  const create = (taken: string[]) => <CreateDatabase classes={classes.ok ? classes.value : {}} taken={taken} />;
   if (!data.ok) {
     return (
-      <Page title="Databases" actions={<CreateDatabase />}>
+      <Page title="Databases" actions={create([])}>
         <ErrorNotice error={data.error} />
       </Page>
     );
@@ -154,7 +137,7 @@ export default async function Databases({ searchParams }: Props) {
   const all = data.value.sort((a, b) => a.name.localeCompare(b.name));
   const family = (e: string | undefined) => (e?.includes("postgres") ? "postgres" : e?.includes("mysql") || e?.includes("mariadb") ? "mysql" : "other");
   return (
-    <Page title="Databases" actions={<CreateDatabase />}>
+    <Page title="Databases" actions={create(all.map((d) => d.name))}>
       <Curated
         label="Databases"
         sections={[
@@ -162,7 +145,7 @@ export default async function Databases({ searchParams }: Props) {
           { id: "mysql", title: "MySQL and MariaDB", items: all.filter((d) => family(d.engine) === "mysql") },
           { id: "other", title: "Other engines", items: all.filter((d) => family(d.engine) === "other") },
         ]}
-        empty={<Empty icon={ICONS.rds} action={<CreateDatabase />} />}
+        empty={<Empty icon={ICONS.rds} action={create([])} />}
         row={(d) => ({
           key: d.key,
           icon: <AwsIcon icon={engineIcon(d.engine)} size={24} />,
