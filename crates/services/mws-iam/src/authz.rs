@@ -73,9 +73,17 @@ impl Authorizer for IamAuthorizer {
         if let Some(arn) = role {
             context.insert("aws:PrincipalArn", vec![arn]);
         }
+        let aws_service = matches!(req.caller.kind, CallerKind::Service { .. });
         if let Some(o) = &caller_org {
-            context.insert("aws:PrincipalOrgID", vec![o.organization_id.clone()]);
-            context.insert("aws:PrincipalOrgPaths", vec![o.org_path.clone()]);
+            // A service principal belongs to no organization; the account
+            // it acts for does (`aws:SourceOrgID`).
+            let (id, paths) = if aws_service {
+                ("aws:SourceOrgID", "aws:SourceOrgPaths")
+            } else {
+                ("aws:PrincipalOrgID", "aws:PrincipalOrgPaths")
+            };
+            context.insert(id, vec![o.organization_id.clone()]);
+            context.insert(paths, vec![o.org_path.clone()]);
         }
         if let Some(a) = &resource_account {
             context.insert("aws:ResourceAccount", vec![a.clone()]);
@@ -91,7 +99,8 @@ impl Authorizer for IamAuthorizer {
             }
             _ => false,
         };
-        if !service_linked {
+        // Nor do SCPs or RCPs restrict AWS service principals.
+        if !service_linked && !aws_service {
             if let Some(levels) = caller_org.as_ref().and_then(|o| o.service_control_policies.as_ref()) {
                 set.service_control = Some(parse_levels(levels, PolicyKind::ServiceControl));
             }
@@ -109,9 +118,12 @@ impl Authorizer for IamAuthorizer {
             || req.action.eq_ignore_ascii_case("sts:AssumeRoot");
         // Anonymous callers have no identity policies to consult: a resource
         // policy alone decides, whoever owns the resource.
+        // The same goes for AWS service principals, which have none either.
         let anonymous = req.caller.kind == CallerKind::Anonymous;
-        set.cross_account =
-            !service_decides && !anonymous && resource_account.as_deref().is_some_and(|a| a != caller_account);
+        set.cross_account = !service_decides
+            && !anonymous
+            && !aws_service
+            && resource_account.as_deref().is_some_and(|a| a != caller_account);
         if let Some(doc) = req.resource_policy {
             let kind = if req.resource_policy_mode == ResourcePolicyMode::Trust {
                 PolicyKind::Trust
@@ -264,6 +276,11 @@ pub(crate) fn principal_policies(
             set.session_required = true;
         }
         CallerKind::Anonymous => principal.anonymous = true,
+        CallerKind::Service { principal: service, .. } => {
+            // Matched by `"Service": ...` principals only; it has no
+            // account, ARN or identity policies of its own.
+            principal = PrincipalInfo { service: Some(service.clone()), ..Default::default() };
+        }
     }
     if let Some(session) = &caller.session {
         set.session =

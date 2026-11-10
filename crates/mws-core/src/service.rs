@@ -59,6 +59,24 @@ impl RequestContext {
     pub fn global_condition_context(&self) -> ConditionContext {
         let mut ctx = ConditionContext::new();
         let c = &self.caller;
+        if let crate::CallerKind::Service { principal, source_arn } = &c.kind {
+            // A service principal has no ARN, account or user id of its
+            // own: policies see the service and what it acts for.
+            ctx.insert("aws:PrincipalIsAWSService".into(), vec!["true".into()]);
+            ctx.insert("aws:PrincipalServiceName".into(), vec![principal.clone()]);
+            if !c.account_id.is_empty() {
+                ctx.insert("aws:SourceAccount".into(), vec![c.account_id.clone()]);
+            }
+            if let Some(arn) = source_arn {
+                ctx.insert("aws:SourceArn".into(), vec![arn.clone()]);
+            }
+            ctx.insert("aws:CurrentTime".into(), vec![self.received_at.format("%Y-%m-%dT%H:%M:%SZ").to_string()]);
+            ctx.insert("aws:EpochTime".into(), vec![self.received_at.timestamp().to_string()]);
+            ctx.insert("aws:SecureTransport".into(), vec!["true".into()]);
+            ctx.insert("aws:RequestedRegion".into(), vec![self.region.clone()]);
+            ctx.insert("aws:ViaAWSService".into(), vec!["false".into()]);
+            return ctx;
+        }
         ctx.insert("aws:PrincipalArn".into(), vec![principal_arn_for_conditions(c)]);
         ctx.insert("aws:PrincipalAccount".into(), vec![c.account_id.clone()]);
         ctx.insert("aws:userid".into(), vec![c.user_id.clone()]);
@@ -71,6 +89,7 @@ impl RequestContext {
             crate::CallerKind::AssumedRole { .. } => "AssumedRole",
             crate::CallerKind::FederatedUser { .. } => "FederatedUser",
             crate::CallerKind::Anonymous => "Anonymous",
+            crate::CallerKind::Service { .. } => unreachable!("handled above"),
         };
         ctx.insert("aws:PrincipalType".into(), vec![principal_type.into()]);
         let mfa = c.session.as_ref().is_some_and(|s| s.mfa_authenticated);

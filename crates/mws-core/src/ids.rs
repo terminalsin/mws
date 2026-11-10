@@ -47,6 +47,16 @@ pub fn account_of_access_key_id(akid: &str) -> Option<String> {
     Some(format!("{:012}", (head & ACCOUNT_MASK) >> 7))
 }
 
+/// A new request id, a random (version 4) UUID like AWS's.
+pub fn request_id() -> String {
+    let mut b = [0u8; 16];
+    rand::thread_rng().fill_bytes(&mut b);
+    b[6] = (b[6] & 0x0f) | 0x40;
+    b[8] = (b[8] & 0x3f) | 0x80;
+    let h: String = b.iter().map(|x| format!("{x:02x}")).collect();
+    format!("{}-{}-{}-{}-{}", &h[0..8], &h[8..12], &h[12..16], &h[16..20], &h[20..32])
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

@@ -71,9 +71,43 @@ pub enum CallerKind {
     /// An unsigned request, for the few operations AWS accepts without a
     /// signature (e.g. `sts:AssumeRoleWithWebIdentity`).
     Anonymous,
+    /// An AWS service acting as its service principal, e.g. S3 sending an
+    /// event notification to a queue as `s3.amazonaws.com`. Only resource
+    /// policies (and KMS key policies) decide what it may do: it has no
+    /// identity policies, and SCPs and RCPs do not apply. The caller's
+    /// `account_id` is the account the service acts for
+    /// (`aws:SourceAccount`).
+    Service {
+        /// The service principal, e.g. `s3.amazonaws.com`.
+        principal: String,
+        /// The resource the service acts for (`aws:SourceArn`), e.g. the
+        /// bucket whose notification this is.
+        source_arn: Option<String>,
+    },
 }
 
 impl Caller {
+    /// The AWS service `principal` acting for `source_account`, on behalf
+    /// of `source_arn` when there is one.
+    pub fn service(principal: &str, source_account: &str, source_arn: Option<&str>) -> Self {
+        Self {
+            account_id: source_account.to_string(),
+            arn: principal.to_string(),
+            user_id: principal.to_string(),
+            access_key_id: String::new(),
+            kind: CallerKind::Service { principal: principal.to_string(), source_arn: source_arn.map(str::to_string) },
+            session: None,
+        }
+    }
+
+    /// The service principal, when an AWS service is the caller.
+    pub fn service_principal(&self) -> Option<&str> {
+        match &self.kind {
+            CallerKind::Service { principal, .. } => Some(principal),
+            _ => None,
+        }
+    }
+
     pub fn anonymous() -> Self {
         Self {
             account_id: String::new(),

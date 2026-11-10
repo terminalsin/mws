@@ -299,7 +299,12 @@ impl Gateway {
     /// Hand a signed request to its service, recording the actions it
     /// authorizes for the request observers and telling the API call
     /// observers about the call it made.
-    async fn dispatch(
+    async fn dispatch(&self, service: &Arc<dyn Service>, ctx: RequestContext, request: HttpRequest) -> HttpResponse {
+        // Deliveries the handler deferred run before the response goes out.
+        mws_core::deferred::run(self.dispatch_now(service, ctx, request)).await
+    }
+
+    async fn dispatch_now(
         &self,
         service: &Arc<dyn Service>,
         mut ctx: RequestContext,
