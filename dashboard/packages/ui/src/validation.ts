@@ -94,7 +94,8 @@ export type Format =
   | "csr"
   | "phone"
   | "pairs"
-  | "tags";
+  | "tags"
+  | "branch";
 
 /** "name": a readable resource name; "token": random letters and digits;
  * "password": meets the usual complexity rules; or a fixed prefix/suffix
@@ -316,7 +317,7 @@ export function repairs(value: string, rule: Rule, code: IssueCode): Repair[] {
       const format = rule.format && FORMATS[rule.format];
       for (const r of format?.repair?.(value, rule) ?? []) offer(r);
       // Multi-line values (JSON, tags) do not reshape into anything useful.
-      if (!value.includes("\n")) for (const r of reshape(value, rule).slice(0, 1)) offer(r);
+      if (out.length === 0 && !value.includes("\n")) for (const r of reshape(value, rule).slice(0, 1)) offer(r);
       break;
     }
     case "tooLong":
@@ -392,6 +393,8 @@ function reshape(value: string, rule: Rule): Repair[] {
     push(label, v);
     if (max !== undefined && length(v) > max) push(`Shorten to ${max} characters`, cut(v, max, sep));
   }
+  // A URL scheme the pattern starts with (`^(s3|https|http)://`).
+  for (const scheme of schemes(rule.pattern, value)) if (!/^[a-z][\w+.-]*:\/\//i.test(value.trim())) push(`Add ${scheme}://`, `${scheme}://${value.trim().replace(/^\/+/, "")}`);
   // A required literal ending (a FIFO queue's ".fifo") or beginning.
   const literal = literalEnds(rule.pattern);
   for (const v of [...seen]) {
@@ -454,6 +457,15 @@ export function allowedChars(rule: Rule): RegExp | null {
   // the next class's first character would read as a range.
   const union = `^(?:${[...new Set(classes)].map((c) => `[${c}]`).join("|")})$`;
   return regex(union);
+}
+
+function schemes(pattern: string | undefined, value: string): string[] {
+  const m = pattern?.match(/^\^\(?((?:[a-z][a-z0-9+.-]*\|)*[a-z][a-z0-9+.-]*)\)?:(?:\\\/|\/){2}/i);
+  if (!m) return [];
+  // A host name (example.com/...) reads as https first; anything else
+  // (bucket/key) keeps the pattern's order.
+  const web = /^[\w-]+(\.[\w-]+)*\.[a-z]{2,}(:\d+)?(\/|$)/i.test(value.trim());
+  return m[1].split("|").sort((a, b) => (web ? Number(b === "https") - Number(a === "https") : 0));
 }
 
 function literalEnds(pattern: string | undefined): { prefix?: string; suffix?: string } {
@@ -839,6 +851,9 @@ export const FORMATS: Record<Format, FormatSpec> = {
     },
     repair(value, rule) {
       const v = value.trim();
+      // An SSH remote (git@github.com:org/repo.git) as its HTTPS URL.
+      const ssh = v.match(/^(?:ssh:\/\/)?[\w.-]+@([\w.-]+\.[a-z]{2,})[:/](.+)$/i);
+      if (ssh) return [{ value: `https://${ssh[1]}/${ssh[2].replace(/^\/+/, "")}`, label: "Use the HTTPS URL", kind: "fix" }];
       // https:// first; http:// only where the rule refuses https://.
       const pick = (bare: string, add: boolean): Repair[] => {
         const https = `https://${bare}`;
@@ -984,6 +999,34 @@ export const FORMATS: Record<Format, FormatSpec> = {
       }
       const fixed = [...tags].map(([k, v]) => `${k}=${v}`).join("\n");
       return fixed ? [{ value: fixed, label: "Use key=value lines", kind: "fix" }] : [];
+    },
+  },
+  // A Git branch name, by `git check-ref-format --branch`.
+  branch: {
+    check(value) {
+      if (/\s/.test(value)) return "No spaces";
+      const bad = value.match(/[~^:?*[\\\x00-\x1f\x7f]/)?.[0];
+      if (bad) return /[\x00-\x1f\x7f]/.test(bad) ? "No control characters" : `No ${bad}`;
+      if (value.includes("..")) return "No ..";
+      if (value.includes("@{") || value === "@") return "No @{";
+      if (value.startsWith("-")) return "Can't start with -";
+      if (/(^|\/)\./.test(value)) return "No part can start with .";
+      if (/\/\/|^\/|\/$/.test(value)) return "No empty parts between /";
+      if (value.endsWith(".")) return "Can't end with .";
+      if (/\.lock(\/|$)/.test(value)) return "No part can end with .lock";
+      return null;
+    },
+    repair(value) {
+      const v = value
+        .trim()
+        .replace(/@\{/g, "-")
+        .replace(/[\s~^:?*[\\\x00-\x1f\x7f]+/g, "-")
+        .replace(/\.{2,}/g, ".")
+        .split("/")
+        .map((p) => p.replace(/^[.-]+/, "").replace(/(\.lock)+$/, "").replace(/[.-]+$/, "").replace(/-{2,}/g, "-"))
+        .filter(Boolean)
+        .join("/");
+      return v && v !== "@" ? [{ value: v, label: "Fix the branch name", kind: "fix" }] : [];
     },
   },
 };

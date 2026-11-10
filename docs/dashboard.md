@@ -117,9 +117,9 @@ Fields validate in place, and say how to fix what they reject. `Field`
 3. what the page adds: `format` (`json`, `policy`, `path`, `arn`, `cidr`,
    `ipv4`, `email`, `emails` (a comma-separated list), `domain`,
    `email-or-domain`, `url`, `s3url`, `bucket`, `name`, `port`, `phone`,
-   `tags` for `key=value` tag lines, `pairs` for any `key=value` list),
-   `taken` (names that exist), `reserved` (prefixes AWS keeps, offered
-   without them),
+   `tags` for `key=value` tag lines, `pairs` for any `key=value` list,
+   `branch` for Git branch names), `taken` (names that exist), `reserved`
+   (prefixes AWS keeps, offered without them),
    `known` (values the field usually points at), `generate` (`name`,
    `token`, `password`, `uuid`, or a prefix/suffix), `arn` (the ARN template
    a bare name expands to) and `hint` (a readable pattern message).
@@ -128,8 +128,9 @@ A problem replaces the field's hint once the person leaves the field or
 submits, and comes with repairs as chips: a fix (reshaped to the pattern,
 shortened, clamped, network address, repaired JSON, a policy document
 rebuilt from a bare statement with its casing fixed, `https://` added or
-`http://` for a local endpoint, a phone number in E.164, `key: value` lines or
-a JSON object rewritten as `key=value`), a
+`http://` for a local endpoint, a phone number in E.164, an SSH remote as its
+HTTPS URL, the scheme a pattern requires, a Git-safe branch name, `key: value`
+lines or a JSON object rewritten as `key=value`), a
 suggestion ("did you mean" among enum values, `known` values, all of them
 when there are only a few, or common email domains) or a generated value. Every repair is checked against the whole rule
 before it is offered. A blocked submit focuses and shakes the first field.
@@ -139,7 +140,7 @@ messages (`Value 'x' at 'roleName' failed to satisfy constraint: ...`) back
 into rules, so a backend rejection gets the same repairs; "already exists"
 errors land on the field marked `unique` with the next free name; anything
 else is mapped with `act(run, { revalidate, fields: { QueueName: "name",
-NoSuchEntity: "role" } })`, and `throw new FieldError(field, message)` targets
+NoSuchEntityException: "role" } })` (error codes as the JS SDK names them, `e.name`), and `throw new FieldError(field, message)` targets
 a field directly. Only issues no field claims show under the form. All of
 this lives in the console (`validation.ts`, `fields.tsx`); MWS itself only
 returns what AWS returns. SQS's create-queue sheet is the reference use.

@@ -273,3 +273,21 @@ test("tags take key=value lines", () => {
   assert.deepEqual(values(rule, "a=1\na=2"), ["a=2"]);
   assert.deepEqual(values(rule, "aws:team=x"), ["team=x"]);
 });
+
+test("branch names follow git's ref rules and are repaired", () => {
+  const branch: Rule = { format: "branch" };
+  for (const ok of ["main", "feature/login", "release-1.2", "fix_x"]) assert.equal(check(ok, branch), null, ok);
+  assert.equal(check("my feature", branch)?.message, "No spaces");
+  assert.deepEqual(values(branch, "my feature"), ["my-feature"]);
+  assert.deepEqual(values(branch, "feat~1..x"), ["feat-1.x"]);
+  assert.deepEqual(values(branch, "-wip/.hidden/"), ["wip/hidden"]);
+  assert.deepEqual(values(branch, "topic.lock"), ["topic"]);
+});
+
+test("URLs: SSH remotes become HTTPS, scheme patterns get their scheme", () => {
+  assert.deepEqual(values({ format: "url" }, "git@github.com:org/site.git"), ["https://github.com/org/site.git"]);
+  const source: Rule = { pattern: "^(s3|https|http)://" };
+  assert.deepEqual(values(source, "my-bucket/site.zip"), ["s3://my-bucket/site.zip"]);
+  assert.deepEqual(values(source, "example.com/site.zip"), ["https://example.com/site.zip"]);
+  assert.deepEqual(values(source, "ftp://x"), []);
+});

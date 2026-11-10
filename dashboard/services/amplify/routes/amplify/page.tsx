@@ -5,6 +5,7 @@ import { GitBranch } from "lucide-react";
 import type { Metadata } from "next";
 
 import { amplify, ICONS } from "../../lib/clients";
+import { APP_NAME, BRANCH, CreateApp } from "../../lib/rules";
 import { createApp } from "./actions";
 
 export const metadata: Metadata = { title: "Amplify" };
@@ -14,16 +15,16 @@ export default async function Apps() {
   const create = (
     <Sheet title="Create app" label="Create new app" testId="create-app">
       <ActionForm action={createApp} submit="Create app" testId="create-app">
-        <Field label="App name">
+        <Field label="App name" rule={APP_NAME}>
           <input name="name" required autoFocus />
         </Field>
-        <Field label="Branch">
+        <Field label="Branch" rule={{ ...BRANCH, required: false }} member="branchName">
           <input name="branch" defaultValue="main" />
         </Field>
-        <Field label="Repository">
+        <Field label="Repository" rule={CreateApp.repository} format="url">
           <input name="repository" placeholder="https://github.com/org/site (optional)" />
         </Field>
-        <Field label="Access token">
+        <Field label="Access token" rule={CreateApp.accessToken} member="accessToken">
           <input name="token" type="password" autoComplete="off" />
         </Field>
       </ActionForm>

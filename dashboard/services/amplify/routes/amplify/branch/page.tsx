@@ -6,6 +6,7 @@ import type { Metadata } from "next";
 
 import { siteUrl } from "../../../lib/amplify";
 import { amplify, ICONS, tone } from "../../../lib/clients";
+import { SOURCE_URL } from "../../../lib/rules";
 import { build, deleteBranch, deploy, stopJob } from "../actions";
 
 export const metadata: Metadata = { title: "Branch" };
@@ -56,10 +57,12 @@ export default async function Branch({ searchParams }: Props) {
               <Field label="Zip">
                 <input name="zip" type="file" accept=".zip" />
               </Field>
-              <Field label="Or a URL">
+              <Field label="Or a URL" rule={SOURCE_URL} member="sourceUrl">
                 <input name="url" placeholder="s3://bucket/site.zip or https://…" />
               </Field>
-              <textarea name="html" rows={5} aria-label="index.html" className="code-editor" placeholder="<h1>Or paste an index.html</h1>" spellCheck={false} />
+              <Field label="Or index.html">
+                <textarea name="html" rows={5} className="code-editor" placeholder="<h1>Hello</h1>" spellCheck={false} />
+              </Field>
             </ActionForm>
           </Sheet>
           <ActionForm action={deleteBranch.bind(null, app, name)} submit="Delete branch" icon={<Trash2 size={16} />} tone="danger" confirm={`Delete ${name}?`} />
