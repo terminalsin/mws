@@ -1,11 +1,21 @@
-import { DescribeHubCommand, DescribeStandardsCommand, GetEnabledStandardsCommand, GetFindingsCommand } from "@aws-sdk/client-securityhub";
+import {
+  DescribeActionTargetsCommand,
+  DescribeHubCommand,
+  DescribeStandardsCommand,
+  GetEnabledStandardsCommand,
+  GetFindingsCommand,
+  GetInsightsCommand,
+  ListAutomationRulesCommand,
+  type SecurityHubClient,
+} from "@aws-sdk/client-securityhub";
 import { ago, load } from "@mws-dashboard/aws";
-import { ActionForm, AwsIcon, Curated, Empty, ErrorNotice, List, Metric, Metrics, Page, Pill, Status } from "@mws-dashboard/ui";
-import { BellOff, CheckCircle2, Plus } from "lucide-react";
+import { ActionForm, AwsIcon, Curated, Empty, ErrorNotice, List, Metric, Metrics, Page, Pill, Status, type FormAction } from "@mws-dashboard/ui";
+import { BellOff, CheckCircle2, Plus, Trash2 } from "lucide-react";
 import type { Metadata } from "next";
 
 import { ICONS, securityhub, severity } from "../../lib/clients";
-import { enableHub, enableStandard, setWorkflow } from "./actions";
+import { deleteActionTarget, deleteAutomationRule, deleteInsight, enableHub, enableStandard, setWorkflow } from "./actions";
+import { NewActionTarget, NewAutomationRule, NewInsight } from "./forms";
 
 export const metadata: Metadata = { title: "Security Hub" };
 
@@ -22,6 +32,9 @@ export default async function SecurityHub({ searchParams }: Props) {
       </Page>
     );
   }
+  if (tab === "insights") return <Insights client={client} />;
+  if (tab === "rules") return <AutomationRules client={client} />;
+  if (tab === "actions") return <CustomActions client={client} />;
   if (tab === "standards") {
     const standards = await load(async () => {
       const [all, enabled] = await Promise.all([client.send(new DescribeStandardsCommand({})).then((r) => r.Standards ?? []), client.send(new GetEnabledStandardsCommand({})).then((r) => r.StandardsSubscriptions ?? [])]);
@@ -91,6 +104,108 @@ export default async function SecurityHub({ searchParams }: Props) {
             ),
           };
         }}
+      />
+    </Page>
+  );
+}
+
+const ICON_INSIGHT = "resource/AmazonCloudWatchMetricsInsights";
+const ICON_RULE = "resource/AmazonEventBridgeRule";
+const ICON_ACTION = "resource/AmazonEventBridgeCustomEventBus";
+
+function Delete({ action, what }: { action: FormAction; what: string }) {
+  return <ActionForm action={action} submit={`Delete ${what}`} icon={<Trash2 size={15} />} tone="danger" confirm={`Delete ${what}?`} />;
+}
+
+async function Insights({ client }: { client: SecurityHubClient }) {
+  const insights = await load(async () => (await client.send(new GetInsightsCommand({}))).Insights ?? []);
+  if (!insights.ok) {
+    return (
+      <Page title="Insights">
+        <ErrorNotice error={insights.error} />
+      </Page>
+    );
+  }
+  const names = insights.value.map((i) => i.Name!);
+  return (
+    <Page title="Insights" actions={<NewInsight names={names} />}>
+      <List
+        label="Insights"
+        empty={<Empty icon={ICON_INSIGHT} action={<NewInsight names={names} />} />}
+        rows={insights.value.map((i) => {
+          const sev = i.Filters?.SeverityLabel?.[0]?.Value;
+          return {
+            key: i.InsightArn!,
+            icon: <AwsIcon icon={ICON_INSIGHT} size={22} />,
+            title: i.Name,
+            subtitle: i.GroupByAttribute,
+            meta: sev ? <Status tone={severity(sev).tone}>{severity(sev).label}</Status> : undefined,
+            actions: <Delete action={deleteInsight.bind(null, i.InsightArn!)} what={`insight ${i.Name}`} />,
+          };
+        })}
+      />
+    </Page>
+  );
+}
+
+async function AutomationRules({ client }: { client: SecurityHubClient }) {
+  const rules = await load(async () => (await client.send(new ListAutomationRulesCommand({}))).AutomationRulesMetadata ?? []);
+  if (!rules.ok) {
+    return (
+      <Page title="Automation rules">
+        <ErrorNotice error={rules.error} />
+      </Page>
+    );
+  }
+  const all = rules.value.sort((a, b) => (a.RuleOrder ?? 0) - (b.RuleOrder ?? 0));
+  const next = Math.max(0, ...all.map((r) => r.RuleOrder ?? 0)) + 1;
+  const create = <NewAutomationRule next={next} names={all.map((r) => r.RuleName!)} />;
+  return (
+    <Page title="Automation rules" actions={create}>
+      <List
+        label="Automation rules"
+        empty={<Empty icon={ICON_RULE} action={create} />}
+        rows={all.map((r) => ({
+          key: r.RuleArn!,
+          icon: <AwsIcon icon={ICON_RULE} size={22} />,
+          title: r.RuleName,
+          subtitle: r.Description !== r.RuleName ? r.Description : undefined,
+          meta: (
+            <>
+              <Pill title="Order">#{r.RuleOrder}</Pill>
+              <Status tone={r.RuleStatus === "ENABLED" ? "good" : "neutral"}>{r.RuleStatus?.toLowerCase()}</Status>
+            </>
+          ),
+          actions: <Delete action={deleteAutomationRule.bind(null, r.RuleArn!)} what={`rule ${r.RuleName}`} />,
+        }))}
+      />
+    </Page>
+  );
+}
+
+async function CustomActions({ client }: { client: SecurityHubClient }) {
+  const targets = await load(async () => (await client.send(new DescribeActionTargetsCommand({}))).ActionTargets ?? []);
+  if (!targets.ok) {
+    return (
+      <Page title="Custom actions">
+        <ErrorNotice error={targets.error} />
+      </Page>
+    );
+  }
+  const ids = targets.value.map((t) => t.ActionTargetArn!.split("/").pop()!);
+  return (
+    <Page title="Custom actions" actions={<NewActionTarget ids={ids} />}>
+      <List
+        label="Custom actions"
+        empty={<Empty icon={ICON_ACTION} action={<NewActionTarget ids={ids} />} />}
+        rows={targets.value.map((t) => ({
+          key: t.ActionTargetArn!,
+          icon: <AwsIcon icon={ICON_ACTION} size={22} />,
+          title: t.Name,
+          subtitle: t.Description !== t.Name ? t.Description : undefined,
+          meta: <code>{t.ActionTargetArn!.split("/").pop()}</code>,
+          actions: <Delete action={deleteActionTarget.bind(null, t.ActionTargetArn!)} what={`custom action ${t.Name}`} />,
+        }))}
       />
     </Page>
   );

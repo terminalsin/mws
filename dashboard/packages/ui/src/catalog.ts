@@ -109,6 +109,9 @@ const NAV: Record<string, NavItem[]> = {
   ],
   securityhub: [
     { label: "Findings", path: "/securityhub", icon: "resource/AWSSecurityHubFinding" },
+    { label: "Insights", path: "/securityhub?tab=insights", icon: "resource/AmazonCloudWatchMetricsInsights" },
+    { label: "Automation rules", path: "/securityhub?tab=rules", icon: "resource/AmazonEventBridgeRule" },
+    { label: "Custom actions", path: "/securityhub?tab=actions", icon: "resource/AmazonEventBridgeCustomEventBus" },
     { label: "Security standards", path: "/securityhub?tab=standards", icon: "service/AWSSecurityHub" },
   ],
   guardduty: [{ label: "Findings", path: "/guardduty", icon: "service/AmazonGuardDuty" }],
