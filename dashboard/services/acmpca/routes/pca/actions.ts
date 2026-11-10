@@ -74,7 +74,7 @@ export async function activateRoot(arn: string, _: ActionResult | null, form: Fo
     const cert = await issued(arn, CertificateArn!);
     await client.send(new ImportCertificateAuthorityCertificateCommand({ CertificateAuthorityArn: arn, Certificate: new TextEncoder().encode(cert.Certificate!) }));
     return "CA certificate installed";
-  }, "/pca", "/pca/ca");
+  }, { revalidate: ["/pca", "/pca/ca"], fields: { ValidationException: "years" } });
 }
 
 export async function signSubordinate(parent: string, child: string) {
@@ -136,5 +136,6 @@ export async function issueFromCsr(arn: string, _: ActionResult | null, form: Fo
     );
     const cert = await issued(arn, CertificateArn!);
     return { ok: true, message: "Issued", detail: cert.Certificate };
-  });
+    // The only plain ValidationException here is a validity past the CA's.
+  }, { fields: { MalformedCSRException: "csr", ValidationException: "days" } });
 }

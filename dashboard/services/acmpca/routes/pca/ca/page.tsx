@@ -1,6 +1,7 @@
 import { DescribeCertificateAuthorityCommand, GetCertificateAuthorityCertificateCommand, ListCertificateAuthoritiesCommand, ListTagsCommand } from "@aws-sdk/client-acm-pca";
 import { load, when } from "@mws-dashboard/aws";
-import { ActionForm, AwsIcon, CodeBlock, ErrorNotice, Field, Page, Section, Sheet, Specs, Status, Tags } from "@mws-dashboard/ui";
+import { ActionForm, AwsIcon, CodeBlock, ErrorNotice, Field, Page, Section, Sheet, Specs, Status, Tags, type Rule } from "@mws-dashboard/ui";
+import { IssueCertificate } from "@mws-dashboard/ui/model/acm-pca";
 import { BadgeCheck, CalendarClock, FileSignature, KeyRound, Pause, Play, RotateCcw, ShieldCheck, Trash2 } from "lucide-react";
 import type { Metadata } from "next";
 
@@ -9,6 +10,11 @@ import { CA_TONE } from "../../../lib/pca";
 import { activateRoot, deleteAuthority, issueFromCsr, restoreAuthority, setAuthorityStatus, signSubordinate } from "../actions";
 
 export const metadata: Metadata = { title: "Certificate authority" };
+
+const DAY = 86_400_000;
+const SIGNING = ["SHA256WITHRSA", "SHA384WITHRSA", "SHA512WITHRSA", "SHA256WITHECDSA", "SHA384WITHECDSA", "SHA512WITHECDSA"];
+const CSR: Rule = { ...IssueCertificate.Csr, type: "string", format: "csr" };
+const VALIDITY = IssueCertificate.Validity.fields!.Value;
 
 type Props = { searchParams: Promise<{ arn?: string }> };
 
@@ -40,6 +46,14 @@ export default async function Authority({ searchParams }: Props) {
   const pending = ca.Status === "PENDING_CERTIFICATE";
   const crl = ca.RevocationConfiguration?.CrlConfiguration;
   const ocsp = ca.RevocationConfiguration?.OcspConfiguration;
+  // A certificate may not outlive its CA (nor, in short-lived mode, 7 days):
+  // say so in the field, where a clamp fixes it, not after a round trip.
+  const caDays = ca.NotAfter ? Math.floor((ca.NotAfter.getTime() - Date.now()) / DAY) : undefined;
+  const maxDays = ca.UsageMode === "SHORT_LIVED_CERTIFICATE" ? Math.min(7, caDays ?? 7) : caDays;
+  const days: Rule = { ...VALIDITY, max: maxDays };
+  // Only the signature algorithms of the CA's own key family.
+  const family = cfg?.KeyAlgorithm?.startsWith("EC_") ? "ECDSA" : "RSA";
+  const signing = SIGNING.filter((s) => s.endsWith(`WITH${family}`));
   return (
     <Page
       title={name}
@@ -52,12 +66,12 @@ export default async function Authority({ searchParams }: Props) {
             <Sheet title="Install CA certificate" label="Install CA certificate" icon={<BadgeCheck size={16} />} testId="install-ca-cert">
               <ActionForm action={activateRoot.bind(null, arn)} submit="Confirm and install" testId="install-ca-cert">
                 <div className="form-row">
-                  <Field label="Validity (years)">
-                    <input name="years" type="number" min={1} max={30} defaultValue={10} />
+                  <Field label="Validity (years)" rule={VALIDITY} member="Validity.Value">
+                    <input name="years" type="number" max={30} defaultValue={10} />
                   </Field>
-                  <Field label="Signature algorithm">
+                  <Field label="Signature algorithm" member="SigningAlgorithm">
                     <select name="signing" defaultValue={cfg?.SigningAlgorithm}>
-                      {["SHA256WITHRSA", "SHA384WITHRSA", "SHA512WITHRSA", "SHA256WITHECDSA", "SHA384WITHECDSA", "SHA512WITHECDSA"].map((s) => (
+                      {signing.map((s) => (
                         <option key={s}>{s}</option>
                       ))}
                     </select>
@@ -79,9 +93,11 @@ export default async function Authority({ searchParams }: Props) {
           {ca.Status === "ACTIVE" && (
             <Sheet title="Issue certificate" label="Issue certificate" icon={<FileSignature size={16} />} testId="issue-certificate">
               <ActionForm action={issueFromCsr.bind(null, arn)} submit="Issue" testId="issue-certificate">
-                <textarea name="csr" rows={8} required aria-label="CSR" placeholder="-----BEGIN CERTIFICATE REQUEST-----" className="code-editor" />
-                <Field label="Validity (days)">
-                  <input name="days" type="number" min={1} defaultValue={365} />
+                <Field label="CSR" rule={CSR} member="Csr">
+                  <textarea name="csr" rows={8} required placeholder="-----BEGIN CERTIFICATE REQUEST-----" className="code-editor" />
+                </Field>
+                <Field label="Validity (days)" rule={days} member="Validity.Value" hint={caDays !== undefined ? `Up to ${maxDays}, when the CA ${ca.UsageMode === "SHORT_LIVED_CERTIFICATE" && maxDays === 7 ? "caps short-lived certificates" : "expires"}` : undefined}>
+                  <input name="days" type="number" defaultValue={maxDays !== undefined ? Math.min(365, maxDays) : 365} />
                 </Field>
                 <input type="hidden" name="signing" value={cfg?.SigningAlgorithm} />
               </ActionForm>

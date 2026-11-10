@@ -1,6 +1,7 @@
 import { ListCertificateAuthoritiesCommand } from "@aws-sdk/client-acm-pca";
 import { ago, load } from "@mws-dashboard/aws";
-import { ActionForm, AwsIcon, Curated, Empty, ErrorNotice, Field, Page, Pill, Sheet, Status } from "@mws-dashboard/ui";
+import { ActionForm, AwsIcon, Curated, Empty, ErrorNotice, Field, Page, Pill, Sheet, Status, type Rule } from "@mws-dashboard/ui";
+import { CreateCertificateAuthority } from "@mws-dashboard/ui/model/acm-pca";
 import type { Metadata } from "next";
 
 import { ICONS, pca } from "../../lib/clients";
@@ -8,6 +9,11 @@ import { CA_TONE } from "../../lib/pca";
 import { createAuthority } from "./actions";
 
 export const metadata: Metadata = { title: "Private CA" };
+
+const SUBJECT = CreateCertificateAuthority.CertificateAuthorityConfiguration.fields!.Subject.fields!;
+// The model allows any two letters; a real ISO code is what clients expect,
+// so names ("Germany"), alpha-3 ("DEU") and withdrawn codes ("UK") repair.
+const COUNTRY: Rule = { format: "country" };
 
 export default async function Authorities() {
   const cas = await load(async () => (await (await pca()).send(new ListCertificateAuthoritiesCommand({}))).CertificateAuthorities ?? []);
@@ -28,15 +34,15 @@ export default async function Authorities() {
             </select>
           </Field>
         </div>
-        <Field label="Common name">
+        <Field label="Common name" rule={SUBJECT.CommonName} member="Subject.CommonName">
           <input name="cn" required autoFocus placeholder="Example Root CA" />
         </Field>
         <div className="form-row">
-          <Field label="Organization">
+          <Field label="Organization" rule={SUBJECT.Organization} member="Subject.Organization">
             <input name="org" />
           </Field>
-          <Field label="Country">
-            <input name="country" maxLength={2} placeholder="US" />
+          <Field label="Country" rule={COUNTRY} member="Subject.Country">
+            <input name="country" placeholder="US" />
           </Field>
         </div>
         <Field label="Key algorithm">
