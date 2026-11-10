@@ -103,8 +103,8 @@ impl Bedrock {
         ctx.authorize("bedrock:ListFoundationModels", "*", ConditionContext::new())?;
         let eq = |want: &Option<String>, have: &str| want.as_ref().is_none_or(|w| w.eq_ignore_ascii_case(have));
         let any = |want: &Option<String>, have: &[String]| want.as_ref().is_none_or(|w| have.iter().any(|h| h == w));
-        let summaries = catalog::models()
-            .iter()
+        let summaries = catalog::all()
+            .into_iter()
             .filter(|m| eq(&input.by_provider, &m.provider_name) || eq(&input.by_provider, provider_slug(&m.model_id)))
             .filter(|m| any(&input.by_customization_type, &m.customizations_supported))
             .filter(|m| any(&input.by_output_modality, &m.output_modalities))

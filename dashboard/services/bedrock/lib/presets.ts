@@ -78,9 +78,12 @@ function portOf(url: string | undefined) {
  * the host through the CLI bridge), whether MWS runs in a container, and
  * the bridge it was given. */
 export interface Local {
-  tools: Record<string, { found: boolean; command: string; path?: string; via?: "bridge" }>;
+  tools: Record<string, { found: boolean; command: string; path?: string; via?: "bridge"; loggedIn?: boolean }>;
   container: boolean;
   bridge: { url: string; reachable: boolean } | null;
 }
+
+/** The command that logs a CLI in. */
+export const LOGIN: Record<string, string> = { "claude-code": "claude login", codex: "codex login" };
 
 export const NO_LOCAL: Local = { tools: {}, container: false, bridge: null };

@@ -772,7 +772,55 @@ pub fn models() -> &'static [ModelSpec] {
 }
 
 pub fn model(model_id: &str) -> Option<&'static ModelSpec> {
-    models().iter().find(|m| m.model_id == model_id)
+    models().iter().find(|m| m.model_id == model_id).or_else(|| {
+        DISCOVERED.read().expect("discovered models lock").iter().map(|(_, m)| *m).find(|m| m.model_id == model_id)
+    })
+}
+
+/// Models runtimes found at their model providers (the Claude Code and Codex
+/// CLIs list theirs), served next to the built-in ones, per owner (one MWS
+/// instance; tests run several in one process).
+type Discovered = Vec<(u64, &'static ModelSpec)>;
+static DISCOVERED: std::sync::RwLock<Discovered> = std::sync::RwLock::new(Vec::new());
+
+/// Replace `owner`'s discovered models. A model seen before keeps its
+/// entry, so repeated discovery does not grow memory.
+pub fn set_discovered(owner: u64, specs: Vec<ModelSpec>) {
+    let mut d = DISCOVERED.write().expect("discovered models lock");
+    let mut next: Discovered = d.iter().filter(|(o, _)| *o != owner).cloned().collect();
+    for s in specs.into_iter().filter(|s| !models().iter().any(|b| b.model_id == s.model_id)) {
+        let known = d
+            .iter()
+            .map(|(_, m)| *m)
+            .find(|o| o.model_id == s.model_id && o.model_name == s.model_name && o.provider_name == s.provider_name);
+        next.push((owner, known.unwrap_or_else(|| Box::leak(Box::new(s)))));
+    }
+    *d = next;
+}
+
+/// Every model: the built-in and configured ones, then discovered ones.
+pub fn all() -> Vec<&'static ModelSpec> {
+    let d = DISCOVERED.read().expect("discovered models lock");
+    let mut v: Vec<&'static ModelSpec> = models().iter().collect();
+    for (_, m) in d.iter() {
+        if !v.iter().any(|x| x.model_id == m.model_id) {
+            v.push(m);
+        }
+    }
+    v
+}
+
+/// A text model a provider offers, for [`set_discovered`].
+pub fn discovered_text_model(
+    model_id: &str,
+    name: &str,
+    provider: &str,
+    family: Family,
+    context_window: u32,
+) -> ModelSpec {
+    let mut spec = m(model_id, name, provider, family, TEXT, TEXT, true, &[], OD, &[], context_window);
+    capabilities(&mut spec);
+    spec
 }
 
 /// The Regions a cross-Region profile prefix routes to.

@@ -88,6 +88,8 @@ struct Inner {
     quotas: mws_servicequotas::QuotaLink,
     windows: Mutex<quotas::Windows>,
     usage: OnceLock<Arc<dyn quotas::TokenUsageSink>>,
+    /// Counts CLI model discoveries, so only the latest one's answer lands.
+    cli_generation: std::sync::atomic::AtomicU64,
 }
 
 #[derive(Debug, Default, Serialize, Deserialize)]
@@ -243,6 +245,7 @@ impl BedrockRuntime {
                 quotas: Default::default(),
                 windows: Default::default(),
                 usage: OnceLock::new(),
+                cli_generation: Default::default(),
             }),
         };
         let weak = Arc::downgrade(&runtime.inner);
@@ -257,6 +260,7 @@ impl BedrockRuntime {
             }
         }));
         bedrock.set_job_storage(Arc::new(batch::JobS3 { runtime: Arc::downgrade(&runtime.inner) }));
+        runtime.refresh_cli_models();
         runtime
     }
 
@@ -296,6 +300,31 @@ impl BedrockRuntime {
         self.inner.env_providers.merged(&self.lock().providers)
     }
 
+    /// Refresh, in the background, the catalog's models listed by the CLI
+    /// providers (Claude Code, Codex).
+    pub fn refresh_cli_models(&self) {
+        let Ok(h) = tokio::runtime::Handle::try_current() else { return };
+        let runtime = self.clone();
+        h.spawn(async move { runtime.discover_cli_models().await });
+    }
+
+    /// The catalog's models listed by the CLI providers, refreshed now.
+    pub async fn discover_cli_models(&self) {
+        use std::sync::atomic::Ordering;
+        let generation = self.inner.cli_generation.fetch_add(1, Ordering::SeqCst) + 1;
+        let providers = self.providers();
+        let mut found = Vec::new();
+        for name in providers.names() {
+            if let Some(r) = providers.resolve(&name).filter(|r| r.kind.is_cli()) {
+                found.extend(cli::discover_models(&r).await);
+            }
+        }
+        // A later refresh already ran: its answer stands.
+        if self.inner.cli_generation.load(Ordering::SeqCst) == generation {
+            mws_bedrock::catalog::set_discovered(Arc::as_ptr(&self.inner) as u64, found);
+        }
+    }
+
     /// Store settings for provider `name` (replacing earlier stored ones; an
     /// absent `apiKey` keeps the stored key, an empty one removes it).
     pub fn put_provider(&self, name: &str, mut config: ProviderConfig) -> Result<(), String> {
@@ -307,6 +336,8 @@ impl BedrockRuntime {
             config.api_key = None;
         }
         state.providers.providers.insert(name.to_string(), config);
+        drop(state);
+        self.refresh_cli_models();
         Ok(())
     }
 
@@ -316,7 +347,10 @@ impl BedrockRuntime {
         if state.providers.default.as_deref() == Some(name) {
             state.providers.default = None;
         }
-        state.providers.providers.remove(name).is_some()
+        let removed = state.providers.providers.remove(name).is_some();
+        drop(state);
+        self.refresh_cli_models();
+        removed
     }
 
     /// Store the default provider (`None` falls back to the environment's).
@@ -1246,7 +1280,8 @@ impl Service for BedrockRuntime {
 
     async fn handle(&self, ctx: RequestContext, request: HttpRequest) -> HttpResponse {
         if request.uri().path().trim_end_matches('/') == "/_aws/bedrock/local" {
-            return json_response(200, crate::cli::describe_local().await);
+            let (local, ()) = tokio::join!(crate::cli::describe_local(), self.discover_cli_models());
+            return json_response(200, local);
         }
         if request.uri().path().starts_with(SIDE_CHANNEL) {
             return self.side_channel(&request);
@@ -1273,11 +1308,13 @@ impl Service for BedrockRuntime {
     fn import_state(&self, state: Value) -> Result<(), String> {
         let state: State = serde_json::from_value(state).map_err(|e| format!("invalid bedrock-runtime state: {e}"))?;
         *self.lock() = state;
+        self.refresh_cli_models();
         Ok(())
     }
 
     fn reset_state(&self) {
         *self.lock() = State::default();
         self.inner.script.clear();
+        self.refresh_cli_models();
     }
 }
