@@ -1,0 +1,20 @@
+{
+  "name": "@mws-dashboard/service-securityhub",
+  "version": "1.0.0",
+  "private": true,
+  "description": "AWS Security Hub pages for the MWS console",
+  "exports": {
+    "./routes/*": "./routes/*"
+  },
+  "dependencies": {
+    "@aws-sdk/client-securityhub": "^3.1164.0",
+    "@mws-dashboard/aws": "*",
+    "@mws-dashboard/ui": "*",
+    "lucide-react": "^1.70.0"
+  },
+  "peerDependencies": {
+    "next": "16.4.5",
+    "react": "^19.3.1",
+    "react-dom": "^19.3.1"
+  }
+}

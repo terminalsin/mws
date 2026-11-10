@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 // Copy the official AWS icons the console uses (from the `aws-icons`
-// package) into the shell's public folder, where every zone loads them from
+// package) into the console's public folder, served at
 // /icons/aws/, and the brand logos ("brand/python", from `simple-icons`,
 // in their brand color) into /icons/brand/. Run after adding an icon:
 //   node scripts/icons.mjs
@@ -10,10 +10,10 @@ import { fileURLToPath } from "node:url";
 
 const root = join(dirname(fileURLToPath(import.meta.url)), "..");
 const source = join(root, "node_modules/aws-icons/icons");
-const target = join(root, "apps/shell/public/icons/aws");
+const target = join(root, "apps/console/public/icons/aws");
 const kinds = { service: "architecture-service", category: "category", resource: "resource", group: "architecture-group" };
 
-// Every "kind/Name" string literal in the UI package and the zones.
+// Every "kind/Name" string literal in the UI package, the services and the console.
 const used = new Set();
 function scan(dir) {
   for (const entry of readdirSync(dir, { withFileTypes: true })) {
@@ -26,10 +26,11 @@ function scan(dir) {
   }
 }
 scan(join(root, "packages"));
+scan(join(root, "services"));
 scan(join(root, "apps"));
 
 rmSync(target, { recursive: true, force: true });
-const brands = join(root, "apps/shell/public/icons/brand");
+const brands = join(root, "apps/console/public/icons/brand");
 rmSync(brands, { recursive: true, force: true });
 const simple = Object.values(await import("simple-icons"));
 let missing = 0;
@@ -58,5 +59,5 @@ for (const icon of [...used].sort()) {
     missing++;
   }
 }
-console.log(`copied ${used.size - missing} icons to apps/shell/public/icons`);
+console.log(`copied ${used.size - missing} icons to apps/console/public/icons`);
 process.exit(missing ? 1 : 0);

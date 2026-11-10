@@ -9,9 +9,8 @@
     "./client": "./src/client.tsx",
     "./console": "./src/console.tsx",
     "./machine": "./src/machine.ts",
-    "./zones": "./src/zones.ts",
+    "./constants": "./src/constants.ts",
     "./styles.css": "./src/styles.css",
-    "./next-config": "./next-config.mjs",
     "./catalog": "./src/catalog.ts"
   },
   "scripts": {

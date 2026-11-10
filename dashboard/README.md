@@ -1,8 +1,7 @@
 # MWS console
 
-A web console for MWS, built as Next.js multi-zone microfrontends: a shell
-app plus one app per group of services, stitched into one site by the
-shell's rewrites. See [docs/dashboard.md](../docs/dashboard.md) for the
+A web console for MWS: one package per AWS service (`services/<id>/`),
+mounted into a single Next.js app (`apps/console`) that serves them all. See [docs/dashboard.md](../docs/dashboard.md) for the
 architecture, configuration and tests.
 
 ```sh

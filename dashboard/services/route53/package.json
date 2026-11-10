@@ -1,0 +1,22 @@
+{
+  "name": "@mws-dashboard/service-route53",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Amazon Route 53 pages for the MWS console",
+  "exports": {
+    "./inventory": "./inventory.ts",
+    "./routes/*": "./routes/*"
+  },
+  "dependencies": {
+    "@aws-sdk/client-ec2": "^3.1164.0",
+    "@aws-sdk/client-route-53": "^3.1164.0",
+    "@mws-dashboard/aws": "*",
+    "@mws-dashboard/ui": "*",
+    "lucide-react": "^1.70.0"
+  },
+  "peerDependencies": {
+    "next": "16.4.5",
+    "react": "^19.3.1",
+    "react-dom": "^19.3.1"
+  }
+}

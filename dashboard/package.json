@@ -1,22 +1,25 @@
 {
   "name": "mws-dashboard",
   "private": true,
-  "description": "A web console for MWS, built as Next.js multi-zone microfrontends",
+  "description": "A web console for MWS: one Next.js app built from a package per AWS service",
   "workspaces": [
     "packages/*",
+    "services/*",
     "apps/*"
   ],
   "scripts": {
-    "dev": "node scripts/zones.mjs dev",
-    "build": "npm run build --workspaces --if-present",
-    "start": "node scripts/zones.mjs start",
-    "typecheck": "tsc --noEmit && npm run typecheck --workspaces --if-present",
+    "dev": "node scripts/console.mjs dev",
+    "build": "node scripts/services.mjs && npm run build -w @mws-dashboard/console",
+    "start": "node scripts/console.mjs start",
+    "services": "node scripts/services.mjs",
+    "typecheck": "node scripts/services.mjs && tsc --noEmit && npm run typecheck --workspaces --if-present",
     "test": "playwright test"
   },
   "devDependencies": {
     "@aws-sdk/client-cloudwatch": "^3.1164.0",
     "@aws-sdk/client-iam": "^3.1164.0",
     "@aws-sdk/client-lambda": "^3.1164.0",
+    "@aws-sdk/client-organizations": "^3.1165.0",
     "@playwright/test": "1.63.0",
     "@tailwindcss/postcss": "^4.3.5",
     "@types/node": "^24.0.0",

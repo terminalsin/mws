@@ -1,0 +1,24 @@
+{
+  "name": "@mws-dashboard/service-lambda",
+  "version": "1.0.0",
+  "private": true,
+  "description": "AWS Lambda pages for the MWS console",
+  "exports": {
+    "./inventory": "./inventory.ts",
+    "./routes/*": "./routes/*"
+  },
+  "dependencies": {
+    "@aws-sdk/client-iam": "^3.1164.0",
+    "@aws-sdk/client-lambda": "^3.1164.0",
+    "@mws-dashboard/ai": "*",
+    "@mws-dashboard/aws": "*",
+    "@mws-dashboard/ui": "*",
+    "fflate": "^0.8.2",
+    "lucide-react": "^1.70.0"
+  },
+  "peerDependencies": {
+    "next": "16.4.5",
+    "react": "^19.3.1",
+    "react-dom": "^19.3.1"
+  }
+}

@@ -1,3 +1,4 @@
+import { CreateOrganizationCommand, OrganizationsClient } from "@aws-sdk/client-organizations";
 import { expect, type Locator, type Page } from "@playwright/test";
 
 // The tests seed what the console cannot create itself (a Lambda function
@@ -72,4 +73,37 @@ export async function rowAction(page: Page, text: string | RegExp, button: strin
   const r = row(page, text);
   await r.getByRole("button", { name: button }).click();
   return r;
+}
+
+/** Turn a service on if this MWS has not yet: the page then becomes the
+ * service's own, so wait for one of its controls instead of a result. */
+export async function enableOnce(page: Page, enable: string, next: string) {
+  await expect(page.getByTestId(enable).or(page.getByTestId(next)).first()).toBeAttached();
+  if ((await page.getByTestId(enable).count()) > 0) {
+    await expect(async () => {
+      if ((await page.getByTestId(enable).count()) > 0) await page.getByTestId(enable).locator('button[type="submit"]').click();
+      await expect(page.getByTestId(next).first()).toBeAttached({ timeout: 3000 });
+    }).toPass();
+  }
+}
+
+/** Fill a form that is on the page (not in a sheet) and return its result line. */
+export async function submitInline(page: Page, testId: string, fields: Record<string, string>) {
+  const form = page.getByTestId(testId).and(page.locator("form"));
+  for (const [name, value] of Object.entries(fields)) await form.locator(`[name="${name}"]`).fill(value);
+  await form.locator('button[type="submit"]').click();
+  const status = form.getByRole("status");
+  await expect(status).toBeVisible();
+  return status;
+}
+
+/** Make this MWS account an organization's management account, unless it
+ * already is (Identity Center permission sets and SCPs need one). Specs run in
+ * parallel, so whichever gets here first creates it. */
+export async function ensureOrganization() {
+  try {
+    await new OrganizationsClient(sdk).send(new CreateOrganizationCommand({ FeatureSet: "ALL" }));
+  } catch (e) {
+    if ((e as { name?: string }).name !== "AlreadyInOrganizationException") throw e;
+  }
 }

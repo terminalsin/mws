@@ -1,8 +1,7 @@
 // Every service the console knows: how to show it (official AWS icon and
-// name), where it sits in the navigation (category), and which zone serves
-// its pages. Navigation lists only services whose `zone` is set, so a service
-// appears the moment its pages exist.
-import type { ZoneId } from "./zones";
+// name), where it sits in the navigation (category), and where its pages
+// are. Each service's pages are their own package (services/<id>/), mounted
+// into the one console app; navigation lists only services with a `path`.
 
 export type CategoryId =
   | "compute"
@@ -50,14 +49,12 @@ export interface Service {
   short: string;
   category: CategoryId;
   icon: string;
-  /** The zone that serves the service's pages, once it has any. */
-  zone?: ZoneId;
-  /** The service's landing path inside its zone. */
+  /** The service's landing page, once it has pages. */
   path?: string;
   /** The names MWS's /_mws/health reports for this service. */
   endpoints: string[];
   /** The service's own navigation, as in the AWS console's service sidebar:
-   * paths inside its zone, each with a resource icon. */
+   * each with a resource icon. */
   nav?: NavItem[];
 }
 
@@ -196,59 +193,59 @@ const svc = (s: Service): Service => ({ ...s, nav: s.nav ?? NAV[s.id] });
 
 export const SERVICES: Service[] = [
   // Compute
-  svc({ id: "ec2", name: "Amazon EC2", short: "EC2", category: "compute", icon: "service/AmazonEC2", zone: "compute", path: "/ec2", endpoints: ["ec2"] }),
-  svc({ id: "lambda", name: "AWS Lambda", short: "Lambda", category: "compute", icon: "service/AWSLambda", zone: "compute", path: "/lambda", endpoints: ["lambda"] }),
-  svc({ id: "autoscaling", name: "EC2 Auto Scaling", short: "Auto Scaling", category: "compute", icon: "service/AmazonEC2AutoScaling", zone: "platform", path: "/autoscaling", endpoints: ["autoscaling"] }),
-  svc({ id: "imagebuilder", name: "EC2 Image Builder", short: "Image Builder", category: "compute", icon: "service/AmazonEC2ImageBuilder", zone: "platform", path: "/imagebuilder", endpoints: ["imagebuilder"] }),
+  svc({ id: "ec2", name: "Amazon EC2", short: "EC2", category: "compute", icon: "service/AmazonEC2", path: "/ec2", endpoints: ["ec2"] }),
+  svc({ id: "lambda", name: "AWS Lambda", short: "Lambda", category: "compute", icon: "service/AWSLambda", path: "/lambda", endpoints: ["lambda"] }),
+  svc({ id: "autoscaling", name: "EC2 Auto Scaling", short: "Auto Scaling", category: "compute", icon: "service/AmazonEC2AutoScaling", path: "/autoscaling", endpoints: ["autoscaling"] }),
+  svc({ id: "imagebuilder", name: "EC2 Image Builder", short: "Image Builder", category: "compute", icon: "service/AmazonEC2ImageBuilder", path: "/imagebuilder", endpoints: ["imagebuilder"] }),
   // Containers
-  svc({ id: "ecr", name: "Amazon ECR", short: "ECR", category: "containers", icon: "service/AmazonElasticContainerRegistry", zone: "data", path: "/ecr", endpoints: ["ecr", "ecr-public"] }),
-  svc({ id: "ecs", name: "Amazon ECS", short: "ECS", category: "containers", icon: "service/AmazonElasticContainerService", zone: "data", path: "/ecs", endpoints: ["ecs"] }),
-  svc({ id: "eks", name: "Amazon EKS", short: "EKS", category: "containers", icon: "service/AmazonElasticKubernetesService", zone: "data", path: "/eks", endpoints: ["eks"] }),
+  svc({ id: "ecr", name: "Amazon ECR", short: "ECR", category: "containers", icon: "service/AmazonElasticContainerRegistry", path: "/ecr", endpoints: ["ecr", "ecr-public"] }),
+  svc({ id: "ecs", name: "Amazon ECS", short: "ECS", category: "containers", icon: "service/AmazonElasticContainerService", path: "/ecs", endpoints: ["ecs"] }),
+  svc({ id: "eks", name: "Amazon EKS", short: "EKS", category: "containers", icon: "service/AmazonElasticKubernetesService", path: "/eks", endpoints: ["eks"] }),
   // Storage
-  svc({ id: "s3", name: "Amazon S3", short: "S3", category: "storage", icon: "service/AmazonSimpleStorageService", zone: "storage", path: "/s3", endpoints: ["s3", "s3control"] }),
-  svc({ id: "efs", name: "Amazon EFS", short: "EFS", category: "storage", icon: "service/AmazonEFS", zone: "data", path: "/efs", endpoints: ["elasticfilesystem"] }),
+  svc({ id: "s3", name: "Amazon S3", short: "S3", category: "storage", icon: "service/AmazonSimpleStorageService", path: "/s3", endpoints: ["s3", "s3control"] }),
+  svc({ id: "efs", name: "Amazon EFS", short: "EFS", category: "storage", icon: "service/AmazonEFS", path: "/efs", endpoints: ["elasticfilesystem"] }),
   // Database
-  svc({ id: "rds", name: "Amazon RDS", short: "RDS", category: "database", icon: "service/AmazonRDS", zone: "data", path: "/rds", endpoints: ["rds"] }),
-  svc({ id: "elasticache", name: "Amazon ElastiCache", short: "ElastiCache", category: "database", icon: "service/AmazonElastiCache", zone: "data", path: "/elasticache", endpoints: ["elasticache"] }),
+  svc({ id: "rds", name: "Amazon RDS", short: "RDS", category: "database", icon: "service/AmazonRDS", path: "/rds", endpoints: ["rds"] }),
+  svc({ id: "elasticache", name: "Amazon ElastiCache", short: "ElastiCache", category: "database", icon: "service/AmazonElastiCache", path: "/elasticache", endpoints: ["elasticache"] }),
   // Networking
-  svc({ id: "vpc", name: "Amazon VPC", short: "VPC", category: "networking", icon: "service/AmazonVirtualPrivateCloud", zone: "networking", path: "/vpc", endpoints: ["ec2"] }),
-  svc({ id: "route53", name: "Amazon Route 53", short: "Route 53", category: "networking", icon: "service/AmazonRoute53", zone: "networking", path: "/route53", endpoints: ["route53"] }),
-  svc({ id: "elb", name: "Elastic Load Balancing", short: "Load Balancers", category: "networking", icon: "service/ElasticLoadBalancing", zone: "networking", path: "/elb", endpoints: ["elb", "elbv2"] }),
-  svc({ id: "globalaccelerator", name: "AWS Global Accelerator", short: "Global Accelerator", category: "networking", icon: "service/AWSGlobalAccelerator", zone: "networking", path: "/ga", endpoints: ["globalaccelerator"] }),
+  svc({ id: "vpc", name: "Amazon VPC", short: "VPC", category: "networking", icon: "service/AmazonVirtualPrivateCloud", path: "/vpc", endpoints: ["ec2"] }),
+  svc({ id: "route53", name: "Amazon Route 53", short: "Route 53", category: "networking", icon: "service/AmazonRoute53", path: "/route53", endpoints: ["route53"] }),
+  svc({ id: "elb", name: "Elastic Load Balancing", short: "Load Balancers", category: "networking", icon: "service/ElasticLoadBalancing", path: "/elb", endpoints: ["elb", "elbv2"] }),
+  svc({ id: "globalaccelerator", name: "AWS Global Accelerator", short: "Global Accelerator", category: "networking", icon: "service/AWSGlobalAccelerator", path: "/ga", endpoints: ["globalaccelerator"] }),
   // Integration
-  svc({ id: "sqs", name: "Amazon SQS", short: "SQS", category: "integration", icon: "service/AmazonSimpleQueueService", zone: "messaging", path: "/sqs", endpoints: ["sqs"] }),
-  svc({ id: "sns", name: "Amazon SNS", short: "SNS", category: "integration", icon: "service/AmazonSimpleNotificationService", zone: "messaging", path: "/sns", endpoints: ["sns"] }),
-  svc({ id: "events", name: "Amazon EventBridge", short: "EventBridge", category: "integration", icon: "service/AmazonEventBridge", zone: "messaging", path: "/events", endpoints: ["events"] }),
-  svc({ id: "ses", name: "Amazon SES", short: "SES", category: "integration", icon: "service/AmazonSimpleEmailService", zone: "messaging", path: "/ses", endpoints: ["ses", "sesv2"] }),
+  svc({ id: "sqs", name: "Amazon SQS", short: "SQS", category: "integration", icon: "service/AmazonSimpleQueueService", path: "/sqs", endpoints: ["sqs"] }),
+  svc({ id: "sns", name: "Amazon SNS", short: "SNS", category: "integration", icon: "service/AmazonSimpleNotificationService", path: "/sns", endpoints: ["sns"] }),
+  svc({ id: "events", name: "Amazon EventBridge", short: "EventBridge", category: "integration", icon: "service/AmazonEventBridge", path: "/events", endpoints: ["events"] }),
+  svc({ id: "ses", name: "Amazon SES", short: "SES", category: "integration", icon: "service/AmazonSimpleEmailService", path: "/ses", endpoints: ["ses", "sesv2"] }),
   // Analytics
-  svc({ id: "kinesis", name: "Amazon Kinesis Data Streams", short: "Kinesis", category: "analytics", icon: "service/AmazonKinesisDataStreams", zone: "data", path: "/kinesis", endpoints: ["kinesis"] }),
-  svc({ id: "firehose", name: "Amazon Data Firehose", short: "Firehose", category: "analytics", icon: "service/AmazonDataFirehose", zone: "data", path: "/firehose", endpoints: ["firehose"] }),
+  svc({ id: "kinesis", name: "Amazon Kinesis Data Streams", short: "Kinesis", category: "analytics", icon: "service/AmazonKinesisDataStreams", path: "/kinesis", endpoints: ["kinesis"] }),
+  svc({ id: "firehose", name: "Amazon Data Firehose", short: "Firehose", category: "analytics", icon: "service/AmazonDataFirehose", path: "/firehose", endpoints: ["firehose"] }),
   // Security & identity
-  svc({ id: "iam", name: "AWS IAM", short: "IAM", category: "security", icon: "service/AWSIdentityandAccessManagement", zone: "security", path: "/iam", endpoints: ["iam", "sts"] }),
-  svc({ id: "kms", name: "AWS KMS", short: "KMS", category: "security", icon: "service/AWSKeyManagementService", zone: "security", path: "/kms", endpoints: ["kms"] }),
-  svc({ id: "secretsmanager", name: "AWS Secrets Manager", short: "Secrets Manager", category: "security", icon: "service/AWSSecretsManager", zone: "security", path: "/secrets", endpoints: ["secretsmanager"] }),
-  svc({ id: "acm", name: "AWS Certificate Manager", short: "Certificates", category: "security", icon: "service/AWSCertificateManager", zone: "networking", path: "/acm", endpoints: ["acm"] }),
-  svc({ id: "acmpca", name: "AWS Private CA", short: "Private CA", category: "security", icon: "service/AWSPrivateCertificateAuthority", zone: "networking", path: "/pca", endpoints: ["acm-pca", "pca-connector-scep"] }),
-  svc({ id: "identitycenter", name: "IAM Identity Center", short: "Identity Center", category: "security", icon: "service/AWSIAMIdentityCenter", zone: "governance", path: "/identitycenter", endpoints: ["sso", "identitystore", "awsssoportal", "sso-oauth"] }),
-  svc({ id: "guardduty", name: "Amazon GuardDuty", short: "GuardDuty", category: "security", icon: "service/AmazonGuardDuty", zone: "governance", path: "/guardduty", endpoints: ["guardduty"] }),
-  svc({ id: "securityhub", name: "AWS Security Hub", short: "Security Hub", category: "security", icon: "service/AWSSecurityHub", zone: "governance", path: "/securityhub", endpoints: ["securityhub"] }),
-  svc({ id: "ram", name: "AWS Resource Access Manager", short: "RAM", category: "security", icon: "service/AWSResourceAccessManager", zone: "governance", path: "/ram", endpoints: ["ram"] }),
+  svc({ id: "iam", name: "AWS IAM", short: "IAM", category: "security", icon: "service/AWSIdentityandAccessManagement", path: "/iam", endpoints: ["iam", "sts"] }),
+  svc({ id: "kms", name: "AWS KMS", short: "KMS", category: "security", icon: "service/AWSKeyManagementService", path: "/kms", endpoints: ["kms"] }),
+  svc({ id: "secretsmanager", name: "AWS Secrets Manager", short: "Secrets Manager", category: "security", icon: "service/AWSSecretsManager", path: "/secrets", endpoints: ["secretsmanager"] }),
+  svc({ id: "acm", name: "AWS Certificate Manager", short: "Certificates", category: "security", icon: "service/AWSCertificateManager", path: "/acm", endpoints: ["acm"] }),
+  svc({ id: "acmpca", name: "AWS Private CA", short: "Private CA", category: "security", icon: "service/AWSPrivateCertificateAuthority", path: "/pca", endpoints: ["acm-pca", "pca-connector-scep"] }),
+  svc({ id: "identitycenter", name: "IAM Identity Center", short: "Identity Center", category: "security", icon: "service/AWSIAMIdentityCenter", path: "/identitycenter", endpoints: ["sso", "identitystore", "awsssoportal", "sso-oauth"] }),
+  svc({ id: "guardduty", name: "Amazon GuardDuty", short: "GuardDuty", category: "security", icon: "service/AmazonGuardDuty", path: "/guardduty", endpoints: ["guardduty"] }),
+  svc({ id: "securityhub", name: "AWS Security Hub", short: "Security Hub", category: "security", icon: "service/AWSSecurityHub", path: "/securityhub", endpoints: ["securityhub"] }),
+  svc({ id: "ram", name: "AWS Resource Access Manager", short: "RAM", category: "security", icon: "service/AWSResourceAccessManager", path: "/ram", endpoints: ["ram"] }),
   // Management
-  svc({ id: "cloudwatch", name: "Amazon CloudWatch", short: "CloudWatch", category: "management", icon: "service/AmazonCloudWatch", zone: "observability", path: "/logs", endpoints: ["logs", "monitoring"] }),
-  svc({ id: "ssm", name: "AWS Systems Manager", short: "Systems Manager", category: "management", icon: "service/AWSSystemsManager", zone: "security", path: "/ssm", endpoints: ["ssm"] }),
-  svc({ id: "cloudformation", name: "AWS CloudFormation", short: "CloudFormation", category: "management", icon: "service/AWSCloudFormation", zone: "governance", path: "/cloudformation", endpoints: ["cloudformation"] }),
-  svc({ id: "cloudtrail", name: "AWS CloudTrail", short: "CloudTrail", category: "management", icon: "service/AWSCloudTrail", zone: "governance", path: "/cloudtrail", endpoints: ["cloudtrail", "cloudtrail-data"] }),
-  svc({ id: "organizations", name: "AWS Organizations", short: "Organizations", category: "management", icon: "service/AWSOrganizations", zone: "governance", path: "/organizations", endpoints: ["organizations"] }),
-  svc({ id: "servicequotas", name: "Service Quotas", short: "Service Quotas", category: "management", icon: "service/AWSTrustedAdvisor", zone: "governance", path: "/servicequotas", endpoints: ["servicequotas"] }),
+  svc({ id: "cloudwatch", name: "Amazon CloudWatch", short: "CloudWatch", category: "management", icon: "service/AmazonCloudWatch", path: "/logs", endpoints: ["logs", "monitoring"] }),
+  svc({ id: "ssm", name: "AWS Systems Manager", short: "Systems Manager", category: "management", icon: "service/AWSSystemsManager", path: "/ssm", endpoints: ["ssm"] }),
+  svc({ id: "cloudformation", name: "AWS CloudFormation", short: "CloudFormation", category: "management", icon: "service/AWSCloudFormation", path: "/cloudformation", endpoints: ["cloudformation"] }),
+  svc({ id: "cloudtrail", name: "AWS CloudTrail", short: "CloudTrail", category: "management", icon: "service/AWSCloudTrail", path: "/cloudtrail", endpoints: ["cloudtrail", "cloudtrail-data"] }),
+  svc({ id: "organizations", name: "AWS Organizations", short: "Organizations", category: "management", icon: "service/AWSOrganizations", path: "/organizations", endpoints: ["organizations"] }),
+  svc({ id: "servicequotas", name: "Service Quotas", short: "Service Quotas", category: "management", icon: "service/AWSTrustedAdvisor", path: "/servicequotas", endpoints: ["servicequotas"] }),
   // Developer tools
-  svc({ id: "codeartifact", name: "AWS CodeArtifact", short: "CodeArtifact", category: "developer", icon: "service/AWSCodeArtifact", zone: "platform", path: "/codeartifact", endpoints: ["codeartifact"] }),
+  svc({ id: "codeartifact", name: "AWS CodeArtifact", short: "CodeArtifact", category: "developer", icon: "service/AWSCodeArtifact", path: "/codeartifact", endpoints: ["codeartifact"] }),
   // AI
-  svc({ id: "bedrock", name: "Amazon Bedrock", short: "Bedrock", category: "ai", icon: "service/AmazonBedrock", zone: "platform", path: "/bedrock", endpoints: ["bedrock", "bedrock-runtime"] }),
+  svc({ id: "bedrock", name: "Amazon Bedrock", short: "Bedrock", category: "ai", icon: "service/AmazonBedrock", path: "/bedrock", endpoints: ["bedrock", "bedrock-runtime"] }),
   // Web & mobile
-  svc({ id: "amplify", name: "AWS Amplify", short: "Amplify", category: "frontend", icon: "service/AWSAmplify", zone: "platform", path: "/amplify", endpoints: ["amplify"] }),
+  svc({ id: "amplify", name: "AWS Amplify", short: "Amplify", category: "frontend", icon: "service/AWSAmplify", path: "/amplify", endpoints: ["amplify"] }),
   // Cost
-  svc({ id: "ce", name: "AWS Cost Explorer", short: "Cost Explorer", category: "cost", icon: "service/AWSCostExplorer", zone: "governance", path: "/ce", endpoints: ["ce"] }),
-  svc({ id: "marketplace", name: "AWS Marketplace", short: "Marketplace", category: "cost", icon: "service/AWSMarketplace", zone: "platform", path: "/marketplace", endpoints: ["marketplace-metering", "marketplace-entitlement"] }),
+  svc({ id: "ce", name: "AWS Cost Explorer", short: "Cost Explorer", category: "cost", icon: "service/AWSCostExplorer", path: "/ce", endpoints: ["ce"] }),
+  svc({ id: "marketplace", name: "AWS Marketplace", short: "Marketplace", category: "cost", icon: "service/AWSMarketplace", path: "/marketplace", endpoints: ["marketplace-metering", "marketplace-entitlement"] }),
 ];
 
 export function service(id: string): Service {
@@ -259,12 +256,12 @@ export function service(id: string): Service {
 
 /** Services that have console pages, grouped by category in catalog order. */
 export function navigation() {
-  return CATEGORIES.map((c) => ({ category: c, services: SERVICES.filter((s) => s.category === c.id && s.zone) })).filter(
+  return CATEGORIES.map((c) => ({ category: c, services: SERVICES.filter((s) => s.category === c.id && s.path) })).filter(
     (g) => g.services.length > 0,
   );
 }
 
-/** The URL of an icon served by the shell (from the official AWS icon set). */
+/** The URL of an icon served by the console (from the official AWS icon set). */
 export function iconUrl(icon: string) {
   return icon.startsWith("brand/") ? `/icons/${icon}.svg` : `/icons/aws/${icon}.svg`;
 }

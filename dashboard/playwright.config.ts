@@ -1,8 +1,8 @@
 import { defineConfig, devices } from "@playwright/test";
 
-// End-to-end tests of the whole console: the shell and every zone, built for
-// production and served by scripts/zones.mjs, against a running MWS (start it
-// with `cargo run -p mws`, or point MWS_ENDPOINT elsewhere).
+// End-to-end tests of the whole console (one spec per service), built for
+// production and served by scripts/console.mjs, against a running MWS (start
+// it with `cargo run -p mws`, or point MWS_ENDPOINT elsewhere).
 const baseURL = process.env.MWS_DASHBOARD_URL ?? "http://127.0.0.1:3000";
 
 export default defineConfig({
@@ -22,7 +22,7 @@ export default defineConfig({
   webServer: process.env.MWS_DASHBOARD_URL
     ? undefined
     : {
-        command: "node scripts/zones.mjs start",
+        command: "node scripts/console.mjs start",
         url: `${baseURL}/control`,
         reuseExistingServer: !process.env.CI,
         timeout: 120_000,
