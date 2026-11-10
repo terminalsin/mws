@@ -44,7 +44,7 @@ real Rust, Python and JavaScript SDKs.
   validation come from the official Smithy models across six protocols
   (awsQuery, awsJson, restXml, restJson, Smithy RPC v2 CBOR and ec2Query).
 - **Things actually happen.** KMS keys do real cryptography, Private CA and
-  ACM issue real X.509 certificates, Lambda functions run on local runtimes,
+  ACM issue real X.509 certificates, Lambda functions run in AWS's own runtime images,
   EC2 instances can run as Docker containers and mount EFS file systems, and
   events flow between services: S3 notifications reach SNS, SQS and Lambda;
   alarms page through SNS; Firehose delivers to S3.

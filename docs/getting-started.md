@@ -6,8 +6,10 @@ to calling as identities other than the root user.
 ## Requirements
 
 - Rust 1.85 or newer (`rustup` recommended).
-- Optional: `python3` and `node` on `PATH` to run Lambda functions with those
-  runtimes, and Docker (or Podman) to run EC2 instances as containers.
+- Optional: Docker (or Podman) to run Lambda functions in AWS's own runtime
+  images (every managed runtime: Node.js, Python, Java, .NET, Ruby, custom)
+  and EC2 instances as containers. Without Docker, Lambda's Python and
+  Node.js functions run on the `python3` and `node` on `PATH`.
 
 ## Build and run
 

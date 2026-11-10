@@ -4,9 +4,10 @@
 //! The image comes from ECR's own storage: MWS writes it as an image
 //! archive (OCI layout plus Docker's `manifest.json`, as `docker save`
 //! writes) and `docker load`s it once, tagged `mws-lambda:<digest>`, so no
-//! registry login or pull is involved. Containers share the host's network,
-//! so the Runtime API on a loopback port and `AWS_ENDPOINT_URL` reach MWS
-//! as they do for local processes. As in Lambda, the root file system is
+//! registry login or pull is involved. Containers share the host's network
+//! on Linux, so the Runtime API on a loopback port and `AWS_ENDPOINT_URL`
+//! reach MWS as they do for local processes (see [`Network`] for Docker
+//! Desktop). As in Lambda, the root file system is
 //! read-only and `/tmp` is writable, sized by the function's ephemeral
 //! storage.
 
@@ -121,45 +122,125 @@ pub(super) fn command(
     let Some((program, rest)) = argv.split_first() else {
         return Err(LaunchError::InvalidEntrypoint("No command specified".into()));
     };
+    let mut args = run_args(&RunArgs { name, function_arn, memory_mb, ephemeral_mb: c.ephemeral_mb, platform: None });
+    args.push("--entrypoint".into());
+    args.push(program.to_string());
+    if let Some(w) = c.working_dir.as_ref().filter(|w| !w.is_empty()) {
+        args.push("--workdir".into());
+        args.push(w.clone());
+    }
+    let mut by_name = BTreeMap::new();
+    push_env(&mut args, env, &mut by_name);
+    args.push(c.image.clone());
+    args.extend(rest.iter().map(|s| s.to_string()));
+    Ok(Command { program: docker(), args, env: by_name })
+}
+
+/// What every Lambda container gets.
+pub(super) struct RunArgs<'a> {
+    pub name: &'a str,
+    pub function_arn: &'a str,
+    pub memory_mb: i32,
+    /// `/tmp`'s size.
+    pub ephemeral_mb: i32,
+    /// `--platform`, for an architecture that is not the host's.
+    pub platform: Option<&'a str>,
+}
+
+/// `docker run` up to the image: a read-only root, a `/tmp` tmpfs, the
+/// memory limit and the network (see [`Network`]).
+pub(super) fn run_args(a: &RunArgs) -> Vec<String> {
     let mut args: Vec<String> = [
         "run",
         "--rm",
         "--pull",
         "never",
         "--name",
-        name,
+        a.name,
         "--label",
-        &format!("mws.lambda.function={function_arn}"),
-        "--network",
-        "host",
+        &format!("mws.lambda.function={}", a.function_arn),
         "--read-only",
         "--tmpfs",
-        &format!("/tmp:rw,exec,size={}m", c.ephemeral_mb.max(512)),
+        &format!("/tmp:rw,exec,size={}m", a.ephemeral_mb.max(512)),
         "--memory",
-        &format!("{}m", memory_mb.max(128)),
-        "--entrypoint",
-        program,
+        &format!("{}m", a.memory_mb.max(128)),
     ]
     .iter()
     .map(|s| s.to_string())
     .collect();
-    if let Some(w) = c.working_dir.as_ref().filter(|w| !w.is_empty()) {
-        args.push("--workdir".into());
-        args.push(w.clone());
+    match Network::current() {
+        Network::Host => args.extend(["--network".into(), "host".into()]),
+        Network::Bridge => args.extend(["--add-host".into(), format!("{HOST_ALIAS}:host-gateway")]),
     }
-    let mut by_name = BTreeMap::new();
+    if let Some(p) = a.platform {
+        args.extend(["--platform".into(), p.to_string()]);
+    }
+    args
+}
+
+/// The name containers reach the host by on a bridge network.
+const HOST_ALIAS: &str = "host.docker.internal";
+
+/// How containers reach MWS (its Runtime API and `AWS_ENDPOINT_URL`), which
+/// listens on the host's loopback interface: `MWS_LAMBDA_DOCKER_NETWORK`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(super) enum Network {
+    /// The host's network: loopback addresses are the host's. The default
+    /// on Linux.
+    Host,
+    /// Docker's bridge network, with loopback addresses rewritten to
+    /// `host.docker.internal`, which Docker Desktop routes to the host's
+    /// loopback interface. The default elsewhere (macOS, Windows).
+    Bridge,
+}
+
+impl Network {
+    pub fn current() -> Self {
+        match std::env::var("MWS_LAMBDA_DOCKER_NETWORK").unwrap_or_default().to_ascii_lowercase().as_str() {
+            "host" => Self::Host,
+            "bridge" => Self::Bridge,
+            _ if cfg!(target_os = "linux") => Self::Host,
+            _ => Self::Bridge,
+        }
+    }
+}
+
+/// `value` (an address or URL) with a loopback host replaced by
+/// `host.docker.internal`.
+fn via_host_alias(value: &str) -> String {
+    let (scheme, rest) = match value.split_once("://") {
+        Some((s, r)) => (format!("{s}://"), r),
+        None => (String::new(), value),
+    };
+    for host in ["127.0.0.1", "localhost", "[::1]", "0.0.0.0"] {
+        if let Some(tail) = rest.strip_prefix(host) {
+            if tail.is_empty() || tail.starts_with([':', '/']) {
+                return format!("{scheme}{HOST_ALIAS}{tail}");
+            }
+        }
+    }
+    value.to_string()
+}
+
+/// Pass `env` to the container: by name through the engine command line's
+/// own environment (values stay off the command line), except variables
+/// that command line itself needs.
+pub(super) fn push_env(args: &mut Vec<String>, env: &BTreeMap<String, String>, by_name: &mut BTreeMap<String, String>) {
+    let bridge = Network::current() == Network::Bridge;
     for (k, v) in env {
+        let v = if bridge && matches!(k.as_str(), "AWS_LAMBDA_RUNTIME_API" | "AWS_ENDPOINT_URL") {
+            via_host_alias(v)
+        } else {
+            v.clone()
+        };
         args.push("-e".into());
         if engine_variable(k) {
             args.push(format!("{k}={v}"));
         } else {
             args.push(k.clone());
-            by_name.insert(k.clone(), v.clone());
+            by_name.insert(k.clone(), v);
         }
     }
-    args.push(c.image.clone());
-    args.extend(rest.iter().map(|s| s.to_string()));
-    Ok(Command { program: docker(), args, env: by_name })
 }
 
 /// Remove a container (its engine command line may already be gone).
@@ -250,5 +331,18 @@ impl Tar {
     fn finish(mut self) -> Vec<u8> {
         self.0.extend(std::iter::repeat_n(0u8, 1024));
         self.0
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::via_host_alias;
+
+    #[test]
+    fn loopback_addresses_go_through_the_host_alias() {
+        assert_eq!(via_host_alias("127.0.0.1:4100"), "host.docker.internal:4100");
+        assert_eq!(via_host_alias("http://localhost:4566"), "http://host.docker.internal:4566");
+        assert_eq!(via_host_alias("http://localhost.example:4566"), "http://localhost.example:4566");
+        assert_eq!(via_host_alias("https://mws.internal"), "https://mws.internal");
     }
 }

@@ -3,9 +3,11 @@
 //! Functions are created, versioned, aliased, permissioned and configured
 //! as in Lambda, and they really run: `Invoke` starts an execution
 //! environment that is a local process speaking the Lambda Runtime API
-//! (see [`runtime`]). Python and Node.js functions run on the machine's
-//! `python3`/`node` with MWS's runtime client; `provided.*` functions run
-//! their own `bootstrap`. Functions get credentials for their execution
+//! (see [`runtime`]). Functions of managed runtimes run in AWS's own
+//! Lambda base images when Docker is available ([`RuntimeExecutor`]);
+//! otherwise Python and Node.js functions run on the machine's
+//! `python3`/`node` with MWS's runtime client, and `provided.*` functions
+//! run their own `bootstrap`. Functions get credentials for their execution
 //! role from STS, and `AWS_ENDPOINT_URL` pointing back at MWS, so AWS SDKs
 //! inside them talk to the emulator. Container image functions pull their
 //! image from ECR (through [`ImageSource`]) and run it in Docker.
@@ -50,6 +52,7 @@ pub use esm::{QueueFacts, QueueMessage, QueueMessageAttribute, QueueSource};
 pub use esm_stream::{StreamPosition, StreamRead, StreamRecord, StreamShard, StreamSource};
 pub use image::{ContainerImage, ImageBlob, ImageError, ImageSource};
 pub use names::FunctionRef;
+pub use runtime::RuntimeExecutor;
 pub use service_invoke::{ServiceInvocation, ServiceInvocationResult, ServiceInvokeError};
 use state::State;
 
@@ -119,6 +122,14 @@ impl Lambda {
                 durable: Default::default(),
             }),
         }
+    }
+
+    /// Choose what runs functions of managed runtimes (`nodejs*`,
+    /// `python*`, `java*`, ...): AWS's Lambda base images in Docker, local
+    /// processes, or the former when Docker is available. Local processes
+    /// unless set.
+    pub fn set_runtime_executor(&self, executor: RuntimeExecutor) {
+        self.inner.runtimes.set_executor(executor);
     }
 
     /// Send function logs to CloudWatch Logs, written as the function's

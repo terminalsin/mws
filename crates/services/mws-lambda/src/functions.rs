@@ -375,6 +375,7 @@ impl Lambda {
                 response = publish(func, None, None);
             }
         }
+        self.prefetch_runtime(&response);
         // The create call reports the function while it is set up.
         response.state = Some("Pending".into());
         response.state_reason = Some("The function is being created.".into());
@@ -596,6 +597,7 @@ impl Lambda {
         }
         drop(st);
         self.inner.runtimes.retire(&f.arn());
+        self.prefetch_runtime(&response);
         response.last_update_status = Some("InProgress".into());
         response.last_update_status_reason = Some("The function is being created.".into());
         response.last_update_status_reason_code = Some("Creating".into());
@@ -692,6 +694,7 @@ impl Lambda {
         let mut response = c.clone();
         drop(st);
         self.inner.runtimes.retire(&f.arn());
+        self.prefetch_runtime(&response);
         response.last_update_status = Some("InProgress".into());
         response.last_update_status_reason = Some("The function is being created.".into());
         response.last_update_status_reason_code = Some("Creating".into());

@@ -42,6 +42,7 @@ use mws_imagebuilder::ImageBuilder;
 use mws_kinesis::Kinesis;
 use mws_kms::Kms;
 use mws_lambda::Lambda;
+pub use mws_lambda::RuntimeExecutor as LambdaRuntimeExecutor;
 use mws_logs::Logs;
 use mws_marketplace_entitlement::Entitlement;
 use mws_marketplace_metering::Metering;
@@ -149,6 +150,12 @@ pub struct Config {
     /// (`MWS_ECR_UPSTREAM_ENDPOINTS=host=url,...`, e.g.
     /// `quay.io=http://127.0.0.1:5000/v2`), in place of `https://<host>/v2`.
     pub ecr_upstream_endpoints: std::collections::BTreeMap<String, String>,
+    /// What runs Lambda functions of managed runtimes
+    /// (`MWS_LAMBDA_RUNTIME_EXECUTOR`: `auto`, `docker` or `local`). The
+    /// binary defaults to `auto` (AWS's Lambda base images in Docker when a
+    /// daemon answers, local interpreters otherwise); the library default
+    /// runs local interpreters.
+    pub lambda_runtime_executor: mws_lambda::RuntimeExecutor,
     /// Where KMS reaches external key store proxies: `host=address`
     /// pairs (`MWS_KMS_XKS_CONNECT_TO=xks.example.com=127.0.0.1:8443`)
     /// override `https://<host>`'s port 443, and extra trusted CA
@@ -216,8 +223,16 @@ impl Config {
             }),
             Err(_) => mws_ecs::BackendChoice::Auto,
         };
+        let lambda_runtime_executor = match std::env::var("MWS_LAMBDA_RUNTIME_EXECUTOR") {
+            Ok(v) => mws_lambda::RuntimeExecutor::parse(&v).unwrap_or_else(|| {
+                tracing::warn!("unknown MWS_LAMBDA_RUNTIME_EXECUTOR {v:?}; using auto");
+                mws_lambda::RuntimeExecutor::Auto
+            }),
+            Err(_) => mws_lambda::RuntimeExecutor::Auto,
+        };
         Self {
             iam,
+            lambda_runtime_executor,
             db: path("MWS_DB"),
             scenario: path("MWS_SCENARIO"),
             skip_federation_signature_verification: skip,
@@ -370,6 +385,7 @@ fn build_with_store(config: Config, store: Option<Arc<Store>>) -> Mws {
     let scep = ScepConnector::new(pca.clone());
     let acm = Acm::new().with_private_ca(pca.clone()).with_route53(route53.clone()).with_sts(sts.clone());
     let lambda = Lambda::with_services(sts.clone(), s3.clone());
+    lambda.set_runtime_executor(config.lambda_runtime_executor);
     let firehose = Firehose::new()
         .with_s3(s3.clone())
         .with_sts(sts.clone())
