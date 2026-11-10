@@ -56,6 +56,9 @@ test("numbers are parsed and clamped", () => {
 test("taken names get the next free variant", () => {
   assert.deepEqual(values({ taken: ["orders", "orders-2"] }, "orders"), ["orders-3"]);
   assert.deepEqual(values({ taken: ["jobs.fifo"], pattern: "^[a-z-]+\\d*(\\.fifo)?$" }, "jobs.fifo")[0], "jobs-2.fifo".replace("-2", "-2"));
+  const email: Rule = { format: "email", taken: ["ops@example.com", "ops+2@example.com"] };
+  assert.deepEqual(values(email, "ops@example.com"), ["ops+3@example.com"]);
+  assert.deepEqual(values({ format: "email", taken: ["ops+4@example.com"] }, "ops+4@example.com"), ["ops+5@example.com"]);
 });
 
 test("formats repair common mistakes", () => {
@@ -66,6 +69,12 @@ test("formats repair common mistakes", () => {
   assert.deepEqual(values({ format: "arn", arn: "arn:aws:iam::123456789012:role/{}" }, "deployer"), ["arn:aws:iam::123456789012:role/deployer"]);
   assert.deepEqual(values({ format: "bucket" }, "My_Bucket"), ["my-bucket"]);
   assert.equal(check('{"a": 1,}', { format: "json" })?.repairs[0].value, '{\n  "a": 1\n}');
+});
+
+test("over-long JSON is minified", () => {
+  const doc = JSON.stringify({ Version: "2012-10-17", Statement: [{ Effect: "Deny", Action: "*", Resource: "*" }] }, null, 2);
+  assert.deepEqual(values({ format: "json", maxLength: 90 }, doc), [JSON.stringify(JSON.parse(doc))]);
+  assert.deepEqual(values({ format: "json", maxLength: 20 }, doc), []);
 });
 
 test("JSON repair handles hand-written JSON", () => {

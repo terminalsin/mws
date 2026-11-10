@@ -283,6 +283,17 @@ export function repairs(value: string, rule: Rule, code: IssueCode): Repair[] {
       for (const r of reshape(value, rule).slice(0, 1)) offer(r);
       break;
     }
+    case "tooLong":
+      // Over-long JSON (a policy document) usually fits once minified.
+      if (rule.format === "json") {
+        try {
+          offer({ value: JSON.stringify(JSON.parse(value)), label: "Minify the JSON", kind: "fix" });
+        } catch {
+          // Not JSON yet: nothing to minify.
+        }
+        break;
+      }
+    // falls through
     default:
       // The least invasive cleanup that works; a second one would only be a
       // worse version of it.
@@ -418,6 +429,16 @@ function numeric(value: string, rule: Rule): Repair | null {
 
 /** The next free variant of a taken name: queue → queue-2 → queue-3. */
 function nextFree(value: string, rule: Rule): Repair | null {
+  // A taken email address: plus-address it (owner+2@example.com).
+  const at = value.lastIndexOf("@");
+  if (rule.format === "email" && at > 0) {
+    const [user, n0] = [value.slice(0, at).replace(/\+(\d+)$/, ""), Number(value.slice(0, at).match(/\+(\d+)$/)?.[1] ?? 1)];
+    for (let n = n0 + 1; n < n0 + 50; n++) {
+      const v = `${user}+${n}${value.slice(at)}`;
+      if (!rule.taken?.includes(v) && valid(v, rule)) return { value: v, label: `Use ${v}`, kind: "fix" };
+    }
+    return null;
+  }
   const allowed = allowedChars(rule);
   const sep = !allowed || allowed.test("-") ? "-" : allowed.test("_") ? "_" : "";
   // Keep a required ending (".fifo") or an extension at the end.
