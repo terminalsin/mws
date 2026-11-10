@@ -442,9 +442,9 @@ fn build_with_store(config: Config, store: Option<Arc<Store>>) -> Mws {
         partition: config.iam.partition.clone(),
     }));
     lambda.set_queue_source(Arc::new(links::LambdaFromSqs(sqs.clone())));
-    lambda.add_destination_sink(Arc::new(links::LambdaDestination::Sqs(sqs.clone())));
-    lambda.add_destination_sink(Arc::new(links::LambdaDestination::Sns(sns.clone())));
-    lambda.add_destination_sink(Arc::new(links::LambdaDestination::Events(events.clone())));
+    lambda.add_destination_sink(Arc::new(links::LambdaDestination::Sqs(client.clone())));
+    lambda.add_destination_sink(Arc::new(links::LambdaDestination::Sns(client.clone())));
+    lambda.add_destination_sink(Arc::new(links::LambdaDestination::Events(client.clone())));
     logs.add_subscription_target(Arc::new(links::LogsToLambda(lambda.clone())));
     logs.add_subscription_target(Arc::new(links::LogsToKinesis { kinesis: kinesis.clone(), sts: sts.clone() }));
     logs.add_subscription_target(Arc::new(links::LogsToFirehose { firehose: firehose.clone(), sts: sts.clone() }));
@@ -571,6 +571,12 @@ fn build_with_store(config: Config, store: Option<Arc<Store>>) -> Mws {
     ses.set_authorizer(iam.authorizer());
     // Event source mappings in restored state poll before any request.
     lambda.set_authorizer(iam.authorizer());
+    // So do schedules, alarms, buffers and windows.
+    events.set_authorizer(iam.authorizer());
+    cloudwatch.set_authorizer(iam.authorizer());
+    firehose.set_authorizer(iam.authorizer());
+    logs.set_authorizer(iam.authorizer());
+    ssm.set_authorizer(iam.authorizer());
     let rds = Rds::new(
         config.rds_backend.resolve(config.rds_docker_cli.as_deref(), config.rds_bind.as_deref()),
         kms.clone(),
@@ -767,7 +773,7 @@ fn build_with_store(config: Config, store: Option<Arc<Store>>) -> Mws {
     // CloudFormation deploys resources through the other services' APIs.
     cloudformation.set_services(services.iter().cloned());
     // Automation runbooks call the other services' APIs too.
-    ssm.set_automation_runtime(Arc::new(ssm::SsmAutomation::new(sts.clone(), &services)));
+    ssm.set_automation_runtime(Arc::new(ssm::SsmAutomation::new(sts.clone(), &services).with_client(client.clone())));
     let mut gateway = Gateway::builder();
     if let Some(store) = store {
         gateway = gateway.store(store);

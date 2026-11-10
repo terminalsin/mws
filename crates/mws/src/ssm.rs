@@ -257,6 +257,9 @@ impl mws_events::ClockSource for SsmWindowEvents {
 pub(crate) struct SsmAutomation {
     pub sts: mws_sts::Sts,
     pub services: std::collections::HashMap<String, std::sync::Arc<dyn mws_core::Service>>,
+    /// Calls go through here when set, so CloudTrail records them as the
+    /// automation role's calls.
+    pub client: Option<mws_core::ServiceClient>,
 }
 
 impl SsmAutomation {
@@ -266,7 +269,14 @@ impl SsmAutomation {
             map.entry(s.signing_name().to_string()).or_insert_with(|| s.clone());
             map.insert(s.name().to_string(), s.clone());
         }
-        Self { sts, services: map }
+        Self { sts, services: map, client: None }
+    }
+
+    /// Make `aws:executeAwsApi` calls through `client`, so they are
+    /// recorded in CloudTrail like any call one service makes for another.
+    pub fn with_client(mut self, client: mws_core::ServiceClient) -> Self {
+        self.client = Some(client);
+        self
     }
 
     /// The service AWS SDKs call `name`.
@@ -374,7 +384,10 @@ impl mws_ssm::AutomationRuntime for SsmAutomation {
                 format!("MWS does not emulate the service {service}."),
             ));
         };
-        svc.invoke(ctx.clone(), operation, input).await
+        match &self.client {
+            Some(client) if client.knows(svc.name()) => client.call(ctx, svc.name(), operation, input).await,
+            _ => svc.invoke(ctx.clone(), operation, input).await,
+        }
     }
 }
 

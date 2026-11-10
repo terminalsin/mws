@@ -14,7 +14,7 @@ pub(crate) struct SnsToSqs(pub ServiceClient);
 
 #[async_trait::async_trait]
 impl QueueDelivery for SnsToSqs {
-    async fn send(&self, ctx: &RequestContext, m: QueueMessage) -> Result<String, String> {
+    async fn send(&self, ctx: &RequestContext, m: QueueMessage) -> Result<String, mws_core::ServiceError> {
         let mut ctx = ctx.as_service(&m.service_principal, &m.source_account, Some(&m.source_arn));
         ctx.received_at = m.now;
         let attributes =
@@ -25,9 +25,14 @@ impl QueueDelivery for SnsToSqs {
             group_id: m.message_group_id,
             dedup_id: m.message_deduplication_id,
         };
-        send_message(&self.0, ctx, &m.queue_arn, message, None).await.map_err(|e| e.message.to_string())
+        send_message(&self.0, ctx, &m.queue_arn, message, Some(SNS_SQS_RETRY)).await
     }
 }
+
+/// SNS's delivery policy for AWS-managed endpoints (SQS): 100,015 attempts
+/// over 23 days, for server-side errors and throttles.
+const SNS_SQS_RETRY: RetryPolicy =
+    RetryPolicy { max_attempts: 100_015, base_delay_secs: 1, max_delay_secs: 1200, max_age_secs: 23 * 86_400 };
 
 /// A message attribute: `(data type, string value, binary value)`.
 pub(crate) type Attribute = (String, Option<String>, Option<Vec<u8>>);
@@ -392,7 +397,9 @@ impl mws_logs::SubscriptionTarget for LogsToLambda {
                 Err(e) => {
                     tracing::debug!(function = arn, "subscription delivery failed: {e:?}");
                     return Err(match e {
-                        mws_lambda::ServiceInvokeError::Failed(m) if m.contains("TooManyRequests") || m.contains("Rate Exceeded") => {
+                        mws_lambda::ServiceInvokeError::Failed(m)
+                            if m.contains("TooManyRequests") || m.contains("Rate Exceeded") =>
+                        {
                             mws_logs::DeliveryFailure::Throttled
                         }
                         _ => mws_logs::DeliveryFailure::Error,
@@ -829,11 +836,12 @@ impl mws_cloudwatch::MetricStreamDelivery for MetricStreamsToFirehose {
 /// Lambda destination records (asynchronous invocation destinations,
 /// dead-letter queues, stream mapping failures) for SQS, SNS and
 /// EventBridge, sent through each service's own operation as the
-/// function's execution role.
+/// function's execution role. Calls go through the [`ServiceClient`], so
+/// CloudTrail records them as the role's calls.
 pub(crate) enum LambdaDestination {
-    Sqs(Sqs),
-    Sns(mws_sns::Sns),
-    Events(mws_events::Events),
+    Sqs(ServiceClient),
+    Sns(ServiceClient),
+    Events(ServiceClient),
 }
 
 fn message_attributes(m: &mws_lambda::DestinationMessage) -> serde_json::Map<String, serde_json::Value> {
@@ -861,24 +869,23 @@ impl mws_lambda::DestinationSink for LambdaDestination {
         arn: &str,
         m: &mws_lambda::DestinationMessage,
     ) -> Result<(), mws_core::ServiceError> {
-        use mws_core::Service;
         let attributes = message_attributes(m);
         match self {
-            LambdaDestination::Sqs(sqs) => {
+            LambdaDestination::Sqs(client) => {
                 let mut request = serde_json::json!({ "QueueUrl": queue_url(ctx, arn)?, "MessageBody": m.body });
                 if !attributes.is_empty() {
                     request["MessageAttributes"] = serde_json::Value::Object(attributes);
                 }
-                sqs.invoke(ctx.clone(), "SendMessage", request).await.map(|_| ())
+                client.call(ctx, "sqs", "SendMessage", request).await.map(|_| ())
             }
-            LambdaDestination::Sns(sns) => {
+            LambdaDestination::Sns(client) => {
                 let mut request = serde_json::json!({ "TopicArn": arn, "Message": m.body });
                 if !attributes.is_empty() {
                     request["MessageAttributes"] = serde_json::Value::Object(attributes);
                 }
-                sns.invoke(ctx.clone(), "Publish", request).await.map(|_| ())
+                client.call(ctx, "sns", "Publish", request).await.map(|_| ())
             }
-            LambdaDestination::Events(events) => {
+            LambdaDestination::Events(client) => {
                 let request = serde_json::json!({ "Entries": [{
                     "Source": "lambda",
                     "DetailType": m.detail_type,
@@ -886,7 +893,7 @@ impl mws_lambda::DestinationSink for LambdaDestination {
                     "EventBusName": arn,
                     "Resources": [arn, m.function_arn],
                 }]});
-                let out = events.invoke(ctx.clone(), "PutEvents", request).await?;
+                let out = client.call(ctx, "events", "PutEvents", request).await?;
                 match out.get("FailedEntryCount").and_then(serde_json::Value::as_i64) {
                     Some(n) if n > 0 => {
                         let entry = &out["Entries"][0];
