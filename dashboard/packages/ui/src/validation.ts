@@ -94,7 +94,9 @@ export type Format =
   | "csr"
   | "phone"
   | "tags"
-  | "branch";
+  | "branch"
+  /** A comma-separated `Name=value` list (dimensions). */
+  | "pairs";
 
 /** "name": a readable resource name; "token": random letters and digits;
  * "password": meets the usual complexity rules; or a fixed prefix/suffix
@@ -446,7 +448,11 @@ export function allowedChars(rule: Rule): RegExp | null {
   if (rule.format === "bucket") return /[a-z0-9.-]/;
   if (rule.format === "name") return /[A-Za-z0-9_-]/;
   if (!rule.pattern) return null;
-  const classes = [...rule.pattern.matchAll(/\[((?:\\.|[^\]\\])+)\]/g)].map((m) => m[1]).filter((c) => !c.startsWith("^"));
+  const all = [...rule.pattern.matchAll(/\[((?:\\.|[^\]\\])+)\]/g)].map((m) => m[1]);
+  const classes = all.filter((c) => !c.startsWith("^"));
+  // A whole-value negated class (`^[^:*]*$`): anything but those.
+  const negated = classes.length === 0 && all.length === 1 ? all[0] : null;
+  if (negated && [`^[${negated}]*$`, `^[${negated}]+$`].includes(rule.pattern)) return regex(`[${negated}]`);
   if (classes.length === 0) {
     const shorthand = rule.pattern.match(/\\[wd]/g);
     if (!shorthand) return null;
@@ -1000,7 +1006,52 @@ export const FORMATS: Record<Format, FormatSpec> = {
       return v && v !== "@" ? [{ value: v, label: "Fix the branch name", kind: "fix" }] : [];
     },
   },
+  pairs: {
+    check(value) {
+      return parsePairs(value) ? null : "Like Name=value, Other=value";
+    },
+    repair(value) {
+      const fixed = repairPairs(value);
+      return fixed === null ? [] : [{ value: fixed, label: "Write as Name=value pairs", kind: "fix" }];
+    },
+  },
 };
+
+/** `Name=value, Other=value` as pairs (a value may contain "="), or null
+ * when an item has no name or no value. */
+export function parsePairs(value: string): [string, string][] | null {
+  const out: [string, string][] = [];
+  for (const item of value.split(",")) {
+    const m = item.match(/^\s*([^=]*?)\s*=\s*(.*?)\s*$/);
+    if (!m || !m[1] || !m[2]) return null;
+    out.push([m[1], m[2]]);
+  }
+  return out;
+}
+
+/** Rewrite the usual ways of writing pairs (JSON objects, `[{Name, Value}]`
+ * lists, `Name: value`, `;` or line separators) as `Name=value, ...`. */
+export function repairPairs(value: string): string | null {
+  const join = (pairs: [string, string][]) => pairs.map(([k, v]) => `${k}=${v}`).join(", ");
+  const json = /^\s*[[{]/.test(value) ? repairJson(value) : null;
+  if (json !== null) {
+    const data: unknown = JSON.parse(json);
+    const scalar = (v: unknown) => (typeof v === "string" || typeof v === "number" || typeof v === "boolean" ? String(v) : null);
+    const pairs = (Array.isArray(data) ? data : Object.entries(data as object).map(([Name, Value]) => ({ Name, Value }))).map((e) => {
+      const o = (e ?? {}) as Record<string, unknown>;
+      return [scalar(o.Name ?? o.Key ?? o.name ?? o.key), scalar(o.Value ?? o.value)];
+    });
+    if (pairs.length && pairs.every(([k, v]) => k && v)) return join(pairs as [string, string][]);
+    return null;
+  }
+  const items = value
+    .split(/[,;&\n]+/)
+    .map((i) => i.trim())
+    .filter(Boolean)
+    .map((i) => (i.includes("=") ? i : i.replace(/\s*:\s*|\s+/, "=")));
+  const pairs = items.length ? parsePairs(items.join(",")) : null;
+  return pairs ? join(pairs) : null;
+}
 
 const DOMAIN = /^(?=.{1,253}$)(?:[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\.)+[a-z]{2,63}$/i;
 /** Top-level domains people mistype, and what they meant. */

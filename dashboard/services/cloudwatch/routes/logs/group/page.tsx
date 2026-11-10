@@ -1,6 +1,7 @@
 import { DescribeLogGroupsCommand, DescribeLogStreamsCommand, FilterLogEventsCommand } from "@aws-sdk/client-cloudwatch-logs";
 import { ago, bytes, load } from "@mws-dashboard/aws";
 import { ActionForm, AwsIcon, Empty, ErrorNotice, Facts, Field, List, Page, Pill, Section, Sheet } from "@mws-dashboard/ui";
+import { FilterLogEvents, PutLogEvents, PutRetentionPolicy } from "@mws-dashboard/ui/model/logs";
 import { Clock, PenLine, Trash2, X } from "lucide-react";
 import type { Metadata } from "next";
 import Link from "next/link";
@@ -37,6 +38,7 @@ export default async function LogGroup({ searchParams }: Props) {
     }),
   ]);
   const g = group.ok ? group.value : undefined;
+  const streamNames = streams.ok ? streams.value.map((s) => s.logStreamName!) : [];
   const icon = sourceIcon(name) ?? ICONS.logs;
   return (
     <Page
@@ -47,21 +49,25 @@ export default async function LogGroup({ searchParams }: Props) {
         <>
           <Sheet title="Write event" label="Write event" icon={<PenLine size={16} />} testId="write-event">
             <ActionForm action={writeEvent.bind(null, name)} submit="Write" testId="write-event">
-              <Field label="Stream">
+              <Field label="Stream" rule={PutLogEvents.logStreamName} known={streamNames} generate="name">
                 <input name="stream" defaultValue={stream ?? "console"} />
               </Field>
-              <textarea name="message" rows={3} aria-label="Message" required />
+              <Field label="Message" rule={PutLogEvents.logEvents.item!.fields!.message}>
+                <textarea name="message" rows={3} />
+              </Field>
             </ActionForm>
           </Sheet>
           <Sheet title="Retention" label="Change retention" icon={<Clock size={16} />} testId="retention">
             <ActionForm action={setRetention.bind(null, name)} submit="Save" testId="retention">
-              <select name="retention" aria-label="Retention" defaultValue={g?.retentionInDays ?? 0}>
-                {RETENTION.map((d) => (
-                  <option key={d} value={d}>
-                    {retentionLabel(d)}
-                  </option>
-                ))}
-              </select>
+              <Field label="Retention" rule={PutRetentionPolicy.retentionInDays}>
+                <select name="retention" defaultValue={g?.retentionInDays ?? 0}>
+                  {RETENTION.map((d) => (
+                    <option key={d} value={d}>
+                      {retentionLabel(d)}
+                    </option>
+                  ))}
+                </select>
+              </Field>
             </ActionForm>
           </Sheet>
           <ActionForm action={deleteGroup.bind(null, name)} submit="Delete log group" icon={<Trash2 size={16} />} tone="danger" confirm={`Delete ${name} and all its events?`} testId="delete-log-group" />
@@ -83,7 +89,9 @@ export default async function LogGroup({ searchParams }: Props) {
       <form className="search-page-form" action="/logs/group">
         <input type="hidden" name="name" value={name} />
         {stream && <input type="hidden" name="stream" value={stream} />}
-        <input name="pattern" defaultValue={pattern} placeholder='ERROR or { $.level = "warn" }' aria-label="Filter pattern" />
+        <Field label="Filter pattern" rule={FilterLogEvents.filterPattern}>
+          <input name="pattern" defaultValue={pattern} placeholder='ERROR or { $.level = "warn" }' aria-label="Filter pattern" />
+        </Field>
       </form>
       {stream && (
         <div className="chips">

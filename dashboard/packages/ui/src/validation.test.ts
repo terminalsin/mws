@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 
-import { check, closest, describePattern, fresh, parseServerIssues, repairJson, repairPolicy, ruleAt, sameMember, valid, type Rule } from "./validation.ts";
+import { check, closest, describePattern, fresh, parsePairs, parseServerIssues, repairJson, repairPairs, repairPolicy, ruleAt, sameMember, valid, type Rule } from "./validation.ts";
 
 const values = (r: Rule, v: string) => check(v, r)?.repairs.map((x) => x.value) ?? [];
 
@@ -280,4 +280,21 @@ test("URLs: SSH remotes become HTTPS, scheme patterns get their scheme", () => {
   assert.deepEqual(values(source, "my-bucket/site.zip"), ["s3://my-bucket/site.zip"]);
   assert.deepEqual(values(source, "example.com/site.zip"), ["https://example.com/site.zip"]);
   assert.deepEqual(values(source, "ftp://x"), []);
+});
+
+test("Name=value pairs parse and repair", () => {
+  assert.deepEqual(parsePairs("QueueName=orders, Env=a=b"), [["QueueName", "orders"], ["Env", "a=b"]]);
+  assert.equal(parsePairs("QueueName"), null);
+  assert.equal(parsePairs("QueueName=orders,"), null);
+  assert.equal(repairPairs("QueueName: orders; Env prod"), "QueueName=orders, Env=prod");
+  assert.equal(repairPairs("QueueName=orders,\nEnv=prod,"), "QueueName=orders, Env=prod");
+  assert.equal(repairPairs('{"QueueName": "orders", Env: 2}'), "QueueName=orders, Env=2");
+  assert.equal(repairPairs('[{"Name": "QueueName", "Value": "orders"}]'), "QueueName=orders");
+  assert.equal(repairPairs("{}"), null);
+  assert.deepEqual(values({ format: "pairs" }, "QueueName: orders"), ["QueueName=orders"]);
+  assert.equal(check("QueueName=orders", { format: "pairs" }), null);
+});
+
+test("negated-class patterns drop just the excluded characters", () => {
+  assert.deepEqual(values({ pattern: "^[^:*]*$" }, "app:web*1"), ["app-web-1"]);
 });

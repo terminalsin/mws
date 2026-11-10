@@ -1,10 +1,11 @@
 import { ListMetricsCommand, type MetricAlarm } from "@aws-sdk/client-cloudwatch";
-import { ago, collect, load } from "@mws-dashboard/aws";
-import { ActionForm, AwsIcon, Curated, Empty, ErrorNotice, Field, Metric, Metrics, Page, Sheet, Status } from "@mws-dashboard/ui";
+import { ago, collect, frameInfo, load } from "@mws-dashboard/aws";
+import { ActionForm, AwsIcon, Curated, Empty, ErrorNotice, Field, Metric, Metrics, Page, Sheet, Status, type Rule } from "@mws-dashboard/ui";
+import { PutMetricAlarm as PutMetricAlarmRules } from "@mws-dashboard/ui/model/cloudwatch";
 import { BellOff, BellRing, CircleCheck, Siren, Trash2 } from "lucide-react";
 import type { Metadata } from "next";
 
-import { ALARM_TONE, ICONS, cloudwatch, listAlarms, metricHref, sourceIcon } from "../../lib/clients";
+import { ALARM_TONE, ICONS, cloudwatch, dimsText, listAlarms, metricHref, sourceIcon, topicArns } from "../../lib/clients";
 import { createAlarm, deleteAlarm, setActions, setState } from "./actions";
 
 export const metadata: Metadata = { title: "Alarms" };
@@ -28,48 +29,50 @@ function rule(a: MetricAlarm) {
   return `${a.Statistic ?? a.ExtendedStatistic}(${a.MetricName}) ${OP[a.ComparisonOperator ?? ""] ?? a.ComparisonOperator} ${a.Threshold} · ${times}${period(a.Period)}`;
 }
 
-const STATES = [
-  { id: "ALARM", title: "In alarm" },
-  { id: "INSUFFICIENT_DATA", title: "Insufficient data" },
-  { id: "OK", title: "OK" },
+// Periods the AWS console offers; PutMetricAlarm takes 10, 20, 30 or any multiple of 60.
+const PERIODS: [number, string][] = [
+  [10, "10 s"],
+  [30, "30 s"],
+  [60, "1 min"],
+  [300, "5 min"],
+  [900, "15 min"],
+  [3600, "1 h"],
+  [21600, "6 h"],
+  [86400, "1 day"],
 ];
 
-export default async function Alarms() {
-  const [alarms, metrics] = await Promise.all([
-    load(listAlarms),
-    load(async () => {
-      const c = await cloudwatch();
-      return collect((NextToken) => c.send(new ListMetricsCommand({ NextToken })), (r) => r.Metrics, (r) => r.NextToken, 2000);
-    }),
-  ]);
-  const namespaces = metrics.ok ? [...new Set(metrics.value.map((m) => m.Namespace!))].sort() : [];
-  const names = metrics.ok ? [...new Set(metrics.value.map((m) => m.MetricName!))].sort() : [];
-  const create = (
+const NAMESPACE: Rule = { ...PutMetricAlarmRules.Namespace, required: true, hint: "Can't start with :" };
+const METRIC: Rule = { ...PutMetricAlarmRules.MetricName, required: true };
+const DIMENSIONS: Rule = { format: "pairs", maxLength: 4096 };
+const ACTION: Rule = { ...PutMetricAlarmRules.AlarmActions.item, format: "arn" };
+
+function CreateAlarm({ namespaces, names, dims, taken, topics, topicArn }: { namespaces: string[]; names: string[]; dims: string[]; taken: string[]; topics: string[]; topicArn?: string }) {
+  return (
     <Sheet title="New alarm" label="Create alarm" testId="create-alarm">
       <ActionForm action={createAlarm} submit="Create" testId="create-alarm">
-        <Field label="Name">
-          <input name="name" required autoFocus />
+        <Field label="Name" rule={PutMetricAlarmRules.AlarmName} taken={taken} generate="name" unique>
+          <input name="name" autoFocus />
         </Field>
-        <Field label="Namespace">
-          <input name="namespace" required list="namespaces" />
+        <Field label="Namespace" rule={NAMESPACE} known={namespaces}>
+          <input name="namespace" list="namespaces" />
         </Field>
         <datalist id="namespaces">{namespaces.map((n) => <option key={n} value={n} />)}</datalist>
-        <Field label="Metric">
-          <input name="metric" required list="metric-names" />
+        <Field label="Metric" rule={METRIC} known={names}>
+          <input name="metric" list="metric-names" />
         </Field>
         <datalist id="metric-names">{names.map((n) => <option key={n} value={n} />)}</datalist>
-        <Field label="Dimensions">
+        <Field label="Dimensions" rule={DIMENSIONS} known={dims}>
           <input name="dims" placeholder="QueueName=orders" />
         </Field>
         <div className="form-grid">
-          <Field label="Statistic">
+          <Field label="Statistic" rule={PutMetricAlarmRules.Statistic}>
             <select name="stat" defaultValue="Sum">
               {["Sum", "Average", "Maximum", "Minimum", "SampleCount"].map((s) => (
                 <option key={s}>{s}</option>
               ))}
             </select>
           </Field>
-          <Field label="Condition">
+          <Field label="Condition" rule={PutMetricAlarmRules.ComparisonOperator}>
             <select name="comparison" defaultValue="GreaterThanThreshold">
               {Object.entries(OP)
                 .slice(0, 4)
@@ -80,16 +83,22 @@ export default async function Alarms() {
                 ))}
             </select>
           </Field>
-          <Field label="Threshold">
-            <input name="threshold" type="number" step="any" required />
+          <Field label="Threshold" rule={{ ...PutMetricAlarmRules.Threshold, required: true }}>
+            <input name="threshold" type="number" step="any" />
           </Field>
-          <Field label="Period (s)">
-            <input name="period" type="number" defaultValue={60} min={10} />
+          <Field label="Period" rule={PutMetricAlarmRules.Period}>
+            <select name="period" defaultValue={60}>
+              {PERIODS.map(([s, label]) => (
+                <option key={s} value={s}>
+                  {label}
+                </option>
+              ))}
+            </select>
           </Field>
-          <Field label="Periods">
-            <input name="evaluations" type="number" defaultValue={1} min={1} />
+          <Field label="Periods" rule={PutMetricAlarmRules.EvaluationPeriods}>
+            <input name="evaluations" type="number" defaultValue={1} />
           </Field>
-          <Field label="Missing data">
+          <Field label="Missing data" rule={PutMetricAlarmRules.TreatMissingData}>
             <select name="missing" defaultValue="missing">
               {["missing", "notBreaching", "breaching", "ignore"].map((s) => (
                 <option key={s}>{s}</option>
@@ -97,11 +106,44 @@ export default async function Alarms() {
             </select>
           </Field>
         </div>
-        <Field label="Notify (SNS topic ARN)">
-          <input name="action" placeholder="arn:aws:sns:…" />
+        <Field label="Notify" rule={ACTION} known={topics} arn={topicArn} hint="SNS topic name or ARN">
+          <input name="action" placeholder="arn:aws:sns:…" list="alarm-topics" />
         </Field>
+        <datalist id="alarm-topics">{topics.map((t) => <option key={t} value={t} />)}</datalist>
       </ActionForm>
     </Sheet>
+  );
+}
+
+const STATES = [
+  { id: "ALARM", title: "In alarm" },
+  { id: "INSUFFICIENT_DATA", title: "Insufficient data" },
+  { id: "OK", title: "OK" },
+];
+
+export default async function Alarms() {
+  const [alarms, metrics, topics, info] = await Promise.all([
+    load(listAlarms),
+    load(async () => {
+      const c = await cloudwatch();
+      return collect((NextToken) => c.send(new ListMetricsCommand({ NextToken })), (r) => r.Metrics, (r) => r.NextToken, 2000);
+    }),
+    load(topicArns),
+    frameInfo(),
+  ]);
+  const namespaces = metrics.ok ? [...new Set(metrics.value.map((m) => m.Namespace!))].sort() : [];
+  const names = metrics.ok ? [...new Set(metrics.value.map((m) => m.MetricName!))].sort() : [];
+  const taken = alarms.ok ? [...alarms.value.metric, ...alarms.value.composite].map((a) => a.AlarmName!) : [];
+  const dims = metrics.ok ? [...new Set(metrics.value.map((m) => dimsText(m.Dimensions)).filter(Boolean))] : [];
+  const create = (
+    <CreateAlarm
+      namespaces={namespaces}
+      names={names}
+      dims={dims}
+      taken={taken}
+      topics={topics.ok ? topics.value : []}
+      topicArn={info.account ? `arn:aws:sns:${info.region}:${info.account}:{}` : undefined}
+    />
   );
   if (!alarms.ok) {
     return (

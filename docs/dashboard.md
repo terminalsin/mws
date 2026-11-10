@@ -117,7 +117,7 @@ Fields validate in place, and say how to fix what they reject. `Field`
 3. what the page adds: `format` (`json`, `policy`, `path`, `arn`, `cidr`,
    `ipv4`, `email`, `emails` (a comma-separated list), `domain`,
    `email-or-domain`, `url`, `s3url`, `bucket`, `name`, `port`, `phone`,
-   `tags` for `key=value` lines, `branch` for Git branch names), `taken` (names that exist), `reserved`
+   `tags` for `key=value` lines, `branch` for Git branch names, `pairs` for `Name=value` lists), `taken` (names that exist), `reserved`
    (prefixes AWS keeps, offered without them),
    `known` (values the field usually points at), `generate` (`name`,
    `token`, `password`, `uuid`, or a prefix/suffix), `arn` (the ARN template
