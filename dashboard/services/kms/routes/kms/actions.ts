@@ -16,21 +16,31 @@ import {
   SignCommand,
   TagResourceCommand,
   GenerateMacCommand,
+  type EncryptionAlgorithmSpec,
   type KeySpec,
   type KeyUsageType,
   type SigningAlgorithmSpec,
   type MacAlgorithmSpec,
 } from "@aws-sdk/client-kms";
-import { act, required, text, type ActionResult } from "@mws-dashboard/aws";
+import { act, FieldError, required, text, type ActionResult } from "@mws-dashboard/aws";
 import { redirect } from "next/navigation";
 
 import { kms } from "../../lib/clients";
+import { listAliases } from "../../lib/kms";
 
 const page = (_id: string) => "/kms/key";
+
+const aliasName = (alias: string) => (alias.startsWith("alias/") ? alias : `alias/${alias}`);
+
+/** Where KMS's errors land on the forms below. */
+const ALIAS_FIELDS = { AliasName: "alias", InvalidAliasNameException: "alias", AlreadyExistsException: "alias" };
 
 export async function createKey(_: ActionResult | null, form: FormData) {
   return act(async () => {
     const client = await kms();
+    const alias = text(form, "alias");
+    // Checked first, so a taken alias does not leave a new key behind.
+    if (alias && (await listAliases()).some((a) => a.AliasName === aliasName(alias))) throw new FieldError("alias", "Already exists", "taken");
     const spec = (text(form, "spec") || "SYMMETRIC_DEFAULT") as KeySpec;
     const usage: KeyUsageType =
       spec === "SYMMETRIC_DEFAULT" || (spec.startsWith("RSA") && text(form, "usage") !== "sign")
@@ -42,11 +52,18 @@ export async function createKey(_: ActionResult | null, form: FormData) {
       new CreateKeyCommand({ KeySpec: spec, KeyUsage: usage, Description: text(form, "description") || undefined, MultiRegion: text(form, "multiRegion") === "on" }),
     );
     const id = out.KeyMetadata!.KeyId!;
-    const alias = text(form, "alias");
-    if (alias) await client.send(new CreateAliasCommand({ AliasName: alias.startsWith("alias/") ? alias : `alias/${alias}`, TargetKeyId: id }));
+    if (alias) {
+      try {
+        await client.send(new CreateAliasCommand({ AliasName: aliasName(alias), TargetKeyId: id }));
+      } catch (e) {
+        // Leave no unnamed key behind for a form that failed.
+        await client.send(new ScheduleKeyDeletionCommand({ KeyId: id, PendingWindowInDays: 7 })).catch(() => undefined);
+        throw e;
+      }
+    }
     if (spec === "SYMMETRIC_DEFAULT" && text(form, "rotation") === "on") await client.send(new EnableKeyRotationCommand({ KeyId: id }));
     return `Created ${alias || id}`;
-  }, "/kms");
+  }, { revalidate: ["/kms"], fields: { ...ALIAS_FIELDS, Description: "description" } });
 }
 
 export async function setEnabled(keyId: string, enable: boolean) {
@@ -78,8 +95,7 @@ export async function scheduleDeletion(keyId: string, _: ActionResult | null, fo
       const out = await (await kms()).send(new ScheduleKeyDeletionCommand({ KeyId: keyId, PendingWindowInDays: days }));
       return `Deletes ${out.DeletionDate?.toISOString().slice(0, 10)}`;
     },
-    "/kms",
-    page(keyId),
+    { revalidate: ["/kms", page(keyId)], fields: { PendingWindowInDays: "days", ValidationException: "days" } },
   );
 }
 
@@ -97,9 +113,9 @@ export async function cancelDeletion(keyId: string) {
 export async function addAlias(keyId: string, _: ActionResult | null, form: FormData) {
   return act(async () => {
     const alias = required(form, "alias", "Alias");
-    await (await kms()).send(new CreateAliasCommand({ AliasName: alias.startsWith("alias/") ? alias : `alias/${alias}`, TargetKeyId: keyId }));
-    return `Added ${alias}`;
-  }, page(keyId));
+    await (await kms()).send(new CreateAliasCommand({ AliasName: aliasName(alias), TargetKeyId: keyId }));
+    return `Added ${aliasName(alias)}`;
+  }, { revalidate: [page(keyId)], fields: ALIAS_FIELDS });
 }
 
 export async function deleteAlias(keyId: string, alias: string) {
@@ -112,10 +128,14 @@ export async function deleteAlias(keyId: string, alias: string) {
 export async function saveKeyPolicy(keyId: string, _: ActionResult | null, form: FormData) {
   return act(async () => {
     const Policy = required(form, "policy", "Policy");
-    JSON.parse(Policy);
+    try {
+      JSON.parse(Policy);
+    } catch {
+      throw new FieldError("policy", "Invalid JSON", "format");
+    }
     await (await kms()).send(new PutKeyPolicyCommand({ KeyId: keyId, PolicyName: "default", Policy }));
     return "Key policy saved";
-  }, page(keyId));
+  }, { revalidate: [page(keyId)], fields: { Policy: "policy", MalformedPolicyDocumentException: "policy" } });
 }
 
 export async function saveKeyTags(keyId: string, _: ActionResult | null, form: FormData) {
@@ -124,13 +144,14 @@ export async function saveKeyTags(keyId: string, _: ActionResult | null, form: F
       .split("\n")
       .map((l) => l.trim())
       .filter(Boolean)
-      .map((l) => {
+      .map((l, i) => {
         const [TagKey, ...rest] = l.split("=");
+        if (!rest.length || !TagKey.trim()) throw new FieldError("tags", `Line ${i + 1}: key=value`, "format");
         return { TagKey: TagKey.trim(), TagValue: rest.join("=").trim() };
       });
     await (await kms()).send(new TagResourceCommand({ KeyId: keyId, Tags }));
     return "Tags saved";
-  }, page(keyId));
+  }, { revalidate: [page(keyId)], fields: { Tags: "tags", TagException: "tags" } });
 }
 
 /** Use the key on a string: encrypt and decrypt, sign, or MAC, by its usage. */
@@ -148,13 +169,14 @@ export async function tryKey(keyId: string, usage: string, algorithm: string | u
       const out = await client.send(new GenerateMacCommand({ KeyId: keyId, Message: input, MacAlgorithm: algorithm as MacAlgorithmSpec }));
       return { ok: true, message: out.MacAlgorithm!, detail: Buffer.from(out.Mac!).toString("base64") };
     }
-    const encrypted = await client.send(new EncryptCommand({ KeyId: keyId, Plaintext: input }));
-    const decrypted = await client.send(new DecryptCommand({ CiphertextBlob: encrypted.CiphertextBlob, KeyId: keyId }));
+    const EncryptionAlgorithm = algorithm as EncryptionAlgorithmSpec | undefined;
+    const encrypted = await client.send(new EncryptCommand({ KeyId: keyId, Plaintext: input, EncryptionAlgorithm }));
+    const decrypted = await client.send(new DecryptCommand({ CiphertextBlob: encrypted.CiphertextBlob, KeyId: keyId, EncryptionAlgorithm }));
     return {
       ok: true,
       message: "Round trip ok",
       detail: `${Buffer.from(encrypted.CiphertextBlob!).toString("base64")}\n\n→ ${new TextDecoder().decode(decrypted.Plaintext)}`,
     };
-  });
+  }, { fields: { Plaintext: "plaintext", Message: "plaintext", ValidationException: "plaintext" } });
 }
 

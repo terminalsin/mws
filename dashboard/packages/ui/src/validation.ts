@@ -54,6 +54,9 @@ export interface Rule {
   /** `taken` ignores case (the service treats `Alice` and `alice` as the
    * same name, as Identity Store does). */
   takenIgnoreCase?: boolean;
+  /** Prefixes AWS keeps for itself (`alias/aws/`, `aws:`): a value starting
+   * with one is offered without it. */
+  reserved?: string[];
   /** Values the field usually refers to (existing roles, keys, queues):
    * close ones are offered when a value is rejected as unknown. */
   known?: string[];
@@ -90,7 +93,8 @@ export type Format =
   | "country"
   | "csr"
   | "phone"
-  | "pairs";
+  | "pairs"
+  | "tags";
 
 /** "name": a readable resource name; "token": random letters and digits;
  * "password": meets the usual complexity rules; or a fixed prefix/suffix
@@ -107,6 +111,7 @@ export type IssueCode =
   | "type"
   | "format"
   | "taken"
+  | "reserved"
   | "missing"
   | "server";
 
@@ -234,6 +239,8 @@ function problem(value: string, rule: Rule, options: Options): Omit<Issue, "repa
     return null;
   }
   if (isTaken(value, rule)) return { code: "taken", message: "Already exists" };
+  const reserved = rule.reserved?.find((p) => value.startsWith(p));
+  if (reserved) return { code: "reserved", message: `${reserved} is reserved for AWS` };
   if (rule.enum && rule.enum.length > 0 && !rule.enum.includes(value)) {
     return { code: "enum", message: rule.enum.length <= 4 ? `One of ${rule.enum.join(", ")}` : "Not an allowed value" };
   }
@@ -289,6 +296,12 @@ export function repairs(value: string, rule: Rule, code: IssueCode): Repair[] {
       offer(nextFree(value, rule));
       offer(fresh(rule));
       break;
+    case "reserved": {
+      const prefix = rule.reserved!.filter((p) => value.startsWith(p)).sort((a, b) => b.length - a.length)[0];
+      offer({ value: value.slice(prefix.length), label: `Drop ${prefix}`, kind: "fix" });
+      offer(fresh(rule));
+      break;
+    }
     case "enum": {
       const near = nearestNumbers(value, rule.enum ?? []);
       if (near) for (const s of near) offer({ value: s, label: `Use ${s}`, kind: "fix" });
@@ -302,7 +315,8 @@ export function repairs(value: string, rule: Rule, code: IssueCode): Repair[] {
     case "format": {
       const format = rule.format && FORMATS[rule.format];
       for (const r of format?.repair?.(value, rule) ?? []) offer(r);
-      for (const r of reshape(value, rule).slice(0, 1)) offer(r);
+      // Multi-line values (JSON, tags) do not reshape into anything useful.
+      if (!value.includes("\n")) for (const r of reshape(value, rule).slice(0, 1)) offer(r);
       break;
     }
     case "tooLong":
@@ -935,6 +949,41 @@ export const FORMATS: Record<Format, FormatSpec> = {
         });
       }
       return entries.length ? [{ value: entries.map(([k, v]) => `${k}=${v}`).join("\n"), label: "Rewrite as key=value", kind: "fix" }] : [];
+    },
+  },
+  // `key=value` per line, AWS's usual tag limits.
+  tags: {
+    check(value) {
+      const keys = new Set<string>();
+      for (const [i, raw] of value.split("\n").entries()) {
+        const line = raw.trim();
+        if (!line) continue;
+        const eq = line.indexOf("=");
+        const key = line.slice(0, eq).trim();
+        if (eq < 0 || !key) return `Line ${i + 1}: key=value`;
+        if (length(key) > 128) return `Line ${i + 1}: key over 128 characters`;
+        if (length(line.slice(eq + 1).trim()) > 256) return `Line ${i + 1}: value over 256 characters`;
+        if (/^aws:/i.test(key)) return `Line ${i + 1}: aws: is reserved for AWS`;
+        if (keys.has(key)) return `Line ${i + 1}: ${key} repeats`;
+        keys.add(key);
+      }
+      return null;
+    },
+    repair(value) {
+      // "key: value", "key value" or a bare key become key=value; a key
+      // given twice keeps its last value; blank lines go.
+      const tags = new Map<string, string>();
+      for (const raw of value.split("\n")) {
+        const line = raw.trim();
+        if (!line) continue;
+        const m = line.includes("=") ? line.match(/^([^=]*)=(.*)$/) : line.match(/^(.+?)\s*(?::\s*|\s+|$)(.*)$/);
+        const key = m?.[1].trim().replace(/^aws:/i, "");
+        if (!key) continue;
+        tags.delete(key);
+        tags.set(key, m![2].trim());
+      }
+      const fixed = [...tags].map(([k, v]) => `${k}=${v}`).join("\n");
+      return fixed ? [{ value: fixed, label: "Use key=value lines", kind: "fix" }] : [];
     },
   },
 };
