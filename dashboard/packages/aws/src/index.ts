@@ -8,7 +8,7 @@ import "server-only";
 import { GetCallerIdentityCommand, STSClient } from "@aws-sdk/client-sts";
 import type { ActionResult, FrameInfo } from "@mws-dashboard/ui";
 import { REGION_COOKIE } from "@mws-dashboard/ui/constants";
-import { CONFLICT, memberPath, parseServerIssues, type FieldIssue, type IssueCode } from "@mws-dashboard/ui/validation";
+import { CONFLICT, memberPath, parseServerIssues, type FieldIssue, type IssueCode, type Rule } from "@mws-dashboard/ui/validation";
 import { revalidatePath } from "next/cache";
 import { cookies } from "next/headers";
 import { unstable_rethrow } from "next/navigation";
@@ -73,12 +73,15 @@ export async function load<T>(read: () => Promise<T>): Promise<Loaded<T>> {
 }
 
 /** A problem with one form field, thrown from an action: it shows on that
- * field (with repairs) instead of under the form. */
+ * field (with repairs) instead of under the form. `rule` is the constraint
+ * the value broke, when the action learned it (e.g. a new minimum), so the
+ * field's repairs satisfy it. */
 export class FieldError extends Error {
   constructor(
     readonly field: string,
     message: string,
     readonly code: IssueCode = "server",
+    readonly rule?: Rule,
   ) {
     super(message);
     this.name = "FieldError";
@@ -121,7 +124,7 @@ export async function act(
  * can repair the value), an "already exists" error (lands on the form's
  * `unique` field), or anything `fields` maps by member or error code. */
 export function fieldIssues(e: unknown, fields: Record<string, string> = {}): FieldIssue[] {
-  if (e instanceof FieldError) return [{ field: e.field, code: e.code, message: e.message }];
+  if (e instanceof FieldError) return [{ field: e.field, code: e.code, message: e.message, ...(e.rule ? { rule: e.rule } : {}) }];
   if (!(e instanceof Error)) return [];
   const byMember = (member: string) => {
     const path = memberPath(member).join(".");
