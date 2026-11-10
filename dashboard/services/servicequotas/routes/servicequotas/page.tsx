@@ -1,6 +1,7 @@
 import { ListAWSDefaultServiceQuotasCommand, ListRequestedServiceQuotaChangeHistoryCommand, ListServiceQuotasCommand, ListServicesCommand } from "@aws-sdk/client-service-quotas";
 import { ago, collect, load } from "@mws-dashboard/aws";
 import { ActionForm, AwsIcon, Empty, ErrorNotice, Field, List, Page, Pill, Sheet, Status, SERVICES } from "@mws-dashboard/ui";
+import { RequestServiceQuotaIncrease } from "@mws-dashboard/ui/model/servicequotas";
 import { ArrowUp } from "lucide-react";
 import type { Metadata } from "next";
 import Link from "next/link";
@@ -57,8 +58,8 @@ export default async function Quotas({ searchParams }: Props) {
                 actions: d.Adjustable ? (
                   <Sheet title={`Request increase: ${d.QuotaName}`} label={`Request increase ${d.QuotaCode}`} icon={<ArrowUp size={15} />} testId={`increase-${d.QuotaCode}`}>
                     <ActionForm action={requestIncrease.bind(null, service, d.QuotaCode!)} submit="Request" testId={`increase-${d.QuotaCode}`}>
-                      <Field label="New value">
-                        <input name="value" type="number" min={(value ?? 0) + 1} defaultValue={(value ?? 0) * 2 || 1} required />
+                      <Field label="New value" hint={`Now ${value ?? 0}`} rule={{ ...RequestServiceQuotaIncrease.DesiredValue, min: Math.floor(value ?? 0) + 1 }} member="DesiredValue">
+                        <input name="value" type="number" step="any" min={Math.floor(value ?? 0) + 1} defaultValue={(value ?? 0) * 2 || 1} required />
                       </Field>
                     </ActionForm>
                   </Sheet>
