@@ -1,6 +1,7 @@
 import { ListAcceleratorsCommand } from "@aws-sdk/client-global-accelerator";
 import { ago, load } from "@mws-dashboard/aws";
 import { ActionForm, AwsIcon, Empty, ErrorNotice, Field, List, Page, Pill, Sheet, Status } from "@mws-dashboard/ui";
+import { CreateAccelerator } from "@mws-dashboard/ui/model/global-accelerator";
 import type { Metadata } from "next";
 
 import { ICONS, ga } from "../../lib/clients";
@@ -8,15 +9,19 @@ import { createAccelerator } from "./actions";
 
 export const metadata: Metadata = { title: "Global Accelerator" };
 
+// The model allows any 255 characters; Global Accelerator itself takes 64
+// letters, digits and inner hyphens.
+const NAME = { ...CreateAccelerator.Name, maxLength: 64, pattern: "^[A-Za-z0-9](?:[A-Za-z0-9-]{0,62}[A-Za-z0-9])?$", hint: "Letters, digits and inner hyphens" };
+
 export default async function Accelerators() {
   const list = await load(async () => (await (await ga()).send(new ListAcceleratorsCommand({}))).Accelerators ?? []);
   const create = (
     <Sheet title="Create accelerator" label="Create accelerator" testId="create-accelerator">
       <ActionForm action={createAccelerator} submit="Create" testId="create-accelerator">
-        <Field label="Name">
-          <input name="name" required maxLength={64} autoFocus />
+        <Field label="Name" rule={NAME} generate="name">
+          <input name="name" required autoFocus />
         </Field>
-        <Field label="IP address type">
+        <Field label="IP address type" rule={CreateAccelerator.IpAddressType}>
           <select name="ip" defaultValue="IPV4">
             <option value="IPV4">IPv4</option>
             <option value="DUAL_STACK">Dual-stack</option>
