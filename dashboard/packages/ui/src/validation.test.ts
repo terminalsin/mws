@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 
-import { amount, check, closest, describePattern, fresh, listItems, parseServerIssues, repairJson, repairPolicy, ruleAt, sameMember, valid, type Rule } from "./validation.ts";
+import { amount, check, closest, describePattern, fresh, listItems, parseServerIssues, repairJson, repairPolicy, ruleAt, sameMember, sharedPrefix, valid, type Rule } from "./validation.ts";
 
 const values = (r: Rule, v: string) => check(v, r)?.repairs.map((x) => x.value) ?? [];
 
@@ -394,4 +394,19 @@ test("separators spelled as literals in the pattern are kept and tidied", () => 
   assert.deepEqual(values(rule, "My.Service/API v2"), ["my.service/api-v2"]);
   assert.deepEqual(values(rule, "team//app/"), ["team/app"]);
   assert.deepEqual(values({ ...rule, taken: ["team/app"] }, "team/app"), ["team/app-2"]);
+});
+
+test("enums without a close match offer values that start the same way", () => {
+  const classes = ["db.t4g.medium", "db.t4g.large", "db.r7g.large"];
+  assert.deepEqual(sharedPrefix("db.t4g.micro", classes), ["db.t4g.medium"]);
+  assert.deepEqual(sharedPrefix("cache.m5", classes), []);
+  assert.deepEqual(check("db.t4g.micro", { enum: classes })?.repairs.map((r) => r.value), ["db.t4g.medium"]);
+});
+
+test("'The parameter X is not a valid ...' messages name their member", () => {
+  const [pw] = parseServerIssues("The parameter MasterUserPassword is not a valid password because it is shorter than 8 characters.");
+  assert.equal(pw.member, "MasterUserPassword");
+  assert.equal(pw.message, "Not a valid password: shorter than 8 characters");
+  const [id] = parseServerIssues("The parameter DBInstanceIdentifier is not a valid identifier. Identifiers must begin with a letter; must contain only ASCII letters, digits, and hyphens.");
+  assert.deepEqual([id.member, id.message], ["DBInstanceIdentifier", "Not a valid identifier"]);
 });
