@@ -94,6 +94,9 @@ export interface CidrRule {
 
 export type Format =
   | "json"
+  /** `KEY=value` lines (environment variables); keys are checked against
+   * `rule.key`, whose `taken` lists keys the platform reserves. */
+  | "env"
   | "dnsName"
   | "certificate"
   | "certificates"
@@ -1317,7 +1320,48 @@ export const FORMATS: Record<Format, FormatSpec> = {
       return out;
     },
   },
+  env: {
+    check(value, rule) {
+      const seen = new Set<string>();
+      for (const line of value.split("\n")) {
+        if (!line.trim()) continue;
+        const at = line.indexOf("=");
+        if (at < 0) return `${line.trim()}: missing =value`;
+        const key = line.slice(0, at);
+        if (seen.has(key)) return `${key} is set twice`;
+        seen.add(key);
+        const issue = check(key, { ...ENV_KEY, ...rule.key });
+        if (issue) return issue.code === "taken" ? `${key} is reserved` : `${key || "Empty key"}: ${issue.message}`;
+      }
+      return null;
+    },
+    repair(value, rule) {
+      // Shell and .env habits (export, quotes, `KEY: value`, comments),
+      // keys reshaped to fit, later duplicates winning, reserved keys dropped.
+      const keyRule = { ...ENV_KEY, ...rule.key };
+      const vars = new Map<string, string>();
+      let dropped = false;
+      for (const raw of value.split("\n")) {
+        const line = raw.trim().replace(/^export\s+/, "");
+        if (!line || line.startsWith("#")) continue;
+        const m = line.match(/^([^=:\s]+)\s*[=:]\s*(.*)$/) ?? line.match(/^(\S+)\s+(.*)$/);
+        if (!m) continue;
+        let key = m[1];
+        if (!valid(key, keyRule)) key = key.toUpperCase().replace(/[^A-Za-z0-9_]/g, "_");
+        if (/^[^A-Za-z]/.test(key)) key = `V${key}`;
+        if (!valid(key, keyRule)) {
+          dropped = true;
+          continue;
+        }
+        vars.set(key, m[2].replace(/^(["'])(.*)\1$/, "$2"));
+      }
+      const fixed = [...vars].map(([k, v]) => `${k}=${v}`).join("\n");
+      return fixed ? [{ value: fixed, label: dropped ? "Fix the keys, drop reserved ones" : "Fix the variables", kind: "fix" }] : [];
+    },
+  },
 };
+
+const ENV_KEY: Rule = { pattern: "^[A-Za-z_][A-Za-z0-9_]*$", hint: "Letters, digits and _" };
 
 
 const DOMAIN = /^(?=.{1,253}$)(?:[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\.)+[a-z]{2,63}$/i;

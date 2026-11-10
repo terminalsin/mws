@@ -1,9 +1,17 @@
 import "server-only";
 
+import { ListRolesCommand } from "@aws-sdk/client-iam";
 import { ListFunctionsCommand, ListTagsCommand } from "@aws-sdk/client-lambda";
 import { collect } from "@mws-dashboard/aws";
 
-import { lambda } from "./clients";
+import { iam, lambda } from "./clients";
+
+/** Roles Lambda can assume (their trust policy names lambda.amazonaws.com). */
+export async function lambdaRoles() {
+  const client = await iam();
+  const roles = await collect((Marker) => client.send(new ListRolesCommand({ Marker })), (r) => r.Roles, (r) => (r.IsTruncated ? r.Marker : undefined));
+  return roles.filter((r) => decodeURIComponent(r.AssumeRolePolicyDocument ?? "").includes("lambda.amazonaws.com"));
+}
 
 export async function listFunctions() {
   const client = await lambda();

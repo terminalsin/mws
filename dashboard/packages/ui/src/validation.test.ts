@@ -414,3 +414,13 @@ test("'The parameter X is not a valid ...' messages name their member", () => {
   const [id] = parseServerIssues("The parameter DBInstanceIdentifier is not a valid identifier. Identifiers must begin with a letter; must contain only ASCII letters, digits, and hyphens.");
   assert.deepEqual([id.member, id.message], ["DBInstanceIdentifier", "Not a valid identifier"]);
 });
+
+test("environment variables: keys checked, shell habits repaired", () => {
+  const rule: Rule = { format: "env", key: { pattern: "^[a-zA-Z]([a-zA-Z0-9_])+$", taken: ["AWS_REGION"] } };
+  assert.equal(check("STAGE=prod\n\nTABLE=orders=v2", rule), null);
+  assert.equal(check("AWS_REGION=x", rule)?.message, "AWS_REGION is reserved");
+  assert.equal(check("AB=1\nAB=2", rule)?.message, "AB is set twice");
+  assert.deepEqual(values(rule, 'export log-level="debug"\n# comment\nTABLE: orders'), ["LOG_LEVEL=debug\nTABLE=orders"]);
+  assert.deepEqual(values(rule, "STAGE=prod\nAWS_REGION=us-east-1"), ["STAGE=prod"]);
+  assert.deepEqual(values(rule, "STAGE=a\nSTAGE=b"), ["STAGE=b"]);
+});

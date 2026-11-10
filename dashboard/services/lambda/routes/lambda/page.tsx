@@ -1,30 +1,26 @@
-import { ListRolesCommand } from "@aws-sdk/client-iam";
 import { applications, stage } from "@mws-dashboard/ai";
-import { ago, collect, load } from "@mws-dashboard/aws";
+import { ago, load } from "@mws-dashboard/aws";
 import { ActionForm, AutoPick, AwsIcon, Curated, Empty, ErrorNotice, Field, Page, Pill, Sheet, Status, runtimeIcon } from "@mws-dashboard/ui";
+import { CreateFunction } from "@mws-dashboard/ui/model/lambda";
 import type { Metadata } from "next";
 
-import { ICONS, RUNTIMES, iam } from "../../lib/clients";
-import { listFunctions } from "../../lib/lambda";
+import { ICONS, RUNTIMES } from "../../lib/clients";
+import { lambdaRoles, listFunctions } from "../../lib/lambda";
+import { FUNCTION_NAME } from "../../lib/rules";
 import { createFunction } from "./actions";
 
 export const metadata: Metadata = { title: "Lambda" };
 
-async function lambdaRoles() {
-  const client = await iam();
-  const roles = await collect((Marker) => client.send(new ListRolesCommand({ Marker })), (r) => r.Roles, (r) => (r.IsTruncated ? r.Marker : undefined));
-  return roles.filter((r) => decodeURIComponent(r.AssumeRolePolicyDocument ?? "").includes("lambda.amazonaws.com"));
-}
-
 export default async function Functions() {
   const [functions, roles] = await Promise.all([load(listFunctions), load(lambdaRoles)]);
+  const names = functions.ok ? functions.value.map((f) => f.FunctionName!) : [];
   const create = (
     <Sheet title="New function" label="Create function" testId="create-function">
       <ActionForm action={createFunction} submit="Create" testId="create-function">
-        <Field label="Name">
-          <input name="name" required pattern="[a-zA-Z0-9\-_]+" autoFocus />
+        <Field label="Name" rule={FUNCTION_NAME} taken={names} unique>
+          <input name="name" required autoFocus />
         </Field>
-        <Field label="Runtime">
+        <Field label="Runtime" rule={CreateFunction.Runtime}>
           <select name="runtime" defaultValue="nodejs22.x">
             {RUNTIMES.map((r) => (
               <option key={r}>{r}</option>
