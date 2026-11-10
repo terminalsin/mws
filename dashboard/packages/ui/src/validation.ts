@@ -101,6 +101,7 @@ export type Format =
   /** `KEY=value` lines (environment variables); keys are checked against
    * `rule.key`, whose `taken` lists keys the platform reserves. */
   | "env"
+  | "portList"
   | "jsonish"
   | "dnsName"
   | "certificate"
@@ -336,13 +337,14 @@ function problem(value: string, rule: Rule, options: Options): Omit<Issue, "repa
     if (rule.required && !options.partial) return { code: "required", message: "Required" };
     return null;
   }
-  if (isTaken(value, rule)) return { code: "taken", message: "Already exists" };
+  // Port lists check `taken` as ranges, with a better message (FORMATS.portList).
+  if (rule.format !== "portList" && isTaken(value, rule)) return { code: "taken", message: "Already exists" };
   const reserved = rule.reserved?.find((p) => value.startsWith(p));
   if (reserved) return { code: "reserved", message: `${reserved} is reserved for AWS` };
   if (rule.enum && rule.enum.length > 0 && !rule.enum.includes(value)) {
     return { code: "enum", message: rule.enum.length <= 4 ? `One of ${rule.enum.join(", ")}` : "Not an allowed value" };
   }
-  if (isNumeric(rule) || rule.min !== undefined || rule.max !== undefined) {
+  if (rule.format !== "portList" && (isNumeric(rule) || rule.min !== undefined || rule.max !== undefined)) {
     if (isNumeric(rule) || /^-?\d/.test(value)) {
       const n = Number(value);
       const integer = rule.type === "integer" || rule.format === "port";
@@ -921,7 +923,61 @@ const SERVICE_PORTS: Record<string, number> = {
 };
 
 export const FORMATS: Record<Format, FormatSpec> = {
-  ...CERT_FORMATS,
+  // "80, 443, 8000-8100": ports and ranges; `taken` holds ranges in use.
+  portList: {
+    check(value, rule) {
+      const ranges = portRanges(value);
+      if (!ranges) return "Like 80, 443 or 8000-8100";
+      const [min, max] = [rule.min ?? 1, rule.max ?? 65535];
+      const bad = ranges.find((r) => r.from < min || r.to > max);
+      if (bad) return `Ports are ${min}–${max}`;
+      const reversed = ranges.find((r) => r.from > r.to);
+      if (reversed) return `${showRange(reversed)} is reversed`;
+      for (const [i, r] of ranges.entries()) {
+        const other = ranges.slice(0, i).find((o) => overlaps(o, r));
+        if (other) return `${showRange(r)} overlaps ${showRange(other)}`;
+      }
+      const used = takenRanges(rule);
+      const clash = ranges.find((r) => used.some((u) => overlaps(u, r)));
+      return clash ? `${showRange(clash)} is already in use` : null;
+    },
+    repair(value, rule) {
+      const out: Repair[] = [];
+      const [min, max] = [rule.min ?? 1, rule.max ?? 65535];
+      // Separators people type: "8000:8100", "8000 to 8100", "80 443".
+      const tidy = value
+        .replace(/[\u2013\u2014:]|\.\.|\s+to\s+/gi, "-")
+        .replace(/\s*-\s*/g, "-")
+        .replace(/[\s;,]+/g, ", ")
+        .replace(/^[, ]+|[, ]+$/g, "");
+      const ranges = portRanges(tidy);
+      if (!ranges) return out;
+      const fixed = merge(ranges.map((r) => clampRange({ from: Math.min(r.from, r.to), to: Math.max(r.from, r.to) }, min, max)));
+      const shown = fixed.map(showRange).join(", ");
+      if (shown !== value) out.push({ value: shown, label: "Tidy the ports", kind: "fix" });
+      // Ranges in use: drop them, or move each to the next free block.
+      const used = takenRanges(rule);
+      const free = fixed.filter((r) => !used.some((u) => overlaps(u, r)));
+      if (free.length && free.length < fixed.length) {
+        out.push({ value: free.map(showRange).join(", "), label: "Drop the ports in use", kind: "fix" });
+      }
+      if (free.length < fixed.length) {
+        const placed: PortRange[] = [];
+        const clash = (x: PortRange) => [...used, ...placed].find((u) => overlaps(u, x));
+        for (const r of fixed) {
+          // The usual alternates of the web ports first, then past each clash.
+          const alt = r.from === r.to && clash(r) ? WEB_ALTERNATES[r.from] : undefined;
+          let next = alt ? { from: alt, to: alt } : r;
+          for (let c = clash(next); c && next.to <= max; c = clash(next)) next = { from: c.to + 1, to: c.to + 1 + (r.to - r.from) };
+          if (next.to > max) return out;
+          placed.push(next);
+        }
+        const moved = placed.map(showRange).join(", ");
+        out.push({ value: moved, label: `Use ${moved}`, kind: "suggest" });
+      }
+      return out;
+    },
+  },  ...CERT_FORMATS,
   json: {
     check(value) {
       try {
@@ -1736,6 +1792,41 @@ export function freeBlocks(bits: number, rule: CidrRule | undefined, limit = 2):
       // Skip past what is in use rather than stepping through it.
       else if (hit[1] < bits) s = hit[0] + sizeOf(hit[1]) - sizeOf(bits);
     }
+  }
+  return out;
+}
+
+const WEB_ALTERNATES: Record<number, number> = { 80: 8080, 443: 8443 };
+
+interface PortRange {
+  from: number;
+  to: number;
+}
+
+/** "80, 8000-8100" as ranges, or null when it does not read as one. */
+export function portRanges(value: string): PortRange[] | null {
+  const parts = value.trim().split(/\s*,\s*/);
+  const out: PortRange[] = [];
+  for (const p of parts) {
+    const m = p.match(/^(\d{1,6})(?:-(\d{1,6}))?$/);
+    if (!m) return null;
+    out.push({ from: Number(m[1]), to: Number(m[2] ?? m[1]) });
+  }
+  return out;
+}
+
+const showRange = (r: PortRange) => (r.from === r.to ? `${r.from}` : `${r.from}-${r.to}`);
+const overlaps = (a: PortRange, b: PortRange) => a.from <= b.to && b.from <= a.to;
+const clampRange = (r: PortRange, min: number, max: number) => ({ from: Math.max(min, Math.min(max, r.from)), to: Math.max(min, Math.min(max, r.to)) });
+const takenRanges = (rule: Rule) => (rule.taken ?? []).flatMap((t) => portRanges(t) ?? []);
+
+/** Sorted, with overlapping ranges joined. */
+function merge(ranges: PortRange[]): PortRange[] {
+  const out: PortRange[] = [];
+  for (const r of [...ranges].sort((a, b) => a.from - b.from)) {
+    const last = out.at(-1);
+    if (last && r.from <= last.to) last.to = Math.max(last.to, r.to);
+    else out.push({ ...r });
   }
   return out;
 }

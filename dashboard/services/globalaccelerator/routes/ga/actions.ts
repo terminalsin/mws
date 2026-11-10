@@ -9,7 +9,8 @@ import {
   DeleteListenerCommand,
   UpdateAcceleratorCommand,
 } from "@aws-sdk/client-global-accelerator";
-import { act, required, text, type ActionResult } from "@mws-dashboard/aws";
+import { act, FieldError, required, text, type ActionResult } from "@mws-dashboard/aws";
+import { portRanges } from "@mws-dashboard/ui/validation";
 import { redirect } from "next/navigation";
 
 import { ga } from "../../lib/clients";
@@ -27,7 +28,7 @@ export async function createAccelerator(_: ActionResult | null, form: FormData) 
       }),
     );
     redirect(href(out.Accelerator!.AcceleratorArn!));
-  });
+  }, { fields: { Name: "name", InvalidArgumentException: "name" } });
 }
 
 export async function setEnabled(arn: string, Enabled: boolean) {
@@ -46,17 +47,18 @@ export async function deleteAccelerator(arn: string) {
 
 export async function addListener(arn: string, _: ActionResult | null, form: FormData) {
   return act(async () => {
-    const [from, to] = required(form, "ports", "Ports").split("-").map(Number);
+    const ranges = portRanges(required(form, "ports", "Ports"));
+    if (!ranges) throw new FieldError("ports", "Like 80, 443 or 8000-8100", "format");
     await (await ga()).send(
       new CreateListenerCommand({
         AcceleratorArn: arn,
         Protocol: (text(form, "protocol") || "TCP") as "TCP" | "UDP",
-        PortRanges: [{ FromPort: from, ToPort: to || from }],
+        PortRanges: ranges.map((r) => ({ FromPort: r.from, ToPort: r.to })),
         IdempotencyToken: `console-${Date.now()}`,
       }),
     );
     return "Listener added";
-  }, "/ga/accelerator");
+  }, { revalidate: ["/ga/accelerator"], fields: { PortRanges: "ports", InvalidPortRangeException: "ports", LimitExceededException: "ports" } });
 }
 
 export async function deleteListener(arn: string) {
@@ -78,7 +80,10 @@ export async function addEndpointGroup(listener: string, _: ActionResult | null,
       }),
     );
     return "Endpoint group added";
-  }, "/ga/accelerator");
+  }, {
+    revalidate: ["/ga/accelerator"],
+    fields: { EndpointGroupRegion: "region", EndpointGroupAlreadyExistsException: "region", EndpointId: "endpoint", InvalidArgumentException: "endpoint", EndpointNotFoundException: "endpoint" },
+  });
 }
 
 export async function deleteEndpointGroup(arn: string) {

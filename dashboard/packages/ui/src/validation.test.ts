@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import { test } from "node:test";
 
 import { CONFLICT, amount, check, closest, describePattern, fresh, listItems, parseServerIssues, repairJson, repairPolicy, ruleAt, sameMember, sharedPrefix, valid, type Rule } from "./validation.ts";
+import { portRanges } from "./validation.ts";
 
 const values = (r: Rule, v: string) => check(v, r)?.repairs.map((x) => x.value) ?? [];
 
@@ -222,6 +223,33 @@ test("member paths match across protocols", () => {
   assert.ok(sameMember("tags.1.member.key", "Tags.Key"));
   assert.ok(!sameMember("roleName", "path"));
   assert.equal(ruleAt({ VpcConfig: { fields: { SubnetIds: { type: "list", item: { maxLength: 9 } } } } }, "vpcConfig.subnetIds.1")?.maxLength, 9);
+});
+
+test("port lists: tidy, reversed, overlaps and ports in use", () => {
+  const rule: Rule = { format: "portList", required: true, taken: ["80", "8000-8100"] };
+  assert.deepEqual(portRanges("80, 443-445"), [{ from: 80, to: 80 }, { from: 443, to: 445 }]);
+  assert.equal(check("443", rule), null);
+  assert.equal(check("9000-9001, 443", rule), null);
+
+  const typed = check("8200 to 8300; 9000:9010", rule)!;
+  assert.equal(typed.code, "format");
+  assert.equal(typed.repairs[0].value, "8200-8300, 9000-9010");
+
+  const reversed = check("9100-9000", rule)!;
+  assert.equal(reversed.message, "9100-9000 is reversed");
+  assert.equal(reversed.repairs[0].value, "9000-9100");
+
+  assert.equal(check("70000", rule)!.repairs[0].value, "65535");
+
+  const used = check("80", rule)!;
+  assert.equal(used.message, "80 is already in use");
+  // 8080 first, but that is inside 8000-8100 too.
+  assert.deepEqual(used.repairs.map((r) => r.value), ["8101"]);
+  assert.deepEqual(check("443", { ...rule, taken: ["443"] })!.repairs.map((r) => r.value), ["8443"]);
+
+  const some = check("443, 8050-8060", rule)!;
+  assert.deepEqual(some.repairs.map((r) => r.value), ["443", "443, 8101-8111"]);
+  for (const r of some.repairs) assert.ok(valid(r.value, rule), r.value);
 });
 
 test("fresh values fit the rule", () => {
