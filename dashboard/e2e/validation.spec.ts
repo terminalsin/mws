@@ -65,6 +65,7 @@ test("validation: taken names and server conflicts suggest the next free name", 
   await sqs.send(new CreateQueueCommand({ QueueName: later, Attributes: { DelaySeconds: "5" } }));
   await name.fill(later);
   // A standard dead-letter queue: a FIFO one is rejected for a standard queue.
+  await page.locator("dialog[open]").locator("summary", { hasText: "More" }).click();
   const dlq = page.locator("dialog[open]").locator('select[name="dlq"]');
   const standard = (await dlq.locator("option").allTextContents()).find((t) => t !== "None" && !t.endsWith(".fifo"))!;
   await dlq.selectOption({ label: standard });

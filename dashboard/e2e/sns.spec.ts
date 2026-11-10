@@ -151,7 +151,9 @@ test("SNS: confirm a pending email subscription from the console", async ({ page
   await page.goto(`/sns/topic?arn=${encodeURIComponent(topicArn)}`);
   await expect(row(page, email)).toContainText("pending");
   await rowAction(page, email, `Confirm ${email}`);
-  await expect(row(page, email)).toContainText("confirmed");
+  // Confirmed is the normal state: only pending ones are marked.
+  await expect(row(page, email)).toContainText(`Unsubscribe ${email}`);
+  await expect(row(page, email)).not.toContainText("pending");
   const subs = (await sns.send(new ListSubscriptionsByTopicCommand({ TopicArn: topicArn }))).Subscriptions ?? [];
   expect(subs[0].SubscriptionArn).not.toBe("PendingConfirmation");
 });
