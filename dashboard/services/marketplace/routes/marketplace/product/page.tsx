@@ -4,6 +4,7 @@ import { Building2, Gauge, KeyRound, Tag, Trash2, UserMinus, UserPlus, Users } f
 import type { Metadata } from "next";
 
 import { ICONS } from "../../../lib/clients";
+import { ACCOUNT, QUANTITY } from "../../../lib/rules";
 import { product, PRODUCT_ICONS, records, subscriptions, valueText } from "../../../lib/marketplace";
 import { deleteProduct, meter, newToken, subscribe, unsubscribe } from "../actions";
 import { Usage } from "../usage";
@@ -38,8 +39,8 @@ export default async function ProductPage({ searchParams }: Props) {
         <>
           <Sheet title="Subscribe a buyer" label="Add subscriber" icon={<UserPlus size={15} />} testId="subscribe">
             <ActionForm action={subscribe.bind(null, p)} submit="Subscribe" testId="subscribe">
-              <Field label="Buyer account">
-                <input name="account" required autoFocus pattern="\d{12}" placeholder="111122223333" />
+              <Field label="Buyer account" rule={ACCOUNT} known={[...new Set(subs.map((s) => s.customerAWSAccountId))]}>
+                <input name="account" required autoFocus inputMode="numeric" placeholder="111122223333" />
               </Field>
               {p.dimensions.map((d) => (
                 <Field key={d.name} label={d.name}>
@@ -68,8 +69,8 @@ export default async function ProductPage({ searchParams }: Props) {
                       ))}
                     </select>
                   </Field>
-                  <Field label="Quantity">
-                    <input name="quantity" type="number" min={0} defaultValue={1} />
+                  <Field label="Quantity" rule={QUANTITY}>
+                    <input name="quantity" inputMode="numeric" defaultValue={1} />
                   </Field>
                 </div>
               </ActionForm>

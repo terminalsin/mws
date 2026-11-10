@@ -75,7 +75,7 @@ test("Load balancers: fields flag problems in place and offer repairs", async ({
   s = await sheet(page, "create-load-balancer");
   await s.control("name").fill(`internal-${lb}`);
   await s.control("name").blur();
-  await expect(s.field("name")).toHaveAttribute("data-invalid", "pattern");
+  await expect(s.field("name")).toHaveAttribute("data-invalid", "reserved");
   await s.field("name").getByRole("button", { name: /Drop internal-/ }).click();
   await expect(s.control("name")).toHaveValue(lb);
   await expect(s.field("name")).not.toHaveAttribute("data-invalid");

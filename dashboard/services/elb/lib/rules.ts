@@ -9,8 +9,10 @@ const NAME = "[A-Za-z0-9](?:[A-Za-z0-9-]{0,30}[A-Za-z0-9])?";
 export const LB_NAME: Rule = {
   ...CreateLoadBalancer.Name,
   maxLength: 32,
-  pattern: `^(?!internal-)${NAME}$`,
-  hint: "Letters, digits and inner hyphens, not internal-…",
+  pattern: `^${NAME}$`,
+  // MWS, like AWS, keeps internal- for internal load balancers' DNS names.
+  reserved: ["internal-"],
+  hint: "Letters, digits and inner hyphens",
   generate: "name",
 };
 

@@ -4,7 +4,8 @@ import { ActionForm, AwsIcon, Curated, Empty, ErrorNotice, Field, Metric, Metric
 import type { Metadata } from "next";
 
 import { ICONS } from "../../lib/clients";
-import { STATE_TONE, listKeys } from "../../lib/kms";
+import { STATE_TONE, listAliases, listKeys } from "../../lib/kms";
+import { ALIAS, DESCRIPTION, takenAliases } from "../../lib/rules";
 import { createKey } from "./actions";
 
 export const metadata: Metadata = { title: "KMS" };
@@ -21,14 +22,18 @@ type Props = { searchParams: Promise<{ tab?: string }> };
 
 export default async function Keys({ searchParams }: Props) {
   const { tab = "customer" } = await searchParams;
-  const keys = await load(listKeys);
+  const [keys, aliases] = await Promise.all([load(listKeys), load(listAliases)]);
+  const taken = takenAliases(aliases.ok ? aliases.value.map((a) => a.AliasName!) : []);
   const create = (
     <Sheet title="New key" label="Create key" testId="create-key">
       <ActionForm action={createKey} submit="Create" testId="create-key">
-        <Field label="Alias">
+        <Field label="Alias" rule={ALIAS} taken={taken} unique>
           <input name="alias" placeholder="alias/app-data" autoFocus />
         </Field>
-        <Field label="Key spec">
+        <Field label="Description" rule={DESCRIPTION}>
+          <input name="description" />
+        </Field>
+        <Field label="Key spec" member="KeySpec">
           <select name="spec" defaultValue="SYMMETRIC_DEFAULT">
             {["SYMMETRIC_DEFAULT", "RSA_2048", "RSA_3072", "RSA_4096", "ECC_NIST_P256", "ECC_NIST_P384", "ECC_NIST_P521", "ECC_SECG_P256K1", "HMAC_224", "HMAC_256", "HMAC_384", "HMAC_512"].map((s) => (
               <option key={s}>{s}</option>

@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 
-import { check, closest, describePattern, fresh, parseServerIssues, repairJson, repairPolicy, ruleAt, sameMember, valid, type Rule } from "./validation.ts";
+import { check, closest, describePattern, fresh, listItems, parseServerIssues, repairJson, repairPolicy, ruleAt, sameMember, valid, type Rule } from "./validation.ts";
 
 const values = (r: Rule, v: string) => check(v, r)?.repairs.map((x) => x.value) ?? [];
 
@@ -118,10 +118,41 @@ test("URL schemes follow the page's pattern", () => {
   assert.deepEqual(values(https, "http://example.com/hook"), ["https://example.com/hook"]);
 });
 
+test("local URLs get http://, key=value lists are rewritten", () => {
+  assert.deepEqual(values({ format: "url" }, "127.0.0.1:11434/v1"), ["http://127.0.0.1:11434/v1"]);
+  assert.deepEqual(values({ format: "url" }, "localhost:8080"), ["http://localhost:8080"]);
+  assert.deepEqual(values({ format: "url" }, "api.openai.com/v1"), ["https://api.openai.com/v1"]);
+  assert.equal(check("x-team=ml\nx-env=dev", { format: "pairs" }), null);
+  assert.equal(check("x-team: ml", { format: "pairs" })?.message, '"x-team: ml" is not key=value');
+  assert.deepEqual(values({ format: "pairs" }, "x-team: ml\nx-env dev"), ["x-team=ml\nx-env=dev"]);
+  assert.deepEqual(values({ format: "pairs" }, '{"x-team": "ml", "n": 2,}'), ["x-team=ml\nn=2"]);
+});
+
 test("JSON repair handles hand-written JSON", () => {
   assert.equal(repairJson("{'Version': '2012-10-17', Statement: [],}"), '{\n  "Version": "2012-10-17",\n  "Statement": []\n}');
   assert.equal(repairJson('"a": 1'), '{\n  "a": 1\n}');
   assert.equal(repairJson("not json at all"), null);
+});
+
+test("lists check each item and drop repeats", () => {
+  const rule: Rule = { format: "list", item: { pattern: "^[A-Za-z0-9_.-]+$", maxLength: 10 } };
+  assert.deepEqual(listItems(" users, requests  hosts,"), ["users", "requests", "hosts"]);
+  assert.equal(check("users, requests", rule), null);
+  const twice = check("users requests users", rule)!;
+  assert.equal(twice.message, "users is listed twice");
+  assert.deepEqual(twice.repairs.map((r) => [r.value, r.label]), [["users, requests", "Remove the second users"]]);
+  const bad = check("users api$calls", rule)!;
+  assert.match(bad.message, /^api\$calls: /);
+  assert.deepEqual(bad.repairs.map((r) => r.value), ["users, api-calls"]);
+  // Fixing one item must not collide with another.
+  assert.deepEqual(values(rule, "a-b a!b"), ["a-b"]);
+});
+
+test("account ids are generated as 12 digits", () => {
+  const rule: Rule = { required: true, pattern: "^\\d{12}$", generate: "account" };
+  const repair = check("", rule)!.repairs[0];
+  assert.equal(repair.kind, "generate");
+  assert.match(repair.value, /^[1-9]\d{11}$/);
 });
 
 test("patterns read as text", () => {
@@ -246,9 +277,75 @@ test("S3 object locations are rewritten to s3:// URLs", () => {
   assert.deepEqual(values({ ...rule, known: ["s3://lists/trusted.txt", "s3://other/x.csv"] }, "s3://lists"), ["s3://lists/trusted.txt"]);
 });
 
-test("taken numbers get the next free one, forbidden prefixes are dropped", () => {
+test("reserved prefixes are dropped", () => {
+  const rule: Rule = { pattern: "^[a-zA-Z0-9:/_-]+$", reserved: ["alias/aws/", "aws/"], generate: "name" };
+  const issue = check("alias/aws/orders", rule)!;
+  assert.equal(issue.code, "reserved");
+  assert.equal(issue.repairs[0].value, "orders");
+  assert.equal(check("aws-orders", rule), null);
+});
+
+test("tags take key=value lines", () => {
+  const rule: Rule = { format: "tags" };
+  assert.equal(check("team=payments\n\nenv=", rule), null);
+  assert.equal(check("team: payments", rule)?.message, "Line 1: key=value");
+  assert.deepEqual(values(rule, "team: payments\nenv prod\nowner\nenv=dev"), ["team=payments\nowner=\nenv=dev"]);
+  assert.equal(check("a=1\na=2", rule)?.message, "Line 2: a repeats");
+  assert.deepEqual(values(rule, "a=1\na=2"), ["a=2"]);
+  assert.deepEqual(values(rule, "aws:team=x"), ["team=x"]);
+});
+
+test("branch names follow git's ref rules and are repaired", () => {
+  const branch: Rule = { format: "branch" };
+  for (const ok of ["main", "feature/login", "release-1.2", "fix_x"]) assert.equal(check(ok, branch), null, ok);
+  assert.equal(check("my feature", branch)?.message, "No spaces");
+  assert.deepEqual(values(branch, "my feature"), ["my-feature"]);
+  assert.deepEqual(values(branch, "feat~1..x"), ["feat-1.x"]);
+  assert.deepEqual(values(branch, "-wip/.hidden/"), ["wip/hidden"]);
+  assert.deepEqual(values(branch, "topic.lock"), ["topic"]);
+});
+
+test("URLs: SSH remotes become HTTPS, scheme patterns get their scheme", () => {
+  assert.deepEqual(values({ format: "url" }, "git@github.com:org/site.git"), ["https://github.com/org/site.git"]);
+  const source: Rule = { pattern: "^(s3|https|http)://" };
+  assert.deepEqual(values(source, "my-bucket/site.zip"), ["s3://my-bucket/site.zip"]);
+  assert.deepEqual(values(source, "example.com/site.zip"), ["https://example.com/site.zip"]);
+  assert.deepEqual(values(source, "ftp://x"), []);
+});
+
+test("yaml documents: JSON is repaired, tab indentation is replaced", () => {
+  const rule: Rule = { format: "yaml" };
+  assert.equal(check("Resources:\n  Q:\n    Type: AWS::SQS::Queue\n", rule), null);
+  assert.equal(check('{"Resources": {}}', rule), null);
+  assert.deepEqual(values(rule, "Resources:\n\tQ:\n\t\tType: AWS::SQS::Queue"), ["Resources:\n  Q:\n    Type: AWS::SQS::Queue"]);
+  assert.equal(check("a:\n\tb: 1", rule)?.message, "Tab indenting line 2");
+  assert.deepEqual(values(rule, "{'Resources': {},}"), ['{\n  "Resources": {}\n}']);
+});
+
+test("key=value lines: other notations are rewritten, duplicates flagged", () => {
+  const rule: Rule = { format: "keyvalue" };
+  assert.equal(check("Env=prod\n\nSize = 2", rule), null);
+  assert.equal(check("Url=https://x?a=b", rule), null);
+  assert.deepEqual(values(rule, "Env: prod\nSize: 2"), ["Env=prod\nSize=2"]);
+  assert.deepEqual(values(rule, "Env: prod, Size: 2"), ["Env=prod\nSize=2"]);
+  assert.deepEqual(values(rule, '{"Env": "prod", "Size": 2}'), ["Env=prod\nSize=2"]);
+  assert.deepEqual(values(rule, 'export ENV="prod"'), ["ENV=prod"]);
+  assert.equal(check("Env=dev\nEnv=prod", rule)?.message, "Env appears twice");
+  assert.deepEqual(values(rule, "Env=dev\nEnv=prod"), ["Env=prod"]);
+  assert.deepEqual(values(rule, "just words"), []);
+});
+
+test("directories are made absolute, cleaned and cut to the allowed depth", () => {
+  // EFS access points: up to 4 levels, no trailing slash, no leading dots.
+  const efs: Rule = { format: "dir", maxLength: 100, pattern: "^(\\/|(\\/(?!\\.)+[^$#<>;`|&?{}^*/\\n]+){1,4})$" };
+  assert.equal(check("app", efs)?.code, "format");
+  assert.deepEqual(values(efs, "app"), ["/app"]);
+  assert.deepEqual(values(efs, "/srv//my data/"), ["/srv/my-data"]);
+  assert.deepEqual(values(efs, "/.cache"), ["/cache"]);
+  assert.deepEqual(values(efs, "/a/b/c/d/e"), ["/a/b/c/d"]);
+});
+
+test("taken numbers get the next free one, required prefixes are added", () => {
   assert.deepEqual(values({ type: "integer", min: 1, max: 65535, taken: ["80", "81"] }, "80"), ["82"]);
-  const lb: Rule = { pattern: "^(?!internal-)[A-Za-z0-9](?:[A-Za-z0-9-]{0,30}[A-Za-z0-9])?$" };
-  assert.deepEqual(values(lb, "internal-my api"), ["my-api"]);
   assert.deepEqual(values({ pattern: "^/[\\S]*$" }, "health"), ["/health"]);
 });

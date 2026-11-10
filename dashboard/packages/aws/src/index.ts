@@ -8,7 +8,7 @@ import "server-only";
 import { GetCallerIdentityCommand, STSClient } from "@aws-sdk/client-sts";
 import type { ActionResult, FrameInfo } from "@mws-dashboard/ui";
 import { REGION_COOKIE } from "@mws-dashboard/ui/constants";
-import { CONFLICT, memberPath, parseServerIssues, type FieldIssue, type IssueCode, type Rule } from "@mws-dashboard/ui/validation";
+import { CONFLICT, memberPath, parseServerIssues, type FieldIssue, type IssueCode, type Repair, type Rule } from "@mws-dashboard/ui/validation";
 import { revalidatePath } from "next/cache";
 import { cookies } from "next/headers";
 import { unstable_rethrow } from "next/navigation";
@@ -81,6 +81,8 @@ export class FieldError extends Error {
     message: string,
     readonly code: IssueCode = "server",
     readonly rule?: Rule,
+    /** Repairs only the action can work out (from what the value refers to). */
+    readonly repairs?: Repair[],
   ) {
     super(message);
     this.name = "FieldError";
@@ -91,7 +93,7 @@ export interface ActOptions {
   /** Paths to revalidate after success. */
   revalidate?: string[];
   /** Form field names by API member (`QueueName: "name"`) or by error code
-   * (`QueueNameExists: "name"`, `NoSuchEntity: "role"`), for errors that
+   * (`QueueNameExists: "name"`, `NoSuchEntityException: "role"`, as the SDK names it), for errors that
    * name a member the form calls differently, or name none. */
   fields?: Record<string, string>;
 }
@@ -123,7 +125,8 @@ export async function act(
  * can repair the value), an "already exists" error (lands on the form's
  * `unique` field), or anything `fields` maps by member or error code. */
 export function fieldIssues(e: unknown, fields: Record<string, string> = {}): FieldIssue[] {
-  if (e instanceof FieldError) return [{ field: e.field, code: e.code, message: e.message, ...(e.rule ? { rule: e.rule } : {}) }];
+  if (e instanceof FieldError)
+    return [{ field: e.field, code: e.code, message: e.message, ...(e.rule ? { rule: e.rule } : {}), ...(e.repairs?.length ? { repairs: e.repairs } : {}) }];
   if (!(e instanceof Error)) return [];
   const byMember = (member: string) => {
     const path = memberPath(member).join(".");

@@ -33,7 +33,7 @@ export async function createFileSystem(_: ActionResult | null, form: FormData) {
       }
     }
     redirect(`/efs/fs?id=${out.FileSystemId}`);
-  });
+  }, { fields: { "Tags.Value": "name", ThroughputMode: "throughput", PerformanceMode: "performance", SubnetId: "vpc", SubnetNotFound: "vpc", NoFreeAddressesInSubnet: "vpc", MountTargetConflict: "vpc", UnsupportedAvailabilityZone: "vpc" } });
 }
 
 export async function deleteFileSystem(id: string, targets: string[]) {
@@ -58,7 +58,7 @@ export async function createAccessPoint(id: string, _: ActionResult | null, form
       }),
     );
     return "Access point created";
-  }, "/efs/fs");
+  }, { revalidate: ["/efs/fs"], fields: { "Tags.Value": "name", "RootDirectory.Path": "path", "PosixUser.Uid": "uid", "PosixUser.Gid": "uid" } });
 }
 
 export async function deleteAccessPoint(id: string) {

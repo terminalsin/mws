@@ -1,6 +1,8 @@
 import { DescribeAccessPointsCommand, DescribeFileSystemsCommand, DescribeMountTargetsCommand } from "@aws-sdk/client-efs";
 import { bytes, load, region } from "@mws-dashboard/aws";
-import { ActionForm, AwsIcon, CodeBlock, Empty, ErrorNotice, Field, List, Page, Section, Sheet, Specs, Status, Tags } from "@mws-dashboard/ui";
+import { ActionForm, AwsIcon, CodeBlock, Empty, ErrorNotice, Field, List, Page, Section, Sheet, Specs, Status, Tags, type Rule } from "@mws-dashboard/ui";
+import { CreateAccessPoint as Rules } from "@mws-dashboard/ui/model/efs";
+import { ruleAt } from "@mws-dashboard/ui/validation";
 import { Gauge, HardDrive, KeyRound, Lock, Trash2 } from "lucide-react";
 import type { Metadata } from "next";
 
@@ -8,6 +10,10 @@ import { ICONS, STATUS_TONE, efs } from "../../../lib/clients";
 import { createAccessPoint, deleteAccessPoint, deleteFileSystem } from "../actions";
 
 export const metadata: Metadata = { title: "File system" };
+
+const NAME: Rule = { ...ruleAt(Rules, "Tags.Value"), required: false, hint: "Letters, digits, spaces and _ . : / = + - @" };
+const PATH: Rule = { ...ruleAt(Rules, "RootDirectory.Path"), format: "dir", hint: "An absolute path, up to 4 levels" };
+const UID: Rule = { ...ruleAt(Rules, "PosixUser.Uid"), default: 1000 };
 
 type Props = { searchParams: Promise<{ id?: string }> };
 
@@ -42,14 +48,14 @@ export default async function FileSystem({ searchParams }: Props) {
         <>
           <Sheet title="Create access point" label="Create access point" icon={<KeyRound size={16} />} testId="create-access-point">
             <ActionForm action={createAccessPoint.bind(null, id)} submit="Create" testId="create-access-point">
-              <Field label="Name">
+              <Field label="Name" rule={NAME} member="Tags.Value">
                 <input name="name" autoFocus />
               </Field>
               <div className="form-row">
-                <Field label="Root directory">
+                <Field label="Root directory" rule={PATH} member="RootDirectory.Path">
                   <input name="path" required defaultValue="/app" />
                 </Field>
-                <Field label="POSIX user id">
+                <Field label="POSIX user id" rule={UID} member="PosixUser.Uid">
                   <input name="uid" type="number" min={0} defaultValue={1000} />
                 </Field>
               </div>

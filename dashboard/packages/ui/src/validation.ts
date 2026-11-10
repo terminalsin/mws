@@ -54,6 +54,9 @@ export interface Rule {
   /** `taken` ignores case (the service treats `Alice` and `alice` as the
    * same name, as Identity Store does). */
   takenIgnoreCase?: boolean;
+  /** Prefixes AWS keeps for itself (`alias/aws/`, `aws:`): a value starting
+   * with one is offered without it. */
+  reserved?: string[];
   /** Values the field usually refers to (existing roles, keys, queues):
    * close ones are offered when a value is rejected as unknown. */
   known?: string[];
@@ -73,6 +76,9 @@ export type Rules = Record<string, Rule>;
 
 export type Format =
   | "json"
+  | "list"
+  | "yaml"
+  | "keyvalue"
   | "policy"
   | "path"
   | "arn"
@@ -89,12 +95,16 @@ export type Format =
   | "port"
   | "country"
   | "csr"
-  | "phone";
+  | "phone"
+  | "pairs"
+  | "tags"
+  | "branch"
+  | "dir";
 
 /** "name": a readable resource name; "token": random letters and digits;
  * "password": meets the usual complexity rules; or a fixed prefix/suffix
  * around a readable name. */
-export type Generate = "name" | "token" | "password" | "uuid" | { prefix?: string; suffix?: string; kind?: "name" | "token" };
+export type Generate = "name" | "token" | "password" | "uuid" | "account" | { prefix?: string; suffix?: string; kind?: "name" | "token" };
 
 export type IssueCode =
   | "required"
@@ -106,6 +116,7 @@ export type IssueCode =
   | "type"
   | "format"
   | "taken"
+  | "reserved"
   | "missing"
   | "server";
 
@@ -135,6 +146,9 @@ export interface FieldIssue {
   rule?: Rule;
   code: IssueCode;
   message: string;
+  /** Repairs the action worked out itself (it knows what the field's value
+   * refers to); offered as they are. */
+  repairs?: Repair[];
 }
 
 // ---------------------------------------------------------------------------
@@ -233,6 +247,8 @@ function problem(value: string, rule: Rule, options: Options): Omit<Issue, "repa
     return null;
   }
   if (isTaken(value, rule)) return { code: "taken", message: "Already exists" };
+  const reserved = rule.reserved?.find((p) => value.startsWith(p));
+  if (reserved) return { code: "reserved", message: `${reserved} is reserved for AWS` };
   if (rule.enum && rule.enum.length > 0 && !rule.enum.includes(value)) {
     return { code: "enum", message: rule.enum.length <= 4 ? `One of ${rule.enum.join(", ")}` : "Not an allowed value" };
   }
@@ -288,6 +304,12 @@ export function repairs(value: string, rule: Rule, code: IssueCode): Repair[] {
       offer(nextNumber(value, rule) ?? nextFree(value, rule));
       offer(fresh(rule));
       break;
+    case "reserved": {
+      const prefix = rule.reserved!.filter((p) => value.startsWith(p)).sort((a, b) => b.length - a.length)[0];
+      offer({ value: value.slice(prefix.length), label: `Drop ${prefix}`, kind: "fix" });
+      offer(fresh(rule));
+      break;
+    }
     case "enum": {
       const near = nearestNumbers(value, rule.enum ?? []);
       if (near) for (const s of near) offer({ value: s, label: `Use ${s}`, kind: "fix" });
@@ -301,7 +323,9 @@ export function repairs(value: string, rule: Rule, code: IssueCode): Repair[] {
     case "format": {
       const format = rule.format && FORMATS[rule.format];
       for (const r of format?.repair?.(value, rule) ?? []) offer(r);
-      for (const r of reshape(value, rule).slice(0, 1)) offer(r);
+      // Multi-line values (JSON, tags) do not reshape into anything useful,
+      // and a list's separators are meaningful (cleanups would join its items).
+      if (out.length === 0 && !value.includes("\n") && rule.format !== "list") for (const r of reshape(value, rule).slice(0, 1)) offer(r);
       break;
     }
     case "tooLong":
@@ -372,16 +396,13 @@ function reshape(value: string, rule: Rule): Repair[] {
     seen.add(v);
     if (valid(v, rule)) out.push({ value: v, label, kind: "fix" });
   };
-  // A forbidden beginning (`^(?!internal-)`) is the problem: drop it.
-  for (const banned of forbiddenPrefixes(rule.pattern)) {
-    const v = value.trim();
-    if (v.startsWith(banned)) push(`Drop ${banned}`, clean(v.slice(banned.length), allowed, sep, false));
-  }
   for (const [label, step] of steps) {
     const v = step(value);
     push(label, v);
     if (max !== undefined && length(v) > max) push(`Shorten to ${max} characters`, cut(v, max, sep));
   }
+  // A URL scheme the pattern starts with (`^(s3|https|http)://`).
+  for (const scheme of schemes(rule.pattern, value)) if (!/^[a-z][\w+.-]*:\/\//i.test(value.trim())) push(`Add ${scheme}://`, `${scheme}://${value.trim().replace(/^\/+/, "")}`);
   // A required literal ending (a FIFO queue's ".fifo") or beginning.
   const literal = literalEnds(rule.pattern);
   for (const v of [...seen]) {
@@ -404,10 +425,6 @@ function reshape(value: string, rule: Rule): Repair[] {
   return out;
 }
 
-/** Literal beginnings a pattern rules out with a leading negative lookahead. */
-function forbiddenPrefixes(pattern: string | undefined): string[] {
-  return [...(pattern ?? "").matchAll(/(?:^|\|)\^\(\?!((?:\\.|[A-Za-z0-9_\-/:])+)\)/g)].map((m) => m[1].replace(/\\(.)/g, "$1"));
-}
 
 function clean(value: string, allowed: RegExp | null, sep: string, lower: boolean): string {
   let v = value.normalize("NFKD").replace(/[\u0300-\u036f]/g, "").trim();
@@ -449,6 +466,15 @@ export function allowedChars(rule: Rule): RegExp | null {
   // the next class's first character would read as a range.
   const union = `^(?:${[...new Set(classes)].map((c) => `[${c}]`).join("|")})$`;
   return regex(union);
+}
+
+function schemes(pattern: string | undefined, value: string): string[] {
+  const m = pattern?.match(/^\^\(?((?:[a-z][a-z0-9+.-]*\|)*[a-z][a-z0-9+.-]*)\)?:(?:\\\/|\/){2}/i);
+  if (!m) return [];
+  // A host name (example.com/...) reads as https first; anything else
+  // (bucket/key) keeps the pattern's order.
+  const web = /^[\w-]+(\.[\w-]+)*\.[a-z]{2,}(:\d+)?(\/|$)/i.test(value.trim());
+  return m[1].split("|").sort((a, b) => (web ? Number(b === "https") - Number(a === "https") : 0));
 }
 
 function literalEnds(pattern: string | undefined): { prefix?: string; suffix?: string } {
@@ -596,6 +622,7 @@ export function fresh(rule: Rule): Repair | null {
     let v: string;
     if (recipe === "uuid") v = globalThis.crypto?.randomUUID?.() ?? `${token(8, "0123456789abcdef")}-${token(4, "0123456789abcdef")}-4${token(3, "0123456789abcdef")}-a${token(3, "0123456789abcdef")}-${token(12, "0123456789abcdef")}`;
     else if (recipe === "password") v = password(rule);
+    else if (recipe === "account") v = token(1, "123456789") + token(11, "0123456789");
     else if (recipe === "token") v = token(Math.min(rule.maxLength ?? 16, Math.max(rule.minLength ?? 16, 16)));
     else {
       const spec = typeof recipe === "object" ? recipe : {};
@@ -731,6 +758,50 @@ export const FORMATS: Record<Format, FormatSpec> = {
       return [{ value: v, label: "Fix the path", kind: "fix" }];
     },
   },
+  yaml: {
+    check(value, rule) {
+      if (/^\s*[{[]/.test(value)) return FORMATS.json.check(value, rule);
+      const tab = value.split("\n").findIndex((l) => /^ *\t/.test(l));
+      return tab >= 0 ? `Tab indenting line ${tab + 1}` : null;
+    },
+    repair(value, rule) {
+      if (/^\s*[{[]/.test(value)) return FORMATS.json.repair!(value, rule);
+      const fixed = value.replace(/^[ \t]+/gm, (indent) => indent.replace(/\t/g, "  "));
+      return [{ value: fixed, label: "Indent with spaces", kind: "fix" }];
+    },
+  },
+  keyvalue: {
+    check(value) {
+      const lines = value.split("\n").map((l) => l.trim());
+      const bad = lines.findIndex((l) => l && !/^[^=\s]+\s*=/.test(l));
+      if (bad >= 0) return `Line ${bad + 1}: Key=value`;
+      const keys = lines.filter(Boolean).map((l) => l.slice(0, l.indexOf("=")).trim());
+      const twice = keys.find((k, i) => keys.indexOf(k) !== i);
+      return twice ? `${twice} appears twice` : null;
+    },
+    repair(value) {
+      const pairs: [string, string][] = [];
+      let object: unknown = null;
+      try {
+        object = JSON.parse(repairJson(value) ?? "null");
+      } catch {
+        object = null;
+      }
+      if (object && typeof object === "object" && !Array.isArray(object)) {
+        for (const [k, v] of Object.entries(object)) pairs.push([k, typeof v === "string" ? v : JSON.stringify(v)]);
+      } else {
+        // `Key: value`, `Key = value`, `export KEY="v"`, or pairs on one line.
+        for (const part of value.split(/\n|[,;](?=\s*[\w.-]+\s*[=:])/)) {
+          const m = part.trim().replace(/^export\s+/, "").match(/^["']?([^\s=:"']+)["']?\s*[=:]\s*(.*)$/);
+          if (m) pairs.push([m[1], m[2].trim().replace(/^(["'])(.*)\1$/, "$2")]);
+          else if (part.trim()) return [];
+        }
+      }
+      // A repeated key keeps its last value, as the API would.
+      const merged = new Map(pairs);
+      return merged.size ? [{ value: [...merged].map(([k, v]) => `${k}=${v}`).join("\n"), label: "One Key=value per line", kind: "fix" }] : [];
+    },
+  },
   arn: {
     check(value) {
       return /^arn:[\w-]+:[\w-]*:[\w-]*:(\d{12}|aws|)?:.+$/.test(value) ? null : "Not an ARN";
@@ -844,6 +915,9 @@ export const FORMATS: Record<Format, FormatSpec> = {
     },
     repair(value, rule) {
       const v = value.trim();
+      // An SSH remote (git@github.com:org/repo.git) as its HTTPS URL.
+      const ssh = v.match(/^(?:ssh:\/\/)?[\w.-]+@([\w.-]+\.[a-z]{2,})[:/](.+)$/i);
+      if (ssh) return [{ value: `https://${ssh[1]}/${ssh[2].replace(/^\/+/, "")}`, label: "Use the HTTPS URL", kind: "fix" }];
       // https:// first; http:// only where the rule refuses https://.
       const pick = (bare: string, add: boolean): Repair[] => {
         const https = `https://${bare}`;
@@ -853,7 +927,12 @@ export const FORMATS: Record<Format, FormatSpec> = {
       };
       const scheme = v.match(/^https?:\/\/(.+)$/i);
       if (scheme) return pick(scheme[1], false);
-      return /^[\w.-]+\.[a-z]{2,}([:/].*)?$/i.test(v) || /^localhost([:/].*)?$/.test(v) ? pick(v, true) : [];
+      // Local endpoints (localhost, an IP, a bare host:port) are plain HTTP.
+      if (/^(localhost|\d{1,3}(\.\d{1,3}){3}|[\w-]+:\d+)([:/?#].*)?$/i.test(v)) {
+        const http = `http://${v}`;
+        return valid(http, rule) ? [{ value: http, label: "Add http://", kind: "fix" }] : pick(v, true);
+      }
+      return /^[\w.-]+\.[a-z]{2,}([:/].*)?$/i.test(v) ? pick(v, true) : [];
     },
   },
   s3url: {
@@ -877,6 +956,33 @@ export const FORMATS: Record<Format, FormatSpec> = {
   name: {
     check(value) {
       return /^[A-Za-z0-9_-]+$/.test(value) ? null : "Letters, digits, - and _";
+    },
+  },
+  // Names separated by commas or spaces, each checked against `rule.item`,
+  // none twice.
+  list: {
+    check(value, rule) {
+      const seen = new Set<string>();
+      for (const item of listItems(value)) {
+        if (seen.has(item)) return `${item} is listed twice`;
+        seen.add(item);
+        const issue = rule.item && problem(item, rule.item, {});
+        if (issue) return `${item}: ${issue.message}`;
+      }
+      return seen.size ? null : "Required";
+    },
+    repair(value, rule) {
+      const out: string[] = [];
+      let label = "";
+      for (const item of listItems(value)) {
+        const fixed = !rule.item || valid(item, rule.item) ? item : check(item, rule.item)?.repairs.find((r) => r.kind === "fix");
+        const v = typeof fixed === "string" ? fixed : fixed?.value;
+        if (typeof fixed === "object" && fixed) label ||= `${fixed.label} in ${item}`;
+        if (v === undefined) label ||= `Remove ${item}`;
+        else if (out.includes(v)) label ||= `Remove the second ${v}`;
+        else out.push(v);
+      }
+      return out.length && label ? [{ value: out.join(", "), label, kind: "fix" }] : [];
     },
   },
   port: {
@@ -925,6 +1031,119 @@ export const FORMATS: Record<Format, FormatSpec> = {
       const out: Repair[] = [{ value: `+${digits}`, label: "Add +", kind: "fix" }];
       // Ten digits without a country code read as a North American number.
       if (digits.length === 10) out.unshift({ value: `+1${digits}`, label: "Add +1", kind: "suggest" });
+      return out;
+    },
+  },
+  // `key=value` per line (or comma), as headers, tags or a mapping.
+  pairs: {
+    check(value) {
+      const bad = pairList(value).find((p) => !/^[^=\s][^=]*=/.test(p));
+      return bad === undefined ? null : `"${bad}" is not key=value`;
+    },
+    repair(value) {
+      // A JSON object, or `key: value` / `key value` lines.
+      let entries: [string, string][];
+      if (value.trim().startsWith("{")) {
+        const json = repairJson(value);
+        const o: unknown = json === null ? null : JSON.parse(json);
+        if (!o || typeof o !== "object" || Array.isArray(o)) return [];
+        entries = Object.entries(o).map(([k, v]) => [k, typeof v === "string" ? v : JSON.stringify(v)]);
+      } else {
+        entries = pairList(value).map((p) => {
+          const m = p.match(/^([^=:\s]+)\s*(?:=|:|\s)\s*(.*)$/);
+          return m ? [m[1], m[2]] : [p, ""];
+        });
+      }
+      return entries.length ? [{ value: entries.map(([k, v]) => `${k}=${v}`).join("\n"), label: "Rewrite as key=value", kind: "fix" }] : [];
+    },
+  },
+  // `key=value` per line, AWS's usual tag limits.
+  tags: {
+    check(value) {
+      const keys = new Set<string>();
+      for (const [i, raw] of value.split("\n").entries()) {
+        const line = raw.trim();
+        if (!line) continue;
+        const eq = line.indexOf("=");
+        const key = line.slice(0, eq).trim();
+        if (eq < 0 || !key) return `Line ${i + 1}: key=value`;
+        if (length(key) > 128) return `Line ${i + 1}: key over 128 characters`;
+        if (length(line.slice(eq + 1).trim()) > 256) return `Line ${i + 1}: value over 256 characters`;
+        if (/^aws:/i.test(key)) return `Line ${i + 1}: aws: is reserved for AWS`;
+        if (keys.has(key)) return `Line ${i + 1}: ${key} repeats`;
+        keys.add(key);
+      }
+      return null;
+    },
+    repair(value) {
+      // "key: value", "key value" or a bare key become key=value; a key
+      // given twice keeps its last value; blank lines go.
+      const tags = new Map<string, string>();
+      for (const raw of value.split("\n")) {
+        const line = raw.trim();
+        if (!line) continue;
+        const m = line.includes("=") ? line.match(/^([^=]*)=(.*)$/) : line.match(/^(.+?)\s*(?::\s*|\s+|$)(.*)$/);
+        const key = m?.[1].trim().replace(/^aws:/i, "");
+        if (!key) continue;
+        tags.delete(key);
+        tags.set(key, m![2].trim());
+      }
+      const fixed = [...tags].map(([k, v]) => `${k}=${v}`).join("\n");
+      return fixed ? [{ value: fixed, label: "Use key=value lines", kind: "fix" }] : [];
+    },
+  },
+  // A Git branch name, by `git check-ref-format --branch`.
+  branch: {
+    check(value) {
+      if (/\s/.test(value)) return "No spaces";
+      const bad = value.match(/[~^:?*[\\\x00-\x1f\x7f]/)?.[0];
+      if (bad) return /[\x00-\x1f\x7f]/.test(bad) ? "No control characters" : `No ${bad}`;
+      if (value.includes("..")) return "No ..";
+      if (value.includes("@{") || value === "@") return "No @{";
+      if (value.startsWith("-")) return "Can't start with -";
+      if (/(^|\/)\./.test(value)) return "No part can start with .";
+      if (/\/\/|^\/|\/$/.test(value)) return "No empty parts between /";
+      if (value.endsWith(".")) return "Can't end with .";
+      if (/\.lock(\/|$)/.test(value)) return "No part can end with .lock";
+      return null;
+    },
+    repair(value) {
+      const v = value
+        .trim()
+        .replace(/@\{/g, "-")
+        .replace(/[\s~^:?*[\\\x00-\x1f\x7f]+/g, "-")
+        .replace(/\.{2,}/g, ".")
+        .split("/")
+        .map((p) => p.replace(/^[.-]+/, "").replace(/(\.lock)+$/, "").replace(/[.-]+$/, "").replace(/-{2,}/g, "-"))
+        .filter(Boolean)
+        .join("/");
+      return v && v !== "@" ? [{ value: v, label: "Fix the branch name", kind: "fix" }] : [];
+    },
+  },
+  dir: {
+    check(value) {
+      return value.startsWith("/") ? null : "An absolute path, like /data";
+    },
+    repair(value, rule) {
+      // Backslashes, doubled or trailing slashes, spaces and shell
+      // characters cleaned up; then leading dots dropped; then the path cut
+      // to the depth the pattern allows. Both slash endings are tried, as
+      // some APIs want one (IAM paths) and others forbid it (EFS).
+      const segments = value
+        .replace(/\\/g, "/")
+        .split("/")
+        .map((s) => s.trim().replace(/\s+/g, "-").replace(/[$#<>;`|&?{}^*\n]/g, ""))
+        .filter(Boolean);
+      const out: Repair[] = [];
+      const add = (segs: string[], label: string) => {
+        const p = "/" + segs.join("/");
+        const v = [p, p + "/"].find((c) => c !== value && valid(c, rule));
+        if (v) out.push({ value: v, label, kind: "fix" });
+      };
+      add(segments, "Clean up the path");
+      const undotted = segments.map((s) => s.replace(/^\.+/, "")).filter(Boolean);
+      if (out.length === 0) add(undotted, "Drop leading dots");
+      for (let n = undotted.length - 1; out.length === 0 && n >= 1; n--) add(undotted.slice(0, n), `Keep ${n} level${n === 1 ? "" : "s"}`);
       return out;
     },
   },
@@ -994,6 +1213,7 @@ function emailRepairs(value: string): Repair[] {
   }
   return out;
 }
+const pairList = (value: string) => value.split(/[\n,]+/).map((p) => p.trim()).filter(Boolean);
 
 const BUCKET = "[a-z0-9][a-z0-9.-]{1,61}[a-z0-9]";
 
@@ -1019,6 +1239,11 @@ function s3Object(value: string): { bucket: string; key: string; canonical: bool
   const consoleUrl = v.match(new RegExp(`^https://[\\w.-]*console\\.aws\\.amazon\\.com/s3/object/(${BUCKET})\\?(?:.*&)?prefix=([^&#]+)`));
   if (consoleUrl) return { bucket: consoleUrl[1], key: decodeURIComponent(consoleUrl[2]), canonical: false };
   return null;
+}
+
+/** The items of a comma- or space-separated list. */
+export function listItems(value: string): string[] {
+  return value.split(/[\s,]+/).filter(Boolean);
 }
 
 function network(o: number[], bits: number): string {
