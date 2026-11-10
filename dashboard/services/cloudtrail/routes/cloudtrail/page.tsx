@@ -1,7 +1,8 @@
 import { DescribeTrailsCommand, GetTrailStatusCommand, LookupEventsCommand, type LookupAttributeKey } from "@aws-sdk/client-cloudtrail";
 import { ago, load } from "@mws-dashboard/aws";
 import { bucketOptions } from "@mws-dashboard/aws/auto";
-import { ActionForm, AutoPick, AwsIcon, Empty, ErrorNotice, Field, List, Page, Pill, Sheet, Status, SERVICES } from "@mws-dashboard/ui";
+import { ActionForm, AutoPick, AwsIcon, Empty, ErrorNotice, Field, List, Page, Pill, Sheet, Status, SERVICES, type Rule } from "@mws-dashboard/ui";
+import { CreateTrail } from "@mws-dashboard/ui/model/cloudtrail";
 import { Pause, Play, Search, Trash2, User } from "lucide-react";
 import type { Metadata } from "next";
 
@@ -18,6 +19,18 @@ function sourceIcon(source: string | undefined) {
   return SERVICES.find((s) => s.id === id || s.endpoints.includes(id))?.icon ?? ICONS.cloudtrail;
 }
 
+// The model leaves trail names unconstrained; these are the checks
+// CreateTrail applies (3-128 characters, letters, digits, . _ -, a letter or
+// digit at both ends, no separators side by side, not an IP address).
+const TRAIL_NAME: Rule = {
+  ...CreateTrail.Name,
+  minLength: 3,
+  maxLength: 128,
+  pattern: "^(?!\\d+\\.\\d+\\.\\d+\\.\\d+$)[A-Za-z0-9](?:[A-Za-z0-9]|[._-](?=[A-Za-z0-9]))*$",
+  hint: "Letters, digits, . _ and -, starting and ending with a letter or digit",
+  generate: "name",
+};
+
 const READ = /^(Get|List|Describe|Head|Lookup|Select|Search|Query|Scan|BatchGet)/;
 
 export default async function CloudTrail({ searchParams }: Props) {
@@ -32,8 +45,8 @@ export default async function CloudTrail({ searchParams }: Props) {
     const create = (
       <Sheet title="Create trail" label="Create trail" testId="create-trail">
         <ActionForm action={createTrail} submit="Create trail" testId="create-trail">
-          <Field label="Trail name">
-            <input name="name" required autoFocus />
+          <Field label="Trail name" rule={TRAIL_NAME} taken={trails.ok ? trails.value.map(({ t }) => t.Name!) : []} unique>
+            <input name="name" required maxLength={128} autoFocus />
           </Field>
           <AutoPick name="bucket" label="S3 bucket" creates="aws-cloudtrail-logs-<account>-<region>" options={buckets} testId="trail-bucket" />
           <label className="check">
