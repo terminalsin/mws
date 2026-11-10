@@ -361,3 +361,12 @@ test("directories are made absolute, cleaned and cut to the allowed depth", () =
   assert.deepEqual(values(efs, "/.cache"), ["/cache"]);
   assert.deepEqual(values(efs, "/a/b/c/d/e"), ["/a/b/c/d"]);
 });
+
+test("hierarchical names are tidied, also after dropping a reserved prefix", () => {
+  // Parameter Store's names: a/b needs a leading slash; /aws and /ssm are reserved.
+  const rule: Rule = { pattern: "^(?:[A-Za-z0-9_.-]+|(?:[/][A-Za-z0-9_.-]+){1,15})$", reserved: ["/aws", "/ssm", "aws", "ssm"] };
+  assert.deepEqual(values(rule, "app/prod/db"), ["/app/prod/db"]);
+  assert.deepEqual(values(rule, "/app//prod/db host/"), ["/app/prod/db-host"]);
+  assert.equal(check("/aws/app/db host", rule)?.code, "reserved");
+  assert.deepEqual(values(rule, "/aws/app/db host"), ["/app/db-host"]);
+});
