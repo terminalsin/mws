@@ -4,7 +4,7 @@
 use chrono::Duration;
 use mws_core::{ConditionContext, RequestContext, ServiceError};
 
-use super::{authorize, cond};
+use super::{authorize, authorize_create, cond};
 use crate::catalog::EVENT_CATEGORIES;
 use crate::generated::{errors, types as t};
 use crate::state::Tagged;
@@ -216,7 +216,7 @@ impl Rds {
         }
         let tags = tags_from(&input.tags)?;
         let es_arn = arn(ctx, "es", &name);
-        authorize(ctx, "CreateEventSubscription", &es_arn, request_tag_context(&tags))?;
+        authorize_create(ctx, "CreateEventSubscription", &es_arn, &tags, request_tag_context(&tags))?;
         self.check_subscription(&input.source_type, &input.event_categories)?;
         if input.source_ids.as_ref().is_some_and(|i| !i.is_empty()) && input.source_type.is_none() {
             return Err(invalid_parameter("Source type must be specified when source IDs are specified."));

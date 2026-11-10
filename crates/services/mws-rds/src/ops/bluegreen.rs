@@ -9,7 +9,7 @@
 
 use mws_core::{ConditionContext, RequestContext, ServiceError};
 
-use super::{authorize, cluster_arn, db_arn};
+use super::{authorize, authorize_create, cluster_arn, db_arn};
 use crate::generated::{errors, types as t};
 use crate::state::Listen;
 use crate::util::{
@@ -78,7 +78,7 @@ impl Rds {
         let id = format!("bgd-{}", &resource_id("").to_ascii_lowercase()[..16]);
         let tags = tags_from(&input.tags)?;
         let bg_arn = crate::util::arn(ctx, "deployment", &id);
-        authorize(ctx, "CreateBlueGreenDeployment", &bg_arn, request_tag_context(&tags))?;
+        authorize_create(ctx, "CreateBlueGreenDeployment", &bg_arn, &tags, request_tag_context(&tags))?;
         let Some((_, _, kind, source)) = parse_arn(&input.source) else {
             return Err(invalid_parameter(format!("Invalid source ARN: {}", input.source)));
         };

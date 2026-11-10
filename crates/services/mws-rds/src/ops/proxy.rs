@@ -6,7 +6,7 @@ use std::sync::Arc;
 
 use mws_core::{ConditionContext, RequestContext, ServiceError};
 
-use super::{authorize, cluster_not_found};
+use super::{authorize, authorize_create, cluster_not_found};
 use crate::catalog::{self, Kind};
 use crate::generated::{errors, types as t};
 use crate::state::{ProxyRecord, State, Tagged};
@@ -290,7 +290,7 @@ impl Rds {
             format!("prx-{}", hex_id(&format!("{}/{}/{name}/{}", account_of(ctx), ctx.region, uuid::Uuid::new_v4())));
         let parn = arn(ctx, "db-proxy", &id);
         let tags = tags_from(&input.tags)?;
-        authorize(ctx, "CreateDBProxy", &parn, request_tag_context(&tags))?;
+        authorize_create(ctx, "CreateDBProxy", &parn, &tags, request_tag_context(&tags))?;
         ctx.authorize("iam:PassRole", &input.role_arn, ConditionContext::new())?;
         let family = input.engine_family.to_ascii_uppercase();
         if !matches!(family.as_str(), "MYSQL" | "POSTGRESQL" | "SQLSERVER") {
@@ -778,7 +778,7 @@ impl Rds {
             &format!("prx-endpoint-{}", hex_id(&format!("{}/{name}", uuid::Uuid::new_v4()))),
         );
         let tags = tags_from(&input.tags)?;
-        authorize(ctx, "CreateDBProxyEndpoint", &earn, request_tag_context(&tags))?;
+        authorize_create(ctx, "CreateDBProxyEndpoint", &earn, &tags, request_tag_context(&tags))?;
         if rec.proxy.status.as_deref() != Some("available") {
             return Err(errors::invalid_db_proxy_state_fault(format!("DBProxy {proxy} is not in available state.")));
         }

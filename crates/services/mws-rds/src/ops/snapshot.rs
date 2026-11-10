@@ -8,7 +8,7 @@ use mws_core::{ConditionContext, RequestContext, ServiceError};
 
 use super::instance::{certificate, check_class, engine_of, param_family_mismatch, NewInstance};
 use super::pitr::Recovery;
-use super::{authorize, cluster_arn, cond, db_arn};
+use super::{authorize, authorize_create, cluster_arn, cond, db_arn};
 use crate::backend::LogSource;
 use crate::catalog;
 use crate::generated::{errors, types as t};
@@ -504,7 +504,7 @@ impl Rds {
         let id = name_of(&input.db_instance_identifier).to_ascii_lowercase();
         let tags = tags_from(&input.tags)?;
         let sarn = arn(ctx, "snapshot", &snap);
-        authorize(ctx, "CreateDBSnapshot", &sarn, request_tag_context(&tags))?;
+        authorize_create(ctx, "CreateDBSnapshot", &sarn, &tags, request_tag_context(&tags))?;
         let rec = self.instance(ctx, &id)?;
         authorize(ctx, "CreateDBSnapshot", &db_arn(ctx, &id), resource_tag_context("db", &rec.db.tag_list))?;
         let status = rec.db.db_instance_status.clone().unwrap_or_default();
@@ -626,7 +626,7 @@ impl Rds {
         let source = self.find_snapshot(ctx, &input.source_db_snapshot_identifier)?;
         let tarn = arn(ctx, "snapshot", &target);
         let mut tags = tags_from(&input.tags)?;
-        authorize(ctx, "CopyDBSnapshot", &tarn, request_tag_context(&tags))?;
+        authorize_create(ctx, "CopyDBSnapshot", &tarn, &tags, request_tag_context(&tags))?;
         authorize(
             ctx,
             "CopyDBSnapshot",
@@ -827,7 +827,7 @@ impl Rds {
         let iarn = db_arn(ctx, &id);
         let mut c = request_tag_context(&o.tags);
         c.extend(cond(&[("rds:DatabaseClass", o.class.clone())]));
-        authorize(ctx, action, &iarn, c)?;
+        authorize_create(ctx, action, &iarn, &o.tags, c)?;
         if self.with_region(ctx, |r| r.instances.contains_key(&id)) {
             return Err(errors::db_instance_already_exists_fault("DB instance already exists"));
         }
@@ -1371,7 +1371,13 @@ impl Rds {
         let snap = identifier("DBClusterSnapshotIdentifier", &input.db_cluster_snapshot_identifier, 255)?;
         let id = name_of(&input.db_cluster_identifier).to_ascii_lowercase();
         let tags = tags_from(&input.tags)?;
-        authorize(ctx, "CreateDBClusterSnapshot", &arn(ctx, "cluster-snapshot", &snap), request_tag_context(&tags))?;
+        authorize_create(
+            ctx,
+            "CreateDBClusterSnapshot",
+            &arn(ctx, "cluster-snapshot", &snap),
+            &tags,
+            request_tag_context(&tags),
+        )?;
         let rec = self.cluster(ctx, &id)?;
         authorize(
             ctx,
@@ -1492,7 +1498,7 @@ impl Rds {
         let source = self.find_cluster_snapshot(ctx, &input.source_db_cluster_snapshot_identifier)?;
         let tarn = arn(ctx, "cluster-snapshot", &target);
         let mut tags = tags_from(&input.tags)?;
-        authorize(ctx, "CopyDBClusterSnapshot", &tarn, request_tag_context(&tags))?;
+        authorize_create(ctx, "CopyDBClusterSnapshot", &tarn, &tags, request_tag_context(&tags))?;
         authorize(
             ctx,
             "CopyDBClusterSnapshot",
@@ -1634,7 +1640,7 @@ impl Rds {
     ) -> Result<t::DBCluster, ServiceError> {
         let id = identifier("DBClusterIdentifier", id, 63)?;
         let carn = cluster_arn(ctx, &id);
-        authorize(ctx, action, &carn, request_tag_context(&o.tags))?;
+        authorize_create(ctx, action, &carn, &o.tags, request_tag_context(&o.tags))?;
         if self.with_region(ctx, |r| r.clusters.contains_key(&id)) {
             return Err(errors::db_cluster_already_exists_fault("DB Cluster already exists"));
         }

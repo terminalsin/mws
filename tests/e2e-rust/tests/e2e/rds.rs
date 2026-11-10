@@ -1767,3 +1767,40 @@ async fn iam_controls_rds_body() {
         dba.delete_db_instance().db_instance_identifier("allowed").skip_final_snapshot(true).send().await.unwrap_err();
     assert_eq!(code(&delete), "AccessDenied");
 }
+
+/// Creating any RDS resource with tags also needs `rds:AddTagsToResource`.
+#[test]
+fn tags_on_create_need_add_tags_to_resource() {
+    run(tags_on_create_need_add_tags_to_resource_body());
+}
+
+async fn tags_on_create_need_add_tags_to_resource_body() {
+    let mws = Mws::start().await;
+    let policy = r#"{"Version":"2012-10-17","Statement":[
+        {"Effect":"Allow","Action":["rds:CreateDBParameterGroup","rds:CreateDBClusterParameterGroup"],"Resource":"*"},
+        {"Effect":"Allow","Action":"rds:AddTagsToResource","Resource":"*","Condition":{"StringEquals":{"aws:RequestTag/team":"data"}}}
+    ]}"#;
+    let (_, cfg) = user_with_policy(&mws, "tagger", Some(policy)).await;
+    let rds = Client::new(&cfg);
+    let create = |name: &'static str, tags: Vec<aws_sdk_rds::types::Tag>| {
+        rds.create_db_parameter_group()
+            .db_parameter_group_name(name)
+            .db_parameter_group_family("postgres16")
+            .description(name)
+            .set_tags(Some(tags))
+    };
+    create("untagged", vec![]).send().await.unwrap();
+    create("team-data", vec![tag("team", "data")]).send().await.unwrap();
+    let denied = create("team-web", vec![tag("team", "web")]).send().await.unwrap_err();
+    assert_eq!(code(&denied), "AccessDenied");
+    let denied = rds
+        .create_db_cluster_parameter_group()
+        .db_cluster_parameter_group_name("cluster-web")
+        .db_parameter_group_family("aurora-postgresql16")
+        .description("web")
+        .tags(tag("team", "web"))
+        .send()
+        .await
+        .unwrap_err();
+    assert_eq!(code(&denied), "AccessDenied");
+}
