@@ -2,6 +2,7 @@ import { ListBucketsCommand } from "@aws-sdk/client-s3";
 import { stage, sections } from "@mws-dashboard/ai";
 import { ago, load } from "@mws-dashboard/aws";
 import { ActionForm, AwsIcon, Curated, Empty, ErrorNotice, Field, Page, Pill, Sheet } from "@mws-dashboard/ui";
+import { CreateBucket as CreateBucketRules } from "@mws-dashboard/ui/model/s3";
 import type { Metadata } from "next";
 
 import { BUCKET_ICON, BUCKET_PURPOSES, ICON, bucketHref, s3 } from "../../lib/s3";
@@ -9,12 +10,12 @@ import { createBucket } from "./actions";
 
 export const metadata: Metadata = { title: "S3" };
 
-function CreateBucket() {
+function CreateBucket({ names = [] }: { names?: string[] }) {
   return (
     <Sheet title="New bucket" label="Create bucket" testId="create-bucket">
       <ActionForm action={createBucket} submit="Create" testId="create-bucket">
-        <Field label="Name">
-          <input name="name" required minLength={3} maxLength={63} pattern="[a-z0-9][a-z0-9.\-]*[a-z0-9]" autoFocus />
+        <Field label="Name" rule={CreateBucketRules.Bucket} format="bucket" generate="name" taken={names} unique>
+          <input name="name" required minLength={3} maxLength={63} autoFocus />
         </Field>
         <label className="check">
           <input type="checkbox" name="versioning" /> Versioning
@@ -32,13 +33,14 @@ export default async function Buckets() {
       BUCKET_PURPOSES,
     );
   });
+  const names = buckets.ok ? buckets.value.flatMap((s) => s.items.map((b) => b.Name!)) : [];
   return (
-    <Page title="Buckets" actions={<CreateBucket />}>
+    <Page title="Buckets" actions={<CreateBucket names={names} />}>
       {buckets.ok ? (
         <Curated
           label="Buckets"
           sections={buckets.value}
-          empty={<Empty icon={BUCKET_ICON} action={<CreateBucket />} />}
+          empty={<Empty icon={BUCKET_ICON} action={<CreateBucket names={names} />} />}
           row={(b) => {
             const env = stage(b.Name!);
             return {
