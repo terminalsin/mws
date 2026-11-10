@@ -88,7 +88,8 @@ export type Format =
   | "port"
   | "country"
   | "csr"
-  | "phone";
+  | "phone"
+  | "pairs";
 
 /** "name": a readable resource name; "token": random letters and digits;
  * "password": meets the usual complexity rules; or a fixed prefix/suffix
@@ -832,7 +833,12 @@ export const FORMATS: Record<Format, FormatSpec> = {
       };
       const scheme = v.match(/^https?:\/\/(.+)$/i);
       if (scheme) return pick(scheme[1], false);
-      return /^[\w.-]+\.[a-z]{2,}([:/].*)?$/i.test(v) || /^localhost([:/].*)?$/.test(v) ? pick(v, true) : [];
+      // Local endpoints (localhost, an IP, a bare host:port) are plain HTTP.
+      if (/^(localhost|\d{1,3}(\.\d{1,3}){3}|[\w-]+:\d+)([:/?#].*)?$/i.test(v)) {
+        const http = `http://${v}`;
+        return valid(http, rule) ? [{ value: http, label: "Add http://", kind: "fix" }] : pick(v, true);
+      }
+      return /^[\w.-]+\.[a-z]{2,}([:/].*)?$/i.test(v) ? pick(v, true) : [];
     },
   },
   bucket: {
@@ -896,6 +902,29 @@ export const FORMATS: Record<Format, FormatSpec> = {
       // Ten digits without a country code read as a North American number.
       if (digits.length === 10) out.unshift({ value: `+1${digits}`, label: "Add +1", kind: "suggest" });
       return out;
+    },
+  },
+  // `key=value` per line (or comma), as headers, tags or a mapping.
+  pairs: {
+    check(value) {
+      const bad = pairList(value).find((p) => !/^[^=\s][^=]*=/.test(p));
+      return bad === undefined ? null : `"${bad}" is not key=value`;
+    },
+    repair(value) {
+      // A JSON object, or `key: value` / `key value` lines.
+      let entries: [string, string][];
+      if (value.trim().startsWith("{")) {
+        const json = repairJson(value);
+        const o: unknown = json === null ? null : JSON.parse(json);
+        if (!o || typeof o !== "object" || Array.isArray(o)) return [];
+        entries = Object.entries(o).map(([k, v]) => [k, typeof v === "string" ? v : JSON.stringify(v)]);
+      } else {
+        entries = pairList(value).map((p) => {
+          const m = p.match(/^([^=:\s]+)\s*(?:=|:|\s)\s*(.*)$/);
+          return m ? [m[1], m[2]] : [p, ""];
+        });
+      }
+      return entries.length ? [{ value: entries.map(([k, v]) => `${k}=${v}`).join("\n"), label: "Rewrite as key=value", kind: "fix" }] : [];
     },
   },
 };
@@ -964,6 +993,7 @@ function emailRepairs(value: string): Repair[] {
   }
   return out;
 }
+const pairList = (value: string) => value.split(/[\n,]+/).map((p) => p.trim()).filter(Boolean);
 
 function network(o: number[], bits: number): string {
   const n = ((o[0] << 24) | (o[1] << 16) | (o[2] << 8) | o[3]) >>> 0;

@@ -116,7 +116,8 @@ Fields validate in place, and say how to fix what they reject. `Field`
 2. the control's own attributes (`required`, `maxLength`, `min`, `type`...);
 3. what the page adds: `format` (`json`, `policy`, `path`, `arn`, `cidr`,
    `ipv4`, `email`, `emails` (a comma-separated list), `domain`,
-   `email-or-domain`, `url`, `bucket`, `name`, `port`, `phone`), `taken` (names that exist),
+   `email-or-domain`, `url`, `bucket`, `name`, `port`, `phone`, `pairs` for
+   `key=value` lists), `taken` (names that exist),
    `known` (values the field usually points at), `generate` (`name`,
    `token`, `password`, `uuid`, or a prefix/suffix), `arn` (the ARN template
    a bare name expands to) and `hint` (a readable pattern message).
@@ -124,7 +125,9 @@ Fields validate in place, and say how to fix what they reject. `Field`
 A problem replaces the field's hint once the person leaves the field or
 submits, and comes with repairs as chips: a fix (reshaped to the pattern,
 shortened, clamped, network address, repaired JSON, a policy document
-rebuilt from a bare statement with its casing fixed, `https://` added, a phone number in E.164), a
+rebuilt from a bare statement with its casing fixed, `https://` added or
+`http://` for a local endpoint, a phone number in E.164, `key: value` lines or
+a JSON object rewritten as `key=value`), a
 suggestion ("did you mean" among enum values, `known` values, all of them
 when there are only a few, or common email domains) or a generated value. Every repair is checked against the whole rule
 before it is offered. A blocked submit focuses and shakes the first field.
