@@ -274,6 +274,10 @@ export type FormAction = (previous: ActionResult | null, form: FormData) => Prom
 
 const SheetContext = createContext<(() => void) | null>(null);
 
+/** The element at the start of a form's action bar, where a stepper puts
+ * its Back and Next buttons (see sections.tsx). */
+export const FormFooterContext = createContext<HTMLElement | null>(null);
+
 /** A submission's life: the button spins while the action runs, confirms
  * with a check when it succeeded, and shakes when it failed. */
 type SubmitPhase = "idle" | "pending" | "succeeded" | "failed";
@@ -366,6 +370,7 @@ export function ActionForm({
   // Every server issue landed on a field: the fields say it, not the form.
   const [inlineOnly, setInlineOnly] = useState(false);
   const quiet = !!icon && !children;
+  const [footer, setFooter] = useState<HTMLElement | null>(null);
   useEffect(() => {
     if (isPending) send({ type: "SUBMIT" });
   }, [isPending, send]);
@@ -430,8 +435,11 @@ export function ActionForm({
       data-tone={tone}
       aria-busy={phase === "pending"}
     >
-      <FormIssuesContext.Provider value={issues.value}>{children}</FormIssuesContext.Provider>
+      <FormIssuesContext.Provider value={issues.value}>
+        <FormFooterContext.Provider value={footer}>{children}</FormFooterContext.Provider>
+      </FormIssuesContext.Provider>
       <div className="form-actions">
+        {!quiet && <span className="form-actions-lead" ref={setFooter} />}
         <Submit label={submit} icon={icon} tone={tone} confirm={confirm} phase={phase} />
       </div>
       {!quiet && phase === "pending" && (

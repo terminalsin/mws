@@ -9,7 +9,8 @@
 import { FieldShell as Field } from "@mws-dashboard/ui/fields";
 import { MoreFields, PresetGallery, type PresetItem } from "@mws-dashboard/ui/presets";
 import type { Rule } from "@mws-dashboard/ui/validation";
-import { useMemo, useState } from "react";
+import { Section, Sections } from "@mws-dashboard/ui/sections";
+import { useMemo, useState, type ReactNode } from "react";
 
 import { OS_FAMILIES, SIZES, familyImage, osLogo } from "./os";
 import { COUNT, IMAGE, INSTANCE_TYPE, ROOT_SIZE, TAG_VALUE, VOLUME_TYPE, VOLUME_TYPES } from "./rules";
@@ -80,7 +81,20 @@ const SIZE_TILES: PresetItem[] = SIZES.map((s) => ({
   icon: <b className="text-sm font-semibold">{s.mem}</b>,
 }));
 
-export function LaunchFields({ choices, mode, template, image: initialImage }: { choices: LaunchChoices; mode: "launch" | "template" | "version"; template?: string; image?: string }) {
+export function LaunchFields({
+  choices,
+  mode,
+  template,
+  image: initialImage,
+  details,
+}: {
+  choices: LaunchChoices;
+  mode: "launch" | "template" | "version";
+  template?: string;
+  image?: string;
+  /** Fields for the last step (a template's name and description). */
+  details?: ReactNode;
+}) {
   const { images, subnets, groups, profiles, templates } = choices;
   const tiles = useMemo(() => imageTiles(images), [images]);
   const [templateId, setTemplateId] = useState(template ?? "");
@@ -116,13 +130,9 @@ export function LaunchFields({ choices, mode, template, image: initialImage }: {
   const chosenTile = tiles.find((t) => t.image === image);
 
   return (
-    <>
+    <Sections testId="launch">
+      <Section id="image" label="Image" summary={chosenTile?.label}>
       {tiles.length > 0 && <PresetGallery presets={tiles} chosen={chosenTile?.id} choose={(t) => setImage(t.image)} label="Image" testId="launch-os" />}
-      {mode === "launch" && (
-        <Field label="Name" rule={TAG_VALUE}>
-          <input name="name" autoFocus />
-        </Field>
-      )}
       {mode === "launch" && templates.length > 0 && !template && (
         <Field label="Launch template" member="LaunchTemplate">
           <select name="launchTemplate" value={templateId} onChange={(e) => setTemplateId(e.target.value)}>
@@ -166,6 +176,8 @@ export function LaunchFields({ choices, mode, template, image: initialImage }: {
           </option>
         ))}
       </datalist>
+      </Section>
+      <Section id="size" label="Size" summary={type || undefined}>
       <PresetGallery presets={SIZE_TILES} chosen={type} choose={(t) => setType(type === t.id && optionalImage ? "" : t.id)} label="Size" testId="launch-size" />
       <Field label="Instance type" rule={INSTANCE_TYPE} member="InstanceType" hint={optionalImage && !type ? "Blank: the template's" : undefined}>
         <input name="type" value={type} onChange={(e) => setType(e.target.value)} list="launch-types" />
@@ -185,7 +197,8 @@ export function LaunchFields({ choices, mode, template, image: initialImage }: {
           </select>
         </Field>
       )}
-      <MoreFields>
+      </Section>
+      <Section id="network" label="Network and storage">
         <Field label="Subnet" member="SubnetId">
           <select name="subnet" value={subnet} onChange={(e) => setSubnet(e.target.value)}>
             <option value="">Default subnet</option>
@@ -243,11 +256,20 @@ export function LaunchFields({ choices, mode, template, image: initialImage }: {
           </select>
         </Field>
         {mode !== "launch" && <input type="hidden" name="rootDevice" value={chosenImage?.root ?? "/dev/xvda"} />}
+      </Section>
+      <Section id="details" label="Details">
         {mode === "launch" && (
-          <Field label="Count" rule={COUNT} member="MaxCount">
-            <input name="count" type="number" min={1} max={20} defaultValue={1} />
-          </Field>
+          <div className="form-row">
+            <Field label="Name" rule={TAG_VALUE}>
+              <input name="name" />
+            </Field>
+            <Field label="Count" rule={COUNT} member="MaxCount">
+              <input name="count" type="number" min={1} max={20} defaultValue={1} />
+            </Field>
+          </div>
         )}
+        {details}
+        <MoreFields label="Advanced">
         <label className="check">
           <input type="checkbox" name="protect" /> Termination protection
         </label>
@@ -269,7 +291,8 @@ export function LaunchFields({ choices, mode, template, image: initialImage }: {
           </Field>
         )}
         <textarea name="userData" rows={4} aria-label="User data" placeholder="#!/bin/bash" className="code-editor" />
-      </MoreFields>
-    </>
+        </MoreFields>
+      </Section>
+    </Sections>
   );
 }

@@ -10,6 +10,7 @@ import { CreateGuardrail } from "@mws-dashboard/ui/model/bedrock";
 import { freeName, MoreFields, PresetGallery } from "@mws-dashboard/ui/presets";
 import { ruleAt } from "@mws-dashboard/ui/validation";
 import { Anchor, EyeOff, Headset, Scale, ShieldCheck, Wrench } from "lucide-react";
+import { Section, Sections } from "@mws-dashboard/ui/sections";
 import { useState, type ReactNode } from "react";
 
 import { FILTERS, GUARDRAIL_TEMPLATES, PII, type GuardrailTemplate } from "./guardrail-presets";
@@ -45,52 +46,67 @@ const label = (s: string) =>
 export function GuardrailFields({ g, taken = [] }: { g?: GetGuardrailResponse; taken?: string[] }) {
   const [t, setT] = useState<GuardrailTemplate>(GUARDRAIL_TEMPLATES[0]);
   const editing = !!g;
+  // Fields remount per template, so each starts from its policies.
+  const part = (p: Part) => <Policies key={t.id} part={p} g={g} t={editing ? undefined : t} taken={taken} />;
   return (
-    <>
+    <Sections mode={editing ? "tabs" : "steps"} testId="guardrail">
       {!editing && (
-        <PresetGallery
-          label="Template"
-          presets={GUARDRAIL_TEMPLATES.map((x) => ({ ...x, icon: ICON[x.id] }))}
-          chosen={t.id}
-          choose={(p) => setT(GUARDRAIL_TEMPLATES.find((x) => x.id === p.id)!)}
-        />
+        <Section id="template" label="Template" summary={t.label}>
+          <PresetGallery label="Template" presets={GUARDRAIL_TEMPLATES.map((x) => ({ ...x, icon: ICON[x.id] }))} chosen={t.id} choose={(p) => setT(GUARDRAIL_TEMPLATES.find((x) => x.id === p.id)!)} />
+        </Section>
       )}
-      {/* Fields remount per template, so each starts from its policies. */}
-      <Policies key={t.id} g={g} t={editing ? undefined : t} taken={taken} />
-    </>
+      <Section id="topics" label="Topics">
+        {part("topics")}
+      </Section>
+      <Section id="filters" label="Filters">
+        {part("filters")}
+      </Section>
+      <Section id="data" label="Personal data">
+        {part("data")}
+      </Section>
+      <Section id="grounding" label="Grounding">
+        {part("grounding")}
+      </Section>
+    </Sections>
   );
 }
 
-function Policies({ g, t, taken }: { g?: GetGuardrailResponse; t?: GuardrailTemplate; taken: string[] }) {
+type Part = "topics" | "filters" | "data" | "grounding";
+
+function Policies({ part, g, t, taken }: { part: Part; g?: GetGuardrailResponse; t?: GuardrailTemplate; taken: string[] }) {
   const filter = (type: string) => g?.contentPolicy?.filters?.find((f) => f.type === type);
   const pii = new Map<string, string>(g ? (g.sensitiveInformationPolicy?.piiEntities ?? []).map((p) => [p.type as string, p.action as string]) : Object.entries(t?.pii ?? {}));
   const entities = [...new Set([...PII, ...pii.keys()])];
   const regexes = g?.sensitiveInformationPolicy?.regexes ?? [];
   const grounding = (type: string) => (g ? g.contextualGroundingPolicy?.filters?.find((f) => f.type === type)?.threshold : type === "GROUNDING" ? t?.grounding : t?.relevance);
   const editing = !!g;
-  return (
-    <>
-      <Field label="Name" rule={NAME} taken={taken} unique={!editing}>
-        <input name="name" required defaultValue={g?.name ?? (t && t.id !== "custom" ? freeName(`${t.id}-guardrail`, taken) : undefined)} />
-      </Field>
-      <Field label="Denied topics" rule={TOPICS}>
-        <textarea
-          name="topics"
-          rows={2}
-          placeholder="Investment advice: recommendations about stocks or funds"
-          defaultValue={g ? (g.topicPolicy?.topics ?? []).map((tp) => `${tp.name}: ${tp.definition}`).join("\n") : t?.topics}
-        />
-      </Field>
-      <Field label="Blocked words" rule={WORDS}>
-        <input name="words" placeholder="comma separated" defaultValue={(g?.wordPolicy?.words ?? []).map((w) => w.text).join(", ")} />
-      </Field>
-      <label className="check">
-        <input type="checkbox" name="profanity" defaultChecked={g ? (g.wordPolicy?.managedWordLists ?? []).some((m) => m.type === "PROFANITY") : !!t?.profanity} /> Profanity
-      </label>
-      <MoreFields open={editing}>
-      <Field label="Description" rule={{ ...CreateGuardrail.description, required: false }}>
-        <input name="description" defaultValue={g?.description} />
-      </Field>
+  if (part === "topics")
+    return (
+      <>
+        <Field label="Name" rule={NAME} taken={taken} unique={!editing}>
+          <input name="name" required defaultValue={g?.name ?? (t && t.id !== "custom" ? freeName(`${t.id}-guardrail`, taken) : undefined)} />
+        </Field>
+        <Field label="Denied topics" rule={TOPICS}>
+          <textarea
+            name="topics"
+            rows={2}
+            placeholder="Investment advice: recommendations about stocks or funds"
+            defaultValue={g ? (g.topicPolicy?.topics ?? []).map((tp) => `${tp.name}: ${tp.definition}`).join("\n") : t?.topics}
+          />
+        </Field>
+        <Field label="Blocked words" rule={WORDS}>
+          <input name="words" placeholder="comma separated" defaultValue={(g?.wordPolicy?.words ?? []).map((w) => w.text).join(", ")} />
+        </Field>
+        <label className="check">
+          <input type="checkbox" name="profanity" defaultChecked={g ? (g.wordPolicy?.managedWordLists ?? []).some((m) => m.type === "PROFANITY") : !!t?.profanity} /> Profanity
+        </label>
+        <Field label="Description" rule={{ ...CreateGuardrail.description, required: false }}>
+          <input name="description" defaultValue={g?.description} />
+        </Field>
+      </>
+    );
+  if (part === "filters")
+    return (
       <fieldset className="checks">
         <legend>Content filters (prompt / response)</legend>
         {FILTERS.map((type) => {
@@ -122,30 +138,38 @@ function Policies({ g, t, taken }: { g?: GetGuardrailResponse; t?: GuardrailTemp
           );
         })}
       </fieldset>
-      <fieldset className="checks">
-        <legend>Personal data</legend>
-        {entities.map((p) => (
-          <label key={p} className="check">
-            <select name={`pii_${p}`} defaultValue={pii.get(p) ?? ""} aria-label={label(p)}>
-              <option value="">off</option>
+    );
+  if (part === "data")
+    return (
+      <>
+        <fieldset className="checks">
+          <legend>Personal data</legend>
+          {entities.map((p) => (
+            <label key={p} className="check">
+              <select name={`pii_${p}`} defaultValue={pii.get(p) ?? ""} aria-label={label(p)}>
+                <option value="">off</option>
+                <option value="ANONYMIZE">mask</option>
+                <option value="BLOCK">block</option>
+              </select>{" "}
+              {label(p)}
+            </label>
+          ))}
+        </fieldset>
+        <div className="form-row">
+          <Field label="Regex filters" rule={REGEXES}>
+            <textarea name="regexes" rows={2} placeholder="Order id: ORD-[0-9]{6}" defaultValue={regexes.map((r) => `${r.name}: ${r.pattern}`).join("\n")} />
+          </Field>
+          <Field label="Regex action">
+            <select name="regexAction" defaultValue={regexes[0]?.action ?? "ANONYMIZE"}>
               <option value="ANONYMIZE">mask</option>
               <option value="BLOCK">block</option>
-            </select>{" "}
-            {label(p)}
-          </label>
-        ))}
-      </fieldset>
-      <div className="form-row">
-        <Field label="Regex filters" rule={REGEXES}>
-          <textarea name="regexes" rows={2} placeholder="Order id: ORD-[0-9]{6}" defaultValue={regexes.map((r) => `${r.name}: ${r.pattern}`).join("\n")} />
-        </Field>
-        <Field label="Regex action">
-          <select name="regexAction" defaultValue={regexes[0]?.action ?? "ANONYMIZE"}>
-            <option value="ANONYMIZE">mask</option>
-            <option value="BLOCK">block</option>
-          </select>
-        </Field>
-      </div>
+            </select>
+          </Field>
+        </div>
+      </>
+    );
+  return (
+    <>
       <div className="form-row">
         <Field label="Grounding threshold" rule={THRESHOLD}>
           <input name="grounding" type="number" step={0.01} min={0} max={0.99} defaultValue={grounding("GROUNDING")} />
@@ -163,16 +187,15 @@ function Policies({ g, t, taken }: { g?: GetGuardrailResponse; t?: GuardrailTemp
         </Field>
       </div>
       {!editing && (
-        <>
+        <MoreFields>
           <Field label="KMS key" rule={{ ...ruleAt(CreateGuardrail, "kmsKeyId"), required: false }}>
             <ResourcePicker kind="kms-key" name="kms" exclude="AWS managed" placeholder="alias/my-key" />
           </Field>
           <Field label="Tags" format="tags">
             <textarea name="tags" rows={2} placeholder="team=ml" />
           </Field>
-        </>
+        </MoreFields>
       )}
-      </MoreFields>
     </>
   );
 }

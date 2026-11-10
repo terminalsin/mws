@@ -72,24 +72,21 @@ test("IAM validation: names, paths and service principals are repaired in place"
   await expect(page.locator("dialog[open]")).toHaveCount(0);
   await expect(page.getByRole("link", { name: user.replace(/\s+/g, "-") })).toBeVisible();
 
-  // A role: "lambda" becomes a service principal, and a bare, lowercase
-  // trust statement becomes a policy document.
+  // A role from a custom trust policy: a bare, lowercase trust statement
+  // becomes a policy document. The form is stepped: trust, permissions, name.
   const role = unique("dash-role");
   await page.goto("/iam?tab=roles");
   const r = await openSheet(page, "create-role");
-  await r.control("name").fill(role);
-  await r.control("service").fill("lambda");
-  await r.control("service").blur();
-  await expect(r.field("service")).toHaveAttribute("data-invalid", "pattern");
-  await r.field("service").getByRole("button", { name: /amazonaws\.com/ }).click();
-  await expect(r.control("service")).toHaveValue("lambda.amazonaws.com");
-  // A typed trust policy waits under More (Lambda is the default tile).
-  await r.form.locator("summary", { hasText: "More" }).click();
+  await r.form.getByTestId("preset-group-people-and-other-accounts").click();
+  await r.form.getByTestId("preset-custom").click();
   await r.control("trust").fill(`{effect: 'allow', principal: {"Service": "ecs-tasks.amazonaws.com"}, action: 'sts:AssumeRole'}`);
   await r.control("trust").blur();
   await expect(r.field("trust")).toHaveAttribute("data-invalid", "format");
   await r.field("trust").getByRole("button", { name: /Fix the policy/ }).click();
   await expect(r.field("trust")).not.toHaveAttribute("data-invalid");
+  await r.form.getByTestId("role-next").click();
+  await r.form.getByTestId("role-next").click();
+  await r.control("name").fill(role);
   await r.form.locator('button[type="submit"]').click();
   await expect(page.locator("dialog[open]")).toHaveCount(0);
   await expect(row(page, role)).toContainText("ecs-tasks.amazonaws.com");

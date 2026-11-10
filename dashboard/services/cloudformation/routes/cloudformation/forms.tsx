@@ -1,6 +1,7 @@
 import { ActionForm, Field, Sheet } from "@mws-dashboard/ui";
 import { CreateChangeSet as ChangeSetRules, CreateStack as CreateStackRules } from "@mws-dashboard/ui/model/cloudformation";
 import { MoreFields } from "@mws-dashboard/ui/presets";
+import { Section, Sections } from "@mws-dashboard/ui/sections";
 import { GitCompare } from "lucide-react";
 
 import { PARAMETERS, SAMPLE_TEMPLATE, STACK_NAME, TEMPLATE } from "../../lib/cloudformation";
@@ -75,39 +76,47 @@ export function CreateChangeSet({
   return (
     <Sheet title="Create change set" label="Create change set" icon={<GitCompare size={16} />} testId="create-change-set">
       <ActionForm action={createChangeSet.bind(null, stack ?? null, previous)} submit="Create change set" testId="create-change-set">
-        {!stack && (
-          <Field label="Stack name" rule={{ ...ChangeSetRules.StackName, ...STACK_NAME }} taken={names}>
-            <input name="name" required maxLength={128} />
-          </Field>
-        )}
-        <div className="form-row">
-          <Field label="Change set name" rule={{ ...ChangeSetRules.ChangeSetName, generate: "name" }} taken={taken} unique>
-            <input name="changeSet" required maxLength={128} />
-          </Field>
-          <Field label="Type">
-            <select name="type" defaultValue={stack ? "UPDATE" : "CREATE"}>
-              {stack ? <option value="UPDATE">Update</option> : <option value="CREATE">Create</option>}
-              <option value="IMPORT">Import resources</option>
-            </select>
-          </Field>
-        </div>
-        <Field label="Template" rule={{ ...ChangeSetRules.TemplateBody, ...TEMPLATE }}>
-          <textarea name="template" rows={14} required className="code-editor" spellCheck={false} defaultValue={template ?? SAMPLE_TEMPLATE} />
-        </Field>
-        <Field label="Parameters" rule={PARAMETERS} hint={Object.values(previous).includes("****") ? "Leave **** to keep a hidden value" : undefined}>
-          <textarea name="parameters" rows={2} spellCheck={false} defaultValue={parameters} />
-        </Field>
-        <Field label="Resources to import" format="pairs" hint="For an import: LogicalId=identifier, e.g. Bucket=my-bucket">
-          <textarea name="imports" rows={2} spellCheck={false} placeholder="Bucket=my-existing-bucket" />
-        </Field>
-        <MoreFields>
-          <Field label="Description" rule={ChangeSetRules.Description}>
-            <input name="description" />
-          </Field>
-          <Capabilities />
-          <Role />
-          {!stack && <TagsField />}
-        </MoreFields>
+        <Sections testId="change-set">
+          <Section id="template" label="Template">
+            <Field label="Template" rule={{ ...ChangeSetRules.TemplateBody, ...TEMPLATE }}>
+              <textarea name="template" rows={14} required className="code-editor" spellCheck={false} defaultValue={template ?? SAMPLE_TEMPLATE} />
+            </Field>
+          </Section>
+          <Section id="details" label="Details">
+            {!stack && (
+              <Field label="Stack name" rule={{ ...ChangeSetRules.StackName, ...STACK_NAME }} taken={names}>
+                <input name="name" required maxLength={128} />
+              </Field>
+            )}
+            <div className="form-row">
+              <Field label="Change set name" rule={{ ...ChangeSetRules.ChangeSetName, generate: "name" }} taken={taken} unique>
+                <input name="changeSet" required maxLength={128} />
+              </Field>
+              <Field label="Type">
+                <select name="type" defaultValue={stack ? "UPDATE" : "CREATE"}>
+                  {stack ? <option value="UPDATE">Update</option> : <option value="CREATE">Create</option>}
+                  <option value="IMPORT">Import resources</option>
+                </select>
+              </Field>
+            </div>
+            <Field label="Parameters" rule={PARAMETERS} hint={Object.values(previous).includes("****") ? "Leave **** to keep a hidden value" : undefined}>
+              <textarea name="parameters" rows={2} spellCheck={false} defaultValue={parameters} />
+            </Field>
+            <MoreFields label="Import">
+              <Field label="Resources to import" format="pairs" hint="For an import: LogicalId=identifier, e.g. Bucket=my-bucket">
+                <textarea name="imports" rows={2} spellCheck={false} placeholder="Bucket=my-existing-bucket" />
+              </Field>
+            </MoreFields>
+          </Section>
+          <Section id="options" label="Options">
+            <Field label="Description" rule={ChangeSetRules.Description}>
+              <input name="description" />
+            </Field>
+            <Capabilities />
+            <Role />
+            {!stack && <TagsField />}
+          </Section>
+        </Sections>
       </ActionForm>
     </Sheet>
   );

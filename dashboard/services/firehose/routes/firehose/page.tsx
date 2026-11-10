@@ -19,6 +19,7 @@ import {
 import { ArrowRight, Lock } from "lucide-react";
 import { CreateDeliveryStream as Rules } from "@mws-dashboard/ui/model/firehose";
 import { MoreFields } from "@mws-dashboard/ui/presets";
+import { Section, Sections } from "@mws-dashboard/ui/sections";
 import type { Metadata } from "next";
 
 import {
@@ -96,51 +97,68 @@ export default async function DeliveryStreams({ searchParams }: Props) {
         submit="Create"
         testId="create-delivery-stream"
       >
-        <Field label="Name" rule={NAME} taken={names} generate="name" unique>
-          <input
-            name="name"
-            required
-            defaultValue={freeName("delivery-stream", names)}
-            spellCheck={false}
-          />
-        </Field>
-        <Field
-          label="Source Kinesis stream ARN"
-          rule={SOURCE}
-          format="arn"
-          known={sources.ok ? sources.value : []}
-          arn={
-            info.account
-              ? `arn:aws:kinesis:${info.region}:${info.account}:stream/{}`
-              : undefined
-          }
-        >
-          <input name="source" placeholder="Direct PUT" />
-        </Field>
-        <AutoPick
-          name="role"
-          label="Role"
-          creates="KinesisFirehoseServiceRole-<stream>"
-          options={
-            roles.ok
-              ? roles.value.map((r) => ({ value: r.Arn!, label: r.RoleName! }))
-              : []
-          }
-          testId="firehose-role"
-        />
-        <DestinationFields
-          buckets={buckets}
-          functions={functions.ok ? functions.value : []}
-        />
-        <MoreFields label="Encryption, tags">
-          <label className="check">
-            <input type="checkbox" name="sse" /> Server-side encryption (Direct
-            PUT)
-          </label>
-          <Field label="Tags" rule={{ ...Rules.Tags, format: "tags" }}>
-            <textarea name="tags" rows={1} placeholder="team=data" />
-          </Field>
-        </MoreFields>
+        <Sections testId="firehose">
+          <Section id="source" label="Source">
+            <Field
+              label="Source Kinesis stream ARN"
+              rule={SOURCE}
+              format="arn"
+              known={sources.ok ? sources.value : []}
+              arn={
+                info.account
+                  ? `arn:aws:kinesis:${info.region}:${info.account}:stream/{}`
+                  : undefined
+              }
+            >
+              <input name="source" placeholder="Direct PUT" />
+            </Field>
+            <AutoPick
+              name="role"
+              label="Role"
+              creates="KinesisFirehoseServiceRole-<stream>"
+              options={
+                roles.ok
+                  ? roles.value.map((r) => ({
+                      value: r.Arn!,
+                      label: r.RoleName!,
+                    }))
+                  : []
+              }
+              testId="firehose-role"
+            />
+          </Section>
+          <Section id="destination" label="Destination">
+            <DestinationFields
+              buckets={buckets}
+              functions={functions.ok ? functions.value : []}
+            />
+          </Section>
+          <Section id="name" label="Name">
+            <Field
+              label="Name"
+              rule={NAME}
+              taken={names}
+              generate="name"
+              unique
+            >
+              <input
+                name="name"
+                required
+                defaultValue={freeName("delivery-stream", names)}
+                spellCheck={false}
+              />
+            </Field>
+            <MoreFields label="Encryption, tags">
+              <label className="check">
+                <input type="checkbox" name="sse" /> Server-side encryption
+                (Direct PUT)
+              </label>
+              <Field label="Tags" rule={{ ...Rules.Tags, format: "tags" }}>
+                <textarea name="tags" rows={1} placeholder="team=data" />
+              </Field>
+            </MoreFields>
+          </Section>
+        </Sections>
       </ActionForm>
     </Sheet>
   );

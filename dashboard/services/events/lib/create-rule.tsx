@@ -2,10 +2,11 @@
 
 // The create-rule form: a gallery of common rules (a schedule, your app's
 // events, the AWS events people react to most), each filling a unique name
-// and its pattern; the description and target role wait under More.
+// and its pattern, in three steps: what triggers it, where it goes, its name.
 
 import { FieldShell } from "@mws-dashboard/ui/fields";
 import { freeName, MoreFields, PresetGallery } from "@mws-dashboard/ui/presets";
+import { Section, Sections } from "@mws-dashboard/ui/sections";
 import { useState } from "react";
 
 import { RULE_PRESETS } from "./rule-presets";
@@ -20,35 +21,45 @@ export function CreateRuleFields({ bus, taken, targets }: { bus: string; taken: 
   const showPattern = preset.custom || !!preset.pattern;
   const showSchedule = bus === "default" && (preset.custom || !!preset.schedule);
   return (
-    <>
-      <PresetGallery presets={presets} chosen={preset.id} choose={setPreset} label="Rule type" size={26} testId="rule-preset" />
-      <div key={preset.id}>
-        <FieldShell label="Name" rule={RULE_NAME} taken={taken} unique>
-          <input name="name" required defaultValue={preset.custom ? undefined : freeName(preset.name, taken)} spellCheck={false} />
-        </FieldShell>
-        {showPattern && (
-          <EventPatternEditor rule={PATTERN} rows={preset.pattern ? 4 : 3} defaultValue={preset.pattern ? JSON.stringify(preset.pattern, null, 2) : preset.custom ? undefined : ""} />
-        )}
-        {showSchedule && (
-          <FieldShell label={preset.custom ? "Or schedule" : "Schedule"} rule={SCHEDULE} member="ScheduleExpression" format="schedule">
-            <input name="schedule" placeholder="rate(5 minutes)" defaultValue={preset.schedule} spellCheck={false} />
+    <Sections testId="rule">
+      <Section id="trigger" label={showSchedule && !showPattern ? "Schedule" : "Events"} summary={preset.label}>
+        <PresetGallery presets={presets} chosen={preset.id} choose={setPreset} label="Rule type" size={26} testId="rule-preset" />
+        <div key={preset.id}>
+          {showPattern && (
+            <EventPatternEditor rule={PATTERN} rows={preset.pattern ? 4 : 3} defaultValue={preset.pattern ? JSON.stringify(preset.pattern, null, 2) : preset.custom ? undefined : ""} />
+          )}
+          {showSchedule && (
+            <FieldShell label={preset.custom ? "Or schedule" : "Schedule"} rule={SCHEDULE} member="ScheduleExpression" format="schedule">
+              <input name="schedule" placeholder="rate(5 minutes)" defaultValue={preset.schedule} spellCheck={false} />
+            </FieldShell>
+          )}
+        </div>
+      </Section>
+      <Section id="target" label="Target">
+        <div key={preset.id}>
+          <FieldShell label="Target ARN" rule={TARGET} member="Arn" format="arn" known={targets.map((t) => t.arn)}>
+            <ResourcePicker kind={["lambda-function", "sqs-queue", "sns-topic", "kinesis-stream", "firehose-stream", "event-bus", "log-group"]} name="target" use="arn" />
           </FieldShell>
-        )}
-        <FieldShell label="Target ARN" rule={TARGET} member="Arn" format="arn" known={targets.map((t) => t.arn)}>
-          <ResourcePicker kind={["lambda-function", "sqs-queue", "sns-topic", "kinesis-stream", "firehose-stream", "event-bus", "log-group"]} name="target" use="arn" />
-        </FieldShell>
-        <label className="check">
-          <input type="checkbox" name="grant" defaultChecked /> Allow the rule in the target&apos;s resource policy
-        </label>
-        <MoreFields>
+          <label className="check">
+            <input type="checkbox" name="grant" defaultChecked /> Allow the rule in the target&apos;s resource policy
+          </label>
+          <MoreFields label="Role">
+            <FieldShell label="Target role" rule={{ ...ROLE, required: false }} member="RoleArn">
+              <ResourcePicker kind="iam-role" name="role" service="events.amazonaws.com" placeholder="For Kinesis, Firehose, buses and API destinations" />
+            </FieldShell>
+          </MoreFields>
+        </div>
+      </Section>
+      <Section id="name" label="Name">
+        <div key={preset.id}>
+          <FieldShell label="Name" rule={RULE_NAME} taken={taken} unique>
+            <input name="name" required defaultValue={preset.custom ? undefined : freeName(preset.name, taken)} spellCheck={false} />
+          </FieldShell>
           <FieldShell label="Description" rule={RULE_DESCRIPTION}>
             <input name="description" />
           </FieldShell>
-          <FieldShell label="Target role" rule={{ ...ROLE, required: false }} member="RoleArn">
-            <ResourcePicker kind="iam-role" name="role" service="events.amazonaws.com" placeholder="For Kinesis, Firehose, buses and API destinations" />
-          </FieldShell>
-        </MoreFields>
-      </div>
-    </>
+        </div>
+      </Section>
+    </Sections>
   );
 }

@@ -8,6 +8,7 @@
 import { iconUrl } from "@mws-dashboard/ui/catalog";
 import { FieldShell } from "@mws-dashboard/ui/fields";
 import { Check, ExternalLink, SlidersHorizontal, Wrench } from "lucide-react";
+import { Section, Sections } from "@mws-dashboard/ui/sections";
 import { useState, type ReactNode } from "react";
 
 import { LOGIN, NO_LOCAL, PRESETS, type Kind, type Local, type Preset } from "../../../lib/presets";
@@ -127,17 +128,9 @@ export function ProviderFields({ p, names = [], local = NO_LOCAL }: { p?: Provid
   ) : (
     <span className="warn-text">Not found where MWS runs</span>
   );
-  return (
-    <>
-      {!p && (
-        <Gallery
-          chosen={preset.id}
-          choose={setPreset}
-          local={local}
-          names={names}
-        />
-      )}
-      {/* Fields remount per preset, so each starts from that preset's values. */}
+  const gallery = <Gallery chosen={preset.id} choose={setPreset} local={local} names={names} />;
+  const fields = (
+      /* Fields remount per preset, so each starts from that preset's values. */
       <div key={p?.name ?? preset.id} className="preset-fields">
         {!p && (
           <FieldShell label="Name" rule={NAME} taken={names} unique>
@@ -260,6 +253,16 @@ export function ProviderFields({ p, names = [], local = NO_LOCAL }: { p?: Provid
           <input type="checkbox" name="makeDefault" defaultChecked={!p && !!preset.fallback} /> Default provider
         </label>
       </div>
-    </>
+  );
+  if (p) return fields;
+  return (
+    <Sections testId="provider">
+      <Section id="provider" label="Provider" summary={preset.label}>
+        {gallery}
+      </Section>
+      <Section id="connection" label="Connection">
+        {fields}
+      </Section>
+    </Sections>
   );
 }

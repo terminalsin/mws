@@ -4,6 +4,7 @@ import { roleOptions } from "@mws-dashboard/aws/auto";
 import { ActionForm, AutoPick, AwsIcon, Empty, ErrorNotice, Field, List, Page, Pill, Sheet, Status } from "@mws-dashboard/ui";
 import { CreateStackInstances as InstanceRules, CreateStackSet as Rules } from "@mws-dashboard/ui/model/cloudformation";
 import { MoreFields } from "@mws-dashboard/ui/presets";
+import { Section, Sections } from "@mws-dashboard/ui/sections";
 import type { Metadata } from "next";
 
 import { PARAMETERS, SAMPLE_TEMPLATE, STACK_NAME, TEMPLATE, word } from "../../../lib/cloudformation";
@@ -19,31 +20,39 @@ function CreateStackSet({ names, roles, here }: { names: string[]; roles: { valu
   return (
     <Sheet title="Create StackSet" label="Create StackSet" testId="create-stack-set">
       <ActionForm action={createStackSet} submit="Create StackSet" testId="create-stack-set">
-        <Field label="StackSet name" rule={{ ...Rules.StackSetName, ...STACK_NAME }} taken={names} unique>
-          <input name="name" required maxLength={128} />
-        </Field>
-        <Field label="Template" rule={{ ...Rules.TemplateBody, ...TEMPLATE }}>
-          <textarea name="template" rows={12} required className="code-editor" spellCheck={false} defaultValue={SAMPLE_TEMPLATE} />
-        </Field>
-        <Field label="Parameters" rule={PARAMETERS}>
-          <textarea name="parameters" rows={2} spellCheck={false} placeholder="Env=prod" />
-        </Field>
-        <Field label="Regions" rule={InstanceRules.Regions} hint="Blank to deploy later">
-          <input name="regions" defaultValue={here} placeholder={here} />
-        </Field>
-        <MoreFields>
-          <Field label="Description" rule={Rules.Description}>
-            <input name="description" />
-          </Field>
-          <Capabilities />
-          <AutoPick name="adminRole" label="Administration role" options={roles} creates={ADMIN_ROLE} testId="admin-role" />
-          <Field label="Execution role name" rule={Rules.ExecutionRoleName}>
-            <input name="executionRole" defaultValue={EXECUTION_ROLE} />
-          </Field>
-          <Field label="Deploy to accounts" rule={InstanceRules.Accounts} hint="Blank for this account">
-            <input name="accounts" placeholder="123456789012" />
-          </Field>
-        </MoreFields>
+        <Sections testId="stack-set">
+          <Section id="template" label="Template">
+            <Field label="Template" rule={{ ...Rules.TemplateBody, ...TEMPLATE }}>
+              <textarea name="template" rows={12} required className="code-editor" spellCheck={false} defaultValue={SAMPLE_TEMPLATE} />
+            </Field>
+          </Section>
+          <Section id="details" label="Details">
+            <Field label="StackSet name" rule={{ ...Rules.StackSetName, ...STACK_NAME }} taken={names} unique>
+              <input name="name" required maxLength={128} />
+            </Field>
+            <Field label="Parameters" rule={PARAMETERS}>
+              <textarea name="parameters" rows={2} spellCheck={false} placeholder="Env=prod" />
+            </Field>
+            <Field label="Description" rule={Rules.Description}>
+              <input name="description" />
+            </Field>
+            <Capabilities />
+          </Section>
+          <Section id="deploy" label="Deploy">
+            <Field label="Regions" rule={InstanceRules.Regions} hint="Blank to deploy later">
+              <input name="regions" defaultValue={here} placeholder={here} />
+            </Field>
+            <Field label="Deploy to accounts" rule={InstanceRules.Accounts} hint="Blank for this account">
+              <input name="accounts" placeholder="123456789012" />
+            </Field>
+            <MoreFields label="Roles">
+              <AutoPick name="adminRole" label="Administration role" options={roles} creates={ADMIN_ROLE} testId="admin-role" />
+              <Field label="Execution role name" rule={Rules.ExecutionRoleName}>
+                <input name="executionRole" defaultValue={EXECUTION_ROLE} />
+              </Field>
+            </MoreFields>
+          </Section>
+        </Sections>
       </ActionForm>
     </Sheet>
   );

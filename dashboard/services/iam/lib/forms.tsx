@@ -9,6 +9,7 @@ import { CreateOpenIDConnectProvider } from "@mws-dashboard/ui/model/iam";
 import { ResourcePicker } from "@mws-dashboard/ui/pickers";
 import { PolicyEditor } from "@mws-dashboard/ui/policy";
 import { MoreFields, PresetGallery, freeName } from "@mws-dashboard/ui/presets";
+import { Section, Sections } from "@mws-dashboard/ui/sections";
 import { useState } from "react";
 
 import { COMMON_POLICIES, OIDC_PRESETS, POLICY_PRESETS, ROLE_PRESETS, managedArn, policyJson, presetTrust, type OidcPreset, type PolicyPreset, type RolePreset } from "./presets";
@@ -20,39 +21,51 @@ export function RoleFields({ taken, account }: { taken: string[]; account: strin
   const trust = presetTrust(preset, account);
   const policy = preset.attach?.split("/").pop();
   return (
-    <>
-      <PresetGallery presets={ROLE_PRESETS.map((p) => ({ ...p, title: p.service ?? p.label }))} chosen={preset.id} choose={setPreset} label="Trusted entity" size={26} />
-      <div key={preset.id} className="preset-fields">
-        <FieldShell label="Name" rule={RULES.roleName} taken={taken} unique>
-          <input name="name" required defaultValue={preset.name ? freeName(preset.name, taken) : undefined} autoFocus={custom} />
-        </FieldShell>
-        {preset.service && <input type="hidden" name="service" value={preset.service} />}
-        <PolicyEditor
-          label="Trust policy"
-          name="trust"
-          kind="trust"
-          rows={10}
-          required={custom}
-          rule={{ ...RULES.trust, required: custom }}
-          defaultValue={trust}
-          startIn={custom ? "json" : "visual"}
-          hint={preset.trust === "github" ? "Replace OWNER/REPO with the repository that deploys" : undefined}
-          testId="trust-editor"
-        />
-        <FieldShell label="Permissions" hint="AWS and customer managed policies to attach">
-          <ResourcePicker kind="iam-policy" name="policies" multiple defaultValue={preset.attach ? `${preset.attach}, ` : undefined} placeholder="Search managed policies" testId="role-policies" />
-        </FieldShell>
-        {policy && <input type="hidden" name="suggested" value={preset.attach} />}
-        <MoreFields>
+    <Sections testId="role">
+      <Section id="trust" label="Trusted entity" summary={preset.label}>
+        <PresetGallery presets={ROLE_PRESETS.map((p) => ({ ...p, title: p.service ?? p.label }))} chosen={preset.id} choose={setPreset} label="Trusted entity" size={26} tabs />
+        <div key={preset.id} className="preset-fields">
+          {preset.service && <input type="hidden" name="service" value={preset.service} />}
+          <MoreFields label="Trust policy" open={!preset.service}>
+            <PolicyEditor
+              label="Trust policy"
+              name="trust"
+              kind="trust"
+              rows={10}
+              required={custom}
+              rule={{ ...RULES.trust, required: custom }}
+              defaultValue={trust}
+              startIn={custom ? "json" : "visual"}
+              hint={preset.trust === "github" ? "Replace OWNER/REPO with the repository that deploys" : undefined}
+              testId="trust-editor"
+            />
+          </MoreFields>
+        </div>
+      </Section>
+      <Section id="permissions" label="Permissions" summary={policy}>
+        <div key={preset.id} className="preset-fields">
+          <FieldShell label="Permissions" hint="AWS and customer managed policies to attach">
+            <ResourcePicker kind="iam-policy" name="policies" multiple defaultValue={preset.attach ? `${preset.attach}, ` : undefined} placeholder="Search managed policies" testId="role-policies" />
+          </FieldShell>
+          {policy && <input type="hidden" name="suggested" value={preset.attach} />}
+          <MoreFields label="Boundary">
+            <FieldShell label="Permissions boundary" rule={{ ...RULES.policyArn, required: false }}>
+              <ResourcePicker kind="iam-policy" name="boundary" placeholder="Optional: the most this role may ever do" />
+            </FieldShell>
+          </MoreFields>
+        </div>
+      </Section>
+      <Section id="name" label="Name">
+        <div key={preset.id} className="preset-fields">
+          <FieldShell label="Name" rule={RULES.roleName} taken={taken} unique>
+            <input name="name" required defaultValue={preset.name ? freeName(preset.name, taken) : undefined} />
+          </FieldShell>
           <FieldShell label="Description" rule={RULES.roleDescription}>
             <input name="description" />
           </FieldShell>
-          <FieldShell label="Permissions boundary" rule={{ ...RULES.policyArn, required: false }}>
-            <ResourcePicker kind="iam-policy" name="boundary" placeholder="Optional: the most this role may ever do" />
-          </FieldShell>
-        </MoreFields>
-      </div>
-    </>
+        </div>
+      </Section>
+    </Sections>
   );
 }
 
@@ -61,26 +74,31 @@ export function RoleFields({ taken, account }: { taken: string[]; account: strin
 export function PolicyFields({ taken, inline }: { taken: string[]; inline?: boolean }) {
   const [preset, setPreset] = useState<PolicyPreset>(POLICY_PRESETS[0]);
   return (
-    <>
-      <PresetGallery presets={POLICY_PRESETS.map((p) => ({ ...p, title: p.description ?? p.label, added: taken.includes(p.name) }))} chosen={preset.id} choose={setPreset} label="Allows" size={26} />
-      <div key={preset.id} className="preset-fields">
-        <FieldShell label="Name" rule={inline ? RULES.inlinePolicyName : RULES.policyName} taken={taken} unique>
-          <input name={inline ? "policyName" : "name"} required defaultValue={preset.name ? freeName(preset.name, taken) : undefined} />
-        </FieldShell>
-        <PolicyEditor label="Document" name="document" rule={RULES.document} required defaultValue={policyJson(preset)} testId="policy-editor" />
-        {!inline && (
-          <MoreFields>
+    <Sections testId="policy">
+      <Section id="template" label="Template" summary={preset.label}>
+        <PresetGallery presets={POLICY_PRESETS.map((p) => ({ ...p, title: p.description ?? p.label, added: taken.includes(p.name) }))} chosen={preset.id} choose={setPreset} label="Allows" size={26} tabs />
+      </Section>
+      <Section id="permissions" label="Permissions">
+        <div key={preset.id} className="preset-fields">
+          <PolicyEditor label="Document" name="document" rule={RULES.document} required defaultValue={policyJson(preset)} testId="policy-editor" />
+        </div>
+      </Section>
+      <Section id="name" label="Name">
+        <div key={preset.id} className="preset-fields">
+          <FieldShell label="Name" rule={inline ? RULES.inlinePolicyName : RULES.policyName} taken={taken} unique>
+            <input name={inline ? "policyName" : "name"} required defaultValue={preset.name ? freeName(preset.name, taken) : undefined} />
+          </FieldShell>
+          {!inline && (
             <FieldShell label="Description" rule={RULES.policyDescription}>
               <input name="description" defaultValue={preset.description} />
             </FieldShell>
-          </MoreFields>
-        )}
-      </div>
-    </>
+          )}
+        </div>
+      </Section>
+    </Sections>
   );
 }
 
-/** The attach form: the common AWS managed policies as tiles, or any policy, searched. */
 export function AttachFields({ attached }: { known?: { arn: string; name: string }[]; attached: string[] }) {
   const [arn, setArn] = useState("");
   const tiles = COMMON_POLICIES.map((p) => ({ ...p, added: attached.includes(managedArn(p.id)) }));
