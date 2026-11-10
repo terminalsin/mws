@@ -103,6 +103,35 @@ Image Builder infrastructure configuration with
 `EC2InstanceProfileForImageBuilder`. The field starts on "create" when
 nothing suitable exists. Helpers live in `packages/aws/src/auto.ts`.
 
+### Presets, pickers and policy builders
+
+- **Logo-first create forms.** A create sheet opens on a grid of presets
+  (`PresetGallery` in `packages/ui/src/presets.tsx`): a runtime, an engine,
+  a template. Picking one fills in sensible values and shows only the fields
+  that choice needs; rarely needed fields wait under `MoreFields`
+  ("More"). `freeName` proposes a name nothing uses yet, and `CopyValue`
+  shows ARNs, URLs and DNS names with a copy button.
+- **Resource pickers.** Fields that take a resource (a role ARN, a key, a
+  queue, a subnet) use `ResourcePicker` (`packages/ui/src/pickers.tsx`). The
+  control stays a plain text input, so anything can be pasted, with the
+  real resources from MWS listed under it and filtered as you type, recent
+  picks first, roles grouped by the service they trust, and a "New ..." row
+  that creates topics, queues, buckets, keys, log groups, streams, buses and
+  roles in place. The lists come from the console's `/api/resources` route
+  (`packages/aws/src/resources.ts`, 25 resource kinds).
+- **Visual IAM policies.** `PolicyEditor` (`packages/ui/src/policy.tsx`)
+  puts a statement builder over the JSON: action search across every model
+  MWS serves, grouped by access level, resource pickers, condition helpers
+  and snippets. Its assistant (`intent.ts`, offline and rule-based) drafts
+  statements from a sentence such as "read the orders bucket, send to the
+  jobs queue, require MFA". IAM's policy, inline policy, version and trust
+  forms use it, as do the resource policy editors of the other services.
+  New roles start from trust presets (AWS services, another account, GitHub
+  Actions, SAML) and use-case policy templates.
+- **EventBridge patterns.** Rules are built from event sources with their
+  logos, detail types and field filters, checked live with
+  `TestEventPattern` against a sample event (`services/events/lib`).
+
 ### Live state, whole lists and batch failures
 
 - **Transitional states refresh themselves.** `Status` mounts a

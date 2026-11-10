@@ -32,8 +32,10 @@ npm ci
 npm test                         # or: npm test -w apps/order-events
 ```
 
-`npm run typecheck` type-checks every app. Lambda functions run on the `node`
-that MWS finds on its `PATH` (or `MWS_LAMBDA_NODE`).
+`npm run typecheck` type-checks every app. The Lambda function in
+`order-events` runs in AWS's `nodejs22.x` base image when MWS has Docker, and
+otherwise on the `node` MWS finds on its `PATH` (or `MWS_LAMBDA_NODE`).
+Node.js 22.12 or newer runs the suites.
 
 Each app's `vitest.config.ts` points the SDK at MWS and its root user:
 

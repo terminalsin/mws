@@ -52,7 +52,7 @@ and the access portal hands out real STS credentials for those roles, so
 | Protected roles | ✅ | Account users can't change or delete reserved roles (`UnmodifiableEntity`). |
 | Customer managed policies | ✅ | Must exist in each account, or provisioning fails with AWS's 404 reason. |
 | Re-provisioning | ✅ | Permission set changes reach roles on `ProvisionPermissionSet`; `LATEST_PERMISSION_SET_PROVISIONED` and `..._NOT_PROVISIONED` filters. |
-| AWS managed policies | 🟡 | Any AWS managed policy ARN attaches; only those MWS's IAM knows grant permissions. |
+| AWS managed policies | ✅ | Checked against IAM's catalog of every AWS managed policy: an unknown ARN is a `ValidationException` ("The managed policy ... does not exist."), attaching one twice a `ConflictException`. |
 
 ## Sign-in and the access portal
 

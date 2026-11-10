@@ -7,8 +7,7 @@
 [![CI](https://github.com/terminalsin/mws/actions/workflows/ci.yml/badge.svg?branch=master)](https://github.com/terminalsin/mws/actions/workflows/ci.yml)
 [![License: MIT OR Apache-2.0](https://img.shields.io/badge/license-MIT%20OR%20Apache--2.0-blue.svg)](#license)
 [![Rust 1.85+](https://img.shields.io/badge/rust-1.85%2B-orange.svg)](https://www.rust-lang.org)
-[![Services](https://img.shields.io/badge/AWS%20services-33-success.svg)](docs/services/README.md)
-[![Services](https://img.shields.io/badge/AWS%20services-30-success.svg)](docs/services/README.md)
+[![Services](https://img.shields.io/badge/AWS%20services-46-success.svg)](docs/services/README.md)
 
 [Getting started](docs/getting-started.md) ·
 [Services](docs/services/README.md) ·
@@ -42,16 +41,19 @@ real Rust, Python and JavaScript SDKs.
   ABAC tag conditions and cross-account access.
 - **Generated from the AWS models.** Request and response shapes, routing and
   validation come from the official Smithy models across six protocols
-  (awsQuery, awsJson, restXml, restJson, Smithy RPC v2 CBOR and ec2Query).
+  (awsQuery, awsJson, restXml, restJson1, Smithy RPC v2 CBOR and ec2Query).
 - **Things actually happen.** KMS keys do real cryptography, Private CA and
-  ACM issue real X.509 certificates, Lambda functions run in AWS's own runtime images,
-  EC2 instances can run as Docker containers and mount EFS file systems, and
-  events flow between services: S3 notifications reach SNS, SQS and Lambda;
-  alarms page through SNS; Firehose delivers to S3.
-  EC2 instances and ElastiCache nodes can run as Docker containers, and events flow between
-  EC2 instances and ECS tasks can run as Docker containers, and events flow between
-  services: S3 notifications reach SNS, SQS and Lambda; alarms page through
-  SNS; Firehose delivers to S3.
+  ACM issue real X.509 certificates, Lambda functions run in AWS's own runtime
+  images, and with Docker, EC2 instances, ECS tasks, RDS databases,
+  ElastiCache nodes and EKS API servers really run. Load balancers proxy real
+  traffic, ECR is a real registry, CodeArtifact serves real package managers,
+  and events flow between services as they do on AWS: S3 notifications reach
+  SNS, SQS and Lambda; alarms page through SNS; Firehose delivers to S3;
+  CloudTrail records every call.
+- **Asynchronous where AWS is.** Instances start `pending`, certificates
+  wait for issuance, replication reports `PENDING` and stacks move through
+  `CREATE_IN_PROGRESS`, all on an emulated clock, so code that skips the SDK
+  waiters fails locally as it would on AWS.
 - **Built for test suites.** In memory by default, with optional SQLite
   persistence, declarative seed scenarios, instant resets, named snapshots and
   an emulated clock you can move forward.
@@ -98,9 +100,11 @@ See [Getting started](docs/getting-started.md) for the Rust and JavaScript
 SDKs, S3 addressing, host-prefixed endpoints and calling as other identities.
 
 To look around in a browser, run the [web console](docs/dashboard.md)
-(`cd dashboard && npm ci && npm run dev`, then open http://localhost:3000):
-an Apple-style console with official AWS icons, ⌘K search across every
-service, and lists grouped by embeddings from MWS's own Bedrock, plus the
+(`cd dashboard && npm ci && npm run dev`, then open http://localhost:3000).
+It covers 41 services with the AWS console's layout: ⌘K search across every
+resource, create forms that validate as you type and offer repairs,
+searchable pickers for roles, keys, queues and the rest, a visual IAM policy
+builder, terminals into running instances and containers, and MWS's own
 clock, snapshots and reset.
 
 ## Supported services
@@ -112,10 +116,10 @@ clock, snapshots and reset.
 | [Organizations](docs/services/organizations.md) | 63 / 63 | awsJson 1.1 |
 | [IAM Identity Center](docs/services/identity-center.md) (SSO Admin, Identity Store, SSO OIDC, portal) | 109 / 109 | awsJson 1.1, restJson1 |
 | [KMS](docs/services/kms.md) | 56 / 56 | awsJson 1.1 |
-| [S3](docs/services/s3.md) | 111 / 112 | restXml |
-| [S3 Control](docs/services/s3control.md) | 97 / 97 | restXml |
-| [Lambda](docs/services/lambda.md) | 68 / 88 | restJson1 |
-| [EC2 and VPC](docs/services/ec2.md) | 164 / 811 | ec2Query |
+| [S3](docs/services/s3.md) | 112 / 112 | restXml |
+| [S3 Control](docs/services/s3control.md) | 79 / 97 | restXml |
+| [Lambda](docs/services/lambda.md) | 88 / 88 | restJson1 |
+| [EC2 and VPC](docs/services/ec2.md) | 325 / 811 | ec2Query |
 | [EC2 Auto Scaling](docs/services/autoscaling.md) | 68 / 68 | awsQuery |
 | [EC2 Image Builder](docs/services/imagebuilder.md) | 77 / 77 | restJson1 |
 | [Elastic Load Balancing](docs/services/elb.md) | 80 / 80 | awsQuery |
@@ -153,8 +157,10 @@ clock, snapshots and reset.
 | [CloudFormation](docs/services/cloudformation.md) | 90 / 90 | awsQuery |
 | [Bedrock and Bedrock Runtime](docs/services/bedrock.md) | 118 / 119 | restJson1 |
 
-Operations outside the implemented set answer `NotImplemented`. Each service
-page lists what is emulated and its known gaps.
+Operations outside the implemented set answer `NotImplemented`: EC2's
+unlisted operations, S3 Control's Outposts bucket operations and Bedrock
+Runtime's `InvokeModelWithBidirectionalStream`. Each service page lists what
+is emulated and its known gaps.
 
 ## How it works
 
@@ -201,6 +207,8 @@ The most common settings (all optional):
 | `MWS_ACCOUNT_ID` | `123456789012` | The root account's id |
 | `MWS_DB` | unset (in memory) | SQLite file to persist state across restarts |
 | `MWS_SCENARIO` | unset | Scenario run at startup; becomes the reset baseline |
+| `MWS_ASYNC_DELAY_MS` | `500` | How long asynchronous work stays pending; `0` settles it inside the call |
+| `MWS_EC2_BACKEND`, `MWS_RDS_BACKEND`, ... | `auto` | Run instances, databases, caches and clusters in Docker when a daemon answers |
 | `RUST_LOG` | `info` | Log filter |
 
 All variables are listed in [Configuration](docs/configuration.md).

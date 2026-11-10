@@ -2,7 +2,7 @@
 
 > Crate: [`mws-lambda`](../../crates/services/mws-lambda) · Tests: [`tests/e2e-rust/tests/e2e/lambda.rs`](../../tests/e2e-rust/tests/e2e/lambda.rs), [`lambda_images.rs`](../../tests/e2e-rust/tests/e2e/lambda_images.rs), [`lambda_runtimes_docker.rs`](../../tests/e2e-rust/tests/e2e/lambda_runtimes_docker.rs)
 
-68 of 88 operations are generated from the AWS model (restJson1) and implemented; the rest answer `NotImplemented`. Functions really run.
+All 88 operations are generated from the AWS model (restJson1) and implemented. Functions really run.
 
 ✅ supported · 🟡 partial · ❌ not supported
 

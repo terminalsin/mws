@@ -2,7 +2,7 @@
 
 > Crate: [`mws-s3control`](../../crates/services/mws-s3control) · Tests: [`tests/e2e-rust/tests/e2e/s3_control_parity.rs`](../../tests/e2e-rust/tests/e2e/s3_control_parity.rs)
 
-All 97 operations are generated from the AWS model (restXml, `{AccountId}.` host prefix, `x-amz-account-id`) and implemented.
+All 97 operations are generated from the AWS model (restXml, `{AccountId}.` host prefix, `x-amz-account-id`), and 79 are implemented; the 18 S3 on Outposts bucket operations (`CreateBucket`, `GetBucket`, `ListRegionalBuckets`, `PutBucketPolicy`, ...) answer `NotImplemented`.
 
 ✅ supported · 🟡 partial · ❌ not supported
 

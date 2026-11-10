@@ -72,18 +72,16 @@ See [State, scenarios and snapshots](state.md) for how the two interact.
 | `MWS_ELASTICACHE_HOST` | `127.0.0.1` | The address ElastiCache endpoints name; node ports are published on the host. |
 | `MWS_ELASTICACHE_REDIS_IMAGE`, `MWS_ELASTICACHE_VALKEY_IMAGE`, `MWS_ELASTICACHE_MEMCACHED_IMAGE` | by engine version | Images to run instead of `redis:<version>-alpine`, `valkey/valkey:<version>-alpine` and `memcached:1.6-alpine`. |
 | `MWS_ECR_UPSTREAM_ENDPOINTS` | unset | Comma-separated `host=url` pairs that point ECR pull-through cache upstreams at other API bases, such as `quay.io=http://127.0.0.1:5000/v2`, instead of `https://<host>/v2`. |
-
-EC2 instances reach the instance metadata service and the AWS endpoint
-through the host, and EKS API servers call MWS's token and authorization
-webhooks at `host.docker.internal`, so with the Docker backends MWS must
-listen on an address containers can reach (the default `0.0.0.0` does).
 | `MWS_ECS_BACKEND` | `auto` | How ECS tasks run. `docker` runs each container as a Docker container, `metadata` runs nothing (tasks only change state), and `auto` uses Docker when a daemon answers and `metadata` otherwise. |
 | `MWS_ECS_DOCKER` | `MWS_EC2_DOCKER`, then `docker` | The Docker-compatible CLI the ECS backend drives. |
 | `MWS_ECS_PAUSE_IMAGE` | `alpine:3.20` | The image of the container that holds an `awsvpc` task's network namespace. |
+| `MWS_CLOUDTRAIL_LOOKUP_DELAY_SECONDS` | `0` | How long, in seconds of emulated time, an event takes to appear in CloudTrail's event history (`LookupEvents`). AWS documents up to about 15 minutes. |
 
-EC2 instances and ECS tasks reach the instance or task metadata service and the AWS endpoint
-through the host, so when using the Docker backend MWS must listen on an
-address containers can reach (the default `0.0.0.0` does).
+EC2 instances and ECS tasks reach the instance or task metadata service and
+the AWS endpoint through the host, and EKS API servers call MWS's token and
+authorization webhooks at `host.docker.internal`, so with the Docker
+backends MWS must listen on an address containers can reach (the default
+`0.0.0.0` does).
 
 ## Bedrock
 
@@ -103,9 +101,20 @@ scripted answers with `POST /_aws/bedrock/responses` (see
 | `MWS_BEDROCK_BACKEND_URL` | `https://api.openai.com/v1` or `https://api.anthropic.com` | Its base URL (for example `http://localhost:11434/v1` for Ollama). |
 | `MWS_BEDROCK_BACKEND_API_KEY` | `OPENAI_API_KEY` or `ANTHROPIC_API_KEY` | Its API key. Providers pointing at `api.openai.com` or `api.anthropic.com` also fall back to those two variables. |
 | `MWS_BEDROCK_BACKEND_MODEL` | derived from the Bedrock model id | Its upstream model. Without one, Anthropic gets the Claude model matching the Bedrock id and OpenAI-compatible servers get the Bedrock id. |
+| `MWS_BEDROCK_MODEL_ACCESS` | unset | `enforce` makes invocations of third-party models check model access as AWS does (the Anthropic use case form, the Marketplace subscription made on first use). Unset, every model may be invoked. |
 | `MWS_BEDROCK_MODELS` | unset | A JSON file with extra foundation models to add to the catalog (an array in `GetFoundationModel`'s shape plus `family`). |
 
 Embeddings, images and rerank are always answered locally.
+
+`mws bedrock-bridge` runs the Claude Code and Codex CLIs on the host for an
+MWS that runs in a container (see
+[Bedrock](services/bedrock.md#model-providers)). It reads:
+
+| Variable | Default | Description |
+| --- | --- | --- |
+| `MWS_BEDROCK_BRIDGE_LISTEN` | `127.0.0.1:4599` | Address the bridge listens on (`--listen` overrides it). |
+| `MWS_BEDROCK_BRIDGE_TOKEN` | a random token, printed at start | The token MWS must send (`MWS_BEDROCK_CLI_BRIDGE_TOKEN` on the MWS side). |
+| `MWS_BEDROCK_BRIDGE_CLAUDE`, `MWS_BEDROCK_BRIDGE_CODEX` | `claude`, `codex` | The executables it runs. |
 
 Provider settings can also be stored at runtime, from the console's Bedrock
 Settings page or the unsigned `/_aws/bedrock/providers` endpoint (see
@@ -115,7 +124,9 @@ environment's field by field and are saved with the rest of MWS state, so
 state file in plain text, as everything else there does.
 
 ```sh
-# Llama models from a local Ollama, Claude from Anthropic, the rest echo.
+# Llama models from a local Ollama (a provider named `ollama` is
+# OpenAI-compatible at http://127.0.0.1:11434/v1 unless URL says otherwise),
+# Claude from Anthropic, the rest echo.
 MWS_BEDROCK_PROVIDER_OLLAMA_MODELS='meta.*' \
 MWS_BEDROCK_PROVIDER_OLLAMA_MODEL_MAP='meta.llama3-8b-instruct-v1:0=llama3:8b' \
 MWS_BEDROCK_PROVIDER_OLLAMA_PARAMS='{"temperature":0.2}' \
