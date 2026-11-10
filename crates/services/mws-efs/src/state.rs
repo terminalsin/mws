@@ -79,7 +79,8 @@ impl FileSystem {
 pub struct MountTarget {
     pub description: t::MountTargetDescription,
     pub security_groups: Vec<String>,
-    /// When a `creating` mount target becomes `available`.
+    /// When a `creating` mount target becomes `available`, or a
+    /// `deleting` one goes away.
     pub transition_ends: Option<chrono::DateTime<chrono::Utc>>,
 }
 
@@ -97,15 +98,23 @@ pub fn file_system_delete() -> chrono::Duration {
 pub fn mount_target_create() -> chrono::Duration {
     chrono::Duration::milliseconds(mws_core::settle::window_ms(4_000))
 }
+/// How long a deleted mount target stays `deleting` (AWS: tens of
+/// seconds), its network interface with it.
+pub fn mount_target_delete() -> chrono::Duration {
+    chrono::Duration::milliseconds(mws_core::settle::window_ms(4_000))
+}
 
 impl State {
     /// Finish the transitions due by `now`: `creating` file systems and
     /// mount targets become `available`, `deleting` file systems go away
-    /// (with their access points). Returns the ids of the file systems
-    /// that went away, whose data the caller removes.
-    pub fn settle(&mut self, now: chrono::DateTime<chrono::Utc>) -> Vec<String> {
+    /// (with their access points), and so do `deleting` mount targets.
+    /// Returns the ids of the file systems that went away, whose data the
+    /// caller removes, and the network interfaces (region key, interface
+    /// id) of the mount targets that did, which the caller deletes.
+    pub fn settle(&mut self, now: chrono::DateTime<chrono::Utc>) -> (Vec<String>, Vec<(String, String)>) {
         let mut gone = Vec::new();
-        for r in self.regions.values_mut() {
+        let mut enis = Vec::new();
+        for (key, r) in self.regions.iter_mut() {
             for fs in r.file_systems.values_mut() {
                 if fs.transition_ends.is_some_and(|t| t <= now) {
                     fs.transition_ends = None;
@@ -120,13 +129,22 @@ impl State {
                 r.file_systems.remove(id);
                 r.access_points.retain(|_, a| a.file_system_id.as_deref() != Some(id.as_str()));
             }
-            for m in r.mount_targets.values_mut() {
+            let mut deleted = Vec::new();
+            for (id, m) in r.mount_targets.iter_mut() {
                 if m.transition_ends.is_some_and(|t| t <= now) {
                     m.transition_ends = None;
-                    m.description.life_cycle_state = "available".into();
+                    if m.description.life_cycle_state == "deleting" {
+                        deleted.push(id.clone());
+                        enis.extend(m.description.network_interface_id.clone().map(|e| (key.clone(), e)));
+                    } else {
+                        m.description.life_cycle_state = "available".into();
+                    }
                 }
             }
+            for id in deleted {
+                r.mount_targets.remove(&id);
+            }
         }
-        gone
+        (gone, enis)
     }
 }
