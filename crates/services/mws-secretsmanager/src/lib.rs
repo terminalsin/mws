@@ -94,6 +94,15 @@ impl SecretsManager {
     }
 }
 
+impl SecretsManager {
+    /// Catch housekeeping up to `ctx.received_at` without a request to
+    /// Secrets Manager: scheduled deletions and rotations whose window
+    /// opened. The emulator calls it as the emulated clock moves.
+    pub fn catch_up(&self, ctx: &RequestContext) {
+        self.tick(ctx);
+    }
+}
+
 #[async_trait::async_trait]
 impl Service for SecretsManager {
     fn recognizes(&self, request: &HttpRequest) -> bool {

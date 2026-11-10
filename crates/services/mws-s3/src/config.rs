@@ -397,6 +397,16 @@ impl Call {
             if !has_action {
                 return Err(errors::invalid_request("At least one action needs to be specified in a rule"));
             }
+            for t in rule.transitions.iter().flatten() {
+                let class = t.storage_class.as_deref().unwrap_or_default();
+                if matches!(class, "STANDARD_IA" | "ONEZONE_IA") && t.days.is_some_and(|d| d < 30) {
+                    return Err(errors::invalid_argument(
+                        format!("'Days' in Transition action must be greater than or equal to 30 for storageClass '{class}'"),
+                        "Days",
+                        &t.days.unwrap_or_default().to_string(),
+                    ));
+                }
+            }
             if let Some(e) = &rule.expiration {
                 let set =
                     e.date.is_some() as u8 + e.days.is_some() as u8 + e.expired_object_delete_marker.is_some() as u8;
@@ -751,6 +761,18 @@ impl Call {
             ))
         })?;
         for r in &config.rules {
+            // V2 rules (with a Filter) must say their priority and
+            // whether delete markers replicate.
+            if r.filter.is_some() && r.priority.is_none() {
+                return Err(errors::invalid_request(
+                    "Priority must be specified for this version of Cross Region Replication configuration schema. Please refer to S3 Developer Guide for more information.",
+                ));
+            }
+            if r.filter.is_some() && r.delete_marker_replication.is_none() {
+                return Err(errors::invalid_request(
+                    "DeleteMarkerReplication must be specified for this version of Cross Region Replication configuration schema. Please refer to S3 Developer Guide for more information.",
+                ));
+            }
             let sse_kms = r
                 .source_selection_criteria
                 .as_ref()

@@ -1008,6 +1008,9 @@ impl Call {
         let mut st = self.write();
         let b = st.bucket_mut(&input.bucket)?;
         check_owner(b, input.expected_bucket_owner.as_deref())?;
+        if input.version_id.is_some() && b.mfa_delete.as_deref() == Some("Enabled") && input.mfa.is_none() {
+            return Err(errors::access_denied("Mfa Authentication must be used for this request"));
+        }
         let conditions = DeleteConditions {
             if_match: input.if_match.as_deref(),
             last_modified: input.if_match_last_modified_time,
@@ -1118,6 +1121,12 @@ impl Call {
         let mut st = self.write();
         let b = st.bucket_mut(&input.bucket)?;
         check_owner(b, input.expected_bucket_owner.as_deref())?;
+        if b.mfa_delete.as_deref() == Some("Enabled")
+            && input.mfa.is_none()
+            && objects.iter().any(|o| o.version_id.is_some())
+        {
+            return Err(errors::access_denied("Mfa Authentication must be used for this request"));
+        }
         let mut deleted = Vec::new();
         let mut errs = Vec::new();
         for o in objects {
