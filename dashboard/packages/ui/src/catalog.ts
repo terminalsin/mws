@@ -114,7 +114,11 @@ const NAV: Record<string, NavItem[]> = {
     { label: "Custom actions", path: "/securityhub?tab=actions", icon: "resource/AmazonEventBridgeCustomEventBus" },
     { label: "Security standards", path: "/securityhub?tab=standards", icon: "service/AWSSecurityHub" },
   ],
-  guardduty: [{ label: "Findings", path: "/guardduty", icon: "service/AmazonGuardDuty" }],
+  guardduty: [
+    { label: "Findings", path: "/guardduty", icon: "service/AmazonGuardDuty" },
+    { label: "Lists", path: "/guardduty/lists", icon: "resource/AWSTrustedAdvisorChecklistSecurity" },
+    { label: "Suppression rules", path: "/guardduty/suppression", icon: "resource/AWSWAFFilteringRule" },
+  ],
   identitycenter: [
     { label: "Users", path: "/identitycenter", icon: "resource/User" },
     { label: "Groups", path: "/identitycenter?tab=groups", icon: "resource/Users" },

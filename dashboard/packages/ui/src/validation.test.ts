@@ -242,3 +242,16 @@ test("a few known values are all offered when none is close", () => {
   const rule: Rule = { pattern: "^(a@example\\.com|b@example\\.com)$", known: ["a@example.com", "b@example.com"] };
   assert.deepEqual(values(rule, "zz@other.org"), ["a@example.com", "b@example.com"]);
 });
+
+test("S3 object locations are rewritten to s3:// URLs", () => {
+  const rule: Rule = { format: "s3url", maxLength: 300 };
+  assert.equal(check("s3://lists/trusted.txt", rule), null);
+  assert.equal(check("https://lists.s3.us-east-1.amazonaws.com/trusted.txt", rule), null);
+  assert.equal(check("https://s3.amazonaws.com/lists/trusted.txt", rule), null);
+  for (const pasted of ["lists/trusted.txt", "arn:aws:s3:::lists/trusted.txt", "S3:/lists/trusted.txt", "https://us-east-1.console.aws.amazon.com/s3/object/lists?region=us-east-1&prefix=trusted.txt"]) {
+    assert.deepEqual(values(rule, pasted), ["s3://lists/trusted.txt"], pasted);
+  }
+  assert.equal(check("s3://lists", rule)?.message, "Like s3://bucket/key");
+  // A bucket without a key: the known objects in it are offered.
+  assert.deepEqual(values({ ...rule, known: ["s3://lists/trusted.txt", "s3://other/x.csv"] }, "s3://lists"), ["s3://lists/trusted.txt"]);
+});
