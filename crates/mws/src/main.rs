@@ -77,7 +77,7 @@ async fn bedrock_bridge() {
         codex: env("MWS_BEDROCK_BRIDGE_CODEX", "codex"),
     };
     let listener = tokio::net::TcpListener::bind(&listen).await.expect("bind the bridge address");
-    let tools = mws_bedrock_runtime::cli::detect();
+    let tools = mws_bedrock_runtime::cli::detect().await;
     let found: Vec<&str> = ["claude-code", "codex"].into_iter().filter(|t| tools[t]["found"] == true).collect();
     println!(
         "MWS Bedrock CLI bridge on http://{listen} ({})",

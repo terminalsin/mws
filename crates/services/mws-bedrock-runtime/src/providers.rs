@@ -237,6 +237,10 @@ impl Resolved {
     /// the Claude model a Bedrock `anthropic.*` id names (Claude Code), else
     /// the CLI's own default.
     pub fn cli_model(&self, model_id: &str) -> Option<String> {
+        // A model the provider itself listed: `<provider>.<model>`.
+        if let Some(m) = model_id.strip_prefix(&format!("{}.", self.name)) {
+            return Some(m.to_string());
+        }
         let mapped = self
             .model_map
             .iter()
@@ -498,8 +502,14 @@ impl Providers {
             .filter(|(_, p)| glob(p, model_id))
             .max_by_key(|(name, p)| (!p.contains('*'), specificity(p), std::cmp::Reverse((*name).clone())))
             .map(|(name, _)| name.clone());
+        // Models a CLI provider listed itself are named after it.
+        let listed = || {
+            let (prefix, _) = model_id.split_once('.')?;
+            self.resolve(prefix).filter(|r| r.kind.is_cli())
+        };
         claimed
             .and_then(|n| self.resolve(&n))
+            .or_else(listed)
             .or_else(|| self.resolve(&self.default_name()))
             .unwrap_or_else(|| self.resolve(ECHO).expect("echo always resolves"))
     }

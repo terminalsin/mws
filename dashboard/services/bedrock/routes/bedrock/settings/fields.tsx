@@ -10,7 +10,7 @@ import { FieldShell } from "@mws-dashboard/ui/fields";
 import { Check, ExternalLink, SlidersHorizontal, Wrench } from "lucide-react";
 import { useState, type ReactNode } from "react";
 
-import { NO_LOCAL, PRESETS, type Kind, type Local, type Preset } from "../../../lib/presets";
+import { LOGIN, NO_LOCAL, PRESETS, type Kind, type Local, type Preset } from "../../../lib/presets";
 
 export interface ProviderView {
   name: string;
@@ -79,7 +79,7 @@ function Gallery({ chosen, choose, local, names }: { chosen: string; choose: (p:
               >
                 <Logo icon={p.icon} />
                 <span>{p.label}</span>
-                {found(p) && <i className="preset-found" aria-label="Installed" title={local.tools[p.detect!]?.via === "bridge" ? "On the host, through the bridge" : local.tools[p.detect!]?.path} />}
+                {found(p) && <i className="preset-found" data-tone={local.tools[p.detect!]?.loggedIn === false ? "warn" : undefined} aria-label={local.tools[p.detect!]?.loggedIn === false ? "Installed, not logged in" : "Installed"} title={local.tools[p.detect!]?.via === "bridge" ? "On the host, through the bridge" : local.tools[p.detect!]?.path} />}
                 {names.includes(p.id) && <Check className="preset-added" size={12} aria-label="Added" />}
               </button>
             ))}
@@ -160,7 +160,16 @@ export function ProviderFields({ p, names = [], local = NO_LOCAL }: { p?: Provid
         {cli && (
           <FieldShell
             label="Command"
-            hint={(!p && tool && !tool.found) || p?.installed === false ? missing : undefined}
+            hint={
+              (!p && tool && !tool.found) || p?.installed === false ? (
+                missing
+              ) : tool?.found && tool.loggedIn === false ? (
+                <span className="warn-text">
+                  Not logged in: run <code>{LOGIN[kind]}</code>
+                  {tool.via === "bridge" ? " on the host" : ""}
+                </span>
+              ) : undefined
+            }
           >
             <input name="command" defaultValue={p?.command ?? preset.command} placeholder={kind === "codex" ? "codex" : "claude"} />
           </FieldShell>
