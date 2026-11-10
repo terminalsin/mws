@@ -32,6 +32,10 @@ export function zoneConfig(id, extra = {}) {
     poweredByHeader: false,
     experimental: {
       serverActions: { allowedOrigins: allowedOrigins(), bodySizeLimit: "64mb" },
+      // Ten dev servers share one workspace. Turbopack's on-disk dev cache
+      // (apps/<zone>/.next/dev) went stale across changes to the shared
+      // packages and kept telling open pages to reload, so compile fresh.
+      turbopackFileSystemCacheForDev: false,
     },
     ...extra,
   };
