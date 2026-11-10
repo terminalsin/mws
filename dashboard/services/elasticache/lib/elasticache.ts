@@ -1,6 +1,11 @@
 import "server-only";
 
-import { DescribeCacheClustersCommand, DescribeReplicationGroupsCommand, DescribeServerlessCachesCommand } from "@aws-sdk/client-elasticache";
+import {
+  DescribeCacheClustersCommand,
+  DescribeReplicationGroupsCommand,
+  DescribeReservedCacheNodesOfferingsCommand,
+  DescribeServerlessCachesCommand,
+} from "@aws-sdk/client-elasticache";
 
 import { elasticache } from "./clients";
 
@@ -64,4 +69,14 @@ export async function listCaches(): Promise<Cache[]> {
         href: `/elasticache/cache?cluster=${encodeURIComponent(c.CacheClusterId!)}`,
       })),
   ];
+}
+
+/** The node types the region offers, read from its reserved-node offerings
+ * (one row per type for a single term, payment option and product). */
+export async function nodeTypes(): Promise<string[]> {
+  const client = await elasticache();
+  const out = await client.send(
+    new DescribeReservedCacheNodesOfferingsCommand({ Duration: "1", OfferingType: "No Upfront", ProductDescription: "redis", MaxRecords: 100 }),
+  );
+  return [...new Set((out.ReservedCacheNodesOfferings ?? []).map((o) => o.CacheNodeType!).filter(Boolean))].sort();
 }

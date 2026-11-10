@@ -1,15 +1,28 @@
 import { load } from "@mws-dashboard/aws";
-import { ActionForm, AwsIcon, Curated, Empty, ErrorNotice, Field, Page, Pill, Sheet, Status } from "@mws-dashboard/ui";
+import { ActionForm, AwsIcon, Curated, Empty, ErrorNotice, Field, Page, Pill, Sheet, Status, type Rule } from "@mws-dashboard/ui";
+import { CreateCacheCluster, CreateServerlessCache } from "@mws-dashboard/ui/model/elasticache";
 import { Lock } from "lucide-react";
 import type { Metadata } from "next";
 
 import { ICONS, STATUS_TONE, engineIcon } from "../../lib/clients";
-import { listCaches } from "../../lib/elasticache";
+import { listCaches, nodeTypes } from "../../lib/elasticache";
 import { createCache } from "./actions";
 
 export const metadata: Metadata = { title: "ElastiCache" };
 
-function CreateCache() {
+// The model leaves identifiers unconstrained; ElastiCache's rules are in its
+// docs (and MWS enforces them): a letter first, then letters, digits and
+// single hyphens, no hyphen at the end, at most 40 characters.
+const NAME: Rule = {
+  ...CreateServerlessCache.ServerlessCacheName,
+  maxLength: 40,
+  pattern: "^[a-zA-Z](?!.*--)[a-zA-Z0-9-]*(?<!-)$",
+  hint: "Starts with a letter; letters, digits and single hyphens",
+  generate: "name",
+};
+
+function CreateCache({ names = [], types = [], list }: { names?: string[]; types?: string[]; list: string }) {
+  const nodeType: Rule = { ...CreateCacheCluster.CacheNodeType, ...(types.length ? { enum: types } : {}) };
   return (
     <Sheet title="Create cache" label="Create cache" testId="create-cache">
       <ActionForm action={createCache} submit="Create" testId="create-cache">
@@ -28,15 +41,20 @@ function CreateCache() {
             </select>
           </Field>
         </div>
-        <Field label="Name">
-          <input name="name" required pattern="[a-zA-Z][a-zA-Z0-9\-]*" maxLength={40} autoFocus />
+        <Field label="Name" rule={NAME} taken={names} unique>
+          <input name="name" required maxLength={40} autoFocus />
         </Field>
         <div className="form-row">
-          <Field label="Node type">
-            <input name="nodeType" defaultValue="cache.t4g.micro" />
+          <Field label="Node type" rule={nodeType} known={types}>
+            <input name="nodeType" defaultValue="cache.t4g.micro" list={list} autoComplete="off" />
+            <datalist id={list}>
+              {types.map((t) => (
+                <option key={t} value={t} />
+              ))}
+            </datalist>
           </Field>
-          <Field label="Nodes">
-            <input name="nodes" type="number" min={1} max={6} defaultValue={1} />
+          <Field label="Nodes" rule={CreateCacheCluster.NumCacheNodes}>
+            <input name="nodes" type="number" min={1} max={40} defaultValue={1} />
           </Field>
         </div>
         <label className="check">
@@ -48,16 +66,18 @@ function CreateCache() {
 }
 
 export default async function Caches() {
-  const caches = await load(listCaches);
+  const [caches, types] = await Promise.all([load(listCaches), load(nodeTypes)]);
+  const known = { names: caches.ok ? caches.value.map((c) => c.name) : [], types: types.ok ? types.value : [] };
+  const create = <CreateCache {...known} list="node-types" />;
   if (!caches.ok) {
     return (
-      <Page title="Caches" actions={<CreateCache />}>
+      <Page title="Caches" actions={create}>
         <ErrorNotice error={caches.error} />
       </Page>
     );
   }
   return (
-    <Page title="Caches" actions={<CreateCache />}>
+    <Page title="Caches" actions={create}>
       <Curated
         label="Caches"
         sections={[
@@ -65,7 +85,7 @@ export default async function Caches() {
           { id: "redis", title: "Redis OSS", items: caches.value.filter((c) => c.engine === "redis") },
           { id: "memcached", title: "Memcached", items: caches.value.filter((c) => c.engine === "memcached") },
         ]}
-        empty={<Empty icon={ICONS.elasticache} action={<CreateCache />} />}
+        empty={<Empty icon={ICONS.elasticache} action={<CreateCache {...known} list="node-types-empty" />} />}
         row={(c) => ({
           key: `${c.kind}:${c.name}`,
           icon: <AwsIcon icon={engineIcon(c.engine)} size={24} />,

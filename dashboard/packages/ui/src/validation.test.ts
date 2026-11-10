@@ -28,6 +28,14 @@ test("pattern mismatches are reshaped to fit", () => {
   assert.deepEqual(values({ pattern: "^[A-Za-z0-9_-]{1,80}$|^[A-Za-z0-9_-]{1,75}\\.fifo$" }, "Orders Queue (prod)"), ["Orders-Queue-prod"]);
 });
 
+test("identifiers that must start with a letter drop what comes first", () => {
+  const rule: Rule = { pattern: "^[a-zA-Z](?!.*--)[a-zA-Z0-9-]*(?<!-)$" };
+  assert.deepEqual(values(rule, "1cache"), ["cache"]);
+  assert.deepEqual(values(rule, "2 my cache"), ["my-cache"]);
+  assert.equal(check("1cache", rule)!.repairs[0].label, "Start with a letter");
+  assert.deepEqual(values(rule, "my--cache-"), ["my-cache"]);
+});
+
 test("too long values are shortened", () => {
   assert.deepEqual(values({ maxLength: 5 }, "abcdefgh"), ["abcde"]);
 });
