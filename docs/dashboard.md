@@ -126,7 +126,10 @@ Fields validate in place, and say how to fix what they reject. `Field`
    `token`, `password`, `uuid`, or a prefix/suffix), `arn` (the ARN template
    a bare name expands to) and `hint` (a readable pattern message). A
    rule's `unit` (`seconds` or `bytes`) converts "5m" or "256 KiB" and
-   shows ranges as durations or sizes.
+   shows ranges as durations or sizes;
+4. from a client component, `validate`: a check of the page's own that
+   returns an issue with repairs, for what a rule cannot say (Route 53's
+   record values follow the chosen type: `services/route53/lib/records.ts`).
 
 A list rule (`type: "list"` with a scalar `item`, e.g. ACM's
 `SubjectAlternativeNames`) on a text control reads it as values separated by
