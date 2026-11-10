@@ -25,6 +25,9 @@ async fn profile(cfg: &aws_config::SdkConfig, name: &str) {
     let iam = aws_sdk_iam::Client::new(cfg);
     let trust = r#"{"Version":"2012-10-17","Statement":[{"Effect":"Allow","Principal":{"Service":"ec2.amazonaws.com"},"Action":"sts:AssumeRole"}]}"#;
     iam.create_role().role_name(name).assume_role_policy_document(trust).send().await.unwrap();
+    // The agent registers only when the role may call ssm:UpdateInstanceInformation.
+    let core = r#"{"Version":"2012-10-17","Statement":[{"Effect":"Allow","Action":["ssm:UpdateInstanceInformation","ssmmessages:*","ec2messages:*"],"Resource":"*"}]}"#;
+    iam.put_role_policy().role_name(name).policy_name("ssm-core").policy_document(core).send().await.unwrap();
     iam.create_instance_profile().instance_profile_name(name).send().await.unwrap();
     iam.add_role_to_instance_profile().instance_profile_name(name).role_name(name).send().await.unwrap();
 }
