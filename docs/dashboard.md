@@ -136,7 +136,7 @@ messages (`Value 'x' at 'roleName' failed to satisfy constraint: ...`) back
 into rules, so a backend rejection gets the same repairs; "already exists"
 errors land on the field marked `unique` with the next free name; anything
 else is mapped with `act(run, { revalidate, fields: { QueueName: "name",
-NoSuchEntity: "role" } })`, and `throw new FieldError(field, message)` targets
+NoSuchEntityException: "role" } })` (error codes as the JS SDK names them, `e.name`), and `throw new FieldError(field, message)` targets
 a field directly. Only issues no field claims show under the form. All of
 this lives in the console (`validation.ts`, `fields.tsx`); MWS itself only
 returns what AWS returns. SQS's create-queue sheet is the reference use.

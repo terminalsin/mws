@@ -91,7 +91,7 @@ export interface ActOptions {
   /** Paths to revalidate after success. */
   revalidate?: string[];
   /** Form field names by API member (`QueueName: "name"`) or by error code
-   * (`QueueNameExists: "name"`, `NoSuchEntity: "role"`), for errors that
+   * (`QueueNameExists: "name"`, `NoSuchEntityException: "role"`, as the SDK names it), for errors that
    * name a member the form calls differently, or name none. */
   fields?: Record<string, string>;
 }

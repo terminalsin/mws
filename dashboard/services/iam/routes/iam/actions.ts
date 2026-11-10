@@ -45,7 +45,7 @@ function json(form: FormData, field: string, label: string) {
 }
 
 /** Where IAM's policy errors land: the form's document field. */
-const document = (field: string) => ({ PolicyDocument: field, MalformedPolicyDocument: field });
+const document = (field: string) => ({ PolicyDocument: field, MalformedPolicyDocumentException: field });
 
 export async function createUser(_: ActionResult | null, form: FormData) {
   return act(async () => {
@@ -77,7 +77,7 @@ export async function createRole(_: ActionResult | null, form: FormData) {
       });
     await (await iam()).send(new CreateRoleCommand({ RoleName: name, AssumeRolePolicyDocument: doc, Description: text(form, "description") || undefined }));
     return `Created ${name}`;
-  }, { revalidate: ["/iam"], fields: { RoleName: "name", AssumeRolePolicyDocument: policy, MalformedPolicyDocument: policy } });
+  }, { revalidate: ["/iam"], fields: { RoleName: "name", AssumeRolePolicyDocument: policy, MalformedPolicyDocumentException: policy } });
 }
 
 export async function createPolicy(_: ActionResult | null, form: FormData) {
@@ -103,7 +103,7 @@ export async function attachPolicy(kind: Kind, name: string, _: ActionResult | n
     else if (kind === "user") await client.send(new AttachUserPolicyCommand({ UserName: name, PolicyArn }));
     else await client.send(new AttachGroupPolicyCommand({ GroupName: name, PolicyArn }));
     return `Attached ${PolicyArn.split("/").pop()}`;
-  }, { revalidate: [page(kind, name)], fields: { PolicyArn: "policyArn", NoSuchEntity: "policyArn", InvalidInput: "policyArn" } });
+  }, { revalidate: [page(kind, name)], fields: { PolicyArn: "policyArn", NoSuchEntityException: "policyArn", InvalidInputException: "policyArn" } });
 }
 
 export async function detachPolicy(kind: Kind, name: string, PolicyArn: string) {
@@ -173,7 +173,7 @@ export async function addToGroup(user: string, _: ActionResult | null, form: For
     const group = required(form, "group", "Group");
     await (await iam()).send(new AddUserToGroupCommand({ UserName: user, GroupName: group }));
     return `Added to ${group}`;
-  }, { revalidate: [page("user", user)], fields: { GroupName: "group", NoSuchEntity: "group" } });
+  }, { revalidate: [page("user", user)], fields: { GroupName: "group", NoSuchEntityException: "group" } });
 }
 
 export async function removeFromGroup(user: string, group: string) {
