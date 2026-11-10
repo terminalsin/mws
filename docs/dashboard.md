@@ -103,6 +103,24 @@ Image Builder infrastructure configuration with
 `EC2InstanceProfileForImageBuilder`. The field starts on "create" when
 nothing suitable exists. Helpers live in `packages/aws/src/auto.ts`.
 
+### Live state, whole lists and batch failures
+
+- **Transitional states refresh themselves.** `Status` mounts a
+  `LiveRefresh` (`@mws-dashboard/ui/client`) when its word is transitional
+  ("Creating", "CREATE_IN_PROGRESS"), which re-renders the page every few
+  seconds (backing off to 15 s, pausing while the tab is hidden or someone
+  types) until nothing on it is changing. For states `Status` can't tell
+  (`PENDING_VALIDATION`, a job's `RUNNING`), render
+  `<LiveRefresh when={...} />` yourself.
+- **Never cut a list silently.** Use `all()` from `@mws-dashboard/aws` to
+  follow `NextToken`/`Marker` wherever a count, summary or lookup needs the
+  whole list. For lists too big to load (S3 objects, log events, records),
+  page with a token search parameter and end the list with
+  `<More shown={n} href={nextPageHref} />`.
+- **Batch calls fail per item.** APIs such as ECR `BatchDeleteImage` answer
+  200 with a `failures` list; pass it to `checkFailures(list, describe)` so
+  the action reports the failure.
+
 ### Form validation and repairs
 
 Fields validate in place, and say how to fix what they reject. `Field`

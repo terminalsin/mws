@@ -16,7 +16,7 @@ import Link from "next/link";
 import { Suspense, type ReactNode } from "react";
 
 import { navigation, iconUrl } from "./catalog";
-import { CommandPalette, CopyButton, NavLink, RegionPicker, RouteProgress, ServicesMenu, SideNav, Toasts, type NavGroup } from "./client";
+import { CommandPalette, CopyButton, LiveRefresh, NavLink, RegionPicker, RouteProgress, ServicesMenu, SideNav, Toasts, type NavGroup } from "./client";
 import { CountUp } from "./motion";
 import { FieldShell, type FieldRules } from "./fields";
 
@@ -360,6 +360,23 @@ export function transitional(word: string) {
   return TRANSITIONAL.test(w) && !STEADY.test(w);
 }
 
+/** The footer of a list that stopped before the end: how many are shown,
+ * and a link to the next page (built by the page, e.g. `?token=...`). Never
+ * cut a list without one. */
+export function More({ shown, href, noun = "items" }: { shown: number; href?: string; noun?: string }) {
+  if (!href) return null;
+  return (
+    <p className="more-items">
+      <span>
+        First {shown.toLocaleString()} {noun}
+      </span>
+      <Link href={href} data-testid="load-more">
+        Next page
+      </Link>
+    </p>
+  );
+}
+
 /** A status as a colored dot with its word. */
 export function Status({ tone, children }: { tone: Tone; children: ReactNode }) {
   const live = typeof children === "string" && transitional(children);
@@ -367,6 +384,7 @@ export function Status({ tone, children }: { tone: Tone; children: ReactNode }) 
     <span className={`status ${tone}`} data-live={live || undefined}>
       <span className="dot" aria-hidden />
       {children}
+      {live ? <LiveRefresh /> : null}
     </span>
   );
 }

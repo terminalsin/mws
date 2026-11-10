@@ -581,6 +581,9 @@
   .status.info .dot {
     @apply bg-[#0f62fe];
   }
+  .more-items {
+    @apply flex items-center gap-4 border-t border-subtle px-4 py-3 text-sm text-secondary;
+  }
   .chips {
     @apply inline-flex flex-wrap gap-1;
   }
