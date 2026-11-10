@@ -2,22 +2,18 @@ import { DescribeAutoScalingGroupsCommand, DescribePoliciesCommand, DescribeScal
 import { ago, load } from "@mws-dashboard/aws";
 import { ActionForm, AwsIcon, Empty, ErrorNotice, Field, List, Page, Pill, Section, Segments, Sheet, Specs, Status } from "@mws-dashboard/ui";
 import { Activity, FileStack, Gauge, HeartPulse, MapPin, Minus, Plus, RefreshCw, Settings2, Trash2, TrendingUp, X } from "lucide-react";
+import { PutScalingPolicy } from "@mws-dashboard/ui/model/autoscaling";
 import type { Metadata } from "next";
 
 import { Capacity } from "../../../lib/capacity";
 import { autoscaling, ICONS, tone } from "../../../lib/clients";
+import { METRICS } from "../../../lib/metrics";
+import { GroupSize, PolicyTarget } from "../../../lib/sizes";
 import { addPolicy, deleteGroup, deletePolicy, editCapacity, refresh, scale, terminate } from "../actions";
 
 export const metadata: Metadata = { title: "Auto Scaling group" };
 
 type Props = { searchParams: Promise<{ name?: string; tab?: string }> };
-
-const METRICS = [
-  ["ASGAverageCPUUtilization", "Average CPU utilization (%)"],
-  ["ASGAverageNetworkIn", "Average network in (bytes)"],
-  ["ASGAverageNetworkOut", "Average network out (bytes)"],
-  ["ALBRequestCountPerTarget", "Requests per target"],
-];
 
 export default async function Group({ searchParams }: Props) {
   const { name = "", tab = "instances" } = await searchParams;
@@ -76,21 +72,10 @@ export default async function Group({ searchParams }: Props) {
         actions={
           <Sheet title="Create dynamic scaling policy" label="Create dynamic scaling policy" icon={<Plus size={15} />} testId="add-policy">
             <ActionForm action={addPolicy.bind(null, name)} submit="Create" testId="add-policy">
-              <Field label="Policy name">
+              <Field label="Policy name" rule={PutScalingPolicy.PolicyName} generate={{ prefix: "target-tracking" }}>
                 <input name="policy" required autoFocus defaultValue="target-tracking" />
               </Field>
-              <Field label="Metric type">
-                <select name="metric">
-                  {METRICS.map(([v, l]) => (
-                    <option key={v} value={v}>
-                      {l}
-                    </option>
-                  ))}
-                </select>
-              </Field>
-              <Field label="Target value">
-                <input name="target" type="number" defaultValue={50} />
-              </Field>
+              <PolicyTarget />
             </ActionForm>
           </Sheet>
         }
@@ -155,17 +140,7 @@ export default async function Group({ searchParams }: Props) {
           <ActionForm action={scale.bind(null, name, Math.min(desired + 1, g.MaxSize ?? desired + 1))} submit="Scale out" icon={<Plus size={16} />} testId="scale-out" />
           <Sheet title="Group size" label="Edit capacity" icon={<Settings2 size={15} />} testId="edit-capacity">
             <ActionForm action={editCapacity.bind(null, name)} submit="Update" testId="edit-capacity">
-              <div className="form-row">
-                <Field label="Min">
-                  <input name="min" type="number" min={0} defaultValue={g.MinSize} />
-                </Field>
-                <Field label="Desired">
-                  <input name="desired" type="number" min={0} defaultValue={desired} />
-                </Field>
-                <Field label="Max">
-                  <input name="max" type="number" min={0} defaultValue={g.MaxSize} />
-                </Field>
-              </div>
+              <GroupSize min={g.MinSize} desired={desired} max={g.MaxSize} />
             </ActionForm>
           </Sheet>
           <ActionForm action={refresh.bind(null, name)} submit="Start instance refresh" icon={<RefreshCw size={16} />} />
