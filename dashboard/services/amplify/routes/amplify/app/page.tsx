@@ -6,6 +6,7 @@ import type { Metadata } from "next";
 
 import { siteUrl } from "../../../lib/amplify";
 import { amplify, ICONS, tone } from "../../../lib/clients";
+import { BRANCH, CreateBranch } from "../../../lib/rules";
 import { createBranch, deleteApp } from "../actions";
 
 export const metadata: Metadata = { title: "App" };
@@ -68,10 +69,10 @@ export default async function App({ searchParams }: Props) {
         actions={
           <Sheet title="Connect branch" label="Connect branch" icon={<Plus size={15} />} testId="create-branch">
             <ActionForm action={createBranch.bind(null, id)} submit="Save" testId="create-branch">
-              <Field label="Branch">
+              <Field label="Branch" rule={BRANCH} member="branchName" taken={branches.map((b) => b.branchName!)} unique>
                 <input name="name" required autoFocus />
               </Field>
-              <Field label="Stage">
+              <Field label="Stage" rule={CreateBranch.stage}>
                 <select name="stage" defaultValue="DEVELOPMENT">
                   {["PRODUCTION", "BETA", "DEVELOPMENT", "EXPERIMENTAL", "PULL_REQUEST"].map((s) => (
                     <option key={s} value={s}>
