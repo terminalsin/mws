@@ -41,7 +41,6 @@ export const PRESETS: Preset[] = [
   { id: "groq", label: "Groq", icon: "ai/groq", kind: "openai", place: "cloud", url: "https://api.groq.com/openai/v1", models: "meta.*", model: "llama-3.3-70b-versatile", keyUrl: "https://console.groq.com/keys" },
   { id: "deepseek", label: "DeepSeek", icon: "ai/deepseek", kind: "openai", place: "cloud", url: "https://api.deepseek.com/v1", models: "deepseek.*", model: "deepseek-chat", keyUrl: "https://platform.deepseek.com/api_keys" },
   { id: "xai", label: "xAI", icon: "ai/xai", kind: "openai", place: "cloud", url: "https://api.x.ai/v1", model: "grok-4", keyUrl: "https://console.x.ai" },
-  { id: "together", label: "Together", icon: "ai/together", kind: "openai", place: "cloud", url: "https://api.together.xyz/v1", models: "meta.*", model: "meta-llama/Llama-3.3-70B-Instruct-Turbo", keyUrl: "https://api.together.ai/settings/api-keys" },
   { id: "fireworks", label: "Fireworks", icon: "ai/fireworks", kind: "openai", place: "cloud", url: "https://api.fireworks.ai/inference/v1", models: "meta.*", model: "accounts/fireworks/models/llama-v3p3-70b-instruct", keyUrl: "https://fireworks.ai/account/api-keys" },
   { id: "cerebras", label: "Cerebras", icon: "ai/cerebras", kind: "openai", place: "cloud", url: "https://api.cerebras.ai/v1", models: "meta.*", model: "llama-3.3-70b", keyUrl: "https://cloud.cerebras.ai" },
   { id: "perplexity", label: "Perplexity", icon: "ai/perplexity", kind: "openai", place: "cloud", url: "https://api.perplexity.ai", model: "sonar", keyUrl: "https://www.perplexity.ai/account/api/keys" },
