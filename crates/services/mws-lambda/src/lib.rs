@@ -20,9 +20,11 @@ pub mod generated {
 }
 
 mod aliases;
+mod capacity;
 mod code;
 mod config_ops;
 mod destinations;
+mod durable;
 mod esm;
 mod esm_stream;
 mod function_url;
@@ -71,6 +73,8 @@ pub(crate) struct Inner {
     images: std::sync::OnceLock<Arc<dyn image::ImageSource>>,
     /// Where the `AWS/Lambda` metrics go.
     metrics: mws_core::metrics::MetricOutlet,
+    /// Durable executions' background work.
+    durable: durable::Runtime,
 }
 
 /// The Lambda service. Cheap to clone; clones share state.
@@ -112,6 +116,7 @@ impl Lambda {
                 destinations: destinations::Sinks::default(),
                 images: std::sync::OnceLock::new(),
                 metrics: Default::default(),
+                durable: Default::default(),
             }),
         }
     }
@@ -169,7 +174,16 @@ impl Service for Lambda {
             && date.bytes().enumerate().all(|(i, b)| if i == 4 || i == 7 { b == b'-' } else { b.is_ascii_digit() })
             && matches!(
                 resource,
-                "functions" | "layers" | "tags" | "event-source-mappings" | "account-settings" | "code-signing-configs"
+                "functions"
+                    | "layers"
+                    | "tags"
+                    | "event-source-mappings"
+                    | "account-settings"
+                    | "code-signing-configs"
+                    | "resource-policy"
+                    | "capacity-providers"
+                    | "durable-executions"
+                    | "durable-execution-callbacks"
             )
     }
 

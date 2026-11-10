@@ -120,6 +120,9 @@ impl Lambda {
         if let Some(c) = st.code_signing_configs.get_mut(resource) {
             return Ok(f(&mut c.tags));
         }
+        if let Some(c) = st.capacity_providers.get_mut(resource) {
+            return Ok(f(&mut c.tags));
+        }
         if let Some(m) = st
             .event_source_mappings
             .values_mut()

@@ -238,6 +238,7 @@ impl Lambda {
             extra.insert("lambda:CodeSigningConfigArn".into(), vec![c.clone()]);
         }
         ctx.authorize("lambda:CreateFunction", &f.arn(), extra)?;
+        self.check_capacity_provider_config(input.capacity_provider_config.as_ref())?;
         self.check_role(ctx, &input.role)?;
 
         let package_type = input.package_type.clone().unwrap_or_else(|| "Zip".into());
@@ -348,6 +349,7 @@ impl Lambda {
             }),
             tenancy_config: input.tenancy_config.clone(),
             durable_config: input.durable_config.clone(),
+            capacity_provider_config: input.capacity_provider_config.clone(),
             ..Default::default()
         };
 
