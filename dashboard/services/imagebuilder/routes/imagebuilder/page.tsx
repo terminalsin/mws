@@ -7,13 +7,15 @@ import {
   ListImagesCommand,
   ListInfrastructureConfigurationsCommand,
 } from "@aws-sdk/client-imagebuilder";
+import { DescribeInstanceTypesCommand } from "@aws-sdk/client-ec2";
 import { ago, load } from "@mws-dashboard/aws";
-import { AutoPick, ActionForm, AwsIcon, Empty, ErrorNotice, Field, List, Page, Pill, Section, Sheet, Status } from "@mws-dashboard/ui";
+import { AutoPick, ActionForm, AwsIcon, Empty, ErrorNotice, Field, List, Page, Pill, Section, Sheet, Status, type Rule } from "@mws-dashboard/ui";
+import { CreateComponent, CreateImagePipeline, CreateImageRecipe, CreateInfrastructureConfiguration } from "@mws-dashboard/ui/model/imagebuilder";
 import { CalendarClock, FlaskConical, Pause, Play, Puzzle, Server, Trash2 } from "lucide-react";
 import type { Metadata } from "next";
 import Link from "next/link";
 
-import { iam, ICONS, imagebuilder, tone } from "../../lib/clients";
+import { ec2, iam, ICONS, imagebuilder, tone } from "../../lib/clients";
 import { createComponent, createInfrastructure, createPipeline, createRecipe, deleteResource, runPipeline, setPipelineEnabled } from "./actions";
 
 export const metadata: Metadata = { title: "Image Builder" };
@@ -41,6 +43,16 @@ phases:
             - nginx -v
 `;
 
+// Image Builder's name pattern reads badly as text; every resource shares it.
+const named = (rule: Rule): Rule => ({ ...rule, hint: "Letters, digits, spaces, - and _", generate: "name" });
+const NAMES = {
+  component: named(CreateComponent.name),
+  recipe: named(CreateImageRecipe.name),
+  infrastructure: named(CreateInfrastructureConfiguration.name),
+  pipeline: named(CreateImagePipeline.name),
+};
+const SCHEDULE: Rule = { ...CreateImagePipeline.schedule.fields!.scheduleExpression, format: "cron" };
+
 /** "arn:…:image/name/1.2.3/4" → "1.2.3/4". */
 const versionOf = (arn: string | undefined) => arn?.split("/").slice(2).join("/");
 const osIcon = (platform: string | undefined, os: string | undefined) =>
@@ -62,7 +74,7 @@ async function Pipelines() {
     recipes.length ? (
       <Sheet title="Create image pipeline" label="Create image pipeline" testId="create-pipeline">
         <ActionForm action={createPipeline} submit="Create pipeline" testId="create-pipeline">
-          <Field label="Name">
+          <Field label="Name" rule={NAMES.pipeline} taken={pipelines.map((p) => p.name!)} unique>
             <input name="name" required autoFocus />
           </Field>
           <Field label="Recipe">
@@ -75,8 +87,8 @@ async function Pipelines() {
             </select>
           </Field>
           <AutoPick name="infrastructure" label="Infrastructure configuration" creates="default · EC2InstanceProfileForImageBuilder" options={infra.map((i) => ({ value: i.arn!, label: i.name! }))} testId="pipeline-infrastructure" />
-          <Field label="Schedule (cron)">
-            <input name="cron" placeholder="0 0 * * ? *  (manual if empty)" />
+          <Field label="Schedule (cron)" rule={SCHEDULE} member="scheduleExpression">
+            <input name="cron" placeholder="0 0 * * ? *  (manual if empty)" spellCheck={false} />
           </Field>
           <label className="check">
             <input type="checkbox" name="tests" defaultChecked /> Run image tests
@@ -180,14 +192,14 @@ async function Recipes() {
     <Sheet title="Create image recipe" label="Create image recipe" testId="create-recipe">
       <ActionForm action={createRecipe} submit="Create recipe" testId="create-recipe">
         <div className="form-row">
-          <Field label="Name">
+          <Field label="Name" rule={NAMES.recipe}>
             <input name="name" required autoFocus />
           </Field>
-          <Field label="Version">
-            <input name="version" defaultValue="1.0.0" />
+          <Field label="Version" rule={CreateImageRecipe.semanticVersion} format="semver" member="semanticVersion" unique>
+            <input name="version" required defaultValue="1.0.0" />
           </Field>
         </div>
-        <Field label="Base image">
+        <Field label="Base image" member="parentImage">
           <select name="parent">
             {parents.map((p) => (
               <option key={p.arn} value={p.arn}>
@@ -240,14 +252,16 @@ async function Components() {
     <Sheet title="Create component" label="Create component" testId="create-component">
       <ActionForm action={createComponent} submit="Create component" testId="create-component">
         <div className="form-row">
-          <Field label="Name">
+          <Field label="Name" rule={NAMES.component}>
             <input name="name" required autoFocus />
           </Field>
-          <Field label="Version">
-            <input name="version" defaultValue="1.0.0" />
+          <Field label="Version" rule={CreateComponent.semanticVersion} format="semver" member="semanticVersion" unique>
+            <input name="version" required defaultValue="1.0.0" />
           </Field>
         </div>
-        <textarea name="data" rows={16} className="code-editor" aria-label="Document" spellCheck={false} defaultValue={SAMPLE} />
+        <Field label="Document" rule={CreateComponent.data}>
+          <textarea name="data" rows={16} className="code-editor" spellCheck={false} defaultValue={SAMPLE} />
+        </Field>
       </ActionForm>
     </Sheet>
   );
@@ -277,23 +291,41 @@ async function Components() {
   };
 }
 
+/** The instance types EC2 offers, so a typo gets a "did you mean". */
+async function instanceTypes(): Promise<string[]> {
+  const out: string[] = [];
+  try {
+    const client = await ec2();
+    let NextToken: string | undefined;
+    do {
+      const page = await client.send(new DescribeInstanceTypesCommand({ NextToken, MaxResults: 100 }));
+      out.push(...(page.InstanceTypes ?? []).map((t) => t.InstanceType!).filter(Boolean));
+      NextToken = page.NextToken;
+    } while (NextToken && out.length < 2000);
+  } catch {
+    return [];
+  }
+  return out.sort();
+}
+
 async function Infrastructure() {
   const data = await load(async () => {
-    const [infra, profiles] = await Promise.all([
+    const [infra, profiles, types] = await Promise.all([
       (await imagebuilder()).send(new ListInfrastructureConfigurationsCommand({})).then((r) => r.infrastructureConfigurationSummaryList ?? []),
       (await iam()).send(new ListInstanceProfilesCommand({})).then((r) => r.InstanceProfiles ?? [], () => []),
+      instanceTypes(),
     ]);
-    return { infra, profiles };
+    return { infra, profiles, types };
   });
   if (!data.ok) return { body: <ErrorNotice error={data.error} />, action: null };
-  const { infra, profiles } = data.value;
+  const { infra, profiles, types } = data.value;
   const action = (
     <Sheet title="Create infrastructure configuration" label="Create infrastructure configuration" testId="create-infrastructure">
       <ActionForm action={createInfrastructure} submit="Create" testId="create-infrastructure">
-        <Field label="Name">
+        <Field label="Name" rule={NAMES.infrastructure} taken={infra.map((i) => i.name!)} unique>
           <input name="name" required autoFocus />
         </Field>
-        <Field label="Instance profile">
+        <Field label="Instance profile" member="instanceProfileName">
           <select name="profile">
             {profiles.map((p) => (
               <option key={p.Arn} value={p.InstanceProfileName}>
@@ -302,8 +334,8 @@ async function Infrastructure() {
             ))}
           </select>
         </Field>
-        <Field label="Instance type">
-          <input name="type" placeholder="m5.large" />
+        <Field label="Instance type" rule={types.length ? { enum: types } : undefined} member="instanceTypes">
+          <input name="type" placeholder="m5.large" spellCheck={false} />
         </Field>
       </ActionForm>
     </Sheet>
