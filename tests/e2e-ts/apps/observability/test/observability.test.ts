@@ -17,6 +17,22 @@ beforeAll(async () => {
   logger = new CloudWatchLogger(logs, monitoring.logGroupName, `web-${process.pid}`, { service: "checkout" });
 });
 
+/**
+ * Alarms evaluate completed periods, about once a minute. MWS runs that on
+ * its emulated clock, which the alarm test moves past the minute of its
+ * data instead of waiting for it, and puts back afterwards (the clock is
+ * shared by every suite).
+ */
+async function clock(body?: object): Promise<{ offsetSeconds: number }> {
+  const res = await fetch(new URL("/_mws/clock", process.env.AWS_ENDPOINT_URL), {
+    method: body ? "POST" : "GET",
+    headers: { "content-type": "application/json" },
+    body: body && JSON.stringify(body),
+  });
+  expect(res.ok).toBe(true);
+  return res.json() as Promise<{ offsetSeconds: number }>;
+}
+
 async function eventually<T>(fn: () => Promise<T | undefined>, timeoutMs = 30_000): Promise<T> {
   const deadline = Date.now() + timeoutMs;
   for (;;) {
@@ -106,10 +122,12 @@ describe("observability", () => {
     });
     expect(errors).toBe(5);
 
+    const { offsetSeconds } = await clock();
+    await clock({ advanceSeconds: 61 });
     const alarm = await eventually(async () => {
       const { MetricAlarms = [] } = await cloudwatch.send(new DescribeAlarmsCommand({ AlarmNames: [monitoring.alarmName] }));
       return MetricAlarms[0]?.StateValue === "ALARM" ? MetricAlarms[0] : undefined;
-    }, 90_000);
+    }, 90_000).finally(() => clock({ offsetSeconds }));
     expect(alarm.StateReason).toMatch(/Threshold Crossed/);
 
     const page = await eventually(async () => {

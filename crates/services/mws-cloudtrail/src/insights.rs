@@ -226,6 +226,7 @@ impl CloudTrail {
                             && wants(&t.insight_selectors, &d.kind)
                         {
                             t.insight_pending.push(r.clone());
+                            t.pending_since.get_or_insert(ctx.received_at);
                             t.insight_events.push(h.clone());
                             let excess = t.insight_events.len().saturating_sub(MAX_INSIGHT_EVENTS);
                             t.insight_events.drain(..excess);

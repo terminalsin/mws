@@ -129,6 +129,14 @@ pub struct Trail {
     /// Records waiting for the next log file, with the account each came
     /// from.
     pub pending: Vec<(String, Value)>,
+    /// When the oldest record (or Insights event) still waiting for a log
+    /// file arrived, on the emulated clock: log files are written about
+    /// every five minutes, as AWS does.
+    pub pending_since: Option<DateTime<Utc>>,
+    /// Records waiting for the trail's CloudWatch Logs log group.
+    pub cw_pending: Vec<(String, Value)>,
+    /// When the oldest of `cw_pending` arrived.
+    pub cw_pending_since: Option<DateTime<Utc>>,
     /// Insights events waiting for delivery.
     pub insight_pending: Vec<Value>,
     /// The Insights events this trail logged (`ListInsightsData`).

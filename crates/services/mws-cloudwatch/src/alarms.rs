@@ -70,6 +70,15 @@ fn validate_actions(actions: &[Option<Vec<String>>]) -> Result<(), ServiceError>
     Ok(())
 }
 
+/// `cloudwatch:AlarmActions`: every action the request names.
+fn alarm_action_conditions(mut cond: ConditionContext, lists: &[&Option<Vec<String>>]) -> ConditionContext {
+    let actions: Vec<String> = lists.iter().filter_map(|l| l.as_ref()).flatten().cloned().collect();
+    if !actions.is_empty() {
+        cond.insert("cloudwatch:AlarmActions".into(), actions);
+    }
+    cond
+}
+
 fn validate_tags(tags: &[types::Tag]) -> Result<(), ServiceError> {
     if tags.len() > 50 {
         return Err(errors::invalid_parameter_value("The number of tags must not exceed 50."));
@@ -168,7 +177,11 @@ impl CloudWatch {
         mut input: types::PutMetricAlarmInput,
     ) -> Result<(), ServiceError> {
         let tags = input.tags.take().unwrap_or_default();
-        self.authorize_alarm(ctx, "PutMetricAlarm", &input.alarm_name, request_tag_conditions(&tags))?;
+        let cond = alarm_action_conditions(
+            request_tag_conditions(&tags),
+            &[&input.ok_actions, &input.alarm_actions, &input.insufficient_data_actions],
+        );
+        self.authorize_alarm(ctx, "PutMetricAlarm", &input.alarm_name, cond)?;
         self.observe(ctx);
         validate_tags(&tags)?;
         validate_actions(&[
@@ -303,7 +316,11 @@ impl CloudWatch {
         mut input: types::PutCompositeAlarmInput,
     ) -> Result<(), ServiceError> {
         let tags = input.tags.take().unwrap_or_default();
-        self.authorize_alarm(ctx, "PutCompositeAlarm", &input.alarm_name, request_tag_conditions(&tags))?;
+        let cond = alarm_action_conditions(
+            request_tag_conditions(&tags),
+            &[&input.ok_actions, &input.alarm_actions, &input.insufficient_data_actions],
+        );
+        self.authorize_alarm(ctx, "PutCompositeAlarm", &input.alarm_name, cond)?;
         self.observe(ctx);
         validate_tags(&tags)?;
         validate_actions(&[
@@ -668,11 +685,9 @@ impl CloudWatch {
                 return Err(errors::resource_not_found(format!("Alarm {} not found", input.alarm_name)));
             }
             // The state holds until the alarm's next evaluation.
-            let puts = region.puts;
             if let Some(a) = region.alarms.get_mut(&input.alarm_name) {
                 if a.alarm_type == "MetricAlarm" {
                     a.last_evaluated = Some(now);
-                    a.seen_puts = puts;
                 }
             }
             let mut out = Vec::new();

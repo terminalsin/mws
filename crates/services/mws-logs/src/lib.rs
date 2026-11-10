@@ -27,6 +27,7 @@ pub mod generated {
     include!(concat!(env!("OUT_DIR"), "/logs_generated.rs"));
 }
 
+mod background;
 mod deliveries;
 mod events;
 pub mod filter;
@@ -34,6 +35,7 @@ mod forward;
 mod groups;
 mod handler;
 pub mod insights;
+mod lake;
 mod livetail;
 mod metrics;
 mod misc;
@@ -54,7 +56,8 @@ use mws_core::{HttpRequest, HttpResponse, RequestContext, Service, ServiceError}
 use mws_kms::Kms;
 use mws_s3::S3;
 
-pub use forward::{control_message, lambda_event, SubscriptionSource, SubscriptionTarget};
+pub use forward::{control_message, lambda_event, DeliveryFailure, SubscriptionSource, SubscriptionTarget};
+pub use lake::{LakeData, LakeEvent, LakeSource};
 pub use metrics::{FilterMetric, MetricPublisher};
 pub use public::{ServiceLogError, ServiceLogEvent, ServiceLogWriter};
 use state::State;
@@ -76,6 +79,8 @@ pub struct Logs {
     sts: Option<mws_sts::Sts>,
     /// Whether the scheduled query runner is started.
     scheduler: Arc<std::sync::atomic::AtomicBool>,
+    /// Import tasks read CloudTrail Lake event data stores here.
+    lake: Arc<std::sync::RwLock<Option<Arc<dyn LakeSource>>>>,
 }
 
 impl Logs {
@@ -99,6 +104,11 @@ impl Logs {
     pub fn with_sts(mut self, sts: mws_sts::Sts) -> Self {
         self.sts = Some(sts);
         self
+    }
+
+    /// Import tasks read CloudTrail Lake event data stores from `source`.
+    pub fn set_lake_source(&self, source: Arc<dyn LakeSource>) {
+        *self.lake.write().expect("Logs lake lock poisoned") = Some(source);
     }
 
     fn lock(&self) -> MutexGuard<'_, State> {
@@ -152,6 +162,7 @@ impl Service for Logs {
     fn import_state(&self, state: serde_json::Value) -> Result<(), String> {
         let state: State = serde_json::from_value(state).map_err(|e| format!("invalid CloudWatch Logs state: {e}"))?;
         *self.lock() = state;
+        self.resume_background();
         Ok(())
     }
 

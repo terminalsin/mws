@@ -136,6 +136,10 @@ pub struct Query {
     pub results: Vec<Vec<types::ResultField>>,
     pub statistics: types::QueryStatistics,
     pub duration_ms: i64,
+    /// Results computed when the query started (over the events as they
+    /// were then), shown once it reaches `Complete`.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub pending: Option<(Vec<Vec<types::ResultField>>, types::QueryStatistics)>,
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
@@ -183,6 +187,17 @@ pub struct Integration {
 pub struct ImportTask {
     pub record: types::Import,
     pub batches: Vec<types::ImportBatch>,
+    /// The managed log group the events go to.
+    pub log_group: String,
+    pub partition: String,
+}
+
+/// What an export task still needs to run.
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[serde(default)]
+pub struct ExportSpec {
+    pub partition: String,
+    pub log_stream_name_prefix: Option<String>,
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
@@ -192,6 +207,8 @@ pub struct Region {
     pub destinations: BTreeMap<String, Destination>,
     /// In creation order (ids sort by creation time).
     pub export_tasks: BTreeMap<String, types::ExportTask>,
+    /// Inputs of the export tasks that have not run yet, by task id.
+    pub export_specs: BTreeMap<String, ExportSpec>,
     pub import_tasks: BTreeMap<String, ImportTask>,
     pub queries: BTreeMap<String, Query>,
     pub query_definitions: BTreeMap<String, types::QueryDefinition>,

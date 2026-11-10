@@ -120,6 +120,19 @@ pub fn mask(policies: &[(String, i64)], ingested: i64, message: &str) -> String 
     out
 }
 
+/// An event as it leaves CloudWatch Logs under `policies`: its message
+/// (and transformed version) masked.
+pub(crate) fn mask_event(policies: &[(String, i64)], e: &crate::state::Event) -> crate::state::Event {
+    if policies.is_empty() {
+        return e.clone();
+    }
+    crate::state::Event {
+        message: mask(policies, e.ingestion_time, &e.message),
+        transformed: e.transformed.as_ref().map(|t| mask(policies, e.ingestion_time, t)),
+        ..e.clone()
+    }
+}
+
 fn check_data_protection_policy(doc: &str) -> Result<(), ServiceError> {
     let bad = || errors::invalid_parameter("Invalid data protection policy document.");
     let v: Value = serde_json::from_str(doc).map_err(|_| bad())?;

@@ -31,7 +31,24 @@ pub struct FilterMetric {
     pub value: f64,
 }
 
-/// Where metric filters publish (CloudWatch).
+/// The namespace of the metrics CloudWatch Logs vends.
+const VENDED_NAMESPACE: &str = "AWS/Logs";
+
+/// One subscription delivery, for its `AWS/Logs` metrics.
+pub(crate) struct DeliveryMetrics<'a> {
+    pub group: &'a GroupRef,
+    pub filter: &'a str,
+    /// `Lambda`, `Kinesis`, `Firehose`, ...
+    pub destination_type: &'a str,
+    pub events: usize,
+    /// Compressed bytes sent.
+    pub bytes: usize,
+    pub now: i64,
+    pub outcome: Result<(), crate::forward::DeliveryFailure>,
+}
+
+/// Where metric filters and the `AWS/Logs` vended metrics publish
+/// (CloudWatch).
 pub trait MetricPublisher: Send + Sync {
     fn publish(&self, metrics: Vec<FilterMetric>);
 }
@@ -57,14 +74,80 @@ impl Logs {
         *self.metric_publisher.write().expect("Logs publisher lock poisoned") = Some(publisher);
     }
 
+    fn publisher(&self) -> Option<Arc<dyn MetricPublisher>> {
+        self.metric_publisher.read().expect("Logs publisher lock poisoned").clone()
+    }
+
+    /// The `AWS/Logs` metrics CloudWatch Logs vends for a stored batch:
+    /// `IncomingBytes` (uncompressed) and `IncomingLogEvents`, per log
+    /// group (`LogGroupName`) and for the account (no dimension).
+    pub(crate) fn publish_incoming(&self, g: &GroupRef, stored: &[Event], now: i64) {
+        if stored.is_empty() {
+            return;
+        }
+        let Some(publisher) = self.publisher() else { return };
+        let bytes: usize = stored.iter().map(|e| e.message.len()).sum();
+        let mut out = Vec::new();
+        for dimensions in [vec![("LogGroupName".to_string(), g.name.clone())], Vec::new()] {
+            for (name, unit, value) in
+                [("IncomingBytes", "Bytes", bytes as f64), ("IncomingLogEvents", "None", stored.len() as f64)]
+            {
+                out.push(FilterMetric {
+                    account: g.account.clone(),
+                    region: g.region.clone(),
+                    namespace: VENDED_NAMESPACE.into(),
+                    metric_name: name.into(),
+                    dimensions: dimensions.clone(),
+                    unit: Some(unit.into()),
+                    timestamp: now,
+                    value,
+                });
+            }
+        }
+        publisher.publish(out);
+    }
+
+    /// The `AWS/Logs` metrics of one subscription filter delivery:
+    /// `ForwardedBytes` (compressed) and `ForwardedLogEvents` when it went
+    /// through, `DeliveryErrors` or `DeliveryThrottling` (log events)
+    /// when it did not. Dimensions `LogGroupName`, `DestinationType` and
+    /// `FilterName`.
+    pub(crate) fn publish_delivery(&self, d: DeliveryMetrics<'_>) {
+        let Some(publisher) = self.publisher() else { return };
+        let dimensions = vec![
+            ("LogGroupName".to_string(), d.group.name.clone()),
+            ("DestinationType".to_string(), d.destination_type.to_string()),
+            ("FilterName".to_string(), d.filter.to_string()),
+        ];
+        let metric = |name: &str, unit: &str, value: f64| FilterMetric {
+            account: d.group.account.clone(),
+            region: d.group.region.clone(),
+            namespace: VENDED_NAMESPACE.into(),
+            metric_name: name.into(),
+            dimensions: dimensions.clone(),
+            unit: Some(unit.into()),
+            timestamp: d.now,
+            value,
+        };
+        let out = match d.outcome {
+            Ok(()) => vec![
+                metric("ForwardedBytes", "Bytes", d.bytes as f64),
+                metric("ForwardedLogEvents", "None", d.events as f64),
+            ],
+            Err(crate::forward::DeliveryFailure::Throttled) => {
+                vec![metric("DeliveryThrottling", "None", d.events as f64)]
+            }
+            Err(crate::forward::DeliveryFailure::Error) => vec![metric("DeliveryErrors", "None", d.events as f64)],
+        };
+        publisher.publish(out);
+    }
+
     /// Run the group's metric filters over newly stored events.
     pub(crate) fn publish_metrics(&self, g: &GroupRef, stored: &[Event]) {
         if stored.is_empty() {
             return;
         }
-        let Some(publisher) = self.metric_publisher.read().expect("Logs publisher lock poisoned").clone() else {
-            return;
-        };
+        let Some(publisher) = self.publisher() else { return };
         let filters = {
             let st = self.lock();
             let Some(group) = st.region_ref(&g.account, &g.region).and_then(|r| r.log_groups.get(&g.name)) else {

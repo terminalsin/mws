@@ -1,9 +1,11 @@
 //! Composition root. This is the only crate that knows which services exist.
 
 mod autoscaling;
+mod cloudwatch_ssm;
 mod ec2_signals;
 mod eks;
 mod links;
+mod logs_lake;
 mod platform_amplify;
 mod platform_bedrock;
 mod platform_costs;
@@ -479,8 +481,17 @@ fn build_with_store(config: Config, store: Option<Arc<Store>>) -> Mws {
         ssm: ssm.clone(),
         partition: config.iam.partition.clone(),
     }));
+    events.register_clock_source(Arc::new(ssm::SsmEvents(ssm.clone())));
+    ssm.set_command_outputs(Arc::new(ssm::SsmOutputs {
+        ec2: ec2.clone(),
+        sts: sts.clone(),
+        s3: s3.clone(),
+        logs: logs.clone(),
+        sns: sns.clone(),
+    }));
     tracing::info!(backend = ec2.backend_name(), "EC2 compute backend");
     cloudwatch.register_action_target("automate", Arc::new(wiring::Ec2AlarmActions(ec2.clone())));
+    cloudwatch_ssm::wire(&cloudwatch, &ssm);
     let ec2_clock = ec2_signals::wire(&ec2, &events, &cloudwatch);
     ec2.set_instance_roles(Arc::new(links::Ec2InstanceRoles { iam: iam.clone(), sts: sts.clone() }));
     guardduty.set_event_sink(Arc::new(sinks::GuardDutyToEvents(events.clone())));
@@ -594,6 +605,7 @@ fn build_with_store(config: Config, store: Option<Arc<Store>>) -> Mws {
         .with_sns(sns.clone())
         .with_events(events.clone());
     cloudtrail.set_organizations(organizations.view());
+    logs.set_lake_source(Arc::new(logs_lake::CloudTrailLake(cloudtrail.clone())));
     let ecr = Ecr::new().with_kms(kms.clone());
     ecr.exclude_registry_prefix(mws_ecr_public::REGISTRY_PATH_PREFIX);
     let ecr_public = EcrPublic::new();

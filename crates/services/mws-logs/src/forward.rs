@@ -52,6 +52,40 @@ pub trait SubscriptionTarget: Send + Sync {
         -> Result<(), String>;
     /// Deliver one gzipped message (JSON `DATA_MESSAGE`).
     fn deliver(&self, ctx: &RequestContext, destination_arn: &str, source: &SubscriptionSource<'_>, gzipped: Vec<u8>);
+    /// [`SubscriptionTarget::deliver`], saying whether the destination
+    /// took the message; this feeds the `DeliveryErrors` and
+    /// `DeliveryThrottling` metrics. Targets that cannot tell keep the
+    /// default, which reports every delivery as forwarded.
+    fn try_deliver(
+        &self,
+        ctx: &RequestContext,
+        destination_arn: &str,
+        source: &SubscriptionSource<'_>,
+        gzipped: Vec<u8>,
+    ) -> Result<(), DeliveryFailure> {
+        self.deliver(ctx, destination_arn, source, gzipped);
+        Ok(())
+    }
+}
+
+/// Why a subscription delivery did not go through.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum DeliveryFailure {
+    /// The destination refused or failed (`DeliveryErrors`).
+    Error,
+    /// The destination throttled CloudWatch Logs (`DeliveryThrottling`).
+    Throttled,
+}
+
+/// The `DestinationType` dimension of a destination ARN's service.
+fn destination_type(arn: &str) -> &'static str {
+    match service_of(arn) {
+        "lambda" => "Lambda",
+        "kinesis" => "Kinesis",
+        "firehose" => "Firehose",
+        "es" | "aoss" => "OpenSearch",
+        _ => "Destination",
+    }
 }
 
 fn service_of(arn: &str) -> &str {
@@ -144,13 +178,28 @@ impl Logs {
             }
         };
         let arn = format!("{}:*", g.arn());
+        let now = ctx.received_at.timestamp_millis();
         for f in filters {
             let (Some(name), Some(destination)) = (&f.filter_name, &f.destination_arn) else { continue };
+            let Ok(pattern) = parse_pattern(f.filter_pattern.as_deref()) else { continue };
             let Some((destination, role)) = self.resolve_destination(destination, f.role_arn.as_deref()) else {
+                // The CloudWatch Logs destination is gone.
+                let events =
+                    stored.iter().filter(|e| pattern.matches(e.message_for(f.apply_on_transformed_logs))).count();
+                if events > 0 {
+                    self.publish_delivery(crate::metrics::DeliveryMetrics {
+                        group: g,
+                        filter: name,
+                        destination_type: "Destination",
+                        events,
+                        bytes: 0,
+                        now,
+                        outcome: Err(DeliveryFailure::Error),
+                    });
+                }
                 continue;
             };
             let Some(target) = self.target_for(&destination) else { continue };
-            let Ok(pattern) = parse_pattern(f.filter_pattern.as_deref()) else { continue };
             let transformed = f.apply_on_transformed_logs;
             let events: Vec<_> = stored
                 .iter()
@@ -162,6 +211,7 @@ impl Logs {
             if events.is_empty() {
                 continue;
             }
+            let count = events.len();
             let message = json!({
                 "messageType": "DATA_MESSAGE",
                 "owner": g.account,
@@ -177,7 +227,18 @@ impl Logs {
                 log_stream: stream,
                 distribution: f.distribution.as_deref().unwrap_or("ByLogStream"),
             };
-            target.deliver(&ctx, &destination, &source, gzip(&message));
+            let gzipped = gzip(&message);
+            let bytes = gzipped.len();
+            let outcome = target.try_deliver(&ctx, &destination, &source, gzipped);
+            self.publish_delivery(crate::metrics::DeliveryMetrics {
+                group: g,
+                filter: name,
+                destination_type: destination_type(&destination),
+                events: count,
+                bytes,
+                now,
+                outcome,
+            });
         }
     }
 }

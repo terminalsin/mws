@@ -21,6 +21,36 @@ fn event(ts: i64, msg: &str) -> InputLogEvent {
     InputLogEvent::builder().timestamp(ts).message(msg).build().unwrap()
 }
 
+/// The results of a query once it has finished: queries run in the
+/// background, `Scheduled` then `Running` then `Complete`.
+pub(crate) async fn wait_query(
+    logs: &Client,
+    id: &str,
+) -> aws_sdk_cloudwatchlogs::operation::get_query_results::GetQueryResultsOutput {
+    for _ in 0..100 {
+        let out = logs.get_query_results().query_id(id).send().await.unwrap();
+        if !matches!(out.status(), Some(QueryStatus::Scheduled | QueryStatus::Running)) {
+            return out;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+    }
+    panic!("query {id} did not finish");
+}
+
+/// An export task once it has left `PENDING` and `RUNNING`.
+pub(crate) async fn wait_export(logs: &Client, id: &str) -> aws_sdk_cloudwatchlogs::types::ExportTask {
+    use aws_sdk_cloudwatchlogs::types::ExportTaskStatusCode as C;
+    for _ in 0..100 {
+        let out = logs.describe_export_tasks().task_id(id).send().await.unwrap();
+        let task = out.export_tasks()[0].clone();
+        if !matches!(task.status().and_then(|s| s.code()), Some(C::Pending | C::Running)) {
+            return task;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+    }
+    panic!("export task {id} did not finish");
+}
+
 async fn group_with_events(logs: &Client, group: &str, stream: &str, messages: &[(i64, &str)]) {
     logs.create_log_group().log_group_name(group).send().await.unwrap();
     logs.create_log_stream().log_group_name(group).log_stream_name(stream).send().await.unwrap();
@@ -286,7 +316,7 @@ async fn insights_queries_and_definitions() {
         .await
         .unwrap();
     let id = started.query_id().unwrap().to_string();
-    let results = logs.get_query_results().query_id(&id).send().await.unwrap();
+    let results = wait_query(&logs, &id).await;
     assert_eq!(results.status(), Some(&QueryStatus::Complete));
     let rows = results.results();
     assert_eq!(rows.len(), 1);
@@ -307,7 +337,7 @@ async fn insights_queries_and_definitions() {
         .send()
         .await
         .unwrap();
-    let raw = logs.get_query_results().query_id(raw.query_id().unwrap()).send().await.unwrap();
+    let raw = wait_query(&logs, raw.query_id().unwrap()).await;
     let ptr = field(&raw.results()[0], "@ptr").unwrap();
     let record = logs.get_log_record().log_record_pointer(&ptr).send().await.unwrap();
     assert_eq!(
@@ -845,6 +875,7 @@ async fn export_tasks_write_to_s3_and_imports_need_cloudtrail_lake() {
         .await
         .unwrap();
     let task_id = task.task_id().unwrap().to_string();
+    wait_export(&logs, &task_id).await;
     let key = format!("cwl/{task_id}/web-1/000000.gz");
     let obj = s3.get_object().bucket("log-archive").key(&key).send().await.unwrap();
     let gz = obj.body.collect().await.unwrap().into_bytes();
@@ -865,7 +896,7 @@ async fn export_tasks_write_to_s3_and_imports_need_cloudtrail_lake() {
     let finished = logs.cancel_export_task().task_id(&task_id).send().await.unwrap_err();
     assert_eq!(code(finished.into_service_error()), "InvalidOperationException");
 
-    // CloudTrail Lake is not part of MWS, so no event data store exists.
+    // No such event data store in CloudTrail Lake.
     let import = logs
         .create_import_task()
         .import_source_arn(
@@ -964,6 +995,7 @@ async fn anomaly_detectors_lookup_tables_and_scheduled_queries() {
         .send()
         .await
         .unwrap();
+    wait_query(&logs, q.query_id().unwrap()).await;
     logs.update_lookup_table().lookup_table_arn(&table_arn).query_id(q.query_id().unwrap()).send().await.unwrap();
     let described = logs.describe_lookup_tables().lookup_table_name_prefix("co").send().await.unwrap();
     let t0 = &described.lookup_tables()[0];
@@ -1179,7 +1211,7 @@ async fn log_objects_stream_large_events() {
         .send()
         .await
         .unwrap();
-    let res = logs.get_query_results().query_id(q.query_id().unwrap()).send().await.unwrap();
+    let res = wait_query(&logs, q.query_id().unwrap()).await;
     let ptr = res.results()[0].iter().find(|f| f.field() == Some("@ptr")).unwrap().value().unwrap().to_string();
     let mut out = logs.get_log_object().log_object_pointer(&ptr).send().await.unwrap();
     let mut data = Vec::new();
@@ -1381,7 +1413,7 @@ async fn transformers_apply_at_ingestion() {
         .send()
         .await
         .unwrap();
-    let res = logs.get_query_results().query_id(q.query_id().unwrap()).send().await.unwrap();
+    let res = wait_query(&logs, q.query_id().unwrap()).await;
     assert_eq!(res.results().len(), 1, "{res:?}");
     let field = |name: &str| {
         res.results()[0].iter().find(|f| f.field() == Some(name)).and_then(|f| f.value()).map(str::to_string)
@@ -1412,7 +1444,7 @@ async fn transformers_apply_at_ingestion() {
         .send()
         .await
         .unwrap();
-    let res = logs.get_query_results().query_id(q.query_id().unwrap()).send().await.unwrap();
+    let res = wait_query(&logs, q.query_id().unwrap()).await;
     let tier = res.results()[0].iter().find(|f| f.field() == Some("tier")).and_then(|f| f.value());
     assert_eq!(tier, Some("gold"));
 }

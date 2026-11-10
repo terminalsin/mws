@@ -245,6 +245,26 @@ pub fn resource_tag_conditions<'a>(tags: impl IntoIterator<Item = (&'a String, &
     tags.into_iter().map(|(k, v)| (format!("aws:ResourceTag/{k}"), vec![v.clone()])).collect()
 }
 
+/// `iam:PassRole` on a role the caller hands to Systems Manager (an
+/// Automation assume role, a notification or maintenance window service
+/// role), with `iam:PassedToService` set to `ssm.amazonaws.com`. A role
+/// name is taken as a role of the caller's account; an empty value or one
+/// that still holds a `{{ placeholder }}` passes nothing.
+pub fn pass_role(ctx: &RequestContext, role: &str) -> Result<(), ServiceError> {
+    let role = role.trim();
+    if role.is_empty() || role.contains("{{") {
+        return Ok(());
+    }
+    let arn = if role.starts_with("arn:") {
+        role.to_string()
+    } else {
+        format!("arn:{}:iam::{}:role/{}", ctx.partition, ctx.caller.account_id, role.trim_start_matches('/'))
+    };
+    let mut c = ConditionContext::new();
+    c.insert("iam:PassedToService".into(), vec!["ssm.amazonaws.com".into()]);
+    ctx.authorize("iam:PassRole", &arn, c)
+}
+
 // ---- pagination -------------------------------------------------------------
 
 fn encode_token(offset: usize) -> String {

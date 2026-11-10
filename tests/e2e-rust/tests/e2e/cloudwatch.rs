@@ -447,6 +447,7 @@ async fn metric_alarms_evaluate_and_notify_sns_and_lambda() {
         .await
         .unwrap();
 
+    let t = now_secs();
     cw.put_metric_data()
         .namespace("Shop")
         .metric_data(
@@ -454,12 +455,15 @@ async fn metric_alarms_evaluate_and_notify_sns_and_lambda() {
                 .metric_name("Errors")
                 .dimensions(dim("Service", "checkout"))
                 .value(9.0)
-                .timestamp(at(now_secs()))
+                .timestamp(at(t))
                 .build(),
         )
         .send()
         .await
         .unwrap();
+    // Alarms evaluate completed periods, about once a minute: let the
+    // minute of the datapoint end.
+    crate::cloudwatch_anomaly::finish_minute(&mws, t).await;
     wait_for_state(&cw, "high-errors", StateValue::Alarm, false).await;
 
     let msg = sqs.receive_message().queue_url(&queue).wait_time_seconds(5).send().await.unwrap();

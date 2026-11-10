@@ -13,6 +13,25 @@ from botocore.exceptions import ClientError
 ACCOUNT = "123456789012"
 
 
+def wait_query(logs, qid):
+    """Queries run in the background: Scheduled, Running, then Complete."""
+    for _ in range(100):
+        res = logs.get_query_results(queryId=qid)
+        if res["status"] not in ("Scheduled", "Running"):
+            return res
+        time.sleep(0.1)
+    raise AssertionError(f"query {qid} did not finish")
+
+
+def wait_export(logs, task):
+    for _ in range(100):
+        t = logs.describe_export_tasks(taskId=task)["exportTasks"][0]
+        if t["status"]["code"] not in ("PENDING", "RUNNING"):
+            return t
+        time.sleep(0.1)
+    raise AssertionError(f"export task {task} did not finish")
+
+
 @pytest.fixture
 def logs(endpoint, session_for):
     # StartLiveTail and GetLogObject use a `stream.` host prefix that does
@@ -106,7 +125,7 @@ def test_insights_queries(logs, group):
         endTime=t // 1000 + 60,
         queryString="stats count(*) as n, max(ms) as worst by path | sort n desc",
     )["queryId"]
-    res = logs.get_query_results(queryId=qid)
+    res = wait_query(logs, qid)
     assert res["status"] == "Complete"
     rows = [{f["field"]: f["value"] for f in row} for row in res["results"]]
     assert rows[0] == {"path": "/a", "n": "2", "worst": "20"}
@@ -124,7 +143,7 @@ def test_insights_queries(logs, group):
     ptr_q = logs.start_query(
         logGroupName=group, startTime=t // 1000 - 60, endTime=t // 1000 + 60, queryString="fields @ptr | limit 1"
     )["queryId"]
-    ptr = logs.get_query_results(queryId=ptr_q)["results"][0][0]["value"]
+    ptr = wait_query(logs, ptr_q)["results"][0][0]["value"]
     assert "@message" in logs.get_log_record(logRecordPointer=ptr)["logRecord"]
     obj = logs.get_log_object(logObjectPointer=ptr)
     data = b"".join(ev["fields"]["data"] for ev in obj["fieldStream"] if "fields" in ev)
@@ -300,6 +319,7 @@ def test_export_to_s3(endpoint, session_for, logs, group):
     )
     t = put(logs, group, "exported")
     task = logs.create_export_task(logGroupName=group, fromTime=t - 1000, to=t + 1000, destination=bucket)["taskId"]
+    wait_export(logs, task)
     body = s3.get_object(Bucket=bucket, Key=f"exportedlogs/{task}/s/000000.gz")["Body"].read()
     assert gzip.decompress(body).decode().strip().endswith(" exported")
     assert logs.describe_export_tasks(taskId=task)["exportTasks"][0]["status"]["code"] == "COMPLETED"

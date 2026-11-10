@@ -154,9 +154,7 @@ impl Logs {
         let g = GroupRef::own(ctx, &input.log_group_name);
         self.authorize_group(ctx, "PutLogEvents", &g, Some(&input.log_stream_name), ConditionContext::new())?;
         let accepted = self.store_events(&g, &input.log_stream_name, input.log_events, now_ms(ctx))?;
-        self.tails.publish(&g, &input.log_stream_name, &accepted.stored);
-        self.forward(Some(ctx), &g, &input.log_stream_name, &accepted.stored);
-        self.publish_metrics(&g, &accepted.stored);
+        self.after_store(Some(ctx), &g, &input.log_stream_name, &accepted.stored, now_ms(ctx));
         let mut response = accepted.response;
         if let Some(entity) = &input.entity {
             let attrs = entity.key_attributes.as_ref().map_or(0, |a| a.len());
@@ -166,6 +164,35 @@ impl Logs {
             }
         }
         Ok(response)
+    }
+
+    /// What follows a stored batch: live tail sessions and subscription
+    /// filters get the events masked by the data protection policies;
+    /// metric filters match them; and the `AWS/Logs` incoming metrics
+    /// count the batch.
+    pub(crate) fn after_store(
+        &self,
+        ctx: Option<&RequestContext>,
+        g: &GroupRef,
+        stream: &str,
+        stored: &[Event],
+        now: i64,
+    ) {
+        let egress = self.masked_for_egress(g, stored);
+        self.tails.publish(g, stream, &egress);
+        self.forward(ctx, g, stream, &egress);
+        self.publish_metrics(g, stored);
+        self.publish_incoming(g, stored, now);
+    }
+
+    /// `events` as they may leave CloudWatch Logs: masked by the data
+    /// protection policies of `g` and of its account.
+    pub(crate) fn masked_for_egress(&self, g: &GroupRef, events: &[Event]) -> Vec<Event> {
+        let masks = {
+            let st = self.lock();
+            crate::policies::masks_for(&st, g)
+        };
+        events.iter().map(|e| crate::policies::mask_event(&masks, e)).collect()
     }
 
     /// Authorize `logs:Unmask` when the caller asks for unmasked events.

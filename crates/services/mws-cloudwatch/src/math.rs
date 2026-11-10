@@ -340,6 +340,12 @@ pub struct Engine<'a> {
     /// Periods must be multiples of this to get data (see
     /// [`crate::metrics::retained_resolution`]).
     pub retained: i64,
+    /// Set on the engine that reads a band's training history, so bands
+    /// inside it do not train again.
+    training: bool,
+    /// Single-metric anomaly detectors `ANOMALY_DETECTION_BAND` used that
+    /// do not exist yet; the caller creates them, as CloudWatch does.
+    pub new_detectors: RefCell<Vec<types::SingleMetricAnomalyDetector>>,
     cache: RefCell<BTreeMap<String, Val>>,
     visiting: RefCell<BTreeSet<String>>,
 }
@@ -359,6 +365,8 @@ impl<'a> Engine<'a> {
             start,
             end,
             retained: 1,
+            training: false,
+            new_detectors: RefCell::default(),
             cache: RefCell::default(),
             visiting: RefCell::default(),
         }
@@ -442,6 +450,79 @@ impl<'a> Engine<'a> {
         self.visiting.borrow_mut().remove(id);
         self.cache.borrow_mut().insert(id.to_string(), v.clone());
         Ok(v)
+    }
+
+    /// The anomaly detector for a band's input: the matching detector, and
+    /// the single-metric detector to create when none matches.
+    fn detector_for(
+        &self,
+        arg: &Expr,
+        ts: &Ts,
+    ) -> (Option<&'a types::AnomalyDetector>, Option<types::SingleMetricAnomalyDetector>) {
+        let detectors = self.region.map(|r| r.anomaly_detectors.as_slice()).unwrap_or_default();
+        if let Some((key, stat)) = &ts.metric {
+            let single = types::SingleMetricAnomalyDetector {
+                account_id: None,
+                namespace: Some(key.namespace.clone()),
+                metric_name: Some(key.name.clone()),
+                dimensions: Some(key.dimensions()),
+                stat: Some(stat.clone()),
+            };
+            let found = detectors.iter().find(|d| {
+                d.single_metric_anomaly_detector.as_ref().is_some_and(|s| crate::anomaly::same_single(s, &single))
+            });
+            return (found, Some(single));
+        }
+        let Expr::Ident(name) = arg else { return (None, None) };
+        let Some(expr) = self.query(name).and_then(|q| q.expression.as_ref()) else { return (None, None) };
+        let found = detectors.iter().find(|d| {
+            d.metric_math_anomaly_detector.as_ref().and_then(|m| m.metric_data_queries.as_ref()).is_some_and(|qs| {
+                qs.iter().find(|q| q.return_data != Some(false)).and_then(|q| q.expression.as_ref()) == Some(expr)
+            })
+        });
+        (found, None)
+    }
+
+    /// `ANOMALY_DETECTION_BAND(arg, k)` for `ts`, the input over the query:
+    /// a model trained on the input's history before the query (see
+    /// [`crate::model`]), with the detector's configuration.
+    fn band(&self, id: &str, arg: &Expr, ts: &Ts, k: f64) -> (Ts, Ts) {
+        let mk = |points: BTreeMap<i64, f64>, suffix: &str| Ts {
+            label: format!("{} ({suffix})", ts.label),
+            period: ts.period,
+            points,
+            metric: None,
+        };
+        if self.training {
+            return (mk(BTreeMap::new(), "lower"), mk(BTreeMap::new(), "upper"));
+        }
+        let period = ts.period.max(1);
+        let (detector, single) = self.detector_for(arg, ts);
+        if detector.is_none() {
+            if let Some(s) = single {
+                self.new_detectors.borrow_mut().push(s);
+            }
+        }
+        let (from, to) = crate::model::training_window(self.start, period);
+        let mut trainer = Engine::new(self.region, self.queries, from, to);
+        trainer.training = true;
+        trainer.quotas = self.quotas;
+        trainer.logs = self.logs;
+        let history = match trainer.eval_expr(id, arg, period) {
+            Ok(Val::Series(h)) => h.points,
+            _ => BTreeMap::new(),
+        };
+        let training = crate::model::Training::from_config(detector.and_then(|d| d.configuration.as_ref()));
+        let Some(model) = crate::model::train(&history, period, &training) else {
+            return (mk(BTreeMap::new(), "lower"), mk(BTreeMap::new(), "upper"));
+        };
+        let (mut lower, mut upper) = (BTreeMap::new(), BTreeMap::new());
+        for t in ts.points.keys() {
+            let (lo, hi) = model.band(*t, k);
+            lower.insert(*t, lo);
+            upper.insert(*t, hi);
+        }
+        (mk(lower, "lower"), mk(upper, "upper"))
     }
 
     fn grid(&self, period: i64) -> Vec<i64> {
@@ -682,7 +763,7 @@ impl<'a> Engine<'a> {
                     None => 2.0,
                 };
                 let Val::Series(ts) = v else { return Err(err(id, "ANOMALY_DETECTION_BAND expects one time series")) };
-                let (lower, upper) = band(&ts, k);
+                let (lower, upper) = self.band(id, &args[0], &ts, k);
                 Val::Array(vec![lower, upper])
             }
             "INSIGHT_RULE_METRIC" => {
@@ -935,19 +1016,6 @@ fn if_(id: &str, c: Val, a: Val, b: Option<Val>, grid: &[i64]) -> Result<Val, Se
     Ok(Val::Series(Ts { points, period: cond.period, label: String::new(), metric: None }))
 }
 
-fn band(ts: &Ts, k: f64) -> (Ts, Ts) {
-    let vals: Vec<f64> = ts.points.values().copied().collect();
-    let mean = aggregate("AVG", &vals).unwrap_or(0.0);
-    let sd = aggregate("STDDEV", &vals).unwrap_or(0.0);
-    let mk = |off: f64, suffix: &str| Ts {
-        label: format!("{} ({suffix})", ts.label),
-        period: ts.period,
-        points: ts.points.keys().map(|t| (*t, mean + off)).collect(),
-        metric: None,
-    };
-    (mk(-k * sd, "lower"), mk(k * sd, "upper"))
-}
-
 fn search_label(key: &MetricKey, _f: &crate::search::Filter) -> String {
     let dims: Vec<&str> = key.dimensions.iter().map(|(_, v)| v.as_str()).collect();
     if dims.is_empty() {
@@ -1148,7 +1216,13 @@ impl CloudWatch {
             }));
         engine.retained = crate::metrics::retained_resolution(start, now);
         let series = results(&engine)?;
+        let new_detectors = engine.new_detectors.take();
+        drop(engine);
         drop(st);
+        if !new_detectors.is_empty() {
+            let mut st = self.lock();
+            crate::anomaly::auto_create(st.region(&ctx.caller.account_id, &ctx.region), new_detectors);
+        }
         let ascending = input.scan_by.as_deref() == Some("TimestampAscending");
         // Page through the datapoints of all results in order.
         let offset = match input.next_token.as_deref() {
@@ -1163,6 +1237,12 @@ impl CloudWatch {
         let mut next = None;
         for (id, label, points) in series {
             let mut pts: Vec<(i64, f64)> = points.into_iter().collect();
+            // Results whose datapoints all went out on earlier pages are
+            // not repeated.
+            if offset > 0 && seen + pts.len() <= offset {
+                seen += pts.len();
+                continue;
+            }
             if !ascending {
                 pts.reverse();
             }

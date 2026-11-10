@@ -3,7 +3,7 @@
 
 use std::io::Read;
 
-use chrono::Duration;
+use chrono::{DateTime, Duration, Utc};
 use mws_core::{ConditionContext, RequestContext, ServiceError};
 use serde_json::Value;
 
@@ -16,6 +16,14 @@ use crate::state::{Channel, Dashboard, EventDataStore, Import, Query, State};
 use crate::CloudTrail;
 
 const MAX_EVENT_DATA_STORES: usize = 10;
+
+/// How long a query waits in `QUEUED` before it is `RUNNING`.
+const QUERY_QUEUED_FOR: Duration = Duration::milliseconds(200);
+
+/// How long after `StartQuery` a query finishes. AWS queries take seconds
+/// to minutes; MWS keeps them short so callers poll a little, as on AWS,
+/// without waiting long.
+const QUERY_RUNS_FOR: Duration = Duration::milliseconds(600);
 const MAX_CHANNELS: usize = 25;
 
 fn eds_not_found(id: &str) -> ServiceError {
@@ -586,8 +594,7 @@ impl CloudTrail {
         }
         let q = sql::parse(&statement_text)
             .map_err(|e| errors::invalid_query_statement(format!("Query statement is not valid: {e}")))?;
-        let started = std::time::Instant::now();
-        let st = self.lock();
+        let mut st = self.lock();
         let mut arns = Vec::new();
         for from in &q.from {
             let arn = self.eds_key(&st, ctx, from)?;
@@ -600,44 +607,107 @@ impl CloudTrail {
             ctx.authorize("cloudtrail:StartQuery", &arn, ConditionContext::new())?;
             arns.push(arn);
         }
-        let account = &st.accounts[&ctx.caller.account_id];
-        let events: Vec<&Value> = arns.iter().flat_map(|a| account.event_data_stores[a].events.iter()).collect();
         let id = uuid::Uuid::new_v4().to_string();
-        let mut query = Query {
+        let query = Query {
             id: id.clone(),
-            statement: statement_text.clone(),
+            statement: statement_text,
+            status: "QUEUED".into(),
             event_data_stores: arns,
             created: ctx.received_at,
-            delivery_s3_uri: delivery.clone(),
+            delivery_s3_uri: delivery,
             alias,
             refresh_id,
             ..Query::default()
         };
-        match sql::run(&q, &events, ctx.received_at) {
-            Ok(out) => {
-                query.status = "FINISHED".into();
-                query.columns = out.columns;
-                query.rows = out.rows;
-                query.events_scanned = out.scanned as i64;
-                query.events_matched = out.matched as i64;
-                query.bytes_scanned = out.bytes as i64;
-            }
-            Err(e) => {
-                query.status = "FAILED".into();
-                query.error_message = Some(e);
-            }
-        }
-        query.execution_time_ms = started.elapsed().as_millis().min(i32::MAX as u128) as i32;
+        st.account(&ctx.caller.account_id).queries.insert(id.clone(), query);
         drop(st);
-        if let (Some(uri), "FINISHED") = (&delivery, query.status.as_str()) {
-            query.delivery_status = Some(self.deliver_query_results(ctx, &query, uri));
-        }
-        self.lock().account(&ctx.caller.account_id).queries.insert(id.clone(), query);
+        // The background tick moves it on too; this just keeps the state
+        // current for the next request.
+        self.progress_queries(&ctx.partition, Some(&ctx.caller.account_id), ctx.received_at);
         Ok(id)
     }
 
+    /// Move queries on: `QUEUED` for [`QUERY_QUEUED_FOR`], then `RUNNING`
+    /// until [`QUERY_RUNS_FOR`] after they started, when they run over the
+    /// stores' events and finish (`FINISHED` or `FAILED`) and deliver their
+    /// results. `account` limits it to one account's queries.
+    pub(crate) fn progress_queries(&self, partition: &str, account: Option<&str>, now: DateTime<Utc>) {
+        let mut finished = Vec::new();
+        {
+            let mut st = self.lock();
+            let owners: Vec<String> = match account {
+                Some(a) => vec![a.to_string()],
+                None => st.accounts.keys().cloned().collect(),
+            };
+            for owner in owners {
+                let Some(a) = st.accounts.get_mut(&owner) else { continue };
+                let due: Vec<String> = a
+                    .queries
+                    .values_mut()
+                    .filter(|q| matches!(q.status.as_str(), "QUEUED" | "RUNNING"))
+                    .filter_map(|q| {
+                        // A clock moved back finishes what it started.
+                        let rewound = q.created - now > Duration::seconds(1);
+                        if q.status == "QUEUED" && (now - q.created >= QUERY_QUEUED_FOR || rewound) {
+                            q.status = "RUNNING".into();
+                        }
+                        (now - q.created >= QUERY_RUNS_FOR || rewound).then(|| q.id.clone())
+                    })
+                    .collect();
+                for id in due {
+                    let a = &st.accounts[&owner];
+                    let q = &a.queries[&id];
+                    let started = std::time::Instant::now();
+                    let events: Vec<&Value> = q
+                        .event_data_stores
+                        .iter()
+                        .filter_map(|arn| a.event_data_stores.get(arn))
+                        .flat_map(|e| e.events.iter())
+                        .collect();
+                    let outcome = sql::parse(&q.statement).and_then(|parsed| sql::run(&parsed, &events, now));
+                    let took = started.elapsed().as_millis() as i64;
+                    let Some(q) = st.accounts.get_mut(&owner).and_then(|a| a.queries.get_mut(&id)) else { continue };
+                    match outcome {
+                        Ok(out) => {
+                            q.status = "FINISHED".into();
+                            q.columns = out.columns;
+                            q.rows = out.rows;
+                            q.events_scanned = out.scanned as i64;
+                            q.events_matched = out.matched as i64;
+                            q.bytes_scanned = out.bytes as i64;
+                        }
+                        Err(e) => {
+                            q.status = "FAILED".into();
+                            q.error_message = Some(e);
+                        }
+                    }
+                    let ran = (now - q.created).num_milliseconds().max(took);
+                    q.execution_time_ms = ran.clamp(0, i64::from(i32::MAX)) as i32;
+                    if q.status == "FINISHED" && q.delivery_s3_uri.is_some() {
+                        q.delivery_status = Some("PENDING".into());
+                        finished.push((owner.clone(), q.clone()));
+                    }
+                }
+            }
+        }
+        for (owner, q) in finished {
+            let Some(uri) = &q.delivery_s3_uri else { continue };
+            let status = self.deliver_query_results(partition, &owner, now, &q, uri);
+            if let Some(q) = self.lock().accounts.get_mut(&owner).and_then(|a| a.queries.get_mut(&q.id)) {
+                q.delivery_status = Some(status);
+            }
+        }
+    }
+
     /// Write a query's results as CSV to `s3://bucket/prefix`.
-    fn deliver_query_results(&self, ctx: &RequestContext, q: &Query, uri: &str) -> String {
+    fn deliver_query_results(
+        &self,
+        partition: &str,
+        account: &str,
+        now: DateTime<Utc>,
+        q: &Query,
+        uri: &str,
+    ) -> String {
         let Some(s3) = self.inner.s3.get() else { return "FAILED".into() };
         let Some(rest) = uri.strip_prefix("s3://") else { return "FAILED".into() };
         let (bucket, prefix) = rest.split_once('/').unwrap_or((rest, ""));
@@ -648,10 +718,10 @@ impl CloudTrail {
             csv.push_str(&row.iter().map(|v| quote(v.as_deref().unwrap_or(""))).collect::<Vec<_>>().join(","));
             csv.push('\n');
         }
-        let date = ctx.received_at.format("%Y/%m/%d");
+        let date = now.format("%Y/%m/%d");
         let prefix = prefix.trim_end_matches('/');
         let base = if prefix.is_empty() { String::new() } else { format!("{prefix}/") };
-        let key = format!("{base}{}/{date}/{}/result_1.csv.gz", ctx.caller.account_id, q.id);
+        let key = format!("{base}{account}/{date}/{}/result_1.csv.gz", q.id);
         let mut gz = flate2::write::GzEncoder::new(Vec::new(), flate2::Compression::default());
         let _ = std::io::Write::write_all(&mut gz, csv.as_bytes());
         let put = mws_s3::ServicePutObject {
@@ -660,10 +730,10 @@ impl CloudTrail {
             body: gz.finish().unwrap_or_default(),
             content_type: "text/csv",
             service_principal: "cloudtrail.amazonaws.com",
-            source_account: &ctx.caller.account_id,
+            source_account: account,
             source_arn: q.event_data_stores.first().map(String::as_str).unwrap_or_default(),
             acl: None,
-            partition: &ctx.partition,
+            partition,
         };
         match s3.put_object_as_service(put) {
             Ok(_) => "SUCCESS".into(),
@@ -719,6 +789,7 @@ impl CloudTrail {
         ctx: &RequestContext,
         input: types::DescribeQueryRequest,
     ) -> Result<types::DescribeQueryResponse, ServiceError> {
+        self.progress_queries(&ctx.partition, Some(&ctx.caller.account_id), ctx.received_at);
         let st = self.lock();
         let q = match (&input.query_id, &input.refresh_id) {
             (Some(id), _) => self.find_query(&st, ctx, id)?,
@@ -766,10 +837,12 @@ impl CloudTrail {
         if !(1..=1000).contains(&max) {
             return Err(errors::invalid_max_results("MaxQueryResults must be between 1 and 1000."));
         }
+        self.progress_queries(&ctx.partition, Some(&ctx.caller.account_id), ctx.received_at);
         let st = self.lock();
         let q = self.find_query(&st, ctx, &input.query_id)?;
         let resource = q.event_data_stores.first().cloned().unwrap_or_else(|| "*".into());
         ctx.authorize("cloudtrail:GetQueryResults", &resource, ConditionContext::new())?;
+        // A query still queued or running has no results yet.
         let rows: Vec<Vec<std::collections::BTreeMap<String, String>>> = q
             .rows
             .iter()
@@ -800,16 +873,29 @@ impl CloudTrail {
         ctx: &RequestContext,
         input: types::CancelQueryRequest,
     ) -> Result<types::CancelQueryResponse, ServiceError> {
-        let st = self.lock();
+        self.progress_queries(&ctx.partition, Some(&ctx.caller.account_id), ctx.received_at);
+        let mut st = self.lock();
         let q = self.find_query(&st, ctx, &input.query_id)?;
         let resource = q.event_data_stores.first().cloned().unwrap_or_else(|| "*".into());
         ctx.authorize("cloudtrail:CancelQuery", &resource, ConditionContext::new())?;
-        // Queries finish as they are started, so there is never one to
-        // cancel.
-        Err(errors::inactive_query(format!(
-            "The specified query cannot be canceled because it is in the {} state.",
-            q.status
-        )))
+        if !matches!(q.status.as_str(), "QUEUED" | "RUNNING") {
+            return Err(errors::inactive_query(format!(
+                "The specified query cannot be canceled because it is in the {} state.",
+                q.status
+            )));
+        }
+        let q = st
+            .account(&ctx.caller.account_id)
+            .queries
+            .get_mut(&input.query_id)
+            .ok_or_else(|| query_not_found(&input.query_id))?;
+        q.status = "CANCELLED".into();
+        q.execution_time_ms = (ctx.received_at - q.created).num_milliseconds().clamp(0, i64::from(i32::MAX)) as i32;
+        Ok(types::CancelQueryResponse {
+            query_id: q.id.clone(),
+            query_status: q.status.clone(),
+            event_data_store_owner_account_id: None,
+        })
     }
 
     pub(crate) fn list_queries(
@@ -817,6 +903,7 @@ impl CloudTrail {
         ctx: &RequestContext,
         input: types::ListQueriesRequest,
     ) -> Result<types::ListQueriesResponse, ServiceError> {
+        self.progress_queries(&ctx.partition, Some(&ctx.caller.account_id), ctx.received_at);
         let st = self.lock();
         let arn = self.eds_key(&st, ctx, &input.event_data_store)?;
         ctx.authorize("cloudtrail:ListQueries", &arn, ConditionContext::new())?;
@@ -1074,8 +1161,9 @@ impl CloudTrail {
         })
     }
 
-    fn find_import(&self, ctx: &RequestContext, id: &str) -> Result<Import, ServiceError> {
-        ctx.authorize("cloudtrail:GetImport", "*", ConditionContext::new())?;
+    /// The caller's import, once `action` is allowed.
+    fn find_import(&self, ctx: &RequestContext, action: &str, id: &str) -> Result<Import, ServiceError> {
+        ctx.authorize(action, "*", ConditionContext::new())?;
         self.lock()
             .accounts
             .get(&ctx.caller.account_id)
@@ -1089,7 +1177,7 @@ impl CloudTrail {
         ctx: &RequestContext,
         input: types::GetImportRequest,
     ) -> Result<types::GetImportResponse, ServiceError> {
-        let i = self.find_import(ctx, &input.import_id)?;
+        let i = self.find_import(ctx, "cloudtrail:GetImport", &input.import_id)?;
         Ok(types::GetImportResponse {
             import_id: Some(i.id),
             destinations: Some(i.destinations),
@@ -1108,8 +1196,7 @@ impl CloudTrail {
         ctx: &RequestContext,
         input: types::StopImportRequest,
     ) -> Result<types::StopImportResponse, ServiceError> {
-        let mut i = self.find_import(ctx, &input.import_id)?;
-        ctx.authorize("cloudtrail:StopImport", "*", ConditionContext::new())?;
+        let mut i = self.find_import(ctx, "cloudtrail:StopImport", &input.import_id)?;
         if matches!(i.status.as_str(), "INITIALIZING" | "IN_PROGRESS") {
             i.status = "STOPPED".into();
             i.updated = ctx.received_at;
@@ -1164,7 +1251,7 @@ impl CloudTrail {
         ctx: &RequestContext,
         input: types::ListImportFailuresRequest,
     ) -> Result<types::ListImportFailuresResponse, ServiceError> {
-        let i = self.find_import(ctx, &input.import_id)?;
+        let i = self.find_import(ctx, "cloudtrail:ListImportFailures", &input.import_id)?;
         let (page, next) =
             names::page(&i.failures, input.next_token.as_deref(), input.max_results.unwrap_or(1000).max(1) as usize)?;
         Ok(types::ListImportFailuresResponse { failures: Some(page), next_token: next })

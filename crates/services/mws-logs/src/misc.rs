@@ -563,6 +563,10 @@ impl Logs {
             .region_ref(&ctx.caller.account_id, &ctx.region)
             .and_then(|r| r.queries.get(query_id))
             .ok_or_else(|| errors::resource_not_found(format!("Query does not exist: {query_id}")))?;
+        // A query still running has no results to take.
+        if q.status != "Complete" {
+            return Err(errors::invalid_operation(format!("Query {query_id} has not completed.")));
+        }
         let mut columns: Vec<String> = Vec::new();
         for row in &q.results {
             for f in row.iter().filter_map(|f| f.field.clone()) {

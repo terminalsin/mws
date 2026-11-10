@@ -17,7 +17,7 @@ use serde_json::Value;
 
 use crate::documents::{parse_content, pick_version};
 use crate::generated::{errors, types};
-use crate::names::{now, page, request_tag_conditions};
+use crate::names::{now, page, pass_role, request_tag_conditions};
 use crate::Ssm;
 
 /// Credentials code that runs for an execution signs with
@@ -93,6 +93,10 @@ pub struct AutomationRecord {
     pub change_details: Option<String>,
     pub scheduled_end_time: Option<DateTime<Utc>>,
     pub auto_approve: bool,
+    /// The execution status last reported to EventBridge.
+    pub reported: String,
+    /// Each step's status last reported, by position.
+    pub reported_steps: Vec<String>,
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
@@ -122,6 +126,10 @@ pub(crate) struct StartSpec {
     pub target: Option<String>,
     pub automation_type: Option<String>,
     pub change: Option<ChangeSpec>,
+    /// Whether the caller must be able to pass the roles the execution
+    /// assumes (`iam:PassRole`): set for executions a caller starts, not
+    /// for those Systems Manager starts itself.
+    pub pass_roles: bool,
 }
 
 #[derive(Debug, Clone, Default)]
@@ -218,6 +226,20 @@ pub(crate) fn strings_of(v: &Value) -> Vec<String> {
             .collect(),
         other => vec![other.to_string()],
     }
+}
+
+/// The role an Automation document assumes (its `assumeRole`, usually
+/// `{{ AutomationAssumeRole }}`) with `given` parameters and defaults
+/// filled in; `None` when it assumes none.
+pub(crate) fn assume_role_of(content: &Value, given: &StringParams) -> Option<String> {
+    let raw = content.get("assumeRole")?;
+    let typed = match resolve_parameters(content, given, None) {
+        Ok((typed, _)) => typed,
+        Err(_) => given.iter().map(|(k, v)| (k.clone(), Value::String(v.join(",")))).collect(),
+    };
+    let role = strings_of(&crate::engine::substitute(raw, &typed)).join("");
+    let role = role.trim().to_string();
+    (!role.is_empty() && !role.contains("{{")).then_some(role)
 }
 
 /// The document's parameters with the given values and defaults, typed,
@@ -317,6 +339,77 @@ impl Ssm {
     ) -> Option<R> {
         let mut st = self.lock();
         st.region(account, region).automations.get_mut(id).map(f)
+    }
+
+    /// Report execution and step status changes since the last call:
+    /// "EC2 Automation Execution Status-change Notification" and "EC2
+    /// Automation Step Status-change Notification" events.
+    pub(crate) fn report_automation(&self, account: &str, region: &str, id: &str) {
+        let mut out = Vec::new();
+        {
+            let mut st = self.lock();
+            let Some(r) = st.region(account, region).automations.get_mut(id) else { return };
+            let e = &r.execution;
+            let status = e.automation_execution_status.clone().unwrap_or_default();
+            let steps = e.step_executions.clone().unwrap_or_default();
+            r.reported_steps.resize(steps.len(), String::new());
+            for (i, s) in steps.iter().enumerate() {
+                let st = s.step_status.clone().unwrap_or_default();
+                if st.is_empty() || st == "Pending" || r.reported_steps[i] == st {
+                    continue;
+                }
+                r.reported_steps[i] = st.clone();
+                out.push((
+                    true,
+                    st,
+                    s.step_name.clone(),
+                    s.action.clone(),
+                    s.execution_start_time,
+                    s.execution_end_time,
+                ));
+            }
+            if !status.is_empty() && r.reported != status {
+                r.reported = status.clone();
+                out.push((false, status, None, None, e.execution_start_time, e.execution_end_time));
+            }
+            if out.is_empty() {
+                return;
+            }
+            let e = r.execution.clone();
+            drop(st);
+            let partition = self.partition();
+            let name = e.document_name.clone().unwrap_or_default();
+            let version = e.document_version.clone().unwrap_or_default();
+            let resources = vec![
+                execution_arn(&partition, region, account, id),
+                format!("arn:{partition}:ssm:{region}:{account}:automation-definition/{name}:{version}"),
+            ];
+            let when = |t: Option<DateTime<Utc>>| t.map(crate::events::automation_time).unwrap_or_default();
+            for (step, status, step_name, action, start, end) in out {
+                let time = match (start, end) {
+                    (Some(s), Some(e)) => (e - s).num_milliseconds().max(0) as f64,
+                    _ => 0.0,
+                };
+                let mut detail = serde_json::json!({
+                    "ExecutionId": id,
+                    "Definition": name,
+                    "DefinitionVersion": version.parse::<f64>().unwrap_or(1.0),
+                    "Status": status,
+                    "StartTime": when(start),
+                    "EndTime": when(end),
+                    "Time": time,
+                });
+                let kind = if step {
+                    detail["StepName"] = Value::String(step_name.unwrap_or_default());
+                    detail["Action"] = Value::String(action.unwrap_or_default());
+                    "EC2 Automation Step Status-change Notification"
+                } else {
+                    detail["ExecutedBy"] = Value::String(e.executed_by.clone().unwrap_or_default());
+                    "EC2 Automation Execution Status-change Notification"
+                };
+                self.emit(account, region, kind, resources.clone(), detail);
+            }
+        }
     }
 
     pub(crate) fn automation(&self, account: &str, region: &str, id: &str) -> Option<AutomationRecord> {
@@ -421,6 +514,19 @@ impl Ssm {
                 }
             }
         }
+        if spec.pass_roles {
+            if let Some(role) = assume_role_of(&content, &spec.parameters) {
+                pass_role(ctx, &role)?;
+            }
+            for rb in spec.change.iter().flat_map(|c| &c.runbooks) {
+                let Some(f) = self.find_document(ctx, &rb.document_name) else { continue };
+                let Ok(v) = pick_version(&f.doc, rb.document_version.as_deref(), None) else { continue };
+                let Ok(rb_content) = parse_content(&v.content, &v.format) else { continue };
+                if let Some(role) = assume_role_of(&rb_content, &rb.parameters.clone().unwrap_or_default()) {
+                    pass_role(ctx, &role)?;
+                }
+            }
+        }
         let mode = spec.mode.clone().unwrap_or_else(|| "Auto".into());
         let id = uuid::Uuid::new_v4().to_string();
         let started = self.clock_now().max(now(ctx));
@@ -517,6 +623,7 @@ impl Ssm {
                 tags: input.tags.unwrap_or_default(),
                 alarm_configuration: input.alarm_configuration,
                 client_token: input.client_token,
+                pass_roles: true,
                 ..Default::default()
             },
         )?;
@@ -556,6 +663,7 @@ impl Ssm {
                     auto_approve: input.auto_approve,
                     change_details: input.change_details,
                 }),
+                pass_roles: true,
                 ..Default::default()
             },
         )?;

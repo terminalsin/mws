@@ -85,8 +85,10 @@ pub fn data_event_type(source: &str, operation: &str) -> Option<&'static str> {
             matches!(operation, "PutLogEvents" | "GetLogEvents" | "FilterLogEvents" | "StartLiveTail" | "GetLogRecord")
                 .then_some("AWS::Logs::LogStream")
         }
-        "monitoring.amazonaws.com" => matches!(operation, "PutMetricData" | "GetMetricData" | "GetMetricStatistics")
-            .then_some("AWS::CloudWatch::Metric"),
+        "monitoring.amazonaws.com" => {
+            matches!(operation, "PutMetricData" | "GetMetricData" | "GetMetricStatistics" | "ListMetrics")
+                .then_some("AWS::CloudWatch::Metric")
+        }
         _ => None,
     }
 }

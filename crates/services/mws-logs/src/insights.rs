@@ -154,6 +154,105 @@ pub enum Command {
     Remove(Vec<String>),
     /// PPL `rename a as b`.
     Rename(Vec<(String, String)>),
+    /// `unmask`: show the events unmasked (the caller needs
+    /// `logs:Unmask`, checked where the records are loaded).
+    Unmask,
+    /// `pattern <field>`: cluster the values into patterns.
+    Pattern(Expr),
+    /// `diff [previousDay|previousWeek|previousMonth]`: compare the
+    /// patterns with an earlier period (by default the one just before
+    /// the query's, of the same length), offset by this many ms.
+    Diff(Option<i64>),
+    /// `anomaly`: the patterns whose counts spike.
+    Anomaly,
+    /// `unnest <field> into <name>`: one record per array element.
+    Unnest {
+        field: Expr,
+        into: String,
+    },
+    /// `lookup <table> <key> [as <field>] [OUTPUT a [as b], ...]`.
+    Lookup(Lookup),
+}
+
+/// A `lookup` command, with the table's rows filled in before it runs.
+#[derive(Debug, Clone)]
+pub struct Lookup {
+    pub table: String,
+    /// The table column matched...
+    pub key: String,
+    /// ...against this field of the record.
+    pub field: String,
+    /// Table columns to add, and the names they get. Empty: every column.
+    pub outputs: Vec<(String, String)>,
+    pub rows: Vec<BTreeMap<String, String>>,
+}
+
+/// The query's own time: `now()` and the window `pattern`, `diff` and
+/// `anomaly` work over.
+#[derive(Debug, Clone, Copy)]
+pub struct Clock {
+    pub now: i64,
+    pub from: i64,
+    pub to: i64,
+}
+
+thread_local! {
+    static CLOCK: std::cell::Cell<Option<Clock>> = const { std::cell::Cell::new(None) };
+}
+
+/// Run `f` with `clock` as the query's time.
+pub fn with_clock<T>(clock: Clock, f: impl FnOnce() -> T) -> T {
+    let prev = CLOCK.with(|c| c.replace(Some(clock)));
+    let out = f();
+    CLOCK.with(|c| c.set(prev));
+    out
+}
+
+fn clock() -> Option<Clock> {
+    CLOCK.with(|c| c.get())
+}
+
+/// The log group selection of a leading `SOURCE logGroups(...)` command.
+#[derive(Debug, Clone, Default, PartialEq)]
+pub struct Source {
+    pub name_prefixes: Vec<String>,
+    pub class: Option<String>,
+    pub accounts: Vec<String>,
+}
+
+/// Split a leading `SOURCE logGroups(namePrefix: [...], class: '...',
+/// accountIdentifiers: [...])` command off a query: the selection and
+/// the rest of the query.
+pub fn split_source(query: &str) -> Result<(Option<Source>, String), String> {
+    let commands = split_commands(query);
+    let Some(first) = commands.first() else { return Ok((None, query.to_string())) };
+    let is_source = first.split_whitespace().next().is_some_and(|w| w.eq_ignore_ascii_case("source"));
+    if !is_source {
+        if commands
+            .iter()
+            .skip(1)
+            .any(|c| c.split_whitespace().next().is_some_and(|w| w.eq_ignore_ascii_case("source")))
+        {
+            return Err("SOURCE must be the first command in the query".into());
+        }
+        return Ok((None, query.to_string()));
+    }
+    let body = first[6..].trim();
+    let inner = body
+        .strip_prefix("logGroups")
+        .map(str::trim)
+        .and_then(|b| b.strip_prefix('('))
+        .and_then(|b| b.strip_suffix(')'))
+        .ok_or_else(|| format!("unexpected symbol found {}", body.split_whitespace().next().unwrap_or("")))?;
+    let strings = |key: &str| -> Vec<String> {
+        let re = Regex::new(&format!(r"{key}\s*:\s*\[([^\]]*)\]")).expect("static regex");
+        let item = Regex::new(r#"['"]([^'"]*)['"]"#).expect("static regex");
+        re.captures(inner).map(|c| item.captures_iter(&c[1]).map(|m| m[1].to_string()).collect()).unwrap_or_default()
+    };
+    let class =
+        Regex::new(r#"class\s*:\s*['"]([^'"]*)['"]"#).expect("static regex").captures(inner).map(|c| c[1].to_string());
+    let source = Source { name_prefixes: strings("namePrefix"), class, accounts: strings("accountIdentifiers") };
+    Ok((Some(source), commands[1..].join(" | ")))
 }
 
 #[derive(Debug, Clone)]
@@ -781,8 +880,9 @@ fn glob_to_regex(pattern: &str) -> Result<(Regex, usize), String> {
 }
 
 pub fn parse(query: &str) -> Result<Query, String> {
+    let (_, query) = split_source(query)?;
     let mut commands = Vec::new();
-    for text in split_commands(query) {
+    for text in split_commands(&query) {
         let toks = tokenize(&text)?;
         let mut p = P { toks, pos: 0, sql: false };
         let Some(Tok::Ident(cmd)) = p.next() else {
@@ -855,15 +955,102 @@ pub fn parse(query: &str) -> Result<Query, String> {
                 _ => return Err("limit must be a number between 1 and 10000".into()),
             },
             "dedup" => Command::Dedup(p.named_list(None)?.into_iter().map(|n| n.name).collect()),
-            "unmask" => continue,
+            // `unmask` or `unmask(@message)`: every field shows unmasked.
+            "unmask" => {
+                p.pos = p.toks.len();
+                Command::Unmask
+            }
+            // Only events with the indexed field are scanned; the result is
+            // that of `filter`.
+            "filterindex" => {
+                let e = p.expr()?;
+                if !p.done() {
+                    return Err(format!("unexpected symbol found {}", describe(p.peek())));
+                }
+                Command::Filter(e)
+            }
+            "pattern" => Command::Pattern(if p.done() { Expr::Field("@message".into()) } else { p.unary()? }),
+            "diff" => match p.next() {
+                None => Command::Diff(None),
+                Some(Tok::Ident(w)) => Command::Diff(match w.to_lowercase().as_str() {
+                    "previousperiod" => None,
+                    "previousday" => Some(86_400_000),
+                    "previousweek" => Some(604_800_000),
+                    "previousmonth" => Some(2_592_000_000),
+                    _ => return Err(format!("unexpected symbol found {w}")),
+                }),
+                other => return Err(format!("unexpected symbol found {}", describe(other.as_ref()))),
+            },
+            "anomaly" => Command::Anomaly,
+            "unnest" => {
+                let field = p.unary()?;
+                if !p.eat_kw("into") {
+                    return Err("expected 'into' in unnest".into());
+                }
+                match p.next() {
+                    Some(Tok::Ident(into)) => Command::Unnest { field, into },
+                    other => return Err(format!("unexpected symbol found {}", describe(other.as_ref()))),
+                }
+            }
+            "lookup" => {
+                let ident = |p: &mut P| match p.next() {
+                    Some(Tok::Ident(i)) => Ok(i),
+                    other => Err(format!("unexpected symbol found {}", describe(other.as_ref()))),
+                };
+                let table = ident(&mut p)?;
+                let key = ident(&mut p)?;
+                let field = if p.eat_kw("as") { ident(&mut p)? } else { key.clone() };
+                let mut outputs = Vec::new();
+                if p.eat_kw("output") || p.eat_kw("outputnew") {
+                    loop {
+                        let column = ident(&mut p)?;
+                        let name = if p.eat_kw("as") { ident(&mut p)? } else { column.clone() };
+                        outputs.push((column, name));
+                        if p.peek() == Some(&Tok::Comma) {
+                            p.pos += 1;
+                            continue;
+                        }
+                        break;
+                    }
+                }
+                Command::Lookup(Lookup { table, key, field, outputs, rows: Vec::new() })
+            }
             other => return Err(format!("unexpected symbol found {other}")),
         };
         if !p.done() {
             return Err(format!("unexpected symbol found {}", describe(p.peek())));
         }
+        let follows_pattern = commands.iter().any(|c| matches!(c, Command::Pattern(_)));
+        if matches!(c, Command::Diff(_) | Command::Anomaly) && !follows_pattern {
+            return Err(format!("{} must follow the pattern command", cmd.to_lowercase()));
+        }
         commands.push(c);
     }
     Ok(Query { commands })
+}
+
+impl Query {
+    /// Whether the query asks for unmasked data.
+    pub fn unmasks(&self) -> bool {
+        self.commands.iter().any(|c| matches!(c, Command::Unmask))
+    }
+
+    /// How far back `diff` compares, in ms; `Some(0)` stands for the
+    /// period just before the query's. `None` without `diff`.
+    pub fn diff_offset(&self) -> Option<i64> {
+        self.commands.iter().find_map(|c| match c {
+            Command::Diff(o) => Some(o.unwrap_or(0)),
+            _ => None,
+        })
+    }
+
+    /// The lookup tables the query reads.
+    pub fn lookups_mut(&mut self) -> impl Iterator<Item = &mut Lookup> {
+        self.commands.iter_mut().filter_map(|c| match c {
+            Command::Lookup(l) => Some(l),
+            _ => None,
+        })
+    }
 }
 
 pub(crate) fn contains_aggregate(e: &Expr) -> bool {
@@ -1016,7 +1203,7 @@ fn call(name: &str, args: &[Expr], r: &Record) -> V {
         }
         "frommillis" => n(0).map(|x| V::Time(x as i64)).unwrap_or(V::Null),
         "tomillis" => n(0).map(V::Num).unwrap_or(V::Null),
-        "now" => V::Time(Utc::now().timestamp_millis()),
+        "now" => V::Time(clock().map_or_else(|| Utc::now().timestamp_millis(), |c| c.now)),
         _ => V::Null,
     }
 }
@@ -1140,6 +1327,12 @@ pub fn execute(q: &Query, mut records: Vec<Record>, limit: usize) -> Output {
     let mut sorted = false;
     let mut all = false;
     let mut row_limit = limit;
+    // `diff` compares with records from an earlier period, which only
+    // `pattern` counts; without it they are not part of the result.
+    let has_diff = q.diff_offset().is_some();
+    if !has_diff {
+        records.retain(|r| !is_previous(r));
+    }
     for c in &q.commands {
         match c {
             Command::AllFields => all = true,
@@ -1298,6 +1491,85 @@ pub fn execute(q: &Query, mut records: Vec<Record>, limit: usize) -> Output {
                     seen.insert(k)
                 });
             }
+            Command::Unmask => {}
+            Command::Pattern(field) => {
+                if !aggregated {
+                    matched_before_stats = Some(records.iter().filter(|r| !is_previous(r)).count());
+                }
+                records = patterns(field, &records, has_diff);
+                fields = PATTERN_FIELDS.iter().map(|f| f.to_string()).collect();
+                aggregated = true;
+                sorted = true;
+                all = false;
+            }
+            Command::Diff(_) => {
+                for r in &mut records {
+                    let now = r.get("@sampleCount").and_then(V::num).unwrap_or(0.0);
+                    let before = r.get(PREVIOUS).and_then(V::num).unwrap_or(0.0);
+                    r.insert("@previousSampleCount".into(), V::Num(before));
+                    r.insert("@changeInSampleCount".into(), V::Num(now - before));
+                    let kind = match (before > 0.0, now > 0.0) {
+                        (false, _) => "NEW",
+                        (true, false) => "REMOVED",
+                        (true, true) => "EXISTING",
+                    };
+                    r.insert("@diffType".into(), V::Str(kind.into()));
+                }
+                fields = ["@pattern", "@sampleCount", "@previousSampleCount", "@changeInSampleCount", "@diffType"]
+                    .iter()
+                    .map(|f| f.to_string())
+                    .collect();
+            }
+            Command::Anomaly => {
+                records = anomalies(records);
+                fields =
+                    ["@pattern", "@sampleCount", "@description", "@priority"].iter().map(|f| f.to_string()).collect();
+            }
+            Command::Unnest { field, into } => {
+                let mut out = Vec::new();
+                for r in records {
+                    for v in array_elements(field, &r) {
+                        let mut copy = r.clone();
+                        copy.insert(into.clone(), v);
+                        out.push(copy);
+                    }
+                }
+                records = out;
+                if !fields.is_empty() && !fields.contains(into) {
+                    fields.push(into.clone());
+                }
+            }
+            Command::Lookup(l) => {
+                for r in &mut records {
+                    let Some(value) = r.get(&l.field).and_then(V::display) else { continue };
+                    let Some(row) = l.rows.iter().find(|row| row.get(&l.key) == Some(&value)) else { continue };
+                    let outputs: Vec<(String, String)> = if l.outputs.is_empty() {
+                        row.keys().filter(|k| **k != l.key).map(|k| (k.clone(), k.clone())).collect()
+                    } else {
+                        l.outputs.clone()
+                    };
+                    for (column, name) in outputs {
+                        if let Some(v) = row.get(&column) {
+                            r.insert(name, V::Str(v.clone()));
+                        }
+                    }
+                }
+                if !fields.is_empty() {
+                    let names: Vec<String> = if l.outputs.is_empty() {
+                        l.rows
+                            .first()
+                            .map(|row| row.keys().filter(|k| **k != l.key).cloned().collect())
+                            .unwrap_or_default()
+                    } else {
+                        l.outputs.iter().map(|(_, n)| n.clone()).collect()
+                    };
+                    for n in names {
+                        if !fields.contains(&n) {
+                            fields.push(n);
+                        }
+                    }
+                }
+            }
         }
     }
     let matched = matched_before_stats.unwrap_or(records.len());
@@ -1321,7 +1593,7 @@ pub fn execute(q: &Query, mut records: Vec<Record>, limit: usize) -> Output {
         .map(|r| {
             let mut row: Vec<(String, String)> = if all && display.is_none() {
                 r.iter()
-                    .filter(|(k, _)| *k != "@ptr")
+                    .filter(|(k, _)| *k != "@ptr" && !k.starts_with("@_"))
                     .filter_map(|(k, v)| v.display().map(|v| (k.clone(), v)))
                     .collect()
             } else {
@@ -1336,6 +1608,230 @@ pub fn execute(q: &Query, mut records: Vec<Record>, limit: usize) -> Output {
         })
         .collect();
     Output { rows, records_matched: matched }
+}
+
+/// The hidden field that marks a record from the period `diff` compares
+/// with.
+pub const PERIOD: &str = "@_period";
+const PREVIOUS: &str = "@_previousCount";
+const TIMES: &str = "@_times";
+const PATTERN_FIELDS: &[&str] = &["@pattern", "@ratio", "@sampleCount", "@severityLabel", "@visualization"];
+/// `@visualization` and `anomaly` look at the window in this many slices.
+const SLICES: usize = 10;
+
+fn is_previous(r: &Record) -> bool {
+    matches!(r.get(PERIOD), Some(V::Str(p)) if p == "previous")
+}
+
+fn timestamp(r: &Record) -> i64 {
+    match r.get("@timestamp") {
+        Some(V::Time(t)) => *t,
+        _ => 0,
+    }
+}
+
+/// A token that varies between events: anything with a digit, or a long
+/// hex/identifier-like string.
+fn is_variable(token: &str) -> bool {
+    token.chars().any(|c| c.is_ascii_digit())
+        || (token.len() >= 16 && token.chars().all(|c| c.is_ascii_hexdigit() || c == '-'))
+}
+
+const WILDCARD: &str = "<*>";
+
+fn severity(text: &str) -> &'static str {
+    static LEVEL: std::sync::OnceLock<Regex> = std::sync::OnceLock::new();
+    let re = LEVEL.get_or_init(|| {
+        Regex::new(r"(?i)\b(fatal|critical|crit|error|err|warning|warn|info|debug|trace)\b").expect("static regex")
+    });
+    match re.captures(text).map(|c| c[1].to_lowercase()) {
+        Some(l) => match l.as_str() {
+            "fatal" | "critical" | "crit" => "FATAL",
+            "error" | "err" => "ERROR",
+            "warning" | "warn" => "WARN",
+            "info" => "INFO",
+            "debug" => "DEBUG",
+            _ => "TRACE",
+        },
+        None => "UNKNOWN",
+    }
+}
+
+/// Whether two token lists are close enough to be one pattern: same
+/// length, same first token, and few positions that differ.
+fn similar(a: &[String], b: &[String]) -> bool {
+    if a.len() != b.len() || a.len() < 2 {
+        return false;
+    }
+    let differ = a.iter().zip(b).filter(|(x, y)| x != y && *x != WILDCARD && *y != WILDCARD).count();
+    a[0] == b[0] && differ <= (a.len() / 3).max(1)
+}
+
+/// The slice of the query window a timestamp falls in.
+fn slice_of(t: i64, from: i64, to: i64) -> usize {
+    let span = (to - from).max(1);
+    (((t - from).clamp(0, span - 1) as i128 * SLICES as i128 / span as i128) as usize).min(SLICES - 1)
+}
+
+/// `pattern`: cluster the field's values into patterns, the varying
+/// tokens replaced by `<*>`, most frequent first.
+fn patterns(field: &Expr, records: &[Record], keep_previous_only: bool) -> Vec<Record> {
+    struct Cluster {
+        tokens: Vec<String>,
+        sample: String,
+        times: Vec<i64>,
+        previous: usize,
+    }
+    let mut clusters: Vec<Cluster> = Vec::new();
+    for r in records {
+        let Some(text) = eval(field, r).display() else { continue };
+        let tokens: Vec<String> = text
+            .split_whitespace()
+            .map(|t| if is_variable(t) { WILDCARD.to_string() } else { t.to_string() })
+            .collect();
+        if tokens.is_empty() {
+            continue;
+        }
+        let at = match clusters.iter().position(|c| c.tokens == tokens) {
+            Some(i) => i,
+            None => match clusters.iter().position(|c| similar(&c.tokens, &tokens)) {
+                Some(i) => {
+                    let c = &mut clusters[i];
+                    for (x, y) in c.tokens.iter_mut().zip(&tokens) {
+                        if x != y {
+                            *x = WILDCARD.to_string();
+                        }
+                    }
+                    i
+                }
+                None => {
+                    clusters.push(Cluster { tokens, sample: text.clone(), times: Vec::new(), previous: 0 });
+                    clusters.len() - 1
+                }
+            },
+        };
+        if is_previous(r) {
+            clusters[at].previous += 1;
+        } else {
+            clusters[at].times.push(timestamp(r));
+        }
+    }
+    let total: usize = clusters.iter().map(|c| c.times.len()).sum();
+    let (from, to) = match clock() {
+        Some(c) => (c.from, c.to),
+        None => {
+            let ts = clusters.iter().flat_map(|c| c.times.iter().copied());
+            (ts.clone().min().unwrap_or(0), ts.max().unwrap_or(0) + 1)
+        }
+    };
+    let mut out: Vec<Record> = clusters
+        .into_iter()
+        .filter(|c| keep_previous_only || !c.times.is_empty())
+        .map(|c| {
+            let mut counts = [0usize; SLICES];
+            for t in &c.times {
+                counts[slice_of(*t, from, to)] += 1;
+            }
+            let pattern = c.tokens.join(" ");
+            let mut r = Record::new();
+            r.insert("@severityLabel".into(), V::Str(severity(&c.sample).into()));
+            r.insert("@pattern".into(), V::Str(pattern));
+            r.insert("@sampleCount".into(), V::Num(c.times.len() as f64));
+            let ratio = if total == 0 { 0.0 } else { c.times.len() as f64 / total as f64 };
+            r.insert("@ratio".into(), V::Num((ratio * 10_000.0).round() / 10_000.0));
+            r.insert("@visualization".into(), V::Str(serde_json::to_string(&counts).expect("counts serialize")));
+            r.insert(PREVIOUS.into(), V::Num(c.previous as f64));
+            r.insert(TIMES.into(), V::Str(serde_json::to_string(&counts).expect("counts serialize")));
+            r
+        })
+        .collect();
+    out.sort_by(|a, b| {
+        let n = |r: &Record| r.get("@sampleCount").and_then(V::num).unwrap_or(0.0);
+        n(b).partial_cmp(&n(a)).unwrap_or(Ordering::Equal)
+    });
+    out
+}
+
+/// `anomaly`: the patterns whose count in one slice of the window stands
+/// out from the rest (more than two standard deviations above the mean,
+/// and at least two events).
+fn anomalies(records: Vec<Record>) -> Vec<Record> {
+    records
+        .into_iter()
+        .filter_map(|mut r| {
+            let counts: Vec<f64> = match r.get(TIMES) {
+                Some(V::Str(s)) => serde_json::from_str::<Vec<f64>>(s).ok()?,
+                _ => return None,
+            };
+            let mean = counts.iter().sum::<f64>() / counts.len().max(1) as f64;
+            let sd = (counts.iter().map(|c| (c - mean).powi(2)).sum::<f64>() / counts.len().max(1) as f64).sqrt();
+            let (slice, peak) =
+                counts.iter().copied().enumerate().max_by(|a, b| a.1.partial_cmp(&b.1).unwrap_or(Ordering::Equal))?;
+            if peak < 2.0 || peak <= mean + 2.0 * sd {
+                return None;
+            }
+            let priority = if peak > mean + 3.0 * sd { "HIGH" } else { "MEDIUM" };
+            r.insert(
+                "@description".into(),
+                V::Str(format!(
+                    "Pattern count {} in slice {} of {SLICES} of the query window, against an average of {}",
+                    fmt_num(peak),
+                    slice + 1,
+                    fmt_num((mean * 100.0).round() / 100.0)
+                )),
+            );
+            r.insert("@priority".into(), V::Str(priority.into()));
+            Some(r)
+        })
+        .collect()
+}
+
+/// The elements `unnest` spreads: a JSON array in the field's text, or
+/// the `field.0`, `field.1`, ... fields JSON discovery flattened it into.
+fn array_elements(field: &Expr, r: &Record) -> Vec<V> {
+    let scalar = |v: &serde_json::Value| match v {
+        serde_json::Value::Null => V::Null,
+        serde_json::Value::Bool(b) => V::Bool(*b),
+        serde_json::Value::Number(n) => n.as_f64().map(V::Num).unwrap_or(V::Null),
+        serde_json::Value::String(s) => V::Str(s.clone()),
+        other => V::Str(other.to_string()),
+    };
+    if let Some(text) = eval(field, r).display() {
+        if let Ok(serde_json::Value::Array(a)) = serde_json::from_str::<serde_json::Value>(text.trim()) {
+            return a.iter().map(scalar).collect();
+        }
+        return vec![V::Str(text)];
+    }
+    let Expr::Field(name) = field else { return Vec::new() };
+    let prefix = format!("{name}.");
+    let mut items: BTreeMap<usize, Record> = BTreeMap::new();
+    for (k, v) in r {
+        let Some(rest) = k.strip_prefix(&prefix) else { continue };
+        let (index, sub) = rest.split_once('.').map_or((rest, None), |(i, s)| (i, Some(s)));
+        let Ok(i) = index.parse::<usize>() else { continue };
+        let item = items.entry(i).or_default();
+        item.insert(sub.unwrap_or("").to_string(), v.clone());
+    }
+    items
+        .into_values()
+        .map(|mut item| match item.remove("") {
+            Some(v) if item.is_empty() => v,
+            _ => {
+                let obj: serde_json::Map<String, serde_json::Value> = item
+                    .into_iter()
+                    .map(|(k, v)| {
+                        let j = match v {
+                            V::Num(n) => serde_json::json!(n),
+                            V::Bool(b) => serde_json::json!(b),
+                            other => serde_json::json!(other.display()),
+                        };
+                        (k, j)
+                    })
+                    .collect();
+                V::Str(serde_json::Value::Object(obj).to_string())
+            }
+        })
+        .collect()
 }
 
 /// Fields discovered in a JSON message, flattened with `.` (arrays by
@@ -1430,6 +1926,38 @@ mod tests {
         assert_eq!(rows, vec![vec![("user".to_string(), "alice".to_string())]]);
         let rows = run("parse @message /user=(?<u>\\w+)/ | stats count_distinct(u) as users", recs);
         assert_eq!(rows, vec![vec![("users".to_string(), "2".to_string())]]);
+    }
+
+    #[test]
+    fn pattern_unnest_source_lookup() {
+        let recs = vec![
+            rec(1000, "ERROR request 17 failed"),
+            rec(2000, "ERROR request 18 failed"),
+            rec(3000, "INFO started worker"),
+        ];
+        let rows = run("pattern @message", recs.clone());
+        assert_eq!(rows[0][0], ("@pattern".into(), "ERROR request <*> failed".into()));
+        assert_eq!(rows[0][2], ("@sampleCount".into(), "2".into()));
+        assert_eq!(rows[0][3], ("@severityLabel".into(), "ERROR".into()));
+        assert_eq!(rows[1][1], ("@ratio".into(), "0.3333".into()));
+
+        let rows = run("unnest a into x | fields x", vec![rec(1, r#"{"a":[1,2,3]}"#)]);
+        assert_eq!(rows.len(), 3);
+
+        let (src, rest) =
+            split_source("SOURCE logGroups(namePrefix: ['/a', \"/b\"], class: 'STANDARD') | fields x").unwrap();
+        let src = src.unwrap();
+        assert_eq!(src.name_prefixes, ["/a", "/b"]);
+        assert_eq!(src.class.as_deref(), Some("STANDARD"));
+        assert_eq!(rest, "fields x");
+
+        let mut q = parse("lookup t k as user OUTPUT v as value | fields user, value").unwrap();
+        for l in q.lookups_mut() {
+            l.rows = vec![[("k".to_string(), "bob".to_string()), ("v".to_string(), "1".to_string())].into()];
+        }
+        let rows = execute(&q, vec![rec(1, r#"{"user":"bob"}"#)], 10).rows;
+        assert_eq!(rows[0], vec![("user".to_string(), "bob".to_string()), ("value".to_string(), "1".to_string())]);
+        assert!(parse("fields x | diff").is_err());
     }
 
     #[test]

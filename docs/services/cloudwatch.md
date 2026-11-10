@@ -20,14 +20,14 @@ All 55 operations are generated from the AWS model and implemented. MWS answers 
 
 | Feature | Status | Details |
 | --- | :---: | --- |
-| Metric alarms | ✅ | On one metric or metric math, evaluated on the emulated clock with `EvaluationPeriods`, `DatapointsToAlarm`, `TreatMissingData` and anomaly detection band thresholds. |
-| Evaluation details | 🟡 | No look-back over the evaluation range for `TreatMissingData`, and no `PARTIAL_DATA` or `EVALUATION_ERROR` states. |
+| Metric alarms | ✅ | On one metric or metric math, evaluated about once a minute on the emulated clock (each period for high-resolution alarms) over completed periods only, with `EvaluationPeriods`, `DatapointsToAlarm`, `TreatMissingData` and anomaly detection band thresholds. A datapoint put now is evaluated once its period ends: tests move `/_mws/clock` past it instead of waiting. |
+| Evaluation details | 🟡 | Alarms look back over an evaluation range of `EvaluationPeriods` + 2 periods: with enough real datapoints the most recent ones decide and `TreatMissingData` is ignored, otherwise the missing ones are treated as it says. AWS does not publish the exact range length, and there is no late-data lag and no `PARTIAL_DATA` or `EVALUATION_ERROR` states. |
 | Composite alarms | ✅ | `ALARM()`, `OK()`, `INSUFFICIENT_DATA()`, `AT_LEAST`, `AND`/`OR`/`NOT`, cycle checks and actions suppressors. |
 | Log alarms | ✅ | Run their Logs Insights query on its schedule. |
 | Actions | ✅ | SNS (as `cloudwatch.amazonaws.com`, with AWS's alarm message) and Lambda (as `lambda.alarms.cloudwatch.amazonaws.com`), judged by their policies; mute rules and disabled actions apply. |
 | Auto Scaling actions | ✅ | Run the named scaling policy. |
 | EC2 actions | ✅ | `arn:aws:automate:<region>:ec2:stop`, `terminate`, `reboot` and `recover` act on the instance named by the alarm's `InstanceId` dimension (`recover` reboots it). |
-| Systems Manager actions | ❌ | Not yet. |
+| Systems Manager actions | 🟡 | `arn:aws:ssm:<region>:<account>:opsitem:<severity>[#CATEGORY=<category>]` creates an OpsItem (one per alarm while it is open; title, source and operational data approximate AWS's). Incident Manager (`ssm-incidents`) is not emulated and those actions fail. |
 | History and events | ✅ | Alarm history with AWS's reason strings and data; `CloudWatch Alarm State Change` events to EventBridge. |
 
 ## Other features
@@ -36,7 +36,7 @@ All 55 operations are generated from the AWS model and implemented. MWS answers 
 | --- | :---: | --- |
 | Dashboards | ✅ | With body validation; `GetMetricWidgetImage` draws a real PNG graph. |
 | Contributor Insights | ✅ | Rules that analyse CloudWatch Logs events for `GetInsightRuleReport`; managed rules. |
-| Anomaly detectors | ✅ | Training state from the metric's history. |
+| Anomaly detectors | 🟡 | `ANOMALY_DETECTION_BAND` trains a model on up to two weeks of history before the queried window (honouring `ExcludedTimeRanges` and `MetricTimezone`), with hourly, daily or weekly seasonality when the history covers two cycles; it needs 10 datapoints of history, otherwise the band is empty. Bands create the metric's detector when none exists. `StateValue` is `PENDING_TRAINING`, `TRAINED_INSUFFICIENT_DATA` (under a day of history) or `TRAINED`. The model is a deterministic mean/standard-deviation model, not AWS's; `AdaptationSpeed` and `OutlierFilteringStrength` are ignored. |
 | Metric streams | 🟡 | `json` streams deliver each minute's records to Firehose as their role; OpenTelemetry formats deliver nothing. |
 | Tags and settings | ✅ | Tag condition keys, OTel enrichment, resource metrics configurations and the default dataset's KMS key. |
 | Cross-account observability | ❌ | Not yet. |

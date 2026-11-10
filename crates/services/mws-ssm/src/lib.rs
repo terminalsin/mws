@@ -41,19 +41,23 @@ mod commands;
 mod compliance;
 mod documents;
 mod engine;
+mod events;
 mod handler;
 mod inventory;
 mod maintenance;
 mod names;
 mod nodes;
 mod ops;
+mod outputs;
 mod params;
 mod patch;
+mod plugins;
 pub mod policies;
 mod public;
 mod query;
 mod references;
 pub mod secure;
+mod service_ops;
 mod sessions;
 mod settings;
 mod sharing;
@@ -68,9 +72,12 @@ use mws_kms::Kms;
 pub use automation::{AutomationRuntime, ScriptCredentials};
 pub use changes::{ParameterChange, ParameterChangeSink};
 pub use commands::{ManagedNode, ManagedNodes, ShellOutput};
+pub use events::SsmEvent;
 pub use maintenance::{TaskInvoker, WindowEvent};
 pub use nodes::DataSyncDestination;
+pub use outputs::{CommandNotification, CommandOutputs, NodeRef};
 pub use references::{ReferencedSecret, SecretsManagerReferences};
+pub use service_ops::ServiceOpsItem;
 pub use sessions::{SessionIo, SessionKind};
 
 use names::{now, resource_tag_conditions, ParamRef};
@@ -95,6 +102,12 @@ pub struct Ssm {
     clock_offset_ms: Arc<std::sync::atomic::AtomicI64>,
     /// Whether the maintenance window ticker runs.
     ticking: Arc<std::sync::atomic::AtomicBool>,
+    /// EventBridge events waiting for the composition root.
+    events: Arc<Mutex<Vec<SsmEvent>>>,
+    /// Each change calendar's last known state (open or not).
+    calendar_states: Arc<Mutex<std::collections::HashMap<String, bool>>>,
+    /// Where command output and notifications go (S3, Logs, SNS).
+    outputs: Arc<RwLock<Option<Arc<dyn CommandOutputs>>>>,
 }
 
 impl Ssm {
@@ -113,6 +126,9 @@ impl Ssm {
             template: Arc::default(),
             clock_offset_ms: Arc::default(),
             ticking: Arc::default(),
+            events: Arc::default(),
+            calendar_states: Arc::default(),
+            outputs: Arc::default(),
         }
     }
 
@@ -251,6 +267,7 @@ impl Service for Ssm {
                     ssm.run_windows(at, false);
                     ssm.run_associations(at);
                     ssm.run_data_syncs(at);
+                    ssm.check_calendars(at);
                 }
             });
         }

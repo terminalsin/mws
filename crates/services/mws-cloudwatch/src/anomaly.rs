@@ -1,12 +1,15 @@
 //! Anomaly detection models (`PutAnomalyDetector`,
 //! `DescribeAnomalyDetectors`, `DeleteAnomalyDetector`). The model itself
-//! is the band metric math's `ANOMALY_DETECTION_BAND` computes from the
-//! metric's history; a detector's `StateValue` follows how much history
+//! ([`crate::model`]) trains on the metric's history whenever
+//! `ANOMALY_DETECTION_BAND` needs a band, with the detector's excluded time
+//! ranges and time zone; a detector's `StateValue` follows how much history
 //! there is to train on.
 
+use chrono::{DateTime, Duration, Utc};
 use mws_core::{ConditionContext, RequestContext, ServiceError};
 
 use crate::generated::{errors, types};
+use crate::math::{Engine, Val};
 use crate::names;
 use crate::state::{MetricKey, Region};
 use crate::stats::Stat;
@@ -69,7 +72,7 @@ fn same_dimensions(a: Option<&[types::Dimension]>, b: Option<&[types::Dimension]
     norm(a) == norm(b)
 }
 
-fn same_single(a: &types::SingleMetricAnomalyDetector, b: &types::SingleMetricAnomalyDetector) -> bool {
+pub(crate) fn same_single(a: &types::SingleMetricAnomalyDetector, b: &types::SingleMetricAnomalyDetector) -> bool {
     a.namespace == b.namespace
         && a.metric_name == b.metric_name
         && a.stat == b.stat
@@ -89,29 +92,73 @@ fn matches(
     }
 }
 
-/// How far a detector has trained: `PENDING_TRAINING` without data,
-/// `TRAINED_INSUFFICIENT_DATA` with under a day of it, else `TRAINED`.
-fn state_value(region: Option<&Region>, d: &types::AnomalyDetector) -> String {
-    let Some(s) = &d.single_metric_anomaly_detector else { return "TRAINED".into() };
-    let key = MetricKey::new(
-        s.namespace.as_deref().unwrap_or_default(),
-        s.metric_name.as_deref().unwrap_or_default(),
-        s.dimensions.as_deref(),
-    );
-    let series = region.and_then(|r| r.metrics.get(&key.key()));
-    match series.and_then(|s| Some((s.samples.first()?.t, s.samples.last()?.t))) {
-        None => "PENDING_TRAINING".into(),
-        Some((first, last)) if (last - first).num_hours() < 24 => "TRAINED_INSUFFICIENT_DATA".into(),
-        Some(_) => "TRAINED".into(),
+/// How far a detector has trained, from the history a model would train
+/// on now (two weeks, less the excluded time ranges, by minute):
+/// `PENDING_TRAINING` without enough of it to train
+/// ([`crate::model::MIN_TRAINING_POINTS`] datapoints), then
+/// `TRAINED_INSUFFICIENT_DATA` while it covers less than a day, then
+/// `TRAINED`.
+fn state_value(region: Option<&Region>, d: &types::AnomalyDetector, now: DateTime<Utc>) -> String {
+    let period = 60;
+    let end = crate::metrics::align(now, period);
+    let start = end - Duration::days(crate::model::TRAINING_DAYS);
+    let points = match (&d.single_metric_anomaly_detector, &d.metric_math_anomaly_detector) {
+        (Some(s), _) => {
+            let key = MetricKey::new(
+                s.namespace.as_deref().unwrap_or_default(),
+                s.metric_name.as_deref().unwrap_or_default(),
+                s.dimensions.as_deref(),
+            );
+            Engine::new(region, &[], start, end)
+                .metric_series(&key, s.stat.as_deref().unwrap_or("Average"), period, None)
+                .points
+        }
+        (None, Some(m)) => {
+            let queries = m.metric_data_queries.clone().unwrap_or_default();
+            let engine = Engine::new(region, &queries, start, end);
+            match queries.iter().find(|q| q.return_data != Some(false)).map(|q| engine.eval(&q.id)) {
+                Some(Ok(Val::Series(ts))) => ts.points,
+                _ => Default::default(),
+            }
+        }
+        _ => Default::default(),
+    };
+    let training = crate::model::Training::from_config(d.configuration.as_ref());
+    let kept: Vec<i64> =
+        points.keys().copied().filter(|t| !training.excluded.iter().any(|(s, e)| *t < *e && t + period > *s)).collect();
+    match (kept.first(), kept.last()) {
+        _ if kept.len() < crate::model::MIN_TRAINING_POINTS => "PENDING_TRAINING".into(),
+        (Some(first), Some(last)) if last - first + period < 86_400 => "TRAINED_INSUFFICIENT_DATA".into(),
+        _ => "TRAINED".into(),
+    }
+}
+
+/// Create the single-metric detectors an `ANOMALY_DETECTION_BAND` used
+/// without one, as CloudWatch does for alarms and graphs.
+pub(crate) fn auto_create(region: &mut Region, wanted: Vec<types::SingleMetricAnomalyDetector>) {
+    for s in wanted {
+        let exists = region
+            .anomaly_detectors
+            .iter()
+            .any(|d| d.single_metric_anomaly_detector.as_ref().is_some_and(|x| same_single(x, &s)));
+        if exists || region.anomaly_detectors.len() >= MAX_DETECTORS {
+            continue;
+        }
+        region.anomaly_detectors.push(types::AnomalyDetector {
+            anomaly_detector_id: Some(uuid::Uuid::new_v4().to_string()),
+            namespace: s.namespace.clone(),
+            metric_name: s.metric_name.clone(),
+            dimensions: s.dimensions.clone(),
+            stat: s.stat.clone(),
+            single_metric_anomaly_detector: Some(s),
+            ..Default::default()
+        });
     }
 }
 
 /// IANA time zone names (`America/New_York`, `UTC`, `Etc/GMT+5`).
 fn valid_timezone(tz: &str) -> bool {
-    tz == "UTC"
-        || tz == "GMT"
-        || tz.split('/').count() >= 2
-            && tz.split('/').all(|p| !p.is_empty() && p.chars().all(|c| c.is_ascii_alphanumeric() || "_+-".contains(c)))
+    tz.parse::<chrono_tz::Tz>().is_ok()
 }
 
 impl CloudWatch {
@@ -198,6 +245,7 @@ impl CloudWatch {
                 )));
             }
         }
+        let now = names::now(ctx);
         let st = self.lock();
         let region = st.region_ref(&ctx.caller.account_id, &ctx.region);
         let detectors: Vec<types::AnomalyDetector> = region
@@ -230,7 +278,7 @@ impl CloudWatch {
                 true
             })
             .map(|mut d| {
-                d.state_value = Some(state_value(region, &d));
+                d.state_value = Some(state_value(region, &d, now));
                 d
             })
             .collect();

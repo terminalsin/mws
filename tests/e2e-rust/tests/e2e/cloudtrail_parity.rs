@@ -51,9 +51,18 @@ fn activity_selector() -> AdvancedEventSelector {
         .unwrap()
 }
 
+/// Run a Lake query and wait for its rows (queries run in the background).
 async fn rows(ct: &aws_sdk_cloudtrail::Client, sql: String) -> Vec<Vec<(String, String)>> {
     let id = ct.start_query().query_statement(sql).send().await.unwrap().query_id.unwrap();
-    let out = ct.get_query_results().query_id(id).send().await.unwrap();
+    let mut out = ct.get_query_results().query_id(&id).send().await.unwrap();
+    for _ in 0..40 {
+        if !matches!(out.query_status().map(|s| s.as_str()), Some("QUEUED") | Some("RUNNING")) {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(100)).await;
+        out = ct.get_query_results().query_id(&id).send().await.unwrap();
+    }
+    assert_eq!(out.query_status().map(|s| s.as_str()), Some("FINISHED"));
     assert_eq!(out.error_message(), None);
     out.query_result_rows()
         .iter()
@@ -208,6 +217,8 @@ async fn insights_events_follow_unusual_call_rates() {
         .unwrap();
     assert_eq!(metrics.values().iter().sum::<f64>(), 31.0);
 
+    // Insights log files come with the trail's next batch of log files.
+    advance(&mws, 301).await;
     let mut keys = Vec::new();
     for _ in 0..40 {
         let out = s3
@@ -393,7 +404,11 @@ async fn dashboards_queries_and_federation() {
     let protected = ct.delete_dashboard().dashboard_id(&dashboard).send().await.unwrap_err();
     assert_eq!(code(protected.into_service_error()), "ConflictException");
 
+    // Queries run in the background: one still queued can be cancelled,
+    // once.
     let q = ct.start_query().query_statement(format!("SELECT eventName FROM {id}")).send().await.unwrap();
+    let cancelled = ct.cancel_query().query_id(q.query_id().unwrap()).send().await.unwrap();
+    assert_eq!(cancelled.query_status().as_str(), "CANCELLED");
     let done = ct.cancel_query().query_id(q.query_id().unwrap()).send().await.unwrap_err();
     assert_eq!(code(done.into_service_error()), "InactiveQueryException");
 

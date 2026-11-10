@@ -6,9 +6,11 @@
 //! and comparisons, the time series functions, `SEARCH`, `IF`, `FILL`,
 //! `ANOMALY_DETECTION_BAND`, `INSIGHT_RULE_METRIC` and label templates.
 //! Alarms (metric, metric math, anomaly band, composite and log alarms)
-//! are evaluated every second against the emulated clock; state changes go
-//! to the history, to EventBridge, and to their SNS and Lambda actions,
-//! honouring mute rules and composite suppressors. Contributor Insights
+//! are evaluated on the emulated clock, metric alarms once a minute over
+//! their completed periods; anomaly bands come from models trained on the
+//! metric's history. State changes go to the history, to EventBridge, and
+//! to their SNS, Lambda, OpsItem and other actions, honouring mute rules
+//! and composite suppressors. Contributor Insights
 //! rules analyse CloudWatch Logs events, metric streams deliver to
 //! Firehose through [`MetricStreamDelivery`], and `GetMetricWidgetImage`
 //! draws a real PNG.
@@ -40,6 +42,7 @@ mod logalarm;
 mod math;
 mod metrics;
 mod misc;
+mod model;
 mod mute;
 mod names;
 mod query;
@@ -75,6 +78,33 @@ pub(crate) struct Inner {
     pub(crate) quotas: OnceLock<mws_servicequotas::ServiceQuotas>,
     /// Alarm action targets of other services, by ARN service name.
     pub(crate) action_targets: Mutex<std::collections::BTreeMap<String, Arc<dyn AlarmActionTarget>>>,
+    /// Systems Manager OpsCenter, for `arn:aws:ssm:...:opsitem:...` actions.
+    pub(crate) ops_items: OnceLock<Arc<dyn OpsItemSink>>,
+}
+
+/// The OpsItem an alarm action (`arn:aws:ssm:<region>:<account>:opsitem:<severity>[#CATEGORY=<category>]`)
+/// creates when the alarm goes to ALARM.
+#[derive(Debug, Clone)]
+pub struct AlarmOpsItem {
+    pub partition: String,
+    pub account: String,
+    pub region: String,
+    pub title: String,
+    pub description: String,
+    pub source: String,
+    pub severity: String,
+    pub category: Option<String>,
+    /// `SearchableString` operational data by key.
+    pub operational_data: std::collections::BTreeMap<String, String>,
+    /// The role CloudWatch creates it as.
+    pub created_by: String,
+    pub at: chrono::DateTime<chrono::Utc>,
+}
+
+/// Where alarm actions create OpsItems (Systems Manager OpsCenter).
+pub trait OpsItemSink: Send + Sync {
+    /// The new (or deduplicated, still open) OpsItem's id.
+    fn create(&self, item: AlarmOpsItem) -> Result<String, String>;
 }
 
 /// What an alarm action of another service (an EC2 Auto Scaling policy)
@@ -127,6 +157,7 @@ impl CloudWatch {
                 streams: OnceLock::new(),
                 quotas: OnceLock::new(),
                 action_targets: Mutex::new(Default::default()),
+                ops_items: OnceLock::new(),
             }),
         }
     }
@@ -164,6 +195,11 @@ impl CloudWatch {
     pub fn with_kms(self, kms: mws_kms::Kms) -> Self {
         let _ = self.inner.kms.set(kms);
         self
+    }
+
+    /// Systems Manager OpsCenter, for OpsItem alarm actions.
+    pub fn set_ops_items(&self, sink: Arc<dyn OpsItemSink>) {
+        let _ = self.inner.ops_items.set(sink);
     }
 
     /// Let alarm actions name `service`'s resources (`autoscaling`).

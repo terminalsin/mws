@@ -1,16 +1,18 @@
 //! Alarm evaluation and actions.
 //!
-//! A scheduler evaluates every alarm each second against the emulated
-//! clock: metric alarms over their last `EvaluationPeriods` periods
-//! (`DatapointsToAlarm` of them must breach, `TreatMissingData` deciding
-//! what gaps mean), metric math and anomaly detection band alarms through
+//! A scheduler ticks each second against the emulated clock and evaluates
+//! each metric alarm once a minute (each period for high-resolution
+//! alarms) over its completed periods: the most recent `EvaluationPeriods`
+//! datapoints of its evaluation range (`DatapointsToAlarm` of them must
+//! breach, `TreatMissingData` deciding what gaps mean), metric math and anomaly detection band alarms through
 //! the metric math engine, log alarms by running their Logs Insights query
 //! on schedule, and composite alarms from their children. State changes go
 //! into the alarm history, to EventBridge as `CloudWatch Alarm State
 //! Change` events, and, when actions are enabled and no mute rule or
 //! suppressor holds them, to the state's actions: SNS topics (published as
 //! `cloudwatch.amazonaws.com`) and Lambda functions (invoked as
-//! `lambda.alarms.cloudwatch.amazonaws.com`).
+//! `lambda.alarms.cloudwatch.amazonaws.com`), Systems Manager OpsItems
+//! (through an [`crate::OpsItemSink`]) and other services' targets.
 
 use std::collections::BTreeMap;
 use std::sync::atomic::Ordering;
@@ -252,26 +254,37 @@ fn alarm_period(m: &types::PutMetricAlarmInput) -> i64 {
 }
 
 /// Whether a metric alarm evaluates now. CloudWatch evaluates an alarm
-/// once per period (every minute at most, every 10 or 30 seconds for
-/// high-resolution alarms), so a state set by `SetAlarmState` holds until
-/// the next evaluation. MWS also evaluates as soon as new data arrives,
-/// and right after the alarm is created or updated.
-fn due(region: &Region, a: &Alarm, now: DateTime<Utc>) -> bool {
+/// about once a minute (every 10 or 30 seconds for high-resolution
+/// alarms), whenever data arrives, so a state set by `SetAlarmState` holds
+/// until the next evaluation. MWS evaluates at each minute (or period)
+/// boundary of the emulated clock, and right after the alarm is created or
+/// updated.
+fn due(a: &Alarm, now: DateTime<Utc>) -> bool {
     let Some(last) = a.last_evaluated else { return true };
-    if region.puts != a.seen_puts {
-        return true;
-    }
     let interval = a.metric.as_ref().map(alarm_period).unwrap_or(60).clamp(1, 60);
     now.timestamp().div_euclid(interval) != last.timestamp().div_euclid(interval)
 }
 
+/// How many periods beyond `EvaluationPeriods` an alarm looks back for
+/// datapoints (its evaluation range) before it treats any as missing.
+const LOOKBACK_PERIODS: i64 = 2;
+
 /// The new state of a metric alarm, with its reason and reason data, or
 /// `None` to leave it as it is.
+///
+/// The alarm reads the completed periods of its evaluation range (the
+/// current, unfinished period is left out). With at least
+/// `EvaluationPeriods` real datapoints in the range it evaluates the most
+/// recent of them and `TreatMissingData` does not apply; with fewer it
+/// evaluates them all, and treats the rest as `TreatMissingData` says.
+/// Anomaly detectors that an `ANOMALY_DETECTION_BAND` needed and that do
+/// not exist yet are added to `new_detectors`.
 pub fn evaluate_metric_alarm(
     region: &Region,
     a: &Alarm,
     now: DateTime<Utc>,
     quotas: Option<crate::math::QuotaScope<'_>>,
+    new_detectors: &mut Vec<types::SingleMetricAnomalyDetector>,
 ) -> Option<(String, String, String)> {
     let m = a.metric.as_ref()?;
     if m.evaluation_criteria.is_some() {
@@ -281,8 +294,9 @@ pub fn evaluate_metric_alarm(
     let mdp = m.datapoints_to_alarm.map(i64::from).unwrap_or(n);
     let op = m.comparison_operator.as_deref()?;
     let period = alarm_period(m);
-    let end = align(now, period) + Duration::seconds(period);
-    let start = end - Duration::seconds(period * n);
+    let end = align(now, period);
+    let range = n + LOOKBACK_PERIODS;
+    let start = end - Duration::seconds(period * range);
     #[allow(clippy::type_complexity)]
     let (points, band, stat_label): (BTreeMap<i64, f64>, BTreeMap<i64, (f64, f64)>, String) =
         match (&m.metric_name, &m.metrics) {
@@ -314,10 +328,12 @@ pub fn evaluate_metric_alarm(
                     .clone();
                 let points = match engine.eval(&id).ok()? {
                     Val::Series(ts) => ts.points,
-                    Val::Scalar(s) => [(align(now, period).timestamp(), s)].into_iter().collect(),
+                    Val::Scalar(s) => [((end - Duration::seconds(period)).timestamp(), s)].into_iter().collect(),
                     _ => return None,
                 };
-                let band = match m.threshold_metric_id.as_ref().map(|t| engine.eval(t)) {
+                let band_val = m.threshold_metric_id.as_ref().map(|t| engine.eval(t));
+                new_detectors.extend(engine.new_detectors.take());
+                let band = match band_val {
                     Some(Ok(Val::Array(a))) if a.len() == 2 => a[0]
                         .points
                         .iter()
@@ -331,8 +347,11 @@ pub fn evaluate_metric_alarm(
         };
     let threshold = m.threshold.unwrap_or(0.0);
     let tmd = m.treat_missing_data.as_deref().unwrap_or("missing");
-    let slots: Vec<i64> = (0..n).map(|k| (start + Duration::seconds(period * k)).timestamp()).collect();
-    let present: Vec<(i64, f64)> = slots.iter().filter_map(|t| points.get(t).map(|v| (*t, *v))).collect();
+    let slots: Vec<i64> = (0..range).map(|k| (start + Duration::seconds(period * k)).timestamp()).collect();
+    let in_range: Vec<(i64, f64)> = slots.iter().filter_map(|t| points.get(t).map(|v| (*t, *v))).collect();
+    // The most recent `n` real datapoints, or all of them when there are
+    // fewer (the rest are missing).
+    let present: Vec<(i64, f64)> = in_range[in_range.len().saturating_sub(n as usize)..].to_vec();
     let missing = n - present.len() as i64;
     let breaching_present = present
         .iter()
@@ -438,18 +457,18 @@ pub fn evaluate_region(
     quotas: Option<&mws_servicequotas::ServiceQuotas>,
 ) -> Vec<Transition> {
     let scope = quotas.map(|sq| crate::math::QuotaScope { quotas: sq, account, region: region_name, now });
+    let mut new_detectors = Vec::new();
     let evaluated: Vec<(String, Option<Decision>)> = region
         .alarms
         .values()
-        .filter(|a| a.alarm_type == "MetricAlarm" && due(region, a, now))
-        .map(|a| (a.name().to_string(), evaluate_metric_alarm(region, a, now, scope)))
+        .filter(|a| a.alarm_type == "MetricAlarm" && due(a, now))
+        .map(|a| (a.name().to_string(), evaluate_metric_alarm(region, a, now, scope, &mut new_detectors)))
         .collect();
-    let puts = region.puts;
+    crate::anomaly::auto_create(region, new_detectors);
     let mut out = Vec::new();
     for (name, decision) in evaluated {
         if let Some(a) = region.alarms.get_mut(&name) {
             a.last_evaluated = Some(now);
-            a.seen_puts = puts;
         }
         let Some((value, reason, data)) = decision else { continue };
         if let Some(t) = transition(region, account, region_name, &name, &value, &reason, Some(data), now) {
@@ -613,6 +632,10 @@ impl CloudWatch {
                         mws_lambda::ServiceInvokeError::Failed(m) => m,
                     })
             }
+            "ssm" if action.split(':').nth(5).is_some_and(|r| r.starts_with("opsitem:")) => {
+                let sink = self.inner.ops_items.get().ok_or("Systems Manager is not available")?;
+                sink.create(ops_item(ctx, t, action)?).map(|_| ())
+            }
             other => {
                 let target =
                     self.inner.action_targets.lock().expect("action targets lock poisoned").get(other).cloned();
@@ -666,6 +689,47 @@ impl CloudWatch {
             },
         );
     }
+}
+
+/// The OpsItem an `arn:aws:ssm:<region>:<account>:opsitem:<severity>[#CATEGORY=<category>]`
+/// action creates.
+fn ops_item(ctx: &RequestContext, t: &Transition, action: &str) -> Result<crate::AlarmOpsItem, String> {
+    let parts: Vec<&str> = action.splitn(6, ':').collect();
+    let spec = parts.get(5).and_then(|r| r.strip_prefix("opsitem:")).unwrap_or_default();
+    let (severity, category) = match spec.split_once('#') {
+        Some((s, c)) => (s, c.strip_prefix("CATEGORY=").map(str::to_string)),
+        None => (spec, None),
+    };
+    if !["1", "2", "3", "4"].contains(&severity) {
+        return Err(format!("Invalid OpsItem severity {severity}"));
+    }
+    let a = &t.alarm;
+    let mut data = BTreeMap::new();
+    // An open OpsItem for the same alarm is not duplicated.
+    data.insert("/aws/dedup".to_string(), json!({"dedupString": a.arn}).to_string());
+    data.insert("/aws/resources".to_string(), json!([{"arn": a.arn}]).to_string());
+    data.insert("AlarmName".to_string(), a.name().to_string());
+    data.insert("AlarmArn".to_string(), a.arn.clone());
+    data.insert("StateReason".to_string(), a.state_reason.clone());
+    Ok(crate::AlarmOpsItem {
+        partition: ctx.partition.clone(),
+        account: t.account.clone(),
+        region: t.region.clone(),
+        title: format!("CloudWatch alarm - '{}' is in {} state", a.name(), a.state_value),
+        description: match a.description() {
+            Some(d) if !d.is_empty() => format!("{d}\n\n{}", a.state_reason),
+            _ => a.state_reason.clone(),
+        },
+        source: "CloudWatch Alarm".to_string(),
+        severity: severity.to_string(),
+        category,
+        operational_data: data,
+        created_by: format!(
+            "arn:{}:iam::{}:role/aws-service-role/ssm.alarms.cloudwatch.amazonaws.com/AWSServiceRoleForCloudWatchAlarms_ActionSSM",
+            ctx.partition, t.account
+        ),
+        at: ctx.received_at,
+    })
 }
 
 fn state_json(value: &str, reason: &str, data: Option<&str>, at: DateTime<Utc>) -> Value {
