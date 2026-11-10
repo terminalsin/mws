@@ -26,7 +26,7 @@ import {
   UpdateAccessKeyCommand,
   UpdateAssumeRolePolicyCommand,
 } from "@aws-sdk/client-iam";
-import { act, required, text, type ActionResult } from "@mws-dashboard/aws";
+import { act, FieldError, required, text, type ActionResult } from "@mws-dashboard/aws";
 import { redirect } from "next/navigation";
 
 import { iam } from "../../lib/clients";
@@ -36,16 +36,23 @@ const page = (kind: Kind, name: string) => `/iam/${kind}s/${encodeURIComponent(n
 
 function json(form: FormData, field: string, label: string) {
   const value = required(form, field, label);
-  JSON.parse(value);
+  try {
+    JSON.parse(value);
+  } catch {
+    throw new FieldError(field, "Invalid JSON", "format");
+  }
   return value;
 }
+
+/** Where IAM's policy errors land: the form's document field. */
+const document = (field: string) => ({ PolicyDocument: field, MalformedPolicyDocument: field });
 
 export async function createUser(_: ActionResult | null, form: FormData) {
   return act(async () => {
     const name = required(form, "name", "User name");
     await (await iam()).send(new CreateUserCommand({ UserName: name, Path: text(form, "path") || undefined }));
     return `Created ${name}`;
-  }, "/iam");
+  }, { revalidate: ["/iam"], fields: { UserName: "name", Path: "path" } });
 }
 
 export async function createGroup(_: ActionResult | null, form: FormData) {
@@ -53,10 +60,12 @@ export async function createGroup(_: ActionResult | null, form: FormData) {
     const name = required(form, "name", "Group name");
     await (await iam()).send(new CreateGroupCommand({ GroupName: name }));
     return `Created ${name}`;
-  }, "/iam");
+  }, { revalidate: ["/iam"], fields: { GroupName: "name" } });
 }
 
 export async function createRole(_: ActionResult | null, form: FormData) {
+  // A rejected trust policy is the one typed, or else the trusted service's.
+  const policy = text(form, "trust") ? "trust" : "service";
   return act(async () => {
     const name = required(form, "name", "Role name");
     const service = text(form, "service");
@@ -68,7 +77,7 @@ export async function createRole(_: ActionResult | null, form: FormData) {
       });
     await (await iam()).send(new CreateRoleCommand({ RoleName: name, AssumeRolePolicyDocument: doc, Description: text(form, "description") || undefined }));
     return `Created ${name}`;
-  }, "/iam");
+  }, { revalidate: ["/iam"], fields: { RoleName: "name", AssumeRolePolicyDocument: policy, MalformedPolicyDocument: policy } });
 }
 
 export async function createPolicy(_: ActionResult | null, form: FormData) {
@@ -76,7 +85,7 @@ export async function createPolicy(_: ActionResult | null, form: FormData) {
     const name = required(form, "name", "Policy name");
     await (await iam()).send(new CreatePolicyCommand({ PolicyName: name, PolicyDocument: json(form, "document", "Policy document") }));
     return `Created ${name}`;
-  }, "/iam");
+  }, { revalidate: ["/iam"], fields: { PolicyName: "name", ...document("document") } });
 }
 
 export async function deletePolicy(arn: string) {
@@ -94,7 +103,7 @@ export async function attachPolicy(kind: Kind, name: string, _: ActionResult | n
     else if (kind === "user") await client.send(new AttachUserPolicyCommand({ UserName: name, PolicyArn }));
     else await client.send(new AttachGroupPolicyCommand({ GroupName: name, PolicyArn }));
     return `Attached ${PolicyArn.split("/").pop()}`;
-  }, page(kind, name));
+  }, { revalidate: [page(kind, name)], fields: { PolicyArn: "policyArn", NoSuchEntity: "policyArn", InvalidInput: "policyArn" } });
 }
 
 export async function detachPolicy(kind: Kind, name: string, PolicyArn: string) {
@@ -115,7 +124,7 @@ export async function putInlinePolicy(kind: "role" | "user", name: string, _: Ac
     if (kind === "role") await client.send(new PutRolePolicyCommand({ RoleName: name, PolicyName, PolicyDocument }));
     else await client.send(new PutUserPolicyCommand({ UserName: name, PolicyName, PolicyDocument }));
     return `Saved ${PolicyName}`;
-  }, page(kind, name));
+  }, { revalidate: [page(kind, name)], fields: { PolicyName: "policyName", ...document("document") } });
 }
 
 export async function deleteInlinePolicy(kind: "role" | "user", name: string, PolicyName: string) {
@@ -131,7 +140,7 @@ export async function updateTrust(role: string, _: ActionResult | null, form: Fo
   return act(async () => {
     await (await iam()).send(new UpdateAssumeRolePolicyCommand({ RoleName: role, PolicyDocument: json(form, "document", "Trust policy") }));
     return "Trust policy saved";
-  }, page("role", role));
+  }, { revalidate: [page("role", role)], fields: document("document") });
 }
 
 export async function createAccessKey(user: string) {
@@ -164,7 +173,7 @@ export async function addToGroup(user: string, _: ActionResult | null, form: For
     const group = required(form, "group", "Group");
     await (await iam()).send(new AddUserToGroupCommand({ UserName: user, GroupName: group }));
     return `Added to ${group}`;
-  }, page("user", user));
+  }, { revalidate: [page("user", user)], fields: { GroupName: "group", NoSuchEntity: "group" } });
 }
 
 export async function removeFromGroup(user: string, group: string) {

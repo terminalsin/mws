@@ -68,7 +68,7 @@ export interface Rule {
 
 export type Rules = Record<string, Rule>;
 
-export type Format = "json" | "arn" | "cidr" | "ipv4" | "email" | "url" | "bucket" | "name" | "port" | "country" | "csr";
+export type Format = "json" | "policy" | "path" | "arn" | "cidr" | "ipv4" | "email" | "url" | "bucket" | "name" | "port" | "country" | "csr";
 
 /** "name": a readable resource name; "token": random letters and digits;
  * "password": meets the usual complexity rules; or a fixed prefix/suffix
@@ -600,6 +600,32 @@ export const FORMATS: Record<Format, FormatSpec> = {
       return fixed === null ? [] : [{ value: fixed, label: "Fix the JSON", kind: "fix" }];
     },
   },
+  policy: {
+    check(value) {
+      let doc: unknown;
+      try {
+        doc = JSON.parse(value);
+      } catch (e) {
+        return jsonMessage(value, e);
+      }
+      return policyProblem(doc);
+    },
+    repair(value) {
+      const fixed = repairPolicy(value);
+      return fixed === null ? [] : [{ value: fixed, label: "Fix the policy", kind: "fix" }];
+    },
+  },
+  path: {
+    check(value) {
+      if (!value.startsWith("/") || !value.endsWith("/")) return "Starts and ends with /, like /team/";
+      if (value.includes("//")) return "No empty segments";
+      return /^[\x21-\x7E]+$/.test(value) ? null : "No spaces or special characters";
+    },
+    repair(value) {
+      const v = `/${value.trim().replace(/\s+/g, "-").replace(/[^\x21-\x7E]/g, "")}/`.replace(/\/{2,}/g, "/");
+      return [{ value: v, label: "Fix the path", kind: "fix" }];
+    },
+  },
   arn: {
     check(value) {
       return /^arn:[\w-]+:[\w-]*:[\w-]*:(\d{12}|aws|)?:.+$/.test(value) ? null : "Not an ARN";
@@ -779,6 +805,77 @@ export function repairJson(value: string): string | null {
     }
   }
   return null;
+}
+
+// ---------------------------------------------------------------------------
+// Policy documents (IAM, and the resource policies of S3, SQS, KMS, ...).
+
+const POLICY_KEYS = ["Version", "Id", "Statement"];
+const STATEMENT_KEYS = ["Sid", "Effect", "Principal", "NotPrincipal", "Action", "NotAction", "Resource", "NotResource", "Condition"];
+const VERSIONS = ["2012-10-17", "2008-10-17"];
+const ACTION = /^(\*|[a-z0-9-]+:[A-Za-z0-9*?]+)$/i;
+const isObject = (v: unknown): v is Record<string, unknown> => typeof v === "object" && v !== null && !Array.isArray(v);
+const list = (v: unknown): unknown[] => (v === undefined ? [] : Array.isArray(v) ? v : [v]);
+
+function policyProblem(doc: unknown): string | null {
+  if (!isObject(doc)) return "A policy is an object with a Statement";
+  if (doc.Version !== undefined && !VERSIONS.includes(doc.Version as string)) return "Version is 2012-10-17";
+  if (doc.Statement === undefined) return "No Statement";
+  const statements = list(doc.Statement);
+  if (statements.length === 0) return "No Statement";
+  for (const [i, s] of statements.entries()) {
+    const which = statements.length > 1 ? `Statement ${i + 1}` : "The statement";
+    if (!isObject(s)) return `${which} isn't an object`;
+    if (s.Effect !== "Allow" && s.Effect !== "Deny") return `${which}: Effect is Allow or Deny`;
+    if (s.Action === undefined && s.NotAction === undefined) return `${which} has no Action`;
+    const bad = [...list(s.Action), ...list(s.NotAction)].find((a) => typeof a !== "string" || !ACTION.test(a));
+    if (bad !== undefined) return `Action ${JSON.stringify(bad)} isn't service:action`;
+  }
+  return null;
+}
+
+/** Canonical key names: wrong case and plurals ("actions") are corrected. */
+function canonicalKeys(o: Record<string, unknown>, keys: string[]): Record<string, unknown> {
+  const out: Record<string, unknown> = {};
+  for (const [k, v] of Object.entries(o)) {
+    const bare = k.trim().toLowerCase();
+    const key = keys.find((c) => c.toLowerCase() === bare || `${c.toLowerCase()}s` === bare) ?? k;
+    out[key] = v;
+  }
+  return out;
+}
+
+/** Fix the usual policy mistakes on top of JSON ones: a bare statement or
+ * statement list, a missing or mistyped Version, key and Effect casing,
+ * actions written `s3.GetObject`. Null when nothing parses. */
+export function repairPolicy(value: string): string | null {
+  let doc: unknown;
+  try {
+    doc = JSON.parse(value);
+  } catch {
+    const json = repairJson(value);
+    if (json === null) return null;
+    doc = JSON.parse(json);
+  }
+  if (Array.isArray(doc)) doc = { Statement: doc };
+  if (!isObject(doc)) return null;
+  let top = canonicalKeys(doc, POLICY_KEYS);
+  if (top.Statement === undefined && Object.keys(canonicalKeys(top, STATEMENT_KEYS)).some((k) => STATEMENT_KEYS.includes(k))) top = { Statement: [top] };
+  const action = (a: unknown) => (typeof a === "string" && !a.includes(":") && a !== "*" ? a.trim().replace(/^([a-z0-9-]+)\s*[.\s/]\s*/i, "$1:") : a);
+  const statement = (raw: unknown) => {
+    if (!isObject(raw)) return raw;
+    const s = canonicalKeys(raw, STATEMENT_KEYS);
+    if (typeof s.Effect === "string") s.Effect = ["Allow", "Deny"].find((e) => e.toLowerCase() === (s.Effect as string).trim().toLowerCase()) ?? s.Effect;
+    for (const k of ["Action", "NotAction"]) if (s[k] !== undefined) s[k] = Array.isArray(s[k]) ? (s[k] as unknown[]).map(action) : action(s[k]);
+    return s;
+  };
+  const { Version, ...rest } = top;
+  const fixed = {
+    Version: VERSIONS.includes(Version as string) ? Version : "2012-10-17",
+    ...rest,
+    Statement: Array.isArray(rest.Statement) ? rest.Statement.map(statement) : statement(rest.Statement),
+  };
+  return JSON.stringify(fixed, null, 2);
 }
 
 // ---------------------------------------------------------------------------
