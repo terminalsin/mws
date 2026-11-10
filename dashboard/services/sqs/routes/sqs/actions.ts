@@ -11,7 +11,7 @@ import {
   SetQueueAttributesCommand,
   StartMessageMoveTaskCommand,
 } from "@aws-sdk/client-sqs";
-import { act, required, text, type ActionResult } from "@mws-dashboard/aws";
+import { act, FieldError, required, text, type ActionResult } from "@mws-dashboard/aws";
 import { redirect } from "next/navigation";
 
 import { sqs } from "../../lib/clients";
@@ -23,7 +23,8 @@ async function url(name: string) {
 export async function createQueue(_: ActionResult | null, form: FormData) {
   return act(async () => {
     let name = required(form, "name", "Queue name");
-    const fifo = text(form, "fifo") === "on";
+    // A name ending in .fifo can only be a FIFO queue, so it is one.
+    const fifo = text(form, "fifo") === "on" || name.endsWith(".fifo");
     if (fifo && !name.endsWith(".fifo")) name += ".fifo";
     const attributes: Record<string, string> = {};
     const dlq = text(form, "dlq");
@@ -36,7 +37,7 @@ export async function createQueue(_: ActionResult | null, form: FormData) {
     }
     await (await sqs()).send(new CreateQueueCommand({ QueueName: name, Attributes: attributes }));
     return `Created queue ${name}`;
-  }, { revalidate: ["/sqs"], fields: { QueueName: "name" } });
+  }, { revalidate: ["/sqs"], fields: { QueueName: "name", RedrivePolicy: "dlq" } });
 }
 
 export async function sendMessage(name: string, _: ActionResult | null, form: FormData) {
@@ -55,7 +56,7 @@ export async function sendMessage(name: string, _: ActionResult | null, form: Fo
       }),
     );
     return `Sent message ${out.MessageId}`;
-  }, `/sqs/${encodeURIComponent(name)}`);
+  }, { revalidate: [`/sqs/${encodeURIComponent(name)}`], fields: { MessageBody: "body", MessageGroupId: "group", MessageDeduplicationId: "dedup", DelaySeconds: "delay" } });
 }
 
 /** Receive up to 10 messages. Peeking makes them visible again at once;
@@ -118,9 +119,16 @@ export async function saveAttributes(name: string, _: ActionResult | null, form:
     const Attributes: Record<string, string> = {};
     for (const a of ATTRIBUTES) {
       const v = form.get(a);
-      if (typeof v === "string") Attributes[a] = v.trim();
+      // An emptied number keeps its current value; an emptied policy removes it.
+      if (typeof v === "string" && (v.trim() || a === "Policy")) Attributes[a] = v.trim();
     }
-    if (Attributes.Policy) JSON.parse(Attributes.Policy);
+    if (Attributes.Policy) {
+      try {
+        JSON.parse(Attributes.Policy);
+      } catch (e) {
+        throw new FieldError("Policy", (e as Error).message, "format");
+      }
+    }
     await (await sqs()).send(new SetQueueAttributesCommand({ QueueUrl: await url(name), Attributes }));
     return "Saved";
   }, `/sqs/${encodeURIComponent(name)}`);
