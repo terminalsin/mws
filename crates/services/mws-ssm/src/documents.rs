@@ -262,10 +262,11 @@ fn catalogue() -> &'static BTreeMap<String, Document> {
     static DOCS: OnceLock<BTreeMap<String, Document>> = OnceLock::new();
     DOCS.get_or_init(|| {
         let created = DateTime::parse_from_rfc3339("2017-08-28T16:00:00Z").expect("valid date").with_timezone(&Utc);
-        let docs: [(&str, &str, &str); 7] = [
+        let docs: [(&str, &str, &str); 8] = [
             ("AWS-RunShellScript", "Command", RUN_SHELL_SCRIPT),
             ("AWS-RunPowerShellScript", "Command", RUN_POWERSHELL_SCRIPT),
             ("AWS-RunPatchBaseline", "Command", RUN_PATCH_BASELINE),
+            ("AWS-GatherSoftwareInventory", "Policy", GATHER_SOFTWARE_INVENTORY),
             ("AWS-UpdateSSMAgent", "Command", UPDATE_SSM_AGENT),
             ("AWS-ConfigureAWSPackage", "Command", CONFIGURE_PACKAGE),
             ("AWS-StartPortForwardingSession", "Session", PORT_FORWARDING),
@@ -886,6 +887,43 @@ const RUN_POWERSHELL_SCRIPT: &str = r#"{
   }
 }"#;
 
+const GATHER_SOFTWARE_INVENTORY: &str = r#"{
+  "schemaVersion": "2.0",
+  "description": "Software Inventory Policy Document.",
+  "parameters": {
+    "applications": {"type": "String", "default": "Enabled", "description": "(Optional) Collect data for installed applications.", "allowedValues": ["Enabled", "Disabled"]},
+    "awsComponents": {"type": "String", "default": "Enabled", "description": "(Optional) Collect data for AWS Components like amazon-ssm-agent.", "allowedValues": ["Enabled", "Disabled"]},
+    "files": {"type": "String", "default": "", "description": "(Optional, requires SSMAgent version 2.2.64.0 and above) Linux example: [{\"Path\":\"/usr/bin\", \"Pattern\":[\"aws*\", \"*ssm*\"],\"Recursive\":false}]"},
+    "networkConfig": {"type": "String", "default": "Enabled", "description": "(Optional) Collect data for Network configurations.", "allowedValues": ["Enabled", "Disabled"]},
+    "billingInfo": {"type": "String", "default": "Enabled", "description": "(Optional) Collect billing info for license included applications.", "allowedValues": ["Enabled", "Disabled"]},
+    "windowsUpdates": {"type": "String", "default": "Enabled", "description": "(Optional) Collect data for all Windows Updates.", "allowedValues": ["Enabled", "Disabled"]},
+    "instanceDetailedInformation": {"type": "String", "default": "Enabled", "description": "(Optional) Collect additional information about the instance, including the CPU model, speed, and the number of cores, to name a few.", "allowedValues": ["Enabled", "Disabled"]},
+    "services": {"type": "String", "default": "Enabled", "description": "(Optional, Windows OS only, requires SSMAgent version 2.2.64.0 and above) Collect data for service configurations.", "allowedValues": ["Enabled", "Disabled"]},
+    "windowsRegistry": {"type": "String", "default": "", "description": "(Optional, Windows OS only, requires SSMAgent version 2.2.64.0 and above) Windows example: [{\"Path\":\"HKEY_LOCAL_MACHINE\\\\SOFTWARE\\\\Amazon\", \"Recursive\":true}]"},
+    "windowsRoles": {"type": "String", "default": "Enabled", "description": "(Optional, Windows OS only, requires SSMAgent version 2.2.64.0 and above) Collect data for Microsoft Windows role configurations.", "allowedValues": ["Enabled", "Disabled"]},
+    "customInventory": {"type": "String", "default": "Enabled", "description": "(Optional) Collect data for custom inventory.", "allowedValues": ["Enabled", "Disabled"]}
+  },
+  "mainSteps": [
+    {
+      "action": "aws:softwareInventory",
+      "name": "collectSoftwareInventoryItems",
+      "inputs": {
+        "applications": "{{ applications }}",
+        "awsComponents": "{{ awsComponents }}",
+        "networkConfig": "{{ networkConfig }}",
+        "files": "{{ files }}",
+        "services": "{{ services }}",
+        "windowsRoles": "{{ windowsRoles }}",
+        "windowsRegistry": "{{ windowsRegistry }}",
+        "windowsUpdates": "{{ windowsUpdates }}",
+        "instanceDetailedInformation": "{{ instanceDetailedInformation }}",
+        "billingInfo": "{{ billingInfo }}",
+        "customInventory": "{{ customInventory }}"
+      }
+    }
+  ]
+}"#;
+
 const RUN_PATCH_BASELINE: &str = r#"{
   "schemaVersion": "2.2",
   "description": "Scans for or installs patches from a patch baseline to a Linux or Windows operating system.",
@@ -911,9 +949,9 @@ const RUN_PATCH_BASELINE: &str = r#"{
   "mainSteps": [
     {
       "precondition": {"StringEquals": ["platformType", "Linux"]},
-      "action": "aws:runShellScript",
+      "action": "aws:runPatchBaseline",
       "name": "PatchLinux",
-      "inputs": {"runCommand": ["echo 'Patch baseline {{ Operation }} completed.'"]}
+      "inputs": {"Operation": "{{ Operation }}", "SnapshotId": "{{ SnapshotId }}", "RebootOption": "{{ RebootOption }}"}
     }
   ]
 }"#;

@@ -431,6 +431,7 @@ fn build_with_store(config: Config, store: Option<Arc<Store>>) -> Mws {
     }));
     let ec2 = Ec2::new(config.ec2_backend.resolve(config.ec2_docker_cli.as_deref()));
     ssm.set_managed_nodes(Arc::new(ssm::SsmNodes(ec2.clone())));
+    ssm.set_data_sync_destination(Arc::new(wiring::SsmDataSync(s3.clone())));
     ssm.set_task_invoker(Arc::new(ssm::SsmTasks { lambda: lambda.clone(), sts: sts.clone() }));
     events.register_clock_source(Arc::new(ssm::SsmWindowEvents {
         ssm: ssm.clone(),
