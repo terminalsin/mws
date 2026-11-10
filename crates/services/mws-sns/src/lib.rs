@@ -48,6 +48,8 @@ use state::State;
 pub(crate) struct Inner {
     state: Mutex<State>,
     lambda: OnceLock<mws_lambda::Lambda>,
+    /// Calls other services' operations (Lambda's `Invoke`) as SNS.
+    client: OnceLock<mws_core::ServiceClient>,
     queues: OnceLock<Arc<dyn QueueDelivery>>,
     /// Where `firehose` subscriptions (and audit findings) go.
     firehose: OnceLock<mws_firehose::Firehose>,
@@ -80,6 +82,7 @@ impl Sns {
             inner: Arc::new(Inner {
                 state: Mutex::new(State::default()),
                 lambda: OnceLock::new(),
+                client: OnceLock::new(),
                 queues: OnceLock::new(),
                 firehose: OnceLock::new(),
                 s3: OnceLock::new(),
@@ -120,6 +123,12 @@ impl Sns {
             ctx.received_at,
             value,
         )]);
+    }
+
+    /// Deliver to `lambda` subscriptions by calling Lambda's own `Invoke`
+    /// as `sns.amazonaws.com` through `client`.
+    pub fn set_service_client(&self, client: mws_core::ServiceClient) {
+        let _ = self.inner.client.set(client);
     }
 
     /// Deliver to `lambda` subscriptions through Lambda.

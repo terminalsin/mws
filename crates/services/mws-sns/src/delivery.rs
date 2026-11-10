@@ -234,6 +234,42 @@ impl Sns {
     fn deliver(&self, ctx: &RequestContext, origin: &Origin, sub: &Subscription, msg: &Outgoing) {
         let body = msg.message_for(&sub.protocol).to_string();
         match sub.protocol.as_str() {
+            "lambda" if self.inner.client.get().is_some() => {
+                // SNS calls Lambda's Invoke (Event) once the publish is done.
+                let event = self.lambda_event(ctx, origin, sub, msg);
+                let client = self.inner.client.get().cloned().expect("checked above");
+                let mut sctx = ctx.as_service(SERVICE_PRINCIPAL, &origin.account, Some(&origin.topic_arn));
+                if let Some(region) = sub.endpoint.split(':').nth(3) {
+                    sctx.region = region.to_string();
+                }
+                let (sns, ctx, origin, sub, msg) =
+                    (self.clone(), ctx.clone(), origin.clone(), sub.clone(), msg.clone());
+                mws_core::deferred::defer(async move {
+                    use base64::Engine;
+                    let input = json!({
+                        "FunctionName": sub.endpoint,
+                        "InvocationType": "Event",
+                        "Payload": base64::engine::general_purpose::STANDARD.encode(event.to_string()),
+                    });
+                    let outcome = client.call(&sctx, "lambda", "Invoke", input).await;
+                    let (success, status_code, response) = match &outcome {
+                        Ok(_) => (true, 202, json!({"lambdaRequestId": uuid::Uuid::new_v4().to_string()})),
+                        Err(e) => {
+                            let status = if e.code.contains("NotFound") { 404 } else { e.status };
+                            (false, status, json!({"ErrorCode": e.code, "ErrorMessage": e.message}))
+                        }
+                    };
+                    sns.log_delivery(
+                        &ctx,
+                        &msg,
+                        sns.attempt(&origin, &sub, success, status_code, response.to_string(), 1),
+                    );
+                    if let Err(e) = outcome {
+                        tracing::warn!(subscription = %sub.arn, "SNS could not invoke {}: {}", sub.endpoint, e.message);
+                        sns.redrive(&ctx, &origin, &sub, &msg);
+                    }
+                });
+            }
             "lambda" => {
                 let Some(lambda) = self.inner.lambda.get() else {
                     tracing::warn!(subscription = %sub.arn, "Lambda is not wired in; dropping the message");
