@@ -1298,6 +1298,10 @@ pub(crate) fn instance_health(
         if state != "running" {
             return ("OutOfService", "Instance", format!("Instance is in {state} state."));
         }
+        // Nothing runs the instance, so probes could only fail.
+        if crate::health::runs_nothing(elb, account, region, id) {
+            return ("InService", "N/A", "N/A".into());
+        }
     }
     match elb.inner.health.get(&HealthKey::classic(region_key, lb, id)) {
         Some(run) if run.healthy == Some(true) => ("InService", "N/A", "N/A".into()),
@@ -1324,6 +1328,9 @@ pub(crate) fn probes(elb: &Elb, st: &State) -> Vec<Probe> {
                 _ => ProbeKind::Tcp,
             };
             for id in &c.instances {
+                if crate::health::runs_nothing(elb, account, region, id) {
+                    continue;
+                }
                 let address = match crate::health::instance_state(elb, account, region, id) {
                     Some((s, Some(ip), _)) if s == "running" => ip.parse().ok().map(|ip| SocketAddr::new(ip, port)),
                     _ => continue,

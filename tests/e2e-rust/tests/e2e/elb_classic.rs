@@ -165,8 +165,9 @@ async fn classic_load_balancers() {
     assert!(a.cross_zone_load_balancing().unwrap().enabled());
     assert_eq!(a.connection_draining().unwrap().timeout(), Some(60));
 
-    // Instances: metadata-only EC2 instances register, but nothing answers
-    // their health checks, so they stay out of service.
+    // Instances: a freshly launched instance is still pending, so it is
+    // out of service. (Once running on the metadata backend, which serves
+    // nothing, it would count as in service.)
     let image = ec2
         .describe_images()
         .owners("amazon")
