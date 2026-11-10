@@ -102,7 +102,11 @@ const NAV: Record<string, NavItem[]> = {
     { label: "AWS services", path: "/servicequotas", icon: "service/AWSTrustedAdvisor" },
     { label: "Quota request history", path: "/servicequotas?tab=requests", icon: "resource/AWSIdentityAccessManagementPermissions" },
   ],
-  ce: [{ label: "Cost and usage", path: "/ce", icon: "service/AWSCostExplorer" }],
+  ce: [
+    { label: "Cost and usage", path: "/ce", icon: "service/AWSCostExplorer" },
+    { label: "Anomaly detection", path: "/ce/anomalies", icon: "resource/AWSTrustedAdvisorChecklistCost" },
+    { label: "Cost categories", path: "/ce/categories", icon: "service/AWSCostandUsageReport" },
+  ],
   securityhub: [
     { label: "Findings", path: "/securityhub", icon: "resource/AWSSecurityHubFinding" },
     { label: "Security standards", path: "/securityhub?tab=standards", icon: "service/AWSSecurityHub" },
