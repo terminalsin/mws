@@ -41,7 +41,9 @@
 | Permissions | ✅ | Resource policies (`AddPermission`), `iam:PassRole` and trust policy checks. |
 | Other settings | ✅ | Environment variables, tags, event invoke configs, provisioned concurrency, recursion and runtime management settings, code signing configs. |
 | Function URLs | ✅ | Serve HTTP at `Host: <id>.lambda-url.<region>.on.aws` or `/_aws/lambda-url/<id>/`, payload format 2.0, CORS, and `AWS_IAM` or `NONE` auth (both `lambda:InvokeFunctionUrl` and `lambda:InvokeFunction` are required, as on AWS). |
-| Durable executions, capacity providers, account resource policies | ❌ | Not yet. |
+| Durable executions | ✅ | Functions with a `DurableConfig` start durable executions (named, idempotent; `Event` or synchronous). MWS keeps the operations the SDK checkpoints, runs waits and step retries on the emulated clock, completes callbacks (with timeouts and heartbeats) and chained invokes, re-invokes the function when an operation it waits for is ready, and records the execution history. |
+| Capacity providers | 🟡 | Capacity providers, function scaling configs and the functions using them are managed as in AWS; the functions still run in local execution environments, not on EC2 instances. |
+| `PutResourcePolicy` | ✅ | Sets the whole policy of a function or version, shared with `AddPermission`/`GetPolicy`. |
 
 ## Asynchronous invocation
 

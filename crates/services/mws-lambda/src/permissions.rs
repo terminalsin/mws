@@ -236,3 +236,90 @@ impl Lambda {
         })
     }
 }
+
+impl Lambda {
+    /// The function (and qualifier) a resource policy ARN names.
+    fn policy_resource(ctx: &RequestContext, arn: &str) -> Result<names::FunctionRef, ServiceError> {
+        let parts: Vec<&str> = arn.split(':').collect();
+        if parts.len() < 7 || parts[0] != "arn" || parts[2] != "lambda" || parts[5] != "function" {
+            return Err(errors::invalid_parameter_value(format!(
+                "Resource-based policies are not supported for {arn}."
+            )));
+        }
+        let qualifier = parts.get(7).map(|q| q.to_string());
+        names::parse_function(ctx, &parts[..7].join(":"), qualifier.as_deref())
+    }
+
+    pub async fn put_resource_policy(
+        &self,
+        ctx: &RequestContext,
+        input: types::PutResourcePolicyRequest,
+    ) -> Result<types::PutResourcePolicyResponse, ServiceError> {
+        let f = Self::policy_resource(ctx, &input.resource_arn)?;
+        self.authorize_function(ctx, "lambda:PutResourcePolicy", &f, ConditionContext::new())?;
+        let doc: Value = serde_json::from_str(&input.policy)
+            .map_err(|_| errors::invalid_parameter_value("The policy is not a valid JSON document."))?;
+        if mws_iam_policy::Policy::parse(&input.policy, mws_iam_policy::PolicyKind::Resource).is_err() {
+            return Err(errors::invalid_parameter_value("The policy document is malformed."));
+        }
+        let statements = match &doc["Statement"] {
+            Value::Array(a) => a.clone(),
+            Value::Object(_) => vec![doc["Statement"].clone()],
+            _ => return Err(errors::invalid_parameter_value("The policy has no statements.")),
+        };
+        let mut st = self.write();
+        let func = Self::function_mut(&mut st, &f)?;
+        if let Some(q) = &f.qualifier {
+            if !func.has_qualifier(q) {
+                return Err(f.not_found());
+            }
+        }
+        let key = f.qualifier.clone().unwrap_or_default();
+        crate::functions::check_revision(
+            func.policy_revisions.get(&key).map(String::as_str),
+            input.revision_id.as_deref(),
+        )?;
+        func.policies.insert(key.clone(), statements);
+        let revision = revision_id();
+        func.policy_revisions.insert(key, revision.clone());
+        let policy = Self::policy_document(func, f.qualifier.as_deref());
+        Ok(types::PutResourcePolicyResponse { policy, revision_id: Some(revision) })
+    }
+
+    pub async fn get_resource_policy(
+        &self,
+        ctx: &RequestContext,
+        input: types::GetResourcePolicyRequest,
+    ) -> Result<types::GetResourcePolicyResponse, ServiceError> {
+        let f = Self::policy_resource(ctx, &input.resource_arn)?;
+        self.authorize_function(ctx, "lambda:GetResourcePolicy", &f, ConditionContext::new())?;
+        let st = self.read();
+        let func = Self::function(&st, &f)?;
+        let policy = Self::policy_document(func, f.qualifier.as_deref()).ok_or_else(no_policy)?;
+        Ok(types::GetResourcePolicyResponse {
+            policy: Some(policy),
+            revision_id: func.policy_revisions.get(f.qualifier.as_deref().unwrap_or("")).cloned(),
+        })
+    }
+
+    pub async fn delete_resource_policy(
+        &self,
+        ctx: &RequestContext,
+        input: types::DeleteResourcePolicyRequest,
+    ) -> Result<(), ServiceError> {
+        let f = Self::policy_resource(ctx, &input.resource_arn)?;
+        self.authorize_function(ctx, "lambda:DeleteResourcePolicy", &f, ConditionContext::new())?;
+        let mut st = self.write();
+        let func = Self::function_mut(&mut st, &f)?;
+        let key = f.qualifier.clone().unwrap_or_default();
+        crate::functions::check_revision(
+            func.policy_revisions.get(&key).map(String::as_str),
+            input.revision_id.as_deref(),
+        )?;
+        if func.policies.remove(&key).is_none_or(|s| s.is_empty()) {
+            return Err(no_policy());
+        }
+        func.policy_revisions.insert(key, revision_id());
+        Ok(())
+    }
+}

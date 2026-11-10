@@ -475,4 +475,144 @@ impl Handler for Lambda {
     ) -> Result<types::UpdateFunctionUrlConfigResponse, ServiceError> {
         Lambda::update_function_url_config(self, ctx, input).await
     }
+    async fn checkpoint_durable_execution(
+        &self,
+        ctx: &RequestContext,
+        input: types::CheckpointDurableExecutionRequest,
+    ) -> Result<types::CheckpointDurableExecutionResponse, ServiceError> {
+        Lambda::checkpoint_durable_execution(self, ctx, input).await
+    }
+    async fn create_capacity_provider(
+        &self,
+        ctx: &RequestContext,
+        input: types::CreateCapacityProviderRequest,
+    ) -> Result<types::CreateCapacityProviderResponse, ServiceError> {
+        Lambda::create_capacity_provider(self, ctx, input).await
+    }
+    async fn delete_capacity_provider(
+        &self,
+        ctx: &RequestContext,
+        input: types::DeleteCapacityProviderRequest,
+    ) -> Result<types::DeleteCapacityProviderResponse, ServiceError> {
+        Lambda::delete_capacity_provider(self, ctx, input).await
+    }
+    async fn delete_resource_policy(
+        &self,
+        ctx: &RequestContext,
+        input: types::DeleteResourcePolicyRequest,
+    ) -> Result<(), ServiceError> {
+        Lambda::delete_resource_policy(self, ctx, input).await
+    }
+    async fn get_capacity_provider(
+        &self,
+        ctx: &RequestContext,
+        input: types::GetCapacityProviderRequest,
+    ) -> Result<types::GetCapacityProviderResponse, ServiceError> {
+        Lambda::get_capacity_provider(self, ctx, input).await
+    }
+    async fn get_durable_execution(
+        &self,
+        ctx: &RequestContext,
+        input: types::GetDurableExecutionRequest,
+    ) -> Result<types::GetDurableExecutionResponse, ServiceError> {
+        Lambda::get_durable_execution(self, ctx, input).await
+    }
+    async fn get_durable_execution_history(
+        &self,
+        ctx: &RequestContext,
+        input: types::GetDurableExecutionHistoryRequest,
+    ) -> Result<types::GetDurableExecutionHistoryResponse, ServiceError> {
+        Lambda::get_durable_execution_history(self, ctx, input).await
+    }
+    async fn get_durable_execution_state(
+        &self,
+        ctx: &RequestContext,
+        input: types::GetDurableExecutionStateRequest,
+    ) -> Result<types::GetDurableExecutionStateResponse, ServiceError> {
+        Lambda::get_durable_execution_state(self, ctx, input).await
+    }
+    async fn get_function_scaling_config(
+        &self,
+        ctx: &RequestContext,
+        input: types::GetFunctionScalingConfigRequest,
+    ) -> Result<types::GetFunctionScalingConfigResponse, ServiceError> {
+        Lambda::get_function_scaling_config(self, ctx, input).await
+    }
+    async fn get_resource_policy(
+        &self,
+        ctx: &RequestContext,
+        input: types::GetResourcePolicyRequest,
+    ) -> Result<types::GetResourcePolicyResponse, ServiceError> {
+        Lambda::get_resource_policy(self, ctx, input).await
+    }
+    async fn list_capacity_providers(
+        &self,
+        ctx: &RequestContext,
+        input: types::ListCapacityProvidersRequest,
+    ) -> Result<types::ListCapacityProvidersResponse, ServiceError> {
+        Lambda::list_capacity_providers(self, ctx, input).await
+    }
+    async fn list_durable_executions_by_function(
+        &self,
+        ctx: &RequestContext,
+        input: types::ListDurableExecutionsByFunctionRequest,
+    ) -> Result<types::ListDurableExecutionsByFunctionResponse, ServiceError> {
+        Lambda::list_durable_executions_by_function(self, ctx, input).await
+    }
+    async fn list_function_versions_by_capacity_provider(
+        &self,
+        ctx: &RequestContext,
+        input: types::ListFunctionVersionsByCapacityProviderRequest,
+    ) -> Result<types::ListFunctionVersionsByCapacityProviderResponse, ServiceError> {
+        Lambda::list_function_versions_by_capacity_provider(self, ctx, input).await
+    }
+    async fn put_function_scaling_config(
+        &self,
+        ctx: &RequestContext,
+        input: types::PutFunctionScalingConfigRequest,
+    ) -> Result<types::PutFunctionScalingConfigResponse, ServiceError> {
+        Lambda::put_function_scaling_config(self, ctx, input).await
+    }
+    async fn put_resource_policy(
+        &self,
+        ctx: &RequestContext,
+        input: types::PutResourcePolicyRequest,
+    ) -> Result<types::PutResourcePolicyResponse, ServiceError> {
+        Lambda::put_resource_policy(self, ctx, input).await
+    }
+    async fn send_durable_execution_callback_failure(
+        &self,
+        ctx: &RequestContext,
+        input: types::SendDurableExecutionCallbackFailureRequest,
+    ) -> Result<types::SendDurableExecutionCallbackFailureResponse, ServiceError> {
+        Lambda::send_durable_execution_callback_failure(self, ctx, input).await
+    }
+    async fn send_durable_execution_callback_heartbeat(
+        &self,
+        ctx: &RequestContext,
+        input: types::SendDurableExecutionCallbackHeartbeatRequest,
+    ) -> Result<types::SendDurableExecutionCallbackHeartbeatResponse, ServiceError> {
+        Lambda::send_durable_execution_callback_heartbeat(self, ctx, input).await
+    }
+    async fn send_durable_execution_callback_success(
+        &self,
+        ctx: &RequestContext,
+        input: types::SendDurableExecutionCallbackSuccessRequest,
+    ) -> Result<types::SendDurableExecutionCallbackSuccessResponse, ServiceError> {
+        Lambda::send_durable_execution_callback_success(self, ctx, input).await
+    }
+    async fn stop_durable_execution(
+        &self,
+        ctx: &RequestContext,
+        input: types::StopDurableExecutionRequest,
+    ) -> Result<types::StopDurableExecutionResponse, ServiceError> {
+        Lambda::stop_durable_execution(self, ctx, input).await
+    }
+    async fn update_capacity_provider(
+        &self,
+        ctx: &RequestContext,
+        input: types::UpdateCapacityProviderRequest,
+    ) -> Result<types::UpdateCapacityProviderResponse, ServiceError> {
+        Lambda::update_capacity_provider(self, ctx, input).await
+    }
 }

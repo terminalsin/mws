@@ -22,6 +22,20 @@ pub struct State {
     pub code_signing_configs: BTreeMap<String, CodeSigningConfig>,
     /// Deployment packages by hex SHA-256.
     pub code: BTreeMap<String, CodeBlob>,
+    /// Lambda Managed Instances capacity providers by ARN.
+    pub capacity_providers: BTreeMap<String, CapacityProvider>,
+    /// Durable executions by ARN.
+    pub durable_executions: BTreeMap<String, crate::durable::Execution>,
+}
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[serde(default)]
+pub struct CapacityProvider {
+    pub account_id: String,
+    pub region: String,
+    pub name: String,
+    pub provider: types::CapacityProvider,
+    pub tags: BTreeMap<String, String>,
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
@@ -53,6 +67,8 @@ pub struct Function {
     /// By qualifier (`$LATEST` when none was given).
     pub runtime_management: BTreeMap<String, RuntimeManagement>,
     pub code_signing_config_arn: Option<String>,
+    /// Lambda Managed Instances scaling configurations by qualifier.
+    pub scaling_configs: BTreeMap<String, types::FunctionScalingConfig>,
 }
 
 /// One version of a function (`$LATEST` or a published number).

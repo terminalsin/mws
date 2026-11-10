@@ -360,6 +360,9 @@ impl Lambda {
             ),
             None => None,
         };
+        if kind != "DryRun" && self.is_durable(&f) {
+            return self.invoke_durable(ctx, &f, payload, kind, input.durable_execution_name.as_deref()).await;
+        }
         match kind {
             "DryRun" => Ok(types::InvocationResponse { status_code: 204, ..Default::default() }),
             "Event" => {
