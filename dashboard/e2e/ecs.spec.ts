@@ -1,6 +1,7 @@
-import { expect, test } from "@playwright/test";
+import { CreateClusterCommand, CreateServiceCommand, ECSClient, RegisterTaskDefinitionCommand } from "@aws-sdk/client-ecs";
+import { expect, test, type Page } from "@playwright/test";
 
-import { row, submit, unique } from "./helpers";
+import { row, sdk, submit, unique } from "./helpers";
 
 test("ECS: a cluster runs a service from a new task definition", async ({ page }) => {
   const family = unique("dash-web");
@@ -14,4 +15,74 @@ test("ECS: a cluster runs a service from a new task definition", async ({ page }
   await expect(page.getByRole("heading", { level: 1, name: cluster })).toBeVisible();
   await submit(page, "create-service", { name: "web", taskDefinition: `${family}:1`, desired: "2" });
   await expect(page.getByLabel("Services").locator("li.row").filter({ hasText: "web" })).toContainText("/2 tasks");
+});
+
+// Inline validation (see validation.spec.ts): names, images and Fargate
+// sizes are checked in the field, with repairs.
+
+async function openSheet(page: Page, path: string, testId: string) {
+  await page.goto(path);
+  const form = page.locator("dialog[open]").getByTestId(testId).and(page.locator("form"));
+  await expect(async () => {
+    if (!(await form.isVisible())) await page.getByTestId(`${testId}-open`).first().click();
+    await expect(form).toBeVisible({ timeout: 1000 });
+  }).toPass();
+  const field = (name: string) => form.locator(".field").filter({ has: page.locator(`[name="${name}"]`) });
+  return { form, field, input: (name: string) => form.locator(`[name="${name}"]`) };
+}
+
+test("ECS validation: task definitions repair names, images and Fargate sizes", async ({ page }) => {
+  const { form, field, input } = await openSheet(page, "/ecs?tab=taskdefs", "register-task-definition");
+  const family = unique("Dash Web");
+  await input("family").fill(family);
+  await input("family").blur();
+  await expect(field("family")).toHaveAttribute("data-invalid", "pattern");
+  await field("family").getByRole("button", { name: /Replace spaces/ }).click();
+  await expect(input("family")).toHaveValue(family.replace(/\s+/g, "-"));
+
+  await input("image").fill("Nginx:Latest");
+  await input("image").blur();
+  await expect(field("image")).toHaveAttribute("data-invalid", "pattern");
+  await field("image").getByRole("button", { name: /Lowercase/ }).click();
+  await expect(input("image")).toHaveValue("nginx:latest");
+
+  // 1 vCPU does not come with 0.5 GB: the nearest sizes Fargate offers are
+  // suggested.
+  await input("cpu").selectOption("1024");
+  await expect(field("memory")).toContainText("2–8 GB");
+  await form.locator('button[type="submit"]').click();
+  await expect(field("memory")).toHaveAttribute("data-invalid", "enum");
+  await expect(input("memory")).toBeFocused();
+  await field("memory").getByRole("button", { name: "Use 2048" }).click();
+  await expect(input("memory")).toHaveValue("2048");
+  await form.locator('button[type="submit"]').click();
+  await expect(page.locator("dialog[open]")).toHaveCount(0);
+  await expect(row(page, family.replace(/\s+/g, "-"))).toBeVisible();
+});
+
+test("ECS validation: taken cluster and service names suggest the next free one", async ({ page }) => {
+  const ecs = new ECSClient(sdk);
+  const cluster = unique("dash-taken");
+  await ecs.send(new CreateClusterCommand({ clusterName: cluster }));
+  let sheet = await openSheet(page, "/ecs", "create-ecs-cluster");
+  await sheet.input("name").fill(cluster);
+  await sheet.input("name").blur();
+  await expect(sheet.field("name")).toHaveAttribute("data-invalid", "taken");
+  await expect(sheet.field("name").getByRole("button", { name: /Use / })).toContainText(`${cluster}-2`);
+
+  // A service created after the page loaded: ECS answers "not idempotent",
+  // which lands on the name field with the same repair.
+  const family = unique("dash-svc");
+  await ecs.send(
+    new RegisterTaskDefinitionCommand({ family, requiresCompatibilities: ["FARGATE"], networkMode: "awsvpc", cpu: "256", memory: "512", containerDefinitions: [{ name: "web", image: "nginx:latest" }] }),
+  );
+  sheet = await openSheet(page, `/ecs/cluster?name=${cluster}`, "create-service");
+  await ecs.send(new CreateServiceCommand({ cluster, serviceName: "web", taskDefinition: `${family}:1`, desiredCount: 0, launchType: "EC2" }));
+  await sheet.input("name").fill("web");
+  await sheet.input("taskDefinition").selectOption(`${family}:1`);
+  await sheet.form.locator('button[type="submit"]').click();
+  await expect(sheet.field("name")).toHaveAttribute("data-invalid", "taken");
+  await expect(page.locator("dialog[open] .result.error")).toHaveCount(0);
+  await sheet.field("name").getByRole("button", { name: /Use / }).click();
+  await expect(sheet.input("name")).toHaveValue("web-2");
 });

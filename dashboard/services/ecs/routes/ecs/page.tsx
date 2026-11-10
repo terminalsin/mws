@@ -2,9 +2,12 @@ import { DescribeClustersCommand, ListClustersCommand, ListTaskDefinitionFamilie
 import { load } from "@mws-dashboard/aws";
 import { ActionForm, AwsIcon, Empty, ErrorNotice, Field, List, Page, Pill, Sheet, Status } from "@mws-dashboard/ui";
 import { Trash2 } from "lucide-react";
+import { RegisterTaskDefinition } from "@mws-dashboard/ui/model/ecs";
 import type { Metadata } from "next";
 
 import { ICONS, STATUS_TONE, ecs } from "../../lib/clients";
+import { NAME, IMAGE } from "../../lib/rules";
+import { FargateSize } from "../../lib/size.tsx";
 import { createCluster, deregisterTaskDefinition, registerTaskDefinition } from "./actions";
 
 export const metadata: Metadata = { title: "ECS" };
@@ -24,35 +27,25 @@ export default async function Clusters({ searchParams }: Props) {
         }),
       );
     });
+    const families = defs.ok ? defs.value.map((d) => d.family) : [];
     const register = (
       <Sheet title="Create task definition" label="Create task definition" testId="register-task-definition">
         <ActionForm action={registerTaskDefinition} submit="Create" testId="register-task-definition">
-          <Field label="Family">
-            <input name="family" required pattern="[A-Za-z0-9_\-]+" autoFocus />
+          <Field label="Family" rule={{ ...RegisterTaskDefinition.family, ...NAME }} known={families}>
+            <input name="family" required autoFocus />
           </Field>
-          <Field label="Image URI">
+          <Field label="Image URI" rule={IMAGE}>
             <input name="image" required placeholder="public.ecr.aws/nginx/nginx:latest" />
           </Field>
+          <FargateSize />
           <div className="form-row">
-            <Field label="CPU">
-              <select name="cpu" defaultValue="256">
-                {["256", "512", "1024", "2048", "4096"].map((c) => (
-                  <option key={c} value={c}>
-                    {Number(c) / 1024} vCPU
-                  </option>
-                ))}
-              </select>
-            </Field>
-            <Field label="Memory (MiB)">
-              <input name="memory" type="number" defaultValue={512} min={512} />
-            </Field>
-            <Field label="Port">
+            <Field label="Port" format="port">
               <input name="port" type="number" min={1} max={65535} placeholder="80" />
             </Field>
+            <Field label="Command">
+              <input name="command" placeholder="optional" />
+            </Field>
           </div>
-          <Field label="Command">
-            <input name="command" placeholder="optional" />
-          </Field>
         </ActionForm>
       </Sheet>
     );
@@ -84,8 +77,8 @@ export default async function Clusters({ searchParams }: Props) {
   const create = (
     <Sheet title="Create cluster" label="Create cluster" testId="create-ecs-cluster">
       <ActionForm action={createCluster} submit="Create" testId="create-ecs-cluster">
-        <Field label="Cluster name">
-          <input name="name" required pattern="[A-Za-z0-9_\-]+" autoFocus />
+        <Field label="Cluster name" rule={NAME} taken={clusters.ok ? clusters.value.map((c) => c.clusterName!) : []} unique>
+          <input name="name" required autoFocus />
         </Field>
         <label className="check">
           <input type="checkbox" name="insights" /> Container Insights

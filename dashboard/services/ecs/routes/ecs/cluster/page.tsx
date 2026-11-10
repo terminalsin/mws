@@ -2,9 +2,12 @@ import { DescribeServicesCommand, DescribeTasksCommand, ListServicesCommand, Lis
 import { ago, load } from "@mws-dashboard/aws";
 import { ActionForm, AwsIcon, Empty, ErrorNotice, Field, List, Page, Pill, Section, Segments, Sheet, Status } from "@mws-dashboard/ui";
 import { Play, Plus, SlidersHorizontal, Square, Trash2 } from "lucide-react";
+import { CreateService, RunTask, UpdateService } from "@mws-dashboard/ui/model/ecs";
 import type { Metadata } from "next";
+import Link from "next/link";
 
 import { ICONS, STATUS_TONE, ecs } from "../../../lib/clients";
+import { NAME } from "../../../lib/rules";
 import { createService, deleteCluster, deleteService, runTask, scaleService, stopTask } from "../actions";
 
 export const metadata: Metadata = { title: "Cluster" };
@@ -26,7 +29,7 @@ export default async function Cluster({ searchParams }: Props) {
       serviceArns.length ? client.send(new DescribeServicesCommand({ cluster: name, services: serviceArns.slice(0, 10) })).then((r) => r.services ?? []) : [],
       taskArns.length ? client.send(new DescribeTasksCommand({ cluster: name, tasks: taskArns.slice(0, 100) })).then((r) => r.tasks ?? []) : [],
     ]);
-    return { services, tasks, defs };
+    return { services, tasks, defs, serviceNames: serviceArns.map((a) => a.split("/").pop()!) };
   });
   if (!data.ok) {
     return (
@@ -35,7 +38,13 @@ export default async function Cluster({ searchParams }: Props) {
       </Page>
     );
   }
-  const { services, tasks, defs } = data.value;
+  const { services, tasks, defs, serviceNames } = data.value;
+  // With no task definition there is nothing to pick: point at where one is made.
+  const defHint = defs.length ? undefined : (
+    <Link href="/ecs?tab=taskdefs" className="inline-flex items-center gap-1 text-link hover:underline">
+      <Plus size={13} /> Task definition
+    </Link>
+  );
   const defOptions = defs.map((d) => (
     <option key={d} value={d}>
       {d.split("/").pop()}
@@ -58,16 +67,16 @@ export default async function Cluster({ searchParams }: Props) {
         <>
           <Sheet title="Create service" label="Create service" icon={<Plus size={16} />} testId="create-service">
             <ActionForm action={createService.bind(null, name)} submit="Create service" testId="create-service">
-              <Field label="Service name">
+              <Field label="Service name" rule={{ ...CreateService.serviceName, ...NAME }} taken={serviceNames} unique>
                 <input name="name" required autoFocus />
               </Field>
-              <Field label="Task definition">
+              <Field label="Task definition" rule={CreateService.taskDefinition} hint={defHint}>
                 <select name="taskDefinition" required>
                   {defOptions}
                 </select>
               </Field>
               <div className="form-row">
-                <Field label="Desired tasks">
+                <Field label="Desired tasks" rule={CreateService.desiredCount}>
                   <input name="desired" type="number" min={0} defaultValue={1} />
                 </Field>
                 {launch}
@@ -76,13 +85,13 @@ export default async function Cluster({ searchParams }: Props) {
           </Sheet>
           <Sheet title="Run task" label="Run task" icon={<Play size={16} />} testId="run-task">
             <ActionForm action={runTask.bind(null, name)} submit="Run" testId="run-task">
-              <Field label="Task definition">
+              <Field label="Task definition" rule={RunTask.taskDefinition} hint={defHint}>
                 <select name="taskDefinition" required>
                   {defOptions}
                 </select>
               </Field>
               <div className="form-row">
-                <Field label="Count">
+                <Field label="Count" rule={RunTask.count}>
                   <input name="count" type="number" min={1} max={10} defaultValue={1} />
                 </Field>
                 {launch}
@@ -143,7 +152,7 @@ export default async function Cluster({ searchParams }: Props) {
                 <>
                   <Sheet title={`Scale ${s.serviceName}`} label={`Scale ${s.serviceName}`} icon={<SlidersHorizontal size={15} />} testId={`scale-${s.serviceName}`}>
                     <ActionForm action={scaleService.bind(null, name, s.serviceName!)} submit="Update" testId={`scale-${s.serviceName}`}>
-                      <Field label="Desired tasks">
+                      <Field label="Desired tasks" rule={UpdateService.desiredCount}>
                         <input name="desired" type="number" min={0} defaultValue={s.desiredCount} />
                       </Field>
                     </ActionForm>

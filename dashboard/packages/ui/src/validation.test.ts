@@ -39,6 +39,14 @@ test("enums suggest close matches", () => {
   assert.deepEqual(values({ enum: ["us-east-1", "eu-west-1"] }, "us east 1"), ["us-east-1"]);
 });
 
+test("numbers outside an allowed set get the nearest allowed ones", () => {
+  const memory: Rule = { type: "integer", enum: ["512", "1024", "2048"] };
+  assert.deepEqual(values(memory, "1500"), ["1024", "2048"]);
+  assert.deepEqual(values(memory, "4096"), ["2048"]);
+  assert.deepEqual(values(memory, "100"), ["512"]);
+  assert.deepEqual(values({ enum: ["STANDARD", "EXPRESS"] }, "100"), []);
+});
+
 test("numbers are parsed and clamped", () => {
   assert.deepEqual(values({ type: "integer", min: 1, max: 1000 }, "5000"), ["1000"]);
   assert.deepEqual(values({ type: "integer", min: 1, max: 1000 }, "30s"), ["30"]);
