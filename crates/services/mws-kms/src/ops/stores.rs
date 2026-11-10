@@ -45,6 +45,7 @@ impl Kms {
                 input.custom_key_store_name
             )));
         }
+        let secret;
         let xks = match store_type.as_str() {
             "AWS_CLOUDHSM" => {
                 let cluster = input
@@ -81,6 +82,7 @@ impl Kms {
                         "The XKS proxy URI {endpoint}{path} is already used by another external key store."
                     )));
                 }
+                secret = Some(cred.raw_secret_access_key.clone());
                 Some(types::XksProxyConfigurationType {
                     connectivity: Some(connectivity),
                     access_key_id: Some(cred.access_key_id),
@@ -107,6 +109,7 @@ impl Kms {
                 cloud_hsm_cluster_id: None,
                 trust_anchor_certificate: None,
                 xks,
+                xks_secret: secret,
             },
         );
         Ok(types::CreateCustomKeyStoreResponse { custom_key_store_id: Some(id) })
@@ -165,9 +168,44 @@ impl Kms {
                 s.id, s.connection_state
             )));
         }
-        // Connecting happens asynchronously; MWS cannot reach the proxy.
-        s.connection_state = "FAILED".into();
-        s.connection_error_code = Some("XKS_PROXY_NOT_REACHABLE".into());
+        if s.store_type != "EXTERNAL_KEY_STORE" {
+            // There is no CloudHSM cluster to connect to.
+            s.connection_state = "FAILED".into();
+            s.connection_error_code = Some("CLUSTER_NOT_FOUND".into());
+            return Ok(types::ConnectCustomKeyStoreResponse {});
+        }
+        // Connecting happens asynchronously: KMS checks the proxy's health.
+        s.connection_state = "CONNECTING".into();
+        s.connection_error_code = None;
+        let proxy = proxy_of(s);
+        let id = s.id.clone();
+        drop(st);
+        let kms = self.clone();
+        let transport = self.xks_transport();
+        let meta = crate::xks::Meta {
+            principal: ctx.caller.arn.clone(),
+            operation: "ConnectCustomKeyStore".into(),
+            request_id: ctx.request_id.clone(),
+            key_arn: None,
+        };
+        std::thread::spawn(move || {
+            let result = match &proxy {
+                Some(p) => crate::xks::health(&transport, p, &meta),
+                None => Err(crate::xks::XksError::InvalidResponse("no proxy".into())),
+            };
+            let mut st = kms.lock();
+            if let Some(s) = st.custom_key_stores.get_mut(&id) {
+                if s.connection_state == "CONNECTING" {
+                    match result {
+                        Ok(()) => s.connection_state = "CONNECTED".into(),
+                        Err(e) => {
+                            s.connection_state = "FAILED".into();
+                            s.connection_error_code = Some(e.connection_error_code().into());
+                        }
+                    }
+                }
+            }
+        });
         Ok(types::ConnectCustomKeyStoreResponse {})
     }
 
@@ -227,6 +265,7 @@ impl Kms {
             }
             if let Some(v) = input.xks_proxy_authentication_credential {
                 x.access_key_id = Some(v.access_key_id);
+                s.xks_secret = Some(v.raw_secret_access_key);
             }
             if let Some(v) = input.xks_proxy_connectivity {
                 x.connectivity = Some(v);
@@ -259,4 +298,16 @@ impl Kms {
         st.custom_key_stores.remove(&input.custom_key_store_id);
         Ok(types::DeleteCustomKeyStoreResponse {})
     }
+}
+
+/// The XKS proxy a store names.
+pub(crate) fn proxy_of(s: &CustomKeyStore) -> Option<crate::xks::Proxy> {
+    let x = s.xks.as_ref()?;
+    Some(crate::xks::Proxy {
+        endpoint: x.uri_endpoint.clone()?,
+        path: x.uri_path.clone()?,
+        access_key_id: x.access_key_id.clone()?,
+        secret: s.xks_secret.clone().unwrap_or_default(),
+        region: s.region.clone(),
+    })
 }

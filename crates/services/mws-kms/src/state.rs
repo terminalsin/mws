@@ -167,6 +167,9 @@ pub struct CustomKeyStore {
     pub cloud_hsm_cluster_id: Option<String>,
     pub trust_anchor_certificate: Option<String>,
     pub xks: Option<types::XksProxyConfigurationType>,
+    /// The proxy authentication credential's secret (never returned).
+    #[serde(default)]
+    pub xks_secret: Option<String>,
 }
 
 #[derive(Debug, Default, Clone, Serialize, Deserialize)]

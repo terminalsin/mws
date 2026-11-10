@@ -98,6 +98,7 @@ sha1.workspace = true
 serde_json.workspace = true
 mws.workspace = true
 mws-ec2.workspace = true
+mws-kms.workspace = true
 mws-rds.workspace = true
 mws-eks.workspace = true
 mws-codeartifact.workspace = true

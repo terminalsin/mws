@@ -6,7 +6,7 @@ pub(crate) mod cryptographic;
 mod grants;
 mod import;
 mod keys;
-mod stores;
+pub(crate) mod stores;
 
 use std::collections::BTreeMap;
 

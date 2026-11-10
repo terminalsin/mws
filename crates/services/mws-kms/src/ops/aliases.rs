@@ -146,7 +146,26 @@ impl Kms {
                     },
                 )
             })
-            .collect();
+            .collect::<Vec<_>>();
+        let mut items = items;
+        if filter.is_none() {
+            // AWS lists the predefined AWS managed aliases even before a
+            // service has created their keys.
+            for service in super::keys::PREDEFINED_AWS_ALIASES {
+                let name = format!("alias/aws/{service}");
+                if !items.iter().any(|(n, _)| *n == name) {
+                    items.push((
+                        name.clone(),
+                        types::AliasListEntry {
+                            alias_arn: Some(format!("{prefix}{name}")),
+                            alias_name: Some(name),
+                            ..Default::default()
+                        },
+                    ));
+                }
+            }
+            items.sort_by(|a, b| a.0.cmp(&b.0));
+        }
         let (aliases, next_marker, truncated) = page(items, input.limit, 50, input.marker.as_deref())?;
         Ok(types::ListAliasesResponse { aliases: Some(aliases), next_marker, truncated })
     }

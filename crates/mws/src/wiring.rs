@@ -296,6 +296,15 @@ impl mws_ssm::DataSyncDestination for SsmDataSync {
     }
 }
 
+/// KMS checks key policy principals against IAM.
+pub(crate) struct IamPrincipals(pub mws_iam::Iam);
+
+impl mws_kms::PrincipalDirectory for IamPrincipals {
+    fn principal_exists(&self, arn: &str) -> bool {
+        self.0.principal_exists(arn)
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::camel_keys;

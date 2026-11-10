@@ -4,6 +4,7 @@
 use chrono::{Duration, Utc};
 use mws_core::{AuthzDecision, ConditionContext, RequestContext, ResourcePolicyMode, ServiceError};
 use mws_iam_policy::{Policy, PolicyKind};
+use serde_json::Value;
 
 use super::{
     invalid_state, key_arn, metadata, page, request_tag_conditions, require_enabled, require_not_pending_deletion,
@@ -25,8 +26,92 @@ pub(crate) fn default_policy(partition: &str, account: &str) -> String {
     )
 }
 
-fn parse_policy(doc: &str) -> Result<(), ServiceError> {
-    Policy::parse(doc, PolicyKind::Resource).map(|_| ()).map_err(|e| errors::malformed_policy_document(e.0))
+/// The `AWS` principals a policy document names.
+fn aws_principals(doc: &str) -> Vec<String> {
+    let Ok(v) = serde_json::from_str::<serde_json::Value>(doc) else { return Vec::new() };
+    let statements = match &v["Statement"] {
+        serde_json::Value::Array(a) => a.clone(),
+        s @ serde_json::Value::Object(_) => vec![s.clone()],
+        _ => Vec::new(),
+    };
+    let mut out = Vec::new();
+    for s in statements {
+        for key in ["Principal", "NotPrincipal"] {
+            match &s[key]["AWS"] {
+                serde_json::Value::String(p) => out.push(p.clone()),
+                serde_json::Value::Array(a) => out.extend(a.iter().filter_map(|p| p.as_str().map(str::to_string))),
+                _ => {}
+            }
+        }
+    }
+    out
+}
+
+impl Kms {
+    /// Ask the store's proxy about the external key a new KMS key will use:
+    /// it must exist, be an enabled AES-256 key for encryption and
+    /// decryption, and not back another KMS key in the store.
+    fn check_external_key(&self, ctx: &RequestContext, store_id: &str, xks_key: &str) -> Result<(), ServiceError> {
+        let proxy = {
+            let st = self.lock();
+            if st.keys.values().any(|k| {
+                k.custom_key_store_id.as_deref() == Some(store_id)
+                    && k.xks_key_id.as_deref() == Some(xks_key)
+                    && k.state != "PendingDeletion"
+            }) {
+                return Err(errors::xks_key_already_in_use(format!(
+                    "The external key {xks_key} is already associated with a KMS key in this external key store."
+                )));
+            }
+            st.custom_key_stores.get(store_id).and_then(super::stores::proxy_of)
+        };
+        let Some(proxy) = proxy else { return Ok(()) };
+        let meta = crate::xks::Meta {
+            principal: ctx.caller.arn.clone(),
+            operation: "CreateKey".into(),
+            request_id: ctx.request_id.clone(),
+            key_arn: None,
+        };
+        let md = match crate::xks::key_metadata(&self.xks_transport(), &proxy, xks_key, &meta) {
+            Ok(md) => md,
+            Err(crate::xks::XksError::Proxy { name, .. }) if name == "KeyNotFoundException" => {
+                return Err(errors::xks_key_not_found(format!(
+                    "The external key store proxy could not find the external key {xks_key}."
+                )));
+            }
+            Err(crate::xks::XksError::TimedOut) => {
+                return Err(errors::dependency_timeout("The external key store proxy did not respond in time."));
+            }
+            Err(e) => {
+                return Err(errors::custom_key_store_invalid_state(format!("CreateKey failed: {}.", e.describe())))
+            }
+        };
+        let usages: Vec<&str> = md["keyUsage"].as_array().into_iter().flatten().filter_map(Value::as_str).collect();
+        if md["keySpec"].as_str() != Some("AES_256")
+            || !usages.contains(&"ENCRYPT")
+            || !usages.contains(&"DECRYPT")
+            || md["keyStatus"].as_str() != Some("ENABLED")
+        {
+            return Err(errors::xks_key_invalid_configuration(format!(
+                "The external key {xks_key} must be an enabled AES_256 key with ENCRYPT and DECRYPT usages."
+            )));
+        }
+        Ok(())
+    }
+
+    /// Parse a key policy and check that the IAM users and roles it names
+    /// exist, as KMS does.
+    fn parse_policy(&self, doc: &str) -> Result<(), ServiceError> {
+        Policy::parse(doc, PolicyKind::Resource).map_err(|e| errors::malformed_policy_document(e.0))?;
+        if let Some(dir) = self.principals() {
+            if aws_principals(doc).iter().any(|p| !dir.principal_exists(p)) {
+                return Err(errors::malformed_policy_document(
+                    "Policy contains a statement with one or more invalid principals.",
+                ));
+            }
+        }
+        Ok(())
+    }
 }
 
 /// The policy lockout safety check: the caller must still be able to
@@ -81,7 +166,7 @@ impl State {
 
 /// Services with a predefined `alias/aws/<service>` alias, which AWS backs
 /// with an AWS managed key on first use.
-const PREDEFINED_AWS_ALIASES: &[&str] = &[
+pub(crate) const PREDEFINED_AWS_ALIASES: &[&str] = &[
     "acm",
     "backup",
     "codeartifact",
@@ -207,13 +292,16 @@ impl Kms {
         if origin == "EXTERNAL_KEY_STORE" && input.xks_key_id.is_none() {
             return Err(validation("XksKeyId is required when Origin is EXTERNAL_KEY_STORE."));
         }
+        if let (Some(store_id), Some(xks_key)) = (input.custom_key_store_id.as_deref(), input.xks_key_id.as_deref()) {
+            self.check_external_key(ctx, store_id, xks_key)?;
+        }
 
         let key_id = new_key_id(multi_region);
         let account = ctx.caller.account_id.clone();
         let arn = key_arn(&ctx.partition, &ctx.region, &account, &key_id);
         let policy = match input.policy {
             Some(p) => {
-                parse_policy(&p)?;
+                self.parse_policy(&p)?;
                 if !input.bypass_policy_lockout_safety_check {
                     lockout_check(ctx, &arn, &p)?;
                 }
@@ -493,7 +581,7 @@ impl Kms {
         if input.policy_name.as_deref().is_some_and(|n| n != "default") {
             return Err(errors::not_found("No such policy exists"));
         }
-        parse_policy(&input.policy)?;
+        self.parse_policy(&input.policy)?;
         if !input.bypass_policy_lockout_safety_check {
             lockout_check(ctx, &t.arn, &input.policy)?;
         }
@@ -751,7 +839,7 @@ impl Kms {
         let arn = key_arn(&ctx.partition, &input.replica_region, &primary.account, &primary.key_id);
         let policy = match input.policy {
             Some(p) => {
-                parse_policy(&p)?;
+                self.parse_policy(&p)?;
                 if !input.bypass_policy_lockout_safety_check {
                     lockout_check(ctx, &arn, &p)?;
                 }
