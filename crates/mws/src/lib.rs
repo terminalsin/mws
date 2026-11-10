@@ -407,6 +407,7 @@ fn build_with_store(config: Config, store: Option<Arc<Store>>) -> Mws {
     let codeartifact = CodeArtifact::new(Some(kms.clone()));
     let events = Events::new().with_lambda(lambda.clone()).with_logs(logs.clone()).with_sts(sts.clone());
     events.register_target_sink("sqs", Arc::new(sinks::SqsTarget(client.clone())));
+    events.register_target_sink("lambda", Arc::new(sinks::LambdaTarget(client.clone())));
     events.set_health_checks(Arc::new(sinks::Route53HealthChecks(route53.clone())));
     let secretsmanager = SecretsManager::new(kms.clone()).with_lambda(lambda.clone());
     ssm.set_secrets_manager(Arc::new(SsmSecretReferences(secretsmanager.clone())));
@@ -416,9 +417,10 @@ fn build_with_store(config: Config, store: Option<Arc<Store>>) -> Mws {
         .with_kms(kms.clone())
         .with_firehose(firehose.clone())
         .with_s3(s3.clone());
-    s3.add_notification_destination(Arc::new(sns.clone()));
-    s3.add_notification_destination(Arc::new(lambda.clone()));
+    s3.add_notification_destination(Arc::new(links::S3ToSns { sns: sns.clone(), client: client.clone() }));
+    s3.add_notification_destination(Arc::new(links::S3ToLambda { lambda: lambda.clone(), client: client.clone() }));
     sns.set_queues(Arc::new(links::SnsToSqs(client.clone())));
+    sns.set_service_client(client.clone());
     s3.add_notification_destination(Arc::new(links::S3ToSqs { sqs: sqs.clone(), client: client.clone() }));
     events.register_target_sink("sns", Arc::new(sinks::SnsTarget(client.clone())));
     let guardduty = GuardDuty::new();

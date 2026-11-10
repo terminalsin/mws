@@ -282,7 +282,9 @@ impl Events {
             return Err(TargetError::permanent("InvalidTarget", "The target ARN is not valid."));
         };
         match service {
-            "lambda" => self.deliver_lambda(&ctx, d, payload),
+            // A registered sink calls Lambda's own Invoke; otherwise Lambda's
+            // typed API is used directly.
+            "lambda" if self.sink("lambda").is_none() => self.deliver_lambda(&ctx, d, payload),
             "logs" => self.deliver_logs(&ctx, d, &payload),
             "events" if resource.starts_with("event-bus/") => self.deliver_bus(&ctx, d),
             "events" if resource.starts_with("api-destination/") => {

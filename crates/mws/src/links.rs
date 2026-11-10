@@ -121,6 +121,89 @@ impl NotificationDestination for S3ToSqs {
     }
 }
 
+/// S3 event notifications that invoke functions: S3 calls Lambda's own
+/// `Invoke` (`Event`) as `s3.amazonaws.com`, which the function policy must
+/// allow for the bucket.
+pub(crate) struct S3ToLambda {
+    pub lambda: mws_lambda::Lambda,
+    pub client: ServiceClient,
+}
+
+impl NotificationDestination for S3ToLambda {
+    fn service(&self) -> &'static str {
+        "lambda"
+    }
+
+    fn check(&self, ctx: &RequestContext, arn: &str, source: &NotificationSource<'_>) -> Result<(), String> {
+        self.lambda.check(ctx, arn, source)
+    }
+
+    fn deliver(&self, ctx: &RequestContext, arn: &str, source: &NotificationSource<'_>, message: String) {
+        let ctx = ctx.as_service(S3_PRINCIPAL, source.bucket_owner, Some(source.bucket_arn));
+        let (client, function) = (self.client.clone(), arn.to_string());
+        mws_core::deferred::defer(async move {
+            if let Err(e) = invoke_event(&client, ctx, &function, message.into_bytes()).await {
+                tracing::warn!(function, "S3 could not invoke a notification function: {}", e.message);
+            }
+        });
+    }
+}
+
+/// S3 event notifications published to topics: S3 calls SNS's own
+/// `Publish` as `s3.amazonaws.com`, which the topic policy must allow.
+pub(crate) struct S3ToSns {
+    pub sns: mws_sns::Sns,
+    pub client: ServiceClient,
+}
+
+impl NotificationDestination for S3ToSns {
+    fn service(&self) -> &'static str {
+        "sns"
+    }
+
+    fn check(&self, ctx: &RequestContext, arn: &str, source: &NotificationSource<'_>) -> Result<(), String> {
+        self.sns.check(ctx, arn, source)
+    }
+
+    fn deliver(&self, ctx: &RequestContext, arn: &str, source: &NotificationSource<'_>, message: String) {
+        let mut ctx = ctx.as_service(S3_PRINCIPAL, source.bucket_owner, Some(source.bucket_arn));
+        if let Some(region) = arn.split(':').nth(3) {
+            ctx.region = region.to_string();
+        }
+        let (client, topic) = (self.client.clone(), arn.to_string());
+        mws_core::deferred::defer(async move {
+            let input = serde_json::json!({
+                "TopicArn": topic,
+                "Message": message,
+                "Subject": "Amazon S3 Notification",
+            });
+            if let Err(e) = client.call(&ctx, "sns", "Publish", input).await {
+                tracing::warn!(topic, "S3 could not publish a notification: {}", e.message);
+            }
+        });
+    }
+}
+
+/// Call Lambda's `Invoke` with `InvocationType=Event` on `function` as
+/// `ctx`'s caller (normally a service principal).
+pub(crate) async fn invoke_event(
+    client: &ServiceClient,
+    mut ctx: RequestContext,
+    function: &str,
+    payload: Vec<u8>,
+) -> Result<(), mws_core::ServiceError> {
+    use base64::Engine;
+    if let Some(region) = function.strip_prefix("arn:").and_then(|a| a.split(':').nth(2)) {
+        ctx.region = region.to_string();
+    }
+    let input = serde_json::json!({
+        "FunctionName": function,
+        "InvocationType": "Event",
+        "Payload": base64::engine::general_purpose::STANDARD.encode(payload),
+    });
+    client.call(&ctx, "lambda", "Invoke", input).await.map(|_| ())
+}
+
 /// Lambda's event source pollers reading SQS queues as the function's
 /// execution role, through SQS's own operations.
 pub(crate) struct LambdaFromSqs(pub Sqs);

@@ -43,6 +43,32 @@ impl TargetSink for SqsTarget {
     }
 }
 
+/// EventBridge targets that are Lambda functions: EventBridge calls
+/// Lambda's own `Invoke` (`Event`) as `events.amazonaws.com`, which the
+/// function policy must allow for the rule.
+pub struct LambdaTarget(pub ServiceClient);
+
+#[async_trait::async_trait]
+impl TargetSink for LambdaTarget {
+    async fn deliver(&self, inv: TargetInvocation<'_>) -> Result<(), TargetError> {
+        let ctx = inv.ctx.as_service(inv.service_principal, inv.source_account, Some(inv.source_arn));
+        // Once Lambda accepts the event, the function's own outcome is not
+        // a delivery failure.
+        match crate::links::invoke_event(&self.0, ctx, inv.target_arn, inv.payload.as_bytes().to_vec()).await {
+            Ok(()) => Ok(()),
+            Err(e) if e.code.contains("NotFound") => Err(TargetError::permanent(
+                "ResourceNotFoundException",
+                format!("Function not found: {}", inv.target_arn),
+            )),
+            Err(e) if e.status == 403 => Err(TargetError::permanent(
+                "AccessDeniedException",
+                format!("EventBridge is not authorized to invoke {}", inv.target_arn),
+            )),
+            Err(e) => Err(TargetError::permanent("InvalidParameterValueException", e.message.to_string())),
+        }
+    }
+}
+
 /// EventBridge targets that are SNS topics: EventBridge calls SNS's own
 /// `Publish` as `events.amazonaws.com`, which the topic policy must allow.
 pub struct SnsTarget(pub ServiceClient);
