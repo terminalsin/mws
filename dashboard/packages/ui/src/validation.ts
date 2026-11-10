@@ -19,6 +19,8 @@
 // Pure functions only: this module is shared by server actions and the
 // browser.
 
+import { CERT_FORMATS } from "./certs.ts";
+
 /** A member's constraints, as generated from the model or written by hand. */
 export interface Rule {
   type?:
@@ -81,6 +83,10 @@ export type Unit = "seconds" | "bytes";
 
 export type Format =
   | "json"
+  | "dnsName"
+  | "certificate"
+  | "certificates"
+  | "privateKey"
   | "list"
   | "yaml"
   | "keyvalue"
@@ -236,6 +242,7 @@ const isNumeric = (r: Rule) => r.type === "integer" || r.type === "number" || r.
 
 /** The first problem with `value` under `rule`, with repairs, or null. */
 export function check(value: string, rule: Rule, options: Options = {}): Issue | null {
+  if (isList(rule)) return checkList(value, rule, options);
   const issue = problem(value, rule, options);
   if (!issue) return null;
   return { ...issue, repairs: repairs(value, rule, issue.code) };
@@ -243,7 +250,60 @@ export function check(value: string, rule: Rule, options: Options = {}): Issue |
 
 /** Is `value` acceptable (no issue at all)? */
 export function valid(value: string, rule: Rule): boolean {
-  return problem(value, rule, {}) === null;
+  return isList(rule) ? checkList(value, rule, {}) === null : problem(value, rule, {}) === null;
+}
+
+// ---------------------------------------------------------------------------
+// Lists typed into one control (names one per line or comma separated).
+
+/** A list of scalars: checked item by item. JSON-typed lists are not. */
+const isList = (r: Rule) => (r.type === "list" || r.type === "set") && !!r.item && !r.format && !r.item.fields && r.item.type !== "map";
+
+const LIST_SEP = /([\s,]+)/;
+
+
+/** The value with each item mapped, keeping the person's separators. */
+function mapItems(value: string, f: (item: string) => string): string {
+  return value
+    .split(LIST_SEP)
+    .map((t, i) => (i % 2 === 0 && t !== "" ? f(t) : t))
+    .join("");
+}
+
+const joiner = (value: string) => (value.includes("\n") ? "\n" : value.includes(",") ? ", " : " ");
+
+function checkList(value: string, rule: Rule, options: Options): Issue | null {
+  const items = listItems(value);
+  if (items.length === 0) return rule.required && !options.partial ? { code: "required", message: "Required", repairs: [] } : null;
+  const bad = items.flatMap((item) => {
+    const issue = check(item, rule.item!);
+    return issue ? [{ item, issue }] : [];
+  });
+  if (bad.length > 0) {
+    const [first] = bad;
+    const more = bad.length > 1 ? ` (+${bad.length - 1} more)` : "";
+    const out: Repair[] = [];
+    const offer = (r: Repair) => {
+      if (r.value !== value && !out.some((o) => o.value === r.value) && valid(r.value, rule)) out.push(r);
+    };
+    // Every bad item replaced by its first repair, then the first one's
+    // alternatives when it is the only problem.
+    const fixes = new Map(bad.map((b) => [b.item, b.issue.repairs[0]?.value]));
+    if (bad.every((b) => b.issue.repairs.length > 0)) {
+      offer({ value: mapItems(value, (t) => fixes.get(t) ?? t), label: bad.length > 1 ? `Fix ${bad.length} values` : first.issue.repairs[0].label, kind: first.issue.repairs[0].kind });
+    }
+    if (bad.length === 1) for (const r of first.issue.repairs.slice(1)) offer({ ...r, value: mapItems(value, (t) => (t === first.item ? r.value : t)) });
+    const kept = items.filter((t) => !fixes.has(t));
+    if (kept.length > 0) offer({ value: kept.join(joiner(value)), label: bad.length > 1 ? `Remove ${bad.length} values` : `Remove ${first.item}`, kind: "fix" });
+    return { code: first.issue.code, message: `${first.item}: ${first.issue.message}${more}`, repairs: out.slice(0, MAX_REPAIRS) };
+  }
+  const { minLength: min, maxLength: max } = rule;
+  if (max !== undefined && items.length > max) {
+    const kept = items.slice(0, max).join(joiner(value));
+    return { code: "tooLong", message: `${items.length - max} over the limit of ${max}`, repairs: [{ value: kept, label: `Keep the first ${max}`, kind: "fix" }] };
+  }
+  if (min !== undefined && items.length < min) return { code: "tooShort", message: `At least ${min}`, repairs: [] };
+  return null;
 }
 
 function problem(value: string, rule: Rule, options: Options): Omit<Issue, "repairs"> | null {
@@ -691,7 +751,7 @@ function password(rule: Rule): string {
 // ---------------------------------------------------------------------------
 // Formats.
 
-interface FormatSpec {
+export interface FormatSpec {
   check: (value: string, rule: Rule) => string | null;
   repair?: (value: string, rule: Rule) => Repair[];
 }
@@ -756,6 +816,7 @@ const CSR_LABEL = /^(NEW )?CERTIFICATE REQUEST$/;
 const pem = (label: string, body: string) => `-----BEGIN ${label}-----\n${body.replace(/\s+/g, "").match(/.{1,64}/g)?.join("\n") ?? ""}\n-----END ${label}-----`;
 
 export const FORMATS: Record<Format, FormatSpec> = {
+  ...CERT_FORMATS,
   json: {
     check(value) {
       try {
