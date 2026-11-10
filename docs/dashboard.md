@@ -114,7 +114,8 @@ Fields validate in place, and say how to fix what they reject. `Field`
    `import { CreateFunction } from "@mws-dashboard/ui/model/lambda"`, then
    `<Field rule={CreateFunction.FunctionName}>`;
 2. the control's own attributes (`required`, `maxLength`, `min`, `type`...);
-3. what the page adds: `format` (`json`, `policy`, `path`, `arn`, `cidr`,
+3. what the page adds: `format` (`json`, `yaml` (YAML or JSON documents),
+   `keyvalue` (one `Key=value` per line), `policy`, `path`, `arn`, `cidr`,
    `ipv4`, `email`, `emails` (a comma-separated list), `domain`,
    `email-or-domain`, `url`, `s3url`, `bucket`, `name`, `port`, `phone`,
    `tags` for `key=value` lines, `branch` for Git branch names), `taken` (names that exist), `reserved`
@@ -138,7 +139,9 @@ into rules, so a backend rejection gets the same repairs; "already exists"
 errors land on the field marked `unique` with the next free name; anything
 else is mapped with `act(run, { revalidate, fields: { QueueName: "name",
 NoSuchEntityException: "role" } })` (error codes as the JS SDK names them, `e.name`), and `throw new FieldError(field, message)` targets
-a field directly. Only issues no field claims show under the form. All of
+a field directly; its optional `repairs` carry fixes only the action can work
+out (CloudFormation's template errors offer the closest logical id, resource
+type or section, see `services/cloudformation/lib/repairs.ts`). Only issues no field claims show under the form. All of
 this lives in the console (`validation.ts`, `fields.tsx`); MWS itself only
 returns what AWS returns. SQS's create-queue sheet is the reference use.
 

@@ -151,7 +151,7 @@ export function FieldShell({
       // The server rejected this exact value: read its constraint into the
       // rule, so the repairs fix what it objected to.
       const serverRule = mergeRules(rule, server.issue.rule, server.issue.code === "taken" ? { taken: [value] } : undefined);
-      next = check(value, serverRule) ?? { code: server.issue.code, message: server.issue.message, repairs: didYouMean(value, serverRule) };
+      next = check(value, serverRule) ?? { code: server.issue.code, message: server.issue.message, repairs: server.issue.repairs ?? didYouMean(value, serverRule) };
     } else {
       next = check(value, rule);
     }
