@@ -91,9 +91,11 @@ export interface CidrRule {
   avoid?: string[];
 }
 
-
+/** `jsonish`: free text, held to JSON once it starts like JSON (`{` or `[`),
+ * as for secret values that may be a password or a key/value document. */
 export type Format =
   | "json"
+  | "jsonish"
   | "dnsName"
   | "certificate"
   | "certificates"
@@ -965,6 +967,14 @@ export const FORMATS: Record<Format, FormatSpec> = {
       // A repeated key keeps its last value, as the API would.
       const merged = new Map(pairs);
       return merged.size ? [{ value: [...merged].map(([k, v]) => `${k}=${v}`).join("\n"), label: "One Key=value per line", kind: "fix" }] : [];
+    },
+  },
+  jsonish: {
+    check(value, rule) {
+      return /^\s*[[{]/.test(value) ? FORMATS.json.check(value, rule) : null;
+    },
+    repair(value, rule) {
+      return FORMATS.json.repair!(value, rule);
     },
   },
   arn: {
@@ -1841,4 +1851,4 @@ function constraintRule(constraint: string): Pick<FieldIssue, "rule" | "code" | 
 }
 
 /** Error codes that mean "this name is taken". */
-export const CONFLICT = /AlreadyExists|AlreadyOwned|NameExists|Duplicate|Conflict|EntityExists|InUse/i;
+export const CONFLICT = /AlreadyExists|ResourceExists|AlreadyOwned|NameExists|Duplicate|Conflict|EntityExists|InUse/i;

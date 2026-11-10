@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 
-import { amount, check, closest, describePattern, fresh, listItems, parseServerIssues, repairJson, repairPolicy, ruleAt, sameMember, sharedPrefix, valid, type Rule } from "./validation.ts";
+import { CONFLICT, amount, check, closest, describePattern, fresh, listItems, parseServerIssues, repairJson, repairPolicy, ruleAt, sameMember, sharedPrefix, valid, type Rule } from "./validation.ts";
 
 const values = (r: Rule, v: string) => check(v, r)?.repairs.map((x) => x.value) ?? [];
 
@@ -456,4 +456,16 @@ test("'The parameter X is not a valid ...' messages name their member", () => {
   assert.equal(pw.message, "Not a valid password: shorter than 8 characters");
   const [id] = parseServerIssues("The parameter DBInstanceIdentifier is not a valid identifier. Identifiers must begin with a letter; must contain only ASCII letters, digits, and hyphens.");
   assert.deepEqual([id.member, id.message], ["DBInstanceIdentifier", "Not a valid identifier"]);
+});
+
+test("jsonish values are text until they start like JSON", () => {
+  assert.equal(check("hunter2", { format: "jsonish" }), null);
+  assert.equal(check('{"user": "app"}', { format: "jsonish" }), null);
+  const issue = check("{'user': 'app',}", { format: "jsonish" })!;
+  assert.equal(issue.code, "format");
+  assert.deepEqual(JSON.parse(issue.repairs[0].value), { user: "app" });
+});
+
+test("ResourceExists errors are conflicts", () => {
+  assert.ok(CONFLICT.test("ResourceExistsException"));
 });
