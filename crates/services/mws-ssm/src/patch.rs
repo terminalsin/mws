@@ -80,7 +80,7 @@ fn predefined_id(region: &str, os: &str) -> String {
     format!("pb-{}", &hex[..17])
 }
 
-fn predefined_arn(partition: &str, region: &str, os: &str) -> String {
+pub(crate) fn predefined_arn(partition: &str, region: &str, os: &str) -> String {
     format!("arn:{partition}:ssm:{region}:{AWS_OWNER}:patchbaseline/{}", predefined_id(region, os))
 }
 

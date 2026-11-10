@@ -51,6 +51,7 @@ impl Ssm {
             "MaintenanceWindow" => "maintenancewindow",
             "PatchBaseline" => "patchbaseline",
             "Activation" => "activation",
+            "Association" => "association",
             _ => return Err(errors::invalid_resource_type("The resource type isn't valid.")),
         };
         let arn = format!("arn:{}:ssm:{}:{}:{kind}/{id}", ctx.partition, ctx.region, ctx.caller.account_id);
@@ -89,6 +90,7 @@ impl Ssm {
             "MaintenanceWindow" => Self::window_tags_mut(r, id),
             "PatchBaseline" => Self::baseline_tags_mut(r, id),
             "Activation" => r.activations.get_mut(id).map(|a| &mut a.tags),
+            "Association" => Self::association_tags_mut(r, id),
             _ => None,
         }
     }

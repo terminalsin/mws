@@ -212,6 +212,54 @@ impl TargetSink for RunCommandTarget {
     }
 }
 
+/// Systems Manager resource data syncs writing into S3 buckets as
+/// `ssm.amazonaws.com` (the bucket policy must allow it).
+pub(crate) struct SsmDataSync(pub mws_s3::S3);
+
+impl mws_ssm::DataSyncDestination for SsmDataSync {
+    fn check(&self, partition: &str, account: &str, bucket: &str, key: &str, source_arn: &str) -> Result<(), String> {
+        let put = mws_s3::ServicePutObject {
+            bucket,
+            key,
+            body: Vec::new(),
+            content_type: "application/json",
+            service_principal: "ssm.amazonaws.com",
+            source_account: account,
+            source_arn,
+            acl: Some("bucket-owner-full-control"),
+            partition,
+        };
+        self.0.check_service_access(&put, &["s3:PutObject", "s3:GetBucketAcl"]).map_err(|e| e.to_string())
+    }
+
+    fn put(
+        &self,
+        partition: &str,
+        account: &str,
+        bucket: &str,
+        key: &str,
+        body: Vec<u8>,
+        source_arn: &str,
+        kms_key_arn: Option<&str>,
+    ) -> Result<(), String> {
+        let put = mws_s3::ServicePutObject {
+            bucket,
+            key,
+            body,
+            content_type: "application/json",
+            service_principal: "ssm.amazonaws.com",
+            source_account: account,
+            source_arn,
+            acl: Some("bucket-owner-full-control"),
+            partition,
+        };
+        match kms_key_arn.filter(|k| !k.is_empty()) {
+            Some(k) => self.0.put_object_as_service_kms(put, k).map(|_| ()),
+            None => self.0.put_object_as_service(put).map(|_| ()).map_err(|e| e.to_string()),
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::camel_keys;

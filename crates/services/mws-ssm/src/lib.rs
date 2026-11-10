@@ -18,9 +18,13 @@
 //! Documents and Run Command run
 //! `aws:runShellScript` steps on managed nodes, the EC2 instances with an
 //! instance profile that a [`ManagedNodes`] reports. Maintenance windows
-//! run on the emulated clock. Patch Manager keeps
-//! baselines and patch groups. Automation, associations,
-//! inventory, sessions and OpsCenter answer `NotImplemented`.
+//! run on the emulated clock. Patch Manager keeps baselines and patch
+//! groups, and `AWS-RunPatchBaseline` really scans (and patches) nodes.
+//! State Manager associations apply documents on their schedule
+//! ([`associations`]); inventory and compliance come from the nodes
+//! ([`inventory`], [`compliance`]); resource data syncs write inventory into
+//! S3 ([`nodes`]). Automation, sessions and OpsCenter answer
+//! `NotImplemented`.
 
 #[allow(clippy::all, dead_code, unused_imports, non_snake_case, non_camel_case_types)]
 pub mod generated {
@@ -28,12 +32,16 @@ pub mod generated {
 }
 
 mod activations;
+mod associations;
 mod changes;
 mod commands;
+mod compliance;
 mod documents;
 mod handler;
+mod inventory;
 mod maintenance;
 mod names;
+mod nodes;
 mod params;
 mod patch;
 pub mod policies;
@@ -54,6 +62,7 @@ use mws_kms::Kms;
 pub use changes::{ParameterChange, ParameterChangeSink};
 pub use commands::{ManagedNode, ManagedNodes, ShellOutput};
 pub use maintenance::{TaskInvoker, WindowEvent};
+pub use nodes::DataSyncDestination;
 pub use references::{ReferencedSecret, SecretsManagerReferences};
 
 use names::{now, resource_tag_conditions, ParamRef};
@@ -68,6 +77,7 @@ pub struct Ssm {
     changes: Arc<RwLock<Option<Arc<dyn ParameterChangeSink>>>>,
     nodes: Arc<RwLock<Option<Arc<dyn ManagedNodes>>>>,
     invoker: Arc<RwLock<Option<Arc<dyn TaskInvoker>>>>,
+    data_sync: Arc<RwLock<Option<Arc<dyn DataSyncDestination>>>>,
     /// The most recent request, as a template for work the clock starts
     /// (maintenance window Lambda tasks).
     template: Arc<RwLock<Option<RequestContext>>>,
@@ -87,6 +97,7 @@ impl Ssm {
             changes: Arc::default(),
             nodes: Arc::default(),
             invoker: Arc::default(),
+            data_sync: Arc::default(),
             template: Arc::default(),
             clock_offset_ms: Arc::default(),
             ticking: Arc::default(),
@@ -224,7 +235,10 @@ impl Service for Ssm {
                 loop {
                     tokio::time::sleep(std::time::Duration::from_secs(1)).await;
                     let offset = ssm.clock_offset_ms.load(std::sync::atomic::Ordering::Relaxed);
-                    ssm.run_windows(chrono::Utc::now() + chrono::Duration::milliseconds(offset), false);
+                    let at = chrono::Utc::now() + chrono::Duration::milliseconds(offset);
+                    ssm.run_windows(at, false);
+                    ssm.run_associations(at);
+                    ssm.run_data_syncs(at);
                 }
             });
         }

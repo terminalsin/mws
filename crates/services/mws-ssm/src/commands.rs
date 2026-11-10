@@ -104,6 +104,10 @@ pub struct CommandRecord {
     pub invocations: Vec<Invocation>,
 }
 
+/// How a step ended: status, status details, response code, stdout and
+/// stderr.
+pub(crate) type StepOutcome = (&'static str, &'static str, i32, String, String);
+
 /// Command parameters by name.
 type Params = BTreeMap<String, Vec<String>>;
 
@@ -379,6 +383,8 @@ pub(crate) struct Launch {
     pub notification_config: Option<types::NotificationConfig>,
     pub cloud_watch_output_config: Option<types::CloudWatchOutputConfig>,
     pub alarm_configuration: Option<types::AlarmConfiguration>,
+    /// Whether a Policy document may run (State Manager associations).
+    pub policy_ok: bool,
 }
 
 /// Run `fut` in the background on the current Tokio runtime, or on a
@@ -581,6 +587,7 @@ impl Ssm {
             notification_config: input.notification_config,
             cloud_watch_output_config: input.cloud_watch_output_config,
             alarm_configuration: input.alarm_configuration,
+            policy_ok: false,
         };
         let command = self.launch(&ctx.caller.account_id, &ctx.region, now(ctx), launch)?;
         Ok(types::SendCommandResult { command: Some(command) })
@@ -601,7 +608,7 @@ impl Ssm {
             .find_document_in(account, region, &input.document_name)
             .ok_or_else(|| crate::documents::not_found(&input.document_name))?;
         let doc = found.doc;
-        if doc.document_type != "Command" {
+        if doc.document_type != "Command" && !(input.policy_ok && doc.document_type == "Policy") {
             return Err(errors::invalid_document(format!(
                 "Document type {} is not supported. Only documents of type Command can be sent.",
                 doc.document_type
@@ -818,6 +825,13 @@ impl Ssm {
                                 ("Failed", "Failed", out.exit_code, out.stdout, stderr)
                             }
                         }
+                    }
+                    "aws:runPatchBaseline" if platform != "Windows" => {
+                        self.run_patch_baseline(&nodes, account, region, instance, command_id, &step.inputs, start)
+                            .await
+                    }
+                    "aws:softwareInventory" => {
+                        self.gather_inventory(&nodes, account, region, instance, &step.inputs, start).await
                     }
                     "aws:runShellScript" | "aws:runPowerShellScript" | "aws:psModule" | "aws:applications" => (
                         "Failed",

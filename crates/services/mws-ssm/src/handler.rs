@@ -28,6 +28,45 @@ macro_rules! delegate {
 
 impl Handler for Ssm {
     delegate! {
+        list_nodes(types::ListNodesRequest) -> types::ListNodesResult;
+        list_nodes_summary(types::ListNodesSummaryRequest) -> types::ListNodesSummaryResult;
+        describe_instance_properties(types::DescribeInstancePropertiesRequest) -> types::DescribeInstancePropertiesResult;
+        get_calendar_state(types::GetCalendarStateRequest) -> types::GetCalendarStateResponse;
+        update_document_metadata(types::UpdateDocumentMetadataRequest) -> types::UpdateDocumentMetadataResponse;
+        list_document_metadata_history(types::ListDocumentMetadataHistoryRequest) -> types::ListDocumentMetadataHistoryResponse;
+        update_managed_instance_role(types::UpdateManagedInstanceRoleRequest) -> types::UpdateManagedInstanceRoleResult;
+        create_resource_data_sync(types::CreateResourceDataSyncRequest) -> types::CreateResourceDataSyncResult;
+        delete_resource_data_sync(types::DeleteResourceDataSyncRequest) -> types::DeleteResourceDataSyncResult;
+        list_resource_data_sync(types::ListResourceDataSyncRequest) -> types::ListResourceDataSyncResult;
+        update_resource_data_sync(types::UpdateResourceDataSyncRequest) -> types::UpdateResourceDataSyncResult;
+        put_inventory(types::PutInventoryRequest) -> types::PutInventoryResult;
+        get_inventory(types::GetInventoryRequest) -> types::GetInventoryResult;
+        get_inventory_schema(types::GetInventorySchemaRequest) -> types::GetInventorySchemaResult;
+        list_inventory_entries(types::ListInventoryEntriesRequest) -> types::ListInventoryEntriesResult;
+        delete_inventory(types::DeleteInventoryRequest) -> types::DeleteInventoryResult;
+        describe_inventory_deletions(types::DescribeInventoryDeletionsRequest) -> types::DescribeInventoryDeletionsResult;
+        put_compliance_items(types::PutComplianceItemsRequest) -> types::PutComplianceItemsResult;
+        list_compliance_items(types::ListComplianceItemsRequest) -> types::ListComplianceItemsResult;
+        list_compliance_summaries(types::ListComplianceSummariesRequest) -> types::ListComplianceSummariesResult;
+        list_resource_compliance_summaries(types::ListResourceComplianceSummariesRequest) -> types::ListResourceComplianceSummariesResult;
+        describe_instance_patch_states(types::DescribeInstancePatchStatesRequest) -> types::DescribeInstancePatchStatesResult;
+        describe_instance_patch_states_for_patch_group(types::DescribeInstancePatchStatesForPatchGroupRequest) -> types::DescribeInstancePatchStatesForPatchGroupResult;
+        describe_instance_patches(types::DescribeInstancePatchesRequest) -> types::DescribeInstancePatchesResult;
+        get_deployable_patch_snapshot_for_instance(types::GetDeployablePatchSnapshotForInstanceRequest) -> types::GetDeployablePatchSnapshotForInstanceResult;
+        describe_patch_properties(types::DescribePatchPropertiesRequest) -> types::DescribePatchPropertiesResult;
+        create_association(types::CreateAssociationRequest) -> types::CreateAssociationResult;
+        create_association_batch(types::CreateAssociationBatchRequest) -> types::CreateAssociationBatchResult;
+        delete_association(types::DeleteAssociationRequest) -> types::DeleteAssociationResult;
+        describe_association(types::DescribeAssociationRequest) -> types::DescribeAssociationResult;
+        describe_association_execution_targets(types::DescribeAssociationExecutionTargetsRequest) -> types::DescribeAssociationExecutionTargetsResult;
+        describe_association_executions(types::DescribeAssociationExecutionsRequest) -> types::DescribeAssociationExecutionsResult;
+        describe_effective_instance_associations(types::DescribeEffectiveInstanceAssociationsRequest) -> types::DescribeEffectiveInstanceAssociationsResult;
+        describe_instance_associations_status(types::DescribeInstanceAssociationsStatusRequest) -> types::DescribeInstanceAssociationsStatusResult;
+        list_association_versions(types::ListAssociationVersionsRequest) -> types::ListAssociationVersionsResult;
+        list_associations(types::ListAssociationsRequest) -> types::ListAssociationsResult;
+        start_associations_once(types::StartAssociationsOnceRequest) -> types::StartAssociationsOnceResult;
+        update_association(types::UpdateAssociationRequest) -> types::UpdateAssociationResult;
+        update_association_status(types::UpdateAssociationStatusRequest) -> types::UpdateAssociationStatusResult;
         create_activation(types::CreateActivationRequest) -> types::CreateActivationResult;
         delete_activation(types::DeleteActivationRequest) -> types::DeleteActivationResult;
         describe_activations(types::DescribeActivationsRequest) -> types::DescribeActivationsResult;

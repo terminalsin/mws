@@ -118,6 +118,18 @@ pub struct Region {
     /// Window execution state changes not yet handed out.
     #[serde(skip)]
     pub window_events: Vec<crate::maintenance::WindowEvent>,
+    /// State Manager associations, by id.
+    pub associations: BTreeMap<String, crate::associations::AssociationRecord>,
+    /// Inventory collected from managed nodes.
+    pub inventory: crate::inventory::InventoryState,
+    /// Compliance by `"{type}|{resource type}|{resource id}"`.
+    pub compliance: BTreeMap<String, crate::compliance::ComplianceRecord>,
+    /// Patch baseline results by node.
+    pub patch_states: BTreeMap<String, crate::compliance::PatchRecord>,
+    /// Resource data syncs, by name.
+    pub data_syncs: BTreeMap<String, crate::nodes::SyncRecord>,
+    /// Document reviews, by `"{name}#{version}"`.
+    pub document_reviews: BTreeMap<String, crate::nodes::ReviewRecord>,
     /// Run Command commands, newest first.
     pub commands: Vec<crate::commands::CommandRecord>,
     /// `Expiration` events of parameters deleted since they were last
