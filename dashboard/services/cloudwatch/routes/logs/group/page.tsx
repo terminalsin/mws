@@ -62,6 +62,7 @@ import {
   TagsTab,
   type Search,
 } from "./tabs";
+import { ResourcePicker } from "@mws-dashboard/ui/pickers";
 
 type Props = { searchParams: Promise<Search> };
 
@@ -253,7 +254,7 @@ export default async function LogGroup({ searchParams }: Props) {
                 known={keys.arns}
                 hint="Empty removes the key"
               >
-                <input name="kms" list="kms-keys" defaultValue={g.kmsKeyId} />
+                <ResourcePicker kind="kms-key" name="kms" exclude="AWS managed" defaultValue={g.kmsKeyId} />
               </Field>
               <datalist id="kms-keys">
                 {Object.entries(keys.aliases).map(([alias, keyArn]) => (

@@ -8,6 +8,7 @@
 import type { Rule } from "@mws-dashboard/ui";
 import { FieldShell } from "@mws-dashboard/ui/fields";
 import { useState } from "react";
+import { ResourcePicker } from "@mws-dashboard/ui/pickers";
 
 export interface Current {
   dlq?: string;
@@ -112,7 +113,7 @@ export function QueueSettings({
         {encryption === "kms" && (
           <>
             <FieldShell label="KMS key" rule={rules.kmsKey} member="KmsMasterKeyId">
-              <input name="kmsKey" required defaultValue={current?.kmsKey ?? "alias/aws/sqs"} spellCheck={false} />
+              <ResourcePicker kind="kms-key" name="kmsKey" required defaultValue={current?.kmsKey ?? "alias/aws/sqs"} />
             </FieldShell>
             <FieldShell label="Data key reuse (s)" rule={rules.kmsReuse} member="KmsDataKeyReusePeriodSeconds">
               <input name="kmsReuse" inputMode="numeric" defaultValue={current?.kmsReuse ?? "300"} />

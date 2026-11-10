@@ -8,6 +8,7 @@ import type { Rule } from "@mws-dashboard/ui";
 import { FieldShell } from "@mws-dashboard/ui/fields";
 import { MoreFields } from "@mws-dashboard/ui/presets";
 import { useState } from "react";
+import { ResourcePicker } from "@mws-dashboard/ui/pickers";
 
 export interface TargetValues {
   id?: string;
@@ -44,7 +45,7 @@ export function TargetFields({ values, rules, known, ids }: { values?: TargetVal
           </FieldShell>
         )}
         <FieldShell label="Target ARN" rule={rules.arn} known={known} member="Arn">
-          <input name="target" required value={arn} onChange={(e) => setArn(e.target.value)} list="rule-targets" spellCheck={false} />
+          <ResourcePicker kind={["lambda-function", "sqs-queue", "sns-topic", "kinesis-stream", "firehose-stream", "event-bus", "log-group"]} name="target" use="arn" required value={arn} onValueChange={setArn} />
         </FieldShell>
       </div>
       <datalist id="rule-targets">
@@ -90,12 +91,12 @@ export function TargetFields({ values, rules, known, ids }: { values?: TargetVal
           </FieldShell>
         </div>
         <FieldShell label="Dead-letter queue" rule={{ ...rules.dlq, required: false }} known={known.filter((a) => a.split(":")[2] === "sqs")} member="DeadLetterConfig.Arn">
-          <input name="dlq" defaultValue={values?.dlq} spellCheck={false} />
+          <ResourcePicker kind="sqs-queue" name="dlq" defaultValue={values?.dlq} />
         </FieldShell>
       </MoreFields>
       {(needsRole || values?.role) && (
         <FieldShell label="Role" rule={{ ...rules.role, required: false }} member="RoleArn">
-          <input name="role" defaultValue={values?.role} spellCheck={false} />
+          <ResourcePicker kind="iam-role" name="role" service="events.amazonaws.com" defaultValue={values?.role} />
         </FieldShell>
       )}
       {fifo && (

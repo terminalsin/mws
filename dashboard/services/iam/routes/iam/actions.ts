@@ -148,12 +148,12 @@ export async function createRole(_: ActionResult | null, form: FormData) {
       });
     const client = await iam();
     await client.send(new CreateRoleCommand({ RoleName: name, AssumeRolePolicyDocument: doc, Description: text(form, "description") || undefined }));
-    // The managed policy the chosen kind of role usually needs (the console's preset).
-    const attach = text(form, "attach");
-    if (attach) {
-      await client.send(new AttachRolePolicyCommand({ RoleName: name, PolicyArn: attach }));
-      return `Created ${name} with ${attach.split("/").pop()}`;
-    }
+    // The managed policies picked (the preset suggests the one that kind of role usually needs).
+    const attach = [...new Set([text(form, "attach"), ...text(form, "policies").split(",")].map((p) => p.trim()).filter(Boolean))];
+    for (const PolicyArn of attach) await client.send(new AttachRolePolicyCommand({ RoleName: name, PolicyArn }));
+    const boundary = text(form, "boundary");
+    if (boundary) await client.send(new PutRolePermissionsBoundaryCommand({ RoleName: name, PermissionsBoundary: boundary }));
+    if (attach.length) return `Created ${name} with ${attach.map((a) => a.split("/").pop()).join(", ")}`;
     return `Created ${name}`;
   }, { revalidate: ["/iam"], fields: { RoleName: "name", Description: "description", AssumeRolePolicyDocument: policy, MalformedPolicyDocumentException: policy } });
 }

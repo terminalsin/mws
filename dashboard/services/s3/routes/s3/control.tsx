@@ -47,6 +47,7 @@ import {
   setJobStatus,
 } from "./control-actions";
 import { BPA_SETTINGS } from "./[bucket]/permissions";
+import { ResourcePicker } from "@mws-dashboard/ui/pickers";
 
 export const CONTROL_TABS: [string, string][] = [
   ["object-lambda", "Object Lambda Access Points"],
@@ -110,7 +111,7 @@ async function objectLambdas(): Promise<View> {
           </select>
         </Field>
         <Field label="Lambda function ARN" format="arn">
-          <input name="function" required placeholder="arn:aws:lambda:us-east-1:123456789012:function:transform" />
+          <ResourcePicker kind="lambda-function" name="function" required />
         </Field>
         <fieldset className="field">
           <legend className="field-label">Also transform</legend>

@@ -31,6 +31,8 @@ import {
   setAccountSetting,
 } from "./actions";
 import { PullThroughForm } from "./pull-through.tsx";
+import { ResourcePicker } from "@mws-dashboard/ui/pickers";
+import { PolicyEditor } from "@mws-dashboard/ui/policy";
 
 export const metadata: Metadata = { title: "ECR" };
 
@@ -64,7 +66,7 @@ function CreateRepository({ names }: { names: string[] }) {
               </select>
             </Field>
             <Field label="KMS key" hint="Empty uses aws/ecr" member="kmsKey">
-              <input name="kms" />
+              <ResourcePicker kind="kms-key" name="kms" />
             </Field>
           </div>
         </MoreFields>
@@ -322,7 +324,7 @@ async function Registry(): Promise<{ actions: ReactNode; body: ReactNode }> {
                     </select>
                   </Field>
                   <Field label="KMS key ARN" member="encryptionConfiguration.kmsKey">
-                    <input name="kms" />
+                    <ResourcePicker kind="kms-key" name="kms" />
                   </Field>
                 </div>
                 <div className="form-row">
@@ -394,9 +396,7 @@ async function Registry(): Promise<{ actions: ReactNode; body: ReactNode }> {
           actions={
             <Sheet title="Registry policy" label="Edit registry policy" icon={<Pencil size={15} aria-hidden />} testId="edit-registry-policy">
               <ActionForm action={saveRegistryPolicy} submit="Save" testId="edit-registry-policy">
-                <Field label="Policy JSON" format="policy" hint="Empty removes the policy">
-                  <textarea name="policy" rows={12} defaultValue={policy.ok && policy.value ? JSON.stringify(JSON.parse(policy.value), null, 2) : ""} />
-                </Field>
+                <PolicyEditor label="Policy JSON" format="policy" hint="Empty removes the policy" kind="resource" name="policy" rows={12} defaultValue={policy.ok && policy.value ? JSON.stringify(JSON.parse(policy.value), null, 2) : ""} />
               </ActionForm>
             </Sheet>
           }

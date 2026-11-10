@@ -1836,3 +1836,471 @@
     color: var(--warn);
   }
 }
+
+/* Resource pickers (pickers.tsx): a text field with the resource's icon
+   and a list of the real resources floating under it in the top layer. */
+@layer components {
+  .picker {
+    position: relative;
+    display: flex;
+    min-width: 0;
+  }
+  .picker > input {
+    flex: 1;
+    padding-left: 2.5rem;
+  }
+  .picker-icon {
+    position: absolute;
+    left: 0.75rem;
+    top: 50%;
+    transform: translateY(-50%);
+    pointer-events: none;
+    opacity: 0.45;
+    filter: grayscale(1);
+    transition: opacity var(--duration-quick) var(--ease-standard), filter var(--duration-quick) var(--ease-standard);
+  }
+  .picker[data-matched] .picker-icon {
+    opacity: 1;
+    filter: none;
+  }
+  .picker-name {
+    position: absolute;
+    right: 0.75rem;
+    top: 50%;
+    transform: translateY(-50%);
+    max-width: 40%;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    pointer-events: none;
+    font-size: 0.75rem;
+    color: var(--tertiary);
+  }
+  .picker:has(.picker-name) > input {
+    padding-right: 40%;
+  }
+  .picker-pop {
+    position: fixed;
+    inset: auto;
+    margin: 0;
+    padding: 0.25rem 0;
+    overflow-y: auto;
+    border: 1px solid var(--separator);
+    background: var(--surface);
+    color: var(--text);
+    box-shadow: 0 2px 6px rgb(0 0 0 / 0.2);
+    font-size: 0.875rem;
+  }
+  /* Opens at once (it answers a click); closes with a quick fade. */
+  .picker-pop:not(:popover-open) {
+    opacity: 0;
+  }
+  .picker-pop {
+    transition: opacity var(--duration-quick) var(--ease-exit), display var(--duration-quick) allow-discrete, overlay var(--duration-quick) allow-discrete;
+  }
+  .picker-pop:popover-open {
+    transition: none;
+  }
+  .picker-group {
+    padding: 0.5rem 0.75rem 0.25rem;
+    font-size: 0.75rem;
+    color: var(--secondary);
+  }
+  .picker-row {
+    display: flex;
+    align-items: center;
+    gap: 0.625rem;
+    min-height: 2.5rem;
+    padding: 0.375rem 0.75rem;
+    cursor: pointer;
+  }
+  .picker-row[data-active] {
+    background: var(--hover);
+  }
+  .picker-row[aria-selected="true"] {
+    box-shadow: inset 3px 0 0 var(--accent);
+  }
+  .picker-row > img,
+  .picker-row > svg {
+    flex: none;
+  }
+  .picker-row-text {
+    display: grid;
+    min-width: 0;
+    flex: 1;
+  }
+  .picker-row-name,
+  .picker-row-detail {
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+  .picker-row-detail {
+    font-size: 0.75rem;
+    color: var(--tertiary);
+  }
+  .picker-check {
+    flex: none;
+    color: var(--accent);
+  }
+  .picker-create {
+    border-top: 1px solid var(--separator);
+    color: var(--link);
+  }
+  .picker-create b {
+    font-weight: 600;
+  }
+  .picker-empty {
+    display: flex;
+    align-items: center;
+    gap: 0.5rem;
+    padding: 0.625rem 0.75rem;
+    font-size: 0.75rem;
+    color: var(--tertiary);
+  }
+  .picker-error {
+    color: var(--bad);
+  }
+}
+@media (prefers-reduced-motion: reduce) {
+  .picker-pop {
+    transition: none;
+  }
+}
+
+/* The policy editor (policy.tsx): statement cards over the JSON. */
+@layer components {
+  .policy-editor {
+    display: grid;
+    gap: 0.5rem;
+    min-width: 0;
+  }
+  .policy-head {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 1rem;
+  }
+  .policy-editor > .field .field-label {
+    position: absolute;
+    width: 1px;
+    height: 1px;
+    overflow: hidden;
+    clip-path: inset(50%);
+  }
+  .policy-json-hidden {
+    position: absolute !important;
+    width: 1px !important;
+    height: 1px !important;
+    min-height: 0 !important;
+    padding: 0 !important;
+    overflow: hidden;
+    clip-path: inset(50%);
+    opacity: 0;
+  }
+  .segments-mini {
+    display: inline-flex;
+    gap: 1px;
+    background: var(--separator);
+  }
+  .segments-mini button {
+    display: inline-flex;
+    align-items: center;
+    gap: 0.35rem;
+    height: 1.75rem;
+    padding: 0 0.625rem;
+    border: 0;
+    background: var(--field);
+    color: var(--secondary);
+    font: inherit;
+    font-size: 0.75rem;
+    cursor: pointer;
+    transition: background-color var(--duration-quick) var(--ease-standard), color var(--duration-quick) var(--ease-standard);
+  }
+  .segments-mini button:hover {
+    background: var(--hover);
+  }
+  .segments-mini button[aria-pressed="true"] {
+    background: var(--text);
+    color: var(--surface);
+  }
+  .segments-mini button[data-effect="Allow"][aria-pressed="true"] {
+    background: var(--good);
+    color: #fff;
+  }
+  .segments-mini button[data-effect="Deny"][aria-pressed="true"] {
+    background: var(--bad);
+    color: #fff;
+  }
+  .policy-statements {
+    display: grid;
+    gap: 0.5rem;
+  }
+  .policy-statement {
+    display: grid;
+    gap: 0.25rem;
+    padding: 0.75rem;
+    border: 1px solid var(--separator);
+    border-left: 3px solid var(--good);
+    background: var(--surface);
+  }
+  .policy-statement[data-effect="Deny"] {
+    border-left-color: var(--bad);
+  }
+  .policy-statement-head {
+    display: flex;
+    align-items: center;
+    gap: 0.75rem;
+  }
+  .policy-statement-head .policy-sid {
+    flex: 1;
+    height: 1.75rem;
+    border-bottom-color: transparent;
+    background: transparent !important;
+    font-size: 0.75rem;
+  }
+  .policy-statement-head .policy-sid:focus {
+    border-bottom-color: var(--strong);
+  }
+  .policy-statement-head .icon-button {
+    height: 1.75rem;
+    width: 1.75rem;
+  }
+  .policy-effect-static {
+    font-size: 0.75rem;
+    font-weight: 600;
+  }
+  .policy-row {
+    display: grid;
+    grid-template-columns: 6.5rem minmax(0, 1fr);
+    gap: 0.75rem;
+    padding: 0.375rem 0;
+    border-top: 1px solid var(--separator);
+  }
+  @media (max-width: 560px) {
+    .policy-row {
+      grid-template-columns: minmax(0, 1fr);
+      gap: 0.25rem;
+    }
+  }
+  .policy-row-label {
+    padding-top: 0.4rem;
+    font-size: 0.75rem;
+    color: var(--secondary);
+  }
+  .policy-row-body {
+    display: grid;
+    gap: 0.375rem;
+    min-width: 0;
+  }
+  .policy-inline {
+    display: flex;
+    align-items: center;
+    gap: 0.25rem;
+    min-width: 0;
+  }
+  .policy-inline select {
+    flex: none;
+    max-width: 45%;
+  }
+  .policy-inline .icon-button {
+    flex: none;
+  }
+  .policy-grow {
+    flex: 1;
+    min-width: 0;
+  }
+  .policy-grow > .picker {
+    width: 100%;
+  }
+  .policy-chips {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 0.25rem;
+  }
+  .policy-chip {
+    display: inline-flex;
+    align-items: center;
+    gap: 0.35rem;
+    max-width: 100%;
+    height: 1.5rem;
+    padding: 0 0.25rem 0 0.5rem;
+    background: var(--tag);
+    font-size: 0.75rem;
+  }
+  .policy-chip[data-level="Write"],
+  .policy-chip[data-level="Permissions"] {
+    background: var(--tag-warn);
+    color: var(--tag-warn-text);
+  }
+  .policy-chip .mono {
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    font-family: var(--font-mono, "IBM Plex Mono", monospace);
+  }
+  .policy-chip button {
+    display: inline-grid;
+    place-items: center;
+    width: 1.125rem;
+    height: 1.125rem;
+    border: 0;
+    background: transparent;
+    color: inherit;
+    cursor: pointer;
+    opacity: 0.6;
+  }
+  .policy-chip button:hover {
+    opacity: 1;
+  }
+  .policy-search {
+    position: relative;
+    display: grid;
+    gap: 0.375rem;
+  }
+  .policy-search > input {
+    width: 100%;
+  }
+  .policy-bulk {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: 0.25rem;
+  }
+  .policy-hits {
+    display: grid;
+    max-height: 15rem;
+    overflow-y: auto;
+    border: 1px solid var(--separator);
+    background: var(--surface);
+  }
+  .policy-hits button {
+    display: flex;
+    align-items: center;
+    gap: 0.5rem;
+    padding: 0.375rem 0.75rem;
+    border: 0;
+    background: transparent;
+    color: var(--text);
+    font: inherit;
+    font-size: 0.8125rem;
+    text-align: left;
+    cursor: pointer;
+  }
+  .policy-hits button[data-active] {
+    background: var(--hover);
+  }
+  .policy-hits .mono {
+    flex: 1;
+    font-family: var(--font-mono, "IBM Plex Mono", monospace);
+  }
+  .policy-level {
+    font-size: 0.6875rem;
+    color: var(--tertiary);
+  }
+  .policy-condition {
+    display: grid;
+    grid-template-columns: minmax(0, 1.2fr) minmax(0, 1fr) minmax(0, 1fr) auto;
+    gap: 1px;
+    align-items: center;
+  }
+  .policy-condition .icon-button {
+    height: 2.5rem;
+    width: 2rem;
+  }
+  .policy-add {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 0.25rem;
+  }
+  .policy-assistant {
+    display: grid;
+    gap: 0.375rem;
+    padding: 0.5rem 0.75rem;
+    background: var(--accent-soft);
+  }
+  .policy-assistant-input {
+    display: flex;
+    align-items: center;
+    gap: 0.5rem;
+    color: var(--accent);
+  }
+  .policy-assistant-input input {
+    flex: 1;
+    height: 2rem;
+    padding: 0;
+    border-bottom-color: transparent;
+    background: transparent !important;
+    color: var(--text);
+  }
+  .policy-notes {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 0.25rem;
+  }
+  .policy-notes > span:not(.field-hint) {
+    padding: 0.125rem 0.5rem;
+    background: var(--surface);
+    font-size: 0.75rem;
+  }
+}
+
+/* EventBridge's pattern builder (services/events/lib/pattern-editor.tsx)
+   reuses the policy editor's rows; these are its own pieces. */
+@layer components {
+  .pattern-sources {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 0.25rem;
+  }
+  .pattern-source {
+    display: inline-flex;
+    align-items: center;
+    gap: 0.375rem;
+    height: 2rem;
+    padding: 0 0.625rem;
+    border: 1px solid var(--separator);
+    background: var(--surface);
+    color: var(--text);
+    font: inherit;
+    font-size: 0.75rem;
+    cursor: pointer;
+    transition: background-color var(--duration-quick) var(--ease-standard);
+  }
+  .pattern-source:hover {
+    background: var(--hover);
+  }
+  .pattern-sources > input {
+    width: 9rem;
+    height: 2rem;
+    font-size: 0.75rem;
+  }
+  .repair[data-on] {
+    background: var(--accent-soft);
+    box-shadow: inset 0 0 0 1px var(--accent);
+  }
+  .pattern-test > summary {
+    display: inline-flex;
+    align-items: center;
+    gap: 0.375rem;
+    cursor: pointer;
+    list-style: none;
+    font-size: 0.75rem;
+  }
+  .pattern-test > summary::-webkit-details-marker {
+    display: none;
+  }
+  .pattern-test[data-match="yes"] > summary {
+    color: var(--good);
+  }
+  .pattern-test[data-match="no"] > summary {
+    color: var(--warn);
+  }
+  .pattern-test[data-match="error"] > summary {
+    color: var(--bad);
+  }
+  .pattern-test > textarea {
+    width: 100%;
+    margin-top: 0.375rem;
+  }
+}

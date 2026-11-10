@@ -12,6 +12,7 @@ import { publicUpstreams } from "../../lib/upstreams";
 import { domainHref, repoHref } from "../../lib/refs";
 import { RepositoryFields } from "../../lib/repository-fields.tsx";
 import { createDomain, createRepository, deleteDomain } from "./actions";
+import { ResourcePicker } from "@mws-dashboard/ui/pickers";
 
 export const metadata: Metadata = { title: "CodeArtifact" };
 
@@ -36,7 +37,7 @@ export default async function CodeArtifact({ searchParams }: Props) {
         </Field>
         <MoreFields>
           <Field label="KMS key" rule={CreateDomain.encryptionKey} member="encryptionKey" hint="ARN; aws/codeartifact when empty">
-            <input name="key" placeholder="arn:aws:kms:…:key/…" />
+            <ResourcePicker kind="kms-key" name="key" exclude="AWS managed" />
           </Field>
         </MoreFields>
       </ActionForm>

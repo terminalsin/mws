@@ -10,6 +10,7 @@ import { MoreFields, PresetGallery, type PresetItem } from "@mws-dashboard/ui/pr
 import { useState } from "react";
 
 import { RETENTION, retentionLabel } from "./retention";
+import { ResourcePicker } from "@mws-dashboard/ui/pickers";
 
 interface Source extends PresetItem {
   prefix: string;
@@ -47,7 +48,7 @@ export function GroupFields({ taken, keyArns, keyAliases }: { taken: string[]; k
         </FieldShell>
         <MoreFields>
           <FieldShell label="KMS key ARN" rule={{ ...CreateLogGroup.kmsKeyId, format: "arn" }} known={keyArns}>
-            <input name="kms" list="create-kms-keys" />
+            <ResourcePicker kind="kms-key" name="kms" exclude="AWS managed" />
           </FieldShell>
           <datalist id="create-kms-keys">
             {Object.entries(keyAliases).map(([alias, arn]) => (

@@ -6,6 +6,7 @@ import { GitCompare } from "lucide-react";
 import { PARAMETERS, SAMPLE_TEMPLATE, STACK_NAME, TEMPLATE } from "../../lib/cloudformation";
 import { createChangeSet, createStack } from "./actions";
 import { StackFields } from "./stack-fields";
+import { ResourcePicker } from "@mws-dashboard/ui/pickers";
 
 const CAPABILITIES = [
   ["CAPABILITY_IAM", "IAM resources"],
@@ -30,7 +31,7 @@ export function Capabilities({ checked = [] }: { checked?: string[] }) {
 function Role() {
   return (
     <Field label="Service role" rule={CreateStackRules.RoleARN} format="arn">
-      <input name="role" placeholder="arn:aws:iam::123456789012:role/cfn-deploy" />
+      <ResourcePicker kind="iam-role" name="role" service="cloudformation.amazonaws.com" />
     </Field>
   );
 }

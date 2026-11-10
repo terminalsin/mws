@@ -35,6 +35,8 @@ import {
   setProtection,
   updateFileSystem,
 } from "../actions";
+import { ResourcePicker } from "@mws-dashboard/ui/pickers";
+import { PolicyEditor } from "@mws-dashboard/ui/policy";
 
 export const metadata: Metadata = { title: "File system" };
 
@@ -337,7 +339,7 @@ async function Network({ id, targets }: { id: string; targets: Awaited<ReturnTyp
     <Sheet title="Add mount target" label="Add mount target" icon={<Plus size={15} aria-hidden />} testId="create-mount-target">
       <ActionForm action={createMountTarget.bind(null, id)} submit="Create" testId="create-mount-target">
         <Field label="Subnet ID" rule={CreateMountTarget.SubnetId} member="SubnetId" hint={networks?.ok ? `In one of ${networks.value.map((v) => nameOf(v.Tags) ?? v.VpcId).join(", ")}` : undefined}>
-          <input name="subnet" required placeholder="subnet-…" />
+          <ResourcePicker kind="subnet" name="subnet" required />
         </Field>
         <Field label="IP address" rule={CreateMountTarget.IpAddress} format="ipv4" hint="Automatic when empty">
           <input name="ip" />
@@ -430,9 +432,7 @@ async function Policy({ id, arn }: { id: string; arn: string }) {
       actions={
         <Sheet title="File system policy" label="Edit file system policy" icon={<Pencil size={15} aria-hidden />} testId="edit-fs-policy">
           <ActionForm action={savePolicy.bind(null, id)} submit="Save" testId="edit-fs-policy">
-            <Field label="Policy JSON" format="policy" hint="Empty removes the policy">
-              <textarea name="policy" rows={16} defaultValue={doc ? JSON.stringify(JSON.parse(doc), null, 2) : policyTemplate(arn)} />
-            </Field>
+            <PolicyEditor label="Policy JSON" format="policy" hint="Empty removes the policy" kind="resource" name="policy" rows={16} defaultValue={doc ? JSON.stringify(JSON.parse(doc), null, 2) : policyTemplate(arn)} />
             <label className="check">
               <input type="checkbox" name="bypass" /> Bypass the lockout safety check
             </label>
@@ -554,7 +554,7 @@ async function Replication({ id }: { id: string }) {
                   <input name="az" />
                 </Field>
                 <Field label="KMS key" rule={ruleAt(CreateReplicationConfiguration, "Destinations.KmsKeyId")} member="Destinations.KmsKeyId">
-                  <input name="kms" />
+                  <ResourcePicker kind="kms-key" name="kms" />
                 </Field>
               </div>
             </ActionForm>

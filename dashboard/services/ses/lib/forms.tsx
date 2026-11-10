@@ -4,6 +4,7 @@ import { FieldShell as Field } from "@mws-dashboard/ui/fields";
 import { freeName, MoreFields, PresetGallery } from "@mws-dashboard/ui/presets";
 import type { Rule } from "@mws-dashboard/ui/validation";
 import { useState } from "react";
+import { ResourcePicker } from "@mws-dashboard/ui/pickers";
 
 export const EVENT_TYPES = ["SEND", "REJECT", "BOUNCE", "COMPLAINT", "DELIVERY", "OPEN", "CLICK", "RENDERING_FAILURE", "DELIVERY_DELAY", "SUBSCRIPTION"] as const;
 const EVENT_LABELS: Record<string, string> = { RENDERING_FAILURE: "Rendering failure", DELIVERY_DELAY: "Delivery delay" };
@@ -59,7 +60,7 @@ export function DestinationFields({ defaults, topics, streams, editing, nameRule
       )}
       {kind === "sns" && (
         <Field label="SNS topic" rule={ARN} known={topics} member="TopicArn">
-          <input name="topic" required defaultValue={defaults.topic ?? topics[0]} />
+          <ResourcePicker kind="sns-topic" name="topic" required defaultValue={defaults.topic ?? topics[0]} />
         </Field>
       )}
       {kind === "eventbridge" && (
@@ -70,10 +71,10 @@ export function DestinationFields({ defaults, topics, streams, editing, nameRule
       {kind === "firehose" && (
         <>
           <Field label="Delivery stream" rule={ARN} known={streams} member="DeliveryStreamArn">
-            <input name="stream" required defaultValue={defaults.stream ?? streams[0]} />
+            <ResourcePicker kind="firehose-stream" name="stream" required defaultValue={defaults.stream ?? streams[0]} />
           </Field>
           <Field label="IAM role SES assumes" rule={ARN} member="IamRoleArn">
-            <input name="role" required defaultValue={defaults.role} placeholder="arn:aws:iam::…:role/ses-firehose" />
+            <ResourcePicker kind="iam-role" name="role" service="ses.amazonaws.com" required defaultValue={defaults.role} />
           </Field>
         </>
       )}
@@ -219,7 +220,7 @@ export function RuleFields({
         {on.s3 && (
           <div className="form-row">
             <Field label="Bucket" rule={{ required: true, minLength: 3, maxLength: 63 }} known={buckets} member="BucketName">
-              <input name="bucket" required defaultValue={defaults.s3?.bucket ?? buckets[0]} />
+              <ResourcePicker kind="s3-bucket" name="bucket" required defaultValue={defaults.s3?.bucket ?? buckets[0]} />
             </Field>
             <Field label="Object key prefix" member="ObjectKeyPrefix">
               <input name="prefix" defaultValue={defaults.s3?.prefix} placeholder="inbound/" />
@@ -230,7 +231,7 @@ export function RuleFields({
         {on.sns && (
           <div className="form-row">
             <Field label="Topic" rule={ARN} known={topics} member="TopicArn">
-              <input name="topic" required defaultValue={defaults.sns?.topic ?? topics[0]} />
+              <ResourcePicker kind="sns-topic" name="topic" required defaultValue={defaults.sns?.topic ?? topics[0]} />
             </Field>
             <Field label="Encoding" member="Encoding">
               <select name="encoding" defaultValue={defaults.sns?.encoding ?? "UTF-8"}>
@@ -244,7 +245,7 @@ export function RuleFields({
         {on.lambda && (
           <div className="form-row">
             <Field label="Function" rule={ARN} known={functions} member="FunctionArn">
-              <input name="function" required defaultValue={defaults.lambda?.fn ?? functions[0]} />
+              <ResourcePicker kind="lambda-function" name="function" required defaultValue={defaults.lambda?.fn ?? functions[0]} />
             </Field>
             <Field label="Invocation" member="InvocationType">
               <select name="invocation" defaultValue={defaults.lambda?.invocation ?? "Event"}>

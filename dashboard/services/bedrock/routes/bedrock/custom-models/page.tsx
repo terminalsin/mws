@@ -12,6 +12,7 @@ import type { Metadata } from "next";
 import { bedrock, ICONS, providerIcon, tone } from "../../../lib/clients";
 import { RUNNING, TYPE_LABEL } from "../../../lib/links";
 import { createCustomizationJob } from "../jobs";
+import { ResourcePicker } from "@mws-dashboard/ui/pickers";
 
 export const metadata: Metadata = { title: "Custom models" };
 
@@ -91,7 +92,7 @@ export default async function CustomModels({ searchParams }: Props) {
         </Field>
         <AutoPick name="role" label="Service role" creates="AmazonBedrockCustomizationRole" options={roles} testId="customization-role" />
         <Field label="Model KMS key" rule={{ ...at("customModelKmsKeyId"), required: false }}>
-          <input name="kms" placeholder="alias/my-key" />
+          <ResourcePicker kind="kms-key" name="kms" exclude="AWS managed" placeholder="alias/my-key" />
         </Field>
         <Field label="Model tags" format="tags">
           <textarea name="tags" rows={2} placeholder="team=ml" />

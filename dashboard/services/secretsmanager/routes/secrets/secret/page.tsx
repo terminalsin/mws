@@ -30,6 +30,8 @@ import {
   updateSecret,
   validatePolicy,
 } from "../actions";
+import { ResourcePicker } from "@mws-dashboard/ui/pickers";
+import { PolicyEditor } from "@mws-dashboard/ui/policy";
 
 type Props = { searchParams: Promise<{ id?: string; reveal?: string; tab?: string; version?: string }> };
 
@@ -99,7 +101,7 @@ export default async function Secret({ searchParams }: Props) {
       <ActionForm action={rotate.bind(null, id)} submit="Save" testId="rotate-secret">
         <Field label="Rotation function" rule={RotateSecret.RotationLambdaARN} format="arn" arn={lambdaArn} known={functions} member="RotationLambdaARN">
           {/* Without a function already set, rotation needs one. */}
-          <input name="lambda" defaultValue={s.RotationLambdaARN} required={!s.RotationLambdaARN} placeholder="arn:aws:lambda:…" />
+          <ResourcePicker kind="lambda-function" name="lambda" defaultValue={s.RotationLambdaARN} required={!s.RotationLambdaARN} />
         </Field>
         <div className="form-row">
           <Field label="Every (days)" rule={DAYS} member="RotationRules.AutomaticallyAfterDays">
@@ -133,7 +135,7 @@ export default async function Secret({ searchParams }: Props) {
             <input name="description" defaultValue={s.Description} />
           </Field>
           <Field label="KMS key" rule={UpdateSecret.KmsKeyId} known={keys} hint="Empty keeps the current key">
-            <input name="kmsKeyId" defaultValue={s.KmsKeyId} placeholder="alias/aws/secretsmanager" />
+            <ResourcePicker kind="kms-key" name="kmsKeyId" defaultValue={s.KmsKeyId} placeholder="alias/aws/secretsmanager" />
           </Field>
         </ActionForm>
       </Sheet>
@@ -304,7 +306,7 @@ export default async function Secret({ searchParams }: Props) {
                   <input name="regions" required placeholder="eu-west-1, ap-southeast-2" />
                 </Field>
                 <Field label="KMS key in those Regions" hint="Empty: aws/secretsmanager">
-                  <input name="kmsKeyId" />
+                  <ResourcePicker kind="kms-key" name="kmsKeyId" />
                 </Field>
                 <label className="check">
                   <input type="checkbox" name="overwrite" /> Overwrite a secret with the same name there
@@ -344,17 +346,13 @@ export default async function Secret({ searchParams }: Props) {
             <>
               <Sheet title="Resource policy" label="Edit permissions" icon={<Pencil size={16} />} testId="edit-policy">
                 <ActionForm action={savePolicy.bind(null, id)} submit="Save" testId="edit-policy">
-                  <Field label="Policy" rule={POLICY} member="ResourcePolicy">
-                    <textarea name="policy" rows={14} className="code-editor" spellCheck={false} defaultValue={pretty(policy.value) || template(account)} />
-                  </Field>
+                  <PolicyEditor label="Policy" rule={POLICY} member="ResourcePolicy" kind="resource" name="policy" rows={14} defaultValue={pretty(policy.value) || template(account)} />
                   <label className="check">
                     <input type="checkbox" name="block" defaultChecked /> Block public access
                   </label>
                 </ActionForm>
                 <ActionForm action={validatePolicy.bind(null, id)} submit="Validate" testId="validate-policy">
-                  <Field label="Policy to validate" rule={POLICY} member="ResourcePolicy">
-                    <textarea name="policy" rows={6} className="code-editor" spellCheck={false} defaultValue={pretty(policy.value) || template(account)} />
-                  </Field>
+                  <PolicyEditor label="Policy to validate" rule={POLICY} member="ResourcePolicy" kind="resource" name="policy" rows={6} defaultValue={pretty(policy.value) || template(account)} />
                 </ActionForm>
               </Sheet>
               {policy.value && <ActionForm action={deletePolicy.bind(null, id)} submit="Delete resource policy" icon={<Trash2 size={16} />} tone="danger" confirm="Delete the resource policy?" testId="delete-policy" />}

@@ -6,16 +6,18 @@
 
 import { FieldShell } from "@mws-dashboard/ui/fields";
 import { CreateOpenIDConnectProvider } from "@mws-dashboard/ui/model/iam";
+import { ResourcePicker } from "@mws-dashboard/ui/pickers";
+import { PolicyEditor } from "@mws-dashboard/ui/policy";
 import { MoreFields, PresetGallery, freeName } from "@mws-dashboard/ui/presets";
 import { useState } from "react";
 
-import { COMMON_POLICIES, OIDC_PRESETS, POLICY_PRESETS, ROLE_PRESETS, managedArn, policyJson, trustJson, type OidcPreset, type PolicyPreset, type RolePreset } from "./presets";
-import { RULES, SERVICE_PRINCIPALS } from "./rules";
+import { COMMON_POLICIES, OIDC_PRESETS, POLICY_PRESETS, ROLE_PRESETS, managedArn, policyJson, presetTrust, type OidcPreset, type PolicyPreset, type RolePreset } from "./presets";
+import { RULES } from "./rules";
 
 export function RoleFields({ taken, account }: { taken: string[]; account: string | null }) {
   const [preset, setPreset] = useState<RolePreset>(ROLE_PRESETS[0]);
   const custom = preset.trust === "custom";
-  const trust = preset.trust === "account" && account ? trustJson(account) : undefined;
+  const trust = presetTrust(preset, account);
   const policy = preset.attach?.split("/").pop();
   return (
     <>
@@ -24,35 +26,30 @@ export function RoleFields({ taken, account }: { taken: string[]; account: strin
         <FieldShell label="Name" rule={RULES.roleName} taken={taken} unique>
           <input name="name" required defaultValue={preset.name ? freeName(preset.name, taken) : undefined} autoFocus={custom} />
         </FieldShell>
-        {!preset.trust && (
-          <FieldShell label="Trusted service" rule={RULES.service}>
-            <input name="service" defaultValue={preset.service} list="principals" />
-          </FieldShell>
-        )}
-        <datalist id="principals">
-          {SERVICE_PRINCIPALS.map((p) => (
-            <option key={p} value={p} />
-          ))}
-        </datalist>
-        {policy && (
-          <label className="check" title={preset.attach}>
-            <input type="checkbox" name="attach" value={preset.attach} defaultChecked /> Attach <code>{policy}</code>
-          </label>
-        )}
-        {custom || trust ? (
-          <FieldShell label="Trust policy" rule={{ ...RULES.trust, required: true }}>
-            <textarea name="trust" rows={10} className="code-editor" spellCheck={false} defaultValue={trust} placeholder='{"Version": "2012-10-17", "Statement": [...]}' />
-          </FieldShell>
-        ) : null}
+        {preset.service && <input type="hidden" name="service" value={preset.service} />}
+        <PolicyEditor
+          label="Trust policy"
+          name="trust"
+          kind="trust"
+          rows={10}
+          required={custom}
+          rule={{ ...RULES.trust, required: custom }}
+          defaultValue={trust}
+          startIn={custom ? "json" : "visual"}
+          hint={preset.trust === "github" ? "Replace OWNER/REPO with the repository that deploys" : undefined}
+          testId="trust-editor"
+        />
+        <FieldShell label="Permissions" hint="AWS and customer managed policies to attach">
+          <ResourcePicker kind="iam-policy" name="policies" multiple defaultValue={preset.attach ? `${preset.attach}, ` : undefined} placeholder="Search managed policies" testId="role-policies" />
+        </FieldShell>
+        {policy && <input type="hidden" name="suggested" value={preset.attach} />}
         <MoreFields>
           <FieldShell label="Description" rule={RULES.roleDescription}>
             <input name="description" />
           </FieldShell>
-          {!custom && !trust && (
-            <FieldShell label="Or a trust policy" rule={RULES.trust}>
-              <textarea name="trust" placeholder='{"Version": "2012-10-17", "Statement": [...]}' />
-            </FieldShell>
-          )}
+          <FieldShell label="Permissions boundary" rule={{ ...RULES.policyArn, required: false }}>
+            <ResourcePicker kind="iam-policy" name="boundary" placeholder="Optional: the most this role may ever do" />
+          </FieldShell>
         </MoreFields>
       </div>
     </>
@@ -70,9 +67,7 @@ export function PolicyFields({ taken, inline }: { taken: string[]; inline?: bool
         <FieldShell label="Name" rule={inline ? RULES.inlinePolicyName : RULES.policyName} taken={taken} unique>
           <input name={inline ? "policyName" : "name"} required defaultValue={preset.name ? freeName(preset.name, taken) : undefined} />
         </FieldShell>
-        <FieldShell label="Document" rule={RULES.document}>
-          <textarea name="document" rows={12} required aria-label="Policy document" className="code-editor" spellCheck={false} defaultValue={policyJson(preset)} />
-        </FieldShell>
+        <PolicyEditor label="Document" name="document" rule={RULES.document} required defaultValue={policyJson(preset)} testId="policy-editor" />
         {!inline && (
           <MoreFields>
             <FieldShell label="Description" rule={RULES.policyDescription}>
@@ -85,24 +80,17 @@ export function PolicyFields({ taken, inline }: { taken: string[]; inline?: bool
   );
 }
 
-/** The attach form: the common AWS managed policies as tiles, or any ARN. */
-export function AttachFields({ known, attached }: { known: { arn: string; name: string }[]; attached: string[] }) {
+/** The attach form: the common AWS managed policies as tiles, or any policy, searched. */
+export function AttachFields({ attached }: { known?: { arn: string; name: string }[]; attached: string[] }) {
   const [arn, setArn] = useState("");
   const tiles = COMMON_POLICIES.map((p) => ({ ...p, added: attached.includes(managedArn(p.id)) }));
   const chosen = COMMON_POLICIES.find((p) => managedArn(p.id) === arn)?.id;
   return (
     <>
       <PresetGallery presets={tiles} chosen={chosen} choose={(p) => setArn(managedArn(p.id))} label="AWS managed" size={24} testId="policy" />
-      <FieldShell label="Policy" rule={RULES.policyArn} known={known.map((p) => p.arn)}>
-        <input name="policyArn" list="policies" required value={arn} onChange={(e) => setArn(e.target.value)} placeholder="arn:aws:iam::aws:policy/ReadOnlyAccess" />
+      <FieldShell label="Policy" rule={RULES.policyArn}>
+        <ResourcePicker kind="iam-policy" name="policyArn" required value={arn} onValueChange={setArn} placeholder="Search AWS and customer managed policies" testId="attach-policy" />
       </FieldShell>
-      <datalist id="policies">
-        {known.map((p) => (
-          <option key={p.arn} value={p.arn}>
-            {p.name}
-          </option>
-        ))}
-      </datalist>
     </>
   );
 }

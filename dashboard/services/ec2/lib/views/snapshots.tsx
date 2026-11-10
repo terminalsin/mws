@@ -11,6 +11,7 @@ import { ICONS, LINKS, ec2, nameTag } from "../clients";
 import { RESOURCE_TONE, listSnapshots } from "../ec2";
 import { SNAPSHOT_DESCRIPTION, TAG_VALUE } from "../rules";
 import { CreateVolumeSheet, zones } from "./volumes";
+import { ResourcePicker } from "@mws-dashboard/ui/pickers";
 
 export async function regions() {
   return ((await (await ec2()).send(new DescribeRegionsCommand({}))).Regions ?? []).map((r) => r.RegionName!).sort();
@@ -38,7 +39,7 @@ export function CopySnapshotSheet({ snapshot, regions, here }: { snapshot: Snaps
           <input type="checkbox" name="encrypted" defaultChecked={snapshot.Encrypted} disabled={snapshot.Encrypted} /> Encrypt
         </label>
         <Field label="KMS key" member="KmsKeyId" hint="Blank: aws/ebs">
-          <input name="kmsKey" />
+          <ResourcePicker kind="kms-key" name="kmsKey" />
         </Field>
       </ActionForm>
     </Sheet>

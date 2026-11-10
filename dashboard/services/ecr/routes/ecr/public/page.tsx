@@ -11,6 +11,7 @@ import type { Metadata } from "next";
 
 import { ICONS, ecrPublic } from "../../../lib/clients";
 import { deletePublicRepository, savePublicCatalog, savePublicPolicy } from "../actions";
+import { PolicyEditor } from "@mws-dashboard/ui/policy";
 
 export const metadata: Metadata = { title: "Public repository" };
 
@@ -119,9 +120,7 @@ export default async function PublicRepository({ searchParams }: Props) {
         actions={
           <Sheet title="Repository policy" label="Edit repository policy" icon={<Pencil size={15} aria-hidden />} testId="edit-public-policy">
             <ActionForm action={savePublicPolicy.bind(null, name)} submit="Save" testId="edit-public-policy">
-              <Field label="Policy JSON" format="policy" hint="Empty removes the policy">
-                <textarea name="policy" rows={12} defaultValue={policy.ok && policy.value ? JSON.stringify(JSON.parse(policy.value), null, 2) : ""} />
-              </Field>
+              <PolicyEditor label="Policy JSON" format="policy" hint="Empty removes the policy" kind="resource" name="policy" rows={12} defaultValue={policy.ok && policy.value ? JSON.stringify(JSON.parse(policy.value), null, 2) : ""} />
             </ActionForm>
           </Sheet>
         }

@@ -9,6 +9,7 @@ import { KEY_PRESETS, type KeyPreset } from "../../lib/presets";
 import { ALIAS, DESCRIPTION, KEY_POLICY, ROTATION_DAYS, TAGS } from "../../lib/rules";
 import { SPECS_FOR } from "../../lib/specs";
 import { createKey } from "./actions";
+import { PolicyEditor } from "@mws-dashboard/ui/policy";
 
 const ICON: Record<string, ReactNode> = {
   encrypt: <Lock size={26} strokeWidth={1.5} aria-hidden />,
@@ -77,9 +78,7 @@ export function CreateKeyForm({ taken }: { taken: string[] }) {
           <Field label="Tags" rule={TAGS}>
             <textarea name="tags" rows={2} placeholder="team=payments" />
           </Field>
-          <Field label="Key policy" rule={KEY_POLICY}>
-            <textarea name="policy" rows={8} placeholder="Default: the account root may use and manage the key" className="code-editor" spellCheck={false} />
-          </Field>
+          <PolicyEditor label="Key policy" rule={KEY_POLICY} kind="resource" name="policy" rows={8} />
         </MoreFields>
       </div>
     </ActionForm>

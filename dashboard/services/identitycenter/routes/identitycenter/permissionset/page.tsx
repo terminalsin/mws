@@ -32,6 +32,7 @@ import {
   savePermissionSetTags,
   updatePermissionSet,
 } from "../actions";
+import { PolicyEditor } from "@mws-dashboard/ui/policy";
 
 type Props = { searchParams: Promise<{ arn?: string; tab?: string }> };
 
@@ -205,9 +206,7 @@ export default async function PermissionSet({ searchParams }: Props) {
             <>
               <Sheet title="Inline policy" label={inline ? "Edit inline policy" : "Create inline policy"} icon={<Pencil size={16} />} testId="inline-policy">
                 <ActionForm action={putInlinePolicy.bind(null, instance, arn)} submit="Save" testId="inline-policy">
-                  <Field label="Document" rule={{ ...PutInlinePolicyToPermissionSet.InlinePolicy, format: "policy" }}>
-                    <textarea name="document" rows={14} required aria-label="Inline policy" defaultValue={inline ? pretty(inline) : EXAMPLE} />
-                  </Field>
+                  <PolicyEditor label="Document" rule={{ ...PutInlinePolicyToPermissionSet.InlinePolicy, format: "policy" }} name="document" rows={14} required aria-label="Inline policy" defaultValue={inline ? pretty(inline) : EXAMPLE} />
                 </ActionForm>
               </Sheet>
               {inline && <ActionForm action={deleteInlinePolicy.bind(null, instance, arn)} submit="Delete inline policy" icon={<Trash2 size={16} />} tone="danger" confirm="Delete the inline policy?" />}

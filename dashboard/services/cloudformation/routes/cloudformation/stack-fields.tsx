@@ -11,6 +11,7 @@ import { useState } from "react";
 
 import { PARAMETERS, STACK_NAME, TEMPLATE } from "../../lib/cloudformation";
 import { STARTERS, type StarterTemplate } from "../../lib/templates";
+import { ResourcePicker } from "@mws-dashboard/ui/pickers";
 
 const CAPABILITIES = [
   ["CAPABILITY_IAM", "IAM resources"],
@@ -63,10 +64,10 @@ export function StackFields({ names }: { names: string[] }) {
             </FieldShell>
           </div>
           <FieldShell label="Service role" rule={CreateStackRules.RoleARN} format="arn">
-            <input name="role" placeholder="arn:aws:iam::123456789012:role/cfn-deploy" />
+            <ResourcePicker kind="iam-role" name="role" service="cloudformation.amazonaws.com" />
           </FieldShell>
           <FieldShell label="Notification topics" rule={CreateStackRules.NotificationARNs} hint="SNS topic ARNs">
-            <input name="notifications" placeholder="arn:aws:sns:us-east-1:123456789012:deploys" />
+            <ResourcePicker kind="sns-topic" name="notifications" multiple />
           </FieldShell>
           <FieldShell label="Tags" format="tags">
             <textarea name="tags" rows={2} placeholder="team=platform" spellCheck={false} />

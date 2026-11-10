@@ -39,6 +39,8 @@ import {
   signSubordinate,
 } from "../actions";
 import { RevocationFields } from "../revocation";
+import { ResourcePicker } from "@mws-dashboard/ui/pickers";
+import { PolicyEditor } from "@mws-dashboard/ui/policy";
 
 export const metadata: Metadata = { title: "Certificate authority" };
 
@@ -251,9 +253,7 @@ export default async function Authority({ searchParams }: Props) {
             <>
               <Sheet title="Resource-based policy" label="Edit policy" icon={<Pencil size={16} />} testId="edit-policy">
                 <ActionForm action={savePolicy.bind(null, arn)} submit="Save" testId="edit-policy">
-                  <Field label="Policy" rule={POLICY}>
-                    <textarea name="policy" rows={14} className="code-editor" spellCheck={false} defaultValue={policy.value ? JSON.stringify(JSON.parse(policy.value), null, 2) : template(arn)} />
-                  </Field>
+                  <PolicyEditor label="Policy" rule={POLICY} kind="resource" name="policy" rows={14} defaultValue={policy.value ? JSON.stringify(JSON.parse(policy.value), null, 2) : template(arn)} />
                 </ActionForm>
               </Sheet>
               {policy.value && <ActionForm action={deletePolicy.bind(null, arn)} submit="Delete policy" icon={<Trash2 size={16} />} tone="danger" confirm="Delete the resource-based policy?" />}
@@ -274,7 +274,7 @@ export default async function Authority({ searchParams }: Props) {
           <Sheet title="Generate audit report" label="Generate audit report" icon={<FileSignature size={16} />} testId="audit-report">
             <ActionForm action={auditReport.bind(null, arn)} submit="Generate" testId="audit-report">
               <Field label="S3 bucket" format="bucket" known={list} member="S3BucketName">
-                <input name="bucket" required />
+                <ResourcePicker kind="s3-bucket" name="bucket" required />
               </Field>
               <Field label="Format">
                 <select name="format" defaultValue="JSON">

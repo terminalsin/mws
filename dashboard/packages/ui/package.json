@@ -15,7 +15,10 @@
     "./validation": "./src/validation.ts",
     "./fields": "./src/fields.tsx",
     "./presets": "./src/presets.tsx",
-    "./model/*": "./src/model/*.ts"
+    "./model/*": "./src/model/*.ts",
+    "./resources": "./src/resources.ts",
+    "./pickers": "./src/pickers.tsx",
+    "./policy": "./src/policy.tsx"
   },
   "scripts": {
     "typecheck": "tsc --noEmit",

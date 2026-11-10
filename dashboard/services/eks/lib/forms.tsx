@@ -12,6 +12,7 @@ import { useState, type ReactNode } from "react";
 
 import { NODE_PRESETS, addonIcon, type NodePreset } from "./presets";
 import { Scaling } from "./scaling.tsx";
+import { ResourcePicker } from "@mws-dashboard/ui/pickers";
 
 export function NodegroupFields({ rule, taken, types, children }: { rule: Rule; taken: string[]; types: string[]; children?: ReactNode }) {
   const [preset, setPreset] = useState<NodePreset>(NODE_PRESETS[0]);
@@ -82,7 +83,7 @@ export function AddonFields({ offered }: { offered: OfferedAddon[] }) {
           </select>
         </FieldShell>
         <FieldShell label="Service account role ARN" format="arn">
-          <input name="role" spellCheck={false} placeholder="optional" />
+          <ResourcePicker kind="iam-role" name="role" placeholder="optional" />
         </FieldShell>
         <FieldShell label="Configuration values" format="jsonish">
           <textarea name="config" rows={3} spellCheck={false} placeholder="optional JSON or YAML" />

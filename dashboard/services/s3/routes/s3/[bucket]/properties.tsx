@@ -29,6 +29,7 @@ import {
   setEventBridge,
   setVersioning,
 } from "../actions";
+import { ResourcePicker } from "@mws-dashboard/ui/pickers";
 
 const EVENTS = [
   "s3:ObjectCreated:*",
@@ -127,7 +128,7 @@ export async function Properties({ bucket }: { bucket: string }) {
                   </select>
                 </Field>
                 <Field label="KMS key" hint="Key ID, ARN or alias; empty uses aws/s3">
-                  <input name="kms" defaultValue={sse?.KMSMasterKeyID} />
+                  <ResourcePicker kind="kms-key" name="kms" defaultValue={sse?.KMSMasterKeyID} />
                 </Field>
                 <label className="check">
                   <input type="checkbox" name="bucketKey" defaultChecked={rule?.BucketKeyEnabled ?? true} /> Bucket Key

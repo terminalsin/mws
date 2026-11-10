@@ -13,6 +13,7 @@ import { KeyRound, Text } from "lucide-react";
 import { useEffect, useState } from "react";
 
 import { SECRET_PRESETS, presetValue, type SecretPreset } from "./presets";
+import { ResourcePicker } from "@mws-dashboard/ui/pickers";
 
 // The model leaves names unconstrained; the characters are in AWS's docs.
 const NAME: Rule = { ...CreateSecret.Name, pattern: "^[A-Za-z0-9/_+=.@-]+$", hint: "Letters, digits and /_+=.@-", generate: "name" };
@@ -60,7 +61,7 @@ export function SecretFields({ names, keys }: { names: string[]; keys: string[] 
             <input name="description" />
           </FieldShell>
           <FieldShell label="KMS key" rule={CreateSecret.KmsKeyId} known={keys}>
-            <input name="kmsKeyId" placeholder="alias/aws/secretsmanager" />
+            <ResourcePicker kind="kms-key" name="kmsKeyId" placeholder="alias/aws/secretsmanager" />
           </FieldShell>
           <FieldShell label="Tags" format="tags">
             <textarea name="tags" rows={2} placeholder="team=payments" />

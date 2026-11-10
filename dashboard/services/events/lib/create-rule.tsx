@@ -10,6 +10,8 @@ import { useState } from "react";
 
 import { RULE_PRESETS } from "./rule-presets";
 import { PATTERN, ROLE, RULE_DESCRIPTION, RULE_NAME, SCHEDULE, TARGET } from "./rules";
+import { ResourcePicker } from "@mws-dashboard/ui/pickers";
+import { EventPatternEditor } from "./pattern-editor.tsx";
 
 export function CreateRuleFields({ bus, taken, targets }: { bus: string; taken: string[]; targets: { arn: string; name: string }[] }) {
   // Schedules run on the default bus only.
@@ -25,9 +27,7 @@ export function CreateRuleFields({ bus, taken, targets }: { bus: string; taken: 
           <input name="name" required defaultValue={preset.custom ? undefined : freeName(preset.name, taken)} spellCheck={false} />
         </FieldShell>
         {showPattern && (
-          <FieldShell label="Event pattern" rule={PATTERN} member="EventPattern" format="eventPattern">
-            <textarea name="pattern" rows={preset.pattern ? 4 : 3} placeholder='{"source": ["my.app"]}' defaultValue={preset.pattern ? JSON.stringify(preset.pattern, null, 2) : undefined} spellCheck={false} />
-          </FieldShell>
+          <EventPatternEditor rule={PATTERN} rows={preset.pattern ? 4 : 3} defaultValue={preset.pattern ? JSON.stringify(preset.pattern, null, 2) : preset.custom ? undefined : ""} />
         )}
         {showSchedule && (
           <FieldShell label={preset.custom ? "Or schedule" : "Schedule"} rule={SCHEDULE} member="ScheduleExpression" format="schedule">
@@ -35,15 +35,8 @@ export function CreateRuleFields({ bus, taken, targets }: { bus: string; taken: 
           </FieldShell>
         )}
         <FieldShell label="Target ARN" rule={TARGET} member="Arn" format="arn" known={targets.map((t) => t.arn)}>
-          <input name="target" placeholder="arn:aws:sqs:…" list="event-targets" spellCheck={false} />
+          <ResourcePicker kind={["lambda-function", "sqs-queue", "sns-topic", "kinesis-stream", "firehose-stream", "event-bus", "log-group"]} name="target" use="arn" />
         </FieldShell>
-        <datalist id="event-targets">
-          {targets.map((t) => (
-            <option key={t.arn} value={t.arn}>
-              {t.name}
-            </option>
-          ))}
-        </datalist>
         <label className="check">
           <input type="checkbox" name="grant" defaultChecked /> Allow the rule in the target&apos;s resource policy
         </label>
@@ -52,7 +45,7 @@ export function CreateRuleFields({ bus, taken, targets }: { bus: string; taken: 
             <input name="description" />
           </FieldShell>
           <FieldShell label="Target role" rule={{ ...ROLE, required: false }} member="RoleArn">
-            <input name="role" placeholder="For Kinesis, Firehose, buses and API destinations" spellCheck={false} />
+            <ResourcePicker kind="iam-role" name="role" service="events.amazonaws.com" placeholder="For Kinesis, Firehose, buses and API destinations" />
           </FieldShell>
         </MoreFields>
       </div>

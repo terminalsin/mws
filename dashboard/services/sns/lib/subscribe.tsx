@@ -11,6 +11,7 @@ import { Braces, Globe, Lock, Mail, MessageSquare, Smartphone } from "lucide-rea
 import { useMemo, useState, type ReactNode } from "react";
 
 import { DLQ_ARN, endpointRule, FILTER_POLICY, PROTOCOLS, roleRule, scopeOf } from "./rules";
+import { ResourcePicker } from "@mws-dashboard/ui/pickers";
 
 export interface Targets {
   sqs: string[];
@@ -79,7 +80,7 @@ export function SubscribeFields({ topicArn, fifo, targets }: { topicArn: string;
       )}
       {protocol === "firehose" && (
         <FieldShell label="Subscription role" rule={role} known={targets.roles} member="SubscriptionRoleArn">
-          <input name="role" required placeholder="Role name or ARN" />
+          <ResourcePicker kind="iam-role" name="role" service="sns.amazonaws.com" required />
         </FieldShell>
       )}
       {protocol === "sqs" && (
@@ -109,7 +110,7 @@ export function SubscribeFields({ topicArn, fifo, targets }: { topicArn: string;
             </select>
           </FieldShell>
           <FieldShell label="Dead-letter queue" rule={DLQ_ARN} known={targets.sqs} member="RedrivePolicy">
-            <input name="dlq" placeholder="Queue ARN" spellCheck={false} />
+            <ResourcePicker kind="sqs-queue" name="dlq" />
           </FieldShell>
         </div>
       </MoreFields>

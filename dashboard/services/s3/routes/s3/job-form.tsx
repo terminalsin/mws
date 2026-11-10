@@ -8,6 +8,7 @@ import { Copy, Eraser, Snowflake, Tag } from "lucide-react";
 import { useState } from "react";
 
 import { createJob } from "./control-actions";
+import { ResourcePicker } from "@mws-dashboard/ui/pickers";
 
 const ICON = { size: 26, strokeWidth: 1.5, "aria-hidden": true } as const;
 
@@ -57,7 +58,7 @@ export function JobForm({ buckets, roles, roleName }: { buckets: string[]; roles
       )}
       {op.id === "lambda" && (
         <Field label="Lambda function ARN" rule={ruleAt(CreateJob, "Operation.LambdaInvoke.FunctionArn")}>
-          <input name="function" required />
+          <ResourcePicker kind="lambda-function" name="function" required />
         </Field>
       )}
       <AutoPick name="role" label="IAM role" creates={roleName} options={roles} testId="job-role" />
