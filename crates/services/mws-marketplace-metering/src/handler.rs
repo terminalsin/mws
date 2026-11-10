@@ -2,7 +2,7 @@
 
 use chrono::{DateTime, Datelike, Duration, DurationRound, TimeZone, Utc};
 use mws_core::{ConditionContext, RequestContext, ServiceError};
-use mws_marketplace_entitlement::{Product, Subscription};
+use mws_marketplace_entitlement::{Product, ProductType, Subscription};
 
 use crate::generated::{errors, types, Handler};
 use crate::signing::{self, PUBLIC_KEY_VERSION};
@@ -20,6 +20,18 @@ fn invalid_product_code() -> ServiceError {
     errors::invalid_product_code(
         "The product code passed does not match the product code used for publishing the product.",
     )
+}
+
+/// `product`, if metering it with an operation for `types` is possible:
+/// MeterUsage is for AMI and container products, RegisterUsage for
+/// container products, BatchMeterUsage for SaaS products. Any other
+/// product code is not one the operation accepts.
+fn of_type(product: Product, types: &[ProductType]) -> Result<Product, ServiceError> {
+    if types.contains(&product.product_type) {
+        Ok(product)
+    } else {
+        Err(invalid_product_code())
+    }
 }
 
 fn not_entitled() -> ServiceError {
@@ -132,6 +144,7 @@ impl Handler for Metering {
     ) -> Result<types::MeterUsageResult, ServiceError> {
         ctx.authorize("aws-marketplace:MeterUsage", "*", ConditionContext::new())?;
         let product = self.catalog.product(&input.product_code).ok_or_else(invalid_product_code)?;
+        let product = of_type(product, &[ProductType::Ami, ProductType::Container])?;
         if !product.has_dimension(&input.usage_dimension) {
             return Err(invalid_dimension());
         }
@@ -255,6 +268,7 @@ impl Handler for Metering {
                     .ok_or_else(invalid_license)?,
                 (None, None) => return Err(invalid_product_code()),
             };
+            let product = of_type(product, &[ProductType::Saas])?;
             let (subscription, customer_account) = if !rec.customer_identifier.is_empty() {
                 let s = self
                     .catalog
@@ -363,6 +377,7 @@ impl Handler for Metering {
     ) -> Result<types::RegisterUsageResult, ServiceError> {
         ctx.authorize("aws-marketplace:RegisterUsage", "*", ConditionContext::new())?;
         let product = self.catalog.product(&input.product_code).ok_or_else(invalid_product_code)?;
+        let product = of_type(product, &[ProductType::Container])?;
         if input.public_key_version != PUBLIC_KEY_VERSION {
             return Err(errors::invalid_public_key_version("Public Key version is invalid."));
         }
