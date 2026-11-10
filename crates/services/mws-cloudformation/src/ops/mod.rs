@@ -148,6 +148,12 @@ impl CloudFormation {
     ) -> Result<(Template, Vec<StackParameter>, EvalData), ServiceError> {
         let raw = Template::parse(body).map_err(validation)?;
         check_auto_expand(&raw, capabilities, direct)?;
+        // Template format errors come before parameter errors (AWS checks
+        // the template first); a template with transforms can only be
+        // checked once processed.
+        if !raw.needs_processing() {
+            self.check_template(ctx, &raw)?;
+        }
         let mut params = parameters::assign(&raw, provided, previous).map_err(validation)?;
         for p in params.iter_mut() {
             if parameters::ssm_value_type(&p.ty).is_some() {
@@ -166,11 +172,11 @@ impl CloudFormation {
                 .await
                 .map_err(validation)?;
             t.original = Some(body.to_string());
+            self.check_template(ctx, &t)?;
             t
         } else {
             raw
         };
-        self.check_template(ctx, &template)?;
         check_capabilities(&template, capabilities)?;
         let data = self.eval_data(ctx, &template, &params, stack_name, stack_id, notification_arns).await?;
         template.creation_order(&|l| data.included(&template, l)).map_err(validation)?;
@@ -194,8 +200,8 @@ impl CloudFormation {
             return Err(validation(format_error(format!("Unrecognized resource types: [{}]", unknown.join(", ")))));
         }
         // Attributes Fn::GetAtt asks for must exist.
-        for r in template.resources().values() {
-            let Some(props) = r.get("Properties") else { continue };
+        let outputs = template.section("Outputs").into_iter().flat_map(|o| o.values());
+        for props in template.resources().values().filter_map(|r| r.get("Properties")).chain(outputs) {
             for (res, attr) in crate::template::references(props).get_atts {
                 let Some(ty) = template.resource_type(&res) else { continue };
                 if let Some(p) = self.provider_in(&ctx.caller.account_id, &ctx.region, ty) {

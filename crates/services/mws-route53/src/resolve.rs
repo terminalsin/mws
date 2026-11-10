@@ -68,8 +68,8 @@ pub(crate) struct Context<'a> {
     /// Whether an alias target outside Route 53 (hosted zone id, DNS name)
     /// is healthy; `None` when nothing knows the target.
     pub external_healthy: &'a dyn Fn(&str, &str) -> Option<bool>,
-    /// The zone owner's other hosted zones, by id, for aliases to their
-    /// records.
+    /// The zone owner's other hosted zones, by id (aliases never resolve
+    /// into them).
     pub zones: &'a dyn Fn(&str) -> Option<&'a Zone>,
 }
 
@@ -230,7 +230,7 @@ fn usable(zone: &Zone, r: &ResourceRecordSet, cx: &Context<'_>, depth: usize) ->
 }
 
 /// The records an alias resolves to: the target record sets of the same
-/// type in the zone (or another of the owner's zones), routed in turn, or the values of a target outside
+/// type in the zone, routed in turn, or the values of a target outside
 /// Route 53 that another service resolves (such as an accelerator's
 /// static IPs). Other targets resolve to nothing.
 fn alias_records(zone: &Zone, r: &ResourceRecordSet, cx: &Context<'_>, depth: usize) -> Vec<Record> {
@@ -240,8 +240,8 @@ fn alias_records(zone: &Zone, r: &ResourceRecordSet, cx: &Context<'_>, depth: us
     }
     let target_zone = crate::strip_id(&alias.hosted_zone_id);
     let zone = match (target_zone != zone.id).then(|| (cx.zones)(target_zone)) {
-        // A record in another of the owner's zones.
-        Some(Some(other)) => other,
+        // Aliases cannot reference another hosted zone's records.
+        Some(Some(_)) => return Vec::new(),
         Some(None) => return external_alias_records(r, target_zone, &alias.dns_name, cx),
         None => zone,
     };

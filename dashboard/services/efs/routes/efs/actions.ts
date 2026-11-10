@@ -10,6 +10,7 @@ import {
   DeleteFileSystemPolicyCommand,
   DeleteMountTargetCommand,
   DeleteReplicationConfigurationCommand,
+  DescribeFileSystemsCommand,
   ModifyMountTargetSecurityGroupsCommand,
   PutBackupPolicyCommand,
   PutFileSystemPolicyCommand,
@@ -64,6 +65,14 @@ export async function createFileSystem(_: ActionResult | null, form: FormData) {
       }),
     );
     const id = out.FileSystemId!;
+    // A new file system is `creating` for a moment and takes no mount
+    // targets or lifecycle policy until it is `available`: wait, as the
+    // AWS console does.
+    for (let i = 0; i < 60; i++) {
+      const fs = (await client.send(new DescribeFileSystemsCommand({ FileSystemId: id }))).FileSystems?.[0];
+      if (fs?.LifeCycleState !== "creating") break;
+      await new Promise((r) => setTimeout(r, 500));
+    }
     const lifecycle = lifecycleFrom(form);
     const problems: string[] = [];
     if (lifecycle.length) await client.send(new PutLifecycleConfigurationCommand({ FileSystemId: id, LifecyclePolicies: lifecycle })).catch((e) => problems.push(`Lifecycle: ${describeError(e)}`));

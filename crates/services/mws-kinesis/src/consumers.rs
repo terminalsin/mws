@@ -13,7 +13,7 @@ use crate::generated::{self, errors, types};
 use crate::metrics::Batch;
 use crate::names::{authorize, authorize_stream, invalid_argument, now_ms, request_tag_context, valid_name, StreamRef};
 use crate::records::{children, iterator_age, position, read_from};
-use crate::state::{Consumer, State, TRANSITION_MS};
+use crate::state::{transition_ms, Consumer, State};
 use crate::throughput::{Bucket, FAN_OUT_BYTES};
 use crate::Kinesis;
 
@@ -163,7 +163,7 @@ impl Kinesis {
             stream_arn: r.arn.clone(),
             created_at: now,
             status: "CREATING".into(),
-            settles_at: now + TRANSITION_MS,
+            settles_at: now + transition_ms(),
             policy: None,
             tags,
         };
@@ -183,7 +183,7 @@ impl Kinesis {
         let arn = c.arn.clone();
         if let Some(c) = st.consumers.get_mut(&arn) {
             c.status = "DELETING".into();
-            c.settles_at = now_ms(ctx) + TRANSITION_MS;
+            c.settles_at = now_ms(ctx) + transition_ms();
         }
         Ok(())
     }

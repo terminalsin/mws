@@ -581,7 +581,24 @@ impl Lambda {
         match kind {
             "DryRun" => Ok(types::InvocationResponse { status_code: 204, ..Default::default() }),
             "Event" => {
-                self.enqueue(ctx, &f, payload);
+                // SNS and S3 carry the X-Ray header of the request that caused
+                // the event, which is how Lambda sees a recursive loop
+                // through them.
+                if matches!(ctx.caller.service_principal(), Some("sns.amazonaws.com" | "s3.amazonaws.com")) {
+                    let ctx = RequestContext { region: f.region.clone(), ..ctx.clone() };
+                    let incoming = mws_core::trace_header::current();
+                    match self.recursion_check(&ctx, &f, incoming.as_deref()) {
+                        Some(header) => {
+                            mws_core::trace_header::scope_sync(Some(header), || self.enqueue(&ctx, &f, payload));
+                        }
+                        None => {
+                            let lambda = self.clone();
+                            tokio::spawn(async move { lambda.drop_recursive_event(&ctx, &f, &payload).await });
+                        }
+                    }
+                } else {
+                    self.enqueue(ctx, &f, payload);
+                }
                 Ok(types::InvocationResponse { status_code: 202, ..Default::default() })
             }
             _ => self.invoke_sync(ctx, &f, payload, client_context, input.log_type.as_deref() == Some("Tail")).await,

@@ -9,7 +9,8 @@
 //! The window is measured on the emulated clock (`RequestContext::received_at`),
 //! so advancing the clock settles pending work at once. It defaults to
 //! [`DEFAULT_DELAY_MS`] and is set with `MWS_ASYNC_DELAY_MS` (`0` makes such
-//! work complete inside the call that starts it).
+//! work complete inside the call that starts it, here and in every
+//! service-specific window that goes through [`window`]).
 
 use std::sync::atomic::{AtomicI64, Ordering};
 
@@ -38,6 +39,33 @@ pub fn delay() -> Duration {
 /// Override the settle window for this process (tests, embedders).
 pub fn set_delay(delay: Duration) {
     DELAY_MS.store(delay.num_milliseconds().max(0), Ordering::Relaxed);
+}
+
+/// Whether pending windows are switched off (`MWS_ASYNC_DELAY_MS=0`).
+pub fn instant() -> bool {
+    delay().is_zero()
+}
+
+/// A service's own transition time: `default`, or nothing when
+/// `MWS_ASYNC_DELAY_MS=0` switches every pending window off. Services with
+/// a longer, service-specific window (EC2 instance states, Lambda function
+/// states, EKS clusters, Kinesis streams, ...) use this so the one setting
+/// makes all of MWS settle at once.
+pub fn window(default: std::time::Duration) -> std::time::Duration {
+    if instant() {
+        std::time::Duration::ZERO
+    } else {
+        default
+    }
+}
+
+/// [`window`] in milliseconds.
+pub fn window_ms(default_ms: i64) -> i64 {
+    if instant() {
+        0
+    } else {
+        default_ms
+    }
 }
 
 /// When work started at `since` is done.

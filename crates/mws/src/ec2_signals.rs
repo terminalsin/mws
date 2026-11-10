@@ -11,7 +11,8 @@ use mws_events::{Events, ServiceEvent};
 use serde_json::json;
 
 /// How long a metadata-backend instance takes to finish a transition
-/// (`MWS_EC2_TRANSITION_MS`, milliseconds; `0` settles at once).
+/// (`MWS_EC2_TRANSITION_MS`, milliseconds; `0` settles at once, as does
+/// `MWS_ASYNC_DELAY_MS=0` when this is unset).
 const DEFAULT_TRANSITION_MS: u64 = 1000;
 
 /// Wire EC2's events and metrics. The returned observer tells EC2 the
@@ -26,8 +27,9 @@ pub(crate) fn wire(ec2: &Ec2, events: &Events, cloudwatch: &CloudWatch) -> Arc<d
                 None
             })
         })
-        .unwrap_or(DEFAULT_TRANSITION_MS);
-    ec2.set_transition_delay(std::time::Duration::from_millis(ms));
+        .map(std::time::Duration::from_millis)
+        .unwrap_or_else(|| mws_core::settle::window(std::time::Duration::from_millis(DEFAULT_TRANSITION_MS)));
+    ec2.set_transition_delay(ms);
     ec2.set_state_change_sink(Arc::new(StateChanges(events.clone())));
     ec2.set_metric_sink(Arc::new(Metrics(cloudwatch.clone())));
     Arc::new(Clock(ec2.clone()))

@@ -30,7 +30,8 @@ async fn advance(mws: &Mws, seconds: i64) {
     assert_eq!(status, 200, "{body}");
 }
 
-/// `aws.guardduty` events from the default bus, delivered to SQS.
+/// `GuardDuty Finding` events from the default bus, delivered to SQS (not
+/// the `AWS API Call via CloudTrail` events GuardDuty calls also send).
 struct Inbox {
     sqs: aws_sdk_sqs::Client,
     url: String,
@@ -57,7 +58,12 @@ impl Inbox {
             .send()
             .await
             .unwrap();
-        eb.put_rule().name(name).event_pattern(r#"{"source":["aws.guardduty"]}"#).send().await.unwrap();
+        eb.put_rule()
+            .name(name)
+            .event_pattern(r#"{"source":["aws.guardduty"],"detail-type":["GuardDuty Finding"]}"#)
+            .send()
+            .await
+            .unwrap();
         eb.put_targets()
             .rule(name)
             .targets(aws_sdk_eventbridge::types::Target::builder().id("q").arn(&arn).build().unwrap())
@@ -276,7 +282,8 @@ async fn suspicious_api_calls_become_findings() {
     assert_eq!(bpa.title(), Some("Amazon S3 Block Public Access was disabled for S3 bucket gd-open."));
 
     // New findings reach EventBridge within five minutes, not at once.
-    assert!(inbox.drain(Duration::from_secs(2)).await.is_empty());
+    let early = inbox.drain(Duration::from_secs(2)).await;
+    assert!(early.is_empty(), "{early:?}");
     advance(&mws, 301).await;
     let mut events = Vec::new();
     let deadline = Instant::now() + Duration::from_secs(10);
@@ -296,7 +303,8 @@ async fn suspicious_api_calls_become_findings() {
     let after = findings(&gd, &id).await;
     let trail = &after["Stealth:IAMUser/CloudTrailLoggingDisabled"];
     assert_eq!(trail.service().unwrap().count(), before.map(|c| c + 1));
-    assert!(inbox.drain(Duration::from_secs(2)).await.is_empty());
+    let early = inbox.drain(Duration::from_secs(2)).await;
+    assert!(early.is_empty(), "{early:?}");
     advance(&mws, 15 * 60).await;
     let mut updates = Vec::new();
     let deadline = Instant::now() + Duration::from_secs(10);

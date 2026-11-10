@@ -107,3 +107,25 @@ export async function ensureOrganization() {
     if ((e as { name?: string }).name !== "AlreadyInOrganizationException") throw e;
   }
 }
+
+/** Wait until `status()` returns `want`, moving MWS's emulated clock on
+ * while waiting (EKS clusters, node groups and other slow resources take
+ * minutes on it, as on AWS), then put the clock back. Resources stay settled
+ * once a read has seen them settle, so other specs sharing MWS are not
+ * affected. */
+export async function settleWithClock(status: () => Promise<string | undefined>, want: string, stepSeconds = 30) {
+  const clock = async (body?: object) =>
+    (await (await fetch(`${sdk.endpoint}/_mws/clock`, body ? { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) } : {})).json()) as { offsetSeconds: number };
+  const before = (await clock()).offsetSeconds;
+  try {
+    await expect
+      .poll(async () => {
+        const now = await status();
+        if (now !== want) await clock({ advanceSeconds: stepSeconds });
+        return now;
+      }, { timeout: 60_000 })
+      .toBe(want);
+  } finally {
+    await clock({ offsetSeconds: before });
+  }
+}

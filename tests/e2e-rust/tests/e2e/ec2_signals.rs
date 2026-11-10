@@ -158,7 +158,10 @@ async fn points(
     stat: &str,
 ) -> Vec<(i64, f64)> {
     for _ in 0..100 {
-        let now = SystemTime::now();
+        // Datapoints are aligned to the start time, so start on an hour
+        // boundary (as AWS recommends) to get period-aligned timestamps.
+        let secs = SystemTime::now().duration_since(SystemTime::UNIX_EPOCH).unwrap().as_secs();
+        let now = SystemTime::UNIX_EPOCH + Duration::from_secs(secs - secs % 3600);
         let mut metric = Metric::builder().namespace("AWS/EC2").metric_name(name);
         for d in dims {
             metric = metric.dimensions(d.clone());
@@ -172,7 +175,7 @@ async fn points(
                     .build(),
             )
             .start_time((now - Duration::from_secs(7200)).into())
-            .end_time((now + Duration::from_secs(3600)).into())
+            .end_time((now + Duration::from_secs(7200)).into())
             .send()
             .await
             .unwrap();

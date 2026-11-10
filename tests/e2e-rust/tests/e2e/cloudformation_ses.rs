@@ -83,7 +83,7 @@ Resources:
     Properties:
       EmailIdentity: example.com
       ConfigurationSetAttributes: {ConfigurationSetName: !Ref ConfigSet}
-      FeedbackAttributes: {EmailForwardingEnabled: false}
+      FeedbackAttributes: {EmailForwardingEnabled: true}
       MailFromAttributes: {MailFromDomain: mail.example.com, BehaviorOnMxFailure: USE_DEFAULT_VALUE}
   Welcome:
     Type: AWS::SES::Template
@@ -173,7 +173,8 @@ async fn ses_resources_deploy_update_and_delete() {
     // Email identity with its attributes and DKIM tokens.
     let id = v2.get_email_identity().email_identity("example.com").send().await.unwrap();
     assert_eq!(id.configuration_set_name(), Some("marketing"));
-    assert!(!id.feedback_forwarding_status());
+    // (Disabling it needs bounce and complaint topics first.)
+    assert!(id.feedback_forwarding_status());
     assert_eq!(id.mail_from_attributes().unwrap().mail_from_domain(), "mail.example.com");
     let token = id.dkim_attributes().unwrap().tokens()[0].clone();
     assert_eq!(output(&stack, "DkimName"), format!("{token}._domainkey.example.com"));

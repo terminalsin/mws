@@ -13,7 +13,7 @@ use crate::names::{
     stream_arn, valid_name, validate_tags, StreamRef,
 };
 use crate::shards::{new_shard, rescale, sequence_number, uniform_ranges};
-use crate::state::{State, Stream, TRANSITION_MS};
+use crate::state::{transition_ms, State, Stream};
 use crate::Kinesis;
 
 const MIN_RETENTION: i32 = 24;
@@ -95,7 +95,7 @@ fn decode_token(token: &str) -> Option<Vec<String>> {
 
 fn transition(s: &mut Stream, status: &str, now: i64) {
     s.status = status.to_string();
-    s.settles_at = now + TRANSITION_MS;
+    s.settles_at = now + transition_ms();
 }
 
 /// The stream must be in a state that accepts configuration changes.
@@ -177,7 +177,7 @@ impl Kinesis {
             region: ctx.region.clone(),
             created_at: now,
             status: "CREATING".into(),
-            settles_at: now + TRANSITION_MS,
+            settles_at: now + transition_ms(),
             mode,
             retention_hours: MIN_RETENTION,
             encryption_type: "NONE".into(),

@@ -8,7 +8,7 @@ use mws_core::{ConditionContext, RequestContext, ServiceError};
 use crate::generated::{errors, types};
 use crate::ips::Cidr;
 use crate::names::{account, authorize, invalid, now_ms, page, time};
-use crate::state::{ByoipCidr, State, TRANSITION_MS};
+use crate::state::{transition_ms, ByoipCidr, State};
 use crate::GlobalAccelerator;
 
 fn describe(c: &ByoipCidr) -> types::ByoipCidr {
@@ -71,7 +71,7 @@ impl GlobalAccelerator {
         let c = st.byoip.get_mut(&k).expect("range present");
         c.state = pending.into();
         c.pending = Some(to.into());
-        c.settles_at = now + TRANSITION_MS;
+        c.settles_at = now + transition_ms();
         Ok(describe(c))
     }
 
@@ -117,7 +117,7 @@ impl GlobalAccelerator {
             seq,
             state: "PENDING_PROVISIONING".into(),
             pending: Some("READY".into()),
-            settles_at: now + TRANSITION_MS,
+            settles_at: now + transition_ms(),
             events: Vec::new(),
         };
         let out = describe(&c);

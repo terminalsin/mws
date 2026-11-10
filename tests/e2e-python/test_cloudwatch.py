@@ -174,9 +174,11 @@ def test_alarm_actions_reach_sns_and_sqs(cbor, endpoint, session_for):
             time.sleep(0.1)
         else:
             pytest.fail("the alarm never fired")
+        # The notification was sent at the advanced time, so read it before
+        # the clock goes back (a message isn't visible before it was sent).
+        msgs = sqs.receive_message(QueueUrl=queue, WaitTimeSeconds=5)["Messages"]
     finally:
         clock(endpoint, {"offsetSeconds": before})
-    msgs = sqs.receive_message(QueueUrl=queue, WaitTimeSeconds=5)["Messages"]
     body = json.loads(msgs[0]["Body"])
     assert body["AlarmName"] == name
     assert body["NewStateValue"] == "ALARM"

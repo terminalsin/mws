@@ -241,8 +241,9 @@ fn expand_loop(key: &str, val: Value, p: &Processor<'_>) -> Result<Vec<(String, 
     Ok(out)
 }
 
-/// Replace a loop identifier: `{"Ref": id}`, `${id}` in `Fn::Sub` strings,
-/// and `${id}` / `&{id}` (alphanumeric characters only) in keys.
+/// Replace a loop identifier: `{"Ref": id}`, and `${id}` / `&{id}`
+/// (alphanumeric characters only) in keys and strings, as in
+/// `!Ref "Queue&{Name}"` or `!Sub "q-${Name}"`.
 fn substitute(v: &mut Value, id: &str, item: &str) {
     let dollar = format!("${{{id}}}");
     let amp = format!("&{{{id}}}");
@@ -252,17 +253,6 @@ fn substitute(v: &mut Value, id: &str, item: &str) {
             if o.len() == 1 && o.get("Ref").and_then(Value::as_str) == Some(id) {
                 *v = Value::String(item.to_string());
                 return;
-            }
-            if let Some(sub) = o.get_mut("Fn::Sub") {
-                match sub {
-                    Value::String(s) => *s = s.replace(&dollar, item),
-                    Value::Array(a) => {
-                        if let Some(Value::String(s)) = a.first_mut() {
-                            *s = s.replace(&dollar, item);
-                        }
-                    }
-                    _ => {}
-                }
             }
             let renamed: Map<String, Value> = std::mem::take(o)
                 .into_iter()
@@ -274,6 +264,7 @@ fn substitute(v: &mut Value, id: &str, item: &str) {
             *o = renamed;
         }
         Value::Array(a) => a.iter_mut().for_each(|x| substitute(x, id, item)),
+        Value::String(s) => *s = s.replace(&dollar, item).replace(&amp, &alnum),
         _ => {}
     }
 }

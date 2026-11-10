@@ -1,8 +1,9 @@
 //! Work CloudWatch Logs does after the call that asked for it returns:
 //! Logs Insights queries (`Scheduled` → `Running` → `Complete`), export
 //! tasks (`PENDING` → `RUNNING` → `COMPLETED`) and import tasks
-//! (`IN_PROGRESS` → `COMPLETED`). Each runs in its own task, a fraction of
-//! a second of real time per step, and times out against the emulated
+//! (`IN_PROGRESS` → `COMPLETED`). Each runs in its own task, taking a
+//! few seconds of real time in all (long enough that concurrency limits
+//! hold while a client starts many), and times out against the emulated
 //! clock.
 
 use std::time::Duration;
@@ -10,13 +11,13 @@ use std::time::Duration;
 use crate::Logs;
 
 /// How long a query stays `Scheduled`, then `Running`.
-const QUERY_SCHEDULED: Duration = Duration::from_millis(150);
-const QUERY_RUNNING: Duration = Duration::from_millis(450);
+const QUERY_SCHEDULED: Duration = Duration::from_millis(500);
+const QUERY_RUNNING: Duration = Duration::from_millis(3000);
 /// Logs Insights stops queries after 60 minutes.
 const QUERY_TIMEOUT_MS: i64 = 60 * 60_000;
 /// How long an export task stays `PENDING`, then `RUNNING`.
-const EXPORT_PENDING: Duration = Duration::from_millis(150);
-const EXPORT_RUNNING: Duration = Duration::from_millis(300);
+const EXPORT_PENDING: Duration = Duration::from_millis(1000);
+const EXPORT_RUNNING: Duration = Duration::from_millis(1000);
 /// How long an import waits before it copies events.
 const IMPORT_DELAY: Duration = Duration::from_millis(200);
 

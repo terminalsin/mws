@@ -164,16 +164,26 @@ fn output(outputs: &[Output], key: &str) -> String {
         .to_string()
 }
 
-async fn settle(cfn: &Client, stack: &str) -> aws_sdk_cloudformation::types::Stack {
+/// Wait for a stack to settle. EKS clusters and node groups take minutes
+/// (on the emulated clock), so move the clock on while waiting.
+async fn settle(mws: &Mws, cfn: &Client, stack: &str) -> aws_sdk_cloudformation::types::Stack {
     for _ in 0..1200 {
         let out = cfn.describe_stacks().stack_name(stack).send().await.unwrap();
         let s = out.stacks()[0].clone();
         if !s.stack_status().unwrap().as_str().ends_with("_IN_PROGRESS") {
             return s;
         }
+        mws.control("POST", "/_mws/clock", Some(r#"{"advanceSeconds": 10}"#)).await;
         tokio::time::sleep(Duration::from_millis(100)).await;
     }
-    panic!("stack {stack} did not settle");
+    let resources = cfn.describe_stack_resources().stack_name(stack).send().await.unwrap();
+    let pending: Vec<_> = resources
+        .stack_resources()
+        .iter()
+        .filter(|r| r.resource_status().is_some_and(|s| s.as_str().ends_with("_IN_PROGRESS")))
+        .map(|r| r.logical_resource_id().unwrap_or_default().to_string())
+        .collect();
+    panic!("stack {stack} did not settle: {pending:?}");
 }
 
 async fn failures(cfn: &Client, stack: &str) -> Vec<String> {
@@ -224,7 +234,7 @@ async fn clusters_groups_and_security_services_deploy_update_and_delete() {
         .send()
         .await
         .unwrap();
-    let stack = settle(&cfn, "compute").await;
+    let stack = settle(&mws, &cfn, "compute").await;
     assert_eq!(stack.stack_status(), Some(&StackStatus::CreateComplete), "{:?}", failures(&cfn, "compute").await);
     let outs = stack.outputs().to_vec();
 
@@ -312,7 +322,7 @@ async fn clusters_groups_and_security_services_deploy_update_and_delete() {
         .send()
         .await
         .unwrap();
-    let stack = settle(&cfn, "compute").await;
+    let stack = settle(&mws, &cfn, "compute").await;
     assert_eq!(stack.stack_status(), Some(&StackStatus::UpdateComplete), "{:?}", failures(&cfn, "compute").await);
     assert_eq!(output(stack.outputs(), "ClusterName"), name);
     assert_eq!(output(stack.outputs(), "GroupName"), group);
@@ -324,9 +334,11 @@ async fn clusters_groups_and_security_services_deploy_update_and_delete() {
     assert_eq!(d.finding_publishing_frequency().map(|f| f.as_str()), Some("ONE_HOUR"));
 
     // Delete: everything is gone.
+    // A deleted stack is found by its id only, as on AWS.
+    let id = stack.stack_id().unwrap().to_string();
     cfn.delete_stack().stack_name("compute").send().await.unwrap();
-    let stack = settle(&cfn, "compute").await;
-    assert_eq!(stack.stack_status(), Some(&StackStatus::DeleteComplete), "{:?}", failures(&cfn, "compute").await);
+    let stack = settle(&mws, &cfn, &id).await;
+    assert_eq!(stack.stack_status(), Some(&StackStatus::DeleteComplete), "{:?}", failures(&cfn, &id).await);
     let e = eks.describe_cluster().name(&name).send().await.unwrap_err();
     assert_eq!(e.into_service_error().meta().code(), Some("ResourceNotFoundException"));
     let g = asg.describe_auto_scaling_groups().auto_scaling_group_names(&group).send().await.unwrap();

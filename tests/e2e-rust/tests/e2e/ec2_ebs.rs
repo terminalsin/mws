@@ -477,6 +477,7 @@ async fn account_settings_instance_snapshots_and_root_replacement() {
         .await
         .unwrap();
     let instance = run.instances()[0].instance_id().unwrap().to_string();
+    crate::ec2::wait_state(&ec2, &instance, aws_sdk_ec2::types::InstanceStateName::Running).await;
     let data = volume(&ec2, 5).await;
     ec2.attach_volume().volume_id(&data).instance_id(&instance).device("/dev/sdf").send().await.unwrap();
     let snaps = ec2

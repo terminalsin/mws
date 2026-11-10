@@ -101,7 +101,7 @@ test("RAM: principals with their status, editing a share, permissions and versio
   await expect(row(page, "team")).toHaveCount(0);
 
   // The CA's default AWS managed permission is attached, and its page shows the policy.
-  await page.getByRole("link", { name: /Managed permissions/ }).click();
+  await page.getByRole("main").getByRole("link", { name: /Managed permissions/ }).click();
   const perm = page.locator("li.row").first();
   await expect(perm).toContainText("acm-pca");
   await perm.getByRole("link").first().click();

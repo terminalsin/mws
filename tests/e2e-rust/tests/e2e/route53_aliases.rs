@@ -184,15 +184,14 @@ async fn aliases_to_s3_websites_other_zones_and_unchecked_services() {
         "{err}"
     );
 
-    // Records in another of the account's zones.
-    create(&r53, &z, alias("x.site.example", &other, "www.other.example", false).build().unwrap()).await.unwrap();
-    assert_eq!(answer(&r53, &z, "x.site.example").await, ["192.0.2.9"]);
-    let err = create(&r53, &z, alias("y.site.example", &other, "missing.other.example", false).build().unwrap())
+    // An alias can't reference a record in another hosted zone, even one
+    // of the account's own.
+    let err = create(&r53, &z, alias("x.site.example", &other, "www.other.example", false).build().unwrap())
         .await
         .unwrap_err();
     assert!(
         err.contains(&format!(
-            "Tried to create an alias that targets missing.other.example., type A in zone {other}, but that target was not found"
+            "Tried to create an alias that targets www.other.example., type A in zone {other}, but that target was not found"
         )),
         "{err}"
     );

@@ -274,16 +274,17 @@ fn validate_group(group: &[&types::ResourceRecordSet], new: &BTreeSet<crate::sta
 
 /// Where an alias may point besides its own zone.
 pub(crate) struct AliasTargets<'a> {
-    /// The caller's other hosted zones, by id.
+    /// The caller's other hosted zones, by id (aliases into them are
+    /// rejected).
     pub zones: &'a dyn Fn(&str) -> Option<&'a Zone>,
     /// Targets in other services' hosted zones (load balancers, S3 website
     /// endpoints, ...); `None` when nothing knows the zone.
     pub external: &'a dyn Fn(&str, &str, &str) -> Option<crate::AliasTargetCheck>,
 }
 
-/// An alias needs its target to exist: a record in the same zone (or
-/// another of the caller's zones), or an AWS resource in its service's
-/// hosted zone. Targets in hosted zones nothing knows (CloudFront, API
+/// An alias needs its target to exist: a record in the same zone, or an
+/// AWS resource in its service's hosted zone. A record in another of the
+/// caller's zones is never a valid target. Targets in hosted zones nothing knows (CloudFront, API
 /// Gateway, ...) go unchecked.
 fn validate_alias(
     rr: &types::ResourceRecordSet,
@@ -312,8 +313,9 @@ fn validate_alias(
             if !names::in_zone(&target, &other.name) {
                 return Some(outside(&other.id));
             }
-            let exists = other.records.values().any(|r| r.name == target && r.r#type == rr.r#type);
-            return (!exists).then(|| not_found(&other.id));
+            // An alias can only reference records in its own hosted zone;
+            // Route 53 does not look into the other zone.
+            return Some(not_found(&other.id));
         }
         return match (targets.external)(target_zone_id, &alias.dns_name, &rr.r#type)? {
             crate::AliasTargetCheck::Found => None,

@@ -174,7 +174,7 @@ impl CloudFormation {
     /// Learn the emulated clock from a request.
     pub(crate) fn observe_clock(&self, ctx: &RequestContext) {
         let offset = (ctx.received_at - chrono::Utc::now()).num_milliseconds().max(0);
-        self.inner.clock_ms.fetch_max(offset, std::sync::atomic::Ordering::Relaxed);
+        self.inner.clock_ms.store(offset, std::sync::atomic::Ordering::Relaxed);
     }
 
     /// The emulated clock's current time, as far as requests have told.

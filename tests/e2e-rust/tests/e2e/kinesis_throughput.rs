@@ -64,11 +64,12 @@ async fn writes_above_a_mebibyte_per_second_throttle_per_shard() {
     provisioned(&k, "hot", 2).await;
     // Twenty 100 KiB records on one partition key: about 2 MiB on one
     // shard, twice what it takes in a second.
+    // ("hotkey" hashes into the first shard's half of the key space.)
     let data = vec![b'x'; 100 * 1024];
     let mut batch = k.put_records().stream_name("hot");
     for _ in 0..20 {
         batch = batch.records(
-            PutRecordsRequestEntry::builder().partition_key("hot-key").data(Blob::new(data.clone())).build().unwrap(),
+            PutRecordsRequestEntry::builder().partition_key("hotkey").data(Blob::new(data.clone())).build().unwrap(),
         );
     }
     let out = batch.send().await.unwrap();
@@ -89,7 +90,7 @@ async fn writes_above_a_mebibyte_per_second_throttle_per_shard() {
     let e = k
         .put_record()
         .stream_name("hot")
-        .partition_key("hot-key")
+        .partition_key("hotkey")
         .data(Blob::new(half.clone()))
         .send()
         .await
@@ -109,7 +110,7 @@ async fn writes_above_a_mebibyte_per_second_throttle_per_shard() {
     assert_eq!(other.shard_id(), "shardId-000000000001");
     // A second later the shard accepts writes again: retrying works.
     tokio::time::sleep(Duration::from_millis(1100)).await;
-    k.put_record().stream_name("hot").partition_key("hot-key").data(Blob::new(half)).send().await.unwrap();
+    k.put_record().stream_name("hot").partition_key("hotkey").data(Blob::new(half)).send().await.unwrap();
 
     let throttled = failed.len() as f64 + 1.0;
     assert_eq!(sum(&cw, "WriteProvisionedThroughputExceeded", "hot").await, throttled);

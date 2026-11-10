@@ -16,7 +16,7 @@ MWS is configured entirely through environment variables. All are optional.
 | `MWS_ACCOUNT_ID` | `123456789012` | The id of the account MWS starts with. |
 | `MWS_ROOT_ACCESS_KEY_ID` | `AKIAMWSROOTEXAMPLE00` | Access key id of that account's root user. |
 | `MWS_ROOT_SECRET_ACCESS_KEY` | `mwsRootSecretAccessKeyEXAMPLEKEY00000000` | Its secret access key. |
-| `MWS_ASYNC_DELAY_MS` | `500` | How long work that AWS does asynchronously stays pending on the emulated clock: S3 replication, Private CA issuance and CA creation, ACM private certificates and DNS validation records, KMS replica keys, Secrets Manager replicas and forced deletions. Code that skips the SDK waiters fails here as it would on AWS. `0` completes such work inside the call that starts it. |
+| `MWS_ASYNC_DELAY_MS` | `500` | How long work that AWS does asynchronously stays pending on the emulated clock: S3 replication, Private CA issuance and CA creation, ACM private certificates and DNS validation records, KMS replica keys, Secrets Manager replicas and forced deletions. Code that skips the SDK waiters fails here as it would on AWS. `0` completes such work inside the call that starts it, and also switches off the service-specific windows below (EC2 instance transitions, Lambda function states, EKS, EFS, Kinesis, Firehose and Global Accelerator transitions) unless their own variable is set. |
 | `MWS_SKIP_FEDERATION_SIGNATURE_VERIFICATION` | unset | `1` accepts web identity tokens and SAML responses without checking their signatures, for test suites that hand-craft them. By default signatures are verified as AWS verifies them. |
 
 ## State
@@ -39,10 +39,11 @@ See [State, scenarios and snapshots](state.md) for how the two interact.
 | `MWS_LAMBDA_DOCKER_CODE` | `copy` when MWS runs in a container or `DOCKER_HOST` names a remote daemon, else `mount` | How a `.zip` function's code and layers reach its container. `mount` bind-mounts MWS's extracted directories (the daemon must see MWS's file system); `copy` copies them into an image per package (`docker create`, `docker cp`, `docker commit`, tagged `mws-lambda-package:<hash>`). |
 | `MWS_LAMBDA_PYTHON` | `python3.x`, then `python3` from `PATH` | Interpreter that runs Python Lambda functions as local processes. |
 | `MWS_LAMBDA_NODE` | `node` from `PATH` | Interpreter that runs Node.js Lambda functions as local processes. |
+| `MWS_LAMBDA_STATE_TRANSITION_MS` | `1000` | How long a new function stays `Pending` and an update `InProgress`, in milliseconds (`0` settles at once; unset follows `MWS_ASYNC_DELAY_MS=0`). |
 | `MWS_LAMBDA_DOCKER` | `docker` | The Docker-compatible CLI that runs Lambda containers (for example `podman`). |
 | `MWS_EC2_BACKEND` | `auto` | How EC2 instances run. `docker` runs each instance as a container, `metadata` runs nothing (instances only change state), and `auto` uses Docker when a daemon answers and `metadata` otherwise. `auto` keeps checking in the background, so a daemon started after MWS (Docker Desktop, colima, OrbStack) is picked up for later launches. |
 | `MWS_EC2_DOCKER` | `docker` | The Docker-compatible CLI the EC2 backend drives (for example `podman`). |
-| `MWS_EC2_TRANSITION_MS` | `1000` | With the metadata backend, how long instances stay `pending`, `stopping` and `shutting-down` before settling, in milliseconds (`0` settles at once). |
+| `MWS_EC2_TRANSITION_MS` | `1000` | With the metadata backend, how long instances stay `pending`, `stopping` and `shutting-down` before settling, in milliseconds (`0` settles at once; unset follows `MWS_ASYNC_DELAY_MS=0`). |
 | `MWS_QUOTA_PROFILE` | `established` | Which [Service Quotas](services/servicequotas.md) values accounts start with. `established` uses AWS's defaults except EC2 vCPU quotas of 1152 per instance class, so many instances can run without increases; `new-account` uses AWS's exact new-account defaults (5 standard vCPUs). |
 | `MWS_EC2_FIREWALL` | `on` | With the Docker backend, whether security groups, network ACLs and route tables filter instances' traffic (`off` leaves it unfiltered). |
 | `MWS_EC2_NETFILTER_IMAGE` | `rancher/klipper-lb:v0.4.13` | The helper image (any image with `/bin/sh` and `iptables-restore`) that writes instances' firewall rules into their network namespaces. |

@@ -173,7 +173,9 @@ impl Cx<'_> {
     /// Call another service's operation as the stack's identity.
     pub async fn call(&self, service: &str, operation: &str, input: Value) -> HResult<Value> {
         let mut ctx = self.ctx.clone();
-        ctx.received_at = chrono::Utc::now() + self.offset;
+        // The clock as it is now (it may have moved since the deployment
+        // started), so services settle work that is due.
+        ctx.received_at = (chrono::Utc::now() + self.offset).max(self.cfn.now());
         self.cfn.call(&ctx, service, operation, input).await.map_err(|e| HandlerError::from_service(service, &e))
     }
 

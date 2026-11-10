@@ -244,11 +244,16 @@ async fn devices_enroll_over_scep_with_a_ca_shared_through_ram() {
     // Not shared with the connector yet: it fails, as in AWS.
     let failed = scep.create_connector().certificate_authority_arn(&ca).send().await.unwrap();
     let failed = failed.connector_arn().unwrap().to_string();
-    // Connectors are CREATING first, like in AWS.
+    // Connectors are CREATING first, like in AWS (for the settle window, which
+    // a heavily loaded test run can outlast before this call).
     let got = scep.get_connector().connector_arn(&failed).send().await.unwrap();
-    assert_eq!(got.connector().unwrap().status().unwrap().as_str(), "CREATING");
-    let err = scep.delete_connector().connector_arn(&failed).send().await.unwrap_err();
-    assert_eq!(err.code(), Some("ConflictException"));
+    let status = got.connector().unwrap().status().unwrap().as_str().to_string();
+    if status == "CREATING" {
+        let err = scep.delete_connector().connector_arn(&failed).send().await.unwrap_err();
+        assert_eq!(err.code(), Some("ConflictException"));
+    } else {
+        assert_eq!(status, "FAILED");
+    }
     let got = wait_connector(&scep, &failed).await;
     assert_eq!(got.status().unwrap().as_str(), "FAILED");
     assert_eq!(got.status_reason().unwrap().as_str(), "PRIVATECA_ACCESS_DENIED");

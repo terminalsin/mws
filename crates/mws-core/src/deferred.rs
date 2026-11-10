@@ -31,7 +31,9 @@ pub fn defer<F>(job: F)
 where
     F: Future<Output = ()> + Send + 'static,
 {
-    let mut job: Option<Job> = Some(Box::pin(job));
+    // The job carries the request's trace header (X-Ray, Lambda's
+    // recursion `Lineage`) to the call it makes.
+    let mut job: Option<Job> = Some(Box::pin(crate::trace_header::propagate(job)));
     let _ = PENDING.try_with(|q| {
         if let Ok(mut q) = q.lock() {
             q.extend(job.take());

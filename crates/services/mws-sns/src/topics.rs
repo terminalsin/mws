@@ -196,6 +196,13 @@ impl Sns {
         for t in tags {
             extra.entry(format!("aws:ResourceTag/{}", t.key)).or_insert_with(|| vec![t.value]);
         }
+        // CloudWatch alarms and SES publish with the legacy `aws:SourceOwner`
+        // key (the source's account), which the default topic policy admits,
+        // so they reach their owner's topics without a policy change. Other
+        // services (EventBridge, S3) need the topic policy to allow them.
+        if matches!(ctx.caller.service_principal(), Some("cloudwatch.amazonaws.com" | "ses.amazonaws.com")) {
+            extra.entry("aws:SourceOwner".to_string()).or_insert_with(|| vec![ctx.caller.account_id.clone()]);
+        }
         ctx.authorize_with_resource_policy(action, topic_arn, policy.as_deref(), extra)
     }
 

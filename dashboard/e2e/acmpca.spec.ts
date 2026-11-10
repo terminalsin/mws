@@ -142,6 +142,11 @@ test("Private CA: an ECDSA root signs a subordinate, authorizes ACM and backs a 
   await page.goto("/pca/connectors");
   await submit(page, "create-connector", { ca: subArn });
   await expect(page).toHaveURL(/\/pca\/connector\?arn=/);
+  // A new connector is CREATING for a moment, as in AWS; challenges need it ACTIVE.
+  await expect(async () => {
+    await page.reload();
+    await expect(page.getByRole("definition").filter({ hasText: /^active$/ })).toBeVisible({ timeout: 1000 });
+  }).toPass();
   await page.getByTestId("create-challenge").locator('button[type="submit"]').click();
   await expect(page.getByTestId("challenge-password")).not.toBeEmpty();
 });

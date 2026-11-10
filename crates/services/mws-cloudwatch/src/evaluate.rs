@@ -642,7 +642,7 @@ impl CloudWatch {
     fn run_action(&self, ctx: &RequestContext, t: &Transition, action: &str) -> Result<(), String> {
         let service = action.split(':').nth(2).unwrap_or_default();
         match service {
-            "ssm" if action.split(':').nth(5).is_some_and(|r| r.starts_with("opsitem:")) => {
+            "ssm" if action.splitn(6, ':').nth(5).is_some_and(|r| r.starts_with("opsitem:")) => {
                 let sink = self.inner.ops_items.get().ok_or("Systems Manager is not available")?;
                 sink.create(ops_item(ctx, t, action)?).map(|_| ())
             }
