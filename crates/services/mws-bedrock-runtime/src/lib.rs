@@ -18,7 +18,8 @@
 //! (`GET`, `PUT /{name}`, `DELETE /{name}`, `PUT {"default": name}`) and
 //! `GET /_aws/bedrock/providers/route?modelId=...` says who answers a model
 //! and `GET /_aws/bedrock/local` which local CLIs (Claude Code,
-//! Codex, Ollama, LM Studio) are installed where MWS runs.
+//! Codex, Ollama, LM Studio) are installed where MWS runs, or on the host
+//! through the CLI bridge.
 
 #[allow(clippy::all, dead_code, unused_imports, non_snake_case, non_camel_case_types)]
 pub mod generated {
@@ -1075,9 +1076,6 @@ impl BedrockRuntime {
         if let Some(rest) = path.trim_end_matches('/').strip_prefix("/_aws/bedrock/providers") {
             return self.providers_endpoint(request, rest.trim_start_matches('/'));
         }
-        if path.trim_end_matches('/') == "/_aws/bedrock/local" {
-            return json_response(200, crate::cli::detect());
-        }
         if path.trim_end_matches('/') != "/_aws/bedrock/responses" {
             return json_response(404, json!({"message": format!("No MWS Bedrock endpoint at {path}.")}));
         }
@@ -1247,6 +1245,9 @@ impl Service for BedrockRuntime {
     }
 
     async fn handle(&self, ctx: RequestContext, request: HttpRequest) -> HttpResponse {
+        if request.uri().path().trim_end_matches('/') == "/_aws/bedrock/local" {
+            return json_response(200, crate::cli::describe_local().await);
+        }
         if request.uri().path().starts_with(SIDE_CHANNEL) {
             return self.side_channel(&request);
         }

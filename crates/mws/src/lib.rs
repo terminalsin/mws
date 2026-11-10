@@ -25,6 +25,7 @@ use mws_acmpca::PrivateCa;
 use mws_amplify::Amplify;
 use mws_autoscaling::AutoScaling;
 use mws_bedrock::Bedrock;
+pub use mws_bedrock_runtime::cli as bedrock_cli;
 use mws_bedrock_runtime::BedrockRuntime;
 pub use mws_bedrock_runtime::{ProviderConfig as BedrockProviderConfig, Providers as BedrockProviders};
 use mws_ce::CostExplorer;

@@ -74,5 +74,13 @@ function portOf(url: string | undefined) {
   }
 }
 
-/** Which local tools `GET /_aws/bedrock/local` found. */
-export type Local = Record<string, { found: boolean; command: string; path?: string }>;
+/** What `GET /_aws/bedrock/local` says: the local tools found (here, or on
+ * the host through the CLI bridge), whether MWS runs in a container, and
+ * the bridge it was given. */
+export interface Local {
+  tools: Record<string, { found: boolean; command: string; path?: string; via?: "bridge" }>;
+  container: boolean;
+  bridge: { url: string; reachable: boolean } | null;
+}
+
+export const NO_LOCAL: Local = { tools: {}, container: false, bridge: null };

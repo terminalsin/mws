@@ -65,6 +65,17 @@ Each provider has an API (`openai` for any OpenAI-compatible chat completions se
 
 `claude-code` and `codex` run the CLI installed where MWS runs (`command`, default `claude` / `codex`, plus extra `args`), once per request, in an empty scratch directory with the CLI's own tools off, using the CLI's existing login. The conversation goes in on stdin as a transcript; Bedrock tools become an instruction to answer with a `{"tool_use": {...}}` JSON object, which comes back as a real tool call. Claude Code gets the system prompt as `--system-prompt` and the Claude model a Bedrock `anthropic.*` id names, unless `model`/`modelMap` say otherwise; Codex uses its configured model unless one is set. Token counts are the CLI's own.
 
+MWS looks for the CLI on its `PATH`, then where the installers put it (`~/.claude/local`, `~/.local/bin`, Homebrew, `/usr/local/bin`, npm, bun, Volta and nvm directories), so it is found even when MWS was started from an IDE or a service manager. `command` may also be a path (`~/` works).
+
+**MWS in a container.** The CLI and its login live on the host, so run the bridge there and point MWS at it:
+
+```sh
+mws bedrock-bridge                       # 127.0.0.1:4599; prints a token
+mws bedrock-bridge --listen 0.0.0.0:4599 # Linux Docker: reachable from containers
+```
+
+Then give MWS `MWS_BEDROCK_CLI_BRIDGE=http://host.docker.internal:4599` and `MWS_BEDROCK_CLI_BRIDGE_TOKEN=<token>` (on Linux, add `--add-host host.docker.internal:host-gateway`), or set one provider's `url` and `apiKey` to the bridge's address and token. The bridge runs only Claude Code and Codex (`MWS_BEDROCK_BRIDGE_CLAUDE` / `MWS_BEDROCK_BRIDGE_CODEX` pick the executables, `MWS_BEDROCK_BRIDGE_TOKEN` fixes the token) and refuses requests without its token.
+
 The console's Add provider sheet starts from presets (Claude Code, Codex, Ollama, LM Studio, vLLM, Anthropic, OpenAI, OpenRouter, Gemini, Mistral, Groq, DeepSeek, xAI, Fireworks, Cerebras, Perplexity) that fill in the API, URL, models and upstream model; local tools MWS found are marked.
 
 Providers come from environment variables (see [configuration](../configuration.md#bedrock)) and from stored settings, which override them field by field and persist with MWS state (`MWS_DB`). The console edits them on Bedrock → Settings. The unsigned endpoint:
@@ -76,10 +87,10 @@ Providers come from environment variables (see [configuration](../configuration.
 | `DELETE /_aws/bedrock/providers/{name}` | Forget the stored settings; any environment settings apply again. |
 | `PUT /_aws/bedrock/providers` | `{"default": "name"}` sets the default provider (`""` returns to the environment's); `{"providers": {...}}` stores several. |
 | `GET /_aws/bedrock/providers/route?modelId=...` | Which provider answers a model, and the upstream model name it would use. |
-| `GET /_aws/bedrock/local` | Which local tools are on MWS's `PATH`: `claude-code`, `codex`, `ollama`, `lmstudio` (`lms`), each `{command, found, path}`. |
+| `GET /_aws/bedrock/local` | `{tools, container, bridge}`: which of `claude-code`, `codex`, `ollama`, `lmstudio` (`lms`) are installed (`{command, found, path}`, `via: "bridge"` when found on the bridge's host), whether MWS runs in a container, and the configured bridge (`{url, reachable}`). |
 
 ## Known gaps
 
-Bidirectional streaming (Nova Sonic), real token counts, enforced model access (Anthropic's use case form, Marketplace subscriptions), Bedrock quota codes (MWS's own; the quota names follow AWS's), passing a real upstream Claude's reasoning signature through (MWS signs reasoning blocks itself), and model-based guardrail detection (guardrail scores come from phrase lists and patterns). Every model is offered in every Region. Invocation logs do not use large data delivery. A revoked API key fails with `UnrecognizedClientException`, not Bedrock's own API key message. The passthrough backends call the provider without streaming and do not use an HTTP proxy. The CLI providers answer text and tool calls only (images and documents are named, not passed), and only when the CLI is installed where MWS runs (not inside the MWS container image).
+Bidirectional streaming (Nova Sonic), real token counts, enforced model access (Anthropic's use case form, Marketplace subscriptions), Bedrock quota codes (MWS's own; the quota names follow AWS's), passing a real upstream Claude's reasoning signature through (MWS signs reasoning blocks itself), and model-based guardrail detection (guardrail scores come from phrase lists and patterns). Every model is offered in every Region. Invocation logs do not use large data delivery. A revoked API key fails with `UnrecognizedClientException`, not Bedrock's own API key message. The passthrough backends call the provider without streaming and do not use an HTTP proxy. The CLI providers answer text and tool calls only (images and documents are named, not passed), and need the CLI where MWS runs or a bridge on the host.
 
 See also: [all services](README.md) · [authentication and authorization](../security.md).

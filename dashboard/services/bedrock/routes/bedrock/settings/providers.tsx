@@ -2,7 +2,7 @@ import { load, mws } from "@mws-dashboard/aws";
 import { ActionForm, AwsIcon, ErrorNotice, List, Pill, Section, Sheet } from "@mws-dashboard/ui";
 import { KeyRound, Pencil, Repeat2, RotateCcw, Server, Star, TriangleAlert } from "lucide-react";
 
-import { providerLogo, type Local } from "../../../lib/presets";
+import { NO_LOCAL, providerLogo, type Local } from "../../../lib/presets";
 import { forgetProvider, saveProvider, setDefaultProvider } from "../actions";
 import { ProviderFields, type ProviderView } from "./fields";
 
@@ -12,12 +12,24 @@ interface Provider extends ProviderView {
 
 /** What a row says about where the provider is: a host, or the CLI. */
 function where(p: Provider) {
-  if (p.kind === "claude-code" || p.kind === "codex") return <code>{p.command}</code>;
+  if (p.kind === "claude-code" || p.kind === "codex") {
+    const host = p.bridge && hostPort(p.bridge);
+    return <code>{host ? `${p.command} @ ${host}` : p.command}</code>;
+  }
   try {
     const u = new URL(p.url ?? "");
     return <code>{u.port ? `${u.hostname}:${u.port}` : u.hostname}</code>;
   } catch {
     return p.url ? <code>{p.url}</code> : undefined;
+  }
+}
+
+function hostPort(url: string) {
+  try {
+    const u = new URL(url);
+    return u.port ? `${u.hostname}:${u.port}` : u.hostname;
+  } catch {
+    return url;
   }
 }
 
@@ -54,7 +66,7 @@ export async function Providers() {
           )}
           <Sheet title="Add model provider" label="Add provider" testId="add-provider">
             <ActionForm action={saveProvider.bind(null, null)} submit="Save" testId="add-provider">
-              <ProviderFields names={names} local={local.ok ? local.value : {}} />
+              <ProviderFields names={names} local={local.ok && local.value.tools ? local.value : NO_LOCAL} />
             </ActionForm>
           </Sheet>
         </>
