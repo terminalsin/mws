@@ -259,17 +259,19 @@ impl OciImage {
         .to_string()
     }
 
-    /// Push to an ECR repository under each of `tags`; returns the
-    /// repository URI and the image digest.
+    /// Push to an ECR repository under each of `tags` as `ctx`, after
+    /// looking the repository up as `lookup`; returns the repository URI
+    /// and the image digest.
     pub(crate) async fn push(
         &self,
         ecr: &Arc<dyn Service>,
+        lookup: &RequestContext,
         ctx: &RequestContext,
         repository: &str,
         tags: &[String],
     ) -> Result<(String, String), String> {
         let repo = ecr
-            .invoke(ctx.clone(), "DescribeRepositories", json!({ "repositoryNames": [repository] }))
+            .invoke(lookup.clone(), "DescribeRepositories", json!({ "repositoryNames": [repository] }))
             .await
             .map_err(|e| e.message)?;
         let uri = repo["repositories"][0]["repositoryUri"].as_str().unwrap_or_default().to_string();

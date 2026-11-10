@@ -46,6 +46,7 @@ pub(crate) struct Env {
     pub(crate) pod_role: String,
     pub(crate) subnets: Vec<String>,
     pub(crate) vpc: String,
+    endpoint: String,
 }
 
 pub(crate) async fn env(mws: &Mws) -> Env {
@@ -87,10 +88,33 @@ pub(crate) async fn env(mws: &Mws) -> Env {
         pod_role: roles["eks-pod"].clone(),
         subnets,
         vpc,
+        endpoint: mws.endpoint.clone(),
     }
 }
 
+/// Move the emulated clock forward by `secs` (`POST /_mws/clock`).
+pub(crate) async fn advance_clock(endpoint: &str, secs: u64) {
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+    let addr = endpoint.trim_start_matches("http://");
+    let mut stream = tokio::net::TcpStream::connect(addr).await.unwrap();
+    let body = format!(r#"{{"advanceSeconds": {secs}}}"#);
+    let request = format!(
+        "POST /_mws/clock HTTP/1.1\r\nHost: {addr}\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+        body.len()
+    );
+    stream.write_all(request.as_bytes()).await.unwrap();
+    let mut response = String::new();
+    stream.read_to_string(&mut response).await.unwrap();
+    assert!(response.starts_with("HTTP/1.1 200"), "{response}");
+}
+
 impl Env {
+    /// Let every EKS transition in progress finish: EKS resources stay
+    /// CREATING, UPDATING or DELETING for minutes of emulated time.
+    pub(crate) async fn settle(&self) {
+        advance_clock(&self.endpoint, 600).await;
+    }
+
     pub(crate) async fn cluster(&self, name: &str, mode: AuthenticationMode) -> aws_sdk_eks::types::Cluster {
         let c = self
             .eks
@@ -103,6 +127,7 @@ impl Env {
             .send()
             .await
             .unwrap();
+        self.settle().await;
         self.eks.wait_until_cluster_active().name(name).wait(Duration::from_secs(60)).await.unwrap();
         c.cluster().unwrap().clone()
     }
@@ -184,6 +209,25 @@ async fn clusters_live_in_the_vpc_and_settle() {
     assert!(group.group_name().unwrap().starts_with("eks-cluster-sg-prod-"));
     assert!(group.tags().iter().any(|t| t.key() == Some("kubernetes.io/cluster/prod") && t.value() == Some("owned")));
 
+    // The control plane takes minutes to come up: meanwhile the cluster is
+    // CREATING and takes no node group.
+    let d = e.eks.describe_cluster().name("prod").send().await.unwrap();
+    assert_eq!(d.cluster().unwrap().status().unwrap().as_str(), "CREATING");
+    let err = e
+        .eks
+        .create_nodegroup()
+        .cluster_name("prod")
+        .nodegroup_name("early")
+        .node_role(&e.node_role)
+        .set_subnets(Some(e.subnets.clone()))
+        .send()
+        .await
+        .unwrap_err();
+    assert_eq!(code(err.as_service_error().unwrap()), "InvalidRequestException");
+    assert_eq!(message(err.as_service_error().unwrap()), "Cluster 'prod' is not in ACTIVE status");
+    let err = e.eks.update_cluster_config().name("prod").deletion_protection(true).send().await.unwrap_err();
+    assert_eq!(code(err.as_service_error().unwrap()), "ResourceInUseException");
+    e.settle().await;
     e.eks.wait_until_cluster_active().name("prod").wait(Duration::from_secs(60)).await.unwrap();
     let d = e.eks.describe_cluster().name("prod").send().await.unwrap();
     assert_eq!(d.cluster().unwrap().status().unwrap().as_str(), "ACTIVE");
@@ -205,6 +249,20 @@ async fn clusters_live_in_the_vpc_and_settle() {
     assert_eq!(list.clusters(), ["prod"]);
 
     e.eks.delete_cluster().name("prod").send().await.unwrap();
+    // Deleting takes a while too, and the name stays taken until it is done.
+    let d = e.eks.describe_cluster().name("prod").send().await.unwrap();
+    assert_eq!(d.cluster().unwrap().status().unwrap().as_str(), "DELETING");
+    let err = e
+        .eks
+        .create_cluster()
+        .name("prod")
+        .role_arn(&e.cluster_role)
+        .resources_vpc_config(VpcConfigRequest::builder().set_subnet_ids(Some(e.subnets.clone())).build())
+        .send()
+        .await
+        .unwrap_err();
+    assert_eq!(code(err.as_service_error().unwrap()), "ResourceInUseException");
+    e.settle().await;
     e.eks.wait_until_cluster_deleted().name("prod").wait(Duration::from_secs(60)).await.unwrap();
     let err = e.eks.describe_cluster().name("prod").send().await.unwrap_err();
     let se = err.into_service_error();
@@ -312,6 +370,7 @@ async fn managed_node_groups_run_ec2_instances() {
         .unwrap()
         .starts_with(&format!("arn:aws:eks:us-east-1:{ACCOUNT}:nodegroup/apps/workers/")));
 
+    e.settle().await;
     e.eks
         .wait_until_nodegroup_active()
         .cluster_name("apps")
@@ -376,6 +435,22 @@ async fn managed_node_groups_run_ec2_instances() {
     assert_eq!(up.r#type(), Some(&UpdateType::ConfigUpdate));
     assert_eq!(up.status(), Some(&UpdateStatus::InProgress));
     assert_eq!(e.nodes("workers", 3).await.len(), 3);
+    // The node group is UPDATING for a while and takes no other update.
+    let err = e
+        .eks
+        .update_nodegroup_config()
+        .cluster_name("apps")
+        .nodegroup_name("workers")
+        .scaling_config(NodegroupScalingConfig::builder().desired_size(2).build())
+        .send()
+        .await
+        .unwrap_err();
+    assert_eq!(code(err.as_service_error().unwrap()), "ResourceInUseException");
+    assert_eq!(
+        message(err.as_service_error().unwrap()),
+        "Nodegroup workers is in UPDATING state and cannot be updated."
+    );
+    e.settle().await;
     let d = e
         .eks
         .describe_update()
@@ -416,6 +491,7 @@ async fn managed_node_groups_run_ec2_instances() {
     );
     let v = e.eks.update_cluster_version().name("apps").version("1.35").send().await.unwrap();
     assert_eq!(v.update().unwrap().r#type(), Some(&UpdateType::VersionUpdate));
+    e.settle().await;
     e.eks.wait_until_cluster_active().name("apps").wait(Duration::from_secs(60)).await.unwrap();
     let before: Vec<_> = e.instances("workers").await.iter().map(|i| i.instance_id().unwrap().to_string()).collect();
     let nv = e.eks.update_nodegroup_version().cluster_name("apps").nodegroup_name("workers").send().await.unwrap();
@@ -501,6 +577,7 @@ async fn managed_node_groups_run_ec2_instances() {
     let del = e.eks.delete_nodegroup().cluster_name("apps").nodegroup_name("workers").send().await.unwrap();
     assert_eq!(del.nodegroup().unwrap().status().unwrap().as_str(), "DELETING");
     assert!(e.nodes("workers", 0).await.is_empty());
+    e.settle().await;
     e.eks
         .wait_until_nodegroup_deleted()
         .cluster_name("apps")
@@ -530,6 +607,19 @@ async fn cluster_config_updates_and_encryption() {
         .await
         .unwrap();
     assert_eq!(u.update().unwrap().r#type(), Some(&UpdateType::EndpointAccessUpdate));
+    // The update takes a while; meanwhile the cluster is UPDATING and
+    // takes no other update.
+    let c = e.eks.describe_cluster().name("cfg").send().await.unwrap();
+    assert_eq!(c.cluster().unwrap().status().unwrap().as_str(), "UPDATING");
+    let first = u.update().unwrap().id().unwrap().to_string();
+    let d = e.eks.describe_update().name("cfg").update_id(&first).send().await.unwrap();
+    assert_eq!(d.update().unwrap().status(), Some(&UpdateStatus::InProgress));
+    let err = e.eks.update_cluster_config().name("cfg").deletion_protection(true).send().await.unwrap_err();
+    assert_eq!(code(err.as_service_error().unwrap()), "ResourceInUseException");
+    assert_eq!(message(err.as_service_error().unwrap()), "Cluster cfg is in UPDATING state and cannot be updated.");
+    e.settle().await;
+    let d = e.eks.describe_update().name("cfg").update_id(&first).send().await.unwrap();
+    assert_eq!(d.update().unwrap().status(), Some(&UpdateStatus::Successful));
     let err = e
         .eks
         .update_cluster_config()
@@ -553,6 +643,7 @@ async fn cluster_config_updates_and_encryption() {
         .await
         .unwrap();
     assert_eq!(u.update().unwrap().r#type(), Some(&UpdateType::LoggingUpdate));
+    e.settle().await;
     let u = e
         .eks
         .update_cluster_config()
@@ -566,6 +657,7 @@ async fn cluster_config_updates_and_encryption() {
         .await
         .unwrap();
     assert_eq!(u.update().unwrap().r#type(), Some(&UpdateType::AccessConfigUpdate));
+    e.settle().await;
     let err = e
         .eks
         .update_cluster_config()
@@ -584,6 +676,7 @@ async fn cluster_config_updates_and_encryption() {
     );
     let u = e.eks.update_cluster_config().name("cfg").deletion_protection(true).send().await.unwrap();
     let id = u.update().unwrap().id().unwrap().to_string();
+    e.settle().await;
     let c = e.eks.describe_cluster().name("cfg").send().await.unwrap();
     let c = c.cluster().unwrap();
     assert_eq!(c.deletion_protection(), Some(true));
@@ -601,12 +694,14 @@ async fn cluster_config_updates_and_encryption() {
     assert!(err.into_service_error().is_invalid_state_exception());
     assert_eq!(e.eks.list_updates().name("cfg").send().await.unwrap().update_ids().len(), 4);
 
-    let key = format!("arn:aws:kms:us-east-1:{ACCOUNT}:key/1234abcd-12ab-34cd-56ef-1234567890ab");
+    let kms = aws_sdk_kms::Client::new(&mws.root_sdk_config().await);
+    let key = kms.create_key().send().await.unwrap().key_metadata().unwrap().arn().unwrap().to_string();
     #[allow(deprecated)]
     let enc =
         || EncryptionConfig::builder().resources("secrets").provider(Provider::builder().key_arn(&key).build()).build();
     let u = e.eks.associate_encryption_config().cluster_name("cfg").encryption_config(enc()).send().await.unwrap();
     assert_eq!(u.update().unwrap().r#type(), Some(&UpdateType::AssociateEncryptionConfig));
+    e.settle().await;
     let err =
         e.eks.associate_encryption_config().cluster_name("cfg").encryption_config(enc()).send().await.unwrap_err();
     assert_eq!(message(err.as_service_error().unwrap()), "Encryption is already enabled on the cluster");
@@ -763,6 +858,7 @@ async fn addons_and_pod_identity() {
     assert_eq!(addon.status().unwrap().as_str(), "CREATING");
     assert_eq!(addon.addon_version(), Some("v1.20.4-eksbuild.2"));
     assert_eq!(addon.pod_identity_associations().len(), 1);
+    e.settle().await;
     e.eks
         .wait_until_addon_active()
         .cluster_name("ad")
@@ -786,6 +882,9 @@ async fn addons_and_pod_identity() {
         .await
         .unwrap();
     assert_eq!(up.update().unwrap().r#type(), Some(&UpdateType::AddonUpdate));
+    let d = e.eks.describe_addon().cluster_name("ad").addon_name("vpc-cni").send().await.unwrap();
+    assert_eq!(d.addon().unwrap().status().unwrap().as_str(), "UPDATING");
+    e.settle().await;
     let d = e.eks.describe_addon().cluster_name("ad").addon_name("vpc-cni").send().await.unwrap();
     assert_eq!(d.addon().unwrap().addon_version(), Some("v1.19.6-eksbuild.7"));
     assert_eq!(d.addon().unwrap().status().unwrap().as_str(), "ACTIVE");
@@ -870,6 +969,7 @@ async fn addons_and_pod_identity() {
 
     let del = e.eks.delete_addon().cluster_name("ad").addon_name("vpc-cni").send().await.unwrap();
     assert_eq!(del.addon().unwrap().status().unwrap().as_str(), "DELETING");
+    e.settle().await;
     e.eks
         .wait_until_addon_deleted()
         .cluster_name("ad")
@@ -912,6 +1012,7 @@ async fn fargate_identity_providers_and_capabilities() {
     let fp = fp.fargate_profile().unwrap();
     assert_eq!(fp.status().unwrap().as_str(), "CREATING");
     assert_eq!(fp.subnets().len(), 2);
+    e.settle().await;
     e.eks
         .wait_until_fargate_profile_active()
         .cluster_name("fg")
@@ -928,6 +1029,7 @@ async fn fargate_identity_providers_and_capabilities() {
     let err = e.eks.delete_cluster().name("fg").send().await.unwrap_err();
     assert_eq!(message(err.as_service_error().unwrap()), "Cluster has fargate profiles attached");
     e.eks.delete_fargate_profile().cluster_name("fg").fargate_profile_name("serverless").send().await.unwrap();
+    e.settle().await;
     let err = e
         .eks
         .describe_fargate_profile()
@@ -956,6 +1058,7 @@ async fn fargate_identity_providers_and_capabilities() {
         .await
         .unwrap();
     assert_eq!(idp.update().unwrap().r#type(), Some(&UpdateType::AssociateIdentityProviderConfig));
+    e.settle().await;
     let which = IdentityProviderConfig::builder().r#type("oidc").name("okta").build().unwrap();
     let d = e
         .eks
@@ -977,6 +1080,7 @@ async fn fargate_identity_providers_and_capabilities() {
         .send()
         .await
         .unwrap();
+    e.settle().await;
     let err = e
         .eks
         .describe_identity_provider_config()
@@ -1030,6 +1134,7 @@ async fn fargate_identity_providers_and_capabilities() {
         .await
         .unwrap_err();
     assert!(message(err.as_service_error().unwrap()).contains("capabilities.eks.amazonaws.com"));
+    e.settle().await;
     let caps = e.eks.list_capabilities().cluster_name("fg").send().await.unwrap();
     assert_eq!(caps.capabilities()[0].status().unwrap().as_str(), "ACTIVE");
     let up = e.eks.update_capability().cluster_name("fg").capability_name("argo").role_arn(&role).send().await.unwrap();
@@ -1038,7 +1143,9 @@ async fn fargate_identity_providers_and_capabilities() {
     assert_eq!(ups.update_ids().len(), 1);
     let d = e.eks.describe_capability().cluster_name("fg").capability_name("argo").send().await.unwrap();
     assert_eq!(d.capability().unwrap().r#type(), Some(&CapabilityType::Argocd));
+    e.settle().await;
     e.eks.delete_capability().cluster_name("fg").capability_name("argo").send().await.unwrap();
+    e.settle().await;
     let err = e.eks.describe_capability().cluster_name("fg").capability_name("argo").send().await.unwrap_err();
     assert!(err.into_service_error().is_resource_not_found_exception());
 }
@@ -1057,6 +1164,7 @@ async fn certificate_authorities_rotate() {
     assert_eq!(created.certificate_authority().unwrap().distribution_status().unwrap().as_str(), "IN_PROGRESS");
     let err = e.eks.create_certificate_authority().cluster_name("ca").send().await.unwrap_err();
     assert!(err.into_service_error().is_resource_limit_exceeded_exception());
+    e.settle().await;
     let d =
         e.eks.describe_certificate_authority().cluster_name("ca").certificate_authority_id(&new).send().await.unwrap();
     let ca = d.certificate_authority().unwrap();
@@ -1064,6 +1172,7 @@ async fn certificate_authorities_rotate() {
     assert!(ca.validity().unwrap().not_after().is_some());
 
     e.eks.activate_certificate_authority().cluster_name("ca").certificate_authority_id(&new).send().await.unwrap();
+    e.settle().await;
     let c = e.eks.describe_cluster().name("ca").send().await.unwrap();
     assert_eq!(c.cluster().unwrap().certificate_authority().unwrap().active().unwrap().id(), Some(new.as_str()));
     let bundle = base64::engine::general_purpose::STANDARD
@@ -1081,6 +1190,7 @@ async fn certificate_authorities_rotate() {
         .unwrap_err();
     assert!(err.into_service_error().is_resource_in_use_exception());
     e.eks.delete_certificate_authority().cluster_name("ca").certificate_authority_id(&original).send().await.unwrap();
+    e.settle().await;
     let list = e.eks.list_certificate_authorities().cluster_name("ca").send().await.unwrap();
     assert_eq!(list.certificate_authorities().len(), 1);
 }
@@ -1100,6 +1210,7 @@ async fn insights_subscriptions_registered_clusters_and_tags() {
     assert_eq!(d.insight().unwrap().insight_status().unwrap().status().unwrap().as_str(), "PASSING");
     let r = e.eks.start_insights_refresh().cluster_name("ins").send().await.unwrap();
     assert_eq!(r.status().unwrap().as_str(), "IN_PROGRESS");
+    e.settle().await;
     let r = e.eks.describe_insights_refresh().cluster_name("ins").send().await.unwrap();
     assert_eq!(r.status().unwrap().as_str(), "COMPLETED");
 
@@ -1183,6 +1294,7 @@ async fn insights_subscriptions_registered_clusters_and_tags() {
     assert!(err.into_service_error().is_invalid_request_exception());
     let dereg = e.eks.deregister_cluster().name("onprem-k8s").send().await.unwrap();
     assert_eq!(dereg.cluster().unwrap().status().unwrap().as_str(), "DELETING");
+    e.settle().await;
     let err = e.eks.describe_cluster().name("onprem-k8s").send().await.unwrap_err();
     assert!(err.into_service_error().is_resource_not_found_exception());
 }
@@ -1259,6 +1371,7 @@ async fn node_groups_are_auto_scaling_groups() {
         .unwrap();
     let ng = ng.nodegroup().unwrap();
     assert!(ng.instance_types().is_empty());
+    e.settle().await;
     assert_eq!(ng.launch_template().unwrap().version(), Some("1"));
     let name = ng.resources().unwrap().auto_scaling_groups()[0].name().unwrap().to_string();
 
@@ -1315,6 +1428,7 @@ async fn node_groups_are_auto_scaling_groups() {
         .unwrap();
     assert_eq!(group(&asg, &name).await.unwrap().desired_capacity(), Some(1));
     e.nodes("custom", 1).await;
+    e.settle().await;
 
     // Suspended processes leave EKS unable to manage the nodes: the node
     // group degrades, and a version update fails.
@@ -1348,6 +1462,7 @@ async fn node_groups_are_auto_scaling_groups() {
     assert_eq!(ng.version(), Some("1.33"));
     let up = e.eks.update_nodegroup_version().cluster_name("asg").nodegroup_name("custom").send().await.unwrap();
     let id = up.update().unwrap().id().unwrap().to_string();
+    e.settle().await;
     let d = e.eks.describe_update().name("asg").update_id(&id).nodegroup_name("custom").send().await.unwrap();
     assert_eq!(d.update().unwrap().status(), Some(&UpdateStatus::Successful));
     let g = group(&asg, &name).await.unwrap();
@@ -1379,4 +1494,71 @@ async fn node_groups_are_auto_scaling_groups() {
     assert!(code(err.as_service_error().unwrap()).starts_with("InvalidLaunchTemplateId"), "{err:?}");
     // The customer's template stays.
     e.ec2.describe_launch_templates().launch_template_ids(&source).send().await.unwrap();
+}
+
+#[tokio::test]
+async fn envelope_encryption_checks_the_kms_key() {
+    use aws_sdk_kms::types::{KeySpec, KeyUsageType};
+
+    let mws = Mws::start().await;
+    let e = env(&mws).await;
+    let kms = aws_sdk_kms::Client::new(&mws.root_sdk_config().await);
+    let key = kms.create_key().send().await.unwrap().key_metadata().unwrap().arn().unwrap().to_string();
+    kms.create_alias().alias_name("alias/eks-secrets").target_key_id(&key).send().await.unwrap();
+    let alias = format!("arn:aws:kms:us-east-1:{ACCOUNT}:alias/eks-secrets");
+    let disabled = kms.create_key().send().await.unwrap().key_metadata().unwrap().arn().unwrap().to_string();
+    kms.disable_key().key_id(&disabled).send().await.unwrap();
+    let rsa = kms
+        .create_key()
+        .key_spec(KeySpec::Rsa2048)
+        .key_usage(KeyUsageType::EncryptDecrypt)
+        .send()
+        .await
+        .unwrap()
+        .key_metadata()
+        .unwrap()
+        .arn()
+        .unwrap()
+        .to_string();
+    let missing = format!("arn:aws:kms:us-east-1:{ACCOUNT}:key/1234abcd-12ab-34cd-56ef-1234567890ab");
+
+    #[allow(deprecated)]
+    let enc = |k: &str| {
+        EncryptionConfig::builder().resources("secrets").provider(Provider::builder().key_arn(k).build()).build()
+    };
+    let create = |client: &Client, name: &str, k: &str| {
+        client
+            .create_cluster()
+            .name(name)
+            .role_arn(&e.cluster_role)
+            .resources_vpc_config(VpcConfigRequest::builder().set_subnet_ids(Some(e.subnets.clone())).build())
+            .encryption_config(enc(k))
+    };
+
+    for (k, want) in [
+        (&missing, "Unable to use KMS key"),
+        (&disabled, "is in Disabled state"),
+        (&rsa, "is not a symmetric encryption key"),
+    ] {
+        let err = create(&e.eks, "bad", k).send().await.unwrap_err();
+        let se = err.into_service_error();
+        assert!(se.is_invalid_parameter_exception(), "{se:?}");
+        assert!(message(&se).contains(want), "{se:?}");
+    }
+
+    // A caller who may describe the key but not create grants on it can't
+    // use it.
+    let policy = r#"{"Version":"2012-10-17","Statement":[
+            {"Effect":"Allow","Action":["eks:*","iam:PassRole","kms:DescribeKey"],"Resource":"*"}]}"#
+        .to_string();
+    let (_, cfg) = user_with_policy(&mws, "no-grants", Some(&policy)).await;
+    let err = create(&Client::new(&cfg), "nogrant", &key).send().await.unwrap_err();
+    let se = err.into_service_error();
+    assert!(se.is_invalid_parameter_exception(), "{se:?}");
+    assert!(message(&se).contains("kms:CreateGrant"), "{se:?}");
+
+    // A key named by its alias ARN works.
+    let c = create(&e.eks, "secure", &alias).send().await.unwrap();
+    let cfg = &c.cluster().unwrap().encryption_config()[0];
+    assert_eq!(cfg.provider().unwrap().key_arn(), Some(alias.as_str()));
 }

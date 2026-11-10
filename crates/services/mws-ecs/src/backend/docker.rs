@@ -13,13 +13,28 @@
 //!
 //! Task volumes without a host path become Docker volumes that live as
 //! long as the task.
+//!
+//! The task role credentials endpoint is at `169.254.170.2`, as on ECS:
+//! containers outside the host network also join the internal network
+//! `mws-ecs-credentials`, whose gateway (the host) has that address, so
+//! the SDKs' container credentials provider (which only talks plain HTTP
+//! to loopback and the ECS link-local addresses) reaches MWS's port there.
+//!
+//! Images from MWS's own ECR registry are written as an image archive and
+//! `docker load`ed (no registry login involved); other images are pulled,
+//! with a `repositoryCredentials` login in a throwaway client config.
 
 use std::process::Stdio;
 
 use tokio::io::AsyncBufReadExt;
 use tokio::process::Command;
 
-use super::{BackendError, ContainerBackend, ContainerSpec, LogLine, StartedContainer, TaskNetwork, TaskSpec};
+use super::{
+    BackendError, ContainerBackend, ContainerSpec, LogLine, RegistryAuth, StartedContainer, TaskNetwork, TaskSpec,
+};
+
+/// The internal network whose gateway is the credentials endpoint.
+const CREDENTIALS_NETWORK: &str = "mws-ecs-credentials";
 
 /// What the pause container runs.
 const PAUSE_SCRIPT: &str = "trap 'exit 0' TERM INT; while :; do sleep 3600 & wait $!; done";
@@ -143,6 +158,67 @@ impl DockerBackend {
         }
         self.run_str(&["pull", image]).await.map(drop)
     }
+
+    /// `docker pull` logged in with `auth`, through a client config of its
+    /// own so the user's stays untouched.
+    async fn pull_with_auth(&self, image: &str, auth: &RegistryAuth) -> Result<(), BackendError> {
+        use base64::Engine;
+        let dir = std::env::temp_dir().join(format!("mws-ecs-auth-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&dir).map_err(|e| BackendError(format!("registry auth: {e}")))?;
+        let token = base64::engine::general_purpose::STANDARD.encode(format!("{}:{}", auth.username, auth.password));
+        let config = serde_json::json!({ "auths": { registry_of(image): { "auth": token } } });
+        let written = std::fs::write(dir.join("config.json"), config.to_string());
+        let out = match written {
+            Ok(()) => {
+                let config_dir = dir.to_string_lossy().to_string();
+                self.run_str(&["--config", &config_dir, "pull", image]).await.map(drop)
+            }
+            Err(e) => Err(BackendError(format!("registry auth: {e}"))),
+        };
+        let _ = std::fs::remove_dir_all(&dir);
+        out
+    }
+
+    /// Put `container` on the credentials network (made on first use).
+    async fn join_credentials_network(&self, container: &str) {
+        {
+            let _guard = self.networks.lock().await;
+            if self.run_str(&["network", "inspect", "--format", "{{.Name}}", CREDENTIALS_NETWORK]).await.is_err() {
+                let created = self
+                    .run_str(&[
+                        "network",
+                        "create",
+                        "--driver",
+                        "bridge",
+                        "--internal",
+                        "--subnet",
+                        "169.254.170.0/24",
+                        "--gateway",
+                        "169.254.170.2",
+                        "--label",
+                        "mws.ecs.credentials=true",
+                        CREDENTIALS_NETWORK,
+                    ])
+                    .await;
+                if let Err(e) = created {
+                    tracing::warn!("ECS cannot create the credentials network {CREDENTIALS_NETWORK}: {e}");
+                    return;
+                }
+            }
+        }
+        if let Err(e) = self.run_str(&["network", "connect", CREDENTIALS_NETWORK, container]).await {
+            tracing::warn!(container, "ECS cannot connect a container to {CREDENTIALS_NETWORK}: {e}");
+        }
+    }
+}
+
+/// The registry an image reference names, as Docker's client config keys
+/// it.
+fn registry_of(image: &str) -> String {
+    match image.split_once('/') {
+        Some((host, _)) if host.contains('.') || host.contains(':') || host == "localhost" => host.to_string(),
+        _ => "https://index.docker.io/v1/".to_string(),
+    }
 }
 
 fn shell_quote(s: &str) -> String {
@@ -159,11 +235,40 @@ impl ContainerBackend for DockerBackend {
         "docker"
     }
 
-    async fn pull(&self, image: &str) -> Result<Option<String>, BackendError> {
-        self.ensure_image(image).await?;
+    async fn pull(&self, image: &str, auth: Option<&RegistryAuth>) -> Result<Option<String>, BackendError> {
+        match auth {
+            Some(a) => self.pull_with_auth(image, a).await?,
+            None => self.ensure_image(image).await?,
+        }
         let digests =
             self.run_str(&["image", "inspect", "--format", "{{range .RepoDigests}}{{.}} {{end}}", image]).await?;
         Ok(digests.split_whitespace().next().and_then(|d| d.split_once('@')).map(|(_, d)| d.to_string()))
+    }
+
+    async fn load_image(&self, tag: &str, image: &crate::platform::RegistryImage) -> Result<(), BackendError> {
+        use tokio::io::AsyncWriteExt;
+        if self.run_str(&["image", "inspect", "--format", "{{.Id}}", tag]).await.is_ok() {
+            return Ok(());
+        }
+        let archive = super::archive::image_archive(tag, image);
+        let mut child = Command::new(&self.cli)
+            .args(["load", "-q"])
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .spawn()
+            .map_err(|e| BackendError(format!("running {}: {e}", self.cli)))?;
+        let mut stdin = child.stdin.take().expect("piped");
+        let writer = tokio::spawn(async move {
+            let _ = stdin.write_all(&archive).await;
+            let _ = stdin.shutdown().await;
+        });
+        let out = child.wait_with_output().await.map_err(|e| BackendError(format!("docker load: {e}")))?;
+        let _ = writer.await;
+        if !out.status.success() {
+            return Err(BackendError(format!("docker load: {}", String::from_utf8_lossy(&out.stderr).trim())));
+        }
+        Ok(())
     }
 
     async fn prepare(&self, task: &TaskSpec) -> Result<String, BackendError> {
@@ -211,6 +316,7 @@ impl ContainerBackend for DockerBackend {
                     PAUSE_SCRIPT.into(),
                 ]);
                 self.run(&args).await?;
+                self.join_credentials_network(&name).await;
                 Ok(name)
             }
             TaskNetwork::Bridge => {
@@ -386,6 +492,9 @@ impl ContainerBackend for DockerBackend {
         }
         let id = self.run(&args).await?;
         let runtime_id = id.lines().last().unwrap_or_default().to_string();
+        if matches!(task.network, TaskNetwork::Bridge) {
+            self.join_credentials_network(&runtime_id).await;
+        }
         let mut bindings = Vec::new();
         match task.network {
             TaskNetwork::Bridge => {
@@ -536,5 +645,16 @@ impl ContainerBackend for DockerBackend {
         for v in &task.volumes {
             let _ = self.run_str(&["volume", "rm", "-f", &Self::volume_name(&task.task_id, v)]).await;
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    #[test]
+    fn registries_are_keyed_as_docker_keys_them() {
+        assert_eq!(super::registry_of("nginx"), "https://index.docker.io/v1/");
+        assert_eq!(super::registry_of("library/nginx:1"), "https://index.docker.io/v1/");
+        assert_eq!(super::registry_of("ghcr.io/org/app:1"), "ghcr.io");
+        assert_eq!(super::registry_of("localhost:5000/app"), "localhost:5000");
     }
 }

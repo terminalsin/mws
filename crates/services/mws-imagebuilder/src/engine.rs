@@ -59,6 +59,8 @@ struct Build {
     container_image: Option<crate::container::OciImage>,
     /// Where the container image was pushed in the build Region.
     container_uri: Option<String>,
+    /// The first instance the build launched: it uploads the build log.
+    build_instance: Option<String>,
 }
 
 impl Build {
@@ -209,6 +211,7 @@ impl ImageBuilder {
             log: Vec::new(),
             container_image: None,
             container_uri: None,
+            build_instance: None,
         };
         b.note(format!("Build of {} started", b.arn));
         let result = self.run_stages(&mut b).await;
@@ -764,6 +767,9 @@ impl ImageBuilder {
             }
         });
         b.note(format!("Launched {what} instance {id} from {image} ({instance_type})"));
+        if b.build_instance.is_none() {
+            b.build_instance = Some(id.clone());
+        }
         ec2link::wait_running(ec2, &b.svc, &id).await.map_err(Failure::failed)?;
         Ok(id)
     }
@@ -1157,6 +1163,21 @@ impl ImageBuilder {
         Ok(out)
     }
 
+    /// What `instance` acts as: its instance profile's role, assumed by
+    /// EC2 (or, with no IAM wired in, Image Builder's service-linked role).
+    fn instance_ctx(&self, b: &Build, instance: &str) -> Result<RequestContext, String> {
+        let Some(roles) = self.instance_roles() else { return Ok(b.svc.clone()) };
+        let profile = b.infra().instance_profile_name.unwrap_or_default();
+        let base = RequestContext {
+            request_id: uuid::Uuid::new_v4().to_string(),
+            region: b.region.clone(),
+            received_at: self.now().max(b.caller.received_at),
+            source_ip: None,
+            ..b.caller.clone()
+        };
+        roles.instance_context(&base, &b.account, &profile, instance)
+    }
+
     fn container_tag(b: &Build) -> String {
         format!("{}-{}", b.image.version.clone().unwrap_or_default(), b.build_number())
     }
@@ -1187,10 +1208,12 @@ impl ImageBuilder {
         let ecr = self.ecr().ok_or_else(|| Failure::failed("Amazon ECR is not available."))?.clone();
         let repo = cr.target_repository.as_ref().map(|r| r.repository_name.clone()).unwrap_or_default();
         let tag = Self::container_tag(b);
-        let (uri, digest) = image
-            .push(&ecr, &b.svc, &repo, std::slice::from_ref(&tag))
-            .await
-            .map_err(|e| Failure::failed(format!("Pushing the image to ECR repository '{repo}' failed: {e}")))?;
+        let push_failed =
+            |e: String| Failure::failed(format!("Pushing the image to ECR repository '{repo}' failed: {e}"));
+        // The build instance pushes, with its instance profile's role.
+        let ictx = self.instance_ctx(b, instance).map_err(push_failed)?;
+        let (uri, digest) =
+            image.push(&ecr, &b.svc, &ictx, &repo, std::slice::from_ref(&tag)).await.map_err(push_failed)?;
         b.note(format!("Pushed {uri}:{tag} ({digest})"));
         let full = format!("{uri}:{tag}");
         b.container_image = Some(image);
@@ -1221,7 +1244,7 @@ impl ImageBuilder {
             let uris = match (&b.container_image, self.ecr()) {
                 (Some(image), Some(ecr)) => {
                     let ctx = self.service_ctx(&b.svc, &b.account, &d.region);
-                    let (uri, _) = image.push(ecr, &ctx, &target, &tags).await.map_err(|e| Failure {
+                    let (uri, _) = image.push(ecr, &ctx, &ctx, &target, &tags).await.map_err(|e| Failure {
                         status: "FAILED",
                         reason: format!(
                             "Distribution failed: pushing to ECR repository '{target}' in {} failed: {e}",
@@ -1354,8 +1377,20 @@ impl ImageBuilder {
                     b.build_number()
                 );
                 let body = base64::engine::general_purpose::STANDARD.encode(text.as_bytes());
-                if let Err(e) =
-                    s3.invoke(b.svc.clone(), "PutObject", json!({ "Bucket": bucket, "Key": key, "Body": body })).await
+                // The build instance uploads its log, with its instance
+                // profile's role; a build that launched none is logged by
+                // Image Builder itself.
+                let ctx = match &b.build_instance {
+                    Some(instance) => match self.instance_ctx(b, instance) {
+                        Ok(ctx) => ctx,
+                        Err(e) => {
+                            tracing::warn!(bucket, error = %e, "the build instance could not write its log to S3");
+                            return;
+                        }
+                    },
+                    None => b.svc.clone(),
+                };
+                if let Err(e) = s3.invoke(ctx, "PutObject", json!({ "Bucket": bucket, "Key": key, "Body": body })).await
                 {
                     tracing::warn!(bucket, error = %e.message, "Image Builder could not write the build log to S3");
                 }

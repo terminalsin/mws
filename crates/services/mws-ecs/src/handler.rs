@@ -61,7 +61,7 @@ impl Handler for Ecs {
         ctx: &RequestContext,
         input: types::CreateServiceRequest,
     ) -> Result<types::CreateServiceResponse, ServiceError> {
-        self.create_service_op(ctx, input)
+        self.create_service_op(ctx, input).await
     }
     async fn create_task_set(
         &self,
@@ -586,7 +586,7 @@ impl Handler for Ecs {
         ctx: &RequestContext,
         input: types::UpdateExpressGatewayServiceRequest,
     ) -> Result<types::UpdateExpressGatewayServiceResponse, ServiceError> {
-        self.update_express_gateway_service_op(ctx, input)
+        self.update_express_gateway_service_op(ctx, input).await
     }
     async fn update_gateway(
         &self,
@@ -600,7 +600,7 @@ impl Handler for Ecs {
         ctx: &RequestContext,
         input: types::UpdateServiceRequest,
     ) -> Result<types::UpdateServiceResponse, ServiceError> {
-        self.update_service_op(ctx, input)
+        self.update_service_op(ctx, input).await
     }
     async fn update_service_primary_task_set(
         &self,

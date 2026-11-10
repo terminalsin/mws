@@ -354,7 +354,8 @@ impl Ecs {
                 propagate_tags: Some("SERVICE".into()),
                 ..Default::default()
             },
-        )?;
+        )
+        .await?;
         let endpoint = format!("https://{name}.ecs.{}.on.aws", scope.region);
         let revision = self.latest_revision(ctx, &arn);
         let now = ctx.received_at;
@@ -425,7 +426,7 @@ impl Ecs {
         Ok(t::DescribeExpressGatewayServiceResponse { service: Some(svc) })
     }
 
-    pub(crate) fn update_express_gateway_service_op(
+    pub(crate) async fn update_express_gateway_service_op(
         &self,
         ctx: &RequestContext,
         input: t::UpdateExpressGatewayServiceRequest,
@@ -489,7 +490,8 @@ impl Ecs {
                 }),
                 ..Default::default()
             },
-        )?;
+        )
+        .await?;
         let now = ctx.received_at;
         let endpoint = prev
             .ingress_paths

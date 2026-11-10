@@ -1228,3 +1228,139 @@ async fn automatic_snapshots() {
     ec.describe_snapshots().snapshot_name("kept-copy").send().await.unwrap();
     mws.stop().await;
 }
+
+#[tokio::test]
+async fn deferred_replication_group_changes_wait_for_the_maintenance_window() {
+    let mws = Mws::start().await;
+    let ec = client(&mws).await;
+    ec.create_replication_group()
+        .replication_group_id("deferred")
+        .replication_group_description("deferred changes")
+        .engine("valkey")
+        .engine_version("8.0")
+        .cache_node_type("cache.r7g.large")
+        .num_cache_clusters(2)
+        .preferred_maintenance_window("sun:05:00-sun:06:00")
+        .send()
+        .await
+        .unwrap();
+
+    // Without ApplyImmediately the node type and engine version changes
+    // are pending: the group keeps its node type, the members their
+    // engine version.
+    let out = ec
+        .modify_replication_group()
+        .replication_group_id("deferred")
+        .cache_node_type("cache.r7g.xlarge")
+        .engine_version("8.1")
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(out.replication_group().unwrap().cache_node_type(), Some("cache.r7g.large"));
+    let members = |ec: &Client| {
+        let ec = ec.clone();
+        async move {
+            let d = ec.describe_cache_clusters().send().await.unwrap();
+            d.cache_clusters().to_vec()
+        }
+    };
+    for c in members(&ec).await {
+        assert_eq!(c.cache_node_type(), Some("cache.r7g.large"));
+        assert_eq!(c.engine_version(), Some("8.0.1"));
+        let p = c.pending_modified_values().unwrap();
+        assert_eq!(p.cache_node_type(), Some("cache.r7g.xlarge"));
+        assert_eq!(p.engine_version(), Some("8.1.0"));
+    }
+
+    // A week later the maintenance window has passed and applied them.
+    let (status, _) = mws.control("POST", "/_mws/clock", Some(r#"{"advanceSeconds": 691200}"#)).await;
+    assert_eq!(status, 200);
+    let d = ec.describe_replication_groups().replication_group_id("deferred").send().await.unwrap();
+    assert_eq!(d.replication_groups()[0].cache_node_type(), Some("cache.r7g.xlarge"));
+    for c in members(&ec).await {
+        assert_eq!(c.cache_node_type(), Some("cache.r7g.xlarge"));
+        assert_eq!(c.engine_version(), Some("8.1.0"));
+        let p = c.pending_modified_values().unwrap();
+        assert_eq!(p.cache_node_type(), None);
+        assert_eq!(p.engine_version(), None);
+    }
+
+    // ApplyImmediately applies at once.
+    let out = ec
+        .modify_replication_group()
+        .replication_group_id("deferred")
+        .cache_node_type("cache.r7g.2xlarge")
+        .apply_immediately(true)
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(out.replication_group().unwrap().cache_node_type(), Some("cache.r7g.2xlarge"));
+}
+
+#[tokio::test]
+async fn kms_keys_for_encryption_at_rest_are_checked() {
+    let mws = Mws::start().await;
+    let ec = client(&mws).await;
+    let kms = aws_sdk_kms::Client::new(&mws.root_sdk_config().await);
+    let key = kms.create_key().send().await.unwrap().key_metadata().unwrap().arn().unwrap().to_string();
+    let disabled = kms.create_key().send().await.unwrap().key_metadata().unwrap().arn().unwrap().to_string();
+    kms.disable_key().key_id(&disabled).send().await.unwrap();
+    let missing = format!("arn:aws:kms:us-east-1:{ACCOUNT}:key/1234abcd-12ab-34cd-56ef-1234567890ab");
+    let create = |ec: &Client, id: &str, k: &str| {
+        ec.create_replication_group()
+            .replication_group_id(id)
+            .replication_group_description("encrypted")
+            .engine("valkey")
+            .cache_node_type("cache.r7g.large")
+            .at_rest_encryption_enabled(true)
+            .kms_key_id(k)
+    };
+
+    let e = create(&ec, "missing", &missing).send().await.unwrap_err().into_service_error();
+    assert_eq!(code(&e), "InvalidParameterValue", "{e:?}");
+    let e = create(&ec, "disabled", &disabled).send().await.unwrap_err().into_service_error();
+    assert_eq!(code(&e), "InvalidKMSKeyFault", "{e:?}");
+    assert!(e.message().unwrap().contains("disabled"), "{e:?}");
+
+    // The caller needs kms:CreateGrant on the key.
+    let policy = r#"{"Version":"2012-10-17","Statement":[
+        {"Effect":"Allow","Action":["elasticache:*","kms:DescribeKey"],"Resource":"*"}]}"#;
+    let (_, cfg) = user_with_policy(&mws, "no-grants", Some(policy)).await;
+    let e = create(&Client::new(&cfg), "nogrant", &key).send().await.unwrap_err().into_service_error();
+    assert_eq!(code(&e), "InvalidKMSKeyFault", "{e:?}");
+    assert!(e.message().unwrap().contains("kms:CreateGrant"), "{e:?}");
+
+    let g = create(&ec, "secure", &key).send().await.unwrap();
+    assert_eq!(g.replication_group().unwrap().kms_key_id(), Some(key.as_str()));
+}
+
+#[tokio::test]
+async fn iam_users_need_matching_ids() {
+    let mws = Mws::start().await;
+    let ec = client(&mws).await;
+    let iam = || AuthenticationMode::builder().r#type(InputAuthenticationType::Iam).build();
+    let e = ec
+        .create_user()
+        .user_id("iam-user")
+        .user_name("someone-else")
+        .engine("valkey")
+        .access_string("on ~* +@all")
+        .authentication_mode(iam())
+        .send()
+        .await
+        .unwrap_err()
+        .into_service_error();
+    assert_eq!(code(&e), "InvalidParameterValue");
+    assert_eq!(e.message(), Some("UserId and UserName must be the same for a user with IAM authentication."));
+    let u = ec
+        .create_user()
+        .user_id("iam-user")
+        .user_name("iam-user")
+        .engine("valkey")
+        .access_string("on ~* +@all")
+        .authentication_mode(iam())
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(u.authentication().unwrap().r#type().map(|t| t.as_str()), Some("iam"));
+}

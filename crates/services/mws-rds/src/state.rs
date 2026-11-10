@@ -121,6 +121,17 @@ pub struct InstanceRecord {
     pub image: String,
     /// Parameter changes wait for a reboot.
     pub pending_reboot: bool,
+    /// When the oldest change in `PendingModifiedValues` was requested
+    /// (emulated clock); they are applied in the first maintenance window
+    /// after it.
+    pub pending_since: Option<DateTime<Utc>>,
+    /// The last storage change is optimized until then (emulated clock):
+    /// the instance shows `storage-optimization` and refuses further
+    /// storage changes.
+    pub storage_optimized_until: Option<DateTime<Utc>>,
+    /// `ApplyPendingMaintenanceAction` opt-in for the pending engine
+    /// upgrade (`next-maintenance`).
+    pub maintenance_opt_in: Option<String>,
 }
 
 #[derive(Debug, Default, Clone, Serialize, Deserialize)]
@@ -133,6 +144,9 @@ pub struct ClusterRecord {
     pub generation: u64,
     pub image: String,
     pub pending_reboot: bool,
+    /// As for instances: when the pending changes were requested.
+    pub pending_since: Option<DateTime<Utc>>,
+    pub maintenance_opt_in: Option<String>,
 }
 
 #[derive(Debug, Default, Clone, Serialize, Deserialize)]

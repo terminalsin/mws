@@ -283,6 +283,42 @@ impl Kms {
         Ok((out.key_arn, out.plaintext))
     }
 
+    /// Look up a key for the caller through `service` (`kms:ViaService`)
+    /// and check that the caller may perform each of `actions` (e.g.
+    /// `kms:DescribeKey`, `kms:CreateGrant`) on it, as services that use a
+    /// key for the caller check before they take it (EKS envelope
+    /// encryption, ElastiCache encryption at rest). Key ids, key ARNs,
+    /// alias names and alias ARNs are accepted. The key's state is not
+    /// checked: the caller decides what a disabled key means.
+    pub fn key_via(
+        &self,
+        ctx: &RequestContext,
+        service: &str,
+        key_id: &str,
+        actions: &[&str],
+    ) -> Result<ServiceKey, ServiceError> {
+        let mut arn = None;
+        for action in actions {
+            let op = action.strip_prefix("kms:").unwrap_or(action);
+            let t = self.authorize_key(
+                ctx,
+                key_id,
+                Access::new(op)
+                    .grant(op)
+                    .aliases()
+                    .condition("kms:ViaService", vec![via(service, &ctx.region)])
+                    .condition("aws:ViaAWSService", vec!["true".into()]),
+            )?;
+            arn = Some(t.arn);
+        }
+        let st = self.lock();
+        let arn = match arn {
+            Some(a) => a,
+            None => st.resolve(ctx, key_id, true)?.arn,
+        };
+        Ok(service_key(st.key(&arn)?))
+    }
+
     /// Generate a data key for the caller through `service`.
     pub fn generate_data_key_via(
         &self,

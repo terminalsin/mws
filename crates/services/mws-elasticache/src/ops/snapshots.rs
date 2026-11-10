@@ -204,6 +204,9 @@ pub(crate) async fn create(
     check_tags(&tags)?;
     let resource = arn(ctx, "snapshot", &input.snapshot_name);
     authorize_create(ctx, "CreateSnapshot", &resource, &tags, Default::default())?;
+    if let Some(k) = input.kms_key_id.as_deref() {
+        svc.check_kms_key(ctx, k)?;
+    }
     let rg = input.replication_group_id.as_deref().map(str::to_ascii_lowercase);
     let cluster = input.cache_cluster_id.as_deref().map(str::to_ascii_lowercase);
     let (info, sources) = svc.with_region(ctx, |r| {
@@ -299,6 +302,9 @@ pub(crate) async fn copy(
         return Ok(t::CopySnapshotResult { snapshot: Some(info) });
     }
     authorize_create(ctx, "CopySnapshot", &resource, &tags, Default::default())?;
+    if let Some(k) = input.kms_key_id.as_deref() {
+        svc.check_kms_key(ctx, k)?;
+    }
     svc.with_region(ctx, |r| {
         if r.snapshots.contains_key(&target) {
             return Err(errors::snapshot_already_exists_fault(format!("Snapshot {target} already exists.")));

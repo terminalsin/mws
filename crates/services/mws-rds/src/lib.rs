@@ -106,6 +106,15 @@ pub trait EventSink: Send + Sync {
     fn put_event(&self, ctx: &RequestContext, event: &RdsEvent);
 }
 
+/// Whether an AWS service principal may assume an IAM role (the role
+/// exists and its trust policy allows the service). MWS wires this to STS.
+pub trait ServiceRoles: Send + Sync {
+    /// Whether `service_principal` (e.g. `monitoring.rds.amazonaws.com`)
+    /// may assume `role_arn` on behalf of `source_arn` in the caller's
+    /// account.
+    fn can_assume(&self, ctx: &RequestContext, role_arn: &str, service_principal: &str, source_arn: &str) -> bool;
+}
+
 pub(crate) struct Inner {
     state: Mutex<State>,
     backend: Arc<dyn DatabaseBackend>,
@@ -114,6 +123,7 @@ pub(crate) struct Inner {
     network: OnceLock<Arc<dyn Network>>,
     events: OnceLock<Arc<dyn EventSink>>,
     exports: OnceLock<Arc<dyn ExportStore>>,
+    roles: OnceLock<Arc<dyn ServiceRoles>>,
     /// Emulated clock minus wall clock, as last seen in a request.
     clock_offset: Mutex<chrono::Duration>,
     /// Each change of that offset: (emulated time, new offset).
@@ -143,6 +153,7 @@ impl Rds {
                 network: OnceLock::new(),
                 events: OnceLock::new(),
                 exports: OnceLock::new(),
+                roles: OnceLock::new(),
                 clock_offset: Mutex::new(chrono::Duration::zero()),
                 clock_history: Mutex::new(Vec::new()),
                 schedule: Mutex::new(ops::pitr::Schedule::default()),
@@ -168,6 +179,15 @@ impl Rds {
     /// Write snapshot exports to S3.
     pub fn set_export_store(&self, store: Arc<dyn ExportStore>) {
         let _ = self.inner.exports.set(store);
+    }
+
+    /// Check the roles RDS assumes itself (Enhanced Monitoring) with STS.
+    pub fn set_service_roles(&self, roles: Arc<dyn ServiceRoles>) {
+        let _ = self.inner.roles.set(roles);
+    }
+
+    pub(crate) fn service_roles(&self) -> Option<&Arc<dyn ServiceRoles>> {
+        self.inner.roles.get()
     }
 
     pub(crate) fn export_store(&self) -> Option<&Arc<dyn ExportStore>> {

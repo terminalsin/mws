@@ -773,7 +773,7 @@ impl Rds {
                 "Automated backups aren't turned on for the DB instance {name}."
             )));
         }
-        if src.db.db_instance_status.as_deref() != Some("available") {
+        if !super::maintenance::operational(src.db.db_instance_status.as_deref().unwrap_or_default()) {
             return Err(errors::invalid_db_instance_state_fault(format!("The DB instance {name} isn't available.")));
         }
         let kms = match &input.kms_key_id {

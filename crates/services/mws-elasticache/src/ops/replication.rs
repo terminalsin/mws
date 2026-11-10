@@ -422,6 +422,9 @@ pub(crate) async fn create(
             ("ClusterModeEnabled", Some(cluster_mode.to_string())),
         ]),
     )?;
+    if let Some(k) = input.kms_key_id.as_deref() {
+        svc.check_kms_key(ctx, k)?;
+    }
     let log = clusters::log_delivery(&input.log_delivery_configurations)?;
     let shown = svc.with_region(ctx, |r| {
         if r.replication_groups.contains_key(&id) {
@@ -558,6 +561,7 @@ pub(crate) async fn create(
             reader_port: tpl.port,
             slots: slot_ranges.clone(),
             migration: None,
+            pending_since: None,
         };
         if let Some(c) = primary_cluster.as_ref().and_then(|p| r.clusters.get(p)) {
             // The existing cluster keeps its credentials.
@@ -806,6 +810,7 @@ pub(crate) async fn modify(
 ) -> Result<t::ModifyReplicationGroupResult, ServiceError> {
     let id = input.replication_group_id.to_ascii_lowercase();
     let key = region_key(ctx);
+    let apply_now = input.apply_immediately == Some(true);
     let mut tls_change = None;
     let (shown, commands, failover_to, users_changed, upgrade) = svc.with_region(ctx, |r| {
         let g = r.replication_groups.get(&id).cloned().ok_or_else(|| not_found(&id))?;
@@ -895,11 +900,20 @@ pub(crate) async fn modify(
             check_window("SnapshotWindow", w, false)?;
             g.info.snapshot_window = Some(w.clone());
         }
+        // Without ApplyImmediately, node type and engine version changes
+        // wait for the maintenance window (see `schedule`), shown meanwhile
+        // in the member clusters' PendingModifiedValues.
+        let mut pending_type = None;
+        let mut pending_version = None;
         if let Some(nt) = &input.cache_node_type {
             clusters::check_node_type(Some(nt))?;
-            g.info.cache_node_type = Some(nt.clone());
-            let mem = catalog::node_type(nt).map(|n| n.maxmemory()).unwrap_or(0);
-            commands.push(vec!["CONFIG".into(), "SET".into(), "maxmemory".into(), mem.to_string()]);
+            if apply_now {
+                g.info.cache_node_type = Some(nt.clone());
+                let mem = catalog::node_type(nt).map(|n| n.maxmemory()).unwrap_or(0);
+                commands.push(vec!["CONFIG".into(), "SET".into(), "maxmemory".into(), mem.to_string()]);
+            } else if g.info.cache_node_type.as_deref() != Some(nt.as_str()) {
+                pending_type = Some(nt.clone());
+            }
         }
         let engine = g.engine();
         let target_engine = clusters::engine_of(input.engine.as_deref(), engine)?;
@@ -921,16 +935,25 @@ pub(crate) async fn modify(
                     g.engine_version, target.version
                 )));
             }
-            g.engine_version = target.version.into();
-            g.info.engine = Some(target_engine.as_str().into());
-            if g.parameter_group.starts_with("default.") {
-                g.parameter_group = if g.cluster_enabled() {
-                    format!("default.{}.cluster.on", target.family)
-                } else {
-                    format!("default.{}", target.family)
-                };
+            if !apply_now && target_engine == engine {
+                if target.version != g.engine_version {
+                    pending_version = Some(target.version.to_string());
+                }
+            } else {
+                g.engine_version = target.version.into();
+                g.info.engine = Some(target_engine.as_str().into());
+                if g.parameter_group.starts_with("default.") {
+                    g.parameter_group = if g.cluster_enabled() {
+                        format!("default.{}.cluster.on", target.family)
+                    } else {
+                        format!("default.{}", target.family)
+                    };
+                }
+                new_version = Some((target_engine, target.version));
             }
-            new_version = Some((target_engine, target.version));
+        }
+        if pending_type.is_some() || pending_version.is_some() {
+            g.pending_since = Some(now(ctx));
         }
         if let Some(pg) = &input.cache_parameter_group_name {
             let family = super::params::family_of(r, pg).ok_or_else(|| {
@@ -1073,8 +1096,28 @@ pub(crate) async fn modify(
         // Settings that live on the member clusters.
         for m in &member_ids {
             if let Some(c) = r.clusters.get_mut(m) {
-                if let Some(nt) = &input.cache_node_type {
+                if let Some(nt) = input.cache_node_type.as_ref().filter(|_| apply_now) {
                     c.info.cache_node_type = Some(nt.clone());
+                }
+                if pending_type.is_some() || pending_version.is_some() {
+                    let p = c.info.pending_modified_values.get_or_insert_with(Default::default);
+                    if pending_type.is_some() {
+                        p.cache_node_type = pending_type.clone();
+                    }
+                    if pending_version.is_some() {
+                        p.engine_version = pending_version.clone();
+                    }
+                }
+                if apply_now {
+                    // What was pending is applied now.
+                    if let Some(p) = c.info.pending_modified_values.as_mut() {
+                        if input.cache_node_type.is_some() {
+                            p.cache_node_type = None;
+                        }
+                        if input.engine_version.is_some() {
+                            p.engine_version = None;
+                        }
+                    }
                 }
                 if let Some((e, v)) = new_version {
                     c.info.engine = Some(e.as_str().into());

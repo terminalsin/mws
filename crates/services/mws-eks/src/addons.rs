@@ -6,6 +6,7 @@ use mws_core::{ConditionContext, RequestContext, ServiceError};
 
 use crate::catalog::{self, AddonSpec};
 use crate::generated::{errors, types};
+use crate::state::durations;
 use crate::updates::Target;
 use crate::util::{self, param, text};
 use crate::Eks;
@@ -177,6 +178,7 @@ impl Eks {
                 .as_ref()
                 .map(|_| types::AddonNamespaceConfigResponse { namespace: Some(namespace) }),
         };
+        rec.begin(format!("addon/{name}"), now, durations::ADDON);
         rec.addons.insert(name, addon.clone());
         Ok(types::CreateAddonResponse { addon: Some(addon) })
     }
@@ -308,7 +310,9 @@ impl Eks {
         }
         a.status = Some("UPDATING".into());
         a.modified_at = Some(ctx.received_at);
-        let update = crate::updates::push(rec, ctx.received_at, "AddonUpdate", params, Some(Target::Addon(&name)));
+        let done_at = rec.begin(format!("addon/{name}"), ctx.received_at, durations::ADDON);
+        let update =
+            crate::updates::push(rec, ctx.received_at, done_at, "AddonUpdate", params, Some(Target::Addon(&name)));
         Ok(types::UpdateAddonResponse { update: Some(update) })
     }
 
@@ -332,6 +336,7 @@ impl Eks {
         a.status = Some("DELETING".into());
         a.modified_at = Some(ctx.received_at);
         let response = a.clone();
+        rec.begin(format!("addon/{}", input.addon_name), ctx.received_at, durations::ADDON);
         let owner = response.addon_arn.clone();
         rec.pod_identities.retain(|_, p| p.owner_arn != owner);
         Ok(types::DeleteAddonResponse { addon: Some(response) })

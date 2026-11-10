@@ -8,10 +8,12 @@
 //! [`MetadataBackend`] runs nothing, so ECS stays a pure control plane on
 //! machines without a container runtime.
 
+mod archive;
 mod docker;
 
 use std::sync::Arc;
 
+pub use archive::local_tag;
 pub use docker::DockerBackend;
 
 /// How a task is networked.
@@ -114,6 +116,13 @@ pub struct TaskSpec {
     pub ipc_mode: Option<String>,
 }
 
+/// Credentials for a private registry (`repositoryCredentials`).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RegistryAuth {
+    pub username: String,
+    pub password: String,
+}
+
 /// A started container.
 #[derive(Debug, Clone, Default)]
 pub struct StartedContainer {
@@ -149,8 +158,16 @@ pub trait ContainerBackend: Send + Sync {
     /// A short name for logs (`docker`, `metadata`).
     fn name(&self) -> &'static str;
 
-    /// Pull an image; returns its digest when known.
-    async fn pull(&self, image: &str) -> Result<Option<String>, BackendError>;
+    /// Pull an image from its registry, logging in with `auth` when given;
+    /// returns its digest when known.
+    async fn pull(&self, image: &str, auth: Option<&RegistryAuth>) -> Result<Option<String>, BackendError>;
+
+    /// Make an image ECS pulled from MWS's own ECR registry available as
+    /// the local reference `tag`, which containers then start from.
+    async fn load_image(&self, tag: &str, image: &crate::platform::RegistryImage) -> Result<(), BackendError> {
+        let _ = (tag, image);
+        Ok(())
+    }
 
     /// Set up what the task's containers share (network, volumes) and
     /// return a handle for it.
@@ -206,7 +223,7 @@ impl ContainerBackend for MetadataBackend {
     fn name(&self) -> &'static str {
         "metadata"
     }
-    async fn pull(&self, _image: &str) -> Result<Option<String>, BackendError> {
+    async fn pull(&self, _image: &str, _auth: Option<&RegistryAuth>) -> Result<Option<String>, BackendError> {
         Ok(None)
     }
     async fn prepare(&self, task: &TaskSpec) -> Result<String, BackendError> {

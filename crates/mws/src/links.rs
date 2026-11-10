@@ -1399,6 +1399,26 @@ pub(crate) struct RdsExports {
     pub s3: mws_s3::S3,
 }
 
+/// Roles RDS assumes itself (Enhanced Monitoring), checked against
+/// their trust policies.
+pub(crate) struct RdsRoles(pub mws_sts::Sts);
+
+impl mws_rds::ServiceRoles for RdsRoles {
+    fn can_assume(&self, ctx: &RequestContext, role_arn: &str, service_principal: &str, source_arn: &str) -> bool {
+        self.0
+            .service_can_assume(&mws_sts::ServiceAssume {
+                role_arn,
+                service_principal,
+                session_name: "rds",
+                duration_seconds: 3600,
+                source_account: Some(&ctx.caller.account_id),
+                source_arn: Some(source_arn),
+                now: ctx.received_at,
+            })
+            .is_ok()
+    }
+}
+
 #[async_trait::async_trait]
 impl mws_rds::ExportStore for RdsExports {
     fn assume(&self, ctx: &RequestContext, role_arn: &str, source_arn: &str) -> Result<RequestContext, String> {
@@ -1726,6 +1746,7 @@ pub(crate) struct EcsPlatform {
     pub logs: mws_logs::Logs,
     pub elb: mws_elb::Elb,
     pub autoscaling: mws_autoscaling::AutoScaling,
+    pub ecr: mws_ecr::Ecr,
 }
 
 impl EcsPlatform {
@@ -1903,6 +1924,65 @@ impl mws_ecs::TaskPlatform for EcsPlatform {
             "Targets": targets.iter().map(|(id, port)| serde_json::json!({"Id": id, "Port": port})).collect::<Vec<_>>(),
         });
         mws_core::Service::invoke(&self.elb, Self::service_linked(ctx), op, request).await.map(|_| ())
+    }
+
+    async fn target_group(
+        &self,
+        ctx: &RequestContext,
+        target_group_arn: &str,
+    ) -> Option<mws_ecs::platform::TargetGroupInfo> {
+        let out = mws_core::Service::invoke(
+            &self.elb,
+            Self::service_linked(ctx),
+            "DescribeTargetGroups",
+            serde_json::json!({ "TargetGroupArns": [target_group_arn] }),
+        )
+        .await
+        .ok()?;
+        let g = out.pointer("/TargetGroups/0")?;
+        Some(mws_ecs::platform::TargetGroupInfo {
+            target_group_arn: target_group_arn.to_string(),
+            target_type: g["TargetType"].as_str().unwrap_or("instance").to_string(),
+            load_balancer_arns: g["LoadBalancerArns"]
+                .as_array()
+                .into_iter()
+                .flatten()
+                .filter_map(|v| v.as_str().map(String::from))
+                .collect(),
+        })
+    }
+
+    fn is_registry_image(&self, image: &str, account: &str, region: &str) -> bool {
+        self.ecr.locate_image(image, account, region).is_some()
+    }
+
+    fn pull_registry_image(
+        &self,
+        ctx: Option<&RequestContext>,
+        image: &str,
+        account: &str,
+        region: &str,
+        architecture: &str,
+    ) -> Result<mws_ecs::platform::RegistryImage, mws_ecs::platform::RegistryPullError> {
+        use mws_ecs::platform::RegistryPullError as E;
+        let location = self.ecr.locate_image(image, account, region).ok_or(E::NotFound)?;
+        if let Some(ctx) = ctx {
+            self.ecr.authorize_registry_login(ctx).map_err(E::Auth)?;
+        }
+        let pulled = self.ecr.pull_image(ctx, &location, architecture).map_err(|e| match e {
+            mws_ecr::PullError::NotFound => E::NotFound,
+            mws_ecr::PullError::AccessDenied => E::Denied,
+            mws_ecr::PullError::Unsupported => E::Unsupported,
+        })?;
+        Ok(mws_ecs::platform::RegistryImage {
+            resolved_digest: pulled.resolved_digest,
+            digest: pulled.digest,
+            manifest: bytes::Bytes::from(pulled.manifest.into_bytes()),
+            manifest_media_type: pulled.media_type,
+            config_digest: pulled.config.digest.clone(),
+            config: pulled.config_data,
+            layers: pulled.layers.into_iter().map(|(d, data)| (d.digest, data)).collect(),
+        })
     }
 
     async fn target_health(&self, ctx: &RequestContext, target_group_arn: &str, id: &str, port: i32) -> Option<String> {
@@ -2455,5 +2535,52 @@ impl mws_lambda::FileSystems for LambdaFileSystems {
                 Err(mws_lambda::FileSystemMountError::Failure(e))
             }
         }
+    }
+}
+
+/// Image Builder build instances acting as their instance profile's role
+/// (assumed by `ec2.amazonaws.com` with the instance id as the session
+/// name, as instance metadata hands it out) when they push container
+/// images and upload build logs.
+pub(crate) struct ImageBuilderInstanceRoles {
+    pub iam: mws_iam::Iam,
+    pub sts: mws_sts::Sts,
+}
+
+impl mws_imagebuilder::InstanceRoles for ImageBuilderInstanceRoles {
+    fn instance_context(
+        &self,
+        base: &RequestContext,
+        account: &str,
+        instance_profile: &str,
+        instance_id: &str,
+    ) -> Result<RequestContext, String> {
+        let none = |why: String| format!("the build instance {instance_id} has no credentials: {why}");
+        let profile = self
+            .iam
+            .instance_profile(account, instance_profile)
+            .ok_or_else(|| none(format!("instance profile {instance_profile} does not exist")))?;
+        let role = profile.role_arn.ok_or_else(|| none(format!("instance profile {instance_profile} has no role")))?;
+        let instance_arn = format!("arn:{}:ec2:{}:{account}:instance/{instance_id}", base.partition, base.region);
+        let creds = self
+            .sts
+            .assume_role_as_service(&mws_sts::ServiceAssume {
+                role_arn: &role,
+                service_principal: "ec2.amazonaws.com",
+                session_name: instance_id,
+                duration_seconds: 6 * 3600,
+                source_account: Some(account),
+                source_arn: Some(&instance_arn),
+                now: base.received_at,
+            })
+            .map_err(|_| none(format!("EC2 cannot assume the role {role}")))?;
+        let resolved = self
+            .sts
+            .credential_store()
+            .resolve(&creds.access_key_id, Some(&creds.session_token), base.received_at)
+            .ok()
+            .flatten()
+            .ok_or_else(|| none(format!("EC2 cannot assume the role {role}")))?;
+        Ok(RequestContext { caller: resolved.caller, ..base.clone() })
     }
 }

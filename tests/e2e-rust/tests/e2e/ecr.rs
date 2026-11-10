@@ -269,9 +269,15 @@ async fn layers_images_scans_and_storage_classes() {
     assert_eq!(refs.referrers()[0].artifact_type(), Some("application/spdx+json"));
     assert_eq!(refs.referrers()[0].digest(), digest(referrer.as_bytes()));
 
-    // Scans finish on the emulated clock; one manual scan a day.
+    // Scans take a few seconds on the emulated clock; one manual scan a day.
     let scan = ecr.start_image_scan().repository_name("app").image_id(by_tag("v1")).send().await.unwrap();
     assert_eq!(scan.image_scan_status().unwrap().status().map(|s| s.as_str()), Some("IN_PROGRESS"));
+    let findings =
+        ecr.describe_image_scan_findings().repository_name("app").image_id(by_tag("v1")).send().await.unwrap();
+    assert_eq!(findings.image_scan_status().unwrap().status().map(|s| s.as_str()), Some("IN_PROGRESS"));
+    assert!(findings.image_scan_findings().is_none());
+    let (status, _) = mws.control("POST", "/_mws/clock", Some(r#"{"advanceSeconds":10}"#)).await;
+    assert_eq!(status, 200);
     let findings =
         ecr.describe_image_scan_findings().repository_name("app").image_id(by_tag("v1")).send().await.unwrap();
     assert_eq!(findings.image_scan_status().unwrap().status().map(|s| s.as_str()), Some("COMPLETE"));
@@ -830,4 +836,186 @@ async fn pull_through_cache_from_an_upstream_registry_over_http() {
     // An image the upstream doesn't have is not found.
     let (status, _, _) = registry_get(&mws, &ecr, &format!("/v2/ecr-public/{alias}/nope/manifests/latest")).await;
     assert_eq!(status, 404);
+}
+
+/// Scan events on the default bus (basic and Inspector), delivered to an
+/// SQS queue; returns the SQS client and queue URL.
+async fn scan_event_queue(mws: &Mws) -> (aws_sdk_sqs::Client, String) {
+    let cfg = mws.root_sdk_config().await;
+    let eb = aws_sdk_eventbridge::Client::new(&cfg);
+    let sqs = aws_sdk_sqs::Client::new(&cfg);
+    let url = sqs.create_queue().queue_name("scan-events").send().await.unwrap().queue_url.unwrap();
+    let attrs = sqs
+        .get_queue_attributes()
+        .queue_url(&url)
+        .attribute_names(aws_sdk_sqs::types::QueueAttributeName::QueueArn)
+        .send()
+        .await
+        .unwrap();
+    let queue_arn = attrs.attributes().unwrap()[&aws_sdk_sqs::types::QueueAttributeName::QueueArn].clone();
+    let policy = serde_json::json!({"Version":"2012-10-17","Statement":[{"Effect":"Allow",
+        "Principal":{"Service":"events.amazonaws.com"},"Action":"sqs:SendMessage","Resource":queue_arn}]});
+    sqs.set_queue_attributes()
+        .queue_url(&url)
+        .attributes(aws_sdk_sqs::types::QueueAttributeName::Policy, policy.to_string())
+        .send()
+        .await
+        .unwrap();
+    eb.put_rule()
+        .name("scans")
+        .event_pattern(r#"{"detail-type":["ECR Image Scan","Inspector2 Scan"]}"#)
+        .send()
+        .await
+        .unwrap();
+    eb.put_targets()
+        .rule("scans")
+        .targets(aws_sdk_eventbridge::types::Target::builder().id("q").arn(&queue_arn).build().unwrap())
+        .send()
+        .await
+        .unwrap();
+    (sqs, url)
+}
+
+/// Wait until `n` events have arrived on the queue.
+async fn scan_events(sqs: &aws_sdk_sqs::Client, url: &str, n: usize) -> Vec<serde_json::Value> {
+    let mut seen = Vec::new();
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(15);
+    while seen.len() < n {
+        assert!(std::time::Instant::now() < deadline, "only {} of {n} scan events: {seen:?}", seen.len());
+        let r = sqs.receive_message().queue_url(url).max_number_of_messages(10).send().await.unwrap();
+        for m in r.messages() {
+            seen.push(serde_json::from_str(m.body().unwrap()).unwrap());
+            sqs.delete_message().queue_url(url).receipt_handle(m.receipt_handle().unwrap()).send().await.unwrap();
+        }
+        if r.messages().is_empty() {
+            tokio::time::sleep(std::time::Duration::from_millis(200)).await;
+        }
+    }
+    seen
+}
+
+fn scan_status(r: &aws_sdk_ecr::operation::describe_image_scan_findings::DescribeImageScanFindingsOutput) -> &str {
+    r.image_scan_status().unwrap().status().unwrap().as_str()
+}
+
+/// Basic scans on push are asynchronous: `IN_PROGRESS` until the scan
+/// completes on the emulated clock, then an `aws.ecr` "ECR Image Scan"
+/// event.
+#[tokio::test]
+async fn basic_scans_on_push_finish_later() {
+    let mws = Mws::start().await;
+    let ecr = client(&mws).await;
+    let (sqs, url) = scan_event_queue(&mws).await;
+    ecr.create_repository()
+        .repository_name("basic")
+        .image_scanning_configuration(
+            aws_sdk_ecr::types::ImageScanningConfiguration::builder().scan_on_push(true).build(),
+        )
+        .send()
+        .await
+        .unwrap();
+    let d = push(&ecr, "basic", "v1", "basic").await;
+    let r = ecr.describe_image_scan_findings().repository_name("basic").image_id(by_tag("v1")).send().await.unwrap();
+    assert_eq!(scan_status(&r), "IN_PROGRESS");
+    assert!(r.image_scan_findings().is_none());
+    let (status, _) = mws.control("POST", "/_mws/clock", Some(r#"{"advanceSeconds":10}"#)).await;
+    assert_eq!(status, 200);
+    let r = ecr.describe_image_scan_findings().repository_name("basic").image_id(by_tag("v1")).send().await.unwrap();
+    assert_eq!(scan_status(&r), "COMPLETE");
+    let findings = r.image_scan_findings().unwrap();
+    assert!(findings.findings().is_empty());
+    assert!(findings.enhanced_findings().is_empty());
+    let events = scan_events(&sqs, &url, 1).await;
+    assert_eq!(events[0]["source"], "aws.ecr");
+    assert_eq!(events[0]["detail-type"], "ECR Image Scan");
+    assert_eq!(events[0]["detail"]["image-digest"], d.as_str());
+    assert_eq!(events[0]["detail"]["scan-status"], "COMPLETE");
+}
+
+/// With the registry on enhanced scanning, Amazon Inspector scans images
+/// in the repositories its rules match: `PENDING`, then `ACTIVE`
+/// (continuous) or `COMPLETE` (on push), findings as `enhancedFindings`,
+/// and `aws.inspector2` events. Manual scans are not available.
+#[tokio::test]
+async fn enhanced_scanning_runs_through_inspector() {
+    let mws = Mws::start().await;
+    let ecr = client(&mws).await;
+    let (sqs, url) = scan_event_queue(&mws).await;
+    let rule = |frequency: ScanFrequency, filter: &str| {
+        RegistryScanningRule::builder()
+            .scan_frequency(frequency)
+            .repository_filters(
+                ScanningRepositoryFilter::builder()
+                    .filter(filter)
+                    .filter_type(ScanningRepositoryFilterType::Wildcard)
+                    .build()
+                    .unwrap(),
+            )
+            .build()
+            .unwrap()
+    };
+    ecr.put_registry_scanning_configuration()
+        .scan_type(ScanType::Enhanced)
+        .rules(rule(ScanFrequency::ContinuousScan, "cont-*"))
+        .rules(rule(ScanFrequency::ScanOnPush, "push-*"))
+        .send()
+        .await
+        .unwrap();
+    for name in ["cont-app", "push-app"] {
+        ecr.create_repository().repository_name(name).send().await.unwrap();
+    }
+    // The repository's own scan-on-push setting doesn't apply with
+    // enhanced scanning.
+    ecr.create_repository()
+        .repository_name("other")
+        .image_scanning_configuration(
+            aws_sdk_ecr::types::ImageScanningConfiguration::builder().scan_on_push(true).build(),
+        )
+        .send()
+        .await
+        .unwrap();
+    let cont = push(&ecr, "cont-app", "v1", "cont").await;
+    let pushed = push(&ecr, "push-app", "v1", "push").await;
+    push(&ecr, "other", "v1", "other").await;
+
+    let r = ecr.describe_image_scan_findings().repository_name("cont-app").image_id(by_tag("v1")).send().await.unwrap();
+    assert_eq!(scan_status(&r), "PENDING");
+    assert!(r.image_scan_findings().is_none());
+    let e =
+        ecr.describe_image_scan_findings().repository_name("other").image_id(by_tag("v1")).send().await.unwrap_err();
+    assert_eq!(code(e.as_service_error().unwrap()), "ScanNotFoundException");
+    let e = ecr.start_image_scan().repository_name("cont-app").image_id(by_tag("v1")).send().await.unwrap_err();
+    assert_eq!(code(e.as_service_error().unwrap()), "ValidationException");
+
+    let (status, _) = mws.control("POST", "/_mws/clock", Some(r#"{"advanceSeconds":60}"#)).await;
+    assert_eq!(status, 200);
+    let r = ecr.describe_image_scan_findings().repository_name("cont-app").image_id(by_tag("v1")).send().await.unwrap();
+    assert_eq!(scan_status(&r), "ACTIVE");
+    let findings = r.image_scan_findings().unwrap();
+    assert!(findings.image_scan_completed_at().is_some());
+    assert!(findings.enhanced_findings().is_empty());
+    assert!(findings.findings().is_empty());
+    let r = ecr.describe_image_scan_findings().repository_name("push-app").image_id(by_tag("v1")).send().await.unwrap();
+    assert_eq!(scan_status(&r), "COMPLETE");
+    let described = ecr.describe_images().repository_name("cont-app").send().await.unwrap();
+    let detail = &described.image_details()[0];
+    assert_eq!(detail.image_scan_status().unwrap().status().map(|s| s.as_str()), Some("ACTIVE"));
+    assert!(detail.image_scan_findings_summary().is_some());
+
+    let mut events = scan_events(&sqs, &url, 2).await;
+    events.sort_by_key(|e| e["detail"]["image-digest"].as_str().unwrap_or_default().to_string());
+    let mut want = [cont.clone(), pushed.clone()];
+    want.sort();
+    for (e, d) in events.iter().zip(&want) {
+        assert_eq!(e["source"], "aws.inspector2", "{e}");
+        assert_eq!(e["detail-type"], "Inspector2 Scan");
+        assert_eq!(e["detail"]["scan-status"], "INITIAL_SCAN_COMPLETE");
+        assert_eq!(e["detail"]["image-digest"], d.as_str());
+    }
+    let cont_event = events.iter().find(|e| e["detail"]["image-digest"] == cont.as_str()).unwrap();
+    assert_eq!(cont_event["detail"]["repository-name"], format!("arn:aws:ecr:us-east-1:{ACCOUNT}:repository/cont-app"));
+    // Nothing else (no basic "ECR Image Scan") arrives.
+    tokio::time::sleep(std::time::Duration::from_millis(500)).await;
+    let r = sqs.receive_message().queue_url(&url).send().await.unwrap();
+    assert!(r.messages().is_empty(), "{:?}", r.messages());
 }

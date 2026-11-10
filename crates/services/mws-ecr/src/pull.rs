@@ -51,6 +51,13 @@ pub enum PullError {
 }
 
 impl Ecr {
+    /// Whether `ctx`'s caller may log in to the registry
+    /// (`ecr:GetAuthorizationToken`), as a service pulling with the
+    /// caller's credentials does first (ECS with a task's execution role).
+    pub fn authorize_registry_login(&self, ctx: &RequestContext) -> Result<(), mws_core::ServiceError> {
+        crate::names::authorize_registry(ctx, "ecr:GetAuthorizationToken", "*")
+    }
+
     /// The repository and reference an image URI names. URIs use AWS's
     /// registry host (`<account>.dkr.ecr.<region>.amazonaws.com`) or the one
     /// repository URIs name (`MWS_ECR_REGISTRY_HOST`); when that host does

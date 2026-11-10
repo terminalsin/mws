@@ -12,6 +12,7 @@ pub mod global;
 pub mod groups;
 pub mod instance;
 pub mod limitless;
+pub mod maintenance;
 pub mod misc;
 pub mod params;
 pub mod pitr;

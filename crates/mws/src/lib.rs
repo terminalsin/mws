@@ -550,7 +550,9 @@ fn build_with_store(config: Config, store: Option<Arc<Store>>) -> Mws {
     rds.set_network(Arc::new(links::RdsNetwork(ec2.clone())));
     rds.set_event_sink(Arc::new(links::RdsEvents { events: events.clone(), sns: sns.clone() }));
     rds.set_export_store(Arc::new(links::RdsExports { sts: sts.clone(), s3: s3.clone() }));
+    rds.set_service_roles(Arc::new(links::RdsRoles(sts.clone())));
     let eks = Eks::with_sts(sts.clone());
+    eks.set_kms(kms.clone());
     eks.set_infrastructure(Arc::new(eks::EksInfrastructure {
         ec2: ec2.clone(),
         iam: iam.clone(),
@@ -601,10 +603,12 @@ fn build_with_store(config: Config, store: Option<Arc<Store>>) -> Mws {
         .set_network(Arc::new(links::ElastiCacheNetwork { ec2: ec2.clone(), partition: config.iam.partition.clone() }));
     elasticache.set_snapshot_bucket(Arc::new(links::ElastiCacheSnapshots(s3.clone())));
     elasticache.set_event_notifier(Arc::new(links::ElastiCacheNotifications(sns.clone())));
+    elasticache.set_kms(kms.clone());
     elasticache.set_metric_publisher(Arc::new(links::ElastiCacheToCloudWatch(cloudwatch.clone())));
     ecr.set_upstream_endpoints(config.ecr_upstream_endpoints.clone());
     ecr.set_upstream_credentials(Arc::new(links::EcrUpstreamCredentials(secretsmanager.clone())));
     imagebuilder.set_ecr(Arc::new(ecr.clone()));
+    imagebuilder.set_instance_roles(Arc::new(links::ImageBuilderInstanceRoles { iam: iam.clone(), sts: sts.clone() }));
     elasticache.set_log_delivery(Arc::new(links::ElastiCacheLogs { logs: logs.clone(), firehose: firehose.clone() }));
     let ecs = mws_ecs::Ecs::new(config.ecs_backend.resolve(config.ecs_docker_cli.as_deref()));
     tracing::info!(backend = ecs.backend_name(), "ECS container backend");
@@ -616,6 +620,7 @@ fn build_with_store(config: Config, store: Option<Arc<Store>>) -> Mws {
         logs: logs.clone(),
         elb: elb.clone(),
         autoscaling: autoscaling.clone(),
+        ecr: ecr.clone(),
     }));
     events.register_target_sink("ecs", Arc::new(wiring::EcsTarget(ecs.clone())));
     let cloudformation = CloudFormation::new();

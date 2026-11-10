@@ -5,6 +5,7 @@
 use mws_core::{ConditionContext, RequestContext, ServiceError};
 
 use crate::generated::{errors, types};
+use crate::state::durations;
 use crate::util::{self, param, text};
 use crate::Eks;
 
@@ -142,9 +143,12 @@ impl Eks {
         };
         rec.identity_providers.insert(name.clone(), config);
         rec.cluster.status = Some("UPDATING".into());
+        rec.begin(format!("idp/{name}"), ctx.received_at, durations::IDENTITY_PROVIDER);
+        let done_at = rec.begin("cluster", ctx.received_at, durations::IDENTITY_PROVIDER);
         let update = crate::updates::push(
             rec,
             ctx.received_at,
+            done_at,
             "AssociateIdentityProviderConfig",
             vec![param("IdentityProviderConfig", format!("[{{\"type\":\"oidc\",\"name\":\"{name}\"}}]"))],
             None,
@@ -225,9 +229,12 @@ impl Eks {
         }
         p.status = Some("DELETING".into());
         rec.cluster.status = Some("UPDATING".into());
+        rec.begin(format!("idp/{}", idp.name), ctx.received_at, durations::IDENTITY_PROVIDER);
+        let done_at = rec.begin("cluster", ctx.received_at, durations::IDENTITY_PROVIDER);
         let update = crate::updates::push(
             rec,
             ctx.received_at,
+            done_at,
             "DisassociateIdentityProviderConfig",
             vec![param("IdentityProviderConfig", format!("[{{\"type\":\"oidc\",\"name\":\"{}\"}}]", idp.name))],
             None,

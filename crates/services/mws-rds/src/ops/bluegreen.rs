@@ -45,9 +45,9 @@ impl Rds {
                     "cluster" => {
                         r.clusters.get(&name).is_some_and(|c| c.cluster.status.as_deref() == Some("available"))
                     }
-                    _ => {
-                        r.instances.get(&name).is_some_and(|i| i.db.db_instance_status.as_deref() == Some("available"))
-                    }
+                    _ => r.instances.get(&name).is_some_and(|i| {
+                        super::maintenance::operational(i.db.db_instance_status.as_deref().unwrap_or_default())
+                    }),
                 })
             });
             if ready {

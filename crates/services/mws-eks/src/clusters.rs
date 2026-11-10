@@ -14,7 +14,7 @@ use crate::catalog;
 const CLUSTERS_QUOTA: &str = "L-1194D53C";
 use crate::generated::{errors, types};
 use crate::infra::SubnetFacts;
-use crate::state::{AccessEntryRec, ClusterRec};
+use crate::state::{durations, AccessEntryRec, ClusterRec};
 use crate::util::{self, param, text, Tags};
 use crate::Eks;
 
@@ -26,53 +26,117 @@ pub(crate) fn convert<A: Serialize, B: DeserializeOwned + Default>(a: &A) -> B {
 }
 
 impl Eks {
-    /// Finish transitions: what was being created, updated or deleted when
-    /// the last request ran is done now.
+    /// Finish the transitions whose time is up on the emulated clock
+    /// (`ctx.received_at`): creates become `ACTIVE`, updates finish and
+    /// deletes go away. Until then the resource keeps its transitional
+    /// state, and calls that need it settled fail as they do on AWS.
     pub(crate) fn settle(&self, ctx: &RequestContext) {
+        let now = ctx.received_at;
         let mut st = self.write();
         let Some(region) = st.regions.get_mut(&format!("{}/{}", util::account(ctx), ctx.region)) else { return };
-        region.clusters.retain(|_, c| c.cluster.status.as_deref() != Some("DELETING"));
+        region.clusters.retain(|_, c| c.cluster.status.as_deref() != Some("DELETING") || !c.due("cluster", now));
         for rec in region.clusters.values_mut() {
             let serving = rec.control_plane.as_ref().is_none_or(|c| c.ready);
-            if matches!(rec.cluster.status.as_deref(), Some("CREATING" | "UPDATING")) && serving {
+            if matches!(rec.cluster.status.as_deref(), Some("CREATING" | "UPDATING"))
+                && serving
+                && rec.due("cluster", now)
+            {
                 rec.cluster.status = Some("ACTIVE".into());
             }
-            rec.nodegroups.retain(|_, n| n.nodegroup.status.as_deref() != Some("DELETING"));
-            for n in rec.nodegroups.values_mut() {
-                if matches!(n.nodegroup.status.as_deref(), Some("CREATING" | "UPDATING")) {
-                    n.nodegroup.status = Some("ACTIVE".into());
-                }
+            let due = |rec: &ClusterRec, kind: &str, name: &str| rec.due(&format!("{kind}/{name}"), now);
+            let gone: Vec<String> = rec
+                .nodegroups
+                .iter()
+                .filter(|(n, g)| g.nodegroup.status.as_deref() == Some("DELETING") && due(rec, "nodegroup", n))
+                .map(|(n, _)| n.clone())
+                .collect();
+            for n in gone {
+                rec.nodegroups.remove(&n);
             }
-            rec.addons.retain(|_, a| a.status.as_deref() != Some("DELETING"));
-            for a in rec.addons.values_mut() {
-                if matches!(a.status.as_deref(), Some("CREATING" | "UPDATING")) {
+            let ready: Vec<String> = rec
+                .nodegroups
+                .iter()
+                .filter(|(n, g)| {
+                    matches!(g.nodegroup.status.as_deref(), Some("CREATING" | "UPDATING")) && due(rec, "nodegroup", n)
+                })
+                .map(|(n, _)| n.clone())
+                .collect();
+            for n in ready {
+                rec.nodegroups.get_mut(&n).expect("listed").nodegroup.status = Some("ACTIVE".into());
+            }
+            let addons: Vec<(String, bool)> = rec
+                .addons
+                .iter()
+                .filter(|(n, _)| due(rec, "addon", n))
+                .map(|(n, a)| (n.clone(), a.status.as_deref() == Some("DELETING")))
+                .collect();
+            for (n, deleting) in addons {
+                if deleting {
+                    rec.addons.remove(&n);
+                } else if let Some(a) =
+                    rec.addons.get_mut(&n).filter(|a| matches!(a.status.as_deref(), Some("CREATING" | "UPDATING")))
+                {
                     a.status = Some("ACTIVE".into());
                 }
             }
-            rec.fargate_profiles.retain(|_, f| f.status.as_deref() != Some("DELETING"));
-            for f in rec.fargate_profiles.values_mut() {
-                if f.status.as_deref() == Some("CREATING") {
+            let profiles: Vec<(String, bool)> = rec
+                .fargate_profiles
+                .iter()
+                .filter(|(n, _)| due(rec, "fargate", n))
+                .map(|(n, f)| (n.clone(), f.status.as_deref() == Some("DELETING")))
+                .collect();
+            for (n, deleting) in profiles {
+                if deleting {
+                    rec.fargate_profiles.remove(&n);
+                } else if let Some(f) =
+                    rec.fargate_profiles.get_mut(&n).filter(|f| f.status.as_deref() == Some("CREATING"))
+                {
                     f.status = Some("ACTIVE".into());
                 }
             }
-            rec.identity_providers.retain(|_, p| p.status.as_deref() != Some("DELETING"));
-            for p in rec.identity_providers.values_mut() {
-                if p.status.as_deref() == Some("CREATING") {
+            let providers: Vec<(String, bool)> = rec
+                .identity_providers
+                .iter()
+                .filter(|(n, _)| due(rec, "idp", n))
+                .map(|(n, p)| (n.clone(), p.status.as_deref() == Some("DELETING")))
+                .collect();
+            for (n, deleting) in providers {
+                if deleting {
+                    rec.identity_providers.remove(&n);
+                } else if let Some(p) =
+                    rec.identity_providers.get_mut(&n).filter(|p| p.status.as_deref() == Some("CREATING"))
+                {
                     p.status = Some("ACTIVE".into());
                 }
             }
-            rec.capabilities.retain(|_, c| c.status.as_deref() != Some("DELETING"));
-            for c in rec.capabilities.values_mut() {
-                if matches!(c.status.as_deref(), Some("CREATING" | "UPDATING")) {
+            let capabilities: Vec<(String, bool)> = rec
+                .capabilities
+                .iter()
+                .filter(|(n, _)| due(rec, "capability", n))
+                .map(|(n, c)| (n.clone(), c.status.as_deref() == Some("DELETING")))
+                .collect();
+            for (n, deleting) in capabilities {
+                if deleting {
+                    rec.capabilities.remove(&n);
+                } else if let Some(c) = rec
+                    .capabilities
+                    .get_mut(&n)
+                    .filter(|c| matches!(c.status.as_deref(), Some("CREATING" | "UPDATING")))
+                {
                     c.status = Some("ACTIVE".into());
                 }
             }
-            if let Some(r) = rec.insights_refresh.as_mut().filter(|r| r.status == "IN_PROGRESS") {
-                r.status = "COMPLETED".into();
-                r.ended_at = Some(ctx.received_at);
+            if rec.due("insights", now) {
+                if let Some(r) = rec.insights_refresh.as_mut().filter(|r| r.status == "IN_PROGRESS") {
+                    r.status = "COMPLETED".into();
+                    r.ended_at = Some(now);
+                }
             }
-            crate::certs::settle(rec);
-            crate::updates::settle(rec);
+            if rec.due("certs", now) {
+                crate::certs::settle(rec);
+            }
+            crate::updates::settle(rec, now);
+            rec.settle_at.retain(|_, at| *at > now);
         }
         region.subscriptions.retain(|_, s| s.status.as_deref() != Some("DELETING"));
         for s in region.subscriptions.values_mut() {
@@ -206,7 +270,7 @@ impl Eks {
 
         // Encryption.
         if let Some(enc) = &input.encryption_config {
-            check_encryption(enc)?;
+            self.check_encryption(ctx, enc)?;
         }
 
         // Roles.
@@ -371,6 +435,7 @@ impl Eks {
             ..Default::default()
         };
         crate::certs::refresh_cluster_certificate(&mut rec);
+        rec.begin("cluster", now, durations::CLUSTER_CREATE);
         self.plan_control_plane(ctx, &mut rec, bootstrap.then(|| creator_principal(ctx)));
         if mode != "CONFIG_MAP" && bootstrap {
             let creator = creator_principal(ctx);
@@ -495,6 +560,7 @@ impl Eks {
                     .with_field("clusterName", text(&name)));
             }
             rec.cluster.status = Some("DELETING".into());
+            rec.begin("cluster", ctx.received_at, durations::CLUSTER_DELETE);
             for a in rec.addons.values_mut() {
                 a.status = Some("DELETING".into());
             }
@@ -583,6 +649,7 @@ impl Eks {
             .with_field("clusterName", text(&input.name)));
         }
         rec.cluster.status = Some("DELETING".into());
+        rec.begin("cluster", ctx.received_at, durations::CLUSTER_DELETE);
         Ok(types::DeregisterClusterResponse { cluster: Some(rec.cluster.clone()) })
     }
 
@@ -624,6 +691,7 @@ impl Eks {
         rec.cluster.version = Some(target.version.into());
         rec.cluster.platform_version = Some(target.platform_version.into());
         rec.cluster.status = Some("UPDATING".into());
+        let done_at = rec.begin("cluster", ctx.received_at, durations::CLUSTER_VERSION_UPDATE);
         let upgrade = rec.control_plane.as_mut().map(|cp| {
             cp.version = target.version.into();
             cp.ready = false;
@@ -631,6 +699,7 @@ impl Eks {
         let update = crate::updates::push(
             rec,
             ctx.received_at,
+            done_at,
             "VersionUpdate",
             vec![param("Version", target.version), param("PlatformVersion", target.platform_version)],
             None,
@@ -883,7 +952,8 @@ impl Eks {
             ("ControlPlaneComponentConfigUpdate", params)
         };
         rec.cluster.status = Some("UPDATING".into());
-        let update = crate::updates::push(rec, now, kind, params, None);
+        let done_at = rec.begin("cluster", now, durations::CLUSTER_UPDATE);
+        let update = crate::updates::push(rec, now, done_at, kind, params, None);
         Ok(types::UpdateClusterConfigResponse { update: Some(update) })
     }
 
@@ -893,24 +963,35 @@ impl Eks {
         input: types::AssociateEncryptionConfigRequest,
     ) -> Result<types::AssociateEncryptionConfigResponse, ServiceError> {
         let arn = util::cluster_arn(ctx, &input.cluster_name);
+        let precheck = |rec: &ClusterRec| -> Result<(), ServiceError> {
+            check_updatable(rec, &input.cluster_name)?;
+            if rec.cluster.encryption_config.as_ref().is_some_and(|e| !e.is_empty()) {
+                return Err(errors::invalid_request("Encryption is already enabled on the cluster")
+                    .with_field("clusterName", text(&input.cluster_name)));
+            }
+            Ok(())
+        };
+        {
+            let mut st = self.write();
+            let rec = util::cluster(&mut st, ctx, &input.cluster_name)?;
+            util::authorize(
+                ctx,
+                "AssociateEncryptionConfig",
+                &arn,
+                rec.cluster.tags.as_ref(),
+                None,
+                ConditionContext::new(),
+            )?;
+            precheck(rec)?;
+        }
+        // KMS is asked without the EKS lock held.
+        self.check_encryption(ctx, &input.encryption_config)?;
         let mut st = self.write();
         let rec = util::cluster(&mut st, ctx, &input.cluster_name)?;
-        util::authorize(
-            ctx,
-            "AssociateEncryptionConfig",
-            &arn,
-            rec.cluster.tags.as_ref(),
-            None,
-            ConditionContext::new(),
-        )?;
-        check_updatable(rec, &input.cluster_name)?;
-        if rec.cluster.encryption_config.as_ref().is_some_and(|e| !e.is_empty()) {
-            return Err(errors::invalid_request("Encryption is already enabled on the cluster")
-                .with_field("clusterName", text(&input.cluster_name)));
-        }
-        check_encryption(&input.encryption_config)?;
+        precheck(rec)?;
         rec.cluster.encryption_config = Some(input.encryption_config.clone());
         rec.cluster.status = Some("UPDATING".into());
+        let done_at = rec.begin("cluster", ctx.received_at, durations::CLUSTER_UPDATE);
         let value = serde_json::to_string(
             &input
                 .encryption_config
@@ -927,6 +1008,7 @@ impl Eks {
         let update = crate::updates::push(
             rec,
             ctx.received_at,
+            done_at,
             "AssociateEncryptionConfig",
             vec![param("EncryptionConfig", value)],
             None,
@@ -1051,7 +1133,41 @@ fn vpc_of(facts: &[SubnetFacts]) -> Result<String, ServiceError> {
     Ok(first)
 }
 
-fn check_encryption(enc: &[types::EncryptionConfig]) -> Result<(), ServiceError> {
+impl Eks {
+    /// Check an envelope encryption configuration the way EKS does: one
+    /// configuration for `secrets`, with a KMS key named by key or alias
+    /// ARN in the cluster's Region. EKS calls `DescribeKey` and
+    /// `CreateGrant` on the key as the caller, so both must be allowed, and
+    /// the key must be an enabled symmetric encryption key. Never call with
+    /// the state lock held.
+    fn check_encryption(&self, ctx: &RequestContext, enc: &[types::EncryptionConfig]) -> Result<(), ServiceError> {
+        let key = check_encryption_shape(enc)?;
+        let Some(kms) = self.kms() else { return Ok(()) };
+        let region = key.split(':').nth(3).unwrap_or_default();
+        if region != ctx.region {
+            return Err(errors::invalid_parameter(format!(
+                "KMS key {key} must be in the same Region as the cluster ({}).",
+                ctx.region
+            )));
+        }
+        let k = kms
+            .key_via(ctx, "eks", key, &["kms:DescribeKey", "kms:CreateGrant"])
+            .map_err(|e| errors::invalid_parameter(format!("Unable to use KMS key {key}: {}", e.message)))?;
+        if k.key_spec != "SYMMETRIC_DEFAULT" || k.key_usage != "ENCRYPT_DECRYPT" {
+            return Err(errors::invalid_parameter(format!(
+                "KMS key {key} is not a symmetric encryption key. EKS envelope encryption needs a symmetric KMS key ({} {} given).",
+                k.key_spec, k.key_usage
+            )));
+        }
+        if k.key_state != "Enabled" {
+            return Err(errors::invalid_parameter(format!("KMS key {key} is in {} state.", k.key_state)));
+        }
+        Ok(())
+    }
+}
+
+/// The key ARN of a well-formed encryption configuration.
+fn check_encryption_shape(enc: &[types::EncryptionConfig]) -> Result<&str, ServiceError> {
     if enc.len() != 1 {
         return Err(errors::invalid_parameter("Only one encryption configuration is supported."));
     }
@@ -1061,10 +1177,14 @@ fn check_encryption(enc: &[types::EncryptionConfig]) -> Result<(), ServiceError>
     }
     let key = e.provider.as_ref().and_then(|p| p.key_arn.as_deref()).unwrap_or_default();
     let parts: Vec<&str> = key.splitn(6, ':').collect();
-    if parts.len() != 6 || parts[0] != "arn" || parts[2] != "kms" || !parts[5].starts_with("key/") {
+    if parts.len() != 6
+        || parts[0] != "arn"
+        || parts[2] != "kms"
+        || !(parts[5].starts_with("key/") || parts[5].starts_with("alias/"))
+    {
         return Err(errors::invalid_parameter(format!("Invalid KMS key ARN: {key}")));
     }
-    Ok(())
+    Ok(key)
 }
 
 fn check_public_cidrs(cidrs: &[String]) -> Result<(), ServiceError> {

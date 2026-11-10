@@ -531,6 +531,9 @@ async fn auto_scaling_elb_rds_and_eks_limits_follow_quotas() {
         .send()
         .await
         .unwrap();
+    // EKS clusters take minutes (of emulated time) to become ACTIVE.
+    let (status, _) = mws.control("POST", "/_mws/clock", Some(r#"{"advanceSeconds":600}"#)).await;
+    assert_eq!(status, 200);
     eks.wait_until_cluster_active().name("quotas").wait(Duration::from_secs(60)).await.unwrap();
     let nodegroup = |max: i32| {
         eks.create_nodegroup()

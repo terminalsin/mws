@@ -584,7 +584,7 @@ impl Rds {
                     "The engine of DB instance {i} isn't compatible with the proxy's engine family {family}."
                 )));
             }
-            if db.db_instance_status.as_deref() != Some("available") {
+            if !super::maintenance::operational(db.db_instance_status.as_deref().unwrap_or_default()) {
                 return Err(super::invalid_instance_state(i, db.db_instance_status.as_deref().unwrap_or_default()));
             }
         }

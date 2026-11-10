@@ -1,6 +1,9 @@
 //! The task metadata endpoint (version 4) and the task role credentials
 //! endpoint, as containers reach them through
 //! `ECS_CONTAINER_METADATA_URI_V4` and `AWS_CONTAINER_CREDENTIALS_FULL_URI`.
+//! Like the ECS agent, the credentials endpoint hands out a fresh session
+//! once the current one is close to expiring, so long-running tasks keep
+//! working credentials.
 //!
 //! Paths, under [`PREFIX`]:
 //!
@@ -124,6 +127,41 @@ fn task_json(rec: &TaskRecord) -> Value {
     })
 }
 
+/// How long before expiry the credentials endpoint rotates a session.
+const REFRESH_BEFORE_MINUTES: i64 = 30;
+
+/// Assume the task role again when the stored session is about to expire.
+fn refresh_credentials(ecs: &Ecs, rec: &mut TaskRecord) {
+    let Some(c) = rec.credentials.as_ref() else { return };
+    let now = ecs.now();
+    if c.expiration.is_some_and(|e| e - chrono::Duration::minutes(REFRESH_BEFORE_MINUTES) > now)
+        || rec.task.last_status.as_deref() == Some("STOPPED")
+    {
+        return;
+    }
+    let (Some(p), Some(arn)) = (ecs.platform(), rec.task.task_arn.clone()) else { return };
+    let account = crate::tasks::account_of_arn(&arn);
+    let fresh = match p.assume_task_role(&c.role_arn, &arn, &account, now) {
+        Ok(f) => f,
+        Err(e) => {
+            tracing::warn!(task = %arn, "ECS cannot refresh the task role credentials: {e}");
+            return;
+        }
+    };
+    let stored = crate::state::TaskCredentials {
+        role_arn: c.role_arn.clone(),
+        access_key_id: fresh.access_key_id,
+        secret_access_key: fresh.secret_access_key,
+        session_token: fresh.session_token,
+        expiration: Some(fresh.expiration),
+    };
+    let mut st = ecs.lock();
+    if let Some(r) = st.regions.values_mut().find_map(|r| r.tasks.get_mut(&arn)) {
+        r.credentials = Some(stored.clone());
+    }
+    rec.credentials = Some(stored);
+}
+
 fn stats(name: &str, id: &str) -> Value {
     json!({
         "read": chrono::Utc::now().to_rfc3339(),
@@ -154,8 +192,9 @@ pub fn serve(ecs: &Ecs, request: &HttpRequest) -> HttpResponse {
             .find(|t| t.task.task_arn.as_deref().is_some_and(|a| crate::names::last_segment(a) == task_id))
             .cloned()
     };
-    let Some(rec) = rec else { return not_found() };
+    let Some(mut rec) = rec else { return not_found() };
     if container == "credentials" && tail.is_empty() {
+        refresh_credentials(ecs, &mut rec);
         return match &rec.credentials {
             Some(c) => respond(
                 200,

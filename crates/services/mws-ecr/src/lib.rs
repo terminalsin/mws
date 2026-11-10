@@ -18,9 +18,9 @@
 //! Beyond storage: tag immutability (with exclusion filters), lifecycle
 //! policies that expire or archive images on the emulated clock (and their
 //! previews), replication to other Regions and accounts (with registry
-//! policies, creation templates and backfills), scan-on-push and manual
-//! scans (MWS has no vulnerability database, so scans complete with no
-//! findings), archival storage, repository creation templates (including
+//! policies, creation templates and backfills), basic scans on push and
+//! manual ones, enhanced (Amazon Inspector) scan states and events (MWS
+//! has no vulnerability database, so scans complete with no findings), archival storage, repository creation templates (including
 //! create-on-push), pull-time update exclusions, KMS encryption settings
 //! checked against KMS, and `aws.ecr` events on EventBridge.
 
@@ -39,6 +39,7 @@ mod registry;
 mod registry_config;
 mod replication;
 mod repos;
+mod scans;
 mod state;
 
 use std::sync::{Arc, Mutex, MutexGuard, OnceLock};
@@ -61,10 +62,13 @@ tokio::task_local! {
     pub(crate) static SESSION_TOKEN: Option<String>;
 }
 
-/// An `aws.ecr` event for the account's default event bus.
+/// An `aws.ecr` (or, for enhanced scans, `aws.inspector2`) event for the
+/// account's default event bus.
 #[derive(Debug, Clone)]
 pub struct EcrEvent {
     pub partition: String,
+    /// `aws.ecr`, or `aws.inspector2` for enhanced scanning.
+    pub source: String,
     pub account: String,
     pub region: String,
     pub detail_type: String,
@@ -109,7 +113,7 @@ impl Ecr {
         self
     }
 
-    /// `aws.ecr` events go here.
+    /// `aws.ecr` and `aws.inspector2` events go here.
     pub fn set_event_sink(&self, sink: Arc<dyn EventSink>) {
         let _ = self.inner.events.set(sink);
     }

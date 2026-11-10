@@ -9,9 +9,20 @@ profiles and access entries. When Docker is available each cluster also runs
 a real Kubernetes API server (k3s), so `aws eks update-kubeconfig` and
 `kubectl` work against it, with IAM authentication through access entries.
 
-Resources move through EKS's states (`CREATING`, `UPDATING`, `DELETING`) and
-settle on the next request, so SDK waiters (`ClusterActive`,
-`NodegroupActive`, `AddonDeleted`, ...) pass on their first poll. Every handler
+Resources stay in EKS's transitional states (`CREATING`, `UPDATING`,
+`DELETING`) for a while on the emulated clock: a cluster takes 2 minutes to
+create (1 to delete, 1 per configuration update, 2 per version upgrade), a
+node group 1.5 minutes to create and 1 per update or delete, add-ons, CAs and
+insights refreshes 30 seconds, Fargate profiles, identity provider configs and
+capabilities 1 minute. That is shorter than on AWS (about 10 minutes for a
+cluster) so SDK waiters (`ClusterActive`, `NodegroupActive`, `AddonDeleted`,
+...) finish within a few polls; advancing `/_mws/clock` (`POST /_mws/clock
+{"advanceSeconds": 600}`) skips the wait. Meanwhile calls that need a settled
+resource fail as on AWS: `CreateNodegroup` on a `CREATING` cluster
+(`InvalidRequestException`), a second update while one is in progress
+(`ResourceInUseException`), and reusing a cluster name while the old cluster
+is still `DELETING`. With the k3s backend a cluster also waits for its API
+server to answer. Every handler
 authorizes `eks:<Action>` on the resource ARN with `aws:ResourceTag/*`,
 `aws:RequestTag/*` and `aws:TagKeys`, and roles passed to EKS need
 `iam:PassRole` (with `iam:PassedToService`) and a trust policy for the right
@@ -30,7 +41,7 @@ service principal.
 | `UpdateClusterConfig` | ✅ | Endpoint access, VPC, logging, access config, upgrade policy, zonal shift, Auto Mode, remote networks, deletion protection, control plane scaling; one kind of change per call. |
 | `UpdateClusterVersion` | ✅ | Next minor version only, node version skew check unless `force`. |
 | Updates | ✅ | `DescribeUpdate`, `ListUpdates` (per node group, add-on or capability), `CancelUpdate`. |
-| Envelope encryption | ✅ | `AssociateEncryptionConfig` once per cluster. |
+| Envelope encryption | ✅ | At create or with `AssociateEncryptionConfig` (once per cluster). The key, named by key or alias ARN in the cluster's Region, is looked up in KMS as the caller: the caller needs `kms:DescribeKey` and `kms:CreateGrant` (with `kms:ViaService=eks.<region>.amazonaws.com`), and the key must be an enabled symmetric encryption key, or the call fails with `InvalidParameterException`. No grant is recorded in KMS, and the error messages are MWS's own wording. |
 | Cluster versions | ✅ | `DescribeClusterVersions` with status and support dates. |
 | Certificate authority rotation | ✅ | Create, activate, delete and list CAs; the cluster bundle carries every distributed CA. |
 | EKS Connector | ✅ | `RegisterCluster` (pending, activation code) and `DeregisterCluster`; `ListClusters include=all`. |

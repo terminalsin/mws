@@ -202,6 +202,9 @@ pub(crate) async fn create(
     if input.user_name.is_empty() {
         return Err(invalid("The parameter UserName must be provided and must not be blank."));
     }
+    if kind == "iam" && input.user_name != input.user_id {
+        return Err(invalid("UserId and UserName must be the same for a user with IAM authentication."));
+    }
     let tags = input.tags.clone().unwrap_or_default();
     check_tags(&tags)?;
     let resource = arn(ctx, "user", &id);
@@ -254,6 +257,9 @@ pub(crate) async fn modify(
             u.info.access_string = Some(format!("{cur} {a}").trim().to_string());
         }
         if let Some((kind, ps)) = creds {
+            if kind == "iam" && u.info.user_name.as_deref() != Some(id.as_str()) {
+                return Err(invalid("UserId and UserName must be the same for a user with IAM authentication."));
+            }
             u.info.authentication = Some(authentication(&kind, &ps));
             u.passwords = ps;
         }

@@ -42,7 +42,7 @@ impl Handler for Rds {
         ctx: &RequestContext,
         input: types::ApplyPendingMaintenanceActionMessage,
     ) -> Result<types::ApplyPendingMaintenanceActionResult, ServiceError> {
-        self.apply_pending_maintenance_action_op(ctx, input)
+        self.apply_pending_maintenance_action_op(ctx, input).await
     }
     async fn authorize_db_security_group_ingress(
         &self,

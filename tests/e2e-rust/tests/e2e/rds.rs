@@ -239,12 +239,25 @@ async fn postgres_instance_lifecycle_body() {
         .unwrap()
         .db_instance
         .unwrap();
-    assert_eq!(m.allocated_storage(), Some(50));
+    // The response still shows the old values, with the new ones (and
+    // the earlier pending class) under PendingModifiedValues.
+    assert_eq!(m.db_instance_status(), Some("modifying"));
+    assert_eq!(m.allocated_storage(), Some(20));
+    assert_eq!(m.pending_modified_values().unwrap().allocated_storage(), Some(50));
     assert_eq!(m.backup_retention_period(), Some(7));
     assert_eq!(m.enabled_cloudwatch_logs_exports(), ["postgresql"]);
+    let d = rds.describe_db_instances().db_instance_identifier("harbor-db").send().await.unwrap();
+    let db = &d.db_instances()[0];
+    assert_eq!(db.allocated_storage(), Some(50));
+    assert_eq!(db.db_instance_class(), Some("db.t3.small"));
+    assert_eq!(db.pending_modified_values().unwrap().db_instance_class(), None);
+    assert_eq!(db.db_instance_status(), Some("storage-optimization"));
     let shrink =
         rds.modify_db_instance().db_instance_identifier("harbor-db").allocated_storage(30).send().await.unwrap_err();
     assert_eq!(code(&shrink), "InvalidParameterValue");
+    let again =
+        rds.modify_db_instance().db_instance_identifier("harbor-db").allocated_storage(100).send().await.unwrap_err();
+    assert_eq!(code(&again), "InvalidParameterCombination");
     let protected = rds
         .delete_db_instance()
         .db_instance_identifier("harbor-db")

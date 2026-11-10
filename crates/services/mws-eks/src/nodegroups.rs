@@ -10,7 +10,7 @@ use mws_core::{ConditionContext, RequestContext, ServiceError};
 use crate::catalog;
 use crate::generated::{errors, types};
 use crate::infra::{GroupState, LaunchTemplateRef, NodeGroupSpec};
-use crate::state::NodegroupRec;
+use crate::state::{durations, NodegroupRec};
 use crate::updates::Target;
 use crate::util::{self, param, text, Tags};
 use crate::Eks;
@@ -443,6 +443,9 @@ impl Eks {
             let crec = util::cluster(&mut st, ctx, &cluster)?;
             let kind = if ami_type.starts_with("WINDOWS") { "EC2_WINDOWS" } else { "EC2_LINUX" };
             crate::access::ensure_node_entry(ctx, crec, &cluster, &role, kind);
+            if rec.nodegroup.status.as_deref() == Some("CREATING") {
+                crec.begin(format!("nodegroup/{name}"), ctx.received_at, durations::NODEGROUP_CREATE);
+            }
             crec.nodegroups.insert(name.clone(), rec);
         }
         self.sync_nodes(ctx, &cluster, &name).await;
@@ -705,8 +708,15 @@ impl Eks {
             }
             ng.status = Some("UPDATING".into());
             ng.modified_at = Some(ctx.received_at);
-            let update =
-                crate::updates::push(rec, ctx.received_at, "ConfigUpdate", params, Some(Target::Nodegroup(&name)));
+            let done_at = rec.begin(format!("nodegroup/{name}"), ctx.received_at, durations::NODEGROUP_UPDATE);
+            let update = crate::updates::push(
+                rec,
+                ctx.received_at,
+                done_at,
+                "ConfigUpdate",
+                params,
+                Some(Target::Nodegroup(&name)),
+            );
             (update, resize)
         };
         if resize {
@@ -815,8 +825,15 @@ impl Eks {
                     params.push(param("LaunchTemplateVersion", v.clone()));
                 }
             }
-            let update =
-                crate::updates::push(rec, ctx.received_at, "VersionUpdate", params, Some(Target::Nodegroup(&name)));
+            let done_at = rec.begin(format!("nodegroup/{name}"), ctx.received_at, durations::NODEGROUP_UPDATE);
+            let update = crate::updates::push(
+                rec,
+                ctx.received_at,
+                done_at,
+                "VersionUpdate",
+                params,
+                Some(Target::Nodegroup(&name)),
+            );
             (update, spec, template, previous)
         };
         // A version update replaces every node from a new version of the
@@ -851,8 +868,11 @@ impl Eks {
                             n.nodegroup.version = ng.version;
                             n.nodegroup.release_version = ng.release_version;
                             n.nodegroup.launch_template = ng.launch_template;
+                            n.nodegroup.status = ng.status;
                             n.image_id = image;
                         }
+                        // A failed update ends at once.
+                        rec.settle_at.remove(&format!("nodegroup/{name}"));
                         crate::updates::fail(rec, &id, "NodeCreationFailure", message, vec![spec.group_name.clone()])
                     }
                 }
@@ -891,14 +911,16 @@ impl Eks {
                 .owns_remote_access_group
                 .then(|| n.nodegroup.resources.as_ref().and_then(|r| r.remote_access_security_group.clone()))
                 .flatten();
-            (
+            let out = (
                 n.nodegroup.clone(),
                 group_name(&n.nodegroup),
                 n.launch_template_id.take(),
                 n.instance_profile.take(),
                 remote,
                 n.nodegroup.node_role.clone().unwrap_or_default(),
-            )
+            );
+            rec.begin(format!("nodegroup/{name}"), ctx.received_at, durations::NODEGROUP_DELETE);
+            out
         };
         if let Some(infra) = self.infra() {
             let scope = util::scope(ctx);

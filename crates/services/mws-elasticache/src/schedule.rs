@@ -1,9 +1,11 @@
 //! Work ElastiCache does on a schedule: daily automatic snapshots in each
-//! cluster's snapshot window (`SnapshotRetentionLimit` > 0), and pruning
-//! the ones older than the retention limit. Time is the emulated clock,
-//! so advancing it past a window takes the snapshot.
+//! cluster's snapshot window (`SnapshotRetentionLimit` > 0), pruning the
+//! ones older than the retention limit, and applying the node type and
+//! engine version changes a `ModifyReplicationGroup` without
+//! `ApplyImmediately` left pending, in the weekly maintenance window. Time
+//! is the emulated clock, so advancing it past a window does the work.
 
-use chrono::{DateTime, Duration, NaiveTime, TimeZone, Utc};
+use chrono::{DateTime, Datelike, Duration, NaiveTime, TimeZone, Utc};
 use mws_core::RequestContext;
 
 use crate::engine;
@@ -18,6 +20,28 @@ pub(crate) fn last_window_start(window: &str, now: DateTime<Utc>) -> Option<Date
     let time = NaiveTime::parse_from_str(start, "%H:%M").ok()?;
     let today = Utc.from_utc_datetime(&now.date_naive().and_time(time));
     Some(if today <= now { today } else { today - Duration::days(1) })
+}
+
+/// The start of the latest weekly maintenance window
+/// (`ddd:hh24:mi-ddd:hh24:mi`) that began at or before `now`.
+pub(crate) fn last_weekly_window_start(window: &str, now: DateTime<Utc>) -> Option<DateTime<Utc>> {
+    let start = window.split('-').next()?;
+    let (day, time) = start.split_once(':')?;
+    let day = match day.to_ascii_lowercase().as_str() {
+        "mon" => 0,
+        "tue" => 1,
+        "wed" => 2,
+        "thu" => 3,
+        "fri" => 4,
+        "sat" => 5,
+        "sun" => 6,
+        _ => return None,
+    };
+    let time = NaiveTime::parse_from_str(time, "%H:%M").ok()?;
+    let today = now.date_naive();
+    let back = (today.weekday().num_days_from_monday() as i64 - day).rem_euclid(7);
+    let at = Utc.from_utc_datetime(&(today - Duration::days(back)).and_time(time));
+    Some(if at <= now { at } else { at - Duration::days(7) })
 }
 
 /// The name AWS gives an automatic snapshot.
@@ -35,6 +59,9 @@ struct Due {
     /// (snapshot name, where its data comes from).
     snapshots: Vec<(String, engine::Sources)>,
     serverless: Vec<String>,
+    /// Replication groups whose pending changes were applied: (id, whether
+    /// the nodes move to a new engine version, commands for the nodes).
+    maintained: Vec<(String, bool, Vec<Vec<String>>)>,
 }
 
 impl ElastiCache {
@@ -57,6 +84,14 @@ impl ElastiCache {
             for name in due.serverless {
                 engine::serverless_snapshot(self, &ctx, &key, &name);
             }
+            for (id, upgrade, commands) in due.maintained {
+                if upgrade {
+                    engine::upgrade(self, &ctx, &key, Some(&id), None);
+                } else {
+                    let nodes = self.with_key(&key, &ctx, |r| engine::nodes_of(r, Some(&id), None));
+                    engine::run_everywhere(self, nodes, commands);
+                }
+            }
         }
     }
 }
@@ -64,6 +99,26 @@ impl ElastiCache {
 fn due(svc: &ElastiCache, ctx: &RequestContext, r: &mut RegionState, now: DateTime<Utc>) -> Due {
     let mut out = Due::default();
     prune(r, now);
+    // Pending modifications, in the maintenance window.
+    let pending: Vec<String> = r
+        .replication_groups
+        .values()
+        .filter(|g| g.status() == "available")
+        .filter_map(|g| {
+            let since = g.pending_since?;
+            let window = r
+                .clusters
+                .values()
+                .find(|c| c.info.replication_group_id.as_deref() == Some(g.id()))
+                .and_then(|c| c.info.preferred_maintenance_window.clone())?;
+            let start = last_weekly_window_start(&window, now)?;
+            (start >= since).then(|| g.id().to_string())
+        })
+        .collect();
+    for id in pending {
+        let (upgrade, commands) = apply_pending(svc, r, &id, now);
+        out.maintained.push((id, upgrade, commands));
+    }
     // Replication groups.
     let groups: Vec<Candidate> = r
         .replication_groups
@@ -151,6 +206,74 @@ fn due(svc: &ElastiCache, ctx: &RequestContext, r: &mut RegionState, now: DateTi
     out
 }
 
+/// Apply a replication group's pending node type and engine version
+/// changes, as `ModifyReplicationGroup` with `ApplyImmediately` would.
+/// Returns whether the nodes move to a new engine version, and the commands
+/// the nodes need otherwise.
+fn apply_pending(svc: &ElastiCache, r: &mut RegionState, id: &str, now: DateTime<Utc>) -> (bool, Vec<Vec<String>>) {
+    let members: Vec<String> = r
+        .clusters
+        .values()
+        .filter(|c| c.info.replication_group_id.as_deref() == Some(id))
+        .map(|c| c.id().to_string())
+        .collect();
+    let pending = members
+        .iter()
+        .filter_map(|m| r.clusters.get(m))
+        .find_map(|c| c.info.pending_modified_values.clone())
+        .unwrap_or_default();
+    let mut commands = Vec::new();
+    let mut upgrade = false;
+    let Some(g) = r.replication_groups.get_mut(id) else { return (false, commands) };
+    g.pending_since = None;
+    if let Some(nt) = &pending.cache_node_type {
+        g.info.cache_node_type = Some(nt.clone());
+        let mem = crate::catalog::node_type(nt).map(|n| n.maxmemory()).unwrap_or(0);
+        commands.push(vec!["CONFIG".into(), "SET".into(), "maxmemory".into(), mem.to_string()]);
+    }
+    if let Some(v) = &pending.engine_version {
+        upgrade = *v != g.engine_version;
+        g.engine_version = v.clone();
+        if g.parameter_group.starts_with("default.") {
+            if let Some(family) =
+                crate::catalog::ENGINE_VERSIONS.iter().find(|e| e.version == v.as_str()).map(|e| e.family)
+            {
+                g.parameter_group = if g.cluster_enabled() {
+                    format!("default.{family}.cluster.on")
+                } else {
+                    format!("default.{family}")
+                };
+            }
+        }
+        if upgrade && svc.runs_engines() {
+            g.info.status = Some("modifying".into());
+        }
+    }
+    let pg = g.parameter_group.clone();
+    for m in &members {
+        let Some(c) = r.clusters.get_mut(m) else { continue };
+        if let Some(nt) = &pending.cache_node_type {
+            c.info.cache_node_type = Some(nt.clone());
+        }
+        if let Some(v) = &pending.engine_version {
+            c.info.engine_version = Some(v.clone());
+            if let Some(p) = c.info.cache_parameter_group.as_mut() {
+                p.cache_parameter_group_name = Some(pg.clone());
+            }
+            if upgrade && svc.runs_engines() {
+                c.set_status("modifying");
+            }
+        }
+        if let Some(p) = c.info.pending_modified_values.as_mut() {
+            p.cache_node_type = None;
+            p.engine_version = None;
+        }
+    }
+    r.event(id, "replication-group", format!("Replication group {id} modified"), now);
+    crate::ops::replication::refresh(svc, r, id);
+    (upgrade, commands)
+}
+
 /// When `source`'s next automatic snapshot is due: the start of the window
 /// it belongs to.
 fn is_due(
@@ -232,6 +355,19 @@ mod tests {
         let now = Utc.with_ymd_and_hms(2026, 11, 5, 3, 0, 0).unwrap();
         assert_eq!(last_window_start("05:30-06:30", now), Some(Utc.with_ymd_and_hms(2026, 11, 4, 5, 30, 0).unwrap()));
         assert_eq!(last_window_start("02:00", now), Some(Utc.with_ymd_and_hms(2026, 11, 5, 2, 0, 0).unwrap()));
+        // Thursday 2026-11-05 03:00.
+        assert_eq!(
+            last_weekly_window_start("thu:02:00-thu:03:00", now),
+            Some(Utc.with_ymd_and_hms(2026, 11, 5, 2, 0, 0).unwrap())
+        );
+        assert_eq!(
+            last_weekly_window_start("thu:04:00-thu:05:00", now),
+            Some(Utc.with_ymd_and_hms(2026, 10, 29, 4, 0, 0).unwrap())
+        );
+        assert_eq!(
+            last_weekly_window_start("sun:23:00-mon:01:30", now),
+            Some(Utc.with_ymd_and_hms(2026, 11, 1, 23, 0, 0).unwrap())
+        );
         assert_eq!(
             automatic_name("g", Utc.with_ymd_and_hms(2026, 11, 5, 2, 0, 0).unwrap()),
             "automatic.g-2026-11-05-02-00"

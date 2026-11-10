@@ -68,6 +68,47 @@ pub struct ScalingGroupInstance {
     pub availability_zone: String,
 }
 
+/// A container image ECS pulled from MWS's own ECR registry: everything a
+/// backend needs to load it without a registry login.
+#[derive(Debug, Clone, Default)]
+pub struct RegistryImage {
+    /// The digest the image reference resolved to (an index's, for
+    /// multi-platform images): the digest the task reports.
+    pub resolved_digest: String,
+    /// The digest of the platform manifest below.
+    pub digest: String,
+    pub manifest: bytes::Bytes,
+    pub manifest_media_type: String,
+    pub config_digest: String,
+    pub config: bytes::Bytes,
+    /// `(digest, content)` of each layer, base layer first.
+    pub layers: Vec<(String, bytes::Bytes)>,
+}
+
+/// Why an image could not be pulled from ECR.
+#[derive(Debug, Clone)]
+pub enum RegistryPullError {
+    /// `ecr:GetAuthorizationToken` was denied (the registry login fails).
+    Auth(ServiceError),
+    /// `ecr:BatchGetImage` or `ecr:GetDownloadUrlForLayer` was denied by
+    /// identity or repository policy (`403 Forbidden`).
+    Denied,
+    /// No such repository or image.
+    NotFound,
+    /// Not a runnable image (an artifact, or no manifest for the platform).
+    Unsupported,
+}
+
+/// What ECS needs to know about an Elastic Load Balancing target group
+/// to check a service's `loadBalancers`.
+#[derive(Debug, Clone, Default)]
+pub struct TargetGroupInfo {
+    pub target_group_arn: String,
+    /// `instance`, `ip`, `lambda` or `alb`.
+    pub target_type: String,
+    pub load_balancer_arns: Vec<String>,
+}
+
 #[async_trait::async_trait]
 pub trait TaskPlatform: Send + Sync {
     /// Create a requester-managed network interface for a task in one of
@@ -145,6 +186,35 @@ pub trait TaskPlatform: Send + Sync {
         _port: i32,
     ) -> Option<String> {
         None
+    }
+
+    /// A target group, if it exists (looked up as ECS's service-linked
+    /// role).
+    async fn target_group(&self, _ctx: &RequestContext, _target_group_arn: &str) -> Option<TargetGroupInfo> {
+        None
+    }
+
+    /// Whether `image` names a repository of MWS's own ECR registry
+    /// (`<account>.dkr.ecr.<region>.amazonaws.com/...`, or the registry
+    /// host MWS names repositories with). Other images are pulled by the
+    /// container backend from their registry.
+    fn is_registry_image(&self, _image: &str, _account: &str, _region: &str) -> bool {
+        false
+    }
+
+    /// Pull an ECR image, as `ctx`'s caller (the execution role) when
+    /// given: `ecr:GetAuthorizationToken`, then `ecr:BatchGetImage` and
+    /// `ecr:GetDownloadUrlForLayer` under identity and repository policy.
+    /// `architecture` is `amd64` or `arm64`.
+    fn pull_registry_image(
+        &self,
+        _ctx: Option<&RequestContext>,
+        _image: &str,
+        _account: &str,
+        _region: &str,
+        _architecture: &str,
+    ) -> Result<RegistryImage, RegistryPullError> {
+        Err(RegistryPullError::NotFound)
     }
 
     /// The Auto Scaling group (by name) behind a capacity provider.

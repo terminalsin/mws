@@ -320,6 +320,7 @@ impl Rds {
         if self.with_region(ctx, |r| r.clusters.contains_key(&id)) {
             return Err(errors::db_cluster_already_exists_fault("DB Cluster already exists"));
         }
+        self.check_monitoring(ctx, input.monitoring_interval, input.monitoring_role_arn.as_deref(), &arn)?;
         let multi_az = !engine.aurora;
         if multi_az && input.db_cluster_instance_class.is_none() {
             return Err(invalid_parameter(format!(
@@ -557,6 +558,7 @@ impl Rds {
             generation: 1,
             image: version.image.into(),
             pending_reboot: false,
+            ..Default::default()
         };
         let mut view = self.launch_cluster(ctx, rec, Launch::default()).await?;
         if let Some(g) = &global {
@@ -712,7 +714,6 @@ impl Rds {
         let mut c = rec.cluster.clone();
         let mut pending = c.pending_modified_values.clone().unwrap_or_default();
         let mut new_password: Option<String> = None;
-        let mut restart = false;
         if let Some(pw) = &input.master_user_password {
             if c.master_user_secret.is_some() && input.manage_master_user_password != Some(false) {
                 return Err(invalid_combination(
@@ -820,11 +821,12 @@ impl Rds {
         if let Some(m) = &input.database_insights_mode {
             c.database_insights_mode = Some(m.clone());
         }
-        if let Some(n) = input.monitoring_interval {
-            c.monitoring_interval = Some(n);
-        }
-        if let Some(r) = &input.monitoring_role_arn {
-            c.monitoring_role_arn = Some(r.clone());
+        if input.monitoring_interval.is_some() || input.monitoring_role_arn.is_some() {
+            let interval = input.monitoring_interval.or(c.monitoring_interval);
+            let role = input.monitoring_role_arn.clone().or(c.monitoring_role_arn.clone()).filter(|r| !r.is_empty());
+            self.check_monitoring(ctx, interval, role.as_deref(), &arn)?;
+            c.monitoring_interval = interval;
+            c.monitoring_role_arn = role;
         }
         if let Some(n) = &input.network_type {
             c.network_type = Some(n.clone());
@@ -842,13 +844,27 @@ impl Rds {
             if engine.aurora && st != "aurora" && st != "aurora-iopt1" {
                 return Err(invalid_parameter(format!("Invalid storage type: {st}")));
             }
-            c.storage_type = Some(st.clone());
+            if engine.aurora {
+                c.storage_type = Some(st.clone());
+            } else if Some(st) != c.storage_type.as_ref() {
+                pending.storage_type = Some(st.clone());
+            }
         }
-        if let Some(a) = input.allocated_storage {
-            c.allocated_storage = Some(a);
+        // Multi-AZ DB clusters' storage waits for the maintenance window
+        // like their engine version.
+        if let Some(a) = input.allocated_storage.filter(|a| Some(*a) != c.allocated_storage) {
+            if engine.aurora {
+                c.allocated_storage = Some(a);
+            } else {
+                pending.allocated_storage = Some(a);
+            }
         }
-        if let Some(i) = input.iops {
-            c.iops = Some(i);
+        if let Some(i) = input.iops.filter(|i| Some(*i) != c.iops) {
+            if engine.aurora {
+                c.iops = Some(i);
+            } else {
+                pending.iops = Some(i);
+            }
         }
         if let Some(class) = &input.db_cluster_instance_class {
             check_class(engine, version, class)?;
@@ -903,12 +919,9 @@ impl Rds {
                             Some(self.param_group(ctx, &engine.default_parameter_group(target), true)?.name);
                     }
                 }
-                if immediate {
-                    c.engine_version = Some(target.version.into());
-                    restart = true;
-                } else {
-                    pending.engine_version = Some(target.version.into());
-                }
+                // Applied by `apply_cluster_changes`, at once with
+                // ApplyImmediately.
+                pending.engine_version = Some(target.version.into());
             }
         }
         let new_id = match &input.new_db_cluster_identifier {
@@ -921,29 +934,33 @@ impl Rds {
             }
             None => None,
         };
+        let deferred = super::maintenance::cluster_has_deferred(&pending);
+        let apply_now = immediate && deferred;
         c.pending_modified_values = Some(pending);
         let old_password = rec.master_password.clone();
-        let version_change = c.engine_version != rec.cluster.engine_version;
-        let generation = self.with_region(ctx, |r| {
+        self.with_region(ctx, |r| {
             let rec = r.clusters.get_mut(&id).expect("looked up above");
             rec.cluster = c.clone();
             if let Some(pw) = &new_password {
                 rec.master_password = pw.clone();
             }
             rec.generation += 1;
-            if version_change {
+            if deferred {
+                rec.pending_since.get_or_insert(ctx.received_at);
+            } else {
+                rec.pending_since = None;
+            }
+            if apply_now && rec.cluster.pending_modified_values.as_ref().is_some_and(|p| p.engine_version.is_some()) {
                 rec.cluster.status = Some("upgrading".into());
             }
             for m in rec.cluster.db_cluster_members.iter().flatten() {
                 if let Some(i) = r.instances.get_mut(m.db_instance_identifier.as_deref().unwrap_or_default()) {
                     i.master_password = rec.master_password.clone();
-                    i.db.engine_version = rec.cluster.engine_version.clone();
                     i.db.iam_database_authentication_enabled = rec.cluster.iam_database_authentication_enabled;
                     i.db.backup_retention_period = rec.cluster.backup_retention_period;
                     i.db.vpc_security_groups = rec.cluster.vpc_security_groups.clone();
                 }
             }
-            rec.generation
         });
         let mut id = id;
         if let Some(n) = new_id {
@@ -959,36 +976,17 @@ impl Rds {
             });
         }
         let view = self.cluster_view(ctx, &self.cluster(ctx, &id)?);
-        if restart {
-            if version_change && self.backend().runs_databases() {
-                // A new engine version needs a new image; the data stays.
-                let image =
-                    engine.version(c.engine_version.as_deref().unwrap_or_default()).map(|v| v.image.to_string());
-                if let Some(image) = image {
-                    let major_change =
-                        engine.version(rec.cluster.engine_version.as_deref().unwrap_or_default()).map(|v| v.major)
-                            != engine.version(c.engine_version.as_deref().unwrap_or_default()).map(|v| v.major);
-                    if !major_change {
-                        self.with_region(ctx, |r| {
-                            if let Some(rec) = r.clusters.get_mut(&id) {
-                                rec.image = image;
-                            }
-                        });
-                    }
-                }
-            }
-            self.restart_cluster(ctx, &id, generation, ("Database cluster engine version upgraded", "RDS-EVENT-0172"))
-                .await;
-        } else {
-            self.emit(
-                ctx,
-                "db-cluster",
-                &id,
-                &cluster_arn(ctx, &id),
-                &["configuration change"],
-                "DB cluster modified",
-                "RDS-EVENT-0016",
-            );
+        self.emit(
+            ctx,
+            "db-cluster",
+            &id,
+            &cluster_arn(ctx, &id),
+            &["configuration change"],
+            "DB cluster modified",
+            "RDS-EVENT-0016",
+        );
+        if apply_now {
+            self.apply_cluster_changes(ctx, &id, super::maintenance::Scope::All).await;
         }
         Ok(t::ModifyDBClusterResult { db_cluster: Some(view) })
     }

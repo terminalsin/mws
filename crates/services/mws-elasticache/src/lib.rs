@@ -125,6 +125,8 @@ pub(crate) struct Inner {
     meter: metrics::Meter,
     log_delivery: OnceLock<Arc<dyn logdelivery::LogDelivery>>,
     log_cursors: logdelivery::Cursors,
+    /// KMS, for the customer managed keys of encryption at rest.
+    kms: OnceLock<mws_kms::Kms>,
 }
 
 /// The ElastiCache service. Cheap to clone; clones share state.
@@ -159,6 +161,7 @@ impl ElastiCache {
                 meter: Default::default(),
                 log_delivery: OnceLock::new(),
                 log_cursors: Default::default(),
+                kms: OnceLock::new(),
             }),
         }
     }
@@ -173,6 +176,45 @@ impl ElastiCache {
 
     pub fn set_event_notifier(&self, notifier: Arc<dyn EventNotifier>) {
         let _ = self.inner.notifier.set(notifier);
+    }
+
+    /// KMS, which `KmsKeyId` keys (encryption at rest) are looked up in.
+    /// AWS couples the two: ElastiCache uses the key for the caller through
+    /// grants. Without it any key id is accepted.
+    pub fn set_kms(&self, kms: mws_kms::Kms) {
+        let _ = self.inner.kms.set(kms);
+    }
+
+    /// Check a customer managed key for encryption at rest as ElastiCache
+    /// does before it takes it: the key must exist, be an enabled
+    /// symmetric encryption key, and the caller must be allowed
+    /// `kms:DescribeKey` and `kms:CreateGrant` on it (through
+    /// ElastiCache). Returns the key as given. Never call with the state
+    /// lock held.
+    pub(crate) fn check_kms_key(&self, ctx: &RequestContext, key: &str) -> Result<(), ServiceError> {
+        let Some(kms) = self.inner.kms.get() else { return Ok(()) };
+        let k = kms.key_via(ctx, "elasticache", key, &["kms:DescribeKey", "kms:CreateGrant"]).map_err(|e| match &*e
+            .code
+        {
+            "NotFoundException" | "InvalidArnException" => {
+                generated::errors::invalid_parameter_value(format!("Invalid KMS key: {key}. {}", e.message))
+            }
+            _ => {
+                generated::errors::invalid_kms_key_fault(format!("The KMS key {key} is not accessible: {}", e.message))
+            }
+        })?;
+        if k.key_spec != "SYMMETRIC_DEFAULT" || k.key_usage != "ENCRYPT_DECRYPT" {
+            return Err(generated::errors::invalid_kms_key_fault(format!(
+                "The KMS key {key} is not a symmetric encryption key."
+            )));
+        }
+        if k.key_state != "Enabled" {
+            return Err(generated::errors::invalid_kms_key_fault(format!(
+                "The KMS key {key} is {}.",
+                if k.key_state == "Disabled" { "disabled".to_string() } else { format!("in state {}", k.key_state) }
+            )));
+        }
+        Ok(())
     }
 
     pub fn backend_name(&self) -> &'static str {

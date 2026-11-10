@@ -134,6 +134,7 @@ impl Rds {
     /// drop the ones past their retention period.
     pub(crate) async fn tick(&self, ctx: &RequestContext) {
         self.ensure_proxy_listeners(ctx).await;
+        self.run_maintenance(ctx).await;
         let now = ctx.received_at;
         let day = Duration::hours(24);
         let (due_instances, due_clusters, expired) = self.with_region(ctx, |r| {
@@ -153,7 +154,7 @@ impl Rds {
                 .filter(|i| {
                     i.db.db_cluster_identifier.is_none()
                         && i.db.backup_retention_period.unwrap_or(0) > 0
-                        && i.db.db_instance_status.as_deref() == Some("available")
+                        && super::maintenance::operational(i.db.db_instance_status.as_deref().unwrap_or_default())
                         && i.db.read_replica_source_db_instance_identifier.is_none()
                 })
                 .filter_map(|i| {

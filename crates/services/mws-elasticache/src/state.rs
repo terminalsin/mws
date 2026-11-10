@@ -152,6 +152,10 @@ pub struct ReplicationGroup {
     pub slots: BTreeMap<String, String>,
     /// Online migration from a self-managed endpoint.
     pub migration: Option<(String, u16)>,
+    /// When node type or engine version changes were deferred to the
+    /// maintenance window (they show in the members'
+    /// `PendingModifiedValues`).
+    pub pending_since: Option<DateTime<Utc>>,
 }
 
 impl ReplicationGroup {
