@@ -59,6 +59,7 @@ import {
   setEncryption,
   updateDestination,
 } from "../actions";
+import { ResourcePicker } from "@mws-dashboard/ui/pickers";
 
 type Props = { searchParams: Promise<{ name?: string; tab?: string }> };
 
@@ -589,9 +590,8 @@ export default async function DeliveryStream({ searchParams }: Props) {
                       rule={{ format: "arn", known: fnList }}
                       hint="Empty turns processing off"
                     >
-                      <input
+                      <ResourcePicker kind="lambda-function"
                         name="lambda"
-                        list="edit-functions"
                         defaultValue={fn}
                       />
                     </Field>
@@ -618,8 +618,8 @@ export default async function DeliveryStream({ searchParams }: Props) {
                   </>
                 ) : null}
                 <Field label="Role ARN" rule={{ ...U.RoleARN, format: "arn" }}>
-                  <input
-                    name="role"
+                  <ResourcePicker kind="iam-role"
+                    name="role" service="firehose.amazonaws.com"
                     defaultValue={
                       s3?.RoleARN ??
                       http?.RoleARN ??
@@ -671,7 +671,7 @@ export default async function DeliveryStream({ searchParams }: Props) {
                   }}
                   hint="Customer managed key only"
                 >
-                  <input name="key" defaultValue={enc?.KeyARN} />
+                  <ResourcePicker kind="kms-key" name="key" exclude="AWS managed" defaultValue={enc?.KeyARN} />
                 </Field>
               </ActionForm>
             </Sheet>

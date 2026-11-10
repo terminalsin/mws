@@ -19,6 +19,7 @@ import Link from "next/link";
 import { ICONS, SEVERITY_TONE, ecr, imageHref, links, pushCommands, repoHref } from "../../../lib/clients";
 import { deleteImage, deleteRepository, previewLifecycle, saveLifecyclePolicy, saveRepositoryPolicy, saveSettings, saveTags } from "../actions";
 import { LifecycleForm } from "./lifecycle-form.tsx";
+import { PolicyEditor } from "@mws-dashboard/ui/policy";
 
 export const metadata: Metadata = { title: "Repository" };
 
@@ -205,9 +206,7 @@ async function Permissions({ name }: { name: string }) {
       actions={
         <Sheet title="Repository policy" label="Edit repository policy" icon={<Pencil size={15} aria-hidden />} testId="edit-repository-policy">
           <ActionForm action={saveRepositoryPolicy.bind(null, name)} submit="Save" testId="edit-repository-policy">
-            <Field label="Policy JSON" format="policy" hint="Empty removes the policy">
-              <textarea name="policy" rows={14} defaultValue={policy.ok && policy.value ? JSON.stringify(JSON.parse(policy.value), null, 2) : template} />
-            </Field>
+            <PolicyEditor label="Policy JSON" format="policy" hint="Empty removes the policy" kind="resource" name="policy" rows={14} defaultValue={policy.ok && policy.value ? JSON.stringify(JSON.parse(policy.value), null, 2) : template} />
           </ActionForm>
         </Sheet>
       }

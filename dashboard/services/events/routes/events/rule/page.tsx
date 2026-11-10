@@ -1,3 +1,4 @@
+import { EventPatternEditor } from "../../../lib/pattern-editor.tsx";
 import { DescribeRuleCommand, ListTargetsByRuleCommand } from "@aws-sdk/client-eventbridge";
 import { all, load } from "@mws-dashboard/aws";
 import { ActionForm, AwsIcon, CodeBlock, Empty, ErrorNotice, Facts, Field, List, Page, Pill, Section, Sheet, Status } from "@mws-dashboard/ui";
@@ -12,6 +13,7 @@ import { TargetFields } from "../../../lib/target-form";
 import { targetArns } from "../../../lib/targets";
 import { targetIcon } from "../../../lib/targets-view";
 import { deleteRule, removeTarget, saveTarget, setRuleState, testPattern, updateRule } from "../actions";
+import { ResourcePicker } from "@mws-dashboard/ui/pickers";
 
 type Props = { searchParams: Promise<{ bus?: string; name?: string }> };
 
@@ -84,16 +86,14 @@ export default async function EventRule({ searchParams }: Props) {
                 <Field label="Description" rule={RULE_DESCRIPTION}>
                   <input name="description" defaultValue={rule.Description} />
                 </Field>
-                <Field label="Event pattern" rule={{ ...PATTERN, required: false }} member="EventPattern" format="eventPattern">
-                  <textarea name="pattern" rows={8} spellCheck={false} defaultValue={rule.EventPattern ? JSON.stringify(JSON.parse(rule.EventPattern), null, 2) : ""} />
-                </Field>
+                <EventPatternEditor rule={{ ...PATTERN, required: false }} rows={8} defaultValue={rule.EventPattern ? JSON.stringify(JSON.parse(rule.EventPattern), null, 2) : ""} />
                 {bus === "default" && (
                   <Field label="Or schedule" rule={SCHEDULE} member="ScheduleExpression" format="schedule">
                     <input name="schedule" defaultValue={rule.ScheduleExpression} />
                   </Field>
                 )}
                 <Field label="Role" rule={{ ...ROLE, required: false }} member="RoleArn">
-                  <input name="role" defaultValue={rule.RoleArn} spellCheck={false} />
+                  <ResourcePicker kind="iam-role" name="role" service="events.amazonaws.com" defaultValue={rule.RoleArn} />
                 </Field>
               </ActionForm>
             </Sheet>

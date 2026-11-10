@@ -14,6 +14,7 @@ import { componentIcon, osLogo } from "../../lib/logos";
 import { versionOf } from "../../lib/lists";
 import { createComponent, createInfrastructure, createPipeline, createRecipe, deleteResource, runPipeline, setPipelineEnabled, updateInfrastructure } from "./actions";
 import { ContainerRecipes, Distributions, LifecyclePolicies, Workflows } from "./tabs";
+import { ResourcePicker } from "@mws-dashboard/ui/pickers";
 
 export const metadata: Metadata = { title: "Image Builder" };
 
@@ -293,10 +294,10 @@ function InfrastructureFields({ profiles, types, i, d }: { profiles: string[]; t
       </Field>
       <div className="form-row">
         <Field label="Subnet" rule={CreateInfrastructureConfiguration.subnetId} member="subnetId">
-          <input name="subnet" placeholder="subnet-…" spellCheck={false} defaultValue={d?.subnetId} />
+          <ResourcePicker kind="subnet" name="subnet" defaultValue={d?.subnetId} />
         </Field>
         <Field label="Security groups" member="securityGroupIds">
-          <input name="groups" placeholder="sg-…" spellCheck={false} defaultValue={(d?.securityGroupIds ?? []).join(", ")} />
+          <ResourcePicker kind="security-group" name="groups" multiple defaultValue={(d?.securityGroupIds ?? []).join(", ")} />
         </Field>
       </div>
       <div className="form-row">
@@ -304,7 +305,7 @@ function InfrastructureFields({ profiles, types, i, d }: { profiles: string[]; t
           <input name="keyPair" spellCheck={false} defaultValue={d?.keyPair} />
         </Field>
         <Field label="SNS topic" rule={CreateInfrastructureConfiguration.snsTopicArn} format="arn" member="snsTopicArn">
-          <input name="topic" spellCheck={false} defaultValue={d?.snsTopicArn} />
+          <ResourcePicker kind="sns-topic" name="topic" defaultValue={d?.snsTopicArn} />
         </Field>
       </div>
       <div className="form-row">

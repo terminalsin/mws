@@ -20,6 +20,7 @@ import {
 import { RUNTIMES } from "../clients";
 import { arnHref, arnName } from "../links";
 import { DESCRIPTION, DESTINATION, DLQ_TARGET, ENVIRONMENT, EPHEMERAL, EVENT_AGE, HANDLER, LAYER_ARNS, MEMORY, PROVISIONED, RESERVED, RETRIES, ROLE, TIMEOUT } from "../rules";
+import { ResourcePicker } from "@mws-dashboard/ui/pickers";
 
 const linked = (arn: string | undefined) => {
   if (!arn) return null;
@@ -125,7 +126,7 @@ export function Configuration({
                 </div>
               )}
               <Field label="Execution role" rule={ROLE} arn={`arn:aws:iam::${account}:role/{}`} known={roles}>
-                <input name="role" defaultValue={c.Role} spellCheck={false} />
+                <ResourcePicker kind="iam-role" name="role" service="lambda.amazonaws.com" defaultValue={c.Role} />
               </Field>
               <Field label="Environment variables" rule={ENVIRONMENT}>
                 <textarea name="env" rows={6} placeholder="KEY=value" spellCheck={false} defaultValue={Object.entries(env).map(([k, v]) => `${k}=${v}`).join("\n")} />
@@ -135,7 +136,7 @@ export function Configuration({
                   <input name="ephemeral" inputMode="numeric" defaultValue={c.EphemeralStorage?.Size} />
                 </Field>
                 <Field label="Dead-letter queue or topic" rule={{ ...DLQ_TARGET, required: false }} known={destinations.filter((d) => /:(sqs|sns):/.test(d))}>
-                  <input name="dlq" defaultValue={dlq} spellCheck={false} />
+                  <ResourcePicker kind={["sqs-queue", "sns-topic"]} name="dlq" defaultValue={dlq} />
                 </Field>
                 {dlq && <input type="hidden" name="hadDlq" value="1" />}
                 {c.PackageType !== "Image" && (

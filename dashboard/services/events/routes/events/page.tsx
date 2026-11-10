@@ -14,6 +14,8 @@ import { buses as listBuses, targetArns } from "../../lib/targets";
 import { ruleHref, TargetIcons } from "../../lib/targets-view";
 import { EventsTabs } from "../../lib/tabs";
 import { createBus, createRule, deleteBus, deleteRule, putEvent, setRuleState, updateBus } from "./actions";
+import { ResourcePicker } from "@mws-dashboard/ui/pickers";
+import { PolicyEditor } from "@mws-dashboard/ui/policy";
 
 export const metadata: Metadata = { title: "EventBridge" };
 
@@ -116,12 +118,10 @@ export default async function EventBridge({ searchParams }: Props) {
                     <input name="description" defaultValue={b.Description} />
                   </Field>
                   <Field label="Dead-letter queue" rule={{ ...DLQ, required: false }} known={known.filter((a) => a.split(":")[2] === "sqs")}>
-                    <input name="dlq" defaultValue={b.DeadLetterConfig?.Arn} spellCheck={false} />
+                    <ResourcePicker kind="sqs-queue" name="dlq" defaultValue={b.DeadLetterConfig?.Arn} />
                   </Field>
                   <MoreFields label="Resource-based policy" expanded={!!b.Policy}>
-                    <Field label="Resource-based policy" format="policy">
-                      <textarea name="policy" rows={8} spellCheck={false} defaultValue={b.Policy ? JSON.stringify(JSON.parse(b.Policy), null, 2) : ""} />
-                    </Field>
+                    <PolicyEditor label="Resource-based policy" format="policy" kind="resource" name="policy" rows={8} defaultValue={b.Policy ? JSON.stringify(JSON.parse(b.Policy), null, 2) : ""} />
                   </MoreFields>
                   {b.Policy && <input type="hidden" name="hadPolicy" value="1" />}
                 </ActionForm>

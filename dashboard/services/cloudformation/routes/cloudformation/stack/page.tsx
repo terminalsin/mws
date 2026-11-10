@@ -24,6 +24,7 @@ import { PARAMETERS, TEMPLATE, resourceType, word } from "../../../lib/cloudform
 import { stackName } from "../../../lib/nav";
 import { cancelUpdate, continueRollback, deleteStack, detectDrift, detectResourceDrift, rollbackStack, setStackPolicy, setTerminationProtection, updateStack } from "../actions";
 import { Capabilities, CreateChangeSet } from "../forms";
+import { ResourcePicker } from "@mws-dashboard/ui/pickers";
 
 export const metadata: Metadata = { title: "Stack" };
 
@@ -375,7 +376,7 @@ export default async function Stack({ searchParams }: Props) {
                   <MoreFields expanded={!!s.Capabilities?.length}>
                     <Capabilities checked={s.Capabilities} />
                     <Field label="Service role" rule={UpdateStackRules.RoleARN} format="arn">
-                      <input name="role" defaultValue={s.RoleARN} />
+                      <ResourcePicker kind="iam-role" name="role" service="cloudformation.amazonaws.com" defaultValue={s.RoleARN} />
                     </Field>
                     <label className="check">
                       <input type="checkbox" name="disableRollback" /> Preserve resources on failure

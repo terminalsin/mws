@@ -10,6 +10,7 @@ import { arnHref, arnName } from "../../../lib/links";
 import { DLQ_ARN, FILTER_POLICY, JSON_POLICY } from "../../../lib/rules";
 import { Endpoint } from "../../../lib/view";
 import { saveSubscription, unsubscribe } from "../actions";
+import { ResourcePicker } from "@mws-dashboard/ui/pickers";
 
 type Props = { searchParams: Promise<{ arn?: string }> };
 
@@ -75,7 +76,7 @@ export default async function SubscriptionPage({ searchParams }: Props) {
                 </label>
               )}
               <Field label="Dead-letter queue" rule={DLQ_ARN} member="RedrivePolicy">
-                <input name="dlq" defaultValue={dlq} spellCheck={false} />
+                <ResourcePicker kind="sqs-queue" name="dlq" defaultValue={dlq} />
               </Field>
               {(protocol === "http" || protocol === "https") && (
                 <Field label="Delivery policy" rule={JSON_POLICY} member="DeliveryPolicy">

@@ -12,6 +12,7 @@ import { MoreFields, PresetGallery } from "@mws-dashboard/ui/presets";
 import { useState } from "react";
 
 import { IA_OPTIONS } from "./options";
+import { ResourcePicker } from "@mws-dashboard/ui/pickers";
 
 const CLASSES = [
   { id: "regional", label: "Regional", icon: "resource/AmazonElasticFileSystemEFSStandard", title: "Stored across Availability Zones" },
@@ -83,7 +84,7 @@ export function CreateFileSystemFields({ nameRule, vpcs, defaultVpc, zones }: { 
             </select>
           </Field>
           <Field label="KMS key" rule={Rules.KmsKeyId} hint="Empty uses aws/elasticfilesystem">
-            <input name="kms" />
+            <ResourcePicker kind="kms-key" name="kms" />
           </Field>
         </div>
         <label className="check">

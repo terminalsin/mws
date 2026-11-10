@@ -39,6 +39,8 @@ import {
   setRotation,
   tryKey,
 } from "../actions";
+import { ResourcePicker } from "@mws-dashboard/ui/pickers";
+import { PolicyEditor } from "@mws-dashboard/ui/policy";
 
 type Props = { searchParams: Promise<{ id?: string; tab?: string }> };
 
@@ -151,9 +153,7 @@ export default async function Key({ searchParams }: Props) {
           policy.ok && (
             <Sheet title="Key policy" label="Edit key policy" icon={<Pencil size={16} />} testId="edit-key-policy">
               <ActionForm action={saveKeyPolicy.bind(null, keyId)} submit="Save" testId="edit-key-policy">
-                <Field label="Key policy" rule={POLICY}>
-                  <textarea name="policy" rows={16} defaultValue={pretty(policy.value)} />
-                </Field>
+                <PolicyEditor label="Key policy" rule={POLICY} kind="resource" name="policy" rows={16} defaultValue={pretty(policy.value)} />
               </ActionForm>
             </Sheet>
           )
@@ -310,7 +310,7 @@ export default async function Key({ searchParams }: Props) {
                 <Sheet title={`Move ${a.AliasName}`} label={`Move ${a.AliasName} to another key`} icon={<ArrowRightLeft size={15} />}>
                   <ActionForm action={moveAlias.bind(null, keyId, a.AliasName!)} submit="Move">
                     <Field label="Key ID or ARN" known={[...new Set(otherKeys.map((k) => k.TargetKeyId!))]} member="TargetKeyId">
-                      <input name="target" required />
+                      <ResourcePicker kind="kms-key" name="target" exclude="AWS managed" use="id" required />
                     </Field>
                   </ActionForm>
                 </Sheet>

@@ -7,6 +7,7 @@ import { Trash2 } from "lucide-react";
 import { CONTROL_ICONS, accessPointHref, account, control } from "../../lib/s3";
 import { createAccessPoint, deleteAccessPoint } from "./control-actions";
 import { BPA_SETTINGS } from "./[bucket]/permissions";
+import { ResourcePicker } from "@mws-dashboard/ui/pickers";
 
 // The model allows 3-255; S3 asks for 3-50 lowercase letters, digits and
 // hyphens, starting and ending with a letter or digit.
@@ -46,7 +47,7 @@ export function CreateAccessPointSheet({ bucket, buckets, taken }: { bucket?: st
             </select>
           </Field>
           <Field label="VPC ID" rule={{ pattern: "^vpc-[0-9a-f]+$", hint: "Only for a VPC origin" }} member="VpcConfiguration.VpcId">
-            <input name="vpc" placeholder="vpc-…" />
+            <ResourcePicker kind="vpc" name="vpc" />
           </Field>
         </div>
         <fieldset className="field">

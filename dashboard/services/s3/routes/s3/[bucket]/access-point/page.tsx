@@ -9,6 +9,7 @@ import type { ReactNode } from "react";
 import { CONTROL_ICONS, accessPointHref, account, bucketHref, control, links, optional } from "../../../../lib/s3";
 import { deleteAccessPoint, saveAccessPointPolicy, saveControlTags } from "../../control-actions";
 import { BPA_SETTINGS, bpaSummary } from "../permissions";
+import { PolicyEditor } from "@mws-dashboard/ui/policy";
 
 type Props = { params: Promise<{ bucket: string }>; searchParams: Promise<{ name?: string }> };
 
@@ -88,9 +89,7 @@ export default async function AccessPoint({ params, searchParams }: Props) {
         actions={
           <Sheet title="Access point policy" label="Edit access point policy" icon={<Pencil size={15} aria-hidden />} testId="edit-ap-policy">
             <ActionForm action={saveAccessPointPolicy.bind(null, name, bucket)} submit="Save" testId="edit-ap-policy">
-              <Field label="Policy JSON" hint="Empty removes the policy" format="policy">
-                <textarea name="policy" rows={14} defaultValue={doc ? JSON.stringify(JSON.parse(doc), null, 2) : template} />
-              </Field>
+              <PolicyEditor label="Policy JSON" hint="Empty removes the policy" format="policy" kind="resource" name="policy" rows={14} defaultValue={doc ? JSON.stringify(JSON.parse(doc), null, 2) : template} />
             </ActionForm>
           </Sheet>
         }

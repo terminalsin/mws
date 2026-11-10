@@ -47,6 +47,7 @@ import {
   testAnswer,
   updateComment,
 } from "../actions";
+import { ResourcePicker } from "@mws-dashboard/ui/pickers";
 
 export const metadata: Metadata = { title: "Hosted zone" };
 
@@ -223,7 +224,7 @@ async function Vpcs({ id, vpcs }: { id: string; vpcs: { VPCId?: string; VPCRegio
             <ActionForm action={authorizeVpc.bind(null, id)} submit="Authorize" testId="authorize-vpc">
               <div className="form-row">
                 <Field label="VPC ID" rule={{ ...CreateVPCAssociationAuthorization.VPC.fields!.VPCId, required: true, pattern: "^vpc-[0-9a-f]{8,17}$", hint: "Like vpc-0abc12345" }} member="VPC.VPCId">
-                  <input name="vpc" />
+                  <ResourcePicker kind="vpc" name="vpc" />
                 </Field>
                 <Field label="Region" member="VPC.VPCRegion">
                   <select name="region" defaultValue={current}>

@@ -5,6 +5,7 @@ import { Pencil, Trash2 } from "lucide-react";
 
 import { ICONS, iam, policyDocument } from "../../lib/clients";
 import type { Kind } from "../../lib/iam";
+import { PolicyEditor } from "@mws-dashboard/ui/policy";
 import { RULES } from "../../lib/rules";
 import { deleteInlinePolicy, updateInlinePolicy } from "./actions";
 
@@ -37,9 +38,7 @@ export async function InlinePolicy({ kind, name, policy }: { kind: Kind; name: s
         <>
           <Sheet title={`Edit ${policy}`} label="Edit policy" icon={<Pencil size={16} />} testId="edit-inline-policy">
             <ActionForm action={updateInlinePolicy.bind(null, kind, name, policy)} submit="Save" testId="edit-inline-policy">
-              <Field label="Document" rule={RULES.document}>
-                <textarea name="document" rows={16} required aria-label="Policy document" defaultValue={pretty(data.value)} />
-              </Field>
+              <PolicyEditor label="Document" name="document" rows={16} required aria-label="Policy document" rule={RULES.document} defaultValue={pretty(data.value)} />
             </ActionForm>
           </Sheet>
           <ActionForm

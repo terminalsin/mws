@@ -11,6 +11,7 @@ import { RESOURCE_TONE, listInstances, listSnapshots, listVolumes, volumeSpec } 
 import { DEVICE, SNAPSHOT_DESCRIPTION, TAG_VALUE } from "../rules";
 import { VolumeFields } from "../volume-fields";
 import { MoreFields } from "@mws-dashboard/ui/presets";
+import { ResourcePicker } from "@mws-dashboard/ui/pickers";
 
 export async function zones() {
   return ((await (await ec2()).send(new DescribeAvailabilityZonesCommand({}))).AvailabilityZones ?? []).map((z) => z.ZoneName!);
@@ -55,7 +56,7 @@ export function CreateVolumeSheet({ zones, snapshots, snapshot, zone }: { zones:
             <input type="checkbox" name="encrypted" defaultChecked={snapshot?.Encrypted} /> Encrypted
           </label>
           <Field label="KMS key" member="KmsKeyId" hint="Blank: aws/ebs">
-            <input name="kmsKey" placeholder="alias/aws/ebs" />
+            <ResourcePicker kind="kms-key" name="kmsKey" placeholder="alias/aws/ebs" />
           </Field>
         </MoreFields>
       </ActionForm>

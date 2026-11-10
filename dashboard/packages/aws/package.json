@@ -8,16 +8,30 @@
     ".": "./src/index.ts",
     "./auto": "./src/auto.ts",
     "./shell": "./src/shell.ts",
-    "./shell-actions": "./src/shell-actions.ts"
+    "./shell-actions": "./src/shell-actions.ts",
+    "./resources": "./src/resources.ts"
   },
   "scripts": {
     "typecheck": "tsc --noEmit"
   },
   "dependencies": {
+    "@aws-sdk/client-acm": "^3.1164.0",
+    "@aws-sdk/client-acm-pca": "^3.1164.0",
     "@aws-sdk/client-cloudwatch-logs": "^3.1164.0",
     "@aws-sdk/client-ec2": "^3.1164.0",
+    "@aws-sdk/client-ecr": "^3.1164.0",
+    "@aws-sdk/client-elastic-load-balancing-v2": "^3.1164.0",
+    "@aws-sdk/client-eventbridge": "^3.1164.0",
+    "@aws-sdk/client-firehose": "^3.1164.0",
     "@aws-sdk/client-iam": "^3.1164.0",
+    "@aws-sdk/client-kinesis": "^3.1164.0",
+    "@aws-sdk/client-kms": "^3.1164.0",
+    "@aws-sdk/client-lambda": "^3.1164.0",
     "@aws-sdk/client-s3": "^3.1164.0",
+    "@aws-sdk/client-secrets-manager": "^3.1164.0",
+    "@aws-sdk/client-sns": "^3.1164.0",
+    "@aws-sdk/client-sqs": "^3.1164.0",
+    "@aws-sdk/client-ssm": "^3.1164.0",
     "@aws-sdk/client-sts": "^3.1164.0",
     "@mws-dashboard/ui": "*",
     "server-only": "^0.0.1"

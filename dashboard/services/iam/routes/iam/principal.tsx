@@ -20,6 +20,8 @@ import Link from "next/link";
 import { ICONS, iam, policyDocument, principalIcon, trust } from "../../lib/clients";
 import { allGroups, attachedPolicies, groupMembers, groupsForUser, inlinePolicies, instanceProfilesForRole, policies, serviceLinked, type Kind } from "../../lib/iam";
 import { AttachFields, PolicyFields } from "../../lib/forms.tsx";
+import { ResourcePicker } from "@mws-dashboard/ui/pickers";
+import { PolicyEditor } from "@mws-dashboard/ui/policy";
 import { RULES } from "../../lib/rules";
 import {
   addMember,
@@ -289,16 +291,9 @@ export async function Principal({ kind, name, tab, deletion }: { kind: Kind; nam
           actions={
             <Sheet title="Permissions boundary" label={boundary ? "Change boundary" : "Set boundary"} icon={<ShieldCheck size={16} />} testId="set-boundary">
               <ActionForm action={putBoundary.bind(null, d.kind, name)} submit="Set boundary" testId="set-boundary">
-                <Field label="Policy" rule={RULES.policyArn} known={d.all.map((p) => p.Arn!)}>
-                  <input name="policyArn" list="boundaries" required defaultValue={boundary?.PermissionsBoundaryArn} placeholder="arn:aws:iam::aws:policy/PowerUserAccess" />
+                <Field label="Policy" rule={RULES.policyArn}>
+                  <ResourcePicker kind="iam-policy" name="policyArn" required defaultValue={boundary?.PermissionsBoundaryArn} placeholder="Search managed policies, e.g. PowerUserAccess" />
                 </Field>
-                <datalist id="boundaries">
-                  {d.all.map((p) => (
-                    <option key={p.Arn} value={p.Arn}>
-                      {p.PolicyName}
-                    </option>
-                  ))}
-                </datalist>
               </ActionForm>
             </Sheet>
           }
@@ -361,9 +356,7 @@ export async function Principal({ kind, name, tab, deletion }: { kind: Kind; nam
           !linked && (
             <Sheet title="Trust policy" label="Edit trust policy" icon={<Pencil size={16} />} testId="edit-trust">
               <ActionForm action={updateTrust.bind(null, name)} submit="Save" testId="edit-trust">
-                <Field label="Document" rule={RULES.trustEdit}>
-                  <textarea name="document" rows={14} required aria-label="Trust policy" defaultValue={pretty(doc)} />
-                </Field>
+                <PolicyEditor label="Document" name="document" kind="trust" rows={14} required aria-label="Trust policy" rule={RULES.trustEdit} defaultValue={pretty(doc)} />
               </ActionForm>
             </Sheet>
           )

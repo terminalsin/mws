@@ -10,6 +10,7 @@ import type { ReactNode } from "react";
 
 import { ICONS, cloudtrail, links, shadowOf } from "../../../lib/clients";
 import { deleteTrail, saveAdvancedSelectors, saveEventSelectors, saveInsights, saveTags, setLogging, updateTrail } from "../actions";
+import { ResourcePicker } from "@mws-dashboard/ui/pickers";
 
 type Props = { searchParams: Promise<{ arn?: string }> };
 
@@ -63,7 +64,7 @@ export default async function TrailPage({ searchParams }: Props) {
               <ActionForm action={updateTrail.bind(null, arn)} submit="Save" testId="edit-trail">
                 <div className="form-row">
                   <Field label="S3 bucket" format="bucket">
-                    <input name="bucket" required defaultValue={t.S3BucketName} />
+                    <ResourcePicker kind="s3-bucket" name="bucket" required defaultValue={t.S3BucketName} />
                   </Field>
                   <Field label="Prefix" rule={PREFIX}>
                     <input name="prefix" defaultValue={t.S3KeyPrefix} />
@@ -71,10 +72,10 @@ export default async function TrailPage({ searchParams }: Props) {
                 </div>
                 <MoreFields expanded={!!(t.SnsTopicARN || t.KmsKeyId || t.CloudWatchLogsLogGroupArn)}>
                   <Field label="SNS topic" hint="Name or ARN; empty turns notifications off">
-                    <input name="topic" defaultValue={t.SnsTopicARN} />
+                    <ResourcePicker kind="sns-topic" name="topic" defaultValue={t.SnsTopicARN} />
                   </Field>
                   <Field label="KMS key" hint="Key ID, ARN or alias; empty uses SSE-S3">
-                    <input name="kms" defaultValue={t.KmsKeyId} />
+                    <ResourcePicker kind="kms-key" name="kms" exclude="AWS managed" defaultValue={t.KmsKeyId} />
                   </Field>
                   <Field label="CloudWatch Logs log group ARN" rule={ARN_RULE}>
                     <input name="logGroup" defaultValue={t.CloudWatchLogsLogGroupArn} placeholder="arn:aws:logs:region:account:log-group:name:*" />

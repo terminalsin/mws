@@ -12,6 +12,7 @@ import { EndpointNetworkFields } from "../../../lib/network-forms";
 import { label, listGroups, network } from "../../../lib/vpc";
 import { deleteEndpoint, editEndpointNetwork, editEndpointPolicy } from "../network-actions";
 import { networkChoices } from "../tabs";
+import { PolicyEditor } from "@mws-dashboard/ui/policy";
 
 export const metadata: Metadata = { title: "Endpoint" };
 
@@ -58,9 +59,7 @@ export default async function EndpointPage({ searchParams }: Props) {
         actions={
           <Sheet title="Edit policy" label="Edit policy" icon={<FileText size={15} />} testId="edit-endpoint-policy">
             <ActionForm action={editEndpointPolicy.bind(null, id)} submit="Save" testId="edit-endpoint-policy">
-              <Field label="Policy" rule={{ ...ModifyVpcEndpoint.PolicyDocument, format: "policy", required: false }} member="PolicyDocument" hint="Full access when empty">
-                <textarea name="policy" rows={14} spellCheck={false} defaultValue={pretty(ep.PolicyDocument)} />
-              </Field>
+              <PolicyEditor label="Policy" rule={{ ...ModifyVpcEndpoint.PolicyDocument, format: "policy", required: false }} member="PolicyDocument" hint="Full access when empty" kind="resource" name="policy" rows={14} defaultValue={pretty(ep.PolicyDocument)} />
             </ActionForm>
           </Sheet>
         }

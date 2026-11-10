@@ -11,6 +11,7 @@ import Link from "next/link";
 import { bedrock } from "../../../lib/clients";
 import { saveLogging, stopLogging } from "../actions";
 import { Providers } from "./providers";
+import { ResourcePicker } from "@mws-dashboard/ui/pickers";
 
 export const metadata: Metadata = { title: "Settings" };
 
@@ -45,12 +46,12 @@ export default async function Settings() {
             <Sheet title="Model invocation logging" label="Edit logging" icon={<Settings2 size={15} />} testId="edit-logging">
               <ActionForm action={saveLogging} submit="Save" testId="edit-logging">
                 <Field label="Log group" rule={LOG_GROUP}>
-                  <input name="logGroup" defaultValue={cw?.logGroupName ?? (c ? "" : "/aws/bedrock/invocations")} />
+                  <ResourcePicker kind="log-group" name="logGroup" defaultValue={cw?.logGroupName ?? (c ? "" : "/aws/bedrock/invocations")} />
                 </Field>
                 <AutoPick name="role" label="Service role" creates="AmazonBedrockInvocationLoggingRole" options={roles} preferred={cw?.roleArn} testId="logging-role" />
                 <div className="form-row">
                   <Field label="S3 bucket" rule={BUCKET} known={buckets.map((b) => b.value)}>
-                    <input name="bucket" defaultValue={s3?.bucketName} />
+                    <ResourcePicker kind="s3-bucket" name="bucket" defaultValue={s3?.bucketName} />
                   </Field>
                   <Field label="Prefix" rule={PREFIX}>
                     <input name="prefix" defaultValue={s3?.keyPrefix} />

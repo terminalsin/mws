@@ -28,6 +28,7 @@ import {
   putMetricStream,
   setMetricStream,
 } from "../actions";
+import { ResourcePicker } from "@mws-dashboard/ui/pickers";
 
 export const metadata: Metadata = { title: "Metric streams" };
 
@@ -95,7 +96,7 @@ export default async function MetricStreams() {
               : undefined
           }
         >
-          <input name="firehose" list="metric-stream-firehoses" />
+          <ResourcePicker kind="firehose-stream" name="firehose" />
         </Field>
         <datalist id="metric-stream-firehoses">
           {(firehoses.ok ? firehoses.value : []).map((f) => (

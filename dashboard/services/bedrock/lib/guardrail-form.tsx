@@ -13,6 +13,7 @@ import { Anchor, EyeOff, Headset, Scale, ShieldCheck, Wrench } from "lucide-reac
 import { useState, type ReactNode } from "react";
 
 import { FILTERS, GUARDRAIL_TEMPLATES, PII, type GuardrailTemplate } from "./guardrail-presets";
+import { ResourcePicker } from "@mws-dashboard/ui/pickers";
 
 const ICON: Record<string, ReactNode> = {
   balanced: <Scale size={24} aria-hidden />,
@@ -164,7 +165,7 @@ function Policies({ g, t, taken }: { g?: GetGuardrailResponse; t?: GuardrailTemp
       {!editing && (
         <>
           <Field label="KMS key" rule={{ ...ruleAt(CreateGuardrail, "kmsKeyId"), required: false }}>
-            <input name="kms" placeholder="alias/my-key" />
+            <ResourcePicker kind="kms-key" name="kms" exclude="AWS managed" placeholder="alias/my-key" />
           </Field>
           <Field label="Tags" format="tags">
             <textarea name="tags" rows={2} placeholder="team=ml" />

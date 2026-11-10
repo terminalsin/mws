@@ -12,6 +12,8 @@ import { ACCESS_POLICY, DEDUP_ID, DISPLAY_NAME, GROUP_ID, JSON_POLICY, KMS_KEY, 
 import { SubscribeFields } from "../../../lib/subscribe";
 import { Endpoint, pending, protocolIcon } from "../../../lib/view";
 import { confirmPending, deleteTopic, publish, saveLogging, saveTopic, saveTopicTags, subscribe, unsubscribe } from "../actions";
+import { ResourcePicker } from "@mws-dashboard/ui/pickers";
+import { PolicyEditor } from "@mws-dashboard/ui/policy";
 
 type Props = { searchParams: Promise<{ arn?: string }> };
 
@@ -113,7 +115,7 @@ export default async function Topic({ searchParams }: Props) {
                   <input type="checkbox" name="encryption" defaultChecked={!!attrs.KmsMasterKeyId} /> Encryption
                 </label>
                 <Field label="KMS key" rule={KMS_KEY} member="KmsMasterKeyId">
-                  <input name="kmsKey" defaultValue={attrs.KmsMasterKeyId ?? "alias/aws/sns"} spellCheck={false} />
+                  <ResourcePicker kind="kms-key" name="kmsKey" defaultValue={attrs.KmsMasterKeyId ?? "alias/aws/sns"} />
                 </Field>
               </div>
 
@@ -128,9 +130,7 @@ export default async function Topic({ searchParams }: Props) {
                 </div>
               )}
               <MoreFields label="Policies, tracing">
-                <Field label="Access policy" rule={ACCESS_POLICY} member="Policy">
-                  <textarea name="policy" rows={8} spellCheck={false} defaultValue={pretty(attrs.Policy)} />
-                </Field>
+                <PolicyEditor label="Access policy" rule={ACCESS_POLICY} member="Policy" kind="resource" name="policy" rows={8} defaultValue={pretty(attrs.Policy)} />
                 <Field label="Delivery policy (HTTP/S)" rule={JSON_POLICY} member="DeliveryPolicy">
                   <textarea name="deliveryPolicy" rows={4} spellCheck={false} defaultValue={pretty(attrs.DeliveryPolicy)} />
                 </Field>

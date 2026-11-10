@@ -79,6 +79,7 @@ import {
   startRefresh,
   terminateInstance,
 } from "../group-actions";
+import { ResourcePicker } from "@mws-dashboard/ui/pickers";
 
 export interface Ctx {
   g: AutoScalingGroup;
@@ -832,7 +833,7 @@ export const detailsTab: Tab = async ({ g, name }) => {
             <Sheet title="Create notification" label="Create notification" icon={<Bell size={15} />} testId="add-notification">
               <ActionForm action={putNotification.bind(null, name)} submit="Create" testId="add-notification">
                 <Field label="SNS topic ARN" format="arn" member="TopicARN">
-                  <input name="topic" required spellCheck={false} />
+                  <ResourcePicker kind="sns-topic" name="topic" required />
                 </Field>
                 <fieldset className="checks">
                   <legend>Event types</legend>

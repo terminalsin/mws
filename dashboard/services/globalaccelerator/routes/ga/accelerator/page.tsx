@@ -23,6 +23,7 @@ import {
   updateFlowLogs,
   updateListener,
 } from "../actions";
+import { ResourcePicker } from "@mws-dashboard/ui/pickers";
 
 export const metadata: Metadata = { title: "Accelerator" };
 
@@ -214,7 +215,7 @@ export default async function Accelerator({ searchParams }: Props) {
               </label>
               <div className="form-row">
                 <Field label="S3 bucket" rule={UpdateAcceleratorAttributes.FlowLogsS3Bucket} format="bucket">
-                  <input name="bucket" defaultValue={attributes?.FlowLogsS3Bucket} />
+                  <ResourcePicker kind="s3-bucket" name="bucket" defaultValue={attributes?.FlowLogsS3Bucket} />
                 </Field>
                 <Field label="Prefix" rule={UpdateAcceleratorAttributes.FlowLogsS3Prefix}>
                   <input name="prefix" defaultValue={attributes?.FlowLogsS3Prefix} />

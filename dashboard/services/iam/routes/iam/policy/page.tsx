@@ -6,6 +6,7 @@ import type { Metadata } from "next";
 
 import { ICONS, iam, policyDocument } from "../../../lib/clients";
 import { policyEntities, policyVersions } from "../../../lib/iam";
+import { PolicyEditor } from "@mws-dashboard/ui/policy";
 import { RULES } from "../../../lib/rules";
 import { createPolicyVersion, deletePolicy, deletePolicyVersion, saveTags, setDefaultVersion } from "../actions";
 
@@ -141,13 +142,16 @@ export default async function Policy({ searchParams }: Props) {
           <>
             <Sheet title={`Edit ${policy.PolicyName}`} label="Edit policy" icon={<Pencil size={16} />} testId="edit-policy">
               <ActionForm action={createPolicyVersion.bind(null, arn)} submit="Save changes" testId="edit-policy">
-                <Field
+                <PolicyEditor
                   label="Document"
+                  name="document"
+                  rows={16}
+                  required
+                  aria-label="Policy document"
                   rule={RULES.document}
                   hint={versions.length >= 5 && oldest ? `Saving deletes ${oldest.VersionId}, the oldest version: IAM keeps five` : undefined}
-                >
-                  <textarea name="document" rows={16} required aria-label="Policy document" defaultValue={pretty(document)} />
-                </Field>
+                  defaultValue={pretty(document)}
+                />
                 <label className="check">
                   <input type="checkbox" name="default" defaultChecked /> Set as default version
                 </label>

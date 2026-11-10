@@ -24,6 +24,7 @@ import {
   saveTags,
   sendMessage,
 } from "../actions";
+import { PolicyEditor } from "@mws-dashboard/ui/policy";
 
 type Props = { params: Promise<{ name: string }> };
 
@@ -156,9 +157,7 @@ export default async function Queue({ params }: Props) {
                 </div>
               </MoreFields>
               <QueueSettings queues={candidates} current={current} fifo={fifo} rules={settingRules} />
-              <Field label="Access policy" rule={RULES.Policy}>
-                <textarea name="Policy" rows={8} defaultValue={attrs.Policy ? JSON.stringify(JSON.parse(attrs.Policy), null, 2) : ""} />
-              </Field>
+              <PolicyEditor label="Access policy" rule={RULES.Policy} kind="resource" name="Policy" rows={8} defaultValue={attrs.Policy ? JSON.stringify(JSON.parse(attrs.Policy), null, 2) : ""} />
             </ActionForm>
           </Sheet>
           <Sheet title="Lambda trigger" label="Configure Lambda function trigger" icon={<Zap size={15} aria-hidden />} testId="lambda-trigger">
