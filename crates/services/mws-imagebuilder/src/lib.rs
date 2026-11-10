@@ -278,7 +278,7 @@ impl ImageBuilder {
             },
             source_ip: None,
             secure_transport: true,
-            authorizer: Arc::new(mws_core::AllowAll),
+            authorizer: mws_core::ServiceLinkedRoleAuthorizer::wrap(base.authorizer.clone()),
             endpoint: base.endpoint.clone(),
         }
     }

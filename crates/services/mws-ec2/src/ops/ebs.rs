@@ -9,8 +9,8 @@ use mws_core::{ConditionContext, RequestContext, ServiceError};
 use crate::generated::types as t;
 use crate::state::RegionState;
 use crate::util::{
-    arn, authorize, b, err, invalid_parameter, new_id, paginate, request_tag_context, resource_tag_context, s,
-    some_tags, tags_for, Filters, Kind,
+    arn, b, err, invalid_parameter, new_id, paginate, request_tag_context, resource_tag_context, s, some_tags,
+    tags_for, Filters, Kind,
 };
 use crate::volumes::VolumeJob;
 use crate::{account_of, catalog, Ec2};
@@ -378,12 +378,15 @@ impl Ec2 {
         if !catalog::zones(&ctx.region).iter().any(|z| z.0 == zone) {
             return Err(invalid_parameter(format!("Invalid availability zone: [{zone}]")));
         }
-        if let Some(token) = input.client_token.as_deref().filter(|t| !t.is_empty()) {
-            let existing =
-                self.with_region(ctx, |r| r.volume_tokens.get(token).and_then(|id| r.volumes.get(id)).cloned());
-            if let Some(v) = existing {
-                return Ok(v);
-            }
+        let fp = crate::idempotency::fingerprint(&input);
+        let existing = self.with_region(ctx, |r| {
+            let id = crate::idempotency::replay(r, "CreateVolume", input.client_token.as_deref(), &fp, |id| {
+                r.volumes.contains_key(id)
+            })?;
+            Ok::<_, ServiceError>(id.and_then(|id| r.volumes.get(&id).cloned()))
+        })?;
+        if let Some(v) = existing {
+            return Ok(v);
         }
         let snapshot = match &input.snapshot_id {
             Some(id) => {
@@ -434,6 +437,9 @@ impl Ec2 {
         if let Some(tp) = throughput {
             cond.insert("ec2:VolumeThroughput".into(), vec![tp.to_string()]);
         }
+        if let Some(snap) = snapshot.as_ref().and_then(|s| s.snapshot_id.clone()) {
+            cond.insert("ec2:ParentSnapshot".into(), vec![snapshot_arn(ctx, &snap)]);
+        }
         let mut resources = vec![(arn(ctx, &account, "volume/*"), cond)];
         if let Some(snap) = &snapshot {
             resources.push((
@@ -441,7 +447,7 @@ impl Ec2 {
                 resource_tag_context(snap.tags.as_ref()),
             ));
         }
-        authorize(ctx, "CreateVolume", &resources, input.dry_run)?;
+        self.authorize_known(ctx, "CreateVolume", &resources, input.dry_run)?;
         let id = new_id("vol");
         let snapshot_id = input.snapshot_id.clone().unwrap_or_default();
         let volume = self.with_region(ctx, |r| {
@@ -478,6 +484,7 @@ impl Ec2 {
             if let Some(token) = input.client_token.clone().filter(|t| !t.is_empty()) {
                 r.volume_tokens.insert(token, id.clone());
             }
+            crate::idempotency::remember(r, "CreateVolume", input.client_token.as_deref(), &fp, &id);
             volume
         });
         self.volume_job(VolumeJob::Create {
@@ -498,13 +505,21 @@ impl Ec2 {
         let account = account_of(ctx);
         let tags = tags_for(&input.tag_specifications, "volume", &["volume"])?;
         let source = self.volume_authorize(ctx, "CopyVolumes", &input.source_volume_id, None)?;
-        authorize(ctx, "CopyVolumes", &[(arn(ctx, &account, "volume/*"), request_tag_context(&tags))], input.dry_run)?;
-        if let Some(token) = input.client_token.as_deref().filter(|t| !t.is_empty()) {
-            let existing =
-                self.with_region(ctx, |r| r.volume_tokens.get(token).and_then(|id| r.volumes.get(id)).cloned());
-            if let Some(v) = existing {
-                return Ok(t::CopyVolumesResult { volumes: Some(vec![v]) });
-            }
+        self.authorize_known(
+            ctx,
+            "CopyVolumes",
+            &[(arn(ctx, &account, "volume/*"), request_tag_context(&tags))],
+            input.dry_run,
+        )?;
+        let fp = crate::idempotency::fingerprint(&input);
+        let existing = self.with_region(ctx, |r| {
+            let id = crate::idempotency::replay(r, "CopyVolumes", input.client_token.as_deref(), &fp, |id| {
+                r.volumes.contains_key(id)
+            })?;
+            Ok::<_, ServiceError>(id.and_then(|id| r.volumes.get(&id).cloned()))
+        })?;
+        if let Some(v) = existing {
+            return Ok(t::CopyVolumesResult { volumes: Some(vec![v]) });
         }
         let size = input.size.unwrap_or(source.size.unwrap_or(1));
         if size < source.size.unwrap_or(0) {
@@ -551,6 +566,7 @@ impl Ec2 {
             if let Some(token) = input.client_token.clone().filter(|t| !t.is_empty()) {
                 r.volume_tokens.insert(token, id.clone());
             }
+            crate::idempotency::remember(r, "CopyVolumes", input.client_token.as_deref(), &fp, &id);
         });
         // A copy is a snapshot of the source restored at once.
         self.volume_job(VolumeJob::Snapshot { volume_id: input.source_volume_id.clone(), snapshot_id: id.clone() });
@@ -568,10 +584,10 @@ impl Ec2 {
     ) -> Result<t::Volume, ServiceError> {
         Kind::Volume.check(id)?;
         let v = self.with_region(ctx, |r| r.volumes.get(id).cloned()).ok_or_else(|| Kind::Volume.not_found(id))?;
-        authorize(
+        self.authorize_known(
             ctx,
             action,
-            &[(arn(ctx, &account_of(ctx), &format!("volume/{id}")), resource_tag_context(v.tags.as_ref()))],
+            &[(arn(ctx, &account_of(ctx), &format!("volume/{id}")), crate::conditions::volume(ctx, &v))],
             dry_run,
         )?;
         Ok(v)
@@ -608,7 +624,7 @@ impl Ec2 {
         ctx: &RequestContext,
         input: t::DescribeVolumesRequest,
     ) -> Result<t::DescribeVolumesResult, ServiceError> {
-        authorize(ctx, "DescribeVolumes", &[("*".into(), ConditionContext::new())], input.dry_run)?;
+        self.authorize_known(ctx, "DescribeVolumes", &[("*".into(), ConditionContext::new())], input.dry_run)?;
         let filters = Filters::new(&input.filters);
         let ids = input.volume_ids.clone().unwrap_or_default();
         self.with_region(ctx, |r| {
@@ -638,7 +654,7 @@ impl Ec2 {
         let tags = self
             .with_region(ctx, |r| r.instances.get(&input.instance_id).map(|i| i.instance.tags.clone()))
             .ok_or_else(|| Kind::Instance.not_found(&input.instance_id))?;
-        authorize(
+        self.authorize_known(
             ctx,
             "AttachVolume",
             &[(arn(ctx, &account, &format!("instance/{}", input.instance_id)), resource_tag_context(tags.as_ref()))],
@@ -868,7 +884,12 @@ impl Ec2 {
         ctx: &RequestContext,
         input: t::DescribeVolumesModificationsRequest,
     ) -> Result<t::DescribeVolumesModificationsResult, ServiceError> {
-        authorize(ctx, "DescribeVolumesModifications", &[("*".into(), ConditionContext::new())], input.dry_run)?;
+        self.authorize_known(
+            ctx,
+            "DescribeVolumesModifications",
+            &[("*".into(), ConditionContext::new())],
+            input.dry_run,
+        )?;
         let filters = Filters::new(&input.filters);
         let ids = input.volume_ids.clone().unwrap_or_default();
         self.with_region(ctx, |r| {
@@ -900,7 +921,7 @@ impl Ec2 {
         ctx: &RequestContext,
         input: t::DescribeVolumeStatusRequest,
     ) -> Result<t::DescribeVolumeStatusResult, ServiceError> {
-        authorize(ctx, "DescribeVolumeStatus", &[("*".into(), ConditionContext::new())], input.dry_run)?;
+        self.authorize_known(ctx, "DescribeVolumeStatus", &[("*".into(), ConditionContext::new())], input.dry_run)?;
         let filters = Filters::new(&input.filters);
         let ids = input.volume_ids.clone().unwrap_or_default();
         self.with_region(ctx, |r| {
@@ -1010,7 +1031,7 @@ impl Ec2 {
         ctx: &RequestContext,
         input: t::ListVolumesInRecycleBinRequest,
     ) -> Result<t::ListVolumesInRecycleBinResult, ServiceError> {
-        authorize(ctx, "ListVolumesInRecycleBin", &[("*".into(), ConditionContext::new())], input.dry_run)?;
+        self.authorize_known(ctx, "ListVolumesInRecycleBin", &[("*".into(), ConditionContext::new())], input.dry_run)?;
         for id in input.volume_ids.iter().flatten() {
             Kind::Volume.check(id)?;
         }
@@ -1024,7 +1045,7 @@ impl Ec2 {
         input: t::RestoreVolumeFromRecycleBinRequest,
     ) -> Result<t::RestoreVolumeFromRecycleBinResult, ServiceError> {
         Kind::Volume.check(&input.volume_id)?;
-        authorize(
+        self.authorize_known(
             ctx,
             "RestoreVolumeFromRecycleBin",
             &[(arn(ctx, &account_of(ctx), &format!("volume/{}", input.volume_id)), ConditionContext::new())],

@@ -2,7 +2,6 @@
 //! EventBridge targets that run work in other services (ECS tasks, Run
 //! Command).
 
-use std::sync::Arc;
 
 use mws_core::metrics::{MetricDatum, MetricPublisher};
 use mws_core::{Caller, CallerKind, RequestContext, Service};
@@ -45,7 +44,7 @@ fn service_ctx(template: &RequestContext, account: &str, region: &str, role: &st
             session: None,
         },
         source_ip: None,
-        authorizer: Arc::new(mws_core::AllowAll),
+        authorizer: mws_core::ServiceLinkedRoleAuthorizer::wrap(template.authorizer.clone()),
         ..template.clone()
     }
 }

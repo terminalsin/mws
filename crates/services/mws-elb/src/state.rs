@@ -47,6 +47,9 @@ pub struct LoadBalancerRecord {
     pub capacity_units: Option<i32>,
     pub capacity_modified_at: Option<DateTime<Utc>>,
     pub capacity_decreases: Vec<DateTime<Utc>>,
+    /// The requester-managed network interface in each enabled subnet, by
+    /// subnet id.
+    pub network_interfaces: BTreeMap<String, String>,
 }
 
 impl LoadBalancerRecord {

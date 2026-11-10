@@ -272,23 +272,57 @@ fn validate_group(group: &[&types::ResourceRecordSet], new: &BTreeSet<crate::sta
     msgs
 }
 
-/// An alias to a record in the same zone needs that record to exist.
+/// Where an alias may point besides its own zone.
+pub(crate) struct AliasTargets<'a> {
+    /// The caller's other hosted zones, by id.
+    pub zones: &'a dyn Fn(&str) -> Option<&'a Zone>,
+    /// Targets in other services' hosted zones (load balancers, S3 website
+    /// endpoints, ...); `None` when nothing knows the zone.
+    pub external: &'a dyn Fn(&str, &str, &str) -> Option<crate::AliasTargetCheck>,
+}
+
+/// An alias needs its target to exist: a record in the same zone (or
+/// another of the caller's zones), or an AWS resource in its service's
+/// hosted zone. Targets in hosted zones nothing knows (CloudFront, API
+/// Gateway, ...) go unchecked.
 fn validate_alias(
     rr: &types::ResourceRecordSet,
     zone: &Zone,
     records: &std::collections::BTreeMap<crate::state::RecordKey, types::ResourceRecordSet>,
+    targets: &AliasTargets<'_>,
 ) -> Option<String> {
     let alias = rr.alias_target.as_ref()?;
-    if strip_id(&alias.hosted_zone_id) != zone.id {
-        return None;
-    }
+    let target_zone_id = strip_id(&alias.hosted_zone_id);
     let target = names::normalize(&alias.dns_name).unwrap_or_else(|| alias.dns_name.clone());
     let shown = names::display(&target);
+    let outside = |zone_id: &str| {
+        format!(
+            "Tried to create an alias that targets {shown}, type {} in zone {zone_id}, but the alias target name does not lie within the target zone",
+            rr.r#type
+        )
+    };
+    let not_found = |zone_id: &str| {
+        format!(
+            "Tried to create an alias that targets {shown}, type {} in zone {zone_id}, but that target was not found",
+            rr.r#type
+        )
+    };
+    if target_zone_id != zone.id {
+        if let Some(other) = (targets.zones)(target_zone_id) {
+            if !names::in_zone(&target, &other.name) {
+                return Some(outside(&other.id));
+            }
+            let exists = other.records.values().any(|r| r.name == target && r.r#type == rr.r#type);
+            return (!exists).then(|| not_found(&other.id));
+        }
+        return match (targets.external)(target_zone_id, &alias.dns_name, &rr.r#type)? {
+            crate::AliasTargetCheck::Found => None,
+            crate::AliasTargetCheck::OutsideZone => Some(outside(target_zone_id)),
+            crate::AliasTargetCheck::NotFound => Some(not_found(target_zone_id)),
+        };
+    }
     if !names::in_zone(&target, &zone.name) {
-        return Some(format!(
-            "Tried to create an alias that targets {shown}, type {} in zone {}, but the alias target name does not lie within the target zone",
-            rr.r#type, zone.id
-        ));
+        return Some(outside(&zone.id));
     }
     if target == rr.name {
         return Some(format!(
@@ -297,12 +331,7 @@ fn validate_alias(
         ));
     }
     let exists = records.values().any(|r| r.name == target && r.r#type == rr.r#type);
-    (!exists).then(|| {
-        format!(
-            "Tried to create an alias that targets {shown}, type {} in zone {}, but that target was not found",
-            rr.r#type, zone.id
-        )
-    })
+    (!exists).then(|| not_found(&zone.id))
 }
 
 impl Route53 {
@@ -393,10 +422,13 @@ impl Route53 {
         }
         if msgs.is_empty() {
             // Aliases and routing groups are judged on the batch's result.
+            let zones = |zid: &str| st.zones.get(zid);
+            let external = |zid: &str, name: &str, ty: &str| self.check_external_alias(zid, name, ty);
+            let targets = AliasTargets { zones: &zones, external: &external };
             for change in input.change_batch.changes.iter().filter(|c| c.action != "DELETE") {
                 let mut rr = change.resource_record_set.clone();
                 rr.name = names::normalize(&rr.name).unwrap_or_default();
-                msgs.extend(validate_alias(&rr, zone, &records));
+                msgs.extend(validate_alias(&rr, zone, &records, &targets));
             }
             let touched: BTreeSet<(String, String)> = input
                 .change_batch

@@ -88,6 +88,7 @@ async fn file_system(mws: &Mws, token: &str) -> (Vec<String>, String, String) {
 
     let fs = efs.create_file_system().creation_token(token).send().await.unwrap();
     let fs_id = fs.file_system_id().to_string();
+    crate::efs::wait_file_system(&efs, &fs_id).await;
     let mt = efs
         .create_mount_target()
         .file_system_id(&fs_id)
@@ -153,7 +154,10 @@ async fn function(
             .send()
             .await
         {
-            Ok(f) => return f.function_arn().unwrap().to_string(),
+            Ok(f) => {
+                mws_e2e::function_active(lambda, name).await;
+                return f.function_arn().unwrap().to_string();
+            }
             Err(e) => last = Some(format!("{:?}", e.into_service_error())),
         }
         tokio::time::sleep(Duration::from_millis(200)).await;

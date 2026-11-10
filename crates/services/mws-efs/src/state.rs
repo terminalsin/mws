@@ -59,6 +59,13 @@ pub struct FileSystem {
     pub lifecycle: Vec<t::LifecyclePolicy>,
     /// When the throughput mode or provisioned throughput last changed.
     pub throughput_changed_at: Option<chrono::DateTime<chrono::Utc>>,
+    /// When the file system last switched to provisioned throughput or had
+    /// it increased: for 24 hours after, the mode can't change and the
+    /// provisioned throughput can't decrease.
+    pub throughput_restricted_at: Option<chrono::DateTime<chrono::Utc>>,
+    /// When a `creating` or `deleting` file system finishes; `None` once
+    /// it is `available`.
+    pub transition_ends: Option<chrono::DateTime<chrono::Utc>>,
 }
 
 impl FileSystem {
@@ -72,4 +79,48 @@ impl FileSystem {
 pub struct MountTarget {
     pub description: t::MountTargetDescription,
     pub security_groups: Vec<String>,
+    /// When a `creating` mount target becomes `available`.
+    pub transition_ends: Option<chrono::DateTime<chrono::Utc>>,
+}
+
+/// How long a new file system stays `creating` (AWS: a few seconds).
+pub const FILE_SYSTEM_CREATE: chrono::Duration = chrono::Duration::seconds(2);
+/// How long a deleted file system stays `deleting`.
+pub const FILE_SYSTEM_DELETE: chrono::Duration = chrono::Duration::seconds(2);
+/// How long a new mount target stays `creating`. AWS takes about 90
+/// seconds; MWS keeps it short, and advancing the emulated clock
+/// (`/_mws/clock`) finishes it at once.
+pub const MOUNT_TARGET_CREATE: chrono::Duration = chrono::Duration::seconds(4);
+
+impl State {
+    /// Finish the transitions due by `now`: `creating` file systems and
+    /// mount targets become `available`, `deleting` file systems go away
+    /// (with their access points). Returns the ids of the file systems
+    /// that went away, whose data the caller removes.
+    pub fn settle(&mut self, now: chrono::DateTime<chrono::Utc>) -> Vec<String> {
+        let mut gone = Vec::new();
+        for r in self.regions.values_mut() {
+            for fs in r.file_systems.values_mut() {
+                if fs.transition_ends.is_some_and(|t| t <= now) {
+                    fs.transition_ends = None;
+                    if fs.description.life_cycle_state == "deleting" {
+                        gone.push(fs.id().to_string());
+                    } else {
+                        fs.description.life_cycle_state = "available".into();
+                    }
+                }
+            }
+            for id in &gone {
+                r.file_systems.remove(id);
+                r.access_points.retain(|_, a| a.file_system_id.as_deref() != Some(id.as_str()));
+            }
+            for m in r.mount_targets.values_mut() {
+                if m.transition_ends.is_some_and(|t| t <= now) {
+                    m.transition_ends = None;
+                    m.description.life_cycle_state = "available".into();
+                }
+            }
+        }
+        gone
+    }
 }

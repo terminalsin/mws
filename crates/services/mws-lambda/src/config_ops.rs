@@ -138,12 +138,20 @@ impl Lambda {
         Err(errors::resource_not_found(format!("Function not found: {resource}")))
     }
 
+    /// `aws:ResourceTag/<key>` for a taggable resource (none when it does
+    /// not exist).
+    fn resource_tags(&self, resource: &str) -> ConditionContext {
+        self.with_tags(resource, |t| crate::functions::resource_tag_context(t)).unwrap_or_default()
+    }
+
     pub async fn tag_resource(
         &self,
         ctx: &RequestContext,
         input: types::TagResourceRequest,
     ) -> Result<(), ServiceError> {
-        ctx.authorize("lambda:TagResource", &input.resource, tag_context(&input.tags))?;
+        let mut c = self.resource_tags(&input.resource);
+        c.extend(tag_context(&input.tags));
+        ctx.authorize("lambda:TagResource", &input.resource, c)?;
         let tags = input.tags;
         self.with_tags(&input.resource, |t| {
             if t.len() + tags.keys().filter(|k| !t.contains_key(*k)).count() > 50 {
@@ -159,7 +167,7 @@ impl Lambda {
         ctx: &RequestContext,
         input: types::UntagResourceRequest,
     ) -> Result<(), ServiceError> {
-        let mut c = ConditionContext::new();
+        let mut c = self.resource_tags(&input.resource);
         c.insert("aws:TagKeys".into(), input.tag_keys.clone());
         ctx.authorize("lambda:UntagResource", &input.resource, c)?;
         self.with_tags(&input.resource, |t| {
@@ -174,7 +182,7 @@ impl Lambda {
         ctx: &RequestContext,
         input: types::ListTagsRequest,
     ) -> Result<types::ListTagsResponse, ServiceError> {
-        ctx.authorize("lambda:ListTags", &input.resource, ConditionContext::new())?;
+        ctx.authorize("lambda:ListTags", &input.resource, self.resource_tags(&input.resource))?;
         let tags = self.with_tags(&input.resource, |t| t.clone())?;
         Ok(types::ListTagsResponse { tags: Some(tags) })
     }
@@ -939,8 +947,8 @@ impl Lambda {
         ctx: &RequestContext,
         input: types::GetEventSourceMappingRequest,
     ) -> Result<types::EventSourceMappingConfiguration, ServiceError> {
-        let arn = self.esm_arn(&input.uuid)?;
-        ctx.authorize("lambda:GetEventSourceMapping", &arn, ConditionContext::new())?;
+        let (arn, keys) = self.esm_arn(&input.uuid)?;
+        ctx.authorize("lambda:GetEventSourceMapping", &arn, keys)?;
         let st = self.read();
         st.event_source_mappings
             .get(&input.uuid)
@@ -948,12 +956,17 @@ impl Lambda {
             .ok_or_else(|| Self::esm_not_found(&input.uuid))
     }
 
-    fn esm_arn(&self, uuid: &str) -> Result<String, ServiceError> {
+    /// The mapping's ARN and the condition keys actions on it carry: its
+    /// tags (`aws:ResourceTag/<key>`) and `lambda:FunctionArn`.
+    fn esm_arn(&self, uuid: &str) -> Result<(String, ConditionContext), ServiceError> {
         let st = self.read();
-        st.event_source_mappings
-            .get(uuid)
-            .and_then(|m| m.config.event_source_mapping_arn.clone())
-            .ok_or_else(|| Self::esm_not_found(uuid))
+        let m = st.event_source_mappings.get(uuid).ok_or_else(|| Self::esm_not_found(uuid))?;
+        let arn = m.config.event_source_mapping_arn.clone().ok_or_else(|| Self::esm_not_found(uuid))?;
+        let mut c = crate::functions::resource_tag_context(&m.tags);
+        if let Some(function) = &m.config.function_arn {
+            c.insert("lambda:FunctionArn".into(), vec![function.clone()]);
+        }
+        Ok((arn, c))
     }
 
     pub async fn update_event_source_mapping(
@@ -961,8 +974,8 @@ impl Lambda {
         ctx: &RequestContext,
         input: types::UpdateEventSourceMappingRequest,
     ) -> Result<types::EventSourceMappingConfiguration, ServiceError> {
-        let arn = self.esm_arn(&input.uuid)?;
-        ctx.authorize("lambda:UpdateEventSourceMapping", &arn, ConditionContext::new())?;
+        let (arn, keys) = self.esm_arn(&input.uuid)?;
+        ctx.authorize("lambda:UpdateEventSourceMapping", &arn, keys)?;
         let function_arn = match &input.function_name {
             Some(n) => {
                 let f = names::parse_function(ctx, n, None)?;
@@ -984,6 +997,12 @@ impl Lambda {
                 let window =
                     input.maximum_batching_window_in_seconds.or(cur.maximum_batching_window_in_seconds).unwrap_or(0);
                 self.check_queue_source(ctx, queue, &function, batch_size, window)?;
+            }
+            let kinesis = cur.event_source_arn.as_deref().is_some_and(crate::esm_stream::is_kinesis);
+            if kinesis && input.batch_size.is_some_and(|b| !(1..=10_000).contains(&b)) {
+                return Err(errors::invalid_parameter_value(
+                    "BatchSize must be between 1 and 10000 for Kinesis event sources.",
+                ));
             }
         }
         let mut st = self.write();
@@ -1032,8 +1051,8 @@ impl Lambda {
         ctx: &RequestContext,
         input: types::DeleteEventSourceMappingRequest,
     ) -> Result<types::EventSourceMappingConfiguration, ServiceError> {
-        let arn = self.esm_arn(&input.uuid)?;
-        ctx.authorize("lambda:DeleteEventSourceMapping", &arn, ConditionContext::new())?;
+        let (arn, keys) = self.esm_arn(&input.uuid)?;
+        ctx.authorize("lambda:DeleteEventSourceMapping", &arn, keys)?;
         let m =
             self.write().event_source_mappings.remove(&input.uuid).ok_or_else(|| Self::esm_not_found(&input.uuid))?;
         let mut out = m.config;

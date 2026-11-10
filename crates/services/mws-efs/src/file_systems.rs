@@ -157,7 +157,7 @@ impl Efs {
             file_system_id: id.clone(),
             file_system_arn: Some(fs_arn(&ctx.partition, &ctx.region, &account, &id)),
             creation_time: ctx.received_at,
-            life_cycle_state: "available".into(),
+            life_cycle_state: "creating".into(),
             name: name_tag(&tags),
             number_of_mount_targets: 0,
             size_in_bytes: Default::default(),
@@ -182,14 +182,12 @@ impl Efs {
             backup: if backup { "ENABLED".into() } else { "DISABLED".into() },
             lifecycle: Vec::new(),
             throughput_changed_at: None,
+            throughput_restricted_at: None,
+            transition_ends: Some(ctx.received_at + crate::state::FILE_SYSTEM_CREATE),
         };
         region.file_systems.insert(id.clone(), fs.clone());
         self.storage().create(&id);
-        let mut out = self.render_fs(&st, &account, &ctx.region, &fs, ctx.received_at);
-        // The new file system is still being created as far as this
-        // response goes; it is available by the next call.
-        out.life_cycle_state = "creating".into();
-        Ok(out)
+        Ok(self.render_fs(&st, &account, &ctx.region, &fs, ctx.received_at))
     }
 
     /// A KMS key reference as an ARN, checked to be an enabled symmetric
@@ -270,13 +268,37 @@ impl Efs {
         if mode == "elastic" && fs.description.performance_mode == "maxIO" {
             return Err(bad_request("Max I/O performance mode is not supported with Elastic throughput mode."));
         }
-        let changed = mode != current || mibps != fs.description.provisioned_throughput_in_mibps;
+        let old_mibps = fs.description.provisioned_throughput_in_mibps;
+        let changed = mode != current || mibps != old_mibps;
+        // Changing the mode, or decreasing provisioned throughput, must
+        // wait 24 hours after switching to provisioned throughput or
+        // increasing it.
+        let decrease = mode == "provisioned" && current == "provisioned" && mibps < old_mibps;
+        if mode != current || decrease {
+            if let Some(at) = fs.throughput_restricted_at {
+                let until = at + chrono::Duration::hours(24);
+                if ctx.received_at < until {
+                    return Err(err(
+                        "TooManyRequests",
+                        429,
+                        format!(
+                            "You have reached the maximum number of throughput mode changes or provisioned throughput value decreases. Wait until {} UTC to retry.",
+                            until.format("%Y-%m-%dT%H:%M:%SZ")
+                        ),
+                    ));
+                }
+            }
+        }
+        let restricts = mode == "provisioned" && (current != "provisioned" || mibps > old_mibps);
         let mut st = self.lock();
         let f = st.region(&account, &ctx.region).file_systems.get_mut(fs.id()).ok_or_else(|| fs_not_found(fs.id()))?;
         if changed {
             f.description.throughput_mode = Some(mode);
             f.description.provisioned_throughput_in_mibps = mibps;
             f.throughput_changed_at = Some(ctx.received_at);
+            if restricts {
+                f.throughput_restricted_at = Some(ctx.received_at);
+            }
         }
         let f = f.clone();
         let mut out = self.render_fs(&st, &account, &ctx.region, &f, ctx.received_at);
@@ -339,10 +361,11 @@ impl Efs {
                 format!("File system '{id}' has mount targets and cannot be deleted."),
             ));
         }
-        region.file_systems.remove(&id);
-        region.access_points.retain(|_, a| a.file_system_id.as_deref() != Some(id.as_str()));
-        drop(st);
-        self.storage().delete(&id);
+        // `deleting` for a moment, then gone (see `State::settle`).
+        if let Some(f) = region.file_systems.get_mut(&id).filter(|f| f.description.life_cycle_state != "deleting") {
+            f.description.life_cycle_state = "deleting".into();
+            f.transition_ends = Some(ctx.received_at + crate::state::FILE_SYSTEM_DELETE);
+        }
         Ok(())
     }
 }

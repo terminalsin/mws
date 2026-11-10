@@ -66,7 +66,55 @@ pub struct LoadBalancerInfo {
     pub availability_zones: Vec<String>,
 }
 pub use metrics::{ElbMetric, MetricSink};
+pub use names::canonical_hosted_zone;
 use state::State;
+
+/// An ELBv2 target group as other services see it
+/// ([`Elb::target_group`]), for services AWS couples to target groups such
+/// as Auto Scaling.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct TargetGroupInfo {
+    pub arn: String,
+    pub vpc_id: Option<String>,
+    /// `instance`, `ip`, `lambda` or `alb`.
+    pub target_type: String,
+    /// The load balancers that forward to it.
+    pub load_balancer_arns: Vec<String>,
+    /// `deregistration_delay.timeout_seconds`.
+    pub deregistration_delay_seconds: i64,
+    pub targets: Vec<TargetInfo>,
+}
+
+/// One registered target and its health (`DescribeTargetHealth` state:
+/// `initial`, `healthy`, `unhealthy`, `unused`, `draining` or
+/// `unavailable`).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct TargetInfo {
+    pub id: String,
+    pub port: i32,
+    pub state: String,
+}
+
+/// A Classic Load Balancer as other services see it
+/// ([`Elb::classic_load_balancer`]).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ClassicLoadBalancerInfo {
+    pub name: String,
+    pub vpc_id: Option<String>,
+    /// The connection draining timeout, when connection draining is on.
+    pub connection_draining_seconds: Option<i64>,
+    pub instances: Vec<ClassicInstanceInfo>,
+}
+
+/// A Classic Load Balancer instance as `DescribeInstanceHealth` shows it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ClassicInstanceInfo {
+    pub instance_id: String,
+    /// `InService` or `OutOfService`.
+    pub state: String,
+    /// `ELB`, `Instance` or `N/A`.
+    pub reason_code: String,
+}
 
 /// Where listeners bind.
 #[derive(Debug, Clone)]
@@ -276,6 +324,91 @@ impl Elb {
             unhealthy_targets: unhealthy,
             availability_zones: c.description.availability_zones.clone().unwrap_or_default(),
         })
+    }
+
+    /// A target group by ARN with its targets' health, for services AWS
+    /// couples to target groups (Auto Scaling's ELB health checks and
+    /// attachment checks).
+    pub fn target_group(&self, account: &str, region: &str, arn: &str) -> Option<TargetGroupInfo> {
+        let st = self.lock();
+        let r = st.regions.get(&State::key(account, region))?;
+        let tg = r.target_groups.get(arn)?;
+        let targets = tg
+            .targets
+            .iter()
+            .map(|target| TargetInfo {
+                id: target.id.clone(),
+                port: target.port,
+                state: health::classify(self, r, account, region, tg, target).state.to_string(),
+            })
+            .collect();
+        Some(TargetGroupInfo {
+            arn: arn.to_string(),
+            vpc_id: tg.tg.vpc_id.clone(),
+            target_type: tg.target_type().to_string(),
+            load_balancer_arns: crate::ops::tg_load_balancers(r, arn),
+            deregistration_delay_seconds: tg
+                .attr("deregistration_delay.timeout_seconds")
+                .and_then(|v| v.parse().ok())
+                .unwrap_or(300),
+            targets,
+        })
+    }
+
+    /// A Classic Load Balancer by name with its instances' health.
+    pub fn classic_load_balancer(&self, account: &str, region: &str, name: &str) -> Option<ClassicLoadBalancerInfo> {
+        let st = self.lock();
+        let region_key = State::key(account, region);
+        let c = st.regions.get(&region_key)?.classic.get(name)?;
+        let draining = c.attributes.connection_draining.as_ref().filter(|d| d.enabled);
+        Some(ClassicLoadBalancerInfo {
+            name: name.to_string(),
+            vpc_id: c.description.vpc_id.clone(),
+            connection_draining_seconds: draining.map(|d| d.timeout.unwrap_or(300) as i64),
+            instances: c
+                .instances
+                .iter()
+                .map(|id| {
+                    let (state, reason, _) = classic::instance_health(self, account, region, &region_key, name, id);
+                    ClassicInstanceInfo {
+                        instance_id: id.clone(),
+                        state: state.to_string(),
+                        reason_code: reason.to_string(),
+                    }
+                })
+                .collect(),
+        })
+    }
+
+    /// A load balancer by its DNS name (case-insensitive, with or without
+    /// the `dualstack.` prefix), in whichever account and Region it lives:
+    /// `(account, Region, load balancer)`. Route 53 aliases name load
+    /// balancers this way.
+    pub fn load_balancer_by_dns_name(&self, dns_name: &str) -> Option<(String, String, LoadBalancerInfo)> {
+        let wanted = dns_name.trim_end_matches('.').to_ascii_lowercase();
+        let wanted = wanted.strip_prefix("dualstack.").unwrap_or(&wanted).to_string();
+        let found = {
+            let st = self.lock();
+            st.regions.iter().find_map(|(key, r)| {
+                let (account, region) = key.split_once('|')?;
+                let matches = |d: Option<&String>| d.is_some_and(|d| d.eq_ignore_ascii_case(&wanted));
+                let arn = r
+                    .load_balancers
+                    .iter()
+                    .find(|(_, lb)| matches(lb.lb.dns_name.as_ref()))
+                    .map(|(arn, _)| arn.clone())
+                    .or_else(|| {
+                        r.classic
+                            .iter()
+                            .find(|(_, c)| matches(c.description.dns_name.as_ref()))
+                            .map(|(name, _)| classic::lb_arn(key, name))
+                    })?;
+                Some((account.to_string(), region.to_string(), arn))
+            })
+        };
+        let (account, region, arn) = found?;
+        let lb = self.load_balancer(&account, &region, &arn)?;
+        Some((account, region, lb))
     }
 
     pub(crate) fn lock(&self) -> MutexGuard<'_, State> {

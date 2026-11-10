@@ -22,17 +22,21 @@ pub mod generated {
 pub mod backend;
 mod billing;
 mod catalog;
+mod conditions;
 mod console;
 mod firewall;
 mod handler;
+mod idempotency;
 pub mod imds;
 mod keys;
+pub mod metrics;
 pub mod network;
 mod ops;
 mod pricing;
 mod public;
 mod quotas;
 mod service_eni;
+mod signals;
 mod state;
 mod util;
 mod volumes;
@@ -43,9 +47,10 @@ use mws_core::{HttpRequest, HttpResponse, RequestContext, Service, ServiceError}
 
 pub use backend::{
     BackendChoice, CommandOutput, ComputeBackend, DockerBackend, ExecStream, HostMount, LaunchExtension, LaunchExtras,
-    MetadataBackend, VolumeMount,
+    MetadataBackend, Usage, VolumeMount,
 };
 pub use billing::{BillableInstance, BillableVolume};
+pub use metrics::{InstanceMetric, MetricSink};
 pub use ops::launch_template::ResolvedLaunchTemplate;
 pub use pricing::{on_demand_price, product_price};
 pub use public::{
@@ -53,6 +58,7 @@ pub use public::{
     ServiceInterfaceRequest, SubnetInfo, VpcInfo,
 };
 pub use service_eni::TaskInterface;
+pub use signals::{InstanceStateChange, StateChangeSink};
 use state::{RegionState, State};
 
 /// Credentials for an instance profile's role, as instance metadata serves
@@ -98,6 +104,7 @@ pub(crate) struct Inner {
     volume_jobs: volumes::VolumeQueue,
     extensions: RwLock<Vec<Arc<dyn LaunchExtension>>>,
     load_balancers: OnceLock<Arc<dyn LoadBalancers>>,
+    signals: signals::Signals,
 }
 
 /// The load balancers VPC endpoint services front: MWS wires this to
@@ -133,6 +140,7 @@ impl Ec2 {
                 volume_jobs: Default::default(),
                 extensions: RwLock::default(),
                 load_balancers: OnceLock::new(),
+                signals: Default::default(),
             }),
         }
     }
@@ -292,7 +300,15 @@ impl Ec2 {
         ops::instance::expire_terminated(r, ctx.received_at);
         ops::vpc::expire_deleted(r, ctx.received_at);
         ops::gateways::expire_deleted(r, ctx.received_at);
-        f(r)
+        // Every instance state change a call makes is reported.
+        let before = self.wants_state_changes().then(|| signals::instance_states(r));
+        let out = f(r);
+        let changes = before.map(|b| signals::changed_states(&b, r)).unwrap_or_default();
+        drop(state);
+        if !changes.is_empty() {
+            self.emit_state_changes(ctx, account, region, changes);
+        }
+        out
     }
 }
 
@@ -473,6 +489,10 @@ impl Service for Ec2 {
         if request.uri().path().starts_with(console::PREFIX) {
             return console::serve(self, &ctx, &request).await;
         }
+        if request.uri().path().starts_with(metrics::PREFIX) {
+            return self.serve_metrics_channel(&request);
+        }
+        self.observe_time(ctx.received_at);
         let params = mws_proto_ec2::read_params(&request);
         let action = params.get("Action").unwrap_or_default().to_string();
         let response = generated::dispatch(self, &ctx, &params).await;
@@ -491,7 +511,8 @@ impl Service for Ec2 {
     }
 
     fn accepts_unsigned(&self, request: &HttpRequest) -> bool {
-        request.uri().path().starts_with(imds::PREFIX)
+        let path = request.uri().path();
+        path.starts_with(imds::PREFIX) || path.starts_with(metrics::PREFIX)
     }
 
     async fn invoke(
@@ -500,6 +521,7 @@ impl Service for Ec2 {
         operation: &str,
         input: serde_json::Value,
     ) -> Result<serde_json::Value, ServiceError> {
+        self.observe_time(ctx.received_at);
         let out = generated::invoke(self, &ctx, operation, input).await;
         self.after_action(&ctx, operation);
         out
@@ -510,7 +532,13 @@ impl Service for Ec2 {
     }
 
     fn import_state(&self, state: serde_json::Value) -> Result<(), String> {
-        let state: State = serde_json::from_value(state).map_err(|e| format!("invalid EC2 state: {e}"))?;
+        let mut state: State = serde_json::from_value(state).map_err(|e| format!("invalid EC2 state: {e}"))?;
+        if self.backend().name() == "metadata" {
+            // Nothing is left to finish a transition the saved state was in.
+            for r in state.regions.values_mut() {
+                ops::instance::settle_all(r);
+            }
+        }
         *self.lock() = state;
         Ok(())
     }

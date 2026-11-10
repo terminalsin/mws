@@ -120,6 +120,44 @@ impl Elb {
         Ok(Placement { vpc_id: vpc.unwrap_or_default(), zones })
     }
 
+    /// The network interface ELB puts in each enabled subnet, as AWS does:
+    /// requester-managed by `amazon-elb`, described `ELB app/<name>/<id>`
+    /// (`net/`, `gwy/`), with the load balancer's security groups and an
+    /// address from the subnet (and a public one when internet-facing).
+    /// On failure the interfaces made so far are deleted again.
+    fn create_interfaces(
+        &self,
+        ctx: &RequestContext,
+        lb_arn: &str,
+        internet_facing: bool,
+        subnets: &[String],
+        groups: &[String],
+    ) -> Result<Vec<(String, String)>, ServiceError> {
+        let Some(ec2) = self.ec2() else { return Ok(Vec::new()) };
+        let account = account_of(ctx);
+        let description = format!("ELB {}", names::lb_dimension(lb_arn));
+        let mut made = Vec::new();
+        for subnet in subnets {
+            match ec2.create_task_interface(ctx, &account, subnet, groups, internet_facing, &description, "amazon-elb")
+            {
+                Ok(eni) => made.push((subnet.clone(), eni.eni_id)),
+                Err(e) => {
+                    self.delete_interfaces(ctx, made.into_iter().map(|(_, id)| id));
+                    return Err(e);
+                }
+            }
+        }
+        Ok(made)
+    }
+
+    fn delete_interfaces(&self, ctx: &RequestContext, enis: impl IntoIterator<Item = String>) {
+        let Some(ec2) = self.ec2() else { return };
+        let account = account_of(ctx);
+        for id in enis {
+            ec2.delete_task_interface(ctx, &account, &id);
+        }
+    }
+
     fn check_security_groups(&self, ctx: &RequestContext, vpc_id: &str, groups: &[String]) -> Result<(), ServiceError> {
         let Some(ec2) = self.ec2() else { return Ok(()) };
         let account = account_of(ctx);
@@ -256,6 +294,23 @@ impl Elb {
             out.state = Some(t::LoadBalancerState { code: Some("provisioning".into()), reason: None });
             Ok(out)
         })?;
+        if result.load_balancer_arn.as_deref() == Some(arn.as_str()) {
+            let subnets: Vec<String> = placement.zones.iter().filter_map(|z| z.subnet_id.clone()).collect();
+            match self.create_interfaces(ctx, &arn, scheme == "internet-facing", &subnets, &security_groups) {
+                Ok(enis) => self.with_region(ctx, |r| {
+                    if let Some(lb) = r.load_balancers.get_mut(&arn) {
+                        lb.network_interfaces = enis.into_iter().collect();
+                    }
+                }),
+                Err(e) => {
+                    self.with_region(ctx, |r| {
+                        r.load_balancers.remove(&arn);
+                        r.tags.remove(&arn);
+                    });
+                    return Err(e);
+                }
+            }
+        }
         Ok(t::CreateLoadBalancerOutput { load_balancers: Some(vec![result]) })
     }
 
@@ -306,13 +361,14 @@ impl Elb {
     ) -> Result<t::DeleteLoadBalancerOutput, ServiceError> {
         let arn = input.load_balancer_arn;
         self.authorize_on(ctx, "DeleteLoadBalancer", &arn)?;
-        let removed_listeners = self.with_region(ctx, |r| {
-            let Some(lb) = r.load_balancers.get(&arn) else { return Ok(Vec::new()) };
+        let (removed_listeners, enis) = self.with_region(ctx, |r| {
+            let Some(lb) = r.load_balancers.get(&arn) else { return Ok((Vec::new(), Vec::new())) };
             if lb.attributes.get("deletion_protection.enabled").map(String::as_str) == Some("true") {
                 return Err(errors::operation_not_permitted(format!(
                     "Load balancer '{arn}' cannot be deleted because deletion protection is enabled"
                 )));
             }
+            let enis: Vec<String> = lb.network_interfaces.values().cloned().collect();
             r.load_balancers.remove(&arn);
             r.tags.remove(&arn);
             let listeners: Vec<_> = r.listeners.values().filter(|l| l.lb_arn() == arn).cloned().collect();
@@ -326,8 +382,9 @@ impl Elb {
                     r.tags.remove(&rule);
                 }
             }
-            Ok(listeners)
+            Ok((listeners, enis))
         })?;
+        self.delete_interfaces(ctx, enis);
         for l in removed_listeners {
             self.release_certificates(
                 l.arn(),
@@ -349,8 +406,17 @@ impl Elb {
         input: t::SetSubnetsInput,
     ) -> Result<t::SetSubnetsOutput, ServiceError> {
         self.authorize_on(ctx, "SetSubnets", &input.load_balancer_arn)?;
-        let (ty, vpc, current) = self.with_region(ctx, |r| {
-            find_lb(r, &input.load_balancer_arn).map(|l| (l.ty().to_string(), l.lb.vpc_id.clone(), l.zones()))
+        let (ty, vpc, current, enis, groups, internet_facing) = self.with_region(ctx, |r| {
+            find_lb(r, &input.load_balancer_arn).map(|l| {
+                (
+                    l.ty().to_string(),
+                    l.lb.vpc_id.clone(),
+                    l.zones(),
+                    l.network_interfaces.clone(),
+                    l.lb.security_groups.clone().unwrap_or_default(),
+                    l.lb.scheme.as_deref() == Some("internet-facing"),
+                )
+            })
         })?;
         let placement = self.place(ctx, &ty, input.subnets.as_ref(), input.subnet_mappings.as_ref(), vpc.as_deref())?;
         if ty == "network" {
@@ -360,8 +426,17 @@ impl Elb {
                 return Err(validation("Subnets cannot be removed from a Network Load Balancer"));
             }
         }
+        // Interfaces follow the subnets: new ones for added subnets, the
+        // removed subnets' ones go.
+        let wanted: Vec<String> = placement.zones.iter().filter_map(|z| z.subnet_id.clone()).collect();
+        let added: Vec<String> = wanted.iter().filter(|s| !enis.contains_key(*s)).cloned().collect();
+        let made = self.create_interfaces(ctx, &input.load_balancer_arn, internet_facing, &added, &groups)?;
+        let dropped: Vec<String> = enis.iter().filter(|(s, _)| !wanted.contains(s)).map(|(_, id)| id.clone()).collect();
+        self.delete_interfaces(ctx, dropped);
         self.with_region(ctx, |r| {
             let lb = r.load_balancers.get_mut(&input.load_balancer_arn).ok_or_else(lb_not_found)?;
+            lb.network_interfaces.retain(|s, _| wanted.contains(s));
+            lb.network_interfaces.extend(made);
             lb.lb.availability_zones = Some(placement.zones.clone());
             if let Some(t) = &input.ip_address_type {
                 lb.lb.ip_address_type = Some(t.clone());
@@ -402,6 +477,14 @@ impl Elb {
             _ => {}
         }
         self.check_security_groups(ctx, &vpc, &input.security_groups)?;
+        if let Some(ec2) = self.ec2() {
+            let enis = self.with_region(ctx, |r| {
+                r.load_balancers.get(&input.load_balancer_arn).map(|l| l.network_interfaces.clone()).unwrap_or_default()
+            });
+            for eni in enis.values() {
+                ec2.set_task_interface_groups(ctx, &account_of(ctx), eni, &input.security_groups)?;
+            }
+        }
         self.with_region(ctx, |r| {
             let lb = r.load_balancers.get_mut(&input.load_balancer_arn).ok_or_else(lb_not_found)?;
             lb.lb.security_groups = Some(input.security_groups.clone());

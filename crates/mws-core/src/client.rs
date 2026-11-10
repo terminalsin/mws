@@ -133,6 +133,14 @@ fn internal_agent(caller: &Caller) -> String {
 }
 
 impl RequestContext {
+    /// This request's caller, acting through a service on its behalf after
+    /// its own request was authorized (a forward access session): only
+    /// explicit denies and policies that must name the principal (KMS key
+    /// policies) still refuse.
+    pub fn on_behalf(&self) -> RequestContext {
+        RequestContext { authorizer: crate::ServiceLinkedRoleAuthorizer::wrap(self.authorizer.clone()), ..self.clone() }
+    }
+
     /// This request's context, with the AWS service `principal` as the
     /// caller, acting for `source_account` on behalf of `source_arn`.
     /// Authorization then evaluates resource policies only.

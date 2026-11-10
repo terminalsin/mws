@@ -12,7 +12,7 @@ use rand::Rng;
 use crate::generated::types as t;
 use crate::state::RegionState;
 use crate::util::{
-    arn, authorize, err, invalid_parameter, missing_parameter, new_id, new_public_ip, paginate, request_tag_context,
+    arn, err, invalid_parameter, missing_parameter, new_id, new_public_ip, paginate, request_tag_context,
     resource_tag_context, s, some_tags, tags_for, Cidr, Filters, Kind,
 };
 use crate::{account_of, Ec2};
@@ -54,16 +54,16 @@ pub(crate) fn authorize_on(
     let found = ec2.with_region(ctx, |r| tags(r));
     let tags = found.ok_or_else(|| kind.not_found(id))?;
     let account = account_of(ctx);
-    authorize(
+    let resources = ec2.with_resource_context(
         ctx,
-        action,
-        &[(arn(ctx, &account, &format!("{resource_type}/{id}")), resource_tag_context(tags.as_ref()))],
-        dry_run,
-    )
+        vec![(arn(ctx, &account, &format!("{resource_type}/{id}")), resource_tag_context(tags.as_ref()))],
+    );
+    crate::util::authorize(ctx, action, &resources, dry_run)
 }
 
 /// Authorize a create call on `resource_type/*` with its request tags.
 pub(crate) fn authorize_create(
+    ec2: &Ec2,
     ctx: &RequestContext,
     action: &str,
     resource_type: &str,
@@ -76,7 +76,9 @@ pub(crate) fn authorize_create(
     for r in extra {
         resources.push((r.clone(), ConditionContext::new()));
     }
-    authorize(ctx, action, &resources, dry_run)
+    // The resources the call names get their own keys (tags, `ec2:Vpc`).
+    let resources = ec2.with_resource_context(ctx, resources);
+    crate::util::authorize(ctx, action, &resources, dry_run)
 }
 
 fn vpc_arn(ctx: &RequestContext, vpc: &str) -> String {
@@ -126,6 +128,7 @@ impl Ec2 {
             tags_for(&input.tag_specifications, "egress-only-internet-gateway", &["egress-only-internet-gateway"])?;
         Kind::Vpc.check(&input.vpc_id)?;
         authorize_create(
+            self,
             ctx,
             "CreateEgressOnlyInternetGateway",
             "egress-only-internet-gateway",
@@ -133,7 +136,17 @@ impl Ec2 {
             &[vpc_arn(ctx, &input.vpc_id)],
             input.dry_run,
         )?;
+        let fp = crate::idempotency::fingerprint(&input);
+        let token = input.client_token.as_deref();
         self.with_region(ctx, |r| {
+            if let Some(id) = crate::idempotency::replay(r, "CreateEgressOnlyInternetGateway", token, &fp, |id| {
+                r.egress_only_internet_gateways.contains_key(id)
+            })? {
+                return Ok(t::CreateEgressOnlyInternetGatewayResult {
+                    client_token: input.client_token.clone(),
+                    egress_only_internet_gateway: r.egress_only_internet_gateways.get(&id).cloned(),
+                });
+            }
             if !r.vpcs.contains_key(&input.vpc_id) {
                 return Err(Kind::Vpc.not_found(&input.vpc_id));
             }
@@ -146,7 +159,8 @@ impl Ec2 {
                 }]),
                 tags: some_tags(tags),
             };
-            r.egress_only_internet_gateways.insert(id, g.clone());
+            r.egress_only_internet_gateways.insert(id.clone(), g.clone());
+            crate::idempotency::remember(r, "CreateEgressOnlyInternetGateway", token, &fp, &id);
             Ok(t::CreateEgressOnlyInternetGatewayResult {
                 client_token: input.client_token.clone(),
                 egress_only_internet_gateway: Some(g),
@@ -182,7 +196,12 @@ impl Ec2 {
         ctx: &RequestContext,
         input: t::DescribeEgressOnlyInternetGatewaysRequest,
     ) -> Result<t::DescribeEgressOnlyInternetGatewaysResult, ServiceError> {
-        authorize(ctx, "DescribeEgressOnlyInternetGateways", &[("*".into(), ConditionContext::new())], input.dry_run)?;
+        self.authorize_known(
+            ctx,
+            "DescribeEgressOnlyInternetGateways",
+            &[("*".into(), ConditionContext::new())],
+            input.dry_run,
+        )?;
         let filters = Filters::new(&input.filters);
         let ids = input.egress_only_internet_gateway_ids.clone().unwrap_or_default();
         self.with_region(ctx, |r| {
@@ -221,6 +240,7 @@ impl Ec2 {
         let tags = tags_for(&input.tag_specifications, "carrier-gateway", &["carrier-gateway"])?;
         Kind::Vpc.check(&input.vpc_id)?;
         authorize_create(
+            self,
             ctx,
             "CreateCarrierGateway",
             "carrier-gateway",
@@ -229,7 +249,14 @@ impl Ec2 {
             input.dry_run,
         )?;
         let account = account_of(ctx);
+        let fp = crate::idempotency::fingerprint(&input);
+        let token = input.client_token.as_deref();
         self.with_region(ctx, |r| {
+            if let Some(id) = crate::idempotency::replay(r, "CreateCarrierGateway", token, &fp, |id| {
+                r.carrier_gateways.contains_key(id)
+            })? {
+                return Ok(t::CreateCarrierGatewayResult { carrier_gateway: r.carrier_gateways.get(&id).cloned() });
+            }
             if !r.vpcs.contains_key(&input.vpc_id) {
                 return Err(Kind::Vpc.not_found(&input.vpc_id));
             }
@@ -250,7 +277,8 @@ impl Ec2 {
                 owner_id: Some(account.clone()),
                 tags: some_tags(tags),
             };
-            r.carrier_gateways.insert(id, g.clone());
+            r.carrier_gateways.insert(id.clone(), g.clone());
+            crate::idempotency::remember(r, "CreateCarrierGateway", token, &fp, &id);
             Ok(t::CreateCarrierGatewayResult { carrier_gateway: Some(g) })
         })
     }
@@ -284,7 +312,7 @@ impl Ec2 {
         ctx: &RequestContext,
         input: t::DescribeCarrierGatewaysRequest,
     ) -> Result<t::DescribeCarrierGatewaysResult, ServiceError> {
-        authorize(ctx, "DescribeCarrierGateways", &[("*".into(), ConditionContext::new())], input.dry_run)?;
+        self.authorize_known(ctx, "DescribeCarrierGateways", &[("*".into(), ConditionContext::new())], input.dry_run)?;
         let filters = Filters::new(&input.filters);
         let ids = input.carrier_gateway_ids.clone().unwrap_or_default();
         self.with_region(ctx, |r| {
@@ -354,7 +382,7 @@ impl Ec2 {
         if !(1..=4_294_967_295).contains(&asn) {
             return Err(invalid_parameter(format!("Value ({asn}) for parameter bgpAsn is invalid.")));
         }
-        authorize_create(ctx, "CreateCustomerGateway", "customer-gateway", &tags, &[], input.dry_run)?;
+        authorize_create(self, ctx, "CreateCustomerGateway", "customer-gateway", &tags, &[], input.dry_run)?;
         self.with_region(ctx, |r| {
             // The same address, ASN and type answer the existing gateway.
             if let Some(existing) = r.customer_gateways.values().find(|g| {
@@ -423,7 +451,7 @@ impl Ec2 {
         ctx: &RequestContext,
         input: t::DescribeCustomerGatewaysRequest,
     ) -> Result<t::DescribeCustomerGatewaysResult, ServiceError> {
-        authorize(ctx, "DescribeCustomerGateways", &[("*".into(), ConditionContext::new())], input.dry_run)?;
+        self.authorize_known(ctx, "DescribeCustomerGateways", &[("*".into(), ConditionContext::new())], input.dry_run)?;
         let filters = Filters::new(&input.filters);
         let ids = input.customer_gateway_ids.clone().unwrap_or_default();
         self.with_region(ctx, |r| {
@@ -474,7 +502,7 @@ impl Ec2 {
                 "Invalid ASN {asn}. Valid ASNs are 64512 to 65534 and 4200000000 to 4294967294."
             )));
         }
-        authorize_create(ctx, "CreateVpnGateway", "vpn-gateway", &tags, &[], input.dry_run)?;
+        authorize_create(self, ctx, "CreateVpnGateway", "vpn-gateway", &tags, &[], input.dry_run)?;
         self.with_region(ctx, |r| {
             let id = new_id("vgw");
             let g = t::VpnGateway {
@@ -549,7 +577,7 @@ impl Ec2 {
         ctx: &RequestContext,
         input: t::DescribeVpnGatewaysRequest,
     ) -> Result<t::DescribeVpnGatewaysResult, ServiceError> {
-        authorize(ctx, "DescribeVpnGateways", &[("*".into(), ConditionContext::new())], input.dry_run)?;
+        self.authorize_known(ctx, "DescribeVpnGateways", &[("*".into(), ConditionContext::new())], input.dry_run)?;
         let filters = Filters::new(&input.filters);
         let ids = input.vpn_gateway_ids.clone().unwrap_or_default();
         self.with_region(ctx, |r| {
@@ -792,7 +820,7 @@ impl Ec2 {
                 }
             }
         }
-        authorize_create(ctx, "CreateVpnConnection", "vpn-connection", &tags, &[], input.dry_run)?;
+        authorize_create(self, ctx, "CreateVpnConnection", "vpn-connection", &tags, &[], input.dry_run)?;
         let now = ctx.received_at;
         self.with_region(ctx, |r| {
             r.customer_gateways
@@ -926,7 +954,7 @@ impl Ec2 {
         ctx: &RequestContext,
         input: t::DescribeVpnConnectionsRequest,
     ) -> Result<t::DescribeVpnConnectionsResult, ServiceError> {
-        authorize(ctx, "DescribeVpnConnections", &[("*".into(), ConditionContext::new())], input.dry_run)?;
+        self.authorize_known(ctx, "DescribeVpnConnections", &[("*".into(), ConditionContext::new())], input.dry_run)?;
         let filters = Filters::new(&input.filters);
         let ids = input.vpn_connection_ids.clone().unwrap_or_default();
         self.with_region(ctx, |r| {

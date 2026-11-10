@@ -97,6 +97,31 @@ pub struct ManagedAlarm {
     pub threshold: f64,
     pub comparison_operator: String,
     pub alarm_actions: Vec<String>,
+    /// A metric math alarm's queries (`CustomizedMetricSpecification.Metrics`);
+    /// when set, the single-metric fields above are unused.
+    pub metrics: Vec<AlarmQuery>,
+}
+
+/// One metric data query of a metric math alarm.
+#[derive(Debug, Clone, Default)]
+pub struct AlarmQuery {
+    pub id: String,
+    pub expression: Option<String>,
+    pub label: Option<String>,
+    pub return_data: Option<bool>,
+    /// A metric query's metric: namespace, name, dimensions, statistic,
+    /// unit and period.
+    pub metric: Option<AlarmQueryMetric>,
+}
+
+#[derive(Debug, Clone, Default)]
+pub struct AlarmQueryMetric {
+    pub namespace: String,
+    pub metric_name: String,
+    pub dimensions: Vec<(String, String)>,
+    pub stat: String,
+    pub unit: Option<String>,
+    pub period: i32,
 }
 
 /// Creates and deletes target tracking alarms in CloudWatch.
@@ -118,11 +143,32 @@ pub enum TrafficTarget {
     LatticeTargetGroup(String),
 }
 
+/// What Auto Scaling reads about a traffic source: enough to check an
+/// attachment, to wait for deregistration (connection draining) and to
+/// follow ELB health checks.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct TrafficSourceInfo {
+    pub vpc_id: Option<String>,
+    /// Targets are instances (target type `instance`; always for a
+    /// Classic Load Balancer).
+    pub instance_targets: bool,
+    /// A load balancer sends it traffic (so deregistration drains).
+    pub in_use: bool,
+    /// How long deregistration takes: the target group's deregistration
+    /// delay, or the Classic Load Balancer's connection draining timeout.
+    pub drain_seconds: i64,
+    /// Registered instances failing their health checks (`unhealthy`, or
+    /// `OutOfService` for a Classic Load Balancer).
+    pub unhealthy: Vec<String>,
+}
+
 /// Registers group instances with load balancers (as Auto Scaling's
-/// service-linked role).
+/// service-linked role), and reports on them.
 pub trait TrafficSink: Send + Sync {
     fn register(&self, ctx: &RequestContext, target: &TrafficTarget, instance_ids: &[String]) -> Result<(), String>;
     fn deregister(&self, ctx: &RequestContext, target: &TrafficTarget, instance_ids: &[String]) -> Result<(), String>;
+    /// The source in `account` and `region`; `None` when it does not exist.
+    fn describe(&self, account: &str, region: &str, target: &TrafficTarget) -> Option<TrafficSourceInfo>;
 }
 
 /// A CloudWatch alarm action naming a scaling policy.
@@ -317,7 +363,9 @@ impl AutoScaling {
                 },
                 session: None,
             },
-            authorizer: Arc::new(mws_core::AllowAll),
+            // The service decides, but explicit denies and KMS key policies
+            // still apply to its service-linked role.
+            authorizer: mws_core::ServiceLinkedRoleAuthorizer::wrap(template.authorizer.clone()),
             request_id: uuid::Uuid::new_v4().to_string(),
             ..template.clone()
         }

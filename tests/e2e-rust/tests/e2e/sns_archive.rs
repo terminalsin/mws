@@ -33,7 +33,8 @@ async fn fifo_queue(sqs: &aws_sdk_sqs::Client, name: &str) -> (String, String) {
 async fn drain(sqs: &aws_sdk_sqs::Client, url: &str) -> Vec<serde_json::Value> {
     let mut out = Vec::new();
     loop {
-        let got = sqs.receive_message().queue_url(url).max_number_of_messages(10).send().await.unwrap();
+        let got =
+            sqs.receive_message().queue_url(url).max_number_of_messages(10).wait_time_seconds(1).send().await.unwrap();
         if got.messages().is_empty() {
             return out;
         }

@@ -7,8 +7,8 @@ use mws_core::{ConditionContext, RequestContext, ServiceError};
 use crate::generated::types as t;
 use crate::state::{RegionState, SgRule};
 use crate::util::{
-    arn, authorize, err, invalid_parameter, missing_parameter, new_id, paginate, request_tag_context,
-    resource_tag_context, s, some_tags, tags_for, Cidr, Filters, Kind,
+    arn, err, invalid_parameter, missing_parameter, new_id, paginate, request_tag_context, s, some_tags, tags_for,
+    Cidr, Filters, Kind,
 };
 use crate::{account_of, Ec2};
 
@@ -365,17 +365,28 @@ impl Ec2 {
         name: &Option<String>,
         dry_run: Option<bool>,
     ) -> Result<String, ServiceError> {
+        self.group_authorize_tagged(ctx, action, id, name, &[], dry_run)
+    }
+
+    /// [`Self::group_authorize`], plus `security-group-rule/*` with the
+    /// tags the call gives its new rules (so tag-on-create applies).
+    fn group_authorize_tagged(
+        &self,
+        ctx: &RequestContext,
+        action: &str,
+        id: &Option<String>,
+        name: &Option<String>,
+        rule_tags: &[t::Tag],
+        dry_run: Option<bool>,
+    ) -> Result<String, ServiceError> {
         let account = account_of(ctx);
-        let (gid, tags) = self.with_region(ctx, |r| {
-            let gid = resolve_group(r, id, name)?;
-            Ok::<_, ServiceError>((gid.clone(), r.security_groups.get(&gid).and_then(|g| g.tags.clone())))
-        })?;
-        authorize(
-            ctx,
-            action,
-            &[(arn(ctx, &account, &format!("security-group/{gid}")), resource_tag_context(tags.as_ref()))],
-            dry_run,
-        )?;
+        let gid = self.with_region(ctx, |r| resolve_group(r, id, name))?;
+        let mut resources = vec![(arn(ctx, &account, &format!("security-group/{gid}")), ConditionContext::new())];
+        if !rule_tags.is_empty() {
+            resources.push((arn(ctx, &account, "security-group-rule/*"), request_tag_context(rule_tags)));
+        }
+        let resources = self.with_resource_context(ctx, resources);
+        self.authorize_known(ctx, action, &resources, dry_run)?;
         Ok(gid)
     }
 
@@ -397,12 +408,19 @@ impl Ec2 {
                 })
                 .ok_or_else(|| err("VPCIdNotSpecified", "No default VPC for this user"))?,
         };
-        authorize(
+        self.authorize_known(
             ctx,
             "CreateSecurityGroup",
             &[
-                (arn(ctx, &account, "security-group/*"), request_tag_context(&tags)),
-                (arn(ctx, &account, &format!("vpc/{vpc_id}")), ConditionContext::new()),
+                (arn(ctx, &account, "security-group/*"), {
+                    let mut c = request_tag_context(&tags);
+                    c.extend(crate::conditions::in_vpc(ctx, &account, &vpc_id));
+                    c
+                }),
+                (
+                    arn(ctx, &account, &format!("vpc/{vpc_id}")),
+                    self.resource_context(ctx, &arn(ctx, &account, &format!("vpc/{vpc_id}"))),
+                ),
             ],
             input.dry_run,
         )?;
@@ -420,9 +438,16 @@ impl Ec2 {
                 "Invalid value for groupDescription. Length of description must be at most 255 characters.",
             ));
         }
+        let limit = self.quota(&account, &ctx.region, crate::quotas::SECURITY_GROUPS, ctx.received_at);
         self.with_region(ctx, |r| {
             if !r.vpcs.contains_key(&vpc_id) {
                 return Err(Kind::Vpc.not_found(&vpc_id));
+            }
+            if r.security_groups.len() as f64 >= limit {
+                return Err(err(
+                    "SecurityGroupLimitExceeded",
+                    "The maximum number of security groups has been reached.",
+                ));
             }
             if r.security_groups
                 .values()
@@ -493,7 +518,7 @@ impl Ec2 {
         ctx: &RequestContext,
         input: t::DescribeSecurityGroupsRequest,
     ) -> Result<t::DescribeSecurityGroupsResult, ServiceError> {
-        authorize(ctx, "DescribeSecurityGroups", &[("*".into(), ConditionContext::new())], input.dry_run)?;
+        self.authorize_known(ctx, "DescribeSecurityGroups", &[("*".into(), ConditionContext::new())], input.dry_run)?;
         let filters = Filters::new(&input.filters);
         let ids = input.group_ids.clone().unwrap_or_default();
         let names = input.group_names.clone().unwrap_or_default();
@@ -609,14 +634,15 @@ impl Ec2 {
         ctx: &RequestContext,
         input: t::AuthorizeSecurityGroupIngressRequest,
     ) -> Result<t::AuthorizeSecurityGroupIngressResult, ServiceError> {
-        let gid = self.group_authorize(
+        let tags = tags_for(&input.tag_specifications, "security-group-rule", &["security-group-rule"])?;
+        let gid = self.group_authorize_tagged(
             ctx,
             "AuthorizeSecurityGroupIngress",
             &input.group_id,
             &input.group_name,
+            &tags,
             input.dry_run,
         )?;
-        let tags = tags_for(&input.tag_specifications, "security-group-rule", &["security-group-rule"])?;
         let mut perms = input.ip_permissions.clone().unwrap_or_default();
         perms.extend(legacy_permission(
             &input.cidr_ip,
@@ -635,14 +661,15 @@ impl Ec2 {
         ctx: &RequestContext,
         input: t::AuthorizeSecurityGroupEgressRequest,
     ) -> Result<t::AuthorizeSecurityGroupEgressResult, ServiceError> {
-        let gid = self.group_authorize(
+        let tags = tags_for(&input.tag_specifications, "security-group-rule", &["security-group-rule"])?;
+        let gid = self.group_authorize_tagged(
             ctx,
             "AuthorizeSecurityGroupEgress",
             &Some(input.group_id.clone()),
             &None,
+            &tags,
             input.dry_run,
         )?;
-        let tags = tags_for(&input.tag_specifications, "security-group-rule", &["security-group-rule"])?;
         let mut perms = input.ip_permissions.clone().unwrap_or_default();
         perms.extend(legacy_permission(
             &input.cidr_ip,
@@ -749,7 +776,12 @@ impl Ec2 {
         ctx: &RequestContext,
         input: t::DescribeSecurityGroupRulesRequest,
     ) -> Result<t::DescribeSecurityGroupRulesResult, ServiceError> {
-        authorize(ctx, "DescribeSecurityGroupRules", &[("*".into(), ConditionContext::new())], input.dry_run)?;
+        self.authorize_known(
+            ctx,
+            "DescribeSecurityGroupRules",
+            &[("*".into(), ConditionContext::new())],
+            input.dry_run,
+        )?;
         let filters = Filters::new(&input.filters);
         let ids = input.security_group_rule_ids.clone().unwrap_or_default();
         let account = account_of(ctx);

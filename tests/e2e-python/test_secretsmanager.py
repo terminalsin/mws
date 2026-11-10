@@ -183,6 +183,7 @@ def test_rotation_invokes_the_function(endpoint, session_for, sm, iam):
         Timeout=30,
         Code={"ZipFile": package({"app.py": ROTATOR})},
     )["FunctionArn"]
+    lam.get_waiter("function_active_v2").wait(FunctionName=role_name)
     lam.add_permission(
         FunctionName=role_name,
         StatementId="sm",

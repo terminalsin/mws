@@ -251,6 +251,10 @@ pub fn dry_run_error() -> ServiceError {
 /// Authorize `ec2:{action}` on each resource, as EC2 does: a denial is
 /// `UnauthorizedOperation` with an encoded authorization message (which
 /// `sts:DecodeAuthorizationMessage` decodes). Then honour `DryRun`.
+///
+/// A resource whose context carries request tags (`aws:TagKeys`, from
+/// [`request_tag_context`]) is one the call creates with tags, so it is
+/// also authorized as `ec2:CreateTags` (see [`authorize_tag_on_create`]).
 pub fn authorize(
     ctx: &RequestContext,
     action: &str,
@@ -259,27 +263,61 @@ pub fn authorize(
 ) -> Result<(), ServiceError> {
     let full = format!("ec2:{action}");
     for (resource, extra) in resources {
-        let mut context = extra.clone();
-        context.entry("ec2:Region".into()).or_insert_with(|| vec![ctx.region.clone()]);
-        if let Err(e) = ctx.authorize(&full, resource, context.clone()) {
-            if e.code != "AccessDenied" {
-                return Err(e);
-            }
-            let encoded = encode_failure(ctx, &full, resource, &context);
-            let reason = e.message.split(" because ").nth(1).map(|r| format!(" because {r}")).unwrap_or_default();
-            let reason = reason.trim_end_matches('.').to_string();
-            return Err(ServiceError::client(
-                "UnauthorizedOperation",
-                403,
-                format!(
-                    "You are not authorized to perform this operation. User: {} is not authorized to perform: {full} on resource: {resource}{reason}. Encoded authorization failure message: {encoded}",
-                    ctx.caller.arn
-                ),
-            ));
-        }
+        authorize_one(ctx, &full, resource, extra)?;
     }
+    authorize_tag_on_create(ctx, action, resources)?;
     if dry_run == Some(true) {
         return Err(dry_run_error());
+    }
+    Ok(())
+}
+
+/// Tag-on-create: a create call that tags what it creates also needs
+/// `ec2:CreateTags` on each tagged resource, evaluated with
+/// `ec2:CreateAction` set to the create action, the request tags and the
+/// resource's other keys. A denial fails the whole call.
+pub fn authorize_tag_on_create(
+    ctx: &RequestContext,
+    action: &str,
+    resources: &[(String, ConditionContext)],
+) -> Result<(), ServiceError> {
+    if action == "CreateTags" {
+        return Ok(());
+    }
+    for (resource, extra) in resources {
+        if !extra.get("aws:TagKeys").is_some_and(|k| !k.is_empty()) {
+            continue;
+        }
+        let mut context = extra.clone();
+        context.insert("ec2:CreateAction".into(), vec![action.to_string()]);
+        authorize_one(ctx, "ec2:CreateTags", resource, &context)?;
+    }
+    Ok(())
+}
+
+fn authorize_one(
+    ctx: &RequestContext,
+    full: &str,
+    resource: &str,
+    extra: &ConditionContext,
+) -> Result<(), ServiceError> {
+    let mut context = extra.clone();
+    context.entry("ec2:Region".into()).or_insert_with(|| vec![ctx.region.clone()]);
+    if let Err(e) = ctx.authorize(full, resource, context.clone()) {
+        if e.code != "AccessDenied" {
+            return Err(e);
+        }
+        let encoded = encode_failure(ctx, full, resource, &context);
+        let reason = e.message.split(" because ").nth(1).map(|r| format!(" because {r}")).unwrap_or_default();
+        let reason = reason.trim_end_matches('.').to_string();
+        return Err(ServiceError::client(
+            "UnauthorizedOperation",
+            403,
+            format!(
+                "You are not authorized to perform this operation. User: {} is not authorized to perform: {full} on resource: {resource}{reason}. Encoded authorization failure message: {encoded}",
+                ctx.caller.arn
+            ),
+        ));
     }
     Ok(())
 }

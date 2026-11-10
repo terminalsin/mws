@@ -32,11 +32,21 @@ struct Job {
     records: Vec<Buffered>,
 }
 
+/// When a destination's buffer is due: its size and interval. With a
+/// Lambda transformation, records reach the destination's buffer only
+/// once the processor's buffer (`BufferIntervalInSeconds`) flushed, so the
+/// interval is the longer of the two.
 fn hints(kind: &str, config: &Value) -> (usize, i64) {
     let effective = config::effective(kind, config);
     let size = effective.pointer("/buffering_hints/size_in_m_bs").and_then(Value::as_i64).unwrap_or(5);
     let interval = effective.pointer("/buffering_hints/interval_in_seconds").and_then(Value::as_i64).unwrap_or(300);
-    (size.max(1) as usize * 1024 * 1024, interval.max(0) * 1000)
+    let mut interval = interval.max(0) * 1000;
+    let processing: Option<types::ProcessingConfiguration> =
+        effective.get("processing_configuration").and_then(|v| serde_json::from_value(v.clone()).ok());
+    if let Some(p) = crate::processing::lambda_processor(processing.as_ref()) {
+        interval = interval.max(crate::processing::processor_hints(kind, p).1);
+    }
+    (size.max(1) as usize * 1024 * 1024, interval)
 }
 
 /// What a successful delivery delivered.
@@ -234,22 +244,21 @@ impl Firehose {
         processing: Option<&types::ProcessingConfiguration>,
         processed: &crate::processing::Processed,
     ) {
-        let lambda = processing
-            .filter(|p| p.enabled.unwrap_or(false))
-            .is_some_and(|p| p.processors.iter().flatten().any(|p| p.r#type == "Lambda"));
-        if lambda {
-            let processing_failed = processed.failed.iter().any(|f| f.output_type == "processing-failed");
+        if crate::processing::lambda_processor(processing).is_some() && !processed.invocations.is_empty() {
+            // ExecuteProcessing.Success: successful invocations over all
+            // invocations; Duration: one data point per invocation.
+            let total = processed.invocations.len() as f64;
+            let succeeded = processed.invocations.iter().filter(|i| i.success).count() as f64;
             let ok = Delivered::of(&processed.ok);
-            self.metrics(
-                ctx,
-                &job.account,
-                &job.stream_name,
-                vec![
-                    point("ExecuteProcessing.Success", "None", if processing_failed { 0.0 } else { 1.0 }),
-                    point("SucceedProcessing.Records", "Count", ok.records as f64),
-                    point("SucceedProcessing.Bytes", "Bytes", ok.bytes as f64),
-                ],
-            );
+            let mut points: Vec<_> = processed
+                .invocations
+                .iter()
+                .map(|i| point("ExecuteProcessing.Duration", "Milliseconds", i.duration_ms))
+                .collect();
+            points.push(point("ExecuteProcessing.Success", "None", succeeded / total));
+            points.push(point("SucceedProcessing.Records", "Count", ok.records as f64));
+            points.push(point("SucceedProcessing.Bytes", "Bytes", ok.bytes as f64));
+            self.metrics(ctx, &job.account, &job.stream_name, points);
         }
         let mut seen = std::collections::BTreeSet::new();
         for f in &processed.failed {
@@ -302,6 +311,7 @@ impl Firehose {
                 let mut processed = self
                     .process(
                         ctx,
+                        &d.kind,
                         &job.stream_arn,
                         &job.account,
                         role.as_deref(),
@@ -323,6 +333,7 @@ impl Firehose {
                         error_code: "DataFormatConversion.EntityNotFound".into(),
                         error_message: "The specified table/database could not be found. Ensure that the table/database exists and that the values provided in the schema configuration are correct, especially with regards to casing.".into(),
                         lambda_arn: None,
+                        attempts: 1,
                     }));
                 }
                 self.report_processing(ctx, job, &effective, processing.as_ref(), &processed).await;
@@ -351,6 +362,7 @@ impl Firehose {
                 let processed = self
                     .process(
                         ctx,
+                        &d.kind,
                         &job.stream_arn,
                         &job.account,
                         role.as_deref(),
@@ -395,8 +407,9 @@ impl Firehose {
             effective.get("s3_configuration").and_then(|v| serde_json::from_value(v.clone()).ok()).unwrap_or_default();
         let backup = backup_target(&backup);
         let mode = effective.get("s3_backup_mode").and_then(Value::as_str).unwrap_or_default().to_string();
-        let processed =
-            self.process(ctx, &job.stream_arn, &job.account, role, processing, false, job.records.clone()).await;
+        let processed = self
+            .process(ctx, &d.kind, &job.stream_arn, &job.account, role, processing, false, job.records.clone())
+            .await;
         self.report_processing(ctx, job, effective, processing, &processed).await;
         self.write_errors(ctx, job, &backup, &processed.failed).await?;
         if matches!(mode.as_str(), "AllData" | "AllEvents" | "AllDocuments") {
@@ -447,6 +460,7 @@ impl Firehose {
                 error_code: e.code.clone(),
                 error_message: e.message.clone(),
                 lambda_arn: None,
+                attempts: 1,
             })
             .collect();
         self.write_errors(ctx, job, &S3Target { error_prefix: backup.error_prefix.clone(), ..backup.clone() }, &failed)

@@ -192,6 +192,19 @@ pub struct Launched {
     pub handle: String,
 }
 
+/// What a running instance uses, for its `AWS/EC2` metrics.
+#[derive(Debug, Clone, Default, PartialEq)]
+pub struct Usage {
+    /// CPU in use now, in percent of one CPU (`docker stats`: 200 is two
+    /// CPUs busy).
+    pub cpu_percent: f64,
+    /// Network counters since the machine started.
+    pub rx_bytes: u64,
+    pub tx_bytes: u64,
+    pub rx_packets: u64,
+    pub tx_packets: u64,
+}
+
 #[derive(Debug, Clone)]
 pub struct BackendError(pub String);
 
@@ -330,6 +343,12 @@ pub trait ComputeBackend: Send + Sync {
     /// Change the data volumes an instance has attached. Returns the
     /// instance's new handle when the backend had to recreate it.
     async fn set_volumes(&self, _handle: &str, _volumes: &[VolumeMount]) -> Result<Option<String>, BackendError> {
+        Ok(None)
+    }
+
+    /// What a running instance uses now. `None` when the backend runs
+    /// nothing to measure.
+    async fn usage(&self, _handle: &str) -> Result<Option<Usage>, BackendError> {
         Ok(None)
     }
 }

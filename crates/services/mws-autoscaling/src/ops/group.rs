@@ -15,7 +15,7 @@ use crate::util::{
     already_exists, at, authorize, group_arn, group_resource, launch_configuration_arn, limit_exceeded, paginate,
     request_tags, resource_in_use, scaling_in_progress, validation, METRICS, PROCESSES, TERMINATION_POLICIES,
 };
-use crate::{account_of, AutoScaling};
+use crate::{account_of, AutoScaling, TrafficTarget};
 
 /// Service Quotas: Auto Scaling groups per Region.
 pub(crate) const GROUPS_QUOTA: &str = "L-CDE20ADC";
@@ -58,6 +58,13 @@ fn check_health_check_type(t: &Option<String>) -> Result<(), ServiceError> {
         }
     }
     Ok(())
+}
+
+/// `iam:PassRole` on `role`, passed to `service`.
+pub(crate) fn pass_role(ctx: &RequestContext, role: &str, service: &str) -> Result<(), ServiceError> {
+    let mut c = ConditionContext::new();
+    c.insert("iam:PassedToService".into(), vec![service.to_string()]);
+    ctx.authorize("iam:PassRole", role, c)
 }
 
 fn version_specified(spec: &t::LaunchTemplateSpecification) -> bool {
@@ -131,9 +138,87 @@ impl AutoScaling {
             .map_err(|e| validation(format!("You must use a valid fully-formed launch template. {}", e.message)))?;
         let arn =
             format!("arn:{}:ec2:{}:{}:launch-template/{}", ctx.partition, ctx.region, account_of(ctx), resolved.id);
-        ctx.authorize("ec2:RunInstances", &arn, ConditionContext::new())
-            .map_err(|_| validation(format!("You are not authorized to use launch template: {}", resolved.name)))?;
+        let denied = || {
+            ServiceError::client(
+                "AccessDenied",
+                403,
+                format!("You are not authorized to use launch template: {}", resolved.name),
+            )
+        };
+        ctx.authorize("ec2:RunInstances", &arn, ConditionContext::new()).map_err(|_| denied())?;
+        // Instances get the template's instance profile: the caller passes
+        // its role to EC2.
+        if let Some(profile) =
+            resolved.data.iam_instance_profile.as_ref().and_then(|p| p.arn.clone().or_else(|| p.name.clone()))
+        {
+            self.check_pass_profile(ctx, &profile).map_err(|_| denied())?;
+        }
         Ok(resolved)
+    }
+
+    /// `iam:PassRole` on the role of instance profile `profile` (a name or
+    /// ARN), passed to EC2. A profile IAM does not know passes no role.
+    pub(crate) fn check_pass_profile(&self, ctx: &RequestContext, profile: &str) -> Result<(), ServiceError> {
+        let Some(role) = self.ec2().instance_profile(&account_of(ctx), profile).and_then(|p| p.role_arn) else {
+            return Ok(());
+        };
+        pass_role(ctx, &role, "ec2.amazonaws.com")
+    }
+
+    /// `iam:PassRole` on the instance profile of launch configuration `lc`.
+    fn check_configuration_profile(&self, ctx: &RequestContext, lc: &str) -> Result<(), ServiceError> {
+        let profile =
+            self.with_region(ctx, |r| r.launch_configurations.get(lc).and_then(|c| c.iam_instance_profile.clone()));
+        match profile.filter(|p| !p.is_empty()) {
+            Some(p) => self.check_pass_profile(ctx, &p),
+            None => Ok(()),
+        }
+    }
+
+    /// Check the load balancers and target groups a group attaches: they
+    /// exist, take instance targets and are in the group's VPC.
+    pub(crate) fn check_traffic_sources(
+        &self,
+        ctx: &RequestContext,
+        vpc: Option<&str>,
+        sources: &[t::TrafficSourceIdentifier],
+    ) -> Result<(), ServiceError> {
+        let Some(sink) = self.traffic() else { return Ok(()) };
+        let account = account_of(ctx);
+        for s in sources {
+            let state = super::traffic::source_state(s, "Added");
+            let target = super::traffic::target_of(&state);
+            let message = match &target {
+                TrafficTarget::TargetGroup(_) => {
+                    "Provided Target Groups may not be valid. Please ensure they exist and try again."
+                }
+                TrafficTarget::ClassicLoadBalancer(_) => {
+                    "Provided Load Balancers may not be valid. Please ensure they exist and try again."
+                }
+                TrafficTarget::LatticeTargetGroup(_) => continue,
+            };
+            let ok = sink.describe(&account, &ctx.region, &target).is_some_and(|info| {
+                info.instance_targets
+                    && match (vpc, info.vpc_id.as_deref()) {
+                        (Some(a), Some(b)) => a == b,
+                        _ => true,
+                    }
+            });
+            if !ok {
+                return Err(validation(message));
+            }
+        }
+        Ok(())
+    }
+
+    /// The VPC of a group's subnets.
+    pub(crate) fn subnets_vpc(
+        &self,
+        ctx: &RequestContext,
+        subnets: &BTreeMap<String, (String, String)>,
+    ) -> Option<String> {
+        let first = subnets.keys().next()?;
+        self.ec2().subnet_summary(&account_of(ctx), &ctx.region, first)?.vpc_id
     }
 
     /// The subnets a group launches into.
@@ -277,6 +362,10 @@ impl AutoScaling {
             cond.insert("autoscaling:VPCZoneIdentifiers".into(), v.split(',').map(|s| s.trim().to_string()).collect());
         }
         authorize(ctx, "CreateAutoScalingGroup", &group_resource(ctx, &account, &name), None, cond)?;
+        if !tags.is_empty() {
+            // Tagging on create is its own permission.
+            authorize(ctx, "CreateOrUpdateTags", &group_resource(ctx, &account, &name), None, request_tags(&tags))?;
+        }
         let max_groups = self.quota(ctx, GROUPS_QUOTA);
         let existing = self.with_region(ctx, |r| (r.groups.contains_key(&name), r.groups.len()));
         if existing.0 {
@@ -313,6 +402,10 @@ impl AutoScaling {
                     "Launch configuration name not found - Launch configuration {lc} not found"
                 )));
             }
+            self.check_configuration_profile(ctx, lc)?;
+        }
+        if let Some(role) = &input.service_linked_role_arn {
+            pass_role(ctx, role, "autoscaling.amazonaws.com")?;
         }
         if let Some(spec) = &input.launch_template {
             self.check_launch_template(ctx, spec)?;
@@ -413,8 +506,9 @@ impl AutoScaling {
             operator: input.operator.clone(),
             ..Default::default()
         };
+        let vpc_id = self.subnets_vpc(ctx, &subnet_zones);
         let mut g = Group { cfg, hooks, subnet_zones, ..Default::default() };
-        let sources = input
+        let sources: Vec<t::TrafficSourceIdentifier> = input
             .load_balancer_names
             .clone()
             .unwrap_or_default()
@@ -428,7 +522,9 @@ impl AutoScaling {
                     .into_iter()
                     .map(|n| t::TrafficSourceIdentifier { identifier: n, r#type: Some("elbv2".into()) }),
             )
-            .chain(input.traffic_sources.clone().unwrap_or_default());
+            .chain(input.traffic_sources.clone().unwrap_or_default())
+            .collect();
+        self.check_traffic_sources(ctx, vpc_id.as_deref(), &sources)?;
         for ts in sources {
             g.traffic_sources.insert(ts.identifier.clone(), super::traffic::source_state(&ts, "Added"));
         }
@@ -495,6 +591,10 @@ impl AutoScaling {
                     "Launch configuration name not found - Launch configuration {lc} not found"
                 )));
             }
+            self.check_configuration_profile(ctx, lc)?;
+        }
+        if let Some(role) = &input.service_linked_role_arn {
+            pass_role(ctx, role, "autoscaling.amazonaws.com")?;
         }
         if let Some(spec) = &input.launch_template {
             self.check_launch_template(ctx, spec)?;
@@ -516,6 +616,25 @@ impl AutoScaling {
         } else {
             None
         };
+        // Attached load balancers must be in the group's (new) VPC.
+        if let Some((subnets, _, _)) = &zones {
+            let vpc = self.subnets_vpc(ctx, subnets);
+            let sources: Vec<t::TrafficSourceIdentifier> = self.with_region(ctx, |r| {
+                r.groups
+                    .get(&name)
+                    .map(|g| {
+                        g.traffic_sources
+                            .values()
+                            .map(|s| t::TrafficSourceIdentifier {
+                                identifier: s.identifier.clone().unwrap_or_default(),
+                                r#type: s.r#type.clone(),
+                            })
+                            .collect()
+                    })
+                    .unwrap_or_default()
+            });
+            self.check_traffic_sources(ctx, vpc.as_deref(), &sources)?;
+        }
         let now = self.now();
         self.with_region(ctx, |r| {
             let g = r.groups.get_mut(&name).ok_or_else(|| crate::util::group_not_found(&name))?;

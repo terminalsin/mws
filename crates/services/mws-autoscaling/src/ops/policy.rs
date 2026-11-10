@@ -8,7 +8,7 @@ use super::authorized_group;
 use crate::generated::types as t;
 use crate::state::{Group, State};
 use crate::util::{at, authorize, limit_exceeded, paginate, policy_arn, scaling_in_progress, validation};
-use crate::{account_of, AlarmTrigger, AutoScaling, ManagedAlarm};
+use crate::{account_of, AlarmQuery, AlarmQueryMetric, AlarmTrigger, AutoScaling, ManagedAlarm};
 
 const ADJUSTMENT_TYPES: &[&str] = &["ChangeInCapacity", "ExactCapacity", "PercentChangeInCapacity"];
 const POLICY_TYPES: &[&str] = &["SimpleScaling", "StepScaling", "TargetTrackingScaling", "PredictiveScaling"];
@@ -110,9 +110,13 @@ fn tracked_metric(group: &str, cfg: &t::TargetTrackingConfiguration) -> Result<T
     }
     if let Some(c) = &cfg.customized_metric_specification {
         if c.metrics.as_ref().is_some_and(|m| !m.is_empty()) {
-            return Err(validation(
-                "Metric math target tracking policies are not supported by MWS; specify MetricName and Namespace.",
-            ));
+            if c.metric_name.is_some() || c.namespace.is_some() || c.dimensions.is_some() || c.statistic.is_some() {
+                return Err(validation(
+                    "A customized metric specification can specify either Metrics or MetricName, Namespace, Dimensions and Statistic, not both.",
+                ));
+            }
+            // A metric math policy: its alarms evaluate the queries.
+            return Ok((String::new(), String::new(), Vec::new(), String::new(), None));
         }
         let name =
             c.metric_name.clone().ok_or_else(|| validation("MetricName must be specified for a customized metric."))?;
@@ -127,6 +131,47 @@ fn tracked_metric(group: &str, cfg: &t::TargetTrackingConfiguration) -> Result<T
         ));
     }
     Err(validation("Either PredefinedMetricSpecification or CustomizedMetricSpecification must be specified."))
+}
+
+/// The metric math queries of a target tracking policy
+/// (`CustomizedMetricSpecification.Metrics`), checked as AWS does: every
+/// query has an expression or a metric, and exactly one returns data.
+fn math_queries(cfg: &t::TargetTrackingConfiguration) -> Result<Vec<AlarmQuery>, ServiceError> {
+    let Some(list) = cfg.customized_metric_specification.as_ref().and_then(|c| c.metrics.as_ref()) else {
+        return Ok(Vec::new());
+    };
+    let mut out = Vec::new();
+    for q in list {
+        if q.expression.is_some() == q.metric_stat.is_some() {
+            return Err(validation(format!(
+                "Metric data query {} must specify exactly one of Expression and MetricStat.",
+                q.id
+            )));
+        }
+        out.push(AlarmQuery {
+            id: q.id.clone(),
+            expression: q.expression.clone(),
+            label: q.label.clone(),
+            return_data: q.return_data,
+            metric: q.metric_stat.as_ref().map(|m| AlarmQueryMetric {
+                namespace: m.metric.namespace.clone(),
+                metric_name: m.metric.metric_name.clone(),
+                dimensions: m.metric.dimensions.iter().flatten().map(|d| (d.name.clone(), d.value.clone())).collect(),
+                stat: m.stat.clone(),
+                unit: m.unit.clone(),
+                period: m.period.or(q.period).unwrap_or(60),
+            }),
+        });
+    }
+    // ReturnData defaults to true for a single query.
+    let returning = out.iter().filter(|q| q.return_data.unwrap_or(out.len() == 1)).count();
+    if returning != 1 {
+        return Err(validation("Exactly one metric data query must have ReturnData set to true."));
+    }
+    if out.len() == 1 {
+        out[0].return_data = Some(true);
+    }
+    Ok(out)
 }
 
 /// Apply a capacity change to a group: clamp, record the cause, start the
@@ -186,6 +231,7 @@ impl AutoScaling {
                     validation("TargetTrackingConfiguration must be specified for a TargetTrackingScaling policy.")
                 })?;
                 tracked_metric(&input.auto_scaling_group_name, cfg)?;
+                math_queries(cfg)?;
             }
             _ => {
                 let cfg = input.predictive_scaling_configuration.as_ref().ok_or_else(|| {
@@ -255,6 +301,7 @@ impl AutoScaling {
             let cfg = policy.target_tracking_configuration.clone().expect("checked");
             let (namespace, metric_name, dimensions, statistic, unit) =
                 tracked_metric(&input.auto_scaling_group_name, &cfg)?;
+            let metrics = math_queries(&cfg)?;
             let arn = policy.policy_arn.clone().unwrap_or_default();
             let id = uuid::Uuid::new_v4().to_string();
             let mut wanted = vec![ManagedAlarm {
@@ -271,6 +318,7 @@ impl AutoScaling {
                 threshold: cfg.target_value,
                 comparison_operator: "GreaterThanThreshold".into(),
                 alarm_actions: vec![arn.clone()],
+                metrics: metrics.clone(),
             }];
             if !cfg.disable_scale_in.unwrap_or(false) {
                 wanted.push(ManagedAlarm {
@@ -287,6 +335,7 @@ impl AutoScaling {
                     threshold: cfg.target_value * 0.9,
                     comparison_operator: "LessThanThreshold".into(),
                     alarm_actions: vec![arn.clone()],
+                    metrics,
                 });
             }
             let mut names = Vec::new();

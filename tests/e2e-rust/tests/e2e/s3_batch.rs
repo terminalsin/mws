@@ -319,6 +319,7 @@ def handler(event, context):
         .send()
         .await
         .unwrap();
+    mws_e2e::function_active(&lambda, "batch-fn").await;
     let manifest = "src,logs/1.log\nsrc,logs/2.log\n";
     let put = s3
         .put_object()

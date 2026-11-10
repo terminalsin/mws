@@ -36,10 +36,12 @@ mod handler;
 mod image;
 mod invoke;
 mod layers;
+mod lifecycle;
 mod metrics;
 mod names;
 mod object_lambda;
 mod permissions;
+mod recursion;
 mod runtime;
 mod service_invoke;
 mod state;
@@ -82,7 +84,14 @@ pub(crate) struct Inner {
     durable: durable::Runtime,
     /// Where `FileSystemConfigs` mount from, when EFS is wired in.
     file_systems: std::sync::OnceLock<Arc<dyn FileSystems>>,
+    /// The authorizer for background work before any request was seen.
+    authorizer: std::sync::OnceLock<Arc<dyn mws_core::Authorizer>>,
+    /// The URL MWS serves on, for background work whose template has none.
+    endpoint: std::sync::OnceLock<EndpointSource>,
 }
+
+/// Where the URL MWS serves on comes from.
+pub type EndpointSource = Arc<dyn Fn() -> Option<String> + Send + Sync>;
 
 /// The Lambda service. Cheap to clone; clones share state.
 #[derive(Clone)]
@@ -125,6 +134,8 @@ impl Lambda {
                 metrics: Default::default(),
                 durable: Default::default(),
                 file_systems: std::sync::OnceLock::new(),
+                authorizer: std::sync::OnceLock::new(),
+                endpoint: std::sync::OnceLock::new(),
             }),
         }
     }
@@ -165,6 +176,46 @@ impl Lambda {
     /// Mount Amazon EFS access points for functions' `FileSystemConfigs`.
     pub fn set_file_systems(&self, file_systems: Arc<dyn FileSystems>) {
         let _ = self.inner.file_systems.set(file_systems);
+    }
+
+    /// The authorizer background work (event source mapping pollers) uses
+    /// before Lambda has seen a request, as after restoring saved state.
+    pub fn set_authorizer(&self, authorizer: Arc<dyn mws_core::Authorizer>) {
+        let _ = self.inner.authorizer.set(authorizer);
+    }
+
+    /// Where background work learns the URL MWS serves on (which functions
+    /// get as `AWS_ENDPOINT_URL`) when no request has told it.
+    pub fn set_endpoint_source(&self, endpoint: EndpointSource) {
+        let _ = self.inner.endpoint.set(endpoint);
+    }
+
+    pub(crate) fn background_endpoint(&self) -> Option<String> {
+        self.inner.endpoint.get().and_then(|e| e())
+    }
+
+    /// A context for background work when no request has been seen.
+    pub(crate) fn background_template(&self, region: &str) -> Option<RequestContext> {
+        let authorizer = self.inner.authorizer.get()?.clone();
+        // Not serving yet: functions would not know where MWS is.
+        let endpoint = Some(self.background_endpoint()?);
+        let partition = self
+            .read()
+            .functions
+            .keys()
+            .find_map(|arn| arn.split(':').nth(1).map(str::to_string))
+            .unwrap_or_else(|| "aws".into());
+        Some(RequestContext {
+            request_id: String::new(),
+            region: region.to_string(),
+            partition,
+            received_at: chrono::Utc::now(),
+            caller: mws_core::Caller::anonymous(),
+            source_ip: None,
+            secure_transport: false,
+            authorizer,
+            endpoint,
+        })
     }
 
     pub fn set_logs(&self, logs: mws_logs::Logs) {
@@ -237,6 +288,9 @@ impl Service for Lambda {
         operation: &str,
         input: serde_json::Value,
     ) -> Result<serde_json::Value, ServiceError> {
+        // CloudFormation and scenario files act through here: their event
+        // source mappings poll as soon as they are enabled, too.
+        self.observe(&ctx);
         generated::invoke(self, &ctx, operation, input).await
     }
 
@@ -245,9 +299,16 @@ impl Service for Lambda {
     }
 
     fn import_state(&self, state: serde_json::Value) -> Result<(), String> {
-        let state: State = serde_json::from_value(state).map_err(|e| format!("invalid Lambda state: {e}"))?;
+        let mut state: State = serde_json::from_value(state).map_err(|e| format!("invalid Lambda state: {e}"))?;
+        // Creates and updates in flight when the state was saved have
+        // completed since.
+        for func in state.functions.values_mut() {
+            lifecycle::settle(func);
+        }
         *self.write() = state;
         self.inner.runtimes.retire_all();
+        // Restored mappings poll without waiting for a Lambda request.
+        self.start_pollers();
         Ok(())
     }
 

@@ -199,7 +199,7 @@ impl Elb {
         let listener_id = input.listener_arn.rsplit('/').next().unwrap_or_default().to_string();
         let lb_path = names::lb_path_of_listener(&input.listener_arn).unwrap_or_default();
         let arn = names::arn(ctx, &account, &format!("listener-rule/{lb_path}/{listener_id}/{}", names::hex_id(16)));
-        self.authorize_create(ctx, "CreateRule", &arn, &tags)?;
+        self.authorize_create_in(ctx, "CreateRule", &input.listener_arn, &arn, &tags)?;
         let max_rules = self.limit(ctx, "rules-per-application-load-balancer");
         let rule = self.with_region(ctx, |r| {
             let actions = super::actions::normalize(r, &lb_arn, &lb_type, &protocol, &input.actions)?;

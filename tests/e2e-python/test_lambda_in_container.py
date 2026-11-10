@@ -111,6 +111,7 @@ def test_functions_run_in_base_images_from_a_containerized_mws(endpoint_in_conta
         Role=role,
         Code={"ZipFile": buf.getvalue()},
     )
+    lam.get_waiter("function_active_v2").wait(FunctionName="node22-in-container")
 
     out = lam.invoke(FunctionName="node22-in-container", Payload=b'{"n": 1}')
     body = json.loads(out["Payload"].read())

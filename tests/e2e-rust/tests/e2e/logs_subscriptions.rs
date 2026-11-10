@@ -63,6 +63,7 @@ async fn subscription_filters_invoke_lambda() {
         .unwrap()
         .function_arn
         .unwrap();
+    mws_e2e::function_active(&lambda, "sink").await;
     logs.create_log_group().log_group_name("/app").send().await.unwrap();
     logs.create_log_stream().log_group_name("/app").log_stream_name("web-1").send().await.unwrap();
 

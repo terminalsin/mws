@@ -8,9 +8,7 @@ use mws_core::{ConditionContext, RequestContext, ServiceError};
 use crate::generated::types as t;
 use crate::ops::gateways::{authorize_create, authorize_on};
 use crate::state::RegionState;
-use crate::util::{
-    arn, authorize, err, missing_parameter, new_id, paginate, s, some_tags, tags_for, Cidr, Filters, Kind,
-};
+use crate::util::{arn, err, missing_parameter, new_id, paginate, s, some_tags, tags_for, Cidr, Filters, Kind};
 use crate::{account_of, Ec2};
 
 fn status(code: &str, message: impl Into<String>) -> Option<t::VpcPeeringConnectionStateReason> {
@@ -138,6 +136,7 @@ impl Ec2 {
         let peer_owner = input.peer_owner_id.clone().unwrap_or_else(|| account.clone());
         let peer_region = input.peer_region.clone().unwrap_or_else(|| ctx.region.clone());
         authorize_create(
+            self,
             ctx,
             "CreateVpcPeeringConnection",
             "vpc-peering-connection",
@@ -284,7 +283,12 @@ impl Ec2 {
         ctx: &RequestContext,
         input: t::DescribeVpcPeeringConnectionsRequest,
     ) -> Result<t::DescribeVpcPeeringConnectionsResult, ServiceError> {
-        authorize(ctx, "DescribeVpcPeeringConnections", &[("*".into(), ConditionContext::new())], input.dry_run)?;
+        self.authorize_known(
+            ctx,
+            "DescribeVpcPeeringConnections",
+            &[("*".into(), ConditionContext::new())],
+            input.dry_run,
+        )?;
         let filters = Filters::new(&input.filters);
         let ids = input.vpc_peering_connection_ids.clone().unwrap_or_default();
         let now = ctx.received_at;

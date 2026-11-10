@@ -6,7 +6,7 @@ use mws_core::{ConditionContext, RequestContext, ServiceError};
 use crate::generated::types as t;
 use crate::state::RegionState;
 use crate::util::{
-    arn, authorize, b, err, missing_parameter, new_id, new_mac, new_public_ip, paginate, private_dns, public_dns,
+    arn, b, err, missing_parameter, new_id, new_mac, new_public_ip, paginate, private_dns, public_dns,
     request_tag_context, resource_tag_context, s, some_tags, tags_for, Filters, Kind,
 };
 use crate::{account_of, Ec2};
@@ -136,22 +136,39 @@ impl Ec2 {
         let account = account_of(ctx);
         Kind::Subnet.check(&input.subnet_id)?;
         let tags = tags_for(&input.tag_specifications, "network-interface", &["network-interface"])?;
-        authorize(
-            ctx,
-            "CreateNetworkInterface",
-            &[
-                (arn(ctx, &account, "network-interface/*"), request_tag_context(&tags)),
-                (arn(ctx, &account, &format!("subnet/{}", input.subnet_id)), ConditionContext::new()),
-            ],
-            input.dry_run,
-        )?;
+        let subnet_arn = arn(ctx, &account, &format!("subnet/{}", input.subnet_id));
+        let subnet_cond = self.resource_context(ctx, &subnet_arn);
+        let mut cond = request_tag_context(&tags);
+        cond.insert("ec2:Subnet".into(), vec![subnet_arn.clone()]);
+        for key in ["ec2:Vpc", "ec2:AvailabilityZone"] {
+            if let Some(v) = subnet_cond.get(key) {
+                cond.insert(key.into(), v.clone());
+            }
+        }
+        let mut resources = vec![(arn(ctx, &account, "network-interface/*"), cond), (subnet_arn, subnet_cond)];
+        for g in input.groups.iter().flatten() {
+            resources.push((arn(ctx, &account, &format!("security-group/{g}")), ConditionContext::new()));
+        }
+        self.authorize_known(ctx, "CreateNetworkInterface", &resources, input.dry_run)?;
         let region = ctx.region.clone();
         let now = ctx.received_at;
+        let limit = self.quota(&account, &region, crate::quotas::GROUPS_PER_INTERFACE, now);
+        let fp = crate::idempotency::fingerprint(&input);
+        let token = input.client_token.as_deref();
         self.with_region(ctx, |r| {
+            if let Some(id) = crate::idempotency::replay(r, "CreateNetworkInterface", token, &fp, |id| {
+                r.network_interfaces.contains_key(id)
+            })? {
+                return Ok(t::CreateNetworkInterfaceResult {
+                    network_interface: r.network_interfaces.get(&id).cloned(),
+                    client_token: input.client_token.clone(),
+                });
+            }
             let subnet =
                 r.subnets.get(&input.subnet_id).ok_or_else(|| Kind::Subnet.not_found(&input.subnet_id))?.clone();
             let vpc_id = subnet.vpc_id.clone().unwrap_or_default();
             let groups = resolve_groups(r, &vpc_id, input.groups.as_deref())?;
+            check_groups_per_interface(&groups, limit)?;
             let ip = match input.private_ip_address.clone().or_else(|| {
                 input
                     .private_ip_addresses
@@ -179,6 +196,7 @@ impl Ec2 {
                 input.interface_type.as_deref().unwrap_or("interface"),
                 now,
             );
+            crate::idempotency::remember(r, "CreateNetworkInterface", token, &fp, &id);
             let eni = r.network_interfaces.get_mut(&id).expect("just made");
             eni.tag_set = some_tags(tags);
             Ok(t::CreateNetworkInterfaceResult {
@@ -199,12 +217,11 @@ impl Ec2 {
         Kind::NetworkInterface.check(eni_id)?;
         let tags = self.with_region(ctx, |r| r.network_interfaces.get(eni_id).map(|n| n.tag_set.clone()));
         let tags = tags.ok_or_else(|| Kind::NetworkInterface.not_found(eni_id))?;
-        authorize(
+        let resources = self.with_resource_context(
             ctx,
-            action,
-            &[(arn(ctx, &account, &format!("network-interface/{eni_id}")), resource_tag_context(tags.as_ref()))],
-            dry_run,
-        )
+            vec![(arn(ctx, &account, &format!("network-interface/{eni_id}")), resource_tag_context(tags.as_ref()))],
+        );
+        self.authorize_known(ctx, action, &resources, dry_run)
     }
 
     pub(crate) fn delete_network_interface_op(
@@ -242,7 +259,12 @@ impl Ec2 {
         ctx: &RequestContext,
         input: t::DescribeNetworkInterfacesRequest,
     ) -> Result<t::DescribeNetworkInterfacesResult, ServiceError> {
-        authorize(ctx, "DescribeNetworkInterfaces", &[("*".into(), ConditionContext::new())], input.dry_run)?;
+        self.authorize_known(
+            ctx,
+            "DescribeNetworkInterfaces",
+            &[("*".into(), ConditionContext::new())],
+            input.dry_run,
+        )?;
         let filters = Filters::new(&input.filters);
         let ids = input.network_interface_ids.clone().unwrap_or_default();
         self.with_region(ctx, |r| {
@@ -336,7 +358,7 @@ impl Ec2 {
         ctx: &RequestContext,
         input: t::DetachNetworkInterfaceRequest,
     ) -> Result<(), ServiceError> {
-        authorize(
+        self.authorize_known(
             ctx,
             "DetachNetworkInterface",
             &[(arn(ctx, &account_of(ctx), "network-interface/*"), ConditionContext::new())],
@@ -373,6 +395,7 @@ impl Ec2 {
         input: t::ModifyNetworkInterfaceAttributeRequest,
     ) -> Result<(), ServiceError> {
         self.eni_authorize(ctx, "ModifyNetworkInterfaceAttribute", &input.network_interface_id, input.dry_run)?;
+        let limit = self.quota(&account_of(ctx), &ctx.region, crate::quotas::GROUPS_PER_INTERFACE, ctx.received_at);
         self.with_region(ctx, |r| {
             let vpc_id = r
                 .network_interfaces
@@ -383,6 +406,9 @@ impl Ec2 {
                 Some(g) => Some(resolve_groups(r, &vpc_id, Some(g))?),
                 None => None,
             };
+            if let Some(g) = &groups {
+                check_groups_per_interface(g, limit)?;
+            }
             let eni = r
                 .network_interfaces
                 .get_mut(&input.network_interface_id)
@@ -427,7 +453,7 @@ impl Ec2 {
     ) -> Result<t::AllocateAddressResult, ServiceError> {
         let account = account_of(ctx);
         let tags = tags_for(&input.tag_specifications, "elastic-ip", &["elastic-ip"])?;
-        authorize(
+        self.authorize_known(
             ctx,
             "AllocateAddress",
             &[(arn(ctx, &account, "elastic-ip/*"), request_tag_context(&tags))],
@@ -492,7 +518,7 @@ impl Ec2 {
     ) -> Result<(), ServiceError> {
         let account = account_of(ctx);
         let alloc = self.with_region(ctx, |r| Self::find_allocation(r, &input.allocation_id, &input.public_ip))?;
-        authorize(
+        self.authorize_known(
             ctx,
             "ReleaseAddress",
             &[(arn(ctx, &account, &format!("elastic-ip/{alloc}")), ConditionContext::new())],
@@ -524,7 +550,7 @@ impl Ec2 {
             Kind::NetworkInterface.check(n)?;
             resources.push((arn(ctx, &account, &format!("network-interface/{n}")), ConditionContext::new()));
         }
-        authorize(ctx, "AssociateAddress", &resources, input.dry_run)?;
+        self.authorize_known(ctx, "AssociateAddress", &resources, input.dry_run)?;
         let region = ctx.region.clone();
         self.with_region(ctx, |r| {
             let eni_id = match (&input.network_interface_id, &input.instance_id) {
@@ -596,7 +622,7 @@ impl Ec2 {
         ctx: &RequestContext,
         input: t::DisassociateAddressRequest,
     ) -> Result<(), ServiceError> {
-        authorize(
+        self.authorize_known(
             ctx,
             "DisassociateAddress",
             &[(arn(ctx, &account_of(ctx), "elastic-ip/*"), ConditionContext::new())],
@@ -652,7 +678,7 @@ impl Ec2 {
         ctx: &RequestContext,
         input: t::DescribeAddressesRequest,
     ) -> Result<t::DescribeAddressesResult, ServiceError> {
-        authorize(ctx, "DescribeAddresses", &[("*".into(), ConditionContext::new())], input.dry_run)?;
+        self.authorize_known(ctx, "DescribeAddresses", &[("*".into(), ConditionContext::new())], input.dry_run)?;
         let filters = Filters::new(&input.filters);
         let ids = input.allocation_ids.clone().unwrap_or_default();
         let ips = input.public_ips.clone().unwrap_or_default();
@@ -704,6 +730,18 @@ pub fn primary_eni(r: &RegionState, instance_id: &str) -> Option<String> {
                 .is_some_and(|a| a.instance_id.as_deref() == Some(instance_id) && a.device_index == Some(0))
         })
         .and_then(|n| n.network_interface_id.clone())
+}
+
+/// Fails when more security groups than the quota allows (Security groups
+/// per network interface) would be on one interface.
+pub(crate) fn check_groups_per_interface(groups: &[t::GroupIdentifier], limit: f64) -> Result<(), ServiceError> {
+    if groups.len() as f64 > limit {
+        return Err(err(
+            "SecurityGroupsPerInterfaceLimitExceeded",
+            "The maximum number of security groups per interface has been reached.",
+        ));
+    }
+    Ok(())
 }
 
 /// Security groups by id, checked to be in `vpc_id`; the VPC's default
@@ -766,7 +804,7 @@ impl Ec2 {
         let account = account_of(ctx);
         let tags = self.with_region(ctx, |r| r.addresses.get(alloc).map(|a| a.tags.clone()));
         let tags = tags.ok_or_else(|| Kind::Allocation.not_found(alloc))?;
-        authorize(
+        self.authorize_known(
             ctx,
             action,
             &[(arn(ctx, &account, &format!("elastic-ip/{alloc}")), resource_tag_context(tags.as_ref()))],
@@ -779,7 +817,12 @@ impl Ec2 {
         ctx: &RequestContext,
         input: t::DescribeAddressesAttributeRequest,
     ) -> Result<t::DescribeAddressesAttributeResult, ServiceError> {
-        authorize(ctx, "DescribeAddressesAttribute", &[("*".into(), ConditionContext::new())], input.dry_run)?;
+        self.authorize_known(
+            ctx,
+            "DescribeAddressesAttribute",
+            &[("*".into(), ConditionContext::new())],
+            input.dry_run,
+        )?;
         if let Some(a) = &input.attribute {
             if a != "domain-name" {
                 return Err(err("InvalidParameterValue", format!("Value ({a}) for parameter attribute is invalid.")));

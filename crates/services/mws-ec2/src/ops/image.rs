@@ -10,8 +10,8 @@ use crate::catalog;
 use crate::generated::types as t;
 use crate::state::{ImageRecord, State};
 use crate::util::{
-    authorize, err, invalid_parameter, missing_parameter, new_id, paginate, request_tag_context, resource_tag_context,
-    s, some_tags, tags_for, Filters, Kind,
+    err, invalid_parameter, missing_parameter, new_id, paginate, request_tag_context, resource_tag_context, s,
+    some_tags, tags_for, Filters, Kind,
 };
 use crate::{account_of, Ec2};
 
@@ -83,7 +83,7 @@ impl Ec2 {
         ctx: &RequestContext,
         input: t::DescribeImagesRequest,
     ) -> Result<t::DescribeImagesResult, ServiceError> {
-        authorize(ctx, "DescribeImages", &[("*".into(), ConditionContext::new())], input.dry_run)?;
+        self.authorize_known(ctx, "DescribeImages", &[("*".into(), ConditionContext::new())], input.dry_run)?;
         let caller = account_of(ctx);
         let filters = Filters::new(&input.filters);
         let ids = input.image_ids.clone().unwrap_or_default();
@@ -209,7 +209,7 @@ impl Ec2 {
     ) -> Result<t::RegisterImageResult, ServiceError> {
         let account = account_of(ctx);
         let tags = tags_for(&input.tag_specifications, "image", &["image", "snapshot"])?;
-        authorize(
+        self.authorize_known(
             ctx,
             "RegisterImage",
             &[(image_arn(ctx, &ctx.region, "*"), request_tag_context(&tags))],
@@ -295,7 +295,7 @@ impl Ec2 {
         let tags = tags_for(&input.tag_specifications, "image", &["image", "snapshot"])?;
         let inst_tags = self.with_region(ctx, |r| r.instances.get(&input.instance_id).map(|i| i.instance.tags.clone()));
         let inst_tags = inst_tags.ok_or_else(|| Kind::Instance.not_found(&input.instance_id))?;
-        authorize(
+        self.authorize_known(
             ctx,
             "CreateImage",
             &[
@@ -496,7 +496,12 @@ impl Ec2 {
     ) -> Result<t::CopyImageResult, ServiceError> {
         let account = account_of(ctx);
         let tags = tags_for(&input.tag_specifications, "image", &["image", "snapshot"])?;
-        authorize(ctx, "CopyImage", &[(image_arn(ctx, &ctx.region, "*"), request_tag_context(&tags))], input.dry_run)?;
+        self.authorize_known(
+            ctx,
+            "CopyImage",
+            &[(image_arn(ctx, &ctx.region, "*"), request_tag_context(&tags))],
+            input.dry_run,
+        )?;
         Kind::Image.check(&input.source_image_id)?;
         if !catalog::REGIONS.contains(&input.source_region.as_str()) {
             return Err(invalid_parameter(format!("Invalid region: {}", input.source_region)));
@@ -504,6 +509,14 @@ impl Ec2 {
         let mut source_ctx = ctx.clone();
         source_ctx.region = input.source_region.clone();
         let source = self.find_image(&source_ctx, &input.source_image_id)?;
+        let fp = crate::idempotency::fingerprint(&input);
+        let token = input.client_token.as_deref();
+        let replayed = self.with_region(ctx, |r| {
+            crate::idempotency::replay(r, "CopyImage", token, &fp, |id| r.images.contains_key(id))
+        })?;
+        if let Some(id) = replayed {
+            return Ok(t::CopyImageResult { image_id: Some(id) });
+        }
         self.check_new_image_name(ctx, &input.name)?;
         let id = new_id("ami");
         let mut image = source.record.image.clone();
@@ -529,7 +542,10 @@ impl Ec2 {
             launch_users: Vec::new(),
             launch_public: false,
         };
-        self.with_region(ctx, |r| r.images.insert(id.clone(), record));
+        self.with_region(ctx, |r| {
+            r.images.insert(id.clone(), record);
+            crate::idempotency::remember(r, "CopyImage", token, &fp, &id);
+        });
         Ok(t::CopyImageResult { image_id: Some(id) })
     }
 
@@ -547,7 +563,7 @@ impl Ec2 {
                 Err(e) => e,
             });
         };
-        authorize(
+        self.authorize_known(
             ctx,
             "DeregisterImage",
             &[(image_arn(ctx, &ctx.region, &input.image_id), resource_tag_context(tags.as_ref()))],
@@ -583,7 +599,7 @@ impl Ec2 {
         ctx: &RequestContext,
         input: t::DescribeImageAttributeRequest,
     ) -> Result<t::ImageAttribute, ServiceError> {
-        authorize(
+        self.authorize_known(
             ctx,
             "DescribeImageAttribute",
             &[(image_arn(ctx, &ctx.region, &input.image_id), ConditionContext::new())],
@@ -637,7 +653,7 @@ impl Ec2 {
         input: t::ModifyImageAttributeRequest,
     ) -> Result<(), ServiceError> {
         Kind::Image.check(&input.image_id)?;
-        authorize(
+        self.authorize_known(
             ctx,
             "ModifyImageAttribute",
             &[(image_arn(ctx, &ctx.region, &input.image_id), ConditionContext::new())],

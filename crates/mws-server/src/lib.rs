@@ -171,7 +171,9 @@ impl Gateway {
             return self.admin(request).await;
         }
         let _gate = self.state.gate.read().await;
-        let response = self.handle_service_request(request_id, request, remote, now).await;
+        let trace = mws_core::trace_header::of(&request);
+        let response =
+            mws_core::trace_header::scope(trace, self.handle_service_request(request_id, request, remote, now)).await;
         self.mark_dirty();
         response
     }

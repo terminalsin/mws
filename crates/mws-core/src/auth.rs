@@ -221,3 +221,29 @@ impl Authorizer for AllowAll {
         AuthzDecision::Allow
     }
 }
+
+/// Judges what an AWS service does through its service-linked role, or on a
+/// caller's behalf after the caller's own request was authorized. The
+/// service decides what it may do, so nothing an identity policy does not
+/// grant is refused; but what AWS still enforces against a service is: an
+/// explicit deny in any policy (a bucket or queue policy), and a resource
+/// policy that must allow the principal itself (a KMS key policy, a role's
+/// trust policy).
+pub struct ServiceLinkedRoleAuthorizer(pub std::sync::Arc<dyn Authorizer>);
+
+impl ServiceLinkedRoleAuthorizer {
+    pub fn wrap(inner: std::sync::Arc<dyn Authorizer>) -> std::sync::Arc<dyn Authorizer> {
+        std::sync::Arc::new(Self(inner))
+    }
+}
+
+impl Authorizer for ServiceLinkedRoleAuthorizer {
+    fn authorize(&self, request: &AuthzRequest<'_>) -> AuthzDecision {
+        match self.0.authorize(request) {
+            AuthzDecision::Allow => AuthzDecision::Allow,
+            deny @ AuthzDecision::Deny { explicit: true, .. } => deny,
+            deny if request.resource_policy_mode != ResourcePolicyMode::Optional => deny,
+            AuthzDecision::Deny { .. } => AuthzDecision::Allow,
+        }
+    }
+}

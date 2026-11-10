@@ -7,6 +7,7 @@ import {
   LambdaClient,
   ListEventSourceMappingsCommand,
   waitUntilFunctionActiveV2,
+  waitUntilFunctionUpdatedV2,
 } from "@aws-sdk/client-lambda";
 import { CreateQueueCommand, GetQueueAttributesCommand, SQSClient } from "@aws-sdk/client-sqs";
 import { expect, test, type Locator, type Page } from "@playwright/test";
@@ -63,7 +64,8 @@ test("Lambda: invoke, edit code and follow logs into CloudWatch", async ({ page 
   await page.getByRole("link", { name: "Code", exact: true }).click();
   await expect(page.getByLabel("Code")).toHaveValue(/hello " \+ event.name/);
   await submit(page, "save-code", { code: CODE.replace('"hello "', '"hi "') });
-  await waitUntilFunctionActiveV2({ client: lambda, maxWaitTime: 60 }, { FunctionName: name });
+  // Until the update completes, invocations run the previous code.
+  await waitUntilFunctionUpdatedV2({ client: lambda, maxWaitTime: 60 }, { FunctionName: name });
   await page.getByRole("link", { name: "Test", exact: true }).click();
   await expect(await submit(page, "invoke", { payload: '{"name": "again"}' })).toContainText('"greeting": "hi again"');
 

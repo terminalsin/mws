@@ -7,7 +7,7 @@
 //! due scheduled actions and advance instance refreshes. Decisions are made
 //! under the state lock; EC2 calls and notifications happen after it.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 
 use chrono::{DateTime, Duration, Utc};
 use mws_core::RequestContext;
@@ -181,8 +181,20 @@ fn activity_event(detail_type: &str, g: &Group, activity: &t::Activity, instance
     }
 }
 
+/// What the group's load balancers say, read before a pass.
+#[derive(Debug, Default, Clone)]
+pub(crate) struct TrafficView {
+    /// The longest deregistration delay (connection draining timeout) of
+    /// the sources that receive traffic.
+    pub drain_seconds: i64,
+    /// Members failing a load balancer health check (only gathered when
+    /// the group uses ELB health checks).
+    pub unhealthy: BTreeSet<String>,
+}
+
 pub(crate) struct Planner<'a> {
     pub g: &'a mut Group,
+    pub traffic: &'a TrafficView,
     pub activities: &'a mut Vec<t::Activity>,
     pub info: &'a BTreeMap<String, InstanceInfo>,
     pub source: &'a Source,
@@ -337,12 +349,15 @@ impl Planner<'_> {
         };
         let details =
             json!({"Subnet ID": m.subnet_id.clone().unwrap_or_default(), "Availability Zone": m.availability_zone});
+        let mut deregistered = false;
         if !m.warm && m.lifecycle_state == "InService" {
             let ops = crate::ops::traffic::member_ops(self.g, &[id.to_string()], false);
+            deregistered = !ops.is_empty();
             self.ops.extend(ops);
         }
         let activity = new_activity(self.activities, self.g, description, cause.clone(), "InProgress", now, details);
         let m = self.g.members.get_mut(id).expect("member");
+        m.deregistered_at = deregistered.then_some(now);
         m.lifecycle_state = "Terminating".into();
         m.activity_id = Some(activity);
         m.terminate_cause = Some(cause);
@@ -472,13 +487,26 @@ impl Planner<'_> {
             }
             "InService" => {
                 let unhealthy_instance = !matches!(ec2_state, "running" | "pending");
-                if unhealthy_instance && !self.g.suspended("HealthCheck") && m.health_status == "Healthy" {
+                // ELB health checks count once the grace period is over.
+                let grace = Duration::seconds(self.g.cfg.health_check_grace_period.unwrap_or(0).max(0) as i64);
+                let elb_unhealthy = !unhealthy_instance
+                    && self.traffic.unhealthy.contains(id)
+                    && m.in_service_at.unwrap_or(m.launched_at) + grace <= now;
+                if (unhealthy_instance || elb_unhealthy)
+                    && !self.g.suspended("HealthCheck")
+                    && m.health_status == "Healthy"
+                {
                     self.g.members.get_mut(id).expect("member").health_status = "Unhealthy".into();
                     self.changed = true;
                 }
                 let m = self.g.members.get(id).cloned().expect("member");
                 if m.health_status == "Unhealthy" && !self.g.suspended("ReplaceUnhealthy") {
-                    let cause = if unhealthy_instance {
+                    let cause = if elb_unhealthy {
+                        format!(
+                            "{} an instance was taken out of service in response to an ELB system health check failure.",
+                            at(now)
+                        )
+                    } else if unhealthy_instance {
                         format!(
                             "{} an instance was taken out of service in response to an EC2 health check indicating it has been terminated or stopped.",
                             at(now)
@@ -500,6 +528,10 @@ impl Planner<'_> {
                 }
             }
             "Terminating" => {
+                // Deregistration (connection draining) finishes first.
+                if m.deregistered_at.is_some_and(|d| now < d + Duration::seconds(self.traffic.drain_seconds)) {
+                    return;
+                }
                 if !self.start_hook(id, TERMINATING) {
                     self.g.members.get_mut(id).expect("member").lifecycle_state = "Terminating:Proceed".into();
                     self.changed = true;
@@ -1066,6 +1098,27 @@ impl AutoScaling {
         }
     }
 
+    /// What the group's traffic sources report now.
+    pub(crate) fn traffic_view(&self, account: &str, region: &str, g: &Group) -> TrafficView {
+        let mut view = TrafficView::default();
+        let Some(sink) = self.traffic() else { return view };
+        let elb_checks = g.cfg.health_check_type.split(',').any(|t| t.trim() == "ELB");
+        for s in g.traffic_sources.values() {
+            let target = crate::ops::traffic::target_of(s);
+            if matches!(target, TrafficTarget::LatticeTargetGroup(_)) {
+                continue;
+            }
+            let Some(info) = sink.describe(account, region, &target) else { continue };
+            if info.in_use {
+                view.drain_seconds = view.drain_seconds.max(info.drain_seconds);
+            }
+            if elb_checks {
+                view.unhealthy.extend(info.unhealthy.into_iter().filter(|i| g.members.contains_key(i)));
+            }
+        }
+        view
+    }
+
     /// One pass over a group. `true` when something changed (so another
     /// pass may make progress at once).
     async fn reconcile_group(
@@ -1084,6 +1137,7 @@ impl AutoScaling {
             (g.members.keys().cloned().collect::<Vec<_>>(), g.clone(), r.launch_configurations.clone())
         };
         let source = self.resolve_source(sctx, &g_snapshot, &lcs);
+        let traffic = self.traffic_view(account, region, &g_snapshot);
         let info = match self.ec2_instances(sctx, &ids).await {
             Ok(i) => i,
             Err(e) => {
@@ -1098,6 +1152,7 @@ impl AutoScaling {
             let Some(g) = groups.get_mut(name) else { return false };
             let mut p = Planner {
                 g,
+                traffic: &traffic,
                 activities,
                 info: &info,
                 source: &source,

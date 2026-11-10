@@ -5,7 +5,7 @@ use mws_core::{ConditionContext, RequestContext, ServiceError};
 use serde_json::json;
 
 use super::{authorized_group, group_of_instance, render_instance};
-use crate::engine::{new_activity, Op, Planner, Source};
+use crate::engine::{new_activity, Op, Planner, Source, TrafficView};
 use crate::generated::types as t;
 use crate::state::Member;
 use crate::util::{at, authorize, paginate, validation};
@@ -451,8 +451,10 @@ impl AutoScaling {
                 };
                 let empty = Default::default();
                 let source = Source::default();
+                let traffic = TrafficView::default();
                 let mut p = Planner {
                     g,
+                    traffic: &traffic,
                     activities,
                     info: &empty,
                     source: &source,
@@ -550,8 +552,10 @@ impl AutoScaling {
                 before + n
             );
             let empty = Default::default();
+            let traffic = TrafficView::default();
             let mut p = Planner {
                 g,
+                traffic: &traffic,
                 activities,
                 info: &empty,
                 source: &source,

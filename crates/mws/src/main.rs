@@ -14,7 +14,7 @@ async fn main() {
         .parse()
         .expect("MWS_LISTEN must be host:port");
     let config = mws::Config::from_env();
-    let mws::Mws { gateway, route53, ses, .. } = match mws::start(config.clone()).await {
+    let mws::Mws { gateway, route53, ses, lambda, .. } = match mws::start(config.clone()).await {
         Ok(m) => m,
         Err(e) => {
             eprintln!("mws: {e}");
@@ -22,6 +22,10 @@ async fn main() {
         }
     };
     let gateway = Arc::new(gateway);
+    // Lambda's background work (pollers of restored event source mappings)
+    // hands functions the URL MWS serves on.
+    let weak = Arc::downgrade(&gateway);
+    lambda.set_endpoint_source(Arc::new(move || weak.upgrade().and_then(|g| g.endpoint().map(str::to_string))));
     if let Ok(dns) = std::env::var("MWS_DNS_LISTEN") {
         let socket = tokio::net::UdpSocket::bind(&dns).await.expect("bind MWS_DNS_LISTEN");
         let tcp = tokio::net::TcpListener::bind(&dns).await.expect("bind MWS_DNS_LISTEN (TCP)");

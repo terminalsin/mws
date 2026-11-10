@@ -34,7 +34,7 @@ use tokio::process::Command;
 use std::collections::HashMap;
 
 use super::{
-    AclRule, AllowRule, BackendError, CommandOutput, ComputeBackend, Firewall, LaunchSpec, Launched, Protocol,
+    AclRule, AllowRule, BackendError, CommandOutput, ComputeBackend, Firewall, LaunchSpec, Launched, Protocol, Usage,
     VolumeMount,
 };
 
@@ -734,6 +734,40 @@ impl ComputeBackend for DockerBackend {
         }
         self.run(&["network".into(), "rm".into(), name]).await.map(drop)
     }
+
+    async fn usage(&self, handle: &str) -> Result<Option<Usage>, BackendError> {
+        let cpu = self
+            .run(&["stats".into(), "--no-stream".into(), "--format".into(), "{{.CPUPerc}}".into(), handle.into()])
+            .await?;
+        let mut usage =
+            Usage { cpu_percent: cpu.trim().trim_end_matches('%').parse().unwrap_or_default(), ..Default::default() };
+        if let Ok(Some(out)) = self.exec(handle, "cat /proc/net/dev").await {
+            if out.exit_code == 0 {
+                (usage.rx_bytes, usage.rx_packets, usage.tx_bytes, usage.tx_packets) = parse_net_dev(&out.stdout);
+            }
+        }
+        Ok(Some(usage))
+    }
+}
+
+/// Received bytes and packets, then sent bytes and packets, over every
+/// interface but loopback in `/proc/net/dev`.
+fn parse_net_dev(text: &str) -> (u64, u64, u64, u64) {
+    let mut sum = (0, 0, 0, 0);
+    for line in text.lines() {
+        let Some((name, rest)) = line.split_once(':') else { continue };
+        if name.trim() == "lo" {
+            continue;
+        }
+        let n: Vec<u64> = rest.split_whitespace().filter_map(|v| v.parse().ok()).collect();
+        if n.len() >= 10 {
+            sum.0 += n[0];
+            sum.1 += n[1];
+            sum.2 += n[8];
+            sum.3 += n[9];
+        }
+    }
+    sum
 }
 
 /// iptables match arguments for a protocol (destination ports).
@@ -847,6 +881,15 @@ impl tokio::io::AsyncRead for ChildOutput {
 mod tests {
     use super::*;
     use crate::backend::RouteRule;
+
+    #[test]
+    fn sums_network_counters_without_loopback() {
+        let text = "Inter-|   Receive                                                |  Transmit\n \
+ face |bytes    packets errs drop fifo frame compressed multicast|bytes    packets errs drop fifo colls carrier compressed\n    \
+lo:     100       2    0    0    0     0          0         0      100       2    0    0    0     0       0          0\n  \
+eth0:    5000      40    0    0    0     0          0         0     3000      30    0    0    0     0       0          0\n";
+        assert_eq!(parse_net_dev(text), (5000, 40, 3000, 30));
+    }
 
     #[test]
     fn renders_security_groups_acls_and_routes() {

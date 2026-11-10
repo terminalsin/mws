@@ -1,6 +1,7 @@
 """SNS through boto3: every operation, plus deliveries boto3 users rely on."""
 
 import json
+import time
 import urllib.parse
 import urllib.request
 import uuid
@@ -26,6 +27,17 @@ def topic(sns):
 def outbox(endpoint, path):
     with urllib.request.urlopen(f"{endpoint}/_aws/sns/{path}") as r:
         return json.loads(r.read())
+
+
+def wait_outbox(endpoint, path, key, n):
+    """Poll an outbox page until `key` holds `n` entries: SNS delivers after
+    Publish returns, so readers must wait, as with real AWS."""
+    for _ in range(100):
+        got = outbox(endpoint, path)
+        if len(got.get(key, [])) >= n:
+            return got
+        time.sleep(0.1)
+    return outbox(endpoint, path)
 
 
 def error_code(excinfo):
@@ -99,7 +111,7 @@ def test_subscriptions_filters_and_email_delivery(endpoint, sns, topic):
     )
     assert [s["Id"] for s in out["Successful"]] == ["1"]
     assert out["Failed"][0]["Code"] == "ParameterValueInvalid"
-    mails = outbox(endpoint, f"email-messages?email={urllib.parse.quote(mailbox)}")["emailMessages"]
+    mails = wait_outbox(endpoint, f"email-messages?email={urllib.parse.quote(mailbox)}", "emailMessages", 3)["emailMessages"]
     bodies = [json.loads(m["body"]) for m in mails[1:]]
     assert [json.loads(b["Message"])["n"] for b in bodies] == [1, 3]
     assert all(b["Type"] == "Notification" and b["SignatureVersion"] == "1" for b in bodies)
@@ -198,7 +210,7 @@ def test_s3_notifications_reach_topics(endpoint, sns, session_for):
     )
     s3.put_object(Bucket=bucket, Key="k", Body=b"v")
     s3.delete_object(Bucket=bucket, Key="k")
-    msgs = outbox(endpoint, f"sms-messages?phoneNumber={urllib.parse.quote(number)}")["smsMessages"]
+    msgs = wait_outbox(endpoint, f"sms-messages?phoneNumber={urllib.parse.quote(number)}", "smsMessages", 2)["smsMessages"]
     events = [json.loads(m["message"]) for m in msgs]
     assert events[0]["Event"] == "s3:TestEvent"
     assert [e["Records"][0]["eventName"] for e in events[1:]] == ["ObjectRemoved:Delete"]

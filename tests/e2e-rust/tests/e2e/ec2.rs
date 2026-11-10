@@ -35,6 +35,19 @@ fn tags(rt: ResourceType, key: &str, value: &str) -> TagSpecification {
     TagSpecification::builder().resource_type(rt).tags(Tag::builder().key(key).value(value).build()).build()
 }
 
+/// Wait until instance `id` reaches `want` (transitions take a moment,
+/// as on AWS).
+pub(crate) async fn wait_state(ec2: &Client, id: &str, want: InstanceStateName) {
+    for _ in 0..200 {
+        let d = ec2.describe_instances().instance_ids(id).send().await.unwrap();
+        if d.reservations()[0].instances()[0].state().and_then(|s| s.name()) == Some(&want) {
+            return;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+    }
+    panic!("{id} never became {want:?}");
+}
+
 /// The Alpine AMI MWS publishes, found the way a user would.
 async fn alpine_ami(ec2: &Client) -> String {
     let images = ec2.describe_images().owners("amazon").filters(filter("name", "mws-alpine-*")).send().await.unwrap();
@@ -549,6 +562,9 @@ async fn instance_lifecycle() {
     assert!(first.private_dns_name().unwrap().ends_with(".ec2.internal"));
     let ids: Vec<String> = run.instances().iter().map(|i| i.instance_id().unwrap().to_string()).collect();
     let id = ids[0].clone();
+    for i in &ids {
+        wait_state(&ec2, i, InstanceStateName::Running).await;
+    }
 
     let described = ec2.describe_instances().instance_ids(&id).send().await.unwrap();
     let i = &described.reservations()[0].instances()[0];
@@ -617,6 +633,7 @@ async fn instance_lifecycle() {
     let change = &stopped.stopping_instances()[0];
     assert_eq!(change.previous_state().unwrap().name(), Some(&InstanceStateName::Running));
     assert_eq!(change.current_state().unwrap().name(), Some(&InstanceStateName::Stopping));
+    wait_state(&ec2, &id, InstanceStateName::Stopped).await;
     let i = ec2.describe_instances().instance_ids(&id).send().await.unwrap();
     let i = &i.reservations()[0].instances()[0];
     assert_eq!(i.state().unwrap().name(), Some(&InstanceStateName::Stopped));
@@ -632,6 +649,7 @@ async fn instance_lifecycle() {
     assert_eq!(code(&e.into_service_error()), "InvalidInstanceID.NotFound");
     let started = ec2.start_instances().instance_ids(&id).send().await.unwrap();
     assert_eq!(started.starting_instances()[0].current_state().unwrap().name(), Some(&InstanceStateName::Pending));
+    wait_state(&ec2, &id, InstanceStateName::Running).await;
     ec2.reboot_instances().instance_ids(&id).send().await.unwrap();
     let i = ec2.describe_instances().instance_ids(&id).send().await.unwrap();
     let i = &i.reservations()[0].instances()[0];
@@ -719,8 +737,7 @@ async fn instance_lifecycle() {
         terminated.terminating_instances()[0].current_state().unwrap().name(),
         Some(&InstanceStateName::ShuttingDown)
     );
-    let i = ec2.describe_instances().instance_ids(&id).send().await.unwrap();
-    assert_eq!(i.reservations()[0].instances()[0].state().unwrap().name(), Some(&InstanceStateName::Terminated));
+    wait_state(&ec2, &id, InstanceStateName::Terminated).await;
     let volumes = ec2.describe_volumes().filters(filter("attachment.instance-id", &id)).send().await.unwrap();
     assert!(volumes.volumes().is_empty());
     let e = ec2.start_instances().instance_ids(&id).send().await.unwrap_err();

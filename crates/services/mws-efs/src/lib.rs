@@ -38,6 +38,7 @@ mod tags;
 mod util;
 
 use std::path::PathBuf;
+use std::sync::atomic::{AtomicI64, Ordering};
 use std::sync::{Arc, Mutex, MutexGuard};
 
 use mws_core::{HttpRequest, HttpResponse, RequestContext, Service, ServiceError};
@@ -53,6 +54,11 @@ struct Inner {
     storage: Storage,
     ec2: Ec2,
     kms: Kms,
+    /// How far the emulated clock (`RequestContext::received_at`) runs
+    /// ahead of the wall clock, in milliseconds, as requests last showed
+    /// it: lifecycle transitions finish on the emulated clock even for
+    /// callers without a request (Lambda mounts).
+    clock_skew_ms: AtomicI64,
 }
 
 /// The EFS service. Cheap to clone; clones share state.
@@ -67,7 +73,15 @@ impl Efs {
         if let Err(e) = std::fs::create_dir_all(&root) {
             tracing::warn!("EFS: creating {}: {e}", root.display());
         }
-        Self { inner: Arc::new(Inner { state: Mutex::new(State::default()), storage: Storage::new(root), ec2, kms }) }
+        Self {
+            inner: Arc::new(Inner {
+                state: Mutex::new(State::default()),
+                storage: Storage::new(root),
+                ec2,
+                kms,
+                clock_skew_ms: AtomicI64::new(0),
+            }),
+        }
     }
 
     /// The default data root: `MWS_EFS_DIR`, or `mws-efs` in the temp
@@ -86,8 +100,24 @@ impl Efs {
         self.inner.storage.root().to_path_buf()
     }
 
+    /// The state, with the lifecycle transitions due by now finished.
     pub(crate) fn lock(&self) -> MutexGuard<'_, State> {
-        self.inner.state.lock().expect("EFS state lock poisoned")
+        let mut st = self.inner.state.lock().expect("EFS state lock poisoned");
+        for id in st.settle(self.now()) {
+            self.storage().delete(&id);
+        }
+        st
+    }
+
+    /// The emulated time.
+    pub(crate) fn now(&self) -> chrono::DateTime<chrono::Utc> {
+        chrono::Utc::now() + chrono::Duration::milliseconds(self.inner.clock_skew_ms.load(Ordering::Relaxed))
+    }
+
+    /// Note how far ahead of the wall clock a request's time is.
+    fn observe(&self, ctx: &RequestContext) {
+        let skew = (ctx.received_at - chrono::Utc::now()).num_milliseconds();
+        self.inner.clock_skew_ms.store(skew.max(0), Ordering::Relaxed);
     }
 
     pub(crate) fn storage(&self) -> &Storage {
@@ -119,6 +149,7 @@ impl Service for Efs {
     }
 
     async fn handle(&self, ctx: RequestContext, request: HttpRequest) -> HttpResponse {
+        self.observe(&ctx);
         if request.uri().path().starts_with(mount::PREFIX) {
             return mount::serve(self, &ctx, &request);
         }
@@ -135,6 +166,7 @@ impl Service for Efs {
         operation: &str,
         input: serde_json::Value,
     ) -> Result<serde_json::Value, ServiceError> {
+        self.observe(&ctx);
         generated::invoke(self, &ctx, operation, input).await
     }
 
@@ -149,12 +181,12 @@ impl Service for Efs {
                 self.storage().create(id);
             }
         }
-        *self.lock() = state;
+        *self.inner.state.lock().expect("EFS state lock poisoned") = state;
         Ok(())
     }
 
     fn reset_state(&self) {
-        let old = std::mem::take(&mut *self.lock());
+        let old = std::mem::take(&mut *self.inner.state.lock().expect("EFS state lock poisoned"));
         for r in old.regions.values() {
             for id in r.file_systems.keys() {
                 self.storage().delete(id);

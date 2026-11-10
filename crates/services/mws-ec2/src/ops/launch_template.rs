@@ -10,8 +10,8 @@ use serde_json::Value;
 use crate::generated::types as t;
 use crate::state::{LaunchTemplateRecord, RegionState};
 use crate::util::{
-    arn, authorize, b, err, invalid_parameter, new_id, paginate, request_tag_context, resource_tag_context, s,
-    some_tags, tags_for, Filters,
+    arn, b, err, invalid_parameter, new_id, paginate, request_tag_context, resource_tag_context, s, some_tags,
+    tags_for, Filters,
 };
 use crate::{account_of, Ec2};
 
@@ -247,7 +247,7 @@ impl Ec2 {
         check_name(&input.launch_template_name)?;
         let tags = tags_for(&input.tag_specifications, "launch-template", &["launch-template"])?;
         validate_data(&input.launch_template_data)?;
-        authorize(
+        self.authorize_known(
             ctx,
             "CreateLaunchTemplate",
             &[(arn(ctx, &account, "launch-template/*"), request_tag_context(&tags))],
@@ -262,7 +262,9 @@ impl Ec2 {
         }
         let now = ctx.received_at;
         let created_by = ctx.caller.arn.clone();
+        let fp = crate::idempotency::fingerprint(&input);
         self.with_region(ctx, |r| {
+            crate::idempotency::replay(r, "CreateLaunchTemplate", input.client_token.as_deref(), &fp, |_| true)?;
             if let Some(token) = input.client_token.as_deref().filter(|t| !t.is_empty()) {
                 if let Some(existing) = r.launch_templates.values().find(|l| l.client_token.as_deref() == Some(token)) {
                     return Ok(t::CreateLaunchTemplateResult {
@@ -309,7 +311,8 @@ impl Ec2 {
                 version_tokens: Default::default(),
             };
             rec.versions.insert(1, version);
-            r.launch_templates.insert(id, rec);
+            r.launch_templates.insert(id.clone(), rec);
+            crate::idempotency::remember(r, "CreateLaunchTemplate", input.client_token.as_deref(), &fp, &id);
             Ok(t::CreateLaunchTemplateResult { launch_template: Some(template), warning: None })
         })
     }
@@ -324,7 +327,7 @@ impl Ec2 {
     ) -> Result<LaunchTemplateRecord, ServiceError> {
         let rec = self.with_region(ctx, |r| find(r, id, name).map(|l| l.clone()))?;
         let lt_id = rec.template.launch_template_id.clone().unwrap_or_default();
-        authorize(
+        self.authorize_known(
             ctx,
             action,
             &[(template_arn(ctx, &account_of(ctx), &lt_id), resource_tag_context(rec.template.tags.as_ref()))],
@@ -349,7 +352,9 @@ impl Ec2 {
         let lt_id = rec.template.launch_template_id.clone().unwrap_or_default();
         let now = ctx.received_at;
         let created_by = ctx.caller.arn.clone();
+        let fp = crate::idempotency::fingerprint(&input);
         self.with_region(ctx, |r| {
+            crate::idempotency::replay(r, "CreateLaunchTemplateVersion", input.client_token.as_deref(), &fp, |_| true)?;
             let rec = r.launch_templates.get_mut(&lt_id).ok_or_else(|| not_found_by_id(&lt_id))?;
             if let Some(token) = input.client_token.as_deref().filter(|t| !t.is_empty()) {
                 if let Some(v) = rec.version_tokens.get(token).and_then(|n| rec.versions.get(n)) {
@@ -389,6 +394,7 @@ impl Ec2 {
             if let Some(token) = input.client_token.clone().filter(|t| !t.is_empty()) {
                 rec.version_tokens.insert(token, n);
             }
+            crate::idempotency::remember(r, "CreateLaunchTemplateVersion", input.client_token.as_deref(), &fp, &lt_id);
             Ok(t::CreateLaunchTemplateVersionResult { launch_template_version: Some(v), warning: None })
         })
     }
@@ -398,7 +404,7 @@ impl Ec2 {
         ctx: &RequestContext,
         input: t::DescribeLaunchTemplatesRequest,
     ) -> Result<t::DescribeLaunchTemplatesResult, ServiceError> {
-        authorize(ctx, "DescribeLaunchTemplates", &[("*".into(), ConditionContext::new())], input.dry_run)?;
+        self.authorize_known(ctx, "DescribeLaunchTemplates", &[("*".into(), ConditionContext::new())], input.dry_run)?;
         let ids = input.launch_template_ids.clone().unwrap_or_default();
         let names = input.launch_template_names.clone().unwrap_or_default();
         if !ids.is_empty() && !names.is_empty() {
@@ -453,7 +459,12 @@ impl Ec2 {
         ctx: &RequestContext,
         input: t::DescribeLaunchTemplateVersionsRequest,
     ) -> Result<t::DescribeLaunchTemplateVersionsResult, ServiceError> {
-        authorize(ctx, "DescribeLaunchTemplateVersions", &[("*".into(), ConditionContext::new())], input.dry_run)?;
+        self.authorize_known(
+            ctx,
+            "DescribeLaunchTemplateVersions",
+            &[("*".into(), ConditionContext::new())],
+            input.dry_run,
+        )?;
         let filters = Filters::new(&input.filters);
         let versions = input.versions.clone().unwrap_or_default();
         let named = input.launch_template_id.is_some() || input.launch_template_name.is_some();
@@ -669,7 +680,7 @@ impl Ec2 {
                 })
             })
             .ok_or_else(|| crate::util::Kind::Instance.not_found(&input.instance_id))?;
-        authorize(
+        self.authorize_known(
             ctx,
             "GetLaunchTemplateData",
             &[(

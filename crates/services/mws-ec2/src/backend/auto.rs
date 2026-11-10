@@ -214,6 +214,10 @@ impl ComputeBackend for AutoBackend {
     async fn set_volumes(&self, handle: &str, volumes: &[VolumeMount]) -> Result<Option<String>, BackendError> {
         self.owner(handle).set_volumes(handle, volumes).await
     }
+
+    async fn usage(&self, handle: &str) -> Result<Option<super::Usage>, BackendError> {
+        self.owner(handle).usage(handle).await
+    }
 }
 
 #[cfg(test)]

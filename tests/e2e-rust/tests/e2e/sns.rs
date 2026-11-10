@@ -33,6 +33,19 @@ async fn get_json(mws: &Mws, path: &str) -> serde_json::Value {
     serde_json::from_slice(&body).unwrap()
 }
 
+/// Polls an outbox page until `list` holds `n` entries: SNS delivers
+/// after `Publish` returns, so a reader must wait, as with real AWS.
+async fn wait_json(mws: &Mws, path: &str, list: &str, n: usize) -> serde_json::Value {
+    for _ in 0..100 {
+        let v = get_json(mws, path).await;
+        if v[list].as_array().is_some_and(|a| a.len() >= n) {
+            return v;
+        }
+        tokio::time::sleep(Duration::from_millis(100)).await;
+    }
+    get_json(mws, path).await
+}
+
 #[tokio::test]
 async fn topic_lifecycle_attributes_and_tags() {
     let mws = Mws::start().await;
@@ -297,7 +310,7 @@ async fn subscriptions_confirmations_and_attributes() {
         .send()
         .await
         .unwrap();
-    let mails = get_json(&mws, "/_aws/sns/email-messages?email=bot@example.com").await;
+    let mails = wait_json(&mws, "/_aws/sns/email-messages?email=bot@example.com", "emailMessages", 2).await;
     let mails = mails["emailMessages"].as_array().unwrap();
     assert_eq!(mails.len(), 2, "confirmation + one notification: {mails:?}");
     let body: serde_json::Value = serde_json::from_str(mails[1]["body"].as_str().unwrap()).unwrap();
@@ -646,6 +659,7 @@ async fn lambda_subscriptions_get_the_sns_event_when_the_function_policy_allows(
         .send()
         .await
         .unwrap();
+    mws_e2e::function_active(&lambda, "recorder").await;
     let fn_arn = f.function_arn().unwrap().to_string();
     let sns = Client::new(&cfg);
     let topic = sns.create_topic().name("to-lambda").send().await.unwrap().topic_arn().unwrap().to_string();
@@ -655,6 +669,8 @@ async fn lambda_subscriptions_get_the_sns_event_when_the_function_policy_allows(
 
     // Without a function policy SNS may not invoke the function.
     sns.publish().topic_arn(&topic).message("dropped").send().await.unwrap();
+    // Delivery is asynchronous: let SNS try (and fail) before the policy changes.
+    tokio::time::sleep(Duration::from_millis(500)).await;
     lambda
         .add_permission()
         .function_name("recorder")
@@ -930,7 +946,7 @@ async fn s3_event_notifications_publish_to_topics_the_topic_policy_opens() {
 
     s3.put_object().bucket("uploads").key("img/cat.png").body(b"meow".to_vec().into()).send().await.unwrap();
     s3.put_object().bucket("uploads").key("docs/readme.txt").body(b"skip".to_vec().into()).send().await.unwrap();
-    let sms = get_json(&mws, "/_aws/sns/sms-messages?phoneNumber=%2B15555550150").await;
+    let sms = wait_json(&mws, "/_aws/sns/sms-messages?phoneNumber=%2B15555550150", "smsMessages", 2).await;
     let sms = sms["smsMessages"].as_array().unwrap();
     assert_eq!(sms.len(), 2, "test event + one object event: {sms:?}");
     let test: serde_json::Value = serde_json::from_str(sms[0]["message"].as_str().unwrap()).unwrap();
@@ -989,6 +1005,7 @@ async fn s3_event_notifications_invoke_functions() {
         .send()
         .await
         .unwrap();
+    mws_e2e::function_active(&lambda, "on-upload").await;
     let fn_arn = f.function_arn().unwrap().to_string();
     let s3 = Mws::s3(&cfg);
     s3.create_bucket().bucket("inbox").send().await.unwrap();
