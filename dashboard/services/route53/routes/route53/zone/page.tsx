@@ -1,18 +1,17 @@
 import { GetHostedZoneCommand, ListResourceRecordSetsCommand, type ResourceRecordSet } from "@aws-sdk/client-route-53";
 import { load } from "@mws-dashboard/aws";
-import { ActionForm, AwsIcon, Curated, Empty, ErrorNotice, Field, Page, Pill, Sheet, Specs } from "@mws-dashboard/ui";
+import { ActionForm, AwsIcon, Curated, Empty, ErrorNotice, Page, Pill, Sheet, Specs } from "@mws-dashboard/ui";
 import { Hash, Lock, Pencil, Plus, Server, Trash2 } from "lucide-react";
 import type { Metadata } from "next";
 import Link from "next/link";
 
 import { ICONS, route53 } from "../../../lib/clients";
+import { RecordFields } from "../../../lib/record-fields";
 import { deleteRecord, deleteZone, saveRecord } from "../actions";
 
 export const metadata: Metadata = { title: "Hosted zone" };
 
 type Props = { searchParams: Promise<{ id?: string }> };
-
-const TYPES = ["A", "AAAA", "CNAME", "MX", "TXT", "NS", "SRV", "CAA", "PTR", "SOA", "DS", "NAPTR", "SPF", "HTTPS", "SVCB"];
 
 /** What a record does, so the zone reads by purpose: where traffic goes,
  * where mail goes, and the zone's own plumbing. */
@@ -24,32 +23,22 @@ function purpose(r: ResourceRecordSet) {
   return "traffic";
 }
 
-function RecordForm({ zone, record, domain }: { zone: string; record?: ResourceRecordSet; domain: string }) {
+function RecordForm({ zone, record, domain, names }: { zone: string; record?: ResourceRecordSet; domain: string; names: string[] }) {
   const testId = record ? `edit-record-${record.Name}-${record.Type}` : "create-record";
   return (
     <ActionForm action={saveRecord.bind(null, zone)} submit={record ? "Save record" : "Create record"} testId={testId}>
-      <div className="form-row">
-        <Field label="Record name">
-          <input name="name" required defaultValue={record?.Name?.replace(/\.$/, "") ?? domain} />
-        </Field>
-        <Field label="Type">
-          <select name="type" defaultValue={record?.Type ?? "A"}>
-            {TYPES.map((t) => (
-              <option key={t}>{t}</option>
-            ))}
-          </select>
-        </Field>
-      </div>
-      <textarea name="values" rows={3} aria-label="Value" placeholder="192.0.2.1" className="code-editor" defaultValue={record?.ResourceRecords?.map((v) => v.Value).join("\n")} />
-      <div className="form-row">
-        <Field label="TTL (seconds)">
-          <input name="ttl" type="number" min={0} defaultValue={record?.TTL ?? 300} />
-        </Field>
-        <Field label="Alias target">
-          <input name="alias" placeholder="my-alb-123.us-east-1.elb.amazonaws.com" defaultValue={record?.AliasTarget?.DNSName} />
-        </Field>
-      </div>
-      <input type="hidden" name="aliasZone" defaultValue={record?.AliasTarget?.HostedZoneId} />
+      <RecordFields
+        zone={domain}
+        names={names}
+        defaults={{
+          name: record?.Name?.replace(/\.$/, "").replace(/\\052/g, "*") ?? domain,
+          type: record?.Type ?? "A",
+          values: record?.ResourceRecords?.map((v) => v.Value).join("\n") ?? "",
+          ttl: record?.TTL ?? 300,
+          alias: record?.AliasTarget?.DNSName,
+          aliasZone: record?.AliasTarget?.HostedZoneId,
+        }}
+      />
     </ActionForm>
   );
 }
@@ -74,6 +63,7 @@ export default async function HostedZone({ searchParams }: Props) {
   }
   const { zone, records } = data.value;
   const domain = zone.HostedZone!.Name!.replace(/\.$/, "");
+  const names = [...new Set(records.filter((r) => !r.AliasTarget && r.Type !== "NS" && r.Type !== "SOA").map((r) => r.Name!.replace(/\.$/, "")))];
   const sections = [
     { id: "traffic", title: "Traffic", items: records.filter((r) => purpose(r) === "traffic") },
     { id: "mail", title: "Mail", items: records.filter((r) => purpose(r) === "mail") },
@@ -89,7 +79,7 @@ export default async function HostedZone({ searchParams }: Props) {
       actions={
         <>
           <Sheet title="Create record" label="Create record" icon={<Plus size={16} />} testId="create-record">
-            <RecordForm zone={id} domain={domain} />
+            <RecordForm zone={id} domain={domain} names={names} />
           </Sheet>
           <ActionForm action={deleteZone.bind(null, id)} submit="Delete hosted zone" icon={<Trash2 size={16} />} tone="danger" confirm={`Delete ${domain}?`} testId="delete-zone" />
         </>
@@ -126,7 +116,7 @@ export default async function HostedZone({ searchParams }: Props) {
             actions: locked ? undefined : (
               <>
                 <Sheet title="Edit record" label={`Edit ${name} ${r.Type}`} icon={<Pencil size={15} />} testId={`edit-record-${r.Name}-${r.Type}`}>
-                  <RecordForm zone={id} record={r} domain={domain} />
+                  <RecordForm zone={id} record={r} domain={domain} names={names} />
                 </Sheet>
                 <ActionForm action={deleteRecord.bind(null, id, r)} submit={`Delete ${name} ${r.Type}`} icon={<Trash2 size={15} />} tone="danger" confirm={`Delete ${name} ${r.Type}?`} />
               </>
