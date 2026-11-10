@@ -1,4 +1,5 @@
 import { CreateClusterCommand, CreateServiceCommand, ECSClient, RegisterTaskDefinitionCommand } from "@aws-sdk/client-ecs";
+import { DescribeSubnetsCommand, EC2Client } from "@aws-sdk/client-ec2";
 import { expect, test, type Page } from "@playwright/test";
 
 import { row, sdk, submit, unique } from "./helpers";
@@ -77,7 +78,10 @@ test("ECS validation: taken cluster and service names suggest the next free one"
     new RegisterTaskDefinitionCommand({ family, requiresCompatibilities: ["FARGATE"], networkMode: "awsvpc", cpu: "256", memory: "512", containerDefinitions: [{ name: "web", image: "nginx:latest" }] }),
   );
   sheet = await openSheet(page, `/ecs/cluster?name=${cluster}`, "create-service");
-  await ecs.send(new CreateServiceCommand({ cluster, serviceName: "web", taskDefinition: `${family}:1`, desiredCount: 0, launchType: "EC2" }));
+  const subnets = (await new EC2Client(sdk).send(new DescribeSubnetsCommand({ Filters: [{ Name: "default-for-az", Values: ["true"] }] }))).Subnets ?? [];
+  await ecs.send(
+    new CreateServiceCommand({ cluster, serviceName: "web", taskDefinition: `${family}:1`, desiredCount: 0, launchType: "FARGATE", networkConfiguration: { awsvpcConfiguration: { subnets: [subnets[0].SubnetId!] } } }),
+  );
   await sheet.input("name").fill("web");
   await sheet.input("taskDefinition").selectOption(`${family}:1`);
   await sheet.form.locator('button[type="submit"]').click();
