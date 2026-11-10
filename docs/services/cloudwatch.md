@@ -37,7 +37,7 @@ All 55 operations are generated from the AWS model and implemented. MWS answers 
 | Dashboards | ✅ | With body validation; `GetMetricWidgetImage` draws a real PNG graph. |
 | Contributor Insights | ✅ | Rules that analyse CloudWatch Logs events for `GetInsightRuleReport`; managed rules. |
 | Anomaly detectors | 🟡 | `ANOMALY_DETECTION_BAND` trains a model on up to two weeks of history before the queried window (honouring `ExcludedTimeRanges` and `MetricTimezone`), with hourly, daily or weekly seasonality when the history covers two cycles; it needs 10 datapoints of history, otherwise the band is empty. Bands create the metric's detector when none exists. `StateValue` is `PENDING_TRAINING`, `TRAINED_INSUFFICIENT_DATA` (under a day of history) or `TRAINED`. The model is a deterministic mean/standard-deviation model, not AWS's; `AdaptationSpeed` and `OutlierFilteringStrength` are ignored. |
-| Metric streams | 🟡 | `json` streams deliver each minute's records to Firehose as their role; OpenTelemetry formats deliver nothing. |
+| Metric streams | 🟡 | `PutMetricStream` needs `iam:PassRole` on the stream's role. `json` streams deliver each minute's records to Firehose as their role; OpenTelemetry formats deliver nothing. |
 | Tags and settings | ✅ | Tag condition keys, OTel enrichment, resource metrics configurations and the default dataset's KMS key. |
 | Cross-account observability | ❌ | Not yet. |
 

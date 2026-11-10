@@ -10,7 +10,8 @@ use std::time::Duration;
 
 use crate::Logs;
 
-/// How long a query stays `Scheduled`, then `Running`.
+/// How long a query stays `Scheduled`, then `Running`. These waits (and
+/// the export and import ones) are switched off by `MWS_ASYNC_DELAY_MS=0`.
 const QUERY_SCHEDULED: Duration = Duration::from_millis(500);
 const QUERY_RUNNING: Duration = Duration::from_millis(3000);
 /// Logs Insights stops queries after 60 minutes.
@@ -36,9 +37,9 @@ impl Logs {
     pub(crate) fn spawn_query(&self, account: String, region: String, id: String) {
         let me = self.clone();
         tokio::spawn(async move {
-            tokio::time::sleep(QUERY_SCHEDULED).await;
+            tokio::time::sleep(mws_core::settle::window(QUERY_SCHEDULED)).await;
             me.advance_query(&account, &region, &id, false);
-            tokio::time::sleep(QUERY_RUNNING).await;
+            tokio::time::sleep(mws_core::settle::window(QUERY_RUNNING)).await;
             me.advance_query(&account, &region, &id, true);
         });
     }
@@ -78,11 +79,11 @@ impl Logs {
     pub(crate) fn spawn_export(&self, account: String, region: String, id: String) {
         let me = self.clone();
         tokio::spawn(async move {
-            tokio::time::sleep(EXPORT_PENDING).await;
+            tokio::time::sleep(mws_core::settle::window(EXPORT_PENDING)).await;
             if !me.start_export(&account, &region, &id) {
                 return;
             }
-            tokio::time::sleep(EXPORT_RUNNING).await;
+            tokio::time::sleep(mws_core::settle::window(EXPORT_RUNNING)).await;
             me.finish_export(&account, &region, &id);
         });
     }
@@ -90,7 +91,7 @@ impl Logs {
     pub(crate) fn spawn_import(&self, account: String, region: String, id: String) {
         let me = self.clone();
         tokio::spawn(async move {
-            tokio::time::sleep(IMPORT_DELAY).await;
+            tokio::time::sleep(mws_core::settle::window(IMPORT_DELAY)).await;
             me.run_import(&account, &region, &id);
         });
     }
