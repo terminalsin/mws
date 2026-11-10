@@ -159,6 +159,7 @@ export function SideNav({ zone, groups }: { zone: ZoneId; groups: NavGroup[] }) 
 /** The top bar's Services menu: every service by category, as in AWS. */
 export function ServicesMenu({ groups }: { groups: NavGroup[] }) {
   const [open, setOpen] = useState(false);
+  const [opened, setOpened] = useState(false);
   const panel = useRef<HTMLDivElement>(null);
   useEffect(() => {
     if (!open) return;
@@ -174,11 +175,21 @@ export function ServicesMenu({ groups }: { groups: NavGroup[] }) {
   }, [open]);
   return (
     <div className="services-menu" ref={panel}>
-      <button type="button" className="topbar-button" aria-label="Services" aria-expanded={open} onClick={() => setOpen(!open)}>
+      <button
+        type="button"
+        className="topbar-button"
+        aria-label="Services"
+        aria-expanded={open}
+        onClick={() => {
+          setOpened(true);
+          setOpen(!open);
+        }}
+      >
         <LayoutGrid size={16} aria-hidden />
       </button>
-      {open && (
-        <div className="services-panel" role="menu">
+      {/* Kept mounted after the first opening, so closing can animate. */}
+      {(open || opened) && (
+        <div className="services-panel" role="menu" data-open={open} inert={!open}>
           {groups.map((g) => (
             <div key={g.id} className="services-group">
               <div className="nav-title">{g.name}</div>
@@ -740,7 +751,6 @@ export function CommandPalette() {
                     role="option"
                     aria-selected={index === cursor}
                     className={index === cursor ? "palette-hit active" : "palette-hit"}
-                    style={{ ["--i" as string]: Math.min(index, 12) }}
                     onMouseEnter={() => setCursor(index)}
                   >
                     <Icon icon={h.icon} size={22} />

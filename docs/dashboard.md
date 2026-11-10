@@ -126,11 +126,18 @@ components are classes composed with `@apply`. Each zone has a
   navigation runs a progress bar across the top, and toasts enter, wait
   (paused on hover) and leave. Every page has a `loading.tsx` that renders a
   `PageSkeleton` shaped like it (list, resource or home), so a click shows the
-  next page's outline at once. Motion uses Carbon's curves and durations:
-  pages and rows rise in, sheets and the palette rise and sink, charts draw,
-  transitional statuses ("creating", "pending") breathe, and moving between
-  zones cross-fades with the top bar and sidebar held still (cross-document
-  view transitions). `prefers-reduced-motion` turns all of it off.
+  next page's outline at once.
+- **Motion only with a purpose** (Apple's rule). Content never animates in:
+  pages, rows and charts appear as they are, and a skeleton is replaced in
+  place, so a load is one transition, not a skeleton followed by staggered
+  fades. Sheets, the search palette and the Services menu open at once and
+  animate as they close. Controls morph between states (the submit button's
+  spinner to a check, a deleting row fading back, a failed submit shaking).
+  Motion that carries information stays: the progress bar, skeleton shimmer,
+  a breathing dot on states still changing ("creating", "pending"), numbers
+  counting to a new value, a toast's remaining time. Moving between zones
+  keeps the top bar and sidebar still (cross-document view transitions).
+  `prefers-reduced-motion` turns all of it off.
 
 ## Curation
 

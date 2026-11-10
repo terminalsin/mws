@@ -116,7 +116,7 @@ test("state export downloads a JSON document", async ({ request }) => {
   expect(typeof (await response.json())).toBe("object");
 });
 
-test("feedback: a sheet's success becomes a toast, rows rise in, and / opens search", async ({ page }) => {
+test("feedback: a sheet's success becomes a toast, menus close with an exit, and / opens search", async ({ page }) => {
   const queue = unique("dash-toast");
   await page.goto("/messaging/sqs");
   await submit(page, "create-queue", { name: queue });
@@ -130,12 +130,26 @@ test("feedback: a sheet's success becomes a toast, rows rise in, and / opens sea
   await expect(page.getByRole("heading", { level: 1, name: queue })).toBeVisible();
   await expect(page.locator(".route-progress")).toHaveAttribute("data-state", "idle");
 
+  const services = page.getByRole("button", { name: "Services" });
+  await services.click();
+  await expect(page.getByRole("menu")).toBeVisible();
+  await page.keyboard.press("Escape");
+  await expect(page.locator(".services-panel")).toHaveAttribute("data-open", "false");
+  await expect(page.getByRole("menu")).toBeHidden();
+
   await page.locator("body").press("/");
   const palette = page.getByRole("dialog", { name: "Search resources" });
   await expect(palette).toBeVisible();
   await expect(palette).not.toHaveAttribute("data-state", /loading|debouncing/);
   await palette.locator("input").press("Escape");
   await expect(palette).toBeHidden();
+});
+
+test("content appears without entry animations", async ({ page }) => {
+  await page.goto("/messaging/sqs");
+  await expect(page.getByRole("heading", { level: 1, name: "Queues" })).toBeVisible();
+  const names = await page.locator(".content > :not(.page-skeleton), li.row").evaluateAll((els) => els.map((e) => getComputedStyle(e).animationName));
+  expect(names.filter((n) => n !== "none")).toEqual([]);
 });
 
 test("motion respects reduced motion", async ({ page }) => {

@@ -788,6 +788,7 @@
   }
   .result.pending {
     @apply h-5 text-helper;
+    animation: appear 0s linear 150ms both;
   }
 
   /* Modals and the command palette. */
@@ -1185,8 +1186,9 @@
     @apply pointer-events-none;
   }
   .page-skeleton {
-    /* Appear only when loading takes long enough to notice. */
-    animation: fade-in var(--moderate-02) var(--ease-entrance) 120ms both;
+    /* Shown only when loading takes long enough to notice, and shown at
+       once, not faded: the page's content then replaces it in place. */
+    animation: appear 0s linear 120ms both;
   }
 
   /* The navigation progress bar, across the top of the frame. */
@@ -1234,45 +1236,22 @@
     background-position: -50% 0;
   }
 }
+/* Present after a delay, without a fade (for loading indicators that only
+   matter when a wait is long). */
+@keyframes appear {
+  from {
+    visibility: hidden;
+  }
+  to {
+    visibility: visible;
+  }
+}
 @keyframes fade-in {
   from {
     opacity: 0;
   }
   to {
     opacity: 1;
-  }
-}
-@keyframes rise {
-  from {
-    opacity: 0;
-    transform: translateY(6px);
-  }
-  to {
-    opacity: 1;
-    transform: none;
-  }
-}
-@keyframes drop {
-  from {
-    opacity: 0;
-    transform: translateY(-6px);
-  }
-  to {
-    opacity: 1;
-    transform: none;
-  }
-}
-@keyframes pop {
-  0% {
-    transform: scale(0.4);
-    opacity: 0;
-  }
-  60% {
-    transform: scale(1.18);
-    opacity: 1;
-  }
-  100% {
-    transform: scale(1);
   }
 }
 @keyframes shake {
@@ -1294,23 +1273,9 @@
   80%,
   100% {
     opacity: 0.25;
-    transform: translateY(0);
   }
   40% {
     opacity: 1;
-    transform: translateY(-3px);
-  }
-}
-@keyframes pulse-ring {
-  0% {
-    box-shadow: 0 0 0 0 currentColor;
-    opacity: 1;
-  }
-  70% {
-    box-shadow: 0 0 0 5px transparent;
-  }
-  100% {
-    box-shadow: 0 0 0 0 transparent;
   }
 }
 @keyframes breathe {
@@ -1341,54 +1306,42 @@
     transform: scaleX(0);
   }
 }
-@keyframes draw {
-  from {
-    stroke-dashoffset: 1;
-  }
-  to {
-    stroke-dashoffset: 0;
-  }
-}
-@keyframes grow-y {
-  from {
-    transform: scaleY(0);
-  }
-  to {
-    transform: scaleY(1);
-  }
-}
-@keyframes grow-x {
-  from {
-    transform: scaleX(0);
-  }
-  to {
-    transform: scaleX(1);
-  }
-}
-@keyframes float-in {
+@keyframes morph-in {
   from {
     opacity: 0;
-    transform: translateY(8px) scale(0.92);
+    transform: scale(0.6);
   }
   to {
     opacity: 1;
     transform: none;
   }
 }
-@keyframes bar-in {
-  from {
-    transform: scaleY(0);
-  }
+@keyframes toast-out {
   to {
-    transform: scaleY(1);
+    opacity: 0;
+    transform: translateX(24px);
+  }
+}
+@keyframes fade-out {
+  to {
+    opacity: 0;
   }
 }
 
-/* Motion. Everything here is off for people who ask for reduced motion
-   (the block below this one), and nothing waits on an animation to be
-   usable: entrances are short and never hide content from the start. */
+/* Motion, after Apple's rule that every animation has a purpose:
+   - Content does not animate in. Pages, rows, tiles and charts appear as they
+     are; where a page has a skeleton, the content simply takes its place,
+     so a load has one transition (skeleton to content), not two.
+   - Things that open, open at once (you asked for them), and animate as they
+     leave, so you see where they went.
+   - A control that changes state morphs between states (colors, the submit
+     button's spinner to check, a deleting row fading back) rather than
+     snapping, and failures shake.
+   - Motion that carries information stays: the progress bar, skeleton
+     shimmer, a breathing dot on states that are still changing, numbers
+     counting to their new value, a toast's remaining time. */
 @layer components {
-  /* Interactive surfaces ease between states instead of snapping. */
+  /* State changes ease instead of snapping. */
   .nav-link,
   .row-main,
   .tile,
@@ -1412,88 +1365,37 @@
       transform var(--fast-02) var(--ease-standard),
       opacity var(--fast-02) var(--ease-standard);
   }
+  /* Pressing gives way under the pointer. */
   .button:active:not(:disabled),
   .icon-button:active:not(:disabled),
   .topbar-button:active,
   .auto-toggle button:active:not(:disabled) {
     transform: scale(0.96);
   }
-  a.tile:hover .aws-icon,
-  a.metric:hover .metric-label svg,
-  .icon-stack:hover .aws-icon {
-    transform: translateY(-1px) scale(1.06);
-  }
-  .tile .aws-icon,
-  .metric-label svg,
-  .row-icon .aws-icon {
-    transition: transform var(--moderate-01) var(--ease-expressive);
-  }
-  a.row-main:hover .row-chevron {
-    transform: translateX(2px);
-    @apply text-primary;
-  }
+  /* A link row's chevron leans toward where it goes. */
   .row-chevron {
     transition:
       transform var(--moderate-01) var(--ease-expressive),
       color var(--fast-02) var(--ease-standard);
   }
-  .nav-link.active::before {
-    animation: grow-y var(--moderate-02) var(--ease-expressive) both;
-  }
-  .segment.active {
-    animation: fade-in var(--moderate-01) var(--ease-entrance) both;
+  a.row-main:hover .row-chevron {
+    transform: translateX(2px);
+    @apply text-primary;
   }
 
-  /* Pages arrive: the title, then each block, a beat apart. */
-  .content > *:not(.page-skeleton) {
-    animation: rise var(--moderate-02) var(--ease-entrance) both;
+  /* Submissions: the button morphs spinner → check, failure shakes. */
+  .button[data-state="succeeded"],
+  .icon-button[data-state="succeeded"] {
+    @apply bg-[var(--good)] text-white;
   }
-  .content > :nth-child(2) {
-    animation-delay: 30ms;
+  .pop {
+    animation: morph-in var(--moderate-01) var(--ease-entrance) both;
   }
-  .content > :nth-child(3) {
-    animation-delay: 60ms;
+  form[data-state="failed"] > .form-actions {
+    animation: shake 360ms var(--ease-standard);
   }
-  .content > :nth-child(4) {
-    animation-delay: 90ms;
-  }
-  .content > :nth-child(n + 5) {
-    animation-delay: 120ms;
-  }
-  /* Rows cascade in (the first sixteen; the rest are below the fold), and
-     a row added by an action rises into place on its own. */
-  .row[style*="--i"],
-  .palette-hit[style*="--i"],
-  .skeleton-tile {
-    animation: rise var(--moderate-02) var(--ease-entrance) both;
-    animation-delay: calc(var(--i, 0) * 18ms);
-  }
-  .tiles > .tile,
-  .metrics > .metric,
-  .specs > li {
-    animation: rise var(--moderate-02) var(--ease-entrance) both;
-  }
-  .tiles > .tile:nth-child(2),
-  .metrics > .metric:nth-child(2),
-  .specs > li:nth-child(2) {
-    animation-delay: 25ms;
-  }
-  .tiles > .tile:nth-child(3),
-  .metrics > .metric:nth-child(3),
-  .specs > li:nth-child(3) {
-    animation-delay: 50ms;
-  }
-  .tiles > .tile:nth-child(4),
-  .metrics > .metric:nth-child(4),
-  .specs > li:nth-child(4) {
-    animation-delay: 75ms;
-  }
-  .tiles > .tile:nth-child(n + 5),
-  .metrics > .metric:nth-child(n + 5),
-  .specs > li:nth-child(n + 5) {
-    animation-delay: 100ms;
-  }
-  /* A row being deleted fades back while its action runs. */
+  /* A row being deleted fades back while its action runs, so its removal is
+     the end of a motion that already started. */
   .row:has(form[data-tone="danger"][data-state="pending"]) {
     opacity: 0.45;
     transition: opacity var(--moderate-02) var(--ease-standard);
@@ -1505,165 +1407,64 @@
     opacity: 0.6;
     transition: opacity var(--moderate-01) var(--ease-standard);
   }
-  .empty > .aws-icon,
-  .error-view > svg {
-    animation: float-in var(--slow-01) var(--ease-spring) both;
-  }
-
-  /* Submissions: a check pops in on success, the button shakes on failure,
-     the outcome slides in under the form. */
-  .pop {
-    animation: pop var(--slow-01) var(--ease-spring) both;
-  }
-  form[data-state="failed"] > .form-actions {
-    animation: shake 360ms var(--ease-standard);
-  }
-  .button[data-state="succeeded"],
-  .icon-button[data-state="succeeded"] {
-    @apply bg-[var(--good)] text-white;
-  }
-  .result:not(.pending) {
-    animation: drop var(--moderate-02) var(--ease-entrance) both;
-  }
-  .result.pending {
-    animation: fade-in var(--moderate-01) linear 150ms both;
-  }
-
-  /* Status: transitional states breathe, and the health light pulses. */
-  .status[data-live] .dot {
-    animation: breathe 1.6s var(--ease-standard) infinite;
-  }
-  .health.up {
-    color: #42be65;
-    animation: pulse-ring 2.4s var(--ease-standard) 1s 3;
-  }
   .region[data-state="switching"] select {
     opacity: 0.6;
   }
 
-  /* Modals rise in and sink out; the backdrop fades. */
+  /* States still in motion breathe. */
+  .status[data-live] .dot {
+    animation: breathe 1.6s var(--ease-standard) infinite;
+  }
+
+  /* Dialogs (sheets, search) open at once and sink away when closed; the
+     backdrop clears with them. */
   dialog {
     transition:
-      opacity var(--moderate-02) var(--ease-entrance),
-      transform var(--moderate-02) var(--ease-expressive),
-      overlay var(--moderate-02) allow-discrete,
-      display var(--moderate-02) allow-discrete;
+      opacity var(--moderate-01) var(--ease-exit),
+      transform var(--moderate-01) var(--ease-exit),
+      overlay var(--moderate-01) allow-discrete,
+      display var(--moderate-01) allow-discrete;
     opacity: 0;
-    transform: translateY(12px) scale(0.98);
+    transform: translateY(8px) scale(0.98);
+  }
+  .palette {
+    transform: translateY(-6px) scale(0.98);
   }
   dialog[open] {
     opacity: 1;
     transform: none;
-  }
-  @starting-style {
-    dialog[open] {
-      opacity: 0;
-      transform: translateY(12px) scale(0.98);
-    }
-  }
-  .palette {
-    transform: translateY(-8px) scale(0.98);
-  }
-  @starting-style {
-    .palette[open] {
-      transform: translateY(-8px) scale(0.98);
-    }
+    transition: none;
   }
   dialog::backdrop {
-    transition:
-      background-color var(--moderate-02) var(--ease-standard),
-      backdrop-filter var(--moderate-02) var(--ease-standard),
-      overlay var(--moderate-02) allow-discrete,
-      display var(--moderate-02) allow-discrete;
     background-color: rgba(22, 22, 22, 0);
+    transition:
+      background-color var(--moderate-01) var(--ease-exit),
+      overlay var(--moderate-01) allow-discrete,
+      display var(--moderate-01) allow-discrete;
   }
   dialog[open]::backdrop {
     background-color: rgba(22, 22, 22, 0.5);
-    backdrop-filter: blur(2px);
+    transition: none;
   }
-  @starting-style {
-    dialog[open]::backdrop {
-      background-color: rgba(22, 22, 22, 0);
-      backdrop-filter: blur(0);
-    }
+
+  /* The Services menu likewise: open at once, fade up and away on close. */
+  .services-panel[data-open="false"] {
+    @apply pointer-events-none invisible opacity-0;
+    transform: translateY(-4px);
+    transition:
+      opacity var(--moderate-01) var(--ease-exit),
+      transform var(--moderate-01) var(--ease-exit),
+      visibility 0s linear var(--moderate-01);
   }
-  .services-panel {
-    animation: drop var(--moderate-01) var(--ease-entrance) both;
-  }
-  .file-preview {
-    animation: rise var(--moderate-02) var(--ease-entrance) both;
-  }
-  .toast[data-state="shown"] {
-    animation: toast-in var(--moderate-02) var(--ease-expressive) both;
-  }
+
+  /* Toasts arrive at once and slide off when they leave. */
   .toast[data-state="leaving"] {
     animation: toast-out 200ms var(--ease-exit) both;
   }
-  details[open] > :not(summary) {
-    animation: drop var(--moderate-01) var(--ease-entrance) both;
-  }
-  .terminal-line {
-    animation: fade-in var(--fast-02) linear both;
-  }
-
-  /* Charts draw themselves. */
-  .chart-line {
-    stroke-dasharray: 1;
-    animation: draw var(--slow-02) var(--ease-expressive) both;
-  }
-  .chart-area,
-  .chart-dot {
-    animation: fade-in var(--slow-01) var(--ease-entrance) 300ms both;
-  }
-  .bar {
-    transform-origin: bottom;
-    animation: bar-in var(--slow-01) var(--ease-expressive) both;
-  }
-  .bar-col:nth-child(2) .bar {
-    animation-delay: 40ms;
-  }
-  .bar-col:nth-child(3) .bar {
-    animation-delay: 80ms;
-  }
-  .bar-col:nth-child(4) .bar {
-    animation-delay: 120ms;
-  }
-  .bar-col:nth-child(5) .bar {
-    animation-delay: 160ms;
-  }
-  .bar-col:nth-child(n + 6) .bar {
-    animation-delay: 200ms;
-  }
-  .hbar,
-  .capacity i.on {
-    transform-origin: left;
-    animation: grow-x var(--slow-01) var(--ease-expressive) 80ms both;
-  }
-  .capacity i.on {
-    transform-origin: bottom;
-    animation-name: grow-y;
-  }
 }
 
-@keyframes toast-in {
-  from {
-    opacity: 0;
-    transform: translateY(12px) scale(0.96);
-  }
-  to {
-    opacity: 1;
-    transform: none;
-  }
-}
-@keyframes toast-out {
-  to {
-    opacity: 0;
-    transform: translateX(24px);
-  }
-}
-
-/* Moving between zones is a full page load: cross-fade it, keeping the top
-   bar and sidebar in place, so the console still feels like one app. */
+/* Moving between zones is a full page load: hold the top bar and sidebar
+   still and swap the content beneath them, so the console stays one app. */
 @media (prefers-reduced-motion: no-preference) {
   @view-transition {
     navigation: auto;
@@ -1679,12 +1480,7 @@
   animation: 90ms var(--ease-exit) both fade-out;
 }
 ::view-transition-new(root) {
-  animation: 180ms var(--ease-entrance) 40ms both fade-in;
-}
-@keyframes fade-out {
-  to {
-    opacity: 0;
-  }
+  animation: none;
 }
 
 @media (prefers-reduced-motion: reduce) {

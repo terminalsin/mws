@@ -303,7 +303,7 @@ export function FileExplorer({ target, actions, start = "/" }: { target: ShellTa
       {!entries && !error && (
         <ul className="list skeleton-list" aria-hidden>
           {[46, 30, 58, 38, 50].map((w, i) => (
-            <li key={i} className="row" style={{ ["--i" as string]: i }}>
+            <li key={i} className="row">
               <span className="row-main">
                 <span className="row-icon">
                   <span className="skeleton-block" style={{ width: 18, height: 18 }} />
@@ -318,10 +318,10 @@ export function FileExplorer({ target, actions, start = "/" }: { target: ShellTa
       )}
       {entries && (
         <ul className="list explorer-list" aria-label="Files" aria-busy={busy} data-busy={busy || undefined} key={path}>
-          {entries.map((e, i) => {
+          {entries.map((e) => {
             const Icon = e.type === "dir" ? Folder : e.type === "link" ? FileSymlink : File;
             return (
-              <li key={e.name} className="row" style={{ ["--i" as string]: Math.min(i, 16) }}>
+              <li key={e.name} className="row">
                 <button type="button" className="row-main explorer-item" onClick={() => view(e)}>
                   <span className="row-icon">
                     <Icon size={18} className={e.type === "dir" ? "folder" : undefined} aria-hidden />

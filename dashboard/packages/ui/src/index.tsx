@@ -13,7 +13,7 @@ import {
   SlidersHorizontal,
 } from "lucide-react";
 import Link from "next/link";
-import { Suspense, type CSSProperties, type ReactNode } from "react";
+import { Suspense, type ReactNode } from "react";
 
 import { navigation, iconUrl } from "./catalog";
 import { CommandPalette, CopyButton, CountUp, NavLink, RegionPicker, RouteProgress, ServicesMenu, SideNav, Toasts, type NavGroup } from "./client";
@@ -236,7 +236,7 @@ export function List({ rows, label, empty }: { rows: Row[]; label?: string; empt
   if (rows.length === 0) return empty ? <>{empty}</> : null;
   return (
     <ul className="list" aria-label={label}>
-      {rows.map((r, index) => {
+      {rows.map((r) => {
         const body = (
           <>
             {r.icon && <span className="row-icon">{r.icon}</span>}
@@ -249,7 +249,7 @@ export function List({ rows, label, empty }: { rows: Row[]; label?: string; empt
           </>
         );
         return (
-          <li key={r.key} className="row" style={index < 16 ? ({ "--i": index } as CSSProperties) : undefined}>
+          <li key={r.key} className="row">
             {r.href ? (
               r.external ? (
                 <a className="row-main" href={r.href}>
@@ -598,7 +598,7 @@ export function PageSkeleton({ variant = "list" }: { variant?: "list" | "detail"
       {variant === "home" && (
         <div className="tiles">
           {[0, 1, 2, 3, 4, 5, 6, 7].map((i) => (
-            <span key={i} className="tile skeleton-tile" style={{ "--i": i } as CSSProperties}>
+            <span key={i} className="tile skeleton-tile">
               <Skeleton block width={32} height={32} />
               <Skeleton width="60%" />
               <Skeleton width={40} height={28} />
@@ -609,7 +609,7 @@ export function PageSkeleton({ variant = "list" }: { variant?: "list" | "detail"
       {variant !== "detail" && (
         <ul className="list skeleton-list">
           {rows.slice(0, variant === "home" ? 4 : rows.length).map((w, i) => (
-            <li key={i} className="row" style={{ "--i": i } as CSSProperties}>
+            <li key={i} className="row">
               <span className="row-main">
                 <span className="row-icon">
                   <Skeleton block width={24} height={24} />
