@@ -220,7 +220,7 @@ impl ServiceClient {
         error: &ServiceError,
     ) {
         let now = ctx.received_at;
-        self.learn_clock(now);
+        self.bump_clock(now);
         let d = Delivery {
             id: crate::ids::request_id(),
             service: service.to_string(),
@@ -265,7 +265,7 @@ impl ServiceClient {
     /// emulated clock. When the job fails for good the retrier's
     /// `give_up` is called (at once, or later from the queue).
     pub async fn run_job(&self, ctx: &RequestContext, handler: &str, mut job: Value, policy: RetryPolicy) {
-        self.learn_clock(ctx.received_at);
+        self.bump_clock(ctx.received_at);
         let now = ctx.received_at;
         let mut d = Delivery {
             id: crate::ids::request_id(),
@@ -337,6 +337,14 @@ impl ServiceClient {
     pub(crate) fn learn_clock(&self, emulated_now: DateTime<Utc>) {
         let offset = (emulated_now - Utc::now()).num_milliseconds().max(0);
         self.outbox.clock_offset_ms.store(offset, Ordering::Relaxed);
+    }
+
+    /// [`ServiceClient::learn_clock`] that only moves the clock forward:
+    /// work queued from a context captured before the clock was advanced
+    /// (a long deployment, a slow invoke) must not pull it back.
+    fn bump_clock(&self, emulated_now: DateTime<Utc>) {
+        let offset = (emulated_now - Utc::now()).num_milliseconds().max(0);
+        self.outbox.clock_offset_ms.fetch_max(offset, Ordering::Relaxed);
     }
 
     fn now(&self) -> DateTime<Utc> {

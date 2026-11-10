@@ -220,7 +220,7 @@ impl Provider for Cluster {
             input.insert("tags".into(), Value::Object(tags));
         }
         cx.call("eks", "CreateCluster", Value::Object(input)).await?;
-        let c = wait_cluster(cx, &name).await?;
+        let c = wait_cluster(cx, &name).await.map_err(|e| e.created(&name))?;
         Ok(Created { physical_id: name, attributes: cluster_attributes(&c) })
     }
 
@@ -399,7 +399,7 @@ impl Provider for Nodegroup {
             input.insert("tags".into(), Value::Object(tags));
         }
         cx.call("eks", "CreateNodegroup", Value::Object(input)).await?;
-        let n = wait_nodegroup(cx, &cluster, &name).await?;
+        let n = wait_nodegroup(cx, &cluster, &name).await.map_err(|e| e.created(&format!("{cluster}/{name}")))?;
         Ok(Created { physical_id: format!("{cluster}/{name}"), attributes: nodegroup_attributes(&n) })
     }
 
@@ -510,7 +510,9 @@ impl Provider for Addon {
             input.insert("tags".into(), Value::Object(tags));
         }
         cx.call("eks", "CreateAddon", Value::Object(input)).await?;
-        let a = wait_active(&format!("Addon {name}"), || describe_addon(cx, &cluster, &name)).await?;
+        let a = wait_active(&format!("Addon {name}"), || describe_addon(cx, &cluster, &name))
+            .await
+            .map_err(|e| e.created(&format!("{cluster}|{name}")))?;
         Ok(Created::new(format!("{cluster}|{name}")).attr("Arn", text(&a["addonArn"])))
     }
 
@@ -601,7 +603,9 @@ impl Provider for FargateProfile {
             input.insert("tags".into(), Value::Object(tags));
         }
         cx.call("eks", "CreateFargateProfile", Value::Object(input)).await?;
-        let p = wait_active(&format!("Fargate profile {name}"), || describe_profile(cx, &cluster, &name)).await?;
+        let p = wait_active(&format!("Fargate profile {name}"), || describe_profile(cx, &cluster, &name))
+            .await
+            .map_err(|e| e.created(&format!("{cluster}|{name}")))?;
         Ok(Created::new(format!("{cluster}|{name}")).attr("Arn", text(&p["fargateProfileArn"])))
     }
 

@@ -452,6 +452,18 @@ impl Bedrock {
         if self.scope(ctx, |s| s.kind(kind::CUSTOM_MODEL).any(|r| r.name == input.model_name)) {
             return Err(conflict(format!("A custom model named {} already exists.", input.model_name)));
         }
+        // Bedrock reads the model artifacts from S3 as the role it is
+        // passed (iam:PassRole to bedrock.amazonaws.com).
+        let io = match &input.role_arn {
+            Some(role) => self.job_role(ctx, role, &model_arn, "BedrockCustomModel")?,
+            None => None,
+        };
+        let outcome = match (&io, &input.model_source_config) {
+            (Some(io), Some(types::ModelDataSource::S3DataSource(src))) => {
+                datacheck::model_weights(io.as_ref(), &src.s3_uri).map(|_| ())
+            }
+            _ => Ok(()),
+        };
         let mut doc = Map::new();
         set(&mut doc, "base_model_arn", base.arn(&ctx.partition, &ctx.region));
         set(&mut doc, "base_model_name", base.model_name.clone());
@@ -459,13 +471,21 @@ impl Bedrock {
         if let Some(k) = &input.model_kms_key_arn {
             set(&mut doc, "model_kms_key_arn", k.clone());
         }
+        if let Some(r) = &input.role_arn {
+            set(&mut doc, "role_arn", r.clone());
+        }
         let now = ctx.received_at;
-        self.insert_tagged(
-            ctx,
-            kind::CUSTOM_MODEL,
-            record(&id, &model_arn, &input.model_name, now, "Creating", Some("Active"), doc),
-            &tags,
-        );
+        let rec = match outcome {
+            Ok(()) => record(&id, &model_arn, &input.model_name, now, "Creating", Some("Active"), doc),
+            Err(message) => {
+                let at = now + Duration::milliseconds(JOB_SECS * 1000 / 2);
+                Record {
+                    steps: vec![step(at, "Failed", json!({"failure_message": message}))],
+                    ..record(&id, &model_arn, &input.model_name, now, "Creating", None, doc)
+                }
+            }
+        };
+        self.insert_tagged(ctx, kind::CUSTOM_MODEL, rec, &tags);
         Ok(types::CreateCustomModelResponse { model_arn })
     }
 

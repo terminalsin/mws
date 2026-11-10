@@ -322,7 +322,7 @@ impl Provider for CacheCluster {
         p.insert("CacheClusterId".into(), json!(id));
         let out = cx.call("elasticache", "CreateCacheCluster", Value::Object(pick(&p, CREATE_CACHE_CLUSTER))).await?;
         let id = text(&out["CacheCluster"]["CacheClusterId"]);
-        let c = wait_cluster(cx, &id).await?;
+        let c = wait_cluster(cx, &id).await.map_err(|e| e.created(&id))?;
         Ok(Created { physical_id: id, attributes: cluster_attributes(&c) })
     }
 
@@ -469,18 +469,22 @@ impl Provider for ReplicationGroup {
         let out =
             cx.call("elasticache", "CreateReplicationGroup", Value::Object(pick(&p, CREATE_REPLICATION_GROUP))).await?;
         let id = text(&out["ReplicationGroup"]["ReplicationGroupId"]);
-        wait_group(cx, &id).await?;
-        // The snapshotting cluster can only be named once the group's
-        // clusters exist.
-        if let Some(c) = s(props, "SnapshottingClusterId") {
-            cx.call(
-                "elasticache",
-                "ModifyReplicationGroup",
-                json!({"ReplicationGroupId": id, "SnapshottingClusterId": c, "ApplyImmediately": true}),
-            )
-            .await?;
+        let g = async {
+            wait_group(cx, &id).await?;
+            // The snapshotting cluster can only be named once the group's
+            // clusters exist.
+            if let Some(c) = s(props, "SnapshottingClusterId") {
+                cx.call(
+                    "elasticache",
+                    "ModifyReplicationGroup",
+                    json!({"ReplicationGroupId": id, "SnapshottingClusterId": c, "ApplyImmediately": true}),
+                )
+                .await?;
+            }
+            wait_group(cx, &id).await
         }
-        let g = wait_group(cx, &id).await?;
+        .await
+        .map_err(|e| e.created(&id))?;
         Ok(Created { physical_id: id, attributes: group_attributes(&g) })
     }
 
@@ -764,7 +768,7 @@ impl Provider for ServerlessCache {
         let out =
             cx.call("elasticache", "CreateServerlessCache", Value::Object(pick(&p, CREATE_SERVERLESS_CACHE))).await?;
         let name = text(&out["ServerlessCache"]["ServerlessCacheName"]);
-        let c = wait_serverless(cx, &name).await?;
+        let c = wait_serverless(cx, &name).await.map_err(|e| e.created(&name))?;
         Ok(Created { physical_id: name, attributes: serverless_attributes(&c) })
     }
 
@@ -866,7 +870,7 @@ impl Provider for User {
         }
         let out = cx.call("elasticache", "CreateUser", Value::Object(input)).await?;
         let id = text(&out["UserId"]);
-        let u = wait_user(cx, &id).await?;
+        let u = wait_user(cx, &id).await.map_err(|e| e.created(&id))?;
         Ok(Created::new(&id).attr("Arn", text(&u["ARN"])).attr("Status", text(&u["Status"])))
     }
 
@@ -939,7 +943,7 @@ impl Provider for UserGroup {
         }
         let out = cx.call("elasticache", "CreateUserGroup", input).await?;
         let id = text(&out["UserGroupId"]);
-        let g = wait_user_group(cx, &id).await?;
+        let g = wait_user_group(cx, &id).await.map_err(|e| e.created(&id))?;
         Ok(Created::new(&id).attr("Arn", text(&g["ARN"])).attr("Status", text(&g["Status"])))
     }
 

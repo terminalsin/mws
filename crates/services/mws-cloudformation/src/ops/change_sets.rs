@@ -179,7 +179,7 @@ impl CloudFormation {
         }
         let me = self.clone();
         let ctx2 = ctx.clone();
-        self.settle_change_set(stack_id.clone(), id.clone(), async move {
+        self.settle_change_set(stack_id.clone(), id.clone(), ctx.received_at, async move {
             let mut cs = cs;
             let prepared = match prepared {
                 Some(p) => Ok(p),
@@ -246,11 +246,14 @@ impl CloudFormation {
 
     /// Finish creating a change set in the background, as AWS does: it
     /// is `CREATE_PENDING`, then `CREATE_IN_PROGRESS` while `work` runs,
-    /// then what `work` returns (`CREATE_COMPLETE` or `FAILED`).
+    /// then what `work` returns (`CREATE_COMPLETE` or `FAILED`), no sooner
+    /// than the settle window after `since` on the emulated clock (so an
+    /// `ExecuteChangeSet` sent without waiting is refused, as in AWS).
     pub(crate) fn settle_change_set(
         &self,
         stack_id: String,
         cs_id: String,
+        since: chrono::DateTime<chrono::Utc>,
         work: impl std::future::Future<Output = ChangeSet> + Send + 'static,
     ) {
         let me = self.clone();
@@ -264,6 +267,15 @@ impl CloudFormation {
             };
             set(&|cs| cs.status = "CREATE_IN_PROGRESS".into());
             let done = work.await;
+            let ready = mws_core::settle::settles_at(since);
+            loop {
+                let left = ready - me.now();
+                if left <= chrono::Duration::zero() {
+                    break;
+                }
+                let left = left.to_std().unwrap_or_default().min(std::time::Duration::from_millis(50));
+                tokio::time::sleep(left).await;
+            }
             set(&|cs| {
                 if cs.status == "CREATE_IN_PROGRESS" {
                     *cs = done.clone();
@@ -693,7 +705,7 @@ impl CloudFormation {
         if let Some(s) = self.state().stacks.get_mut(&stack_id) {
             s.change_sets.insert(id.clone(), pending);
         }
-        self.settle_change_set(stack_id.clone(), id.clone(), async move { cs });
+        self.settle_change_set(stack_id.clone(), id.clone(), ctx.received_at, async move { cs });
         Ok(types::CreateChangeSetOutput { id: Some(id), stack_id: Some(stack_id) })
     }
 

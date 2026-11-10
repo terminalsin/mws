@@ -37,6 +37,11 @@ pub struct InvocationTarget {
     pub routed_to: Option<String>,
 }
 
+/// Whether invocations check model access (`MWS_BEDROCK_MODEL_ACCESS=enforce`).
+fn model_access_enforced() -> bool {
+    std::env::var("MWS_BEDROCK_MODEL_ACCESS").is_ok_and(|v| v.trim().eq_ignore_ascii_case("enforce"))
+}
+
 pub fn invalid_model() -> ServiceError {
     validation("The provided model identifier is invalid.")
 }
@@ -69,6 +74,48 @@ impl Bedrock {
     /// Resolve `ident` (as `InvokeModel`, `Converse` and their streaming
     /// forms take it) for the caller's account and Region.
     pub fn resolve_invocation(&self, ctx: &RequestContext, ident: &str) -> Result<InvocationTarget, ServiceError> {
+        let target = self.resolve_target(ctx, ident)?;
+        if !matches!(target.kind, TargetKind::ImportedModel | TargetKind::MarketplaceEndpoint) {
+            self.check_model_access(ctx, target.model)?;
+        }
+        Ok(target)
+    }
+
+    /// Serverless foundation models are enabled on first use: Anthropic
+    /// models once the account has submitted its use case, other
+    /// third-party models by subscribing through AWS Marketplace on the
+    /// first call (which the caller must be allowed to do). Amazon models
+    /// need neither. Only enforced with `MWS_BEDROCK_MODEL_ACCESS=enforce`,
+    /// since most local use never fills in the form.
+    pub fn check_model_access(&self, ctx: &RequestContext, model: &ModelSpec) -> Result<(), ServiceError> {
+        if !model_access_enforced() || model.provider_name == "Amazon" {
+            return Ok(());
+        }
+        if model.provider_name == "Anthropic" && self.scope(ctx, |s| s.use_case.is_none()) {
+            return Err(ServiceError::client(
+                "ResourceNotFoundException",
+                404,
+                "Model use case details have not been submitted for this account. Fill out the Anthropic use case details form before using the model. If you have already filled out the form, try again in 15 minutes.",
+            ));
+        }
+        if self.scope(ctx, |s| s.agreements.contains(&model.model_id)) {
+            return Ok(());
+        }
+        let denied = ["aws-marketplace:ViewSubscriptions", "aws-marketplace:Subscribe"]
+            .into_iter()
+            .any(|action| ctx.authorize(action, "*", mws_core::ConditionContext::new()).is_err());
+        if denied {
+            return Err(ServiceError::client(
+                "AccessDeniedException",
+                403,
+                "Model access is denied due to IAM user or service role is not authorized to perform the required AWS Marketplace actions (aws-marketplace:ViewSubscriptions, aws-marketplace:Subscribe) to enable access to this model. Refer to the Amazon Bedrock documentation for further details. Your AWS Marketplace subscription for this model cannot be completed at this time. If you recently fixed this issue, try again after 15 minutes.",
+            ));
+        }
+        self.scope(ctx, |s| s.agreements.insert(model.model_id.clone()));
+        Ok(())
+    }
+
+    fn resolve_target(&self, ctx: &RequestContext, ident: &str) -> Result<InvocationTarget, ServiceError> {
         let partition = ctx.partition.clone();
         let region = ctx.region.clone();
         if let Some(a) = parse_arn(ident) {

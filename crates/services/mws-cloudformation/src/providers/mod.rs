@@ -67,11 +67,21 @@ pub struct HandlerError {
     pub not_found: bool,
     /// The service's error code, when a service call failed.
     pub code: String,
+    /// The physical id of a resource the handler created before it
+    /// failed (for example while waiting for it to stabilize), so the
+    /// rollback deletes it.
+    pub physical_id: Option<String>,
 }
 
 impl HandlerError {
     pub fn invalid(message: impl Into<String>) -> Self {
-        Self { message: message.into(), not_found: false, code: String::new() }
+        Self { message: message.into(), not_found: false, code: String::new(), physical_id: None }
+    }
+
+    /// Note that the resource `id` already exists in the target service.
+    pub fn created(mut self, id: &str) -> Self {
+        self.physical_id.get_or_insert_with(|| id.to_string());
+        self
     }
 
     pub fn from_service(service: &str, e: &ServiceError) -> Self {
@@ -87,6 +97,7 @@ impl HandlerError {
             ),
             not_found: code == "NotFound",
             code: e.code.to_string(),
+            physical_id: None,
         }
     }
 
@@ -99,6 +110,7 @@ impl HandlerError {
             ),
             not_found: code == "NotFound",
             code: String::new(),
+            physical_id: None,
         }
     }
 }
@@ -131,7 +143,9 @@ fn handler_error_code(e: &ServiceError) -> &'static str {
         "AlreadyExists"
     } else if c.starts_with("AccessDenied") || c == "UnauthorizedOperation" || c == "AuthorizationError" {
         "AccessDenied"
-    } else if c.contains("Throttl") || c.contains("LimitExceeded") {
+    } else if c.contains("LimitExceeded") && !c.contains("RequestLimitExceeded") {
+        "ServiceLimitExceeded"
+    } else if c.contains("Throttl") || c.contains("RequestLimitExceeded") {
         "Throttling"
     } else if e.status >= 500 {
         "ServiceInternalError"
@@ -155,6 +169,9 @@ pub struct Cx<'a> {
     /// The emulated clock's offset from the wall clock: calls made later
     /// in a deployment carry the time they are made.
     pub offset: chrono::Duration,
+    /// When the stack operation times out (`TimeoutInMinutes`), on the
+    /// emulated clock: waits for signals end then.
+    pub deadline: Option<chrono::DateTime<chrono::Utc>>,
 }
 
 impl Cx<'_> {

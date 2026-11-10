@@ -123,6 +123,7 @@ impl CloudFormation {
             logical_id: "",
             stack_tags: &[],
             offset: chrono::Duration::zero(),
+            deadline: None,
         }
     }
 

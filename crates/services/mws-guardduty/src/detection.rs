@@ -465,7 +465,9 @@ impl GuardDuty {
     pub(crate) fn remember(&self, ctx: &RequestContext) {
         let offset = (ctx.received_at - chrono::Utc::now()).num_milliseconds().max(0);
         *self.background.template.lock().expect("GuardDuty template lock poisoned") = Some((ctx.clone(), offset));
-        if self.background.started.set(()).is_err() || tokio::runtime::Handle::try_current().is_err() {
+        // Outside a runtime the loop cannot start yet; a later call made
+        // inside one starts it.
+        if tokio::runtime::Handle::try_current().is_err() || self.background.started.set(()).is_err() {
             return;
         }
         let me = self.clone();
