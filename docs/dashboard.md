@@ -117,7 +117,8 @@ Fields validate in place, and say how to fix what they reject. `Field`
 3. what the page adds: `format` (`json`, `policy`, `path`, `arn`, `cidr`,
    `ipv4`, `email`, `emails` (a comma-separated list), `domain`,
    `email-or-domain`, `url`, `s3url`, `bucket`, `name`, `port`, `phone`,
-   `tags` for `key=value` lines, `branch` for Git branch names), `taken` (names that exist), `reserved`
+   `tags` for `key=value` tag lines, `pairs` for any `key=value` list,
+   `branch` for Git branch names), `taken` (names that exist), `reserved`
    (prefixes AWS keeps, offered without them),
    `known` (values the field usually points at), `generate` (`name`,
    `token`, `password`, `uuid`, or a prefix/suffix), `arn` (the ARN template
@@ -126,8 +127,10 @@ Fields validate in place, and say how to fix what they reject. `Field`
 A problem replaces the field's hint once the person leaves the field or
 submits, and comes with repairs as chips: a fix (reshaped to the pattern,
 shortened, clamped, network address, repaired JSON, a policy document
-rebuilt from a bare statement with its casing fixed, `https://` added, a phone number in E.164, an SSH remote as
-its HTTPS URL, the scheme a pattern requires, a Git-safe branch name), a
+rebuilt from a bare statement with its casing fixed, `https://` added or
+`http://` for a local endpoint, a phone number in E.164, an SSH remote as its
+HTTPS URL, the scheme a pattern requires, a Git-safe branch name, `key: value`
+lines or a JSON object rewritten as `key=value`), a
 suggestion ("did you mean" among enum values, `known` values, all of them
 when there are only a few, or common email domains) or a generated value. Every repair is checked against the whole rule
 before it is offered. A blocked submit focuses and shakes the first field.

@@ -83,7 +83,9 @@ export default async function Guardrail({ searchParams }: Props) {
               </Field>
             )}
           </div>
-          <textarea name="text" rows={3} aria-label="Text" required />
+          <Field label="Text">
+            <textarea name="text" rows={3} required />
+          </Field>
         </ActionForm>
       </Section>
       {filters.length > 0 && (

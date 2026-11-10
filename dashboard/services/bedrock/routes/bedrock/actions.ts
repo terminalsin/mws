@@ -12,8 +12,8 @@ import {
   type GuardrailPiiEntityType,
 } from "@aws-sdk/client-bedrock";
 import { ApplyGuardrailCommand, ConverseCommand } from "@aws-sdk/client-bedrock-runtime";
-import { act, mws, required, text, type ActionResult } from "@mws-dashboard/aws";
-import { ROLES, ensureLogGroup, roleFrom } from "@mws-dashboard/aws/auto";
+import { act, FieldError, mws, required, text, type ActionResult } from "@mws-dashboard/aws";
+import { ROLES, bucketOptions, ensureLogGroup, roleFrom } from "@mws-dashboard/aws/auto";
 import { redirect } from "next/navigation";
 
 import { bedrock, bedrockRuntime } from "../../lib/clients";
@@ -41,15 +41,31 @@ export async function converse(_: ActionResult | null, form: FormData) {
       message: `${out.usage?.inputTokens ?? 0} → ${out.usage?.outputTokens ?? 0} tokens · ${out.metrics?.latencyMs ?? 0} ms${blocked ? " · blocked by guardrail" : ""}`,
       detail: reply || "(empty)",
     };
+  }, {
+    fields: {
+      modelId: "model",
+      "inferenceConfig.temperature": "temperature",
+      "inferenceConfig.maxTokens": "maxTokens",
+      "system.text": "system",
+      "messages.content.text": "prompt",
+      "guardrailConfig.guardrailIdentifier": "guardrail",
+    },
   });
 }
 
 const FILTERS: GuardrailContentFilterType[] = ["HATE", "INSULTS", "SEXUAL", "VIOLENCE", "MISCONDUCT", "PROMPT_ATTACK"];
 
+/** A denied topic from a `Name: definition` line (a bare line is both). */
+function topic(line: string) {
+  const i = line.indexOf(":");
+  const name = (i > 0 ? line.slice(0, i) : line).trim();
+  return { name: name.slice(0, 100).replace(/[^\w\s!?.-]/g, "").trim() || "Topic", definition: (i > 0 ? line.slice(i + 1) : line).trim() || name, type: "DENY" as const };
+}
+
 export async function createGuardrail(_: ActionResult | null, form: FormData) {
   return act(async () => {
     const strength = text(form, "strength") || "MEDIUM";
-    const topics = list(text(form, "topics"));
+    const topics = text(form, "topics").split("\n").map((t) => t.trim()).filter(Boolean);
     const words = list(text(form, "words"));
     const pii = form.getAll("pii").map(String) as GuardrailPiiEntityType[];
     const out = await (await bedrock()).send(
@@ -68,7 +84,7 @@ export async function createGuardrail(_: ActionResult | null, form: FormData) {
                 })),
               },
         topicPolicyConfig: topics.length
-          ? { topicsConfig: topics.map((t) => ({ name: t.slice(0, 100).replace(/[^\w\s!?.-]/g, ""), definition: t, type: "DENY" as const })) }
+          ? { topicsConfig: topics.map((t) => topic(t)) }
           : undefined,
         wordPolicyConfig:
           words.length || text(form, "profanity") === "on"
@@ -81,6 +97,15 @@ export async function createGuardrail(_: ActionResult | null, form: FormData) {
       }),
     );
     redirect(`/bedrock/guardrail?id=${out.guardrailId}`);
+  }, {
+    fields: {
+      name: "name",
+      blockedInputMessaging: "blocked",
+      blockedOutputsMessaging: "blocked",
+      "topicPolicyConfig.topicsConfig.name": "topics",
+      "topicPolicyConfig.topicsConfig.definition": "topics",
+      "wordPolicyConfig.wordsConfig.text": "words",
+    },
   });
 }
 
@@ -107,7 +132,7 @@ export async function testGuardrail(id: string, _: ActionResult | null, form: Fo
       message: intervened ? "Intervened" : "Passed",
       detail: intervened ? [...(out.outputs ?? []).map((o) => o.text), "", ...reasons].join("\n") : undefined,
     };
-  });
+  }, { fields: { "content.text.text": "text", guardrailVersion: "version", source: "source" } });
 }
 
 export async function publishGuardrail(id: string) {
@@ -134,7 +159,7 @@ export async function createProfile(_: ActionResult | null, form: FormData) {
       }),
     );
     return "Created";
-  }, "/bedrock/profiles");
+  }, { revalidate: ["/bedrock/profiles"], fields: { inferenceProfileName: "name", "modelSource.copyFrom": "source", "tags.value": "costCenter" } });
 }
 
 export async function deleteProfile(arn: string) {
@@ -148,7 +173,9 @@ export async function saveLogging(_: ActionResult | null, form: FormData) {
   return act(async () => {
     const group = text(form, "logGroup");
     const bucket = text(form, "bucket");
-    if (!group && !bucket) throw new Error("Choose a log group or a bucket");
+    if (!group && !bucket) throw new FieldError("logGroup", "Choose a log group or a bucket", "required");
+    // Deliveries to a bucket that does not exist would only fail later.
+    if (bucket && !(await bucketOptions()).some((b) => b.value === bucket)) throw new FieldError("bucket", "No such bucket", "missing");
     const roleArn = group ? await roleFrom(form, "role", ROLES.bedrockLogging) : undefined;
     if (group) await ensureLogGroup(group);
     await (await bedrock()).send(
@@ -164,7 +191,16 @@ export async function saveLogging(_: ActionResult | null, form: FormData) {
       }),
     );
     return "Saved";
-  }, "/bedrock/settings");
+  }, {
+    revalidate: ["/bedrock/settings"],
+    fields: {
+      "loggingConfig.cloudWatchConfig.logGroupName": "logGroup",
+      logGroupName: "logGroup",
+      "loggingConfig.cloudWatchConfig.roleArn": "role",
+      "loggingConfig.s3Config.bucketName": "bucket",
+      "loggingConfig.s3Config.keyPrefix": "prefix",
+    },
+  });
 }
 
 export async function stopLogging() {
@@ -174,11 +210,11 @@ export async function stopLogging() {
   }, "/bedrock/settings");
 }
 
-/** `key=value` lines (or commas) as an object. */
-function pairs(s: string): Record<string, string> | undefined {
-  const entries = list(s).map((kv) => {
+/** `key=value` lines (or commas) in `form[field]` as an object. */
+function pairs(form: FormData, field: string): Record<string, string> | undefined {
+  const entries = list(text(form, field)).map((kv) => {
     const i = kv.indexOf("=");
-    if (i < 1) throw new Error(`"${kv}" is not key=value`);
+    if (i < 1) throw new FieldError(field, `"${kv}" is not key=value`, "format");
     return [kv.slice(0, i).trim(), kv.slice(i + 1).trim()] as const;
   });
   return entries.length ? Object.fromEntries(entries) : undefined;
@@ -193,9 +229,9 @@ export async function saveProvider(existing: string | null, _: ActionResult | nu
       try {
         params = JSON.parse(raw);
       } catch {
-        throw new Error("Default parameters must be a JSON object");
+        throw new FieldError("params", "Not valid JSON", "format");
       }
-      if (!params || typeof params !== "object" || Array.isArray(params)) throw new Error("Default parameters must be a JSON object");
+      if (!params || typeof params !== "object" || Array.isArray(params)) throw new FieldError("params", "A JSON object, like {\"temperature\": 0.2}", "format");
     }
     const timeout = text(form, "timeout");
     const config = {
@@ -204,15 +240,31 @@ export async function saveProvider(existing: string | null, _: ActionResult | nu
       apiKey: text(form, "clearKey") === "on" ? "" : text(form, "apiKey") || undefined,
       model: text(form, "model") || undefined,
       models: list(text(form, "models")).length ? list(text(form, "models")) : undefined,
-      modelMap: pairs(text(form, "modelMap")),
-      headers: pairs(text(form, "headers")),
+      modelMap: pairs(form, "modelMap"),
+      headers: pairs(form, "headers"),
       params,
       timeoutSeconds: timeout ? Number(timeout) : undefined,
     };
-    await mws(`/_aws/bedrock/providers/${encodeURIComponent(name)}`, { method: "PUT", json: config });
+    try {
+      await mws(`/_aws/bedrock/providers/${encodeURIComponent(name)}`, { method: "PUT", json: config });
+    } catch (e) {
+      throw providerError(e);
+    }
     if (text(form, "makeDefault") === "on") await mws("/_aws/bedrock/providers", { method: "PUT", json: { default: name } });
     return existing ? "Saved" : `Added ${name}`;
   }, "/bedrock/settings");
+}
+
+/** MWS's provider checks, on the field each one concerns. */
+function providerError(e: unknown): unknown {
+  const message = e instanceof Error ? e.message.replace(/^\S+ answered \d+: /, "") : "";
+  const field = [
+    [/^Provider name/, "name"],
+    [/^Provider URL/, "url"],
+    [/^timeoutSeconds/, "timeout"],
+    [/^Header/, "headers"],
+  ].find(([re]) => (re as RegExp).test(message))?.[1] as string | undefined;
+  return field ? new FieldError(field, message) : e;
 }
 
 export async function forgetProvider(name: string) {

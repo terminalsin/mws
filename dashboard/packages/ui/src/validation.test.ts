@@ -118,6 +118,16 @@ test("URL schemes follow the page's pattern", () => {
   assert.deepEqual(values(https, "http://example.com/hook"), ["https://example.com/hook"]);
 });
 
+test("local URLs get http://, key=value lists are rewritten", () => {
+  assert.deepEqual(values({ format: "url" }, "127.0.0.1:11434/v1"), ["http://127.0.0.1:11434/v1"]);
+  assert.deepEqual(values({ format: "url" }, "localhost:8080"), ["http://localhost:8080"]);
+  assert.deepEqual(values({ format: "url" }, "api.openai.com/v1"), ["https://api.openai.com/v1"]);
+  assert.equal(check("x-team=ml\nx-env=dev", { format: "pairs" }), null);
+  assert.equal(check("x-team: ml", { format: "pairs" })?.message, '"x-team: ml" is not key=value');
+  assert.deepEqual(values({ format: "pairs" }, "x-team: ml\nx-env dev"), ["x-team=ml\nx-env=dev"]);
+  assert.deepEqual(values({ format: "pairs" }, '{"x-team": "ml", "n": 2,}'), ["x-team=ml\nn=2"]);
+});
+
 test("JSON repair handles hand-written JSON", () => {
   assert.equal(repairJson("{'Version': '2012-10-17', Statement: [],}"), '{\n  "Version": "2012-10-17",\n  "Statement": []\n}');
   assert.equal(repairJson('"a": 1'), '{\n  "a": 1\n}');

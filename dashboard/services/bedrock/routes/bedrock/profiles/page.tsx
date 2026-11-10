@@ -1,6 +1,8 @@
 import { ListFoundationModelsCommand, ListInferenceProfilesCommand } from "@aws-sdk/client-bedrock";
 import { load } from "@mws-dashboard/aws";
 import { ActionForm, AwsIcon, Empty, ErrorNotice, Field, List, Page, Pill, Section, Segments, Sheet } from "@mws-dashboard/ui";
+import { CreateInferenceProfile } from "@mws-dashboard/ui/model/bedrock";
+import { ruleAt } from "@mws-dashboard/ui/validation";
 import { Globe, MessageSquareText, Trash2 } from "lucide-react";
 import type { Metadata } from "next";
 import Link from "next/link";
@@ -13,22 +15,28 @@ export const metadata: Metadata = { title: "Inference profiles" };
 type Props = { searchParams: Promise<{ tab?: string }> };
 
 /** "us.anthropic.claude-…" → its geography. */
+const NAME = { ...CreateInferenceProfile.inferenceProfileName, hint: "Letters and digits, single spaces, - or _ between them", generate: "name" as const };
+const TAG_VALUE = ruleAt(CreateInferenceProfile, "tags.value");
+
 const GEO: Record<string, string> = { us: "US", eu: "EU", apac: "APAC", global: "Global", jp: "Japan", au: "Australia", ca: "Canada" };
 
 export default async function Profiles({ searchParams }: Props) {
   const { tab = "system" } = await searchParams;
   const client = await bedrock();
   const data = await load(async () => {
-    const [profiles, models] = await Promise.all([
-      client.send(new ListInferenceProfilesCommand({ typeEquals: tab === "application" ? "APPLICATION" : "SYSTEM_DEFINED", maxResults: 1000 })).then((r) => r.inferenceProfileSummaries ?? []),
+    const list = (type: "APPLICATION" | "SYSTEM_DEFINED") =>
+      client.send(new ListInferenceProfilesCommand({ typeEquals: type, maxResults: 1000 })).then((r) => r.inferenceProfileSummaries ?? []);
+    const [profiles, applications, models] = await Promise.all([
+      list(tab === "application" ? "APPLICATION" : "SYSTEM_DEFINED"),
+      tab === "application" ? null : list("APPLICATION").catch(() => []),
       client.send(new ListFoundationModelsCommand({ byOutputModality: "TEXT" })).then((r) => r.modelSummaries ?? []),
     ]);
-    return { profiles, models };
+    return { profiles, models, names: (applications ?? profiles).map((p) => p.inferenceProfileName!) };
   });
   const create = data.ok && (
     <Sheet title="Create inference profile" label="Create inference profile" testId="create-profile">
       <ActionForm action={createProfile} submit="Create" testId="create-profile">
-        <Field label="Name">
+        <Field label="Name" rule={NAME} taken={data.value.names} unique>
           <input name="name" required autoFocus />
         </Field>
         <Field label="Model">
@@ -42,7 +50,7 @@ export default async function Profiles({ searchParams }: Props) {
               ))}
           </select>
         </Field>
-        <Field label="Cost center">
+        <Field label="Cost center" rule={TAG_VALUE}>
           <input name="costCenter" />
         </Field>
       </ActionForm>
