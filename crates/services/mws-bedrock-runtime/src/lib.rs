@@ -16,7 +16,9 @@
 //! "error"?}`), `GET` shows how many are queued and `DELETE` clears them.
 //! `/_aws/bedrock/providers` lists, stores and deletes provider settings
 //! (`GET`, `PUT /{name}`, `DELETE /{name}`, `PUT {"default": name}`) and
-//! `GET /_aws/bedrock/providers/route?modelId=...` says who answers a model.
+//! `GET /_aws/bedrock/providers/route?modelId=...` says who answers a model
+//! and `GET /_aws/bedrock/local` which local CLIs (Claude Code,
+//! Codex, Ollama, LM Studio) are installed where MWS runs.
 
 #[allow(clippy::all, dead_code, unused_imports, non_snake_case, non_camel_case_types)]
 pub mod generated {
@@ -26,6 +28,7 @@ pub mod generated {
 pub mod backend;
 mod batch;
 mod checks;
+pub mod cli;
 mod client;
 mod converse;
 mod handler;
@@ -963,6 +966,9 @@ impl BedrockRuntime {
         let path = request.uri().path();
         if let Some(rest) = path.trim_end_matches('/').strip_prefix("/_aws/bedrock/providers") {
             return self.providers_endpoint(request, rest.trim_start_matches('/'));
+        }
+        if path.trim_end_matches('/') == "/_aws/bedrock/local" {
+            return json_response(200, crate::cli::detect());
         }
         if path.trim_end_matches('/') != "/_aws/bedrock/responses" {
             return json_response(404, json!({"message": format!("No MWS Bedrock endpoint at {path}.")}));

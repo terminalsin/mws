@@ -1725,3 +1725,95 @@
     opacity: 0.6;
   }
 }
+
+/* Preset galleries: pick a provider (or any template) by its logo. */
+@layer components {
+  .presets {
+    display: grid;
+    gap: 1rem;
+    margin-bottom: 1.25rem;
+  }
+  .presets h3 {
+    margin: 0 0 0.5rem;
+    font-size: 0.75rem;
+    font-weight: 400;
+    letter-spacing: 0.32px;
+    color: var(--secondary);
+  }
+  .preset-grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fill, minmax(84px, 1fr));
+    gap: 4px;
+  }
+  .preset {
+    position: relative;
+    display: grid;
+    justify-items: center;
+    align-content: center;
+    gap: 0.4rem;
+    min-height: 76px;
+    padding: 0.6rem 0.25rem;
+    border: 1px solid var(--separator);
+    background: var(--surface);
+    color: var(--text);
+    font: inherit;
+    font-size: 0.75rem;
+    cursor: pointer;
+    transition: background-color var(--duration-quick) var(--ease-standard), box-shadow var(--duration-quick) var(--ease-standard);
+  }
+  .preset:hover {
+    background: var(--hover);
+  }
+  .preset[aria-checked="true"] {
+    background: var(--accent-soft);
+    box-shadow: inset 0 0 0 2px var(--accent);
+  }
+  .preset:focus-visible {
+    outline: 2px solid var(--accent);
+    outline-offset: -2px;
+  }
+  .preset span {
+    max-width: 100%;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+  .preset-found {
+    position: absolute;
+    top: 6px;
+    right: 6px;
+    width: 6px;
+    height: 6px;
+    border-radius: 50%;
+    background: var(--good);
+  }
+  .preset-added {
+    position: absolute;
+    top: 4px;
+    left: 4px;
+    color: var(--secondary);
+  }
+  .more-fields {
+    margin: 0.25rem 0 0.75rem;
+  }
+  .more-fields > summary {
+    display: inline-flex;
+    align-items: center;
+    gap: 0.4rem;
+    cursor: pointer;
+    color: var(--link);
+    list-style: none;
+    margin-bottom: 0.75rem;
+  }
+  .more-fields > summary::-webkit-details-marker {
+    display: none;
+  }
+  .inline-link {
+    display: inline-flex;
+    align-items: center;
+    gap: 0.25rem;
+  }
+  .warn-text {
+    color: var(--warn);
+  }
+}

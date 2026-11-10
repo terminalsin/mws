@@ -1,89 +1,31 @@
 import { load, mws } from "@mws-dashboard/aws";
-import { ActionForm, ErrorNotice, Field, List, Pill, Section, Sheet } from "@mws-dashboard/ui";
-import { Bot, KeyRound, Pencil, Repeat2, RotateCcw, Sparkles, Star } from "lucide-react";
+import { ActionForm, AwsIcon, ErrorNotice, List, Pill, Section, Sheet } from "@mws-dashboard/ui";
+import { KeyRound, Pencil, Repeat2, RotateCcw, Server, Star, TriangleAlert } from "lucide-react";
 
+import { providerLogo, type Local } from "../../../lib/presets";
 import { forgetProvider, saveProvider, setDefaultProvider } from "../actions";
+import { ProviderFields, type ProviderView } from "./fields";
 
-interface Provider {
-  name: string;
-  kind: "echo" | "openai" | "anthropic";
+interface Provider extends ProviderView {
   source: "builtin" | "environment" | "stored" | "environment+stored";
-  url?: string;
-  apiKey?: string;
-  apiKeySet: boolean;
-  model?: string;
-  models: string[];
-  modelMap: Record<string, string>;
-  params: Record<string, unknown>;
-  headers: Record<string, string>;
-  timeoutSeconds: number;
 }
 
-const KIND_ICON = { echo: Repeat2, openai: Bot, anthropic: Sparkles };
-const SOURCE = { builtin: "built in", environment: "env", stored: "stored", "environment+stored": "env + stored" };
-
-const lines = (m: Record<string, string>) => Object.entries(m).map(([k, v]) => `${k}=${v}`).join("\n");
-
-// The console stores names lowercased; MWS takes letters, digits, - _ and .
-const NAME = { required: true, pattern: "^[a-z0-9._-]+$", hint: "Lowercase letters, digits, . - and _" };
-
-function ProviderForm({ p, names = [] }: { p?: Provider; names?: string[] }) {
-  return (
-    <ActionForm action={saveProvider.bind(null, p?.name ?? null)} submit="Save" testId={p ? `edit-provider-${p.name}` : "add-provider"}>
-      {!p && (
-        <Field label="Name" rule={NAME} taken={names} unique>
-          <input name="name" placeholder="ollama" required />
-        </Field>
-      )}
-      <div className="form-row">
-        <Field label="API">
-          <select name="kind" defaultValue={p?.kind ?? "openai"}>
-            <option value="openai">OpenAI compatible</option>
-            <option value="anthropic">Anthropic</option>
-            <option value="echo">Echo</option>
-          </select>
-        </Field>
-        <Field label="Timeout (s)">
-          <input name="timeout" type="number" min={1} defaultValue={p?.timeoutSeconds} />
-        </Field>
-      </div>
-      <Field label="URL" format="url">
-        <input name="url" defaultValue={p?.url} placeholder="http://127.0.0.1:11434/v1" />
-      </Field>
-      <Field label="API key">
-        <input name="apiKey" type="password" autoComplete="off" placeholder={p?.apiKeySet ? `${p.apiKey} (unchanged)` : ""} />
-      </Field>
-      {p?.apiKeySet && (
-        <label className="check">
-          <input type="checkbox" name="clearKey" /> Remove stored key
-        </label>
-      )}
-      <div className="form-row">
-        <Field label="Models">
-          <input name="models" defaultValue={p?.models.join(", ")} placeholder="meta.*, mistral.*" />
-        </Field>
-        <Field label="Upstream model">
-          <input name="model" defaultValue={p?.model} placeholder="llama3.1:8b" />
-        </Field>
-      </div>
-      <Field label="Model map" format="pairs">
-        <textarea name="modelMap" rows={3} className="code-editor" spellCheck={false} defaultValue={p && lines(p.modelMap)} placeholder="meta.llama3-8b-instruct-v1:0=llama3:8b" />
-      </Field>
-      <Field label="Default parameters" format="json">
-        <textarea name="params" rows={3} className="code-editor" spellCheck={false} defaultValue={p && Object.keys(p.params).length ? JSON.stringify(p.params, null, 2) : ""} placeholder='{"temperature": 0.2}' />
-      </Field>
-      <Field label="Headers" format="pairs">
-        <textarea name="headers" rows={2} className="code-editor" spellCheck={false} defaultValue={p && lines(p.headers)} placeholder="x-team=ml" />
-      </Field>
-      <label className="check">
-        <input type="checkbox" name="makeDefault" /> Default provider
-      </label>
-    </ActionForm>
-  );
+/** What a row says about where the provider is: a host, or the CLI. */
+function where(p: Provider) {
+  if (p.kind === "claude-code" || p.kind === "codex") return <code>{p.command}</code>;
+  try {
+    const u = new URL(p.url ?? "");
+    return <code>{u.port ? `${u.hostname}:${u.port}` : u.hostname}</code>;
+  } catch {
+    return p.url ? <code>{p.url}</code> : undefined;
+  }
 }
 
 export async function Providers() {
-  const res = await load(() => mws<{ default: string; providers: Provider[] }>("/_aws/bedrock/providers"));
+  const [res, local] = await Promise.all([
+    load(() => mws<{ default: string; providers: Provider[] }>("/_aws/bedrock/providers")),
+    load(() => mws<Local>("/_aws/bedrock/local")),
+  ]);
   if (!res.ok) {
     return (
       <Section title="Model providers">
@@ -92,6 +34,7 @@ export async function Providers() {
     );
   }
   const { default: fallback, providers } = res.value;
+  const names = providers.map((p) => p.name);
   return (
     <Section
       title="Model providers"
@@ -110,7 +53,9 @@ export async function Providers() {
             </ActionForm>
           )}
           <Sheet title="Add model provider" label="Add provider" testId="add-provider">
-            <ProviderForm names={providers.map((p) => p.name)} />
+            <ActionForm action={saveProvider.bind(null, null)} submit="Save" testId="add-provider">
+              <ProviderFields names={names} local={local.ok ? local.value : {}} />
+            </ActionForm>
           </Sheet>
         </>
       }
@@ -118,28 +63,35 @@ export async function Providers() {
       <List
         label="Model providers"
         rows={providers.map((p) => {
-          const Icon = KIND_ICON[p.kind];
+          const logo = providerLogo(p);
           return {
             key: p.name,
-            icon: <Icon size={20} aria-hidden />,
+            icon: logo ? <AwsIcon icon={logo} size={22} /> : p.kind === "echo" ? <Repeat2 size={20} aria-hidden /> : <Server size={20} aria-hidden />,
             title: p.name,
-            subtitle: p.kind === "echo" ? "Deterministic, offline" : <code>{p.url}</code>,
+            subtitle: p.kind === "echo" ? undefined : where(p),
             meta: (
               <span className="chips">
                 {p.name === fallback && <Pill icon={<Star size={11} />}>default</Pill>}
+                {p.installed === false && (
+                  <Pill tone="warn" icon={<TriangleAlert size={11} />}>
+                    not installed
+                  </Pill>
+                )}
                 {p.models.map((m) => (
                   <Pill key={m}>{m}</Pill>
                 ))}
                 {p.model && <Pill>→ {p.model}</Pill>}
                 {p.apiKeySet && <Pill icon={<KeyRound size={11} />}>{p.apiKey}</Pill>}
-                <Pill>{SOURCE[p.source]}</Pill>
+                {p.source.startsWith("environment") && <Pill title={p.source === "environment" ? "From the environment" : "Environment, with stored changes"}>env</Pill>}
               </span>
             ),
             actions:
               p.kind === "echo" && p.source === "builtin" ? undefined : (
                 <>
                   <Sheet title={`Edit ${p.name}`} label={`Edit ${p.name}`} icon={<Pencil size={15} />} testId={`edit-provider-${p.name}`}>
-                    <ProviderForm p={p} />
+                    <ActionForm action={saveProvider.bind(null, p.name)} submit="Save" testId={`edit-provider-${p.name}`}>
+                      <ProviderFields p={p} />
+                    </ActionForm>
                   </Sheet>
                   {p.source.includes("stored") && (
                     <ActionForm

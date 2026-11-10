@@ -20,6 +20,7 @@
     "@aws-sdk/client-iam": "^3.1164.0",
     "@aws-sdk/client-lambda": "^3.1164.0",
     "@aws-sdk/client-organizations": "^3.1165.0",
+    "@lobehub/icons-static-svg": "^1.102.0",
     "@playwright/test": "1.63.0",
     "@tailwindcss/postcss": "^4.3.5",
     "@types/node": "^24.0.0",
