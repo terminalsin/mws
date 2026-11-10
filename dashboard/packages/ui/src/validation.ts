@@ -83,6 +83,7 @@ export type Format =
   | "domain"
   | "email-or-domain"
   | "url"
+  | "s3url"
   | "bucket"
   | "name"
   | "port"
@@ -835,6 +836,15 @@ export const FORMATS: Record<Format, FormatSpec> = {
       return /^[\w.-]+\.[a-z]{2,}([:/].*)?$/i.test(v) || /^localhost([:/].*)?$/.test(v) ? pick(v, true) : [];
     },
   },
+  s3url: {
+    check(value) {
+      return s3Object(value)?.canonical && value.trim() === value ? null : "Like s3://bucket/key";
+    },
+    repair(value) {
+      const found = s3Object(value.trim());
+      return found ? [{ value: `s3://${found.bucket}/${found.key}`, label: "Use the s3:// URL", kind: "fix" }] : [];
+    },
+  },
   bucket: {
     check(value) {
       if (!/^[a-z0-9][a-z0-9.-]{1,61}[a-z0-9]$/.test(value)) return "3–63 lowercase letters, digits, . and -";
@@ -963,6 +973,32 @@ function emailRepairs(value: string): Repair[] {
     out.push({ value: `${user}@${d}`, label: `Did you mean ${d}?`, kind: "suggest" });
   }
   return out;
+}
+
+const BUCKET = "[a-z0-9][a-z0-9.-]{1,61}[a-z0-9]";
+
+/** The bucket and key an S3 object reference names: s3://bucket/key, or the
+ * shapes people paste instead (virtual-hosted or path-style https URLs, an
+ * object ARN, the console's object page, a bare bucket/key). A canonical
+ * s3:// URL and the https forms are accepted as they are; `check` flags the
+ * rest so the repair can rewrite them. */
+function s3Object(value: string): { bucket: string; key: string; canonical: boolean } | null {
+  const v = value.trim();
+  const tries: [RegExp, boolean][] = [
+    [new RegExp(`^s3://(${BUCKET})/(.+)$`), true],
+    [new RegExp(`^https://(${BUCKET})\\.s3(?:[.-][a-z0-9-]+)?\\.amazonaws\\.com/(.+)$`), true],
+    [new RegExp(`^https://s3(?:[.-][a-z0-9-]+)?\\.amazonaws\\.com/(${BUCKET})/(.+)$`), true],
+    [new RegExp(`^s3:/*(${BUCKET})/(.+)$`, "i"), false],
+    [new RegExp(`^arn:aws[\\w-]*:s3:::(${BUCKET})/(.+)$`), false],
+    [new RegExp(`^(${BUCKET})/(.+)$`), false],
+  ];
+  for (const [re, canonical] of tries) {
+    const m = v.match(re);
+    if (m) return { bucket: m[1].toLowerCase(), key: m[2], canonical };
+  }
+  const consoleUrl = v.match(new RegExp(`^https://[\\w.-]*console\\.aws\\.amazon\\.com/s3/object/(${BUCKET})\\?(?:.*&)?prefix=([^&#]+)`));
+  if (consoleUrl) return { bucket: consoleUrl[1], key: decodeURIComponent(consoleUrl[2]), canonical: false };
+  return null;
 }
 
 function network(o: number[], bits: number): string {
