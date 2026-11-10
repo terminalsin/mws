@@ -312,7 +312,8 @@ export function repairs(value: string, rule: Rule, code: IssueCode): Repair[] {
       break;
     case "reserved": {
       const prefix = rule.reserved!.filter((p) => value.startsWith(p)).sort((a, b) => b.length - a.length)[0];
-      offer({ value: value.slice(prefix.length), label: `Drop ${prefix}`, kind: "fix" });
+      const rest = value.slice(prefix.length);
+      offer({ value: valid(rest, rule) ? rest : (reshape(rest, rule)[0]?.value ?? rest), label: `Drop ${prefix}`, kind: "fix" });
       offer(fresh(rule));
       break;
     }
@@ -427,6 +428,11 @@ function reshape(value: string, rule: Rule): Repair[] {
       const i = chars.findIndex((c) => first.test(c));
       if (i > 0) push(label, chars.slice(i).join(""));
     }
+  }
+  // Hierarchical names (/app/prod/db-host): a missing leading slash, doubled
+  // or trailing ones.
+  if (allowed?.test("/")) {
+    for (const v of [...seen]) push(v.startsWith("/") ? "Tidy the slashes" : "Start with /", "/" + v.split("/").filter(Boolean).join("/"));
   }
   return out;
 }
