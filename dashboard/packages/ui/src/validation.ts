@@ -44,6 +44,9 @@ export interface Rule {
   enum?: string[];
   sensitive?: boolean;
   default?: string | number | boolean;
+  /** What a number counts, so "12h" or "256 KiB" convert to it and ranges
+   * read as durations or sizes. */
+  unit?: Unit;
   /** A console-side format with its own checks and repairs. */
   format?: Format;
   /** For `format: "arn"`: the ARN a bare name expands to, with `{}` where
@@ -73,6 +76,8 @@ export interface Rule {
 }
 
 export type Rules = Record<string, Rule>;
+
+export type Unit = "seconds" | "bytes";
 
 export type Format =
   | "json"
@@ -257,12 +262,13 @@ function problem(value: string, rule: Rule, options: Options): Omit<Issue, "repa
       const n = Number(value);
       const integer = rule.type === "integer" || rule.format === "port";
       if (!/^-?(\d+\.?\d*|\.\d+)(e[-+]?\d+)?$/i.test(value.trim()) || Number.isNaN(n))
-        return { code: "type", message: integer ? "Whole number" : "Number" };
+        return { code: "type", message: rule.unit && inUnit(value, rule.unit) !== null ? `In ${rule.unit}` : integer ? "Whole number" : "Number" };
       if (integer && !Number.isInteger(n)) return { code: "type", message: "Whole number" };
       const min = rule.min ?? (rule.format === "port" ? 0 : undefined);
       const max = rule.max ?? (rule.format === "port" ? 65535 : undefined);
-      if (min !== undefined && n < min) return { code: "range", message: max !== undefined ? `${min}–${max}` : `At least ${min}` };
-      if (max !== undefined && n > max) return { code: "range", message: min !== undefined ? `${min}–${max}` : `At most ${max}` };
+      const [lo, hi] = [min, max].map((v) => (v === undefined ? "" : amount(v, rule.unit)));
+      if (min !== undefined && n < min) return { code: "range", message: max !== undefined ? `${lo}–${hi}` : `At least ${lo}` };
+      if (max !== undefined && n > max) return { code: "range", message: min !== undefined ? `${lo}–${hi}` : `At most ${hi}` };
     }
   }
   const len = length(value);
@@ -489,8 +495,45 @@ function literalEnds(pattern: string | undefined): { prefix?: string; suffix?: s
   return out;
 }
 
+const UNITS: Record<Unit, [RegExp, number][]> = {
+  seconds: [
+    [/^(?:s|secs?|seconds?)$/, 1],
+    [/^(?:m|mins?|minutes?)$/, 60],
+    [/^(?:h|hrs?|hours?)$/, 3600],
+    [/^(?:d|days?)$/, 86400],
+    [/^(?:w|wks?|weeks?)$/, 604800],
+  ],
+  bytes: [
+    [/^b(?:ytes?)?$/, 1],
+    [/^k(?:i?b)?$/, 1024],
+    [/^m(?:i?b)?$/, 1024 ** 2],
+    [/^g(?:i?b)?$/, 1024 ** 3],
+  ],
+};
+
+/** "12h" in seconds, "256 KiB" in bytes: the value in the rule's unit. */
+export function inUnit(value: string, unit: Unit): number | null {
+  const m = value.trim().toLowerCase().match(/^(\d+(?:\.\d+)?)\s*([a-z]+)$/);
+  const scale = m && UNITS[unit].find(([re]) => re.test(m[2]))?.[1];
+  return m && scale ? Number(m[1]) * scale : null;
+}
+
+/** A number as people read it in its unit: 43200 → "12h", 262144 → "256 KiB". */
+export function amount(n: number, unit?: Unit): string {
+  if (unit === "seconds") {
+    for (const [s, u] of [[604800, "w"], [86400, "d"], [3600, "h"], [60, "m"]] as const) if (n >= s && n % s === 0) return `${n / s}${u}`;
+    return `${n}s`;
+  }
+  if (unit === "bytes") {
+    for (const [s, u] of [[1024 ** 3, "GiB"], [1024 ** 2, "MiB"], [1024, "KiB"]] as const) if (n >= s && n % s === 0) return `${n / s} ${u}`;
+    return `${n} B`;
+  }
+  return String(n);
+}
+
 function numeric(value: string, rule: Rule): Repair | null {
-  const digits = value.replace(/[,_\s]/g, "").match(/-?\d+(\.\d+)?/)?.[0];
+  const converted = rule.unit ? inUnit(value, rule.unit) : null;
+  const digits = converted !== null ? String(converted) : value.replace(/[,_\s]/g, "").match(/-?\d+(\.\d+)?/)?.[0];
   if (digits === undefined) {
     return rule.min !== undefined ? { value: String(rule.min), label: `Use ${rule.min}`, kind: "fix" } : null;
   }
@@ -498,7 +541,7 @@ function numeric(value: string, rule: Rule): Repair | null {
   if (rule.type === "integer" || rule.format === "port") n = Math.round(n);
   const min = rule.min ?? (rule.format === "port" ? 0 : undefined);
   const max = rule.max ?? (rule.format === "port" ? 65535 : undefined);
-  let label = `Use ${n}`;
+  let label = converted !== null ? `${value.trim()} in ${rule.unit}` : `Use ${n}`;
   if (min !== undefined && n < min) [n, label] = [min, `Raise to the minimum, ${min}`];
   if (max !== undefined && n > max) [n, label] = [max, `Lower to the maximum, ${max}`];
   return { value: String(n), label, kind: "fix" };
@@ -1418,6 +1461,9 @@ export function parseServerIssues(message: string): FieldIssue[] {
   const missing = message.match(/(?:Missing required (?:parameter|key|field)|The parameter|Parameter) '?([A-Za-z][\w.]*)'? (?:is (?:required|missing)|must be specified)/i) ??
     message.match(/^(?:\w+: )?'?([A-Za-z][\w.]*)'? (?:is required|must be specified|cannot be empty)/);
   if (!param && missing) out.push({ member: missing[1], code: "required", message: "Required" });
+  // "Invalid value for the parameter VisibilityTimeout." (SQS attributes)
+  const attribute = message.match(/^Invalid value for the parameter (\w+)\.?$/);
+  if (attribute) out.push({ member: attribute[1], code: "server", message: "Invalid value" });
   return out;
 }
 

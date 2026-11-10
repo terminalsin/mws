@@ -64,7 +64,10 @@ test("validation: taken names and server conflicts suggest the next free name", 
   ({ name, field } = await openSheet(page));
   await sqs.send(new CreateQueueCommand({ QueueName: later, Attributes: { DelaySeconds: "5" } }));
   await name.fill(later);
-  await page.locator("dialog[open]").locator('select[name="dlq"]').selectOption({ index: 1 });
+  // A standard dead-letter queue: a FIFO one is rejected for a standard queue.
+  const dlq = page.locator("dialog[open]").locator('select[name="dlq"]');
+  const standard = (await dlq.locator("option").allTextContents()).find((t) => t !== "None" && !t.endsWith(".fifo"))!;
+  await dlq.selectOption({ label: standard });
   await page.locator("dialog[open]").locator('button[type="submit"]').click();
   await expect(field).toHaveAttribute("data-invalid", "taken");
   await expect(page.locator("dialog[open] .result.error")).toHaveCount(0);
