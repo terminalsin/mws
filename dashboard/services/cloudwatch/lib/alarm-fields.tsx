@@ -10,6 +10,7 @@ import type { MetricAlarm } from "@aws-sdk/client-cloudwatch";
 import { FieldShell } from "@mws-dashboard/ui/fields";
 import { PutMetricAlarm as Rules } from "@mws-dashboard/ui/model/cloudwatch";
 import { freeName, MoreFields, PresetGallery } from "@mws-dashboard/ui/presets";
+import { Section, Sections } from "@mws-dashboard/ui/sections";
 import type { Rule } from "@mws-dashboard/ui/validation";
 import { Wrench } from "lucide-react";
 import { useState } from "react";
@@ -181,80 +182,86 @@ export function AlarmFields({
     </>
   );
 
+  const key = p?.id ?? "custom";
   return (
-    <>
-      {!edit && (
-        <PresetGallery
-          presets={[...ALARM_PRESETS.map((a) => ({ ...a, found: namespaces.includes(a.namespace) })), CUSTOM]}
-          chosen={chosen?.id ?? CUSTOM.id}
-          choose={(x) => setChosen(ALARM_PRESETS.find((a) => a.id === x.id) ?? null)}
-          label="Alarm"
-          size={26}
-        />
-      )}
-      <div key={p?.id ?? "custom"} className="preset-fields">
-        {edit ? (
-          <input type="hidden" name="enabled" value={alarm.ActionsEnabled === false ? "off" : "on"} />
-        ) : (
-          <FieldShell label="Name" rule={Rules.AlarmName} taken={taken} generate="name" unique>
-            <input name="name" autoFocus defaultValue={p ? freeName(p.base, taken) : undefined} />
-          </FieldShell>
+    <Sections mode={edit ? "tabs" : "steps"} testId={testId}>
+      <Section id="metric" label="Metric" summary={p?.label ?? alarm?.MetricName}>
+        {!edit && (
+          <PresetGallery
+            presets={[...ALARM_PRESETS.map((a) => ({ ...a, found: namespaces.includes(a.namespace) })), CUSTOM]}
+            chosen={chosen?.id ?? CUSTOM.id}
+            choose={(x) => setChosen(ALARM_PRESETS.find((a) => a.id === x.id) ?? null)}
+            label="Alarm"
+            size={26}
+          />
         )}
-        {math ? (
-          <>
-            <FieldShell label="Metric math" rule={{ format: "json" }} hint="MetricDataQuery list">
-              <textarea name="metrics" rows={6} className="code-editor" defaultValue={JSON.stringify(alarm!.Metrics, null, 2)} />
-            </FieldShell>
-            {alarm?.ThresholdMetricId && <input type="hidden" name="thresholdMetric" value={alarm.ThresholdMetricId} />}
-          </>
-        ) : (
-          <>
-            {!p && metricFields}
-            <FieldShell label={p?.dimension && !p.dimensionValue ? p.dimension : "Dimensions"} rule={DIMENSIONS} known={known}>
-              <textarea name="dims" rows={p ? 1 : 2} placeholder={p?.dimension ? `${p.dimension}=…` : "QueueName=orders"} defaultValue={dimDefault} />
-            </FieldShell>
-          </>
-        )}
-        <div className="form-grid">
-          {!math && !p && statField}
-          <FieldShell label="Condition" rule={Rules.ComparisonOperator}>
-            <select name="comparison" defaultValue={alarm?.ComparisonOperator ?? p?.comparison ?? ops[0]}>
-              {ops.map((k) => (
-                <option key={k} value={k}>
-                  {OP[k]}
-                </option>
-              ))}
-            </select>
-          </FieldShell>
-          {!alarm?.ThresholdMetricId && (
-            <FieldShell label="Threshold" rule={{ ...Rules.Threshold, required: true }}>
-              <input name="threshold" type="number" step="any" defaultValue={alarm?.Threshold ?? p?.threshold} />
-            </FieldShell>
-          )}
-          {!math && !p && periodField}
-          {!p && evaluationsField}
-        </div>
-        <ActionFields alarm={alarm} topics={topics} topicArn={topicArn} fold={!edit} />
-        <MoreFields open={edit}>
-          {p && (
+        <div key={key} className="preset-fields">
+          {math ? (
             <>
-              {metricFields}
-              <div className="form-grid">
-                {statField}
-                {periodField}
-                {evaluationsField}
-              </div>
+              <FieldShell label="Metric math" rule={{ format: "json" }} hint="MetricDataQuery list">
+                <textarea name="metrics" rows={6} className="code-editor" defaultValue={JSON.stringify(alarm!.Metrics, null, 2)} />
+              </FieldShell>
+              {alarm?.ThresholdMetricId && <input type="hidden" name="thresholdMetric" value={alarm.ThresholdMetricId} />}
+            </>
+          ) : (
+            <>
+              {!p && metricFields}
+              <FieldShell label={p?.dimension && !p.dimensionValue ? p.dimension : "Dimensions"} rule={DIMENSIONS} known={known}>
+                <textarea name="dims" rows={p ? 1 : 2} placeholder={p?.dimension ? `${p.dimension}=…` : "QueueName=orders"} defaultValue={dimDefault} />
+              </FieldShell>
+              {p && (
+                <MoreFields label="Metric">
+                  {metricFields}
+                </MoreFields>
+              )}
             </>
           )}
-          {rare}
-          {!edit && <OtherActions topics={topics} topicArn={topicArn} />}
-          {!edit && (
-            <FieldShell label="Tags" rule={TAGS}>
-              <textarea name="tags" rows={1} placeholder="team=payments" />
+        </div>
+      </Section>
+      <Section id="condition" label="Condition">
+        <div key={key} className="preset-fields">
+          <div className="form-grid">
+            {!math && statField}
+            <FieldShell label="Condition" rule={Rules.ComparisonOperator}>
+              <select name="comparison" defaultValue={alarm?.ComparisonOperator ?? p?.comparison ?? ops[0]}>
+                {ops.map((k) => (
+                  <option key={k} value={k}>
+                    {OP[k]}
+                  </option>
+                ))}
+              </select>
+            </FieldShell>
+            {!alarm?.ThresholdMetricId && (
+              <FieldShell label="Threshold" rule={{ ...Rules.Threshold, required: true }}>
+                <input name="threshold" type="number" step="any" defaultValue={alarm?.Threshold ?? p?.threshold} />
+              </FieldShell>
+            )}
+            {!math && periodField}
+            {evaluationsField}
+          </div>
+          <MoreFields open={edit}>{rare}</MoreFields>
+        </div>
+      </Section>
+      <Section id="notify" label={edit ? "Actions" : "Notify and name"}>
+        <div key={key} className="preset-fields">
+          <ActionFields alarm={alarm} topics={topics} topicArn={topicArn} fold={!edit} />
+          {edit ? (
+            <input type="hidden" name="enabled" value={alarm.ActionsEnabled === false ? "off" : "on"} />
+          ) : (
+            <FieldShell label="Name" rule={Rules.AlarmName} taken={taken} generate="name" unique>
+              <input name="name" defaultValue={p ? freeName(p.base, taken) : undefined} />
             </FieldShell>
           )}
-        </MoreFields>
-      </div>
-    </>
+          {!edit && (
+            <MoreFields>
+              <OtherActions topics={topics} topicArn={topicArn} />
+              <FieldShell label="Tags" rule={TAGS}>
+                <textarea name="tags" rows={1} placeholder="team=payments" />
+              </FieldShell>
+            </MoreFields>
+          )}
+        </div>
+      </Section>
+    </Sections>
   );
 }

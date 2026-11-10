@@ -1,6 +1,8 @@
 import type { CompositeAlarm, MetricAlarm } from "@aws-sdk/client-cloudwatch";
 import { ActionForm, Field, type Rule } from "@mws-dashboard/ui";
 import { PutCompositeAlarm } from "@mws-dashboard/ui/model/cloudwatch";
+import { MoreFields } from "@mws-dashboard/ui/presets";
+import { Section, Sections } from "@mws-dashboard/ui/sections";
 
 import { ActionFields, AlarmFields } from "./alarm-fields";
 
@@ -27,7 +29,11 @@ export interface AlarmFormProps {
 
 export function AlarmForm({ action, testId, alarm, ...rest }: AlarmFormProps) {
   return (
-    <ActionForm action={action} submit={alarm ? "Save" : "Create"} testId={testId}>
+    <ActionForm
+      action={action}
+      submit={alarm ? "Save" : "Create"}
+      testId={testId}
+    >
       <AlarmFields alarm={alarm} testId={testId} {...rest} />
     </ActionForm>
   );
@@ -56,91 +62,101 @@ export function CompositeForm({
       submit={alarm ? "Save" : "Create"}
       testId={testId}
     >
-      {alarm ? (
-        <input
-          type="hidden"
-          name="enabled"
-          value={alarm.ActionsEnabled === false ? "off" : "on"}
-        />
-      ) : (
-        <Field
-          label="Name"
-          rule={PutCompositeAlarm.AlarmName}
-          taken={taken}
-          generate="name"
-          unique
-        >
-          <input name="name" autoFocus />
-        </Field>
-      )}
-      <Field label="Description" rule={PutCompositeAlarm.AlarmDescription}>
-        <input name="description" defaultValue={alarm?.AlarmDescription} />
-      </Field>
-      <Field
-        label="Rule"
-        rule={PutCompositeAlarm.AlarmRule}
-        hint='ALARM("cpu-high") AND NOT OK("latency")'
-      >
-        <textarea
-          name="rule"
-          rows={3}
-          className="code-editor"
-          required
-          defaultValue={
-            alarm?.AlarmRule ?? (alarms[0] ? `ALARM("${alarms[0]}")` : "")
-          }
-        />
-      </Field>
-      <ActionFields alarm={alarm} topics={topics} topicArn={topicArn} />
-      <Field
-        label="Actions suppressor"
-        rule={PutCompositeAlarm.ActionsSuppressor}
-        known={alarms}
-      >
-        <input
-          name="suppressor"
-          list={`${testId}-alarms`}
-          defaultValue={alarm?.ActionsSuppressor}
-        />
-      </Field>
-      <datalist id={`${testId}-alarms`}>
-        {alarms.map((n) => (
-          <option key={n} value={n} />
-        ))}
-      </datalist>
-      <div className="form-grid">
-        <Field
-          label="Wait (s)"
-          rule={{
-            ...PutCompositeAlarm.ActionsSuppressorWaitPeriod,
-            unit: "seconds",
-          }}
-        >
-          <input
-            name="wait"
-            type="number"
-            defaultValue={alarm?.ActionsSuppressorWaitPeriod ?? 60}
-          />
-        </Field>
-        <Field
-          label="Extension (s)"
-          rule={{
-            ...PutCompositeAlarm.ActionsSuppressorExtensionPeriod,
-            unit: "seconds",
-          }}
-        >
-          <input
-            name="extension"
-            type="number"
-            defaultValue={alarm?.ActionsSuppressorExtensionPeriod ?? 60}
-          />
-        </Field>
-      </div>
-      {!alarm && (
-        <Field label="Tags" rule={TAGS}>
-          <textarea name="tags" rows={1} placeholder="team=payments" />
-        </Field>
-      )}
+      <Sections mode={alarm ? "tabs" : "steps"} testId={testId}>
+        <Section id="rule" label="Rule">
+          {alarm ? (
+            <input
+              type="hidden"
+              name="enabled"
+              value={alarm.ActionsEnabled === false ? "off" : "on"}
+            />
+          ) : (
+            <Field
+              label="Name"
+              rule={PutCompositeAlarm.AlarmName}
+              taken={taken}
+              generate="name"
+              unique
+            >
+              <input name="name" autoFocus />
+            </Field>
+          )}
+          <Field label="Description" rule={PutCompositeAlarm.AlarmDescription}>
+            <input name="description" defaultValue={alarm?.AlarmDescription} />
+          </Field>
+          <Field
+            label="Rule"
+            rule={PutCompositeAlarm.AlarmRule}
+            hint='ALARM("cpu-high") AND NOT OK("latency")'
+          >
+            <textarea
+              name="rule"
+              rows={3}
+              className="code-editor"
+              required
+              defaultValue={
+                alarm?.AlarmRule ?? (alarms[0] ? `ALARM("${alarms[0]}")` : "")
+              }
+            />
+          </Field>
+        </Section>
+        <Section id="actions" label="Actions">
+          <ActionFields alarm={alarm} topics={topics} topicArn={topicArn} />
+          <MoreFields label="Suppression" open={!!alarm?.ActionsSuppressor}>
+            <Field
+              label="Actions suppressor"
+              rule={PutCompositeAlarm.ActionsSuppressor}
+              known={alarms}
+            >
+              <input
+                name="suppressor"
+                list={`${testId}-alarms`}
+                defaultValue={alarm?.ActionsSuppressor}
+              />
+            </Field>
+            <datalist id={`${testId}-alarms`}>
+              {alarms.map((n) => (
+                <option key={n} value={n} />
+              ))}
+            </datalist>
+            <div className="form-grid">
+              <Field
+                label="Wait (s)"
+                rule={{
+                  ...PutCompositeAlarm.ActionsSuppressorWaitPeriod,
+                  unit: "seconds",
+                }}
+              >
+                <input
+                  name="wait"
+                  type="number"
+                  defaultValue={alarm?.ActionsSuppressorWaitPeriod ?? 60}
+                />
+              </Field>
+              <Field
+                label="Extension (s)"
+                rule={{
+                  ...PutCompositeAlarm.ActionsSuppressorExtensionPeriod,
+                  unit: "seconds",
+                }}
+              >
+                <input
+                  name="extension"
+                  type="number"
+                  defaultValue={alarm?.ActionsSuppressorExtensionPeriod ?? 60}
+                />
+              </Field>
+            </div>
+          </MoreFields>
+          {!alarm && (
+            <MoreFields label="Tags">
+              <Field label="Tags" rule={TAGS}>
+                <textarea name="tags" rows={1} placeholder="team=payments" />
+              </Field>
+            </MoreFields>
+          )}
+        </Section>
+      </Sections>
     </ActionForm>
   );
 }

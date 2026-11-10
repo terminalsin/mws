@@ -38,6 +38,7 @@ export async function submit(page: Page, testId: string, fields: Record<string, 
   await expect(form).toBeVisible();
   for (const [name, value] of Object.entries(fields)) {
     const field = form.locator(`[name="${name}"]`);
+    await reveal(field);
     const tag = await field.evaluate((e) => e.tagName);
     const type = await field.getAttribute("type");
     if (tag === "SELECT") await field.selectOption(value);
@@ -45,6 +46,7 @@ export async function submit(page: Page, testId: string, fields: Record<string, 
     else await field.fill(value);
   }
   page.once("dialog", (d) => d.accept().catch(() => {}));
+  await lastStep(form);
   await form.locator('button[type="submit"]').click();
   const status = form.getByRole("status");
   if (inSheet) {
@@ -128,4 +130,26 @@ export async function settleWithClock(status: () => Promise<string | undefined>,
   } finally {
     await clock({ offsetSeconds: before });
   }
+}
+
+/** Open the form section (step or tab) that holds `control`, when the form
+ * is split into sections and it is in another one. */
+export async function reveal(control: Locator) {
+  await control.first().evaluate((el) => {
+    const panel = el.closest(".section-panel");
+    if (!panel || !(panel as HTMLElement).hidden) return;
+    const root = panel.parentElement!;
+    const i = [...root.querySelectorAll(":scope > .section-panel")].indexOf(panel);
+    (root.querySelectorAll(':scope > [role="tablist"] > [role="tab"]')[i] as HTMLElement | undefined)?.click();
+  });
+}
+
+/** Move a stepped form to its last step, where the submit button is. */
+export async function lastStep(form: Locator) {
+  await form.evaluate((el) => {
+    for (const root of el.querySelectorAll('.form-sections[data-last="false"]')) {
+      const tabs = root.querySelectorAll(':scope > [role="tablist"] > [role="tab"]');
+      (tabs[tabs.length - 1] as HTMLElement | undefined)?.click();
+    }
+  });
 }

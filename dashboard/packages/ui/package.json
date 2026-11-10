@@ -18,7 +18,8 @@
     "./model/*": "./src/model/*.ts",
     "./resources": "./src/resources.ts",
     "./pickers": "./src/pickers.tsx",
-    "./policy": "./src/policy.tsx"
+    "./policy": "./src/policy.tsx",
+    "./sections": "./src/sections.tsx"
   },
   "scripts": {
     "typecheck": "tsc --noEmit",

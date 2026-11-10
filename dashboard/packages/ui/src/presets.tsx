@@ -10,7 +10,7 @@
 //   <MoreFields> ...rarely needed fields... </MoreFields>
 
 import { Check, SlidersHorizontal } from "lucide-react";
-import type { ReactNode } from "react";
+import { useState, type ReactNode } from "react";
 
 import { iconUrl } from "./catalog";
 
@@ -44,6 +44,7 @@ export function PresetGallery<P extends PresetItem>({
   label,
   size = 28,
   testId = "preset",
+  tabs,
 }: {
   presets: P[];
   chosen: string | undefined;
@@ -51,17 +52,39 @@ export function PresetGallery<P extends PresetItem>({
   label: string;
   size?: number;
   testId?: string;
+  /** Show one group at a time behind a row of group chips (for big galleries). */
+  tabs?: boolean;
 }) {
   const groups = new Map<string, P[]>();
   for (const p of presets) {
     const g = p.group ?? "";
     groups.set(g, [...(groups.get(g) ?? []), p]);
   }
+  const titles = [...groups.keys()];
+  const tabbed = !!tabs && titles.length > 1;
+  const [shown, setShown] = useState(() => presets.find((p) => p.id === chosen)?.group ?? titles[0]);
   return (
-    <div className="presets" role="radiogroup" aria-label={label}>
+    <div className="presets" role="radiogroup" aria-label={label} data-tabbed={tabbed || undefined}>
+      {tabbed && (
+        <div className="preset-tabs" role="tablist" aria-label={`${label} groups`}>
+          {titles.map((t) => (
+            <button
+              key={t || "_"}
+              type="button"
+              role="tab"
+              aria-selected={t === shown}
+              data-testid={`${testId}-group-${(t || "other").toLowerCase().replace(/[^a-z0-9]+/g, "-")}`}
+              data-has-chosen={groups.get(t)!.some((p) => p.id === chosen) || undefined}
+              onClick={() => setShown(t)}
+            >
+              {t || label}
+            </button>
+          ))}
+        </div>
+      )}
       {[...groups].map(([title, list]) => (
-        <section key={title || "_"} aria-label={title || label}>
-          {title && <h3>{title}</h3>}
+        <section key={title || "_"} aria-label={title || label} hidden={tabbed && title !== shown}>
+          {title && !tabbed && <h3>{title}</h3>}
           <div className="preset-grid">
             {list.map((p) => (
               <button

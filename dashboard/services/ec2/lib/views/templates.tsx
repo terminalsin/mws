@@ -16,13 +16,20 @@ export async function CreateTemplateSheet() {
   return (
     <Sheet title="Create launch template" label="Create launch template" testId="create-launch-template">
       <ActionForm action={createTemplate} submit="Create" testId="create-launch-template">
-        <Field label="Name" rule={TEMPLATE_NAME} member="LaunchTemplateName" taken={choices.templates.map((t) => t.name)} unique>
-          <input name="name" required autoFocus />
-        </Field>
-        <Field label="Version description" rule={VERSION_DESCRIPTION} member="VersionDescription">
-          <input name="description" />
-        </Field>
-        <LaunchFields choices={choices} mode="template" />
+        <LaunchFields
+          choices={choices}
+          mode="template"
+          details={
+            <>
+              <Field label="Name" rule={TEMPLATE_NAME} member="LaunchTemplateName" taken={choices.templates.map((t) => t.name)} unique>
+                <input name="name" required />
+              </Field>
+              <Field label="Version description" rule={VERSION_DESCRIPTION} member="VersionDescription">
+                <input name="description" />
+              </Field>
+            </>
+          }
+        />
       </ActionForm>
     </Sheet>
   );
