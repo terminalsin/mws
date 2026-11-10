@@ -291,3 +291,25 @@ test("URLs: SSH remotes become HTTPS, scheme patterns get their scheme", () => {
   assert.deepEqual(values(source, "example.com/site.zip"), ["https://example.com/site.zip"]);
   assert.deepEqual(values(source, "ftp://x"), []);
 });
+
+test("yaml documents: JSON is repaired, tab indentation is replaced", () => {
+  const rule: Rule = { format: "yaml" };
+  assert.equal(check("Resources:\n  Q:\n    Type: AWS::SQS::Queue\n", rule), null);
+  assert.equal(check('{"Resources": {}}', rule), null);
+  assert.deepEqual(values(rule, "Resources:\n\tQ:\n\t\tType: AWS::SQS::Queue"), ["Resources:\n  Q:\n    Type: AWS::SQS::Queue"]);
+  assert.equal(check("a:\n\tb: 1", rule)?.message, "Tab indenting line 2");
+  assert.deepEqual(values(rule, "{'Resources': {},}"), ['{\n  "Resources": {}\n}']);
+});
+
+test("key=value lines: other notations are rewritten, duplicates flagged", () => {
+  const rule: Rule = { format: "keyvalue" };
+  assert.equal(check("Env=prod\n\nSize = 2", rule), null);
+  assert.equal(check("Url=https://x?a=b", rule), null);
+  assert.deepEqual(values(rule, "Env: prod\nSize: 2"), ["Env=prod\nSize=2"]);
+  assert.deepEqual(values(rule, "Env: prod, Size: 2"), ["Env=prod\nSize=2"]);
+  assert.deepEqual(values(rule, '{"Env": "prod", "Size": 2}'), ["Env=prod\nSize=2"]);
+  assert.deepEqual(values(rule, 'export ENV="prod"'), ["ENV=prod"]);
+  assert.equal(check("Env=dev\nEnv=prod", rule)?.message, "Env appears twice");
+  assert.deepEqual(values(rule, "Env=dev\nEnv=prod"), ["Env=prod"]);
+  assert.deepEqual(values(rule, "just words"), []);
+});

@@ -76,6 +76,8 @@ export type Rules = Record<string, Rule>;
 
 export type Format =
   | "json"
+  | "yaml"
+  | "keyvalue"
   | "policy"
   | "path"
   | "arn"
@@ -142,6 +144,9 @@ export interface FieldIssue {
   rule?: Rule;
   code: IssueCode;
   message: string;
+  /** Repairs the action worked out itself (it knows what the field's value
+   * refers to); offered as they are. */
+  repairs?: Repair[];
 }
 
 // ---------------------------------------------------------------------------
@@ -736,6 +741,50 @@ export const FORMATS: Record<Format, FormatSpec> = {
     repair(value) {
       const v = `/${value.trim().replace(/\s+/g, "-").replace(/[^\x21-\x7E]/g, "")}/`.replace(/\/{2,}/g, "/");
       return [{ value: v, label: "Fix the path", kind: "fix" }];
+    },
+  },
+  yaml: {
+    check(value, rule) {
+      if (/^\s*[{[]/.test(value)) return FORMATS.json.check(value, rule);
+      const tab = value.split("\n").findIndex((l) => /^ *\t/.test(l));
+      return tab >= 0 ? `Tab indenting line ${tab + 1}` : null;
+    },
+    repair(value, rule) {
+      if (/^\s*[{[]/.test(value)) return FORMATS.json.repair!(value, rule);
+      const fixed = value.replace(/^[ \t]+/gm, (indent) => indent.replace(/\t/g, "  "));
+      return [{ value: fixed, label: "Indent with spaces", kind: "fix" }];
+    },
+  },
+  keyvalue: {
+    check(value) {
+      const lines = value.split("\n").map((l) => l.trim());
+      const bad = lines.findIndex((l) => l && !/^[^=\s]+\s*=/.test(l));
+      if (bad >= 0) return `Line ${bad + 1}: Key=value`;
+      const keys = lines.filter(Boolean).map((l) => l.slice(0, l.indexOf("=")).trim());
+      const twice = keys.find((k, i) => keys.indexOf(k) !== i);
+      return twice ? `${twice} appears twice` : null;
+    },
+    repair(value) {
+      const pairs: [string, string][] = [];
+      let object: unknown = null;
+      try {
+        object = JSON.parse(repairJson(value) ?? "null");
+      } catch {
+        object = null;
+      }
+      if (object && typeof object === "object" && !Array.isArray(object)) {
+        for (const [k, v] of Object.entries(object)) pairs.push([k, typeof v === "string" ? v : JSON.stringify(v)]);
+      } else {
+        // `Key: value`, `Key = value`, `export KEY="v"`, or pairs on one line.
+        for (const part of value.split(/\n|[,;](?=\s*[\w.-]+\s*[=:])/)) {
+          const m = part.trim().replace(/^export\s+/, "").match(/^["']?([^\s=:"']+)["']?\s*[=:]\s*(.*)$/);
+          if (m) pairs.push([m[1], m[2].trim().replace(/^(["'])(.*)\1$/, "$2")]);
+          else if (part.trim()) return [];
+        }
+      }
+      // A repeated key keeps its last value, as the API would.
+      const merged = new Map(pairs);
+      return merged.size ? [{ value: [...merged].map(([k, v]) => `${k}=${v}`).join("\n"), label: "One Key=value per line", kind: "fix" }] : [];
     },
   },
   arn: {
