@@ -313,3 +313,13 @@ test("key=value lines: other notations are rewritten, duplicates flagged", () =>
   assert.deepEqual(values(rule, "Env=dev\nEnv=prod"), ["Env=prod"]);
   assert.deepEqual(values(rule, "just words"), []);
 });
+
+test("directories are made absolute, cleaned and cut to the allowed depth", () => {
+  // EFS access points: up to 4 levels, no trailing slash, no leading dots.
+  const efs: Rule = { format: "dir", maxLength: 100, pattern: "^(\\/|(\\/(?!\\.)+[^$#<>;`|&?{}^*/\\n]+){1,4})$" };
+  assert.equal(check("app", efs)?.code, "format");
+  assert.deepEqual(values(efs, "app"), ["/app"]);
+  assert.deepEqual(values(efs, "/srv//my data/"), ["/srv/my-data"]);
+  assert.deepEqual(values(efs, "/.cache"), ["/cache"]);
+  assert.deepEqual(values(efs, "/a/b/c/d/e"), ["/a/b/c/d"]);
+});

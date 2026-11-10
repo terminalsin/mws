@@ -115,7 +115,7 @@ Fields validate in place, and say how to fix what they reject. `Field`
    `<Field rule={CreateFunction.FunctionName}>`;
 2. the control's own attributes (`required`, `maxLength`, `min`, `type`...);
 3. what the page adds: `format` (`json`, `yaml` (YAML or JSON documents),
-   `keyvalue` (one `Key=value` per line), `policy`, `path`, `arn`, `cidr`,
+   `keyvalue` (one `Key=value` per line), `policy`, `path` (IAM), `dir`, `arn`, `cidr`,
    `ipv4`, `email`, `emails` (a comma-separated list), `domain`,
    `email-or-domain`, `url`, `s3url`, `bucket`, `name`, `port`, `phone`,
    `tags` for `key=value` tag lines, `pairs` for any `key=value` list,

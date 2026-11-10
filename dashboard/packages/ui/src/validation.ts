@@ -97,7 +97,8 @@ export type Format =
   | "phone"
   | "pairs"
   | "tags"
-  | "branch";
+  | "branch"
+  | "dir";
 
 /** "name": a readable resource name; "token": random letters and digits;
  * "password": meets the usual complexity rules; or a fixed prefix/suffix
@@ -1076,6 +1077,33 @@ export const FORMATS: Record<Format, FormatSpec> = {
         .filter(Boolean)
         .join("/");
       return v && v !== "@" ? [{ value: v, label: "Fix the branch name", kind: "fix" }] : [];
+    },
+  },
+  dir: {
+    check(value) {
+      return value.startsWith("/") ? null : "An absolute path, like /data";
+    },
+    repair(value, rule) {
+      // Backslashes, doubled or trailing slashes, spaces and shell
+      // characters cleaned up; then leading dots dropped; then the path cut
+      // to the depth the pattern allows. Both slash endings are tried, as
+      // some APIs want one (IAM paths) and others forbid it (EFS).
+      const segments = value
+        .replace(/\\/g, "/")
+        .split("/")
+        .map((s) => s.trim().replace(/\s+/g, "-").replace(/[$#<>;`|&?{}^*\n]/g, ""))
+        .filter(Boolean);
+      const out: Repair[] = [];
+      const add = (segs: string[], label: string) => {
+        const p = "/" + segs.join("/");
+        const v = [p, p + "/"].find((c) => c !== value && valid(c, rule));
+        if (v) out.push({ value: v, label, kind: "fix" });
+      };
+      add(segments, "Clean up the path");
+      const undotted = segments.map((s) => s.replace(/^\.+/, "")).filter(Boolean);
+      if (out.length === 0) add(undotted, "Drop leading dots");
+      for (let n = undotted.length - 1; out.length === 0 && n >= 1; n--) add(undotted.slice(0, n), `Keep ${n} level${n === 1 ? "" : "s"}`);
+      return out;
     },
   },
 };
