@@ -10,7 +10,7 @@ import { FieldShell } from "@mws-dashboard/ui/fields";
 import { Check, ExternalLink, SlidersHorizontal, Wrench } from "lucide-react";
 import { useState, type ReactNode } from "react";
 
-import { PRESETS, type Kind, type Local, type Preset } from "../../../lib/presets";
+import { NO_LOCAL, PRESETS, type Kind, type Local, type Preset } from "../../../lib/presets";
 
 export interface ProviderView {
   name: string;
@@ -27,6 +27,8 @@ export interface ProviderView {
   command?: string;
   args?: string[];
   installed?: boolean;
+  /** The bridge a CLI provider runs through. */
+  bridge?: string;
 }
 
 // The console stores names lowercased; MWS takes letters, digits, - _ and .
@@ -53,7 +55,7 @@ function Logo({ icon, size = 28 }: { icon: string; size?: number }) {
 
 /** The preset gallery: on this machine first (found tools before the rest), then cloud APIs. */
 function Gallery({ chosen, choose, local, names }: { chosen: string; choose: (p: Preset) => void; local: Local; names: string[] }) {
-  const found = (p: Preset) => !!(p.detect && local[p.detect]?.found);
+  const found = (p: Preset) => !!(p.detect && local.tools[p.detect]?.found);
   const groups: [string, Preset[]][] = [
     ["On this machine", PRESETS.filter((p) => p.place === "local").sort((a, b) => Number(found(b)) - Number(found(a)))],
     ["Cloud", PRESETS.filter((p) => p.place === "cloud")],
@@ -77,7 +79,7 @@ function Gallery({ chosen, choose, local, names }: { chosen: string; choose: (p:
               >
                 <Logo icon={p.icon} />
                 <span>{p.label}</span>
-                {found(p) && <i className="preset-found" aria-label="Installed" title={local[p.detect!]?.path} />}
+                {found(p) && <i className="preset-found" aria-label="Installed" title={local.tools[p.detect!]?.via === "bridge" ? "On the host, through the bridge" : local.tools[p.detect!]?.path} />}
                 {names.includes(p.id) && <Check className="preset-added" size={12} aria-label="Added" />}
               </button>
             ))}
@@ -95,10 +97,10 @@ function Gallery({ chosen, choose, local, names }: { chosen: string; choose: (p:
 }
 
 /** Fields that only some providers need, folded away unless `open`. */
-function More({ open, children }: { open: boolean; children: ReactNode }) {
+function More({ open, expanded, children }: { open: boolean; expanded?: boolean; children: ReactNode }) {
   if (open) return <>{children}</>;
   return (
-    <details className="more-fields">
+    <details className="more-fields" open={expanded}>
       <summary>
         <SlidersHorizontal size={14} aria-hidden /> More
       </summary>
@@ -107,7 +109,7 @@ function More({ open, children }: { open: boolean; children: ReactNode }) {
   );
 }
 
-export function ProviderFields({ p, names = [], local = {} }: { p?: ProviderView; names?: string[]; local?: Local }) {
+export function ProviderFields({ p, names = [], local = NO_LOCAL }: { p?: ProviderView; names?: string[]; local?: Local }) {
   const [preset, setPreset] = useState<Preset>(CUSTOM);
   // An existing provider shows its own kind's fields; a new one its preset's.
   const kind: Kind = p?.kind ?? preset.kind;
@@ -115,7 +117,16 @@ export function ProviderFields({ p, names = [], local = {} }: { p?: ProviderView
   const cli = isCli(kind);
   const localServer = !p && preset.place === "local" && !cli;
   const v = (from: string | undefined, fallback?: string) => (p ? from : fallback);
-  const tool = cli ? local[kind] : undefined;
+  const tool = cli ? local.tools[kind] : undefined;
+  // A container cannot run the host's CLI: offer the bridge up front.
+  const needsBridge = cli && local.container && !local.bridge && !p?.bridge && (p ? p.installed === false : !tool?.found);
+  const missing = needsBridge ? (
+    <span className="warn-text">
+      MWS runs in a container: run <code>mws bedrock-bridge</code> on the host
+    </span>
+  ) : (
+    <span className="warn-text">Not found where MWS runs</span>
+  );
   return (
     <>
       {!p && (
@@ -149,13 +160,7 @@ export function ProviderFields({ p, names = [], local = {} }: { p?: ProviderView
         {cli && (
           <FieldShell
             label="Command"
-            hint={
-              tool && !tool.found && !p ? (
-                <span className="warn-text">Not found where MWS runs</span>
-              ) : p && p.installed === false ? (
-                <span className="warn-text">Not found where MWS runs</span>
-              ) : undefined
-            }
+            hint={(!p && tool && !tool.found) || p?.installed === false ? missing : undefined}
           >
             <input name="command" defaultValue={p?.command ?? preset.command} placeholder={kind === "codex" ? "codex" : "claude"} />
           </FieldShell>
@@ -192,7 +197,17 @@ export function ProviderFields({ p, names = [], local = {} }: { p?: ProviderView
             <input name="model" defaultValue={v(p?.model, preset.model)} placeholder={cli || preset.models ? "auto" : "llama3.1:8b"} />
           </FieldShell>
         </div>
-        <More open={custom}>
+        <More open={custom} expanded={needsBridge}>
+          {cli && (
+            <div className="form-row">
+              <FieldShell label="Bridge URL" format="url">
+                <input name="url" defaultValue={p?.url} placeholder={local.bridge?.url ?? "http://host.docker.internal:4599"} />
+              </FieldShell>
+              <FieldShell label="Bridge token">
+                <input name="apiKey" type="password" autoComplete="off" placeholder={p?.apiKeySet ? `${p.apiKey} (unchanged)` : ""} />
+              </FieldShell>
+            </div>
+          )}
           {!cli && !custom && !localServer && !p && (
             <FieldShell label="URL" format="url">
               <input name="url" defaultValue={preset.url} />

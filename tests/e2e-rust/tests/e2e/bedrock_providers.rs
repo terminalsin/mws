@@ -359,8 +359,33 @@ echo '{{"type":"turn.completed","usage":{{"input_tokens":20,"output_tokens":3}}}
     let (status, local) = mws.control("GET", "/_aws/bedrock/local", None).await;
     assert_eq!(status, 200);
     for k in ["claude-code", "codex", "ollama", "lmstudio"] {
-        assert!(local[k]["found"].is_boolean(), "{local}");
+        assert!(local["tools"][k]["found"].is_boolean(), "{local}");
     }
+    assert!(local["container"].is_boolean(), "{local}");
+
+    // Through a bridge (what an MWS in a container uses to reach the
+    // host's CLI): the bridge runs its own command with its own login.
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let bridge = format!("http://{}", listener.local_addr().unwrap());
+    let commands = mws::bedrock_cli::BridgeCommands {
+        claude: dir.join("claude").display().to_string(),
+        codex: dir.join("codex").display().to_string(),
+    };
+    tokio::spawn(mws::bedrock_cli::serve_bridge(listener, "bridge-secret".into(), commands));
+    let via = json!({"kind": "claude-code", "url": bridge, "apiKey": "bridge-secret", "models": ["cohere.*"]});
+    let (status, v) = mws.control("PUT", "/_aws/bedrock/providers/host-claude", Some(&via.to_string())).await;
+    assert_eq!(status, 200, "{v}");
+    assert_eq!(v["bridge"], bridge.as_str());
+    let _ = std::fs::remove_file(dir.join("claude.stdin"));
+    let out = r.converse().model_id("cohere.command-r-v1:0").messages(user("over the bridge")).send().await.unwrap();
+    let ConverseOutput::Message(m) = out.output().unwrap() else { panic!("no message") };
+    assert_eq!(m.content()[0].as_text().unwrap(), "hi from claude code");
+    assert_eq!(std::fs::read_to_string(dir.join("claude.stdin")).unwrap(), "over the bridge");
+    // A wrong token is refused.
+    let bad = json!({"kind": "claude-code", "url": bridge, "apiKey": "nope", "models": ["cohere.*"]});
+    mws.control("PUT", "/_aws/bedrock/providers/host-claude", Some(&bad.to_string())).await;
+    let err = r.converse().model_id("cohere.command-r-v1:0").messages(user("x")).send().await.unwrap_err();
+    assert!(format!("{:?}", err.into_service_error()).contains("bridge token"));
     mws.stop().await;
     let _ = std::fs::remove_dir_all(&dir);
 }

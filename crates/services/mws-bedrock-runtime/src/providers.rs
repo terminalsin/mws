@@ -273,7 +273,13 @@ impl Resolved {
         });
         if self.kind.is_cli() {
             let command = self.command.clone().unwrap_or_else(|| crate::cli::default_command(self.kind).to_string());
-            v["installed"] = json!(crate::cli::find(&command).is_some());
+            if !self.url.is_empty() {
+                v["url"] = json!(self.url);
+            }
+            match crate::cli::bridge_url(self) {
+                Some(url) => v["bridge"] = json!(url),
+                None => v["installed"] = json!(crate::cli::find(&command).is_some()),
+            }
             v["command"] = json!(command);
             v["args"] = json!(self.args);
         } else if self.kind != Kind::Echo {

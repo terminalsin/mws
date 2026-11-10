@@ -66,7 +66,7 @@ test("Bedrock: a preset fills in the provider, local CLIs included", async ({ pa
   expect(name).toMatch(/^codex(-\d+)?$/);
   await expect(control("kind")).toHaveValue("codex");
   await expect(control("command")).toHaveValue("codex");
-  await expect(control("apiKey")).toHaveCount(0);
+  await expect(control("apiKey")).toBeHidden();
   await control("models").fill(`dashcli${Date.now()}.*`);
   const models = await control("models").inputValue();
   await form.locator('button[type="submit"]').click();

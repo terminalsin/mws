@@ -7,12 +7,19 @@
 //! written out as a transcript. Bedrock tool definitions become an
 //! instruction to answer with a JSON `tool_use` object, which is read back
 //! as a real tool call.
+//!
+//! When MWS runs in a container the CLI usually lives on the host, so a
+//! provider can run it through a bridge instead: `mws bedrock-bridge` on
+//! the host (see [`serve_bridge`]) runs the CLI with the host's login, and
+//! the provider's `url` (or `MWS_BEDROCK_CLI_BRIDGE`) points at it.
 
 use std::path::{Path, PathBuf};
 use std::process::Stdio;
+use std::time::Duration;
 
+use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
-use tokio::io::AsyncWriteExt;
+use tokio::io::{AsyncReadExt, AsyncWriteExt};
 
 use crate::backend::{tool_use_id, Backend, BackendError};
 use crate::prompt::{tokens, Completion, OutPart, Part, Prompt, Role, StopReason, ToolChoice};
@@ -26,14 +33,51 @@ pub fn default_command(kind: Kind) -> &'static str {
     }
 }
 
-/// The full path of `command` (a bare name is looked up on `PATH`).
+/// The full path of `command`: a path as given (`~/` expanded), else a bare
+/// name on `PATH`, else in the places the installers put these CLIs (MWS
+/// started from an IDE or a service manager often has a shorter `PATH`).
 pub fn find(command: &str) -> Option<PathBuf> {
-    let p = Path::new(command);
-    if p.components().count() > 1 {
-        return is_executable(p).then(|| p.to_path_buf());
+    let home = std::env::var_os("HOME").map(PathBuf::from);
+    let expanded = match (command.strip_prefix("~/"), &home) {
+        (Some(rest), Some(h)) => h.join(rest),
+        _ => PathBuf::from(command),
+    };
+    if expanded.components().count() > 1 {
+        return is_executable(&expanded).then_some(expanded);
     }
-    let path = std::env::var_os("PATH")?;
-    std::env::split_paths(&path).map(|d| d.join(command)).find(|c| is_executable(c))
+    let on_path = std::env::var_os("PATH")
+        .into_iter()
+        .flat_map(|p| std::env::split_paths(&p).collect::<Vec<_>>())
+        .map(|d| d.join(command));
+    on_path.chain(install_dirs(home.as_deref()).into_iter().map(|d| d.join(command))).find(|c| is_executable(c))
+}
+
+/// Where the Claude Code, Codex, Ollama and LM Studio installers put their
+/// executables.
+fn install_dirs(home: Option<&Path>) -> Vec<PathBuf> {
+    let mut dirs: Vec<PathBuf> =
+        ["/opt/homebrew/bin", "/usr/local/bin", "/usr/bin"].iter().map(PathBuf::from).collect();
+    if let Some(h) = home {
+        for d in [
+            ".claude/local",
+            ".local/bin",
+            ".npm-global/bin",
+            ".bun/bin",
+            ".volta/bin",
+            ".cargo/bin",
+            ".lmstudio/bin",
+            "bin",
+        ] {
+            dirs.push(h.join(d));
+        }
+        // nvm: every installed Node version, newest first.
+        if let Ok(entries) = std::fs::read_dir(h.join(".nvm/versions/node")) {
+            let mut versions: Vec<PathBuf> = entries.filter_map(|e| e.ok()).map(|e| e.path().join("bin")).collect();
+            versions.sort();
+            dirs.extend(versions.into_iter().rev());
+        }
+    }
+    dirs
 }
 
 fn is_executable(p: &Path) -> bool {
@@ -65,7 +109,8 @@ pub fn transcript(prompt: &Prompt) -> (String, String) {
         let tools = serde_json::to_string_pretty(&tools).expect("JSON serializes");
         let block = format!(
             "You can call these tools:\n{tools}\n\n{must} To call one, reply with only a JSON object \
-             {{\"tool_use\": {{\"name\": \"<tool>\", \"input\": {{...}}}}}} and nothing else. \
+             {{\"tool_use\": {{\"name\": \"<tool>\", \"input\": {{...}}}}}} (one per call) and nothing else: \
+             no tags, no prose. \
              Tool results come back in the next user turn."
         );
         system = if system.is_empty() { block } else { format!("{system}\n\n{block}") };
@@ -117,15 +162,35 @@ fn parts_of(prompt: &Prompt, text: String) -> (Vec<OutPart>, StopReason) {
         .map(str::trim)
         .unwrap_or(trimmed);
     if !prompt.tools.is_empty() {
-        if let Ok(v) = serde_json::from_str::<Value>(unfenced) {
-            let call = v.get("tool_use").unwrap_or(&v);
-            if let Some(name) = call.get("name").and_then(Value::as_str) {
-                if prompt.tools.iter().any(|t| t.name == name) {
-                    let input = call.get("input").cloned().filter(Value::is_object).unwrap_or_else(|| json!({}));
-                    let part = OutPart::ToolUse { id: tool_use_id(), name: name.to_string(), input };
-                    return (vec![part], StopReason::ToolUse);
+        let call = |v: &Value| -> Option<OutPart> {
+            let call = v.get("tool_use").unwrap_or(v);
+            let name = call.get("name").and_then(Value::as_str)?;
+            prompt.tools.iter().any(|t| t.name == name).then(|| OutPart::ToolUse {
+                id: tool_use_id(),
+                name: name.to_string(),
+                input: call.get("input").cloned().filter(Value::is_object).unwrap_or_else(|| json!({})),
+            })
+        };
+        if let Some(part) = serde_json::from_str::<Value>(unfenced).ok().as_ref().and_then(call) {
+            return (vec![part], StopReason::ToolUse);
+        }
+        // Models sometimes wrap the call (in tags, a list, a sentence):
+        // every `{"tool_use": ...}` object anywhere in the answer counts.
+        let mut calls = Vec::new();
+        let mut from = 0;
+        while let Some(at) = text[from..].find("\"tool_use\"").map(|i| i + from) {
+            from = at + 1;
+            let Some(open) = text[..at].rfind('{') else { continue };
+            let mut stream = serde_json::Deserializer::from_str(&text[open..]).into_iter::<Value>();
+            if let Some(Ok(v)) = stream.next() {
+                if let Some(part) = call(&v) {
+                    calls.push(part);
+                    from = open + stream.byte_offset();
                 }
             }
+        }
+        if !calls.is_empty() {
+            return (calls, StopReason::ToolUse);
         }
     }
     let mut text = text;
@@ -147,7 +212,7 @@ impl Cli {
         self.provider.command.clone().unwrap_or_else(|| default_command(self.provider.kind).to_string())
     }
 
-    fn args(&self, system: &str, model: Option<&str>, out_file: &Path) -> Vec<String> {
+    fn args(&self, system: &str, model: Option<&str>) -> Vec<String> {
         let mut a: Vec<String> = Vec::new();
         match self.provider.kind {
             Kind::Codex => {
@@ -165,7 +230,7 @@ impl Cli {
                     .map(String::from),
                 );
                 a.push("-o".into());
-                a.push(out_file.display().to_string());
+                a.push(OUT.into());
                 if let Some(m) = model {
                     a.extend(["-m".into(), m.to_string()]);
                 }
@@ -203,30 +268,24 @@ impl Cli {
 #[async_trait::async_trait]
 impl Backend for Cli {
     async fn complete(&self, prompt: &Prompt) -> Result<Completion, BackendError> {
-        let command = self.command();
-        let label = match self.provider.kind {
-            Kind::Codex => "Codex",
-            _ => "Claude Code",
-        };
-        let Some(exe) = find(&command) else {
-            return Err(BackendError {
-                status: 502,
-                message: format!("The {label} CLI ({command}) is not installed where MWS runs."),
-            });
-        };
+        let label = label(self.provider.kind);
         let (system, mut body) = transcript(prompt);
         if self.provider.kind == Kind::Codex && !system.is_empty() {
             body = format!("<instructions>\n{system}\n</instructions>\n\n{body}");
         }
         let model = self.provider.cli_model(&prompt.model_id);
-        let dir = std::env::temp_dir().join(format!("mws-bedrock-{}", uuid::Uuid::new_v4().simple()));
-        std::fs::create_dir_all(&dir)
-            .map_err(|e| BackendError { status: 500, message: format!("Could not create a scratch directory: {e}") })?;
-        let out_file = dir.join("answer.txt");
-        let result = self.run(&exe, &dir, &self.args(&system, model.as_deref(), &out_file), &body, label).await;
-        let answer = std::fs::read_to_string(&out_file).ok();
-        let _ = std::fs::remove_dir_all(&dir);
-        let stdout = result?;
+        let run = Run {
+            kind: self.provider.kind,
+            args: self.args(&system, model.as_deref()),
+            stdin: body,
+            timeout_seconds: self.provider.timeout.as_secs(),
+        };
+        let out = match bridge_url(&self.provider) {
+            Some(url) => run_on_bridge(&url, bridge_token(&self.provider).as_deref(), &run).await?,
+            None => run_here(&self.command(), &run).await?,
+        };
+        let stdout = checked(&out, self.provider.kind, label)?;
+        let answer = out.answer;
 
         let (text, input_tokens, output_tokens) = match self.provider.kind {
             Kind::Codex => {
@@ -298,54 +357,334 @@ impl Backend for Cli {
     }
 }
 
-impl Cli {
-    async fn run(
-        &self,
-        exe: &Path,
-        dir: &Path,
-        args: &[String],
-        stdin: &str,
-        label: &str,
-    ) -> Result<String, BackendError> {
-        let mut child = tokio::process::Command::new(exe)
-            .args(args)
-            .current_dir(dir)
-            .stdin(Stdio::piped())
-            .stdout(Stdio::piped())
-            .stderr(Stdio::piped())
-            .kill_on_drop(true)
-            .spawn()
-            .map_err(|e| BackendError { status: 502, message: format!("Could not start {label}: {e}") })?;
-        if let Some(mut input) = child.stdin.take() {
-            let _ = input.write_all(stdin.as_bytes()).await;
-        }
-        let out = tokio::time::timeout(self.provider.timeout, child.wait_with_output())
-            .await
-            .map_err(|_| BackendError {
-                status: 504,
-                message: format!("{label} did not answer within {} seconds.", self.provider.timeout.as_secs()),
-            })?
-            .map_err(|e| BackendError { status: 502, message: format!("{label} failed: {e}") })?;
-        let stdout = String::from_utf8_lossy(&out.stdout).into_owned();
-        if !out.status.success() && self.provider.kind == Kind::Codex {
-            let err = String::from_utf8_lossy(&out.stderr);
-            let tail: String =
-                err.lines().rev().find(|l| !l.trim().is_empty()).unwrap_or("").chars().take(500).collect();
-            return Err(BackendError { status: 502, message: format!("{label} exited with {}: {tail}", out.status) });
-        }
-        if !out.status.success() && stdout.trim().is_empty() {
-            let err = String::from_utf8_lossy(&out.stderr);
-            return Err(BackendError {
-                status: 502,
-                message: format!(
-                    "{label} exited with {}: {}",
-                    out.status,
-                    err.trim().chars().take(500).collect::<String>()
-                ),
-            });
-        }
-        Ok(stdout)
+fn label(kind: Kind) -> &'static str {
+    match kind {
+        Kind::Codex => "Codex",
+        _ => "Claude Code",
     }
+}
+
+/// Where a CLI provider's runs go instead of this machine: its `url`, else
+/// `MWS_BEDROCK_CLI_BRIDGE`.
+pub fn bridge_url(p: &Resolved) -> Option<String> {
+    Some(p.url.clone())
+        .filter(|u| !u.is_empty())
+        .or_else(|| std::env::var("MWS_BEDROCK_CLI_BRIDGE").ok().filter(|u| !u.is_empty()))
+}
+
+/// The bridge's token: the provider's `apiKey`, else
+/// `MWS_BEDROCK_CLI_BRIDGE_TOKEN`.
+fn bridge_token(p: &Resolved) -> Option<String> {
+    p.api_key.clone().or_else(|| std::env::var("MWS_BEDROCK_CLI_BRIDGE_TOKEN").ok().filter(|t| !t.is_empty()))
+}
+
+/// The placeholder for the answer file in a CLI's arguments; whoever runs
+/// the CLI puts a file of its own there.
+const OUT: &str = "{mws:answer-file}";
+
+/// One CLI run, as MWS asks a bridge for it.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct Run {
+    pub kind: Kind,
+    pub args: Vec<String>,
+    pub stdin: String,
+    pub timeout_seconds: u64,
+}
+
+/// What a run produced.
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", default)]
+pub struct RunOutput {
+    pub success: bool,
+    pub status: String,
+    pub stdout: String,
+    pub stderr: String,
+    /// The answer file's contents, when the CLI wrote one.
+    pub answer: Option<String>,
+}
+
+/// The CLI's stdout, or the failure it reported.
+fn checked(out: &RunOutput, kind: Kind, label: &str) -> Result<String, BackendError> {
+    let tail = |s: &str| {
+        s.trim().lines().rev().find(|l| !l.trim().is_empty()).unwrap_or("").chars().take(500).collect::<String>()
+    };
+    if !out.success && (kind == Kind::Codex || out.stdout.trim().is_empty()) {
+        return Err(BackendError {
+            status: 502,
+            message: format!("{label} exited with {}: {}", out.status, tail(&out.stderr)),
+        });
+    }
+    Ok(out.stdout.clone())
+}
+
+/// Run the CLI on this machine, in a scratch directory.
+pub async fn run_here(command: &str, run: &Run) -> Result<RunOutput, BackendError> {
+    let label = label(run.kind);
+    let Some(exe) = find(command) else {
+        let hint = if in_container() {
+            " MWS runs in a container: run `mws bedrock-bridge` on the host and set the provider's URL (or MWS_BEDROCK_CLI_BRIDGE) to it."
+        } else {
+            ""
+        };
+        return Err(BackendError {
+            status: 502,
+            message: format!("The {label} CLI ({command}) is not installed where MWS runs.{hint}"),
+        });
+    };
+    let dir = std::env::temp_dir().join(format!("mws-bedrock-{}", uuid::Uuid::new_v4().simple()));
+    std::fs::create_dir_all(&dir)
+        .map_err(|e| BackendError { status: 500, message: format!("Could not create a scratch directory: {e}") })?;
+    let out_file = dir.join("answer.txt");
+    let args: Vec<String> =
+        run.args.iter().map(|a| if a == OUT { out_file.display().to_string() } else { a.clone() }).collect();
+    let result = spawn(&exe, &dir, &args, &run.stdin, Duration::from_secs(run.timeout_seconds.max(1)), label).await;
+    let answer = std::fs::read_to_string(&out_file).ok();
+    let _ = std::fs::remove_dir_all(&dir);
+    result.map(|o| RunOutput { answer, ..o })
+}
+
+async fn spawn(
+    exe: &Path,
+    dir: &Path,
+    args: &[String],
+    stdin: &str,
+    timeout: Duration,
+    label: &str,
+) -> Result<RunOutput, BackendError> {
+    let mut child = tokio::process::Command::new(exe)
+        .args(args)
+        .current_dir(dir)
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .kill_on_drop(true)
+        .spawn()
+        .map_err(|e| BackendError { status: 502, message: format!("Could not start {label}: {e}") })?;
+    if let Some(mut input) = child.stdin.take() {
+        let _ = input.write_all(stdin.as_bytes()).await;
+    }
+    let out = tokio::time::timeout(timeout, child.wait_with_output())
+        .await
+        .map_err(|_| BackendError {
+            status: 504,
+            message: format!("{label} did not answer within {} seconds.", timeout.as_secs()),
+        })?
+        .map_err(|e| BackendError { status: 502, message: format!("{label} failed: {e}") })?;
+    Ok(RunOutput {
+        success: out.status.success(),
+        status: out.status.to_string(),
+        stdout: String::from_utf8_lossy(&out.stdout).into_owned(),
+        stderr: String::from_utf8_lossy(&out.stderr).into_owned(),
+        answer: None,
+    })
+}
+
+/// Run the CLI through a bridge.
+async fn run_on_bridge(url: &str, token: Option<&str>, run: &Run) -> Result<RunOutput, BackendError> {
+    let label = label(run.kind);
+    let mut headers = vec![("Content-Type".to_string(), "application/json".to_string())];
+    if let Some(t) = token {
+        headers.push(("Authorization".into(), format!("Bearer {t}")));
+    }
+    let endpoint = format!("{}/run", url.trim_end_matches('/'));
+    let res = crate::client::send_with_timeout(
+        crate::client::Request {
+            method: "POST",
+            url: &endpoint,
+            headers,
+            body: Some(serde_json::to_vec(run).expect("JSON serializes")),
+        },
+        Duration::from_secs(run.timeout_seconds + 10),
+    )
+    .await
+    .map_err(|e| BackendError {
+        status: 502,
+        message: format!("The {label} bridge at {url} could not be reached: {e}"),
+    })?;
+    if res.status != 200 {
+        let msg = serde_json::from_slice::<Value>(&res.body)
+            .ok()
+            .and_then(|v| v.get("message").and_then(Value::as_str).map(str::to_string))
+            .unwrap_or_else(|| String::from_utf8_lossy(&res.body).chars().take(300).collect());
+        return Err(BackendError {
+            status: if res.status == 504 { 504 } else { 502 },
+            message: format!("The {label} bridge: {msg}"),
+        });
+    }
+    serde_json::from_slice(&res.body)
+        .map_err(|e| BackendError { status: 502, message: format!("The {label} bridge sent invalid JSON: {e}") })
+}
+
+/// Whether MWS itself runs in a container.
+pub fn in_container() -> bool {
+    Path::new("/.dockerenv").exists() || Path::new("/run/.containerenv").exists()
+}
+
+/// Serve the bridge: `POST /run` runs Claude Code or Codex here (only those,
+/// with this machine's login) for an MWS that cannot, `GET /health` says
+/// which tools are installed. Every request needs `Authorization: Bearer
+/// <token>`.
+pub async fn serve_bridge(listener: tokio::net::TcpListener, token: String, commands: BridgeCommands) {
+    loop {
+        let Ok((mut stream, _)) = listener.accept().await else { continue };
+        let token = token.clone();
+        let commands = commands.clone();
+        tokio::spawn(async move {
+            let (status, body) = match read_request(&mut stream).await {
+                Ok((method, path, auth, body)) => {
+                    bridge_answer(&method, &path, auth.as_deref(), &body, &token, &commands).await
+                }
+                Err(e) => (400, json!({ "message": e })),
+            };
+            let body = body.to_string();
+            let reason = match status {
+                200 => "OK",
+                401 => "Unauthorized",
+                404 => "Not Found",
+                504 => "Gateway Timeout",
+                _ => "Bad Request",
+            };
+            let head = format!(
+                "HTTP/1.1 {status} {reason}\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+                body.len()
+            );
+            let _ = stream.write_all(head.as_bytes()).await;
+            let _ = stream.write_all(body.as_bytes()).await;
+        });
+    }
+}
+
+/// The executables a bridge runs.
+#[derive(Debug, Clone)]
+pub struct BridgeCommands {
+    pub claude: String,
+    pub codex: String,
+}
+
+impl Default for BridgeCommands {
+    fn default() -> Self {
+        BridgeCommands { claude: "claude".into(), codex: "codex".into() }
+    }
+}
+
+async fn bridge_answer(
+    method: &str,
+    path: &str,
+    auth: Option<&str>,
+    body: &[u8],
+    token: &str,
+    commands: &BridgeCommands,
+) -> (u16, Value) {
+    let given = auth.and_then(|a| a.strip_prefix("Bearer ")).unwrap_or("");
+    // Compare without an early exit, so timing says nothing about the token.
+    let same =
+        given.len() == token.len() && given.bytes().zip(token.bytes()).fold(0u8, |acc, (a, b)| acc | (a ^ b)) == 0;
+    if !same {
+        return (401, json!({ "message": "Missing or wrong bridge token." }));
+    }
+    match (method, path) {
+        ("GET", "/health") => (200, json!({ "tools": detect() })),
+        ("POST", "/run") => {
+            let run: Run = match serde_json::from_slice(body) {
+                Ok(r) => r,
+                Err(e) => return (400, json!({ "message": format!("Invalid run: {e}") })),
+            };
+            if !run.kind.is_cli() {
+                return (400, json!({ "message": "The bridge runs only Claude Code and Codex." }));
+            }
+            let command = match run.kind {
+                Kind::Codex => &commands.codex,
+                _ => &commands.claude,
+            };
+            match run_here(command, &run).await {
+                Ok(out) => (200, serde_json::to_value(out).expect("JSON serializes")),
+                Err(e) => (e.status, json!({ "message": e.message })),
+            }
+        }
+        _ => (404, json!({ "message": "Use POST /run or GET /health." })),
+    }
+}
+
+/// One HTTP/1.1 request: method, path, Authorization header, body.
+async fn read_request(stream: &mut tokio::net::TcpStream) -> Result<(String, String, Option<String>, Vec<u8>), String> {
+    const MAX: usize = 32 * 1024 * 1024;
+    let mut buf = Vec::new();
+    let mut chunk = [0u8; 8192];
+    let head_end = loop {
+        let n = stream.read(&mut chunk).await.map_err(|e| e.to_string())?;
+        if n == 0 {
+            return Err("connection closed".into());
+        }
+        buf.extend_from_slice(&chunk[..n]);
+        if let Some(i) = buf.windows(4).position(|w| w == b"\r\n\r\n") {
+            break i;
+        }
+        if buf.len() > 64 * 1024 {
+            return Err("headers too large".into());
+        }
+    };
+    let head = String::from_utf8_lossy(&buf[..head_end]).into_owned();
+    let mut lines = head.split("\r\n");
+    let mut first = lines.next().unwrap_or_default().split(' ');
+    let method = first.next().unwrap_or_default().to_string();
+    let path = first.next().unwrap_or_default().split('?').next().unwrap_or_default().to_string();
+    let mut length = 0usize;
+    let mut auth = None;
+    for l in lines {
+        if let Some((k, v)) = l.split_once(':') {
+            if k.eq_ignore_ascii_case("content-length") {
+                length = v.trim().parse().map_err(|_| "bad Content-Length")?;
+            } else if k.eq_ignore_ascii_case("authorization") {
+                auth = Some(v.trim().to_string());
+            }
+        }
+    }
+    if length > MAX {
+        return Err("body too large".into());
+    }
+    let mut body = buf[head_end + 4..].to_vec();
+    while body.len() < length {
+        let n = stream.read(&mut chunk).await.map_err(|e| e.to_string())?;
+        if n == 0 {
+            break;
+        }
+        body.extend_from_slice(&chunk[..n]);
+    }
+    body.truncate(length);
+    Ok((method, path, auth, body))
+}
+
+/// What `GET /_aws/bedrock/local` shows: the local tools here, whether MWS
+/// runs in a container, and the bridge's tools when one is configured.
+pub async fn describe_local() -> Value {
+    let mut tools = detect();
+    let bridge = std::env::var("MWS_BEDROCK_CLI_BRIDGE").ok().filter(|u| !u.is_empty());
+    let mut bridge_info = Value::Null;
+    if let Some(url) = &bridge {
+        let mut headers = Vec::new();
+        if let Ok(t) = std::env::var("MWS_BEDROCK_CLI_BRIDGE_TOKEN") {
+            headers.push(("Authorization".to_string(), format!("Bearer {t}")));
+        }
+        let health = format!("{}/health", url.trim_end_matches('/'));
+        let res = crate::client::send_with_timeout(
+            crate::client::Request { method: "GET", url: &health, headers, body: None },
+            Duration::from_secs(2),
+        )
+        .await;
+        let remote = res.ok().filter(|r| r.status == 200).and_then(|r| serde_json::from_slice::<Value>(&r.body).ok());
+        if let Some(remote_tools) = remote.as_ref().and_then(|v| v.get("tools")).and_then(Value::as_object) {
+            for (name, t) in remote_tools {
+                if t["found"] == true && tools[name]["found"] != true {
+                    let mut t = t.clone();
+                    t["via"] = json!("bridge");
+                    tools[name] = t;
+                }
+            }
+        }
+        bridge_info = json!({ "url": url, "reachable": remote.is_some() });
+    }
+    json!({ "tools": tools, "container": in_container(), "bridge": bridge_info })
 }
 
 /// Which local model tools this machine has: the CLIs on `PATH`.
@@ -414,6 +753,13 @@ mod tests {
         assert!(
             matches!(&parts[0], OutPart::ToolUse { name, input, .. } if name == "weather" && input["city"] == "Oslo")
         );
+        // Wrapped calls still count.
+        let (parts, stop) = parts_of(
+            &p,
+            "<function_calls>\n[{\"tool_use\": {\"name\": \"weather\", \"input\": {\"city\": \"Oslo\"}}}]\n</function_calls>\nChecking.".into(),
+        );
+        assert_eq!(stop, StopReason::ToolUse);
+        assert_eq!(parts.len(), 1);
         // An unknown tool name is just text.
         let (parts, stop) = parts_of(&p, "{\"tool_use\": {\"name\": \"other\"}}".into());
         assert_eq!(stop, StopReason::EndTurn);
