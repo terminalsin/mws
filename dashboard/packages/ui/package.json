@@ -14,6 +14,7 @@
     "./catalog": "./src/catalog.ts",
     "./validation": "./src/validation.ts",
     "./fields": "./src/fields.tsx",
+    "./presets": "./src/presets.tsx",
     "./model/*": "./src/model/*.ts"
   },
   "scripts": {
