@@ -140,13 +140,16 @@ test("Lambda: configuration and test event fields offer repairs", async ({ page 
   await page.goto(`/lambda/${name}?tab=test`);
   const invoke = page.getByTestId("invoke").and(page.locator("form"));
   const payload = invoke.locator('[name="payload"]');
-  // Typed before hydration, the value is not followed yet: retry until it is.
+  // Typed before hydration, the value may be lost or merged with the
+  // default: retry until the field follows exactly what was typed.
+  const fixJson = fieldOf(invoke, "payload").getByRole("button", { name: "Fix the JSON" });
   await expect(async () => {
     await payload.fill("{name: 'console',}");
     await payload.blur();
-    await expect(fieldOf(invoke, "payload")).toHaveAttribute("data-invalid", "format", { timeout: 1000 });
+    await expect(payload).toHaveValue("{name: 'console',}", { timeout: 500 });
+    await expect(fixJson).toBeVisible({ timeout: 1000 });
   }).toPass();
-  await fieldOf(invoke, "payload").getByRole("button", { name: "Fix the JSON" }).click();
+  await fixJson.click();
   await expect(payload).toHaveValue('{\n  "name": "console"\n}');
   await invoke.locator('button[type="submit"]').click();
   await expect(invoke.getByRole("status")).toContainText('"greeting": "hello console"');
