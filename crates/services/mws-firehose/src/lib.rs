@@ -73,6 +73,9 @@ pub(crate) struct Inner {
     /// The last request's context and clock offset, for background
     /// deliveries.
     template: Mutex<Option<(RequestContext, chrono::Duration)>>,
+    /// The authorizer background deliveries use before Firehose has seen
+    /// a request (after restoring saved state).
+    authorizer: OnceLock<Arc<dyn mws_core::Authorizer>>,
     started: OnceLock<()>,
     /// Serializes delivery rounds.
     delivering: tokio::sync::Mutex<()>,
@@ -189,6 +192,8 @@ impl Service for Firehose {
     fn import_state(&self, state: serde_json::Value) -> Result<(), String> {
         let state: State = serde_json::from_value(state).map_err(|e| format!("invalid Firehose state: {e}"))?;
         *self.lock() = state;
+        // Buffered records are delivered after a restart too.
+        self.start_rounds();
         Ok(())
     }
 

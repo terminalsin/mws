@@ -67,6 +67,9 @@ pub use streams::MetricStreamDelivery;
 pub(crate) struct Inner {
     pub(crate) clock_offset_ms: AtomicI64,
     pub(crate) template: Mutex<Option<RequestContext>>,
+    /// The authorizer the evaluator uses before CloudWatch has seen a
+    /// request (after restoring saved state).
+    pub(crate) authorizer: OnceLock<Arc<dyn mws_core::Authorizer>>,
     pub(crate) scheduler: AtomicBool,
     /// Calls SNS and Lambda for alarm actions.
     pub(crate) client: OnceLock<mws_core::ServiceClient>,
@@ -148,6 +151,7 @@ impl CloudWatch {
             inner: Arc::new(Inner {
                 clock_offset_ms: AtomicI64::new(0),
                 template: Mutex::new(None),
+                authorizer: OnceLock::new(),
                 scheduler: AtomicBool::new(false),
                 client: OnceLock::new(),
                 events: OnceLock::new(),
@@ -269,6 +273,14 @@ impl Service for CloudWatch {
         operation: &str,
         input: serde_json::Value,
     ) -> Result<serde_json::Value, ServiceError> {
+        // Alarms made by CloudFormation or scenario files are evaluated
+        // without waiting for an HTTP request. Only HTTP requests move the
+        // clock: a service's background call may carry the wall clock.
+        if self.inner.template.lock().expect("template lock poisoned").is_none() {
+            self.observe(&ctx);
+        } else {
+            self.start_evaluator();
+        }
         generated::invoke(self, &ctx, operation, input).await
     }
 
@@ -280,6 +292,8 @@ impl Service for CloudWatch {
     fn import_state(&self, state: serde_json::Value) -> Result<(), String> {
         let state: State = serde_json::from_value(state).map_err(|e| format!("invalid CloudWatch state: {e}"))?;
         *self.lock() = state;
+        // Restored alarms and metric streams keep running.
+        self.start_evaluator();
         Ok(())
     }
 

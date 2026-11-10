@@ -170,7 +170,7 @@ impl CloudWatch {
             return;
         }
         let Some(sink) = self.inner.streams.get().cloned() else { return };
-        let Some(template) = self.inner.template.lock().expect("template lock poisoned").clone() else { return };
+        let Some(template) = self.background_template() else { return };
         for b in batches {
             let mut ctx =
                 RequestContext { region: b.region.clone(), received_at: self.clock_now(), ..template.clone() };

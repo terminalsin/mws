@@ -75,6 +75,9 @@ pub(crate) struct Inner {
     /// Retries target deliveries on the emulated clock (the shared queue
     /// once wired in, else a private one).
     jobs: OnceLock<mws_core::ServiceClient>,
+    /// The authorizer schedules and clock sources use before EventBridge
+    /// has seen a request (after restoring saved state).
+    authorizer: OnceLock<Arc<dyn mws_core::Authorizer>>,
 }
 
 /// The EventBridge service. Cheap to clone; clones share state.
@@ -104,6 +107,7 @@ impl Events {
                 scheduler: AtomicBool::new(false),
                 metrics: Default::default(),
                 jobs: OnceLock::new(),
+                authorizer: OnceLock::new(),
             }),
         }
     }
@@ -183,14 +187,42 @@ impl Events {
         // just the time the request took to get here.
         self.inner.clock_offset_ms.store(if offset < 0 { 0 } else { offset }, Ordering::Relaxed);
         *self.inner.template.lock().expect("template lock poisoned") = Some(ctx.clone());
+        self.start_scheduler();
+    }
+
+    /// Start the scheduler (scheduled rules, clock sources) once there is
+    /// a runtime to run it on.
+    fn start_scheduler(&self) {
         if tokio::runtime::Handle::try_current().is_ok() && !self.inner.scheduler.swap(true, Ordering::SeqCst) {
             let me = self.clone();
             tokio::spawn(async move { me.run_scheduler().await });
         }
     }
 
+    /// The authorizer background work uses before EventBridge has seen a
+    /// request, as after restoring saved state.
+    pub fn set_authorizer(&self, authorizer: Arc<dyn mws_core::Authorizer>) {
+        let _ = self.inner.authorizer.set(authorizer);
+    }
+
+    /// The last request's context, or (before any request) one made from
+    /// the authorizer set with [`Events::set_authorizer`].
     pub(crate) fn template(&self) -> Option<RequestContext> {
-        self.inner.template.lock().expect("template lock poisoned").clone()
+        if let Some(t) = self.inner.template.lock().expect("template lock poisoned").clone() {
+            return Some(t);
+        }
+        let authorizer = self.inner.authorizer.get()?.clone();
+        Some(RequestContext {
+            request_id: String::new(),
+            region: String::new(),
+            partition: "aws".into(),
+            received_at: self.now(),
+            caller: mws_core::Caller::anonymous(),
+            source_ip: None,
+            secure_transport: true,
+            authorizer,
+            endpoint: None,
+        })
     }
 }
 
@@ -231,6 +263,8 @@ impl Service for Events {
     fn import_state(&self, state: serde_json::Value) -> Result<(), String> {
         let state: State = serde_json::from_value(state).map_err(|e| format!("invalid EventBridge state: {e}"))?;
         *self.lock() = state;
+        // Schedules keep firing after a restart from saved state.
+        self.start_scheduler();
         Ok(())
     }
 

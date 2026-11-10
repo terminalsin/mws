@@ -67,7 +67,7 @@ impl Logs {
     /// looked at. A query that missed several firings (the clock jumped)
     /// runs once, for the latest.
     pub(crate) async fn run_scheduled_queries(&self) {
-        let Some((template, offset)) = self.template.lock().expect("Logs template lock poisoned").clone() else {
+        let Some((template, offset)) = self.background_template() else {
             return;
         };
         let now = Utc::now() + offset;
