@@ -71,6 +71,37 @@ impl Period {
         Ok(Self { start, end, hourly: granularity == "HOURLY" })
     }
 
+    /// Check the period against what Cost Explorer keeps: hourly data for
+    /// the last 14 days (hourly granularity is a Cost Management
+    /// preference; MWS treats it as enabled), and 13 months of history
+    /// (the current month and the twelve before it).
+    pub fn check_window(&self, now: DateTime<Utc>) -> Result<(), ServiceError> {
+        if self.hourly {
+            let earliest = now - Duration::days(14);
+            let earliest = earliest - Duration::milliseconds(ms(earliest).rem_euclid(3_600_000));
+            if self.start < earliest {
+                return Err(validation(
+                    "Hourly granularity is only available for the last 14 days. Choose a start date within the last 14 days, or a DAILY or MONTHLY granularity.",
+                ));
+            }
+        }
+        let mut earliest = month_start(now);
+        for _ in 0..12 {
+            earliest = month_start(earliest - Duration::days(1));
+        }
+        if self.start < earliest {
+            return Err(ServiceError::client(
+                "DataUnavailableException",
+                400,
+                format!(
+                    "Data is not available for the requested time period. Cost Explorer keeps 13 months of history: the start date can't be earlier than {}.",
+                    date_str(earliest)
+                ),
+            ));
+        }
+        Ok(())
+    }
+
     pub fn interval(&self) -> t::DateInterval {
         let f = if self.hourly { time_str } else { date_str };
         t::DateInterval { start: f(self.start), end: f(self.end) }

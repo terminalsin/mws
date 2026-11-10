@@ -6,7 +6,10 @@ use mws_bedrock::catalog::Family;
 use mws_core::ServiceError;
 use serde_json::{json, Value};
 
-use crate::prompt::{Completion, Msg, OutPart, Part, Prompt, Role, StopReason, ToolChoice, ToolDef};
+use crate::prompt::{
+    reasoning_signature, thinking_budget, Completion, Msg, OutPart, Part, Prompt, Role, StopReason, ToolChoice, ToolDef,
+};
+use mws_bedrock::catalog::ModelSpec;
 
 const B64: base64::engine::GeneralPurpose = base64::engine::general_purpose::STANDARD;
 
@@ -32,6 +35,37 @@ pub enum Native {
         documents: Vec<String>,
         top_n: Option<usize>,
     },
+}
+
+/// Limits a model puts on any chat request: its context window, its
+/// largest output (Claude's wording through `InvokeModel`) and Claude's
+/// thinking budget.
+pub fn check_limits(spec: &ModelSpec, p: &Prompt) -> Result<(), ServiceError> {
+    if spec.context_window > 0 && p.input_tokens() > spec.context_window {
+        return Err(crate::validation("Input is too long for requested model."));
+    }
+    if spec.family != Family::Anthropic {
+        return Ok(());
+    }
+    let max = p.max_tokens.unwrap_or(4096);
+    if spec.max_output_tokens > 0 && max > spec.max_output_tokens {
+        return Err(crate::validation(format!(
+            "max_tokens: {max} > {}, which is the maximum allowed number of output tokens for {}",
+            spec.max_output_tokens,
+            anthropic_api_name(&spec.model_id)
+        )));
+    }
+    if let Some(budget) = thinking_budget(&p.extra) {
+        if budget < 1024 {
+            return Err(crate::validation(
+                "thinking.enabled.budget_tokens: Input should be greater than or equal to 1024",
+            ));
+        }
+        if max <= budget {
+            return Err(crate::validation("`max_tokens` must be greater than `thinking.budget_tokens`."));
+        }
+    }
+    Ok(())
 }
 
 pub fn malformed(detail: impl std::fmt::Display) -> ServiceError {
@@ -289,6 +323,11 @@ pub fn parse(family: Family, model_id: &str, body: &[u8]) -> Result<Native, Serv
             p.temperature = f64_of(&v, "temperature");
             p.top_p = f64_of(&v, "top_p");
             p.stop = strings(v.get("stop_sequences"));
+            for k in ["thinking", "top_k", "anthropic_beta"] {
+                if let Some(x) = v.get(k) {
+                    p.extra.insert(k.into(), x.clone());
+                }
+            }
             for t in v.get("tools").and_then(Value::as_array).into_iter().flatten() {
                 p.tools.push(ToolDef {
                     name: t.get("name").and_then(Value::as_str).unwrap_or_default().to_string(),
@@ -552,6 +591,9 @@ pub fn anthropic_request(p: &Prompt) -> Value {
     if !p.stop.is_empty() {
         body["stop_sequences"] = json!(p.stop);
     }
+    for (k, v) in &p.extra {
+        body[k] = v.clone();
+    }
     if !p.tools.is_empty() && p.tool_choice != ToolChoice::None {
         body["tools"] = json!(p
             .tools
@@ -630,7 +672,9 @@ pub fn render(family: Family, model_id: &str, c: &Completion) -> Value {
                 .iter()
                 .map(|p| match p {
                     OutPart::Text(t) => json!({"type": "text", "text": t}),
-                    OutPart::Reasoning(t) => json!({"type": "thinking", "thinking": t, "signature": ""}),
+                    OutPart::Reasoning(t) => {
+                        json!({"type": "thinking", "thinking": t, "signature": reasoning_signature(t)})
+                    }
                     OutPart::ToolUse { id, name, input } => {
                         json!({"type": "tool_use", "id": id, "name": name, "input": input})
                     }
@@ -757,6 +801,10 @@ pub fn stream_chunks(family: Family, model_id: &str, c: &Completion, latency_ms:
                                 json!({"type": "text_delta", "text": d})
                             };
                             chunks.push(json!({"type": "content_block_delta", "index": index, "delta": delta}));
+                        }
+                        if thinking {
+                            chunks.push(json!({"type": "content_block_delta", "index": index,
+                                "delta": {"type": "signature_delta", "signature": reasoning_signature(t)}}));
                         }
                     }
                     OutPart::ToolUse { id, name, input } => {

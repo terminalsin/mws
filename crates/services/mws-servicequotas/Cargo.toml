@@ -7,7 +7,9 @@ license.workspace = true
 
 [dependencies]
 async-trait.workspace = true
+bytes.workspace = true
 chrono.workspace = true
+http.workspace = true
 mws-core.workspace = true
 mws-proto-json.workspace = true
 serde.workspace = true

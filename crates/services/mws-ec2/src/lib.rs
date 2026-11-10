@@ -20,6 +20,7 @@ pub mod generated {
 }
 
 pub mod backend;
+mod billing;
 mod catalog;
 mod console;
 mod firewall;
@@ -44,7 +45,9 @@ pub use backend::{
     BackendChoice, CommandOutput, ComputeBackend, DockerBackend, ExecStream, HostMount, LaunchExtension, LaunchExtras,
     MetadataBackend, VolumeMount,
 };
+pub use billing::{BillableInstance, BillableVolume};
 pub use ops::launch_template::ResolvedLaunchTemplate;
+pub use pricing::{on_demand_price, product_price};
 pub use public::{
     availability_zones, InstanceInfo, InstanceNetwork, SecurityGroupInfo, ServiceInterface, ServiceInterfaceError,
     ServiceInterfaceRequest, SubnetInfo, VpcInfo,

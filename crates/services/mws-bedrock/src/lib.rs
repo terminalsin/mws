@@ -19,6 +19,7 @@ pub mod generated {
 
 pub mod api_key;
 pub mod catalog;
+mod datacheck;
 pub mod guard;
 mod handler;
 mod jobs;
@@ -28,6 +29,7 @@ mod profiles;
 mod reasoning;
 mod resolve;
 mod state;
+pub mod storage;
 mod util;
 
 use std::sync::{Arc, RwLock, RwLockReadGuard, RwLockWriteGuard};
@@ -44,6 +46,8 @@ pub struct Bedrock {
     inner: Arc<RwLock<State>>,
     /// Runs batch inference jobs (bedrock-runtime installs it).
     runner: Arc<std::sync::OnceLock<JobRunner>>,
+    /// S3 as job roles see it (bedrock-runtime installs it).
+    storage: Arc<std::sync::OnceLock<Arc<dyn storage::JobStorage>>>,
 }
 
 /// Runs a batch inference job and reports with
@@ -72,6 +76,16 @@ impl Bedrock {
     /// Have `runner` run batch inference jobs as they are created.
     pub fn set_job_runner(&self, runner: JobRunner) {
         let _ = self.runner.set(runner);
+    }
+
+    /// Have customization, import and evaluation jobs read and write S3
+    /// as their roles through `storage`.
+    pub fn set_job_storage(&self, storage: Arc<dyn storage::JobStorage>) {
+        let _ = self.storage.set(storage);
+    }
+
+    pub(crate) fn job_storage(&self) -> Option<Arc<dyn storage::JobStorage>> {
+        self.storage.get().cloned()
     }
 
     fn read(&self) -> RwLockReadGuard<'_, State> {

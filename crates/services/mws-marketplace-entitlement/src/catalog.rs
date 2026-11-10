@@ -64,6 +64,9 @@ impl Product {
 pub struct Dimension {
     pub name: String,
     pub description: Option<String>,
+    /// What the buyer pays per unit, in USD (Cost Explorer charges
+    /// metered usage at it; none means no charge).
+    pub price: Option<f64>,
 }
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]

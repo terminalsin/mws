@@ -3,7 +3,7 @@
 use std::collections::{BTreeMap, BTreeSet};
 
 use chrono::{DateTime, Duration, Utc};
-use mws_core::{RequestContext, ServiceError};
+use mws_core::{ConditionContext, RequestContext, ServiceError};
 
 use crate::costs::{auth, page};
 use crate::generated::types as t;
@@ -35,6 +35,15 @@ pub(crate) fn tag_map(tags: Option<&[t::ResourceTag]>) -> Result<BTreeMap<String
         return Err(ServiceError::client("TooManyTagsException", 400, "Your resource has too many tags."));
     }
     Ok(out)
+}
+
+/// `aws:RequestTag/*` and `aws:TagKeys` for tags in a request.
+pub(crate) fn request_tag_context(tags: &BTreeMap<String, String>) -> ConditionContext {
+    let mut c: ConditionContext = tags.iter().map(|(k, v)| (format!("aws:RequestTag/{k}"), vec![v.clone()])).collect();
+    if !tags.is_empty() {
+        c.insert("aws:TagKeys".into(), tags.keys().cloned().collect());
+    }
+    c
 }
 
 /// A cost category's effective start: the first of a month at most a year
@@ -127,17 +136,48 @@ impl CostExplorer {
         f(st.accounts.entry(ctx.caller.account_id.clone()).or_default())
     }
 
+    /// The tags of a cost category, anomaly monitor or subscription of the
+    /// caller's account, when it exists.
+    pub(crate) fn tags_of(&self, ctx: &RequestContext, arn: &str) -> Option<BTreeMap<String, String>> {
+        let st = self.lock();
+        let acct = st.accounts.get(&ctx.caller.account_id)?;
+        acct.cost_categories
+            .get(arn)
+            .map(|c| c.tags.clone())
+            .or_else(|| acct.monitors.get(arn).map(|m| m.tags.clone()))
+            .or_else(|| acct.subscriptions.get(arn).map(|s| s.tags.clone()))
+    }
+
+    /// Authorize `action` on an existing resource: its ARN, with
+    /// `aws:ResourceTag/*` from its tags, plus `extra`.
+    pub(crate) fn authorize_on(
+        &self,
+        ctx: &RequestContext,
+        action: &str,
+        arn: &str,
+        extra: ConditionContext,
+    ) -> Result<(), ServiceError> {
+        let mut context: ConditionContext = self
+            .tags_of(ctx, arn)
+            .unwrap_or_default()
+            .into_iter()
+            .map(|(k, v)| (format!("aws:ResourceTag/{k}"), vec![v]))
+            .collect();
+        context.extend(extra);
+        ctx.authorize(&format!("ce:{action}"), arn, context)
+    }
+
     pub(crate) fn create_cost_category_definition_op(
         &self,
         ctx: &RequestContext,
         input: t::CreateCostCategoryDefinitionRequest,
     ) -> Result<t::CreateCostCategoryDefinitionResponse, ServiceError> {
-        auth(ctx, "CreateCostCategoryDefinition")?;
+        let tags = tag_map(input.resource_tags.as_deref())?;
+        let arn = arn(ctx, "costcategory");
+        ctx.authorize("ce:CreateCostCategoryDefinition", &arn, request_tag_context(&tags))?;
         check_rules(&input.rules)?;
         check_split_charge_rules(input.split_charge_rules.as_deref())?;
         let start = effective_start(input.effective_start.as_deref(), ctx.received_at)?;
-        let tags = tag_map(input.resource_tags.as_deref())?;
-        let arn = arn(ctx, "costcategory");
         self.with_account(ctx, |acct| {
             if acct.cost_categories.values().any(|c| c.name == input.name) {
                 return Err(validation(format!(
@@ -176,7 +216,7 @@ impl CostExplorer {
         ctx: &RequestContext,
         input: t::UpdateCostCategoryDefinitionRequest,
     ) -> Result<t::UpdateCostCategoryDefinitionResponse, ServiceError> {
-        auth(ctx, "UpdateCostCategoryDefinition")?;
+        self.authorize_on(ctx, "UpdateCostCategoryDefinition", &input.cost_category_arn, Default::default())?;
         check_rules(&input.rules)?;
         check_split_charge_rules(input.split_charge_rules.as_deref())?;
         let start = effective_start(input.effective_start.as_deref(), ctx.received_at)?;
@@ -203,7 +243,7 @@ impl CostExplorer {
         ctx: &RequestContext,
         input: t::DescribeCostCategoryDefinitionRequest,
     ) -> Result<t::DescribeCostCategoryDefinitionResponse, ServiceError> {
-        auth(ctx, "DescribeCostCategoryDefinition")?;
+        self.authorize_on(ctx, "DescribeCostCategoryDefinition", &input.cost_category_arn, Default::default())?;
         let c = self
             .with_account(ctx, |acct| acct.cost_categories.get(&input.cost_category_arn).cloned())
             .ok_or_else(|| missing_category(&input.cost_category_arn))?;
@@ -227,7 +267,7 @@ impl CostExplorer {
         ctx: &RequestContext,
         input: t::DeleteCostCategoryDefinitionRequest,
     ) -> Result<t::DeleteCostCategoryDefinitionResponse, ServiceError> {
-        auth(ctx, "DeleteCostCategoryDefinition")?;
+        self.authorize_on(ctx, "DeleteCostCategoryDefinition", &input.cost_category_arn, Default::default())?;
         self.with_account(ctx, |acct| acct.cost_categories.remove(&input.cost_category_arn))
             .ok_or_else(|| missing_category(&input.cost_category_arn))?;
         Ok(t::DeleteCostCategoryDefinitionResponse {
@@ -276,6 +316,7 @@ impl CostExplorer {
 
     /// Tag keys in the caller's data, with when each was last used.
     fn tag_keys(&self, ctx: &RequestContext) -> BTreeMap<String, i64> {
+        self.accrue(ctx.received_at, false);
         let st = self.lock();
         let mut keys = BTreeMap::new();
         for r in Self::visible(&st, &ctx.caller.account_id) {
@@ -421,8 +462,8 @@ impl CostExplorer {
         ctx: &RequestContext,
         input: t::TagResourceRequest,
     ) -> Result<t::TagResourceResponse, ServiceError> {
-        ctx.authorize("ce:TagResource", &input.resource_arn, Default::default())?;
         let new = tag_map(Some(&input.resource_tags))?;
+        self.authorize_on(ctx, "TagResource", &input.resource_arn, request_tag_context(&new))?;
         self.with_resource_tags(ctx, &input.resource_arn, |tags| {
             let mut merged = tags.clone();
             merged.extend(new);
@@ -440,7 +481,8 @@ impl CostExplorer {
         ctx: &RequestContext,
         input: t::UntagResourceRequest,
     ) -> Result<t::UntagResourceResponse, ServiceError> {
-        ctx.authorize("ce:UntagResource", &input.resource_arn, Default::default())?;
+        let keys = ConditionContext::from([("aws:TagKeys".to_string(), input.resource_tag_keys.clone())]);
+        self.authorize_on(ctx, "UntagResource", &input.resource_arn, keys)?;
         self.with_resource_tags(ctx, &input.resource_arn, |tags| {
             for k in &input.resource_tag_keys {
                 tags.remove(k);
@@ -455,7 +497,7 @@ impl CostExplorer {
         ctx: &RequestContext,
         input: t::ListTagsForResourceRequest,
     ) -> Result<t::ListTagsForResourceResponse, ServiceError> {
-        ctx.authorize("ce:ListTagsForResource", &input.resource_arn, Default::default())?;
+        self.authorize_on(ctx, "ListTagsForResource", &input.resource_arn, Default::default())?;
         let tags = self.with_resource_tags(ctx, &input.resource_arn, |tags| Ok(tags.clone()))?;
         Ok(t::ListTagsForResourceResponse {
             resource_tags: Some(tags.into_iter().map(|(key, value)| t::ResourceTag { key, value }).collect()),

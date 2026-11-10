@@ -97,6 +97,10 @@ pub struct Prompt {
     pub temperature: Option<f64>,
     pub top_p: Option<f64>,
     pub stop: Vec<String>,
+    /// Model-specific request fields (`Converse`
+    /// `additionalModelRequestFields`, e.g. Claude's `thinking` or
+    /// `top_k`), passed to the model as they are.
+    pub extra: Map<String, Value>,
 }
 
 impl Prompt {
@@ -196,6 +200,28 @@ impl Completion {
             _ => None,
         })
     }
+}
+
+/// The signature of a reasoning block: an opaque, deterministic token
+/// over its text that clients send back in later turns, as Claude's are.
+pub fn reasoning_signature(text: &str) -> String {
+    use base64::Engine;
+    use sha2::Digest;
+    let mut h = sha2::Sha256::new();
+    h.update(b"mws-bedrock-reasoning\0");
+    h.update(text.as_bytes());
+    let d = h.finalize();
+    let mut raw = b"EqoB".to_vec();
+    raw.extend_from_slice(&d);
+    raw.extend_from_slice(&sha2::Sha256::digest(d));
+    base64::engine::general_purpose::STANDARD.encode(raw)
+}
+
+/// The thinking budget a request's `thinking` field enables, if any.
+pub fn thinking_budget(extra: &Map<String, Value>) -> Option<u32> {
+    let t = extra.get("thinking")?;
+    (t.get("type").and_then(Value::as_str) == Some("enabled"))
+        .then(|| t.get("budget_tokens").and_then(Value::as_u64).unwrap_or(0) as u32)
 }
 
 /// MWS's token count: a quarter of the characters, rounded up, like the

@@ -128,6 +128,42 @@ pub(crate) fn page<T>(
     Ok((items.into_iter().skip(start).take(size).collect(), next))
 }
 
+/// One page of GetCostAndUsage: results, account attributes, next token.
+type CostPage = (Vec<t::ResultByTime>, Vec<t::DimensionValuesWithAttributes>, Option<String>);
+
+/// The most time periods one GetCostAndUsage page holds, and the most
+/// groups across them.
+const PAGE_PERIODS: usize = 100;
+const PAGE_GROUPS: usize = 1000;
+
+/// One page of results by time: whole periods, until either limit is
+/// reached (always at least one period).
+fn page_results(
+    results: Vec<t::ResultByTime>,
+    token: Option<&str>,
+) -> Result<(Vec<t::ResultByTime>, Option<String>), ServiceError> {
+    let start = match token {
+        None => 0,
+        Some(tok) => tok
+            .strip_prefix("CE")
+            .and_then(|n| n.parse::<usize>().ok())
+            .filter(|n| *n < results.len().max(1))
+            .ok_or_else(|| ServiceError::client("InvalidNextTokenException", 400, "Invalid NextToken"))?,
+    };
+    let mut end = start;
+    let mut groups = 0;
+    while end < results.len() && end - start < PAGE_PERIODS {
+        let n = results[end].groups.as_ref().map_or(0, Vec::len).max(1);
+        if end > start && groups + n > PAGE_GROUPS {
+            break;
+        }
+        groups += n;
+        end += 1;
+    }
+    let next = (end < results.len()).then(|| format!("CE{end}"));
+    Ok((results.into_iter().skip(start).take(end - start).collect(), next))
+}
+
 impl CostExplorer {
     /// Run `f` over what the caller may see.
     pub(crate) fn with_view<R>(&self, ctx: &RequestContext, f: impl FnOnce(&View<'_>) -> R) -> R {
@@ -136,6 +172,7 @@ impl CostExplorer {
 
     /// Run `f` over what `account` may see.
     pub(crate) fn with_view_of<R>(&self, account: &str, now: i64, f: impl FnOnce(&View<'_>) -> R) -> R {
+        self.accrue(query::from_ms(now), false);
         let st = self.lock();
         let records = Self::visible(&st, account);
         let names = self.names(&records);
@@ -226,14 +263,16 @@ impl CostExplorer {
         metrics: &[String],
         group_by: &[t::GroupDefinition],
         allow_resource: bool,
-    ) -> Result<(Vec<t::ResultByTime>, Vec<t::DimensionValuesWithAttributes>), ServiceError> {
+        token: Option<&str>,
+    ) -> Result<CostPage, ServiceError> {
         let period = Period::parse(interval, granularity)?;
+        period.check_window(ctx.received_at)?;
         check_metrics(metrics)?;
         check_group_by(group_by, allow_resource)?;
         if let Some(f) = filter {
             check_expression(f)?;
         }
-        Ok(self.with_view(ctx, |view| {
+        let (results, attrs) = self.with_view(ctx, |view| {
             let (results, accounts) =
                 Self::results_by_time(view, period, granularity, filter, metrics, group_by, ctx.received_at);
             let attrs = accounts
@@ -247,7 +286,9 @@ impl CostExplorer {
                 })
                 .collect();
             (results, attrs)
-        }))
+        });
+        let (results, next) = page_results(results, token)?;
+        Ok((results, attrs, next))
     }
 
     pub(crate) fn get_cost_and_usage_op(
@@ -257,7 +298,7 @@ impl CostExplorer {
     ) -> Result<t::GetCostAndUsageResponse, ServiceError> {
         auth(ctx, "GetCostAndUsage")?;
         let group_by = input.group_by.clone().unwrap_or_default();
-        let (results, attrs) = self.cost_and_usage(
+        let (results, attrs, next) = self.cost_and_usage(
             ctx,
             &input.time_period,
             &input.granularity,
@@ -265,9 +306,10 @@ impl CostExplorer {
             &input.metrics,
             &group_by,
             false,
+            input.next_page_token.as_deref(),
         )?;
         Ok(t::GetCostAndUsageResponse {
-            next_page_token: None,
+            next_page_token: next,
             group_definitions: input.group_by,
             results_by_time: Some(results),
             dimension_value_attributes: Some(attrs),
@@ -287,7 +329,7 @@ impl CostExplorer {
         }
         let metrics = input.metrics.clone().unwrap_or_default();
         let group_by = input.group_by.clone().unwrap_or_default();
-        let (results, attrs) = self.cost_and_usage(
+        let (results, attrs, next) = self.cost_and_usage(
             ctx,
             &input.time_period,
             &input.granularity,
@@ -295,9 +337,10 @@ impl CostExplorer {
             &metrics,
             &group_by,
             true,
+            input.next_page_token.as_deref(),
         )?;
         Ok(t::GetCostAndUsageWithResourcesResponse {
-            next_page_token: None,
+            next_page_token: next,
             group_definitions: input.group_by,
             results_by_time: Some(results),
             dimension_value_attributes: Some(attrs),

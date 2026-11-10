@@ -11,6 +11,14 @@
 //!   Secrets Manager, SQS, SNS, Lambda, S3, CloudWatch, EventBridge,
 //!   Kinesis, Cost Explorer itself) are charged at their public on-demand
 //!   price, aggregated per hour.
+//! - **Derived** resource usage: [`ResourceUsageSource`]s report running
+//!   resources (EC2 instances and volumes, RDS, EKS, ElastiCache, Fargate
+//!   tasks, S3 and EFS storage). They are sampled on the emulated clock
+//!   (every Cost Explorer query, and API calls at most once a minute) and
+//!   accrued hour by hour at public on-demand prices ([`rates`]), with
+//!   `RESOURCE_ID` and the resource's tags.
+//! - **Charged** usage that other services report as it happens
+//!   ([`CostExplorer::record_usage`]): Marketplace metering, Bedrock tokens.
 //!
 //! Over it: GetCostAndUsage (with resources, comparisons and drivers),
 //! dimension/tag/cost category values, forecasts, cost categories with
@@ -31,17 +39,20 @@ mod costs;
 mod handler;
 mod pricing;
 mod query;
+pub mod rates;
 mod seed;
 mod settings;
 mod state;
+mod usage;
 
 use std::collections::BTreeMap;
-use std::sync::{Arc, Mutex, MutexGuard, OnceLock};
+use std::sync::{Arc, Mutex, MutexGuard, OnceLock, RwLock};
 
 use mws_core::{ApiCall, HttpRequest, HttpResponse, RequestContext, RequestObserver, Service, ServiceError};
 
 pub use seed::SeedRecord;
 pub use state::CostRecord;
+pub use usage::{ResourceUsage, ResourceUsageSource, UsageCharge, UsageRate};
 
 use state::State;
 
@@ -75,6 +86,7 @@ pub(crate) struct Inner {
     state: Mutex<State>,
     directory: OnceLock<Arc<dyn AccountDirectory>>,
     notifier: OnceLock<Arc<dyn AnomalyNotifier>>,
+    sources: RwLock<Vec<Arc<dyn ResourceUsageSource>>>,
 }
 
 /// The Cost Explorer service. Cheap to clone; clones share state.
@@ -150,6 +162,7 @@ impl CostExplorer {
 
 impl RequestObserver for CostExplorer {
     fn observe(&self, call: &ApiCall) {
+        self.accrue(call.at, true);
         if call.account.is_empty() || !call.succeeded() {
             return;
         }

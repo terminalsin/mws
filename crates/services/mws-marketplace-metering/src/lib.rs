@@ -33,25 +33,47 @@ mod handler;
 mod signing;
 pub mod state;
 
-use std::sync::{Arc, Mutex, MutexGuard};
+use std::sync::{Arc, Mutex, MutexGuard, OnceLock};
 
 use mws_core::{HttpRequest, HttpResponse, RequestContext, Service, ServiceError};
-use mws_marketplace_entitlement::Entitlement;
+use mws_marketplace_entitlement::{Entitlement, Product};
 
 use state::State;
 pub use state::{MeteringRecord, Registration};
+
+/// Told about every metering record Metering accepts, with the product it
+/// meters (Cost Explorer charges the buyer). Called outside Metering's
+/// locks.
+pub trait UsageSink: Send + Sync {
+    fn accepted(&self, region: &str, record: &MeteringRecord, product: &Product);
+}
 
 /// The Metering Service. Cheap to clone; clones share state.
 #[derive(Clone)]
 pub struct Metering {
     state: Arc<Mutex<State>>,
     catalog: Entitlement,
+    sink: Arc<OnceLock<Arc<dyn UsageSink>>>,
 }
 
 impl Metering {
     /// Metering reads products and subscriptions from `catalog`.
     pub fn new(catalog: Entitlement) -> Self {
-        Self { state: Arc::default(), catalog }
+        Self { state: Arc::default(), catalog, sink: Arc::default() }
+    }
+
+    /// Where accepted usage goes (Cost Explorer).
+    pub fn set_usage_sink(&self, sink: Arc<dyn UsageSink>) {
+        let _ = self.sink.set(sink);
+    }
+
+    pub(crate) fn report_accepted(&self, region: &str, records: Vec<MeteringRecord>) {
+        let Some(sink) = self.sink.get() else { return };
+        for r in records {
+            if let Some(product) = self.catalog.product(&r.product_code) {
+                sink.accepted(region, &r, &product);
+            }
+        }
     }
 
     pub(crate) fn lock(&self) -> MutexGuard<'_, State> {

@@ -7,7 +7,7 @@ use std::sync::Arc;
 use chrono::{DateTime, Duration, Utc};
 use mws_core::{ConditionContext, RequestContext, ServiceError};
 
-use crate::apps::{app, app_mut, authorize, branch, branch_mut};
+use crate::apps::{app, app_mut, authorize, branch, branch_mut, caller_branch_arn};
 use crate::deploy::{Files, Origin, Source};
 use crate::generated::types;
 use crate::names::{self, bad_request, not_found};
@@ -45,6 +45,9 @@ pub(crate) struct JobRef {
     pub job_id: u64,
     pub endpoint: String,
     pub clock: Clock,
+    /// The request that started the job, as a template for the calls the
+    /// job makes later (assuming the service role, reading secrets).
+    pub ctx: RequestContext,
 }
 
 impl JobRef {
@@ -55,6 +58,16 @@ impl JobRef {
 
 pub(crate) fn endpoint(ctx: &RequestContext) -> String {
     ctx.endpoint.clone().unwrap_or_else(|| "http://localhost:4566".into())
+}
+
+/// The ARN of a job of the caller's branch, to authorize on before the
+/// lookup.
+fn caller_job_arn(ctx: &RequestContext, app_id: &str, branch: &str, job: &str) -> String {
+    let branch_arn = caller_branch_arn(ctx, app_id, branch);
+    match job.parse::<u64>() {
+        Ok(n) => names::job_arn(&branch_arn, n),
+        Err(_) => format!("{branch_arn}/jobs/{job}"),
+    }
 }
 
 fn parse_job_id(id: &str) -> Result<u64, ServiceError> {
@@ -294,10 +307,11 @@ impl Amplify {
         input: types::CreateDeploymentRequest,
     ) -> Result<types::CreateDeploymentResult, ServiceError> {
         let job_id = {
+            let arn = caller_branch_arn(ctx, &input.app_id, &input.branch_name);
+            authorize(ctx, "CreateDeployment", &arn, ConditionContext::new())?;
             let st = self.read();
             let rec = app(ctx, &st, &input.app_id)?;
-            let b = branch(rec, &input.branch_name)?;
-            authorize(ctx, "CreateDeployment", &b.branch.branch_arn, ConditionContext::new())?;
+            branch(rec, &input.branch_name)?;
             if !rec.app.repository.is_empty() {
                 return Err(bad_request("Operation not supported. App is already connected a repository."));
             }
@@ -348,11 +362,12 @@ impl Amplify {
     ) -> Result<types::StartDeploymentResult, ServiceError> {
         let now = ctx.received_at;
         let (job_id, source) = {
+            let arn = caller_branch_arn(ctx, &input.app_id, &input.branch_name);
+            authorize(ctx, "StartDeployment", &arn, ConditionContext::new())?;
             let mut st = self.write();
             let rec = app_mut(ctx, &mut st, &input.app_id)?;
             let connected = !rec.app.repository.is_empty();
             let b = branch_mut(rec, &input.branch_name)?;
-            authorize(ctx, "StartDeployment", &b.branch.branch_arn, ConditionContext::new())?;
             if connected {
                 return Err(bad_request("Operation not supported. App is already connected a repository."));
             }
@@ -380,6 +395,7 @@ impl Amplify {
                         job_id: n,
                         endpoint: endpoint(ctx),
                         clock: Clock::of(ctx),
+                        ctx: ctx.clone(),
                     };
                     self.with_job(&job, |j| {
                         j.summary.source_url = Some(url.to_string());
@@ -398,6 +414,7 @@ impl Amplify {
             job_id,
             endpoint: endpoint(ctx),
             clock: Clock::of(ctx),
+            ctx: ctx.clone(),
         };
         let summary = self.with_job(&job, |j| j.summary.clone()).expect("job exists");
         self.spawn_deployment(job, source);
@@ -411,10 +428,11 @@ impl Amplify {
     ) -> Result<types::StartJobResult, ServiceError> {
         let now = ctx.received_at;
         let commit = {
+            let arn = caller_branch_arn(ctx, &input.app_id, &input.branch_name);
+            authorize(ctx, "StartJob", &arn, ConditionContext::new())?;
             let st = self.read();
             let rec = app(ctx, &st, &input.app_id)?;
             let b = branch(rec, &input.branch_name)?;
-            authorize(ctx, "StartJob", &b.branch.branch_arn, ConditionContext::new())?;
             if rec.app.repository.is_empty() {
                 return Err(bad_request(
                     "Operation not supported. App is not connected to a repository; use StartDeployment.",
@@ -461,6 +479,7 @@ impl Amplify {
             job_id: id,
             endpoint: endpoint(ctx),
             clock: Clock::of(ctx),
+            ctx: ctx.clone(),
         };
         self.with_job(&job, |j| {
             j.steps = vec![step("BUILD", now), step("DEPLOY", now), step("VERIFY", now)];
@@ -478,12 +497,13 @@ impl Amplify {
         input: types::StopJobRequest,
     ) -> Result<types::StopJobResult, ServiceError> {
         let summary = {
+            let arn = caller_job_arn(ctx, &input.app_id, &input.branch_name, &input.job_id);
+            authorize(ctx, "StopJob", &arn, ConditionContext::new())?;
             let mut st = self.write();
             let rec = app_mut(ctx, &mut st, &input.app_id)?;
             let b = branch_mut(rec, &input.branch_name)?;
             let n = parse_job_id(&input.job_id)?;
             let j = b.jobs.get_mut(&n).ok_or_else(|| not_found("Job", &input.job_id))?;
-            authorize(ctx, "StopJob", &j.summary.job_arn, ConditionContext::new())?;
             match j.summary.status.as_str() {
                 "CREATED" | "PENDING" => {
                     j.summary.status = "CANCELLED".into();
@@ -510,11 +530,12 @@ impl Amplify {
         ctx: &RequestContext,
         input: types::GetJobRequest,
     ) -> Result<types::GetJobResult, ServiceError> {
+        let arn = caller_job_arn(ctx, &input.app_id, &input.branch_name, &input.job_id);
+        authorize(ctx, "GetJob", &arn, ConditionContext::new())?;
         let st = self.read();
         let rec = app(ctx, &st, &input.app_id)?;
         let b = branch(rec, &input.branch_name)?;
         let j = b.jobs.get(&parse_job_id(&input.job_id)?).ok_or_else(|| not_found("Job", &input.job_id))?;
-        authorize(ctx, "GetJob", &j.summary.job_arn, ConditionContext::new())?;
         Ok(types::GetJobResult { job: types::Job { summary: j.summary.clone(), steps: j.steps.clone() } })
     }
 
@@ -523,10 +544,11 @@ impl Amplify {
         ctx: &RequestContext,
         input: types::ListJobsRequest,
     ) -> Result<types::ListJobsResult, ServiceError> {
+        let arn = format!("{}/jobs/*", caller_branch_arn(ctx, &input.app_id, &input.branch_name));
+        authorize(ctx, "ListJobs", &arn, ConditionContext::new())?;
         let st = self.read();
         let rec = app(ctx, &st, &input.app_id)?;
         let b = branch(rec, &input.branch_name)?;
-        authorize(ctx, "ListJobs", &format!("{}/jobs/*", b.branch.branch_arn), ConditionContext::new())?;
         let all: Vec<types::JobSummary> = b.jobs.values().rev().map(|j| j.summary.clone()).collect();
         let (job_summaries, next_token) = names::paginate(&all, input.next_token.as_deref(), input.max_results)?;
         Ok(types::ListJobsResult { job_summaries, next_token })
@@ -537,12 +559,13 @@ impl Amplify {
         ctx: &RequestContext,
         input: types::DeleteJobRequest,
     ) -> Result<types::DeleteJobResult, ServiceError> {
+        let arn = caller_job_arn(ctx, &input.app_id, &input.branch_name, &input.job_id);
+        authorize(ctx, "DeleteJob", &arn, ConditionContext::new())?;
         let mut st = self.write();
         let rec = app_mut(ctx, &mut st, &input.app_id)?;
         let b = branch_mut(rec, &input.branch_name)?;
         let n = parse_job_id(&input.job_id)?;
         let j = b.jobs.get(&n).ok_or_else(|| not_found("Job", &input.job_id))?;
-        authorize(ctx, "DeleteJob", &j.summary.job_arn, ConditionContext::new())?;
         if matches!(j.summary.status.as_str(), "PENDING" | "PROVISIONING" | "RUNNING" | "CANCELLING") {
             return Err(bad_request(format!("Job {} is running and cannot be deleted.", input.job_id)));
         }
@@ -560,11 +583,12 @@ impl Amplify {
         ctx: &RequestContext,
         input: types::ListArtifactsRequest,
     ) -> Result<types::ListArtifactsResult, ServiceError> {
+        let arn = caller_job_arn(ctx, &input.app_id, &input.branch_name, &input.job_id);
+        authorize(ctx, "ListArtifacts", &arn, ConditionContext::new())?;
         let st = self.read();
         let rec = app(ctx, &st, &input.app_id)?;
         let b = branch(rec, &input.branch_name)?;
         let j = b.jobs.get(&parse_job_id(&input.job_id)?).ok_or_else(|| not_found("Job", &input.job_id))?;
-        authorize(ctx, "ListArtifacts", &j.summary.job_arn, ConditionContext::new())?;
         let all: Vec<types::Artifact> = j
             .artifact_ids
             .iter()
@@ -603,9 +627,10 @@ impl Amplify {
         input: types::GenerateAccessLogsRequest,
     ) -> Result<types::GenerateAccessLogsResult, ServiceError> {
         let csv = {
+            let arn = names::caller_app_arn(ctx, &input.app_id);
+            authorize(ctx, "GenerateAccessLogs", &arn, ConditionContext::new())?;
             let st = self.read();
             let rec = app(ctx, &st, &input.app_id)?;
-            authorize(ctx, "GenerateAccessLogs", &rec.app.app_arn, ConditionContext::new())?;
             if !crate::domains::app_has_domain(rec, &input.domain_name) {
                 return Err(not_found("Domain", &input.domain_name));
             }

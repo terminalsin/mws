@@ -9,9 +9,11 @@ use mws_core::{ConditionContext, RequestContext, ServiceError};
 use serde_json::{json, Map, Value};
 
 use crate::catalog;
+use crate::datacheck;
 use crate::generated::types;
 use crate::resolve::foundation_from_arn;
 use crate::state::{kind, Record, Scope};
+use crate::storage::{join_key, s3_location, RoleStorage};
 use crate::util::{
     arn, conflict, from_doc, not_found, page, random_id, request_tag_context, resource_tag_context, set, sort_records,
     tag_map, to_doc, ts, validation, MAX_TAGS,
@@ -38,8 +40,121 @@ fn record(
         updated: now,
         status: status.into(),
         transition: done.map(|d| (d.to_string(), now + Duration::seconds(JOB_SECS))),
+        steps: Vec::new(),
         doc,
     }
+}
+
+fn step(at: DateTime<Utc>, status: &str, doc: Value) -> crate::state::Step {
+    crate::state::Step { at, status: status.into(), doc: doc.as_object().cloned().unwrap_or_default() }
+}
+
+/// Authorize passing `role_arn` to Bedrock.
+fn pass_role(ctx: &RequestContext, role_arn: &str) -> Result<(), ServiceError> {
+    let mut passed = ConditionContext::new();
+    passed.insert("iam:PassedToService".into(), vec!["bedrock.amazonaws.com".into()]);
+    ctx.authorize("iam:PassRole", role_arn, passed)
+}
+
+/// Validate a customization job's data as its role and write the training
+/// metrics to the output location. Returns the final training loss.
+fn customization_outcome(
+    io: &dyn RoleStorage,
+    input: &types::CreateModelCustomizationJobRequest,
+    base: &catalog::ModelSpec,
+    customization: &str,
+    id: &str,
+) -> Result<f64, String> {
+    let mut count = 0;
+    if let Some(uri) = &input.training_data_config.s3_uri {
+        let records = datacheck::read_jsonl(io, uri, "training data")?;
+        datacheck::training_format(&records, base.family, customization, uri, "training data")?;
+        count = records.len();
+    }
+    if let Some(v) = &input.validation_data_config {
+        for val in &v.validators {
+            let records = datacheck::read_jsonl(io, &val.s3_uri, "validation data")?;
+            datacheck::training_format(&records, base.family, customization, &val.s3_uri, "validation data")?;
+        }
+    }
+    let epochs: usize = input
+        .hyper_parameters
+        .as_ref()
+        .and_then(|h| h.get("epochCount"))
+        .and_then(|e| e.parse().ok())
+        .unwrap_or(2)
+        .clamp(1, 10);
+    let out = &input.output_data_config.s3_uri;
+    let (bucket, prefix) = s3_location(out).ok_or_else(|| format!("The output S3 URI {out} is invalid."))?;
+    let mut csv = String::from("step_number,epoch_number,training_loss,perplexity\n");
+    let mut loss = 2.0;
+    let steps = count.max(1);
+    for epoch in 0..epochs {
+        for n in 0..steps {
+            let step = epoch * steps + n + 1;
+            loss = 2.0 / (1.0 + step as f64 * 0.25);
+            csv.push_str(&format!("{step},{epoch},{loss:.4},{:.4}\n", f64::exp(loss)));
+        }
+    }
+    let key = join_key(
+        &join_key(&prefix, &format!("model-customization-job-{id}")),
+        "training_artifacts/step_wise_training_metrics.csv",
+    );
+    io.put(&bucket, &key, csv.into_bytes(), "text/csv")
+        .map_err(|e| format!("Unable to write to the output S3 location {out}: {e}"))?;
+    Ok((loss * 10_000.0).round() / 10_000.0)
+}
+
+/// Read an evaluation job's custom datasets as its role and write each
+/// model's results under `<output>/<job name>/<job id>/`.
+fn evaluation_outcome(io: &dyn RoleStorage, doc: &Map<String, Value>, job_name: &str, id: &str) -> Result<(), String> {
+    let cfg = doc.get("evaluation_config").cloned().unwrap_or_default();
+    let configs = cfg
+        .as_object()
+        .and_then(|c| c.values().next())
+        .and_then(|v| v.get("dataset_metric_configs"))
+        .and_then(Value::as_array)
+        .cloned()
+        .unwrap_or_default();
+    let mut models = Vec::new();
+    collect_strings(doc.get("inference_config").unwrap_or(&Value::Null), "model_identifier", &mut models);
+    collect_strings(doc.get("inference_config").unwrap_or(&Value::Null), "inference_source_identifier", &mut models);
+    if models.is_empty() {
+        models.push("model".into());
+    }
+    let out = doc
+        .get("output_data_config")
+        .and_then(|o| o.get("s3_uri"))
+        .and_then(Value::as_str)
+        .unwrap_or_default()
+        .to_string();
+    let (bucket, prefix) = s3_location(&out).ok_or_else(|| format!("The output S3 URI {out} is invalid."))?;
+    for c in configs {
+        let Some(uri) = c.pointer("/dataset/dataset_location/S3Uri").and_then(Value::as_str) else { continue };
+        let records = datacheck::eval_dataset(io, uri)?;
+        let task = c.get("task_type").and_then(Value::as_str).unwrap_or("General");
+        let dataset = c.pointer("/dataset/name").and_then(Value::as_str).unwrap_or("dataset");
+        for model in &models {
+            let lines: Vec<String> = records
+                .iter()
+                .map(|r| {
+                    json!({
+                        "inputRecord": r,
+                        "modelResponses": [{"response": r.get("prompt"), "modelIdentifier": model}],
+                    })
+                    .to_string()
+                })
+                .collect();
+            let short = model.rsplit('/').next().unwrap_or(model);
+            let key = join_key(
+                &prefix,
+                &format!("{job_name}/{id}/models/{short}/taskTypes/{task}/datasets/{dataset}/{id}_output.jsonl"),
+            );
+            io.put(&bucket, &key, (lines.join("\n") + "\n").into_bytes(), "application/jsonl")
+                .map_err(|e| format!("Unable to write to the output S3 location {out}: {e}"))?;
+        }
+    }
+    Ok(())
 }
 
 fn check_tags(tags: &[types::Tag], name: &str) -> Result<(), ServiceError> {
@@ -104,6 +219,19 @@ impl Bedrock {
         Ok(r)
     }
 
+    /// Pass `role_arn` to a job and assume it as Bedrock would.
+    fn job_role(
+        &self,
+        ctx: &RequestContext,
+        role_arn: &str,
+        job_arn: &str,
+        session: &str,
+    ) -> Result<Option<std::sync::Arc<dyn RoleStorage>>, ServiceError> {
+        pass_role(ctx, role_arn)?;
+        let Some(storage) = self.job_storage() else { return Ok(None) };
+        storage.assume(ctx, role_arn, job_arn, session).map(Some).map_err(validation)
+    }
+
     fn insert_tagged(&self, ctx: &RequestContext, kind: &str, r: Record, tags: &[types::Tag]) {
         self.scope(ctx, |s| {
             if !tags.is_empty() {
@@ -128,6 +256,7 @@ impl Bedrock {
         let id = random_id(12);
         let job_arn = arn(ctx, &format!("model-customization-job/{}/{id}", base.model_id));
         ctx.authorize("bedrock:CreateModelCustomizationJob", &job_arn, request_tag_context(&job_tags))?;
+        let io = self.job_role(ctx, &input.role_arn, &job_arn, "BedrockModelCustomization")?;
         let model_id = random_id(12);
         let model_arn = arn(ctx, &format!("custom-model/{}/{model_id}", base.model_id));
         let now = ctx.received_at;
@@ -141,6 +270,11 @@ impl Bedrock {
             }
             Ok(())
         })?;
+        // Bedrock validates the data as the job role, then trains.
+        let outcome = match &io {
+            Some(io) => customization_outcome(io.as_ref(), &input, base, &customization, &id),
+            None => Ok(0.0),
+        };
         let mut doc = to_doc(&input);
         for k in ["job_tags", "custom_model_tags", "base_model_identifier", "custom_model_kms_key_id"] {
             doc.remove(k);
@@ -160,18 +294,53 @@ impl Bedrock {
         }
         set(&mut model_doc, "job_name", input.job_name.clone());
         set(&mut model_doc, "base_model_name", base.model_name.clone());
+        let detail = |status: &str, at: DateTime<Utc>| json!({"status": status, "creation_time": ts(now), "last_modified_time": ts(at)});
+        set(
+            &mut doc,
+            "status_details",
+            json!({"validation_details": detail("InProgress", now), "data_processing_details": detail("NotStarted", now),
+                   "training_details": detail("NotStarted", now)}),
+        );
+        let validated = now + Duration::milliseconds(JOB_SECS * 1000 / 2);
+        let done = now + Duration::seconds(JOB_SECS);
+        let steps = match &outcome {
+            Ok(loss) => vec![
+                step(
+                    validated,
+                    "InProgress",
+                    json!({"status_details": {"validation_details": detail("Completed", validated),
+                        "data_processing_details": detail("Completed", validated),
+                        "training_details": detail("InProgress", validated)}}),
+                ),
+                step(
+                    done,
+                    "Completed",
+                    json!({"status_details": {"training_details": detail("Completed", done)},
+                           "training_metrics": {"training_loss": loss}, "end_time": ts(done)}),
+                ),
+            ],
+            Err(message) => vec![step(
+                validated,
+                "Failed",
+                json!({"status_details": {"validation_details": detail("Failed", validated)},
+                       "failure_message": message, "end_time": ts(validated)}),
+            )],
+        };
         self.insert_tagged(
             ctx,
             kind::CUSTOMIZATION_JOB,
-            record(&id, &job_arn, &input.job_name, now, "InProgress", Some("Completed"), doc),
+            Record { steps, ..record(&id, &job_arn, &input.job_name, now, "InProgress", None, doc) },
             &job_tags,
         );
-        self.insert_tagged(
-            ctx,
-            kind::CUSTOM_MODEL,
-            record(&model_id, &model_arn, &input.custom_model_name, now, "Creating", Some("Active"), model_doc),
-            &model_tags,
-        );
+        // The custom model exists once training produced it.
+        if outcome.is_ok() {
+            self.insert_tagged(
+                ctx,
+                kind::CUSTOM_MODEL,
+                record(&model_id, &model_arn, &input.custom_model_name, now, "Creating", Some("Active"), model_doc),
+                &model_tags,
+            );
+        }
         Ok(types::CreateModelCustomizationJobResponse { job_arn })
     }
 
@@ -251,11 +420,13 @@ impl Bedrock {
         let now = ctx.received_at;
         self.scope(ctx, |s| {
             let rec = s.get_mut(kind, &r.id).expect("record exists");
-            if rec.status != running && !(running == "InProgress" && rec.status == "Submitted") {
+            let queued = matches!(rec.status.as_str(), "Submitted" | "Validating" | "Scheduled");
+            if rec.status != running && !(running == "InProgress" && queued) {
                 return Err(validation(format!("The job can't be stopped because its status is {}.", rec.status)));
             }
             rec.status = stopped.into();
             rec.transition = None;
+            rec.steps.clear();
             rec.updated = now;
             set(&mut rec.doc, "end_time", ts(now));
             Ok(())
@@ -518,6 +689,7 @@ impl Bedrock {
         let id = random_id(12);
         let job_arn = arn(ctx, &format!("model-import-job/{id}"));
         ctx.authorize("bedrock:CreateModelImportJob", &job_arn, request_tag_context(&job_tags))?;
+        let io = self.job_role(ctx, &input.role_arn, &job_arn, "BedrockModelImport")?;
         let model_id = random_id(12);
         let model_arn = arn(ctx, &format!("imported-model/{model_id}"));
         self.scope(ctx, |s| {
@@ -542,25 +714,42 @@ impl Bedrock {
         if let Some(v) = doc.get("model_data_source") {
             mdoc.insert("model_data_source".into(), v.clone());
         }
-        set(&mut mdoc, "model_architecture", "llama3");
+        // Bedrock reads the weights as the job role.
+        let outcome = match (&io, &input.model_data_source) {
+            (Some(io), types::ModelDataSource::S3DataSource(src)) => datacheck::model_weights(io.as_ref(), &src.s3_uri),
+            _ => Ok("llama".to_string()),
+        };
+        set(&mut mdoc, "model_architecture", outcome.clone().unwrap_or_default());
         set(&mut mdoc, "instruct_supported", true);
         set(
             &mut mdoc,
             "custom_model_units",
             json!({"custom_model_units_per_model_copy": 1, "custom_model_units_version": "1.0"}),
         );
+        let steps = match &outcome {
+            Ok(_) => {
+                let done = now + Duration::seconds(JOB_SECS);
+                vec![step(done, "Completed", json!({"end_time": ts(done)}))]
+            }
+            Err(message) => {
+                let at = now + Duration::milliseconds(JOB_SECS * 1000 / 2);
+                vec![step(at, "Failed", json!({"failure_message": message, "end_time": ts(at)}))]
+            }
+        };
         self.insert_tagged(
             ctx,
             kind::IMPORT_JOB,
-            record(&id, &job_arn, &input.job_name, now, "InProgress", Some("Completed"), doc),
+            Record { steps, ..record(&id, &job_arn, &input.job_name, now, "InProgress", None, doc) },
             &job_tags,
         );
-        self.insert_tagged(
-            ctx,
-            kind::IMPORTED_MODEL,
-            record(&model_id, &model_arn, &input.imported_model_name, now, "Creating", Some("Active"), mdoc),
-            &model_tags,
-        );
+        if outcome.is_ok() {
+            self.insert_tagged(
+                ctx,
+                kind::IMPORTED_MODEL,
+                record(&model_id, &model_arn, &input.imported_model_name, now, "Creating", Some("Active"), mdoc),
+                &model_tags,
+            );
+        }
         Ok(types::CreateModelImportJobResponse { job_arn })
     }
 
@@ -779,6 +968,12 @@ impl Bedrock {
         let target = self
             .resolve_invocation(ctx, &input.model_id)
             .map_err(|_| validation(format!("The provided model identifier {} is invalid.", input.model_id)))?;
+        if !target.model.batch_supported {
+            return Err(validation(format!(
+                "The model {} doesn't support batch inference. Try again with a model that supports batch inference.",
+                input.model_id
+            )));
+        }
         let now = ctx.received_at;
         if self.scope(ctx, |s| s.kind(kind::INVOCATION_JOB).any(|r| r.name == input.job_name)) {
             return Err(conflict(format!("A batch inference job named {} already exists.", input.job_name)));
@@ -877,7 +1072,8 @@ impl Bedrock {
         Ok(types::StopModelInvocationJobResponse {})
     }
 
-    /// Mark a batch inference job as running; false when it was stopped.
+    /// Mark a batch inference job as being validated; false when it was
+    /// stopped.
     pub fn start_invocation_job(&self, account: &str, region: &str, job_arn: &str, now: DateTime<Utc>) -> bool {
         self.scope_in(account, region, now, |s| {
             let Some(id) = s.find_id(kind::INVOCATION_JOB, job_arn) else { return false };
@@ -885,14 +1081,16 @@ impl Bedrock {
             if r.status != "Submitted" {
                 return false;
             }
-            r.status = "InProgress".into();
+            r.status = "Validating".into();
             r.updated = now;
             true
         })
     }
 
     /// Record a batch inference job's results (bedrock-runtime runs the
-    /// records and reports here).
+    /// records and reports here). A job that failed validation (no records
+    /// processed) fails at once; one that ran goes `Scheduled`, then
+    /// `InProgress`, and reaches its final status at `now`.
     pub fn finish_invocation_job(
         &self,
         account: &str,
@@ -905,27 +1103,40 @@ impl Bedrock {
         self.scope_in(account, region, now, |s| {
             let Some(id) = s.find_id(kind::INVOCATION_JOB, job_arn) else { return };
             let r = s.get_mut(kind::INVOCATION_JOB, &id).expect("record exists");
-            if r.status == "Stopped" {
+            if r.status == "Stopped" || r.status == "Stopping" {
                 return;
             }
             let (total, ok, errors) = counts;
-            r.status = if errors > 0 && ok > 0 {
-                "PartiallyCompleted".into()
+            let status = if errors > 0 && ok > 0 {
+                "PartiallyCompleted"
             } else if errors > 0 || message.is_some() {
-                "Failed".into()
+                "Failed"
             } else {
-                "Completed".into()
+                "Completed"
             };
             r.transition = None;
-            r.updated = now;
-            set(&mut r.doc, "end_time", ts(now));
-            set(&mut r.doc, "total_record_count", total);
-            set(&mut r.doc, "processed_record_count", total);
-            set(&mut r.doc, "success_record_count", ok);
-            set(&mut r.doc, "error_record_count", errors);
+            let mut fin = json!({
+                "end_time": ts(now), "total_record_count": total, "processed_record_count": total,
+                "success_record_count": ok, "error_record_count": errors,
+            });
             if let Some(m) = message {
-                set(&mut r.doc, "message", m);
+                fin["message"] = json!(m);
             }
+            if total == 0 && status == "Failed" {
+                r.status = status.into();
+                r.updated = now;
+                if let Value::Object(m) = fin {
+                    r.doc.extend(m);
+                }
+                return;
+            }
+            let start = r.created;
+            let span = (now - start).max(Duration::milliseconds(4));
+            r.steps = vec![
+                step(start + span / 4, "Scheduled", json!({})),
+                step(start + span / 2, "InProgress", json!({})),
+                step(now, status, fin),
+            ];
         })
     }
 
@@ -941,6 +1152,7 @@ impl Bedrock {
         let id = random_id(12);
         let job_arn = arn(ctx, &format!("evaluation-job/{id}"));
         ctx.authorize("bedrock:CreateEvaluationJob", &job_arn, request_tag_context(&tags))?;
+        let io = self.job_role(ctx, &input.role_arn, &job_arn, "BedrockModelEvaluation")?;
         if self.scope(ctx, |s| s.kind(kind::EVALUATION_JOB).any(|r| r.name == input.job_name)) {
             return Err(conflict(format!("An evaluation job named {} already exists.", input.job_name)));
         }
@@ -953,10 +1165,24 @@ impl Bedrock {
             types::EvaluationConfig::Automated(_) => "Automated",
         };
         set(&mut doc, "job_type", job_type);
+        let outcome = match &io {
+            Some(io) => evaluation_outcome(io.as_ref(), &doc, &input.job_name, &id),
+            None => Ok(()),
+        };
+        let steps = match outcome {
+            Ok(()) => {
+                let done = now + Duration::seconds(JOB_SECS);
+                vec![step(done, "Completed", json!({"end_time": ts(done)}))]
+            }
+            Err(message) => {
+                let at = now + Duration::milliseconds(JOB_SECS * 1000 / 2);
+                vec![step(at, "Failed", json!({"failure_messages": [message], "end_time": ts(at)}))]
+            }
+        };
         self.insert_tagged(
             ctx,
             kind::EVALUATION_JOB,
-            record(&id, &job_arn, &input.job_name, now, "InProgress", Some("Completed"), doc),
+            Record { steps, ..record(&id, &job_arn, &input.job_name, now, "InProgress", None, doc) },
             &tags,
         );
         Ok(types::CreateEvaluationJobResponse { job_arn })

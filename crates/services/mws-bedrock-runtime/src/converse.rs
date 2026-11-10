@@ -4,7 +4,10 @@
 use serde_json::{json, Value};
 
 use crate::generated::types;
-use crate::prompt::{Completion, Msg, OutPart, Part, Prompt, Role, StopReason, ToolChoice, ToolDef};
+use crate::prompt::{
+    reasoning_signature, Completion, Msg, OutPart, Part, Prompt, Role, StopReason, ToolChoice, ToolDef,
+};
+use mws_bedrock::catalog::ModelSpec;
 
 /// The pieces of a `Converse` (or `CountTokens`) request.
 pub struct ConverseInput<'a> {
@@ -14,6 +17,8 @@ pub struct ConverseInput<'a> {
     pub inference: Option<&'a types::InferenceConfiguration>,
     pub tools: Option<&'a types::ToolConfiguration>,
     pub prompt_variables: Option<&'a std::collections::BTreeMap<String, types::PromptVariableValues>>,
+    /// `additionalModelRequestFields`, a JSON document.
+    pub additional_fields: Option<&'a str>,
 }
 
 /// Content the request marked for guardrail evaluation (`guardContent`).
@@ -63,6 +68,75 @@ fn invalid(message: impl Into<String>) -> mws_core::ServiceError {
     crate::validation(message)
 }
 
+/// Reject what the model can't take: tools, forced tool choice, system
+/// prompts, image or video content, and more output tokens than it makes.
+pub fn check_capabilities(spec: &ModelSpec, input: &ConverseInput<'_>) -> Result<(), mws_core::ServiceError> {
+    if let Some(tc) = input.tools {
+        if !spec.tool_use {
+            return Err(invalid("This model doesn't support tool use."));
+        }
+        let forced = match &tc.tool_choice {
+            Some(types::ToolChoice::Any(_)) => Some("any"),
+            Some(types::ToolChoice::Tool(_)) => Some("tool"),
+            _ => None,
+        };
+        if let Some(f) = forced.filter(|_| !spec.tool_choice) {
+            return Err(invalid(format!(
+                "This model doesn't support the toolConfig.toolChoice.{f} field. Remove toolConfig.toolChoice.{f} and try again."
+            )));
+        }
+    }
+    let has_system =
+        input.system.is_some_and(|s| s.iter().any(|b| !matches!(b, types::SystemContentBlock::CachePoint(_))));
+    if has_system && !spec.system_prompt {
+        return Err(invalid("This model doesn't support system messages."));
+    }
+    let takes = |m: &str| spec.input_modalities.iter().any(|x| x == m);
+    for m in input.messages.unwrap_or_default() {
+        for c in &m.content {
+            let kind = match c {
+                types::ContentBlock::Image(_) if !takes("IMAGE") => "image",
+                types::ContentBlock::Video(_) if !takes("VIDEO") => "video",
+                _ => continue,
+            };
+            return Err(invalid(format!("This model doesn't support the {kind} content block that you provided.")));
+        }
+    }
+    if let Some(m) = input.inference.and_then(|ic| ic.max_tokens) {
+        let max = spec.max_output_tokens;
+        if max > 0 && m as i64 > max as i64 {
+            return Err(invalid(format!(
+                "The maximum tokens you requested exceeds the model limit of {max}. Try again with a maximum tokens value that is lower than {max}."
+            )));
+        }
+    }
+    Ok(())
+}
+
+/// The model-specific request fields each model family accepts through
+/// `additionalModelRequestFields` (others pass through unchecked).
+fn known_fields(spec: &ModelSpec) -> Option<&'static [&'static str]> {
+    use mws_bedrock::catalog::Family;
+    match spec.family {
+        Family::Anthropic => {
+            Some(&["top_k", "thinking", "anthropic_beta", "metadata", "context_management", "output_config"])
+        }
+        Family::Nova => Some(&["inferenceConfig", "reasoningConfig"]),
+        _ => None,
+    }
+}
+
+/// Checks on a built prompt: unknown model fields, the context window,
+/// and the thinking budget.
+pub fn check_limits(spec: &ModelSpec, p: &Prompt) -> Result<(), mws_core::ServiceError> {
+    if let Some(known) = known_fields(spec) {
+        if let Some(k) = p.extra.keys().find(|k| !known.contains(&k.as_str())) {
+            return Err(crate::native::malformed(format!("#: extraneous key [{k}] is not permitted")));
+        }
+    }
+    crate::native::check_limits(spec, p)
+}
+
 /// The prompt a `Converse` request describes, and its guard content.
 pub fn prompt(input: ConverseInput<'_>) -> Result<(Prompt, GuardContent), mws_core::ServiceError> {
     let mut p = Prompt { model_id: input.model_id.to_string(), ..Default::default() };
@@ -79,6 +153,11 @@ pub fn prompt(input: ConverseInput<'_>) -> Result<(Prompt, GuardContent), mws_co
             }
             types::SystemContentBlock::CachePoint(_) => {}
         }
+    }
+    match input.additional_fields.map(serde_json::from_str::<Value>) {
+        None | Some(Ok(Value::Null)) => {}
+        Some(Ok(Value::Object(m))) => p.extra = m,
+        Some(_) => return Err(invalid("The additionalModelRequestFields field must be a JSON object.")),
     }
     let messages = input.messages.unwrap_or_default();
     if messages.is_empty() && vars.is_none() {
@@ -99,6 +178,7 @@ pub fn prompt(input: ConverseInput<'_>) -> Result<(Prompt, GuardContent), mws_co
         if m.content.is_empty() {
             return Err(invalid(format!("The content field in the Message object at messages.{i} is empty. Add a ContentBlock object to the content field and try again.")));
         }
+        check_tool_results(messages, i)?;
         let mut parts = Vec::new();
         for c in &m.content {
             match c {
@@ -224,7 +304,7 @@ pub fn message(c: &Completion) -> types::Message {
             OutPart::Text(t) => types::ContentBlock::Text(t.clone()),
             OutPart::Reasoning(t) => {
                 types::ContentBlock::ReasoningContent(types::ReasoningContentBlock::ReasoningText(
-                    types::ReasoningTextBlock { text: t.clone(), signature: None },
+                    types::ReasoningTextBlock { text: t.clone(), signature: Some(reasoning_signature(t)) },
                 ))
             }
             OutPart::ToolUse { id, name, input } => types::ContentBlock::ToolUse(types::ToolUseBlock {
@@ -276,6 +356,12 @@ pub fn stream(
                         content_block_index: index,
                     }));
                 }
+                out.push(E::ContentBlockDelta(types::ContentBlockDeltaEvent {
+                    delta: types::ContentBlockDelta::ReasoningContent(types::ReasoningContentBlockDelta::Signature(
+                        reasoning_signature(t),
+                    )),
+                    content_block_index: index,
+                }));
             }
             OutPart::ToolUse { id, name, input } => {
                 out.push(E::ContentBlockStart(types::ContentBlockStartEvent {
@@ -332,4 +418,43 @@ pub fn additional_fields(paths: Option<&[String]>, c: &Completion) -> Option<Str
         }
     }
     Some(Value::Object(out).to_string())
+}
+
+/// `toolResult` blocks in message `i` must answer `toolUse` blocks of the
+/// previous (assistant) turn, one each.
+fn check_tool_results(messages: &[types::Message], i: usize) -> Result<(), mws_core::ServiceError> {
+    let results: Vec<(usize, &str)> = messages[i]
+        .content
+        .iter()
+        .enumerate()
+        .filter_map(|(j, c)| match c {
+            types::ContentBlock::ToolResult(t) => Some((j, t.tool_use_id.as_str())),
+            _ => None,
+        })
+        .collect();
+    if results.is_empty() {
+        return Ok(());
+    }
+    let uses: Vec<&str> = match i.checked_sub(1) {
+        Some(prev) => messages[prev]
+            .content
+            .iter()
+            .filter_map(|c| match c {
+                types::ContentBlock::ToolUse(t) => Some(t.tool_use_id.as_str()),
+                _ => None,
+            })
+            .collect(),
+        None => Vec::new(),
+    };
+    if results.len() > uses.len() {
+        return Err(invalid(format!(
+            "The number of toolResult blocks at messages.{i}.content exceeds the number of toolUse blocks of previous turn."
+        )));
+    }
+    if let Some((j, id)) = results.iter().find(|(_, id)| !uses.contains(id)) {
+        return Err(invalid(format!(
+            "messages.{i}.content.{j}: unexpected toolUseId found in toolResult blocks: {id}. Each toolResult block must have a corresponding toolUse block in the previous turn."
+        )));
+    }
+    Ok(())
 }

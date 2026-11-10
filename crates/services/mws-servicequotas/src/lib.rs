@@ -1,8 +1,10 @@
 //! Service Quotas for MWS.
 //!
 //! A catalog of AWS service and quota codes with their default values, the
-//! values applied to each account (raised by increase requests, which are
-//! approved after a short review on the emulated clock), the
+//! values applied to each account (raised by increase requests: small ones
+//! are approved after a short review on the emulated clock, large ones go
+//! to a support case that takes a day, and [`control`] can script any
+//! outcome), the
 //! organization's quota request template, automatic management settings,
 //! utilization reports and tags.
 //!
@@ -21,6 +23,7 @@ pub mod generated {
 }
 
 pub mod catalog;
+pub mod control;
 mod ops;
 mod state;
 mod usage;
@@ -91,6 +94,11 @@ impl ServiceQuotas {
         self.inner.state.lock().expect("Service Quotas state lock poisoned")
     }
 
+    /// How increase requests are reviewed.
+    pub(crate) fn review(&self) -> state::Review {
+        self.lock().review.clone()
+    }
+
     /// The value of a quota applied to `account` in `region`: the default
     /// unless an increase was approved. Quotas Service Quotas does not know
     /// are unlimited.
@@ -99,8 +107,9 @@ impl ServiceQuotas {
         self.apply_template(account, now);
         let mut st = self.lock();
         let start = def.starting_value(region, self.profile());
+        let review = st.review.clone();
         let Some(acct) = st.accounts.get_mut(account) else { return start };
-        acct.settle(now.timestamp_millis());
+        acct.settle(now.timestamp_millis(), &review);
         acct.applied.get(&state::key(region, def.global, service, code)).copied().unwrap_or(start)
     }
 
@@ -156,6 +165,8 @@ impl ServiceQuotas {
             return;
         }
         let at = now.timestamp_millis();
+        let review = st.review.clone();
+        let profile = self.profile();
         let acct = st.accounts.entry(account.to_string()).or_default();
         acct.template_applied = true;
         for (k, desired) in template {
@@ -164,6 +175,7 @@ impl ServiceQuotas {
                 continue;
             };
             let Some(def) = catalog::quota(service, code) else { continue };
+            let (settles_at, escalate) = state::review_of(&review, at, desired, def.starting_value(region, profile));
             let id = ops::new_request_id();
             acct.requests.insert(
                 id.clone(),
@@ -183,7 +195,8 @@ impl ServiceQuotas {
                         org.management_account_id, org.management_account_id
                     ),
                     request_type: None,
-                    settles_at: at + state::APPROVAL_MS,
+                    settles_at,
+                    escalate,
                 },
             );
         }
@@ -214,9 +227,12 @@ impl ServiceQuotas {
             return;
         }
         let at = now.timestamp_millis();
+        let profile = self.profile();
         let mut st = self.lock();
+        let review = st.review.clone();
         let acct = st.accounts.entry(account.to_string()).or_default();
         for (def, desired) in wanted {
+            let (settles_at, escalate) = state::review_of(&review, at, desired, def.starting_value(region, profile));
             if acct.requests.values().any(|r| {
                 r.open() && r.service == def.service && r.code == def.code && (def.global || r.region == region)
             }) {
@@ -238,7 +254,8 @@ impl ServiceQuotas {
                     case_id: None,
                     requester: format!("{{\"accountId\":\"{account}\",\"callerArn\":\"arn:aws:iam::{account}:root\"}}"),
                     request_type: Some("AutomaticManagement".into()),
-                    settles_at: at + state::APPROVAL_MS,
+                    settles_at,
+                    escalate,
                 },
             );
         }
@@ -261,14 +278,21 @@ impl ServiceQuotas {
 #[async_trait::async_trait]
 impl Service for ServiceQuotas {
     fn recognizes(&self, request: &HttpRequest) -> bool {
-        mws_proto_json::targets(&generated::SERVICE_INFO, request)
+        mws_proto_json::targets(&generated::SERVICE_INFO, request) || request.uri().path().starts_with(control::PREFIX)
     }
 
     fn signing_name(&self) -> &'static str {
         "servicequotas"
     }
 
+    fn accepts_unsigned(&self, request: &HttpRequest) -> bool {
+        request.uri().path().starts_with(control::PREFIX)
+    }
+
     async fn handle(&self, ctx: RequestContext, request: HttpRequest) -> HttpResponse {
+        if request.uri().path().starts_with(control::PREFIX) {
+            return self.serve_control(&request, ctx.received_at.timestamp_millis());
+        }
         generated::dispatch(self, &ctx, &request).await
     }
 

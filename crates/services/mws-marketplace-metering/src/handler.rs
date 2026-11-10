@@ -210,6 +210,9 @@ impl Handler for Metering {
         if let Some(token) = input.client_token {
             st.client_tokens.insert(token, id.clone());
         }
+        let accepted: Vec<MeteringRecord> = st.records.last().cloned().into_iter().collect();
+        drop(st);
+        self.report_accepted(&ctx.region, accepted);
         Ok(types::MeterUsageResult { metering_record_id: Some(id) })
     }
 
@@ -298,6 +301,7 @@ impl Handler for Metering {
 
         let reporter = ctx.caller.arn.clone();
         let mut st = self.lock();
+        let mut accepted = Vec::new();
         let mut results = Vec::with_capacity(resolved.len());
         for r in resolved {
             let quantity = r.input.quantity.unwrap_or(0);
@@ -344,8 +348,11 @@ impl Handler for Metering {
                 client_token: None,
                 recorded_at: now,
             });
+            accepted.push(st.records.last().cloned().expect("just pushed"));
             results.push(result("Success", Some(id)));
         }
+        drop(st);
+        self.report_accepted(&ctx.region, accepted);
         Ok(types::BatchMeterUsageResult { results: Some(results), unprocessed_records: Some(Vec::new()) })
     }
 

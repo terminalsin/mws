@@ -14,7 +14,7 @@ use mws_core::{RequestContext, ServiceError};
 use crate::costs::{auth, page};
 use crate::generated::types as t;
 use crate::query::{check_expression, date_str, from_ms, ms, parse_time, validation, View};
-use crate::settings::{arn, tag_map};
+use crate::settings::{arn, request_tag_context, tag_map};
 use crate::state::{Monitor, Subscription};
 use crate::CostExplorer;
 
@@ -222,7 +222,9 @@ impl CostExplorer {
         ctx: &RequestContext,
         input: t::CreateAnomalyMonitorRequest,
     ) -> Result<t::CreateAnomalyMonitorResponse, ServiceError> {
-        auth(ctx, "CreateAnomalyMonitor")?;
+        let tags = tag_map(input.resource_tags.as_deref())?;
+        let arn = arn(ctx, "anomalymonitor");
+        ctx.authorize("ce:CreateAnomalyMonitor", &arn, request_tag_context(&tags))?;
         let mut spec = input.anomaly_monitor;
         match spec.monitor_type.as_str() {
             "DIMENSIONAL" => {
@@ -235,8 +237,6 @@ impl CostExplorer {
                 None => return Err(validation("MonitorSpecification is required for CUSTOM monitors.")),
             },
         }
-        let tags = tag_map(input.resource_tags.as_deref())?;
-        let arn = arn(ctx, "anomalymonitor");
         let today = date_str(ctx.received_at);
         spec.monitor_arn = None;
         self.with_account(ctx, |acct| {
@@ -302,7 +302,7 @@ impl CostExplorer {
         ctx: &RequestContext,
         input: t::UpdateAnomalyMonitorRequest,
     ) -> Result<t::UpdateAnomalyMonitorResponse, ServiceError> {
-        ctx.authorize("ce:UpdateAnomalyMonitor", &input.monitor_arn, Default::default())?;
+        self.authorize_on(ctx, "UpdateAnomalyMonitor", &input.monitor_arn, Default::default())?;
         let today = date_str(ctx.received_at);
         self.with_account(ctx, |acct| {
             let m = acct.monitors.get_mut(&input.monitor_arn).ok_or_else(unknown_monitor)?;
@@ -322,7 +322,7 @@ impl CostExplorer {
         ctx: &RequestContext,
         input: t::DeleteAnomalyMonitorRequest,
     ) -> Result<t::DeleteAnomalyMonitorResponse, ServiceError> {
-        ctx.authorize("ce:DeleteAnomalyMonitor", &input.monitor_arn, Default::default())?;
+        self.authorize_on(ctx, "DeleteAnomalyMonitor", &input.monitor_arn, Default::default())?;
         self.with_account(ctx, |acct| acct.monitors.remove(&input.monitor_arn)).ok_or_else(unknown_monitor)?;
         Ok(t::DeleteAnomalyMonitorResponse {})
     }
@@ -332,14 +332,14 @@ impl CostExplorer {
         ctx: &RequestContext,
         input: t::CreateAnomalySubscriptionRequest,
     ) -> Result<t::CreateAnomalySubscriptionResponse, ServiceError> {
-        auth(ctx, "CreateAnomalySubscription")?;
+        let tags = tag_map(input.resource_tags.as_deref())?;
+        let arn = arn(ctx, "anomalysubscription");
+        ctx.authorize("ce:CreateAnomalySubscription", &arn, request_tag_context(&tags))?;
         let mut spec = input.anomaly_subscription;
         check_subscribers(&spec.frequency, &spec.subscribers)?;
         if spec.threshold.is_none() && spec.threshold_expression.is_none() {
             return Err(validation("Either Threshold or ThresholdExpression is required."));
         }
-        let tags = tag_map(input.resource_tags.as_deref())?;
-        let arn = arn(ctx, "anomalysubscription");
         spec.subscription_arn = None;
         spec.account_id = Some(ctx.caller.account_id.clone());
         for s in &mut spec.subscribers {
@@ -397,7 +397,7 @@ impl CostExplorer {
         ctx: &RequestContext,
         input: t::UpdateAnomalySubscriptionRequest,
     ) -> Result<t::UpdateAnomalySubscriptionResponse, ServiceError> {
-        ctx.authorize("ce:UpdateAnomalySubscription", &input.subscription_arn, Default::default())?;
+        self.authorize_on(ctx, "UpdateAnomalySubscription", &input.subscription_arn, Default::default())?;
         self.with_account(ctx, |acct| {
             let monitors: BTreeSet<String> = acct.monitors.keys().cloned().collect();
             let s = acct.subscriptions.get_mut(&input.subscription_arn).ok_or_else(unknown_subscription)?;
@@ -436,7 +436,7 @@ impl CostExplorer {
         ctx: &RequestContext,
         input: t::DeleteAnomalySubscriptionRequest,
     ) -> Result<t::DeleteAnomalySubscriptionResponse, ServiceError> {
-        ctx.authorize("ce:DeleteAnomalySubscription", &input.subscription_arn, Default::default())?;
+        self.authorize_on(ctx, "DeleteAnomalySubscription", &input.subscription_arn, Default::default())?;
         self.with_account(ctx, |acct| acct.subscriptions.remove(&input.subscription_arn))
             .ok_or_else(unknown_subscription)?;
         Ok(t::DeleteAnomalySubscriptionResponse {})

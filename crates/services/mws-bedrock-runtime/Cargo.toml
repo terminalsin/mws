@@ -19,6 +19,7 @@ mws-logs.workspace = true
 mws-proto-json.workspace = true
 mws-proto-restjson.workspace = true
 mws-s3.workspace = true
+mws-servicequotas.workspace = true
 mws-sts.workspace = true
 rustls.workspace = true
 rustls-native-certs.workspace = true

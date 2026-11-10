@@ -108,7 +108,31 @@ pub struct Record {
     pub status: String,
     /// A pending transition: the status the resource reaches, and when.
     pub transition: Option<(String, DateTime<Utc>)>,
+    /// Further timed steps, applied in order once due: each sets the
+    /// status and merges its fields into `doc`.
+    pub steps: Vec<Step>,
     pub doc: Map<String, Value>,
+}
+
+/// A timed step of a job's lifecycle.
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[serde(default)]
+pub struct Step {
+    pub at: DateTime<Utc>,
+    pub status: String,
+    /// Fields merged into the record's document (nested objects merge).
+    pub doc: Map<String, Value>,
+}
+
+fn merge(into: &mut Map<String, Value>, from: &Map<String, Value>) {
+    for (k, v) in from {
+        match (into.get_mut(k), v) {
+            (Some(Value::Object(a)), Value::Object(b)) => merge(a, b),
+            _ => {
+                into.insert(k.clone(), v.clone());
+            }
+        }
+    }
 }
 
 impl Record {
@@ -119,6 +143,12 @@ impl Record {
                 self.updated = *at;
                 self.transition = None;
             }
+        }
+        while self.steps.first().is_some_and(|s| s.at <= now) {
+            let step = self.steps.remove(0);
+            self.status = step.status;
+            self.updated = step.at;
+            merge(&mut self.doc, &step.doc);
         }
     }
 

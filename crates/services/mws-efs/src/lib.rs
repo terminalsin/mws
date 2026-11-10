@@ -24,6 +24,7 @@ pub mod generated {
 }
 
 mod access_points;
+mod billing;
 mod file_systems;
 mod handler;
 pub mod mount;
@@ -43,6 +44,7 @@ use mws_core::{HttpRequest, HttpResponse, RequestContext, Service, ServiceError}
 use mws_ec2::Ec2;
 use mws_kms::Kms;
 
+pub use billing::FileSystemStorage;
 use state::State;
 use storage::Storage;
 

@@ -102,6 +102,7 @@ impl Bedrock {
                     updated: now,
                     status: "ACTIVE".into(),
                     transition: None,
+                    steps: Vec::new(),
                     doc,
                 },
             );

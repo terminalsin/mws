@@ -18,11 +18,11 @@ const HAIKU: &str = "anthropic.claude-3-haiku-20240307-v1:0";
 const SONNET_45: &str = "anthropic.claude-sonnet-4-5-20250929-v1:0";
 const NOVA_MICRO: &str = "amazon.nova-micro-v1:0";
 
-fn user(text: &str) -> Message {
+pub(crate) fn user(text: &str) -> Message {
     Message::builder().role(ConversationRole::User).content(ContentBlock::Text(text.into())).build().unwrap()
 }
 
-fn doc(v: &Value) -> Document {
+pub(crate) fn doc(v: &Value) -> Document {
     match v {
         Value::Null => Document::Null,
         Value::Bool(b) => Document::Bool(*b),
@@ -641,13 +641,18 @@ async fn async_invoke_and_batch_inference_write_to_s3() {
     assert_eq!(again.invocation_arn(), arn);
 
     // Batch inference reads JSONL from S3 and writes the answers back.
-    let records = [
+    // A job needs at least 100 records.
+    let mut records = vec![
         json!({"recordId": "r1", "modelInput": {"anthropic_version": "bedrock-2023-05-31", "max_tokens": 50,
                "messages": [{"role": "user", "content": "first"}]}}),
         json!({"recordId": "r2", "modelInput": {"anthropic_version": "bedrock-2023-05-31", "max_tokens": 50,
                "messages": [{"role": "user", "content": "second"}]}}),
         json!({"recordId": "r3", "modelInput": {"nonsense": true}}),
     ];
+    for n in 4..=100 {
+        records.push(json!({"recordId": format!("r{n}"), "modelInput": {"anthropic_version": "bedrock-2023-05-31",
+            "max_tokens": 50, "messages": [{"role": "user", "content": format!("record {n}")}]}}));
+    }
     let body = records.iter().map(|r| r.to_string()).collect::<Vec<_>>().join("\n");
     s3.put_object()
         .bucket("bedrock-out")
@@ -734,7 +739,7 @@ async fn async_invoke_and_batch_inference_write_to_s3() {
     let manifest =
         s3.get_object().bucket("bedrock-out").key(format!("batch/out/{id}/manifest.json.out")).send().await.unwrap();
     let manifest: Value = serde_json::from_slice(&manifest.body.collect().await.unwrap().to_vec()).unwrap();
-    assert_eq!(manifest["successRecordCount"], 2);
+    assert_eq!(manifest["successRecordCount"], 99);
     assert_eq!(manifest["errorRecordCount"], 1);
     let jobs = b.list_model_invocation_jobs().send().await.unwrap();
     assert_eq!(jobs.invocation_job_summaries().len(), 2);
@@ -923,7 +928,7 @@ async fn api_keys_authenticate_as_their_user() {
 
 /// A role Bedrock may assume for this account, with an optional inline
 /// policy. Returns its ARN.
-async fn bedrock_role(iam: &aws_sdk_iam::Client, name: &str, policy: Option<&str>) -> String {
+pub(crate) async fn bedrock_role(iam: &aws_sdk_iam::Client, name: &str, policy: Option<&str>) -> String {
     let trust = format!(
         r#"{{"Version":"2012-10-17","Statement":[{{"Effect":"Allow","Principal":{{"Service":"bedrock.amazonaws.com"}},"Action":"sts:AssumeRole","Condition":{{"StringEquals":{{"aws:SourceAccount":"{ACCOUNT}"}}}}}}]}}"#
     );

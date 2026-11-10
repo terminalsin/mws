@@ -3,6 +3,9 @@
 mod autoscaling;
 mod eks;
 mod links;
+mod platform_amplify;
+mod platform_bedrock;
+mod platform_costs;
 mod ses;
 mod sinks;
 mod ssm;
@@ -479,6 +482,12 @@ fn build_with_store(config: Config, store: Option<Arc<Store>>) -> Mws {
     guardduty.set_finding_exporter(Arc::new(links::GuardDutyToS3(s3.clone())));
     guardduty.set_organizations(Arc::new(links::GuardDutyOrganizations(organizations.clone())));
     let amplify = Amplify::with_services(s3.clone(), route53.clone());
+    amplify.set_platform(Arc::new(platform_amplify::AmplifyPlatform {
+        iam: iam.clone(),
+        sts: sts.clone(),
+        ssm: ssm.clone(),
+        acm: acm.clone(),
+    }));
     let globalaccelerator = GlobalAccelerator::new();
     globalaccelerator.add_endpoint_directory(Arc::new(links::GlobalAcceleratorEc2(ec2.clone())));
     route53.add_alias_resolver(Arc::new(links::Route53ToGlobalAccelerator(globalaccelerator.clone())));
@@ -498,7 +507,9 @@ fn build_with_store(config: Config, store: Option<Arc<Store>>) -> Mws {
     s3.set_service_quotas(servicequotas.clone());
     iam.set_service_quotas(servicequotas.clone());
     lambda.set_service_quotas(servicequotas.clone());
+    amplify.set_service_quotas(servicequotas.clone());
     cloudwatch.set_service_quotas(servicequotas.clone());
+    bedrock_runtime.set_service_quotas(servicequotas.clone());
     let ce = CostExplorer::new();
     ce.set_account_directory(Arc::new(links::CostAccounts(organizations.clone())));
     ce.set_anomaly_notifier(Arc::new(links::AnomalyAlerts(sns.clone())));
@@ -618,6 +629,21 @@ fn build_with_store(config: Config, store: Option<Arc<Store>>) -> Mws {
         autoscaling: autoscaling.clone(),
     }));
     events.register_target_sink("ecs", Arc::new(wiring::EcsTarget(ecs.clone())));
+    // Cost Explorer bills running resources, Bedrock tokens and Marketplace metering.
+    platform_bedrock::wire(&bedrock_runtime, &ce);
+    platform_costs::wire(
+        &ce,
+        platform_costs::PlatformResources {
+            ec2: ec2.clone(),
+            rds: rds.clone(),
+            eks: eks.clone(),
+            elasticache: elasticache.clone(),
+            ecs: ecs.clone(),
+            s3: s3.clone(),
+            efs: efs.clone(),
+        },
+        &marketplace_metering,
+    );
     let cloudformation = CloudFormation::new();
     cloudformation.set_role_assumer(Arc::new(links::CloudFormationRoles(sts.clone(), iam.clone())));
     let authorizer = iam.authorizer();

@@ -26,6 +26,28 @@ pub(crate) fn authorize(
     })
 }
 
+/// `aws:ResourceTag/*` of the caller's app `app_id`, if there is one.
+/// Handlers authorize on the ARN the request names before looking the app
+/// up, so callers without permission get `AccessDeniedException` whether or
+/// not it exists.
+pub(crate) fn app_tags(ctx: &RequestContext, st: &State, app_id: &str) -> ConditionContext {
+    app(ctx, st, app_id).map(|a| names::tag_context(a.app.tags.as_ref())).unwrap_or_default()
+}
+
+/// `aws:ResourceTag/*` of a branch of the caller's app, if there is one.
+pub(crate) fn branch_tags(ctx: &RequestContext, st: &State, app_id: &str, name: &str) -> ConditionContext {
+    app(ctx, st, app_id)
+        .ok()
+        .and_then(|a| a.branches.get(name))
+        .map(|b| names::tag_context(b.branch.tags.as_ref()))
+        .unwrap_or_default()
+}
+
+/// The ARN of branch `name` of the caller's app `app_id`.
+pub(crate) fn caller_branch_arn(ctx: &RequestContext, app_id: &str, name: &str) -> String {
+    names::branch_arn(&names::caller_app_arn(ctx, app_id), name)
+}
+
 /// The caller's app `app_id`.
 pub(crate) fn app<'a>(ctx: &RequestContext, st: &'a State, app_id: &str) -> Result<&'a AppRecord, ServiceError> {
     st.apps
@@ -81,6 +103,10 @@ pub(crate) fn render_branch(rec: &BranchRecord) -> types::Branch {
     b
 }
 
+fn backend_arn(ctx: &RequestContext, app_id: &str, name: &str) -> String {
+    format!("{}/backendenvironments/{}", names::caller_app_arn(ctx, app_id), names::encode_segment(name))
+}
+
 fn check_repository(repository: Option<&str>, token: Option<&str>) -> Result<(), ServiceError> {
     if repository.is_some_and(|r| !r.is_empty()) && token.is_none_or(str::is_empty) {
         return Err(bad_request(
@@ -118,6 +144,27 @@ fn check_custom_headers(yaml: Option<&str>) -> Result<(), ServiceError> {
 }
 
 impl Amplify {
+    /// `iam:PassRole` for a service or compute role handed to Amplify, which
+    /// must exist.
+    pub(crate) fn check_role(&self, ctx: &RequestContext, role: Option<&str>) -> Result<(), ServiceError> {
+        let Some(role) = role.filter(|r| !r.is_empty()) else { return Ok(()) };
+        let mut c = ConditionContext::new();
+        c.insert("iam:PassedToService".into(), vec![names::SERVICE_PRINCIPAL.into()]);
+        ctx.authorize("iam:PassRole", role, c).map_err(|e| {
+            if e.code == "AccessDenied" {
+                ServiceError::client("AccessDeniedException", 403, e.message)
+            } else {
+                e
+            }
+        })?;
+        if let Some(p) = self.platform() {
+            if !p.role_exists(role) {
+                return Err(bad_request(format!("Role {role} is not valid. The role does not exist.")));
+            }
+        }
+        Ok(())
+    }
+
     pub(crate) async fn create_app(
         &self,
         ctx: &RequestContext,
@@ -136,6 +183,9 @@ impl Amplify {
             check_rules(rules)?;
         }
         check_custom_headers(input.custom_headers.as_deref())?;
+        self.check_role(ctx, input.iam_service_role_arn.as_deref())?;
+        self.check_role(ctx, input.compute_role_arn.as_deref())?;
+        let limit = self.quota(ctx, "L-1BED97F3");
         let now = ctx.received_at;
         let app = types::App {
             app_id: app_id.clone(),
@@ -180,7 +230,12 @@ impl Amplify {
             ..AppRecord::default()
         };
         let out = render_app(&rec);
-        self.write().apps.insert(app_id, rec);
+        let mut st = self.write();
+        let count = st.apps.values().filter(|a| a.account == ctx.caller.account_id && a.region == ctx.region).count();
+        if count >= limit {
+            return Err(errors::limit_exceeded(format!("The number of apps has reached the limit of {limit}.")));
+        }
+        st.apps.insert(app_id, rec);
         Ok(types::CreateAppResult { app: out })
     }
 
@@ -190,8 +245,8 @@ impl Amplify {
         input: types::GetAppRequest,
     ) -> Result<types::GetAppResult, ServiceError> {
         let st = self.read();
+        authorize(ctx, "GetApp", &names::caller_app_arn(ctx, &input.app_id), app_tags(ctx, &st, &input.app_id))?;
         let rec = app(ctx, &st, &input.app_id)?;
-        authorize(ctx, "GetApp", &rec.app.app_arn, names::tag_context(rec.app.tags.as_ref()))?;
         Ok(types::GetAppResult { app: render_app(rec) })
     }
 
@@ -215,9 +270,12 @@ impl Amplify {
         ctx: &RequestContext,
         input: types::UpdateAppRequest,
     ) -> Result<types::UpdateAppResult, ServiceError> {
+        let tags = app_tags(ctx, &self.read(), &input.app_id);
+        authorize(ctx, "UpdateApp", &names::caller_app_arn(ctx, &input.app_id), tags)?;
+        self.check_role(ctx, input.iam_service_role_arn.as_deref())?;
+        self.check_role(ctx, input.compute_role_arn.as_deref())?;
         let mut st = self.write();
         let rec = app_mut(ctx, &mut st, &input.app_id)?;
-        authorize(ctx, "UpdateApp", &rec.app.app_arn, names::tag_context(rec.app.tags.as_ref()))?;
         let token = input.access_token.clone().or(input.oauth_token.clone());
         if input.repository.is_some() {
             check_repository(input.repository.as_deref(), token.as_deref().or(rec.repository_token.as_deref()))?;
@@ -276,8 +334,8 @@ impl Amplify {
     ) -> Result<types::DeleteAppResult, ServiceError> {
         let rec = {
             let mut st = self.write();
-            let rec = app(ctx, &st, &input.app_id)?;
-            authorize(ctx, "DeleteApp", &rec.app.app_arn, names::tag_context(rec.app.tags.as_ref()))?;
+            authorize(ctx, "DeleteApp", &names::caller_app_arn(ctx, &input.app_id), app_tags(ctx, &st, &input.app_id))?;
+            app(ctx, &st, &input.app_id)?;
             let rec = st.apps.remove(&input.app_id).expect("app exists");
             st.webhooks.retain(|_, w| w.webhook.app_id.as_deref() != Some(input.app_id.as_str()));
             st.uploads.retain(|_, u| u.app_id != input.app_id);
@@ -296,18 +354,20 @@ impl Amplify {
         ctx: &RequestContext,
         input: types::CreateBranchRequest,
     ) -> Result<types::CreateBranchResult, ServiceError> {
+        let arn = caller_branch_arn(ctx, &input.app_id, &input.branch_name);
+        authorize(ctx, "CreateBranch", &arn, names::request_tag_context(input.tags.as_ref()))?;
+        self.check_role(ctx, input.compute_role_arn.as_deref())?;
+        let limit = self.quota(ctx, "L-A6716586");
         let mut st = self.write();
         let rec = app_mut(ctx, &mut st, &input.app_id)?;
-        let arn = names::branch_arn(&rec.app.app_arn, &input.branch_name);
-        authorize(ctx, "CreateBranch", &arn, names::request_tag_context(input.tags.as_ref()))?;
         if let Some(tags) = &input.tags {
             names::check_tags(tags)?;
         }
         if rec.branches.contains_key(&input.branch_name) {
             return Err(bad_request(format!("Branch {} already exists.", input.branch_name)));
         }
-        if rec.branches.len() >= 50 {
-            return Err(errors::limit_exceeded("The number of branches has reached the limit of 50."));
+        if rec.branches.len() >= limit {
+            return Err(errors::limit_exceeded(format!("The number of branches has reached the limit of {limit}.")));
         }
         names::check_basic_auth(input.basic_auth_credentials.as_deref(), input.enable_basic_auth)?;
         let now = ctx.received_at;
@@ -360,9 +420,10 @@ impl Amplify {
         input: types::GetBranchRequest,
     ) -> Result<types::GetBranchResult, ServiceError> {
         let st = self.read();
+        let arn = caller_branch_arn(ctx, &input.app_id, &input.branch_name);
+        authorize(ctx, "GetBranch", &arn, branch_tags(ctx, &st, &input.app_id, &input.branch_name))?;
         let rec = app(ctx, &st, &input.app_id)?;
         let b = branch(rec, &input.branch_name)?;
-        authorize(ctx, "GetBranch", &b.branch.branch_arn, names::tag_context(b.branch.tags.as_ref()))?;
         Ok(types::GetBranchResult { branch: render_branch(b) })
     }
 
@@ -372,8 +433,9 @@ impl Amplify {
         input: types::ListBranchesRequest,
     ) -> Result<types::ListBranchesResult, ServiceError> {
         let st = self.read();
+        let arn = format!("{}/branches/*", names::caller_app_arn(ctx, &input.app_id));
+        authorize(ctx, "ListBranches", &arn, ConditionContext::new())?;
         let rec = app(ctx, &st, &input.app_id)?;
-        authorize(ctx, "ListBranches", &format!("{}/branches/*", rec.app.app_arn), ConditionContext::new())?;
         let mut all: Vec<&BranchRecord> = rec.branches.values().collect();
         all.sort_by_key(|b| b.branch.create_time);
         let all: Vec<types::Branch> = all.into_iter().map(render_branch).collect();
@@ -386,6 +448,10 @@ impl Amplify {
         ctx: &RequestContext,
         input: types::UpdateBranchRequest,
     ) -> Result<types::UpdateBranchResult, ServiceError> {
+        let arn = caller_branch_arn(ctx, &input.app_id, &input.branch_name);
+        let tags = branch_tags(ctx, &self.read(), &input.app_id, &input.branch_name);
+        authorize(ctx, "UpdateBranch", &arn, tags)?;
+        self.check_role(ctx, input.compute_role_arn.as_deref())?;
         let mut st = self.write();
         let rec = app_mut(ctx, &mut st, &input.app_id)?;
         let taken: Vec<String> = rec
@@ -395,7 +461,6 @@ impl Amplify {
             .map(|b| b.branch.display_name.clone())
             .collect();
         let br = branch_mut(rec, &input.branch_name)?;
-        authorize(ctx, "UpdateBranch", &br.branch.branch_arn, names::tag_context(br.branch.tags.as_ref()))?;
         let enabled = input.enable_basic_auth.unwrap_or(br.branch.enable_basic_auth);
         let creds = input.basic_auth_credentials.as_deref().or(br.branch.basic_auth_credentials.as_deref());
         names::check_basic_auth(creds, Some(enabled))?;
@@ -448,9 +513,10 @@ impl Amplify {
     ) -> Result<types::DeleteBranchResult, ServiceError> {
         let removed = {
             let mut st = self.write();
+            let arn = caller_branch_arn(ctx, &input.app_id, &input.branch_name);
+            authorize(ctx, "DeleteBranch", &arn, branch_tags(ctx, &st, &input.app_id, &input.branch_name))?;
             let rec = app_mut(ctx, &mut st, &input.app_id)?;
-            let br = branch(rec, &input.branch_name)?;
-            authorize(ctx, "DeleteBranch", &br.branch.branch_arn, names::tag_context(br.branch.tags.as_ref()))?;
+            branch(rec, &input.branch_name)?;
             let removed = rec.branches.remove(&input.branch_name).expect("branch exists");
             for d in rec.domains.values_mut() {
                 d.domain.sub_domains.retain(|s| s.sub_domain_setting.branch_name != input.branch_name);
@@ -475,10 +541,10 @@ impl Amplify {
         ctx: &RequestContext,
         input: types::CreateBackendEnvironmentRequest,
     ) -> Result<types::CreateBackendEnvironmentResult, ServiceError> {
+        let arn = backend_arn(ctx, &input.app_id, &input.environment_name);
+        authorize(ctx, "CreateBackendEnvironment", &arn, ConditionContext::new())?;
         let mut st = self.write();
         let rec = app_mut(ctx, &mut st, &input.app_id)?;
-        let arn = format!("{}/backendenvironments/{}", rec.app.app_arn, names::encode_segment(&input.environment_name));
-        authorize(ctx, "CreateBackendEnvironment", &arn, ConditionContext::new())?;
         if rec.backends.contains_key(&input.environment_name) {
             return Err(bad_request(format!("Backend environment {} already exists.", input.environment_name)));
         }
@@ -499,13 +565,14 @@ impl Amplify {
         ctx: &RequestContext,
         input: types::GetBackendEnvironmentRequest,
     ) -> Result<types::GetBackendEnvironmentResult, ServiceError> {
+        let arn = backend_arn(ctx, &input.app_id, &input.environment_name);
+        authorize(ctx, "GetBackendEnvironment", &arn, ConditionContext::new())?;
         let st = self.read();
         let rec = app(ctx, &st, &input.app_id)?;
         let env = rec
             .backends
             .get(&input.environment_name)
             .ok_or_else(|| not_found("Backend environment", &input.environment_name))?;
-        authorize(ctx, "GetBackendEnvironment", &env.backend_environment_arn, ConditionContext::new())?;
         Ok(types::GetBackendEnvironmentResult { backend_environment: env.clone() })
     }
 
@@ -514,14 +581,10 @@ impl Amplify {
         ctx: &RequestContext,
         input: types::ListBackendEnvironmentsRequest,
     ) -> Result<types::ListBackendEnvironmentsResult, ServiceError> {
+        let arn = format!("{}/backendenvironments/*", names::caller_app_arn(ctx, &input.app_id));
+        authorize(ctx, "ListBackendEnvironments", &arn, ConditionContext::new())?;
         let st = self.read();
         let rec = app(ctx, &st, &input.app_id)?;
-        authorize(
-            ctx,
-            "ListBackendEnvironments",
-            &format!("{}/backendenvironments/*", rec.app.app_arn),
-            ConditionContext::new(),
-        )?;
         let mut all: Vec<types::BackendEnvironment> = rec
             .backends
             .values()
@@ -538,14 +601,14 @@ impl Amplify {
         ctx: &RequestContext,
         input: types::DeleteBackendEnvironmentRequest,
     ) -> Result<types::DeleteBackendEnvironmentResult, ServiceError> {
+        let arn = backend_arn(ctx, &input.app_id, &input.environment_name);
+        authorize(ctx, "DeleteBackendEnvironment", &arn, ConditionContext::new())?;
         let mut st = self.write();
         let rec = app_mut(ctx, &mut st, &input.app_id)?;
         let env = rec
             .backends
-            .get(&input.environment_name)
+            .remove(&input.environment_name)
             .ok_or_else(|| not_found("Backend environment", &input.environment_name))?;
-        authorize(ctx, "DeleteBackendEnvironment", &env.backend_environment_arn, ConditionContext::new())?;
-        let env = rec.backends.remove(&input.environment_name).expect("environment exists");
         Ok(types::DeleteBackendEnvironmentResult { backend_environment: env })
     }
 
@@ -558,16 +621,25 @@ impl Amplify {
             .ok_or_else(|| not_found("Webhook", id))
     }
 
+    /// The ARN to authorize a webhook call on, before looking it up: the
+    /// webhook's, or one under any of the caller's apps when it does not
+    /// exist.
+    fn webhook_arn(ctx: &RequestContext, st: &State, id: &str) -> String {
+        Self::webhook(ctx, st, id)
+            .map(|w| w.webhook.webhook_arn.clone())
+            .unwrap_or_else(|_| format!("{}/webhooks/{id}", names::caller_app_arn(ctx, "*")))
+    }
+
     pub(crate) async fn create_webhook(
         &self,
         ctx: &RequestContext,
         input: types::CreateWebhookRequest,
     ) -> Result<types::CreateWebhookResult, ServiceError> {
+        let id = uuid::Uuid::new_v4().to_string();
+        let arn = format!("{}/webhooks/{id}", names::caller_app_arn(ctx, &input.app_id));
+        authorize(ctx, "CreateWebhook", &arn, ConditionContext::new())?;
         let mut st = self.write();
         let rec = app_mut(ctx, &mut st, &input.app_id)?;
-        let id = uuid::Uuid::new_v4().to_string();
-        let arn = format!("{}/webhooks/{id}", rec.app.app_arn);
-        authorize(ctx, "CreateWebhook", &arn, ConditionContext::new())?;
         branch(rec, &input.branch_name)?;
         rec.app.webhook_create_time.get_or_insert(ctx.received_at);
         let token = names::random_alnum(40);
@@ -602,8 +674,8 @@ impl Amplify {
         input: types::GetWebhookRequest,
     ) -> Result<types::GetWebhookResult, ServiceError> {
         let st = self.read();
+        authorize(ctx, "GetWebhook", &Self::webhook_arn(ctx, &st, &input.webhook_id), ConditionContext::new())?;
         let w = Self::webhook(ctx, &st, &input.webhook_id)?;
-        authorize(ctx, "GetWebhook", &w.webhook.webhook_arn, ConditionContext::new())?;
         Ok(types::GetWebhookResult { webhook: w.webhook.clone() })
     }
 
@@ -612,9 +684,10 @@ impl Amplify {
         ctx: &RequestContext,
         input: types::ListWebhooksRequest,
     ) -> Result<types::ListWebhooksResult, ServiceError> {
+        let arn = format!("{}/webhooks/*", names::caller_app_arn(ctx, &input.app_id));
+        authorize(ctx, "ListWebhooks", &arn, ConditionContext::new())?;
         let st = self.read();
-        let rec = app(ctx, &st, &input.app_id)?;
-        authorize(ctx, "ListWebhooks", &format!("{}/webhooks/*", rec.app.app_arn), ConditionContext::new())?;
+        app(ctx, &st, &input.app_id)?;
         let mut all: Vec<types::Webhook> = st
             .webhooks
             .values()
@@ -632,8 +705,8 @@ impl Amplify {
         input: types::UpdateWebhookRequest,
     ) -> Result<types::UpdateWebhookResult, ServiceError> {
         let mut st = self.write();
+        authorize(ctx, "UpdateWebhook", &Self::webhook_arn(ctx, &st, &input.webhook_id), ConditionContext::new())?;
         let w = Self::webhook(ctx, &st, &input.webhook_id)?;
-        authorize(ctx, "UpdateWebhook", &w.webhook.webhook_arn, ConditionContext::new())?;
         let app_id = w.webhook.app_id.clone().unwrap_or_default();
         if let Some(b) = &input.branch_name {
             let rec = app(ctx, &st, &app_id)?;
@@ -656,8 +729,8 @@ impl Amplify {
         input: types::DeleteWebhookRequest,
     ) -> Result<types::DeleteWebhookResult, ServiceError> {
         let mut st = self.write();
-        let w = Self::webhook(ctx, &st, &input.webhook_id)?;
-        authorize(ctx, "DeleteWebhook", &w.webhook.webhook_arn, ConditionContext::new())?;
+        authorize(ctx, "DeleteWebhook", &Self::webhook_arn(ctx, &st, &input.webhook_id), ConditionContext::new())?;
+        Self::webhook(ctx, &st, &input.webhook_id)?;
         let w = st.webhooks.remove(&input.webhook_id).expect("webhook exists");
         Ok(types::DeleteWebhookResult { webhook: w.webhook })
     }

@@ -23,6 +23,7 @@ pub mod generated {
     include!(concat!(env!("OUT_DIR"), "/s3_generated.rs"));
 }
 
+mod billing;
 #[macro_use]
 mod checksum;
 mod access_points;
@@ -65,6 +66,7 @@ pub use access_points::{
     ObjectLambdaInvoker, Transformation,
 };
 pub use auth::policy_is_public;
+pub use billing::BucketStorage;
 pub use checksum::compute as compute_checksum;
 pub use notifications::{event_message, EventBridgeSink, NotificationDestination, NotificationSource, ObjectEvent};
 pub use public::{ServicePutError, ServicePutObject, ServicePutOptions, ServiceRead};

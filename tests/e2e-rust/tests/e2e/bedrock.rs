@@ -14,6 +14,26 @@ const HAIKU: &str = "anthropic.claude-3-haiku-20240307-v1:0";
 const NOVA_MICRO: &str = "amazon.nova-micro-v1:0";
 const ROLE: &str = "arn:aws:iam::123456789012:role/bedrock-jobs";
 
+/// The `bedrock-jobs` role: Bedrock may assume it, and it may read and
+/// write `buckets`.
+pub(crate) async fn jobs_role(cfg: &aws_config::SdkConfig, buckets: &[&str]) -> String {
+    let iam = aws_sdk_iam::Client::new(cfg);
+    let trust = r#"{"Version":"2012-10-17","Statement":[{"Effect":"Allow","Principal":{"Service":"bedrock.amazonaws.com"},"Action":"sts:AssumeRole"}]}"#;
+    let role = iam.create_role().role_name("bedrock-jobs").assume_role_policy_document(trust).send().await.unwrap();
+    let resources: Vec<String> =
+        buckets.iter().flat_map(|b| [format!("\"arn:aws:s3:::{b}\""), format!("\"arn:aws:s3:::{b}/*\"")]).collect();
+    let policy = format!(
+        r#"{{"Version":"2012-10-17","Statement":[{{"Effect":"Allow","Action":["s3:GetObject","s3:ListBucket","s3:PutObject"],"Resource":[{}]}}]}}"#,
+        resources.join(",")
+    );
+    iam.put_role_policy().role_name("bedrock-jobs").policy_name("s3").policy_document(policy).send().await.unwrap();
+    role.role().unwrap().arn().to_string()
+}
+
+pub(crate) async fn put(s3: &aws_sdk_s3::Client, bucket: &str, key: &str, body: impl Into<Vec<u8>>) {
+    s3.put_object().bucket(bucket).key(key).body(body.into().into()).send().await.unwrap();
+}
+
 pub(crate) fn code<E: ProvideErrorMetadata>(e: &E) -> String {
     e.code().unwrap_or_default().to_string()
 }
@@ -312,7 +332,15 @@ async fn customization_import_and_deployments() {
     let mws = Mws::start().await;
     let cfg = mws.root_sdk_config().await;
     let b = Client::new(&cfg);
-    Mws::s3(&cfg).create_bucket().bucket("training").send().await.unwrap();
+    let s3 = Mws::s3(&cfg);
+    s3.create_bucket().bucket("training").send().await.unwrap();
+    assert_eq!(jobs_role(&cfg, &["training"]).await, ROLE);
+    let line = r#"{"system": "Be brief.", "messages": [{"role": "user", "content": "Hi"}, {"role": "assistant", "content": "Hello!"}]}"#;
+    put(&s3, "training", "train.jsonl", format!("{line}\n{line}\n")).await;
+    put(&s3, "training", "llama/config.json", r#"{"model_type": "llama", "architectures": ["LlamaForCausalLM"]}"#)
+        .await;
+    put(&s3, "training", "llama/tokenizer.json", "{}").await;
+    put(&s3, "training", "llama/model-00001-of-00001.safetensors", vec![0u8; 16]).await;
 
     let job = b
         .create_model_customization_job()
@@ -446,7 +474,9 @@ async fn customization_import_and_deployments() {
 #[tokio::test]
 async fn evaluation_and_prompt_optimization_jobs() {
     let mws = Mws::start().await;
-    let b = Client::new(&mws.root_sdk_config().await);
+    let cfg = mws.root_sdk_config().await;
+    let b = Client::new(&cfg);
+    jobs_role(&cfg, &["evals"]).await;
     let dataset = EvaluationDataset::builder().name("Builtin.BoolQ").build().unwrap();
     let job = b
         .create_evaluation_job()

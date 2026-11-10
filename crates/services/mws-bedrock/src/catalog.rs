@@ -92,10 +92,33 @@ pub struct ModelSpec {
     /// The context window, in tokens.
     #[serde(default = "default_context")]
     pub context_window: u32,
+    /// The largest `maxTokens` (`max_tokens`) the model accepts.
+    #[serde(default = "default_max_output")]
+    pub max_output_tokens: u32,
+    /// Whether `Converse` accepts `toolConfig`.
+    #[serde(default = "yes")]
+    pub tool_use: bool,
+    /// Whether `toolChoice` may be `any` or `tool` (not only `auto`).
+    #[serde(default = "yes")]
+    pub tool_choice: bool,
+    /// Whether the model takes system prompts.
+    #[serde(default = "yes")]
+    pub system_prompt: bool,
+    /// Whether batch inference (`CreateModelInvocationJob`) supports it.
+    #[serde(default)]
+    pub batch_supported: bool,
 }
 
 fn active() -> String {
     "ACTIVE".into()
+}
+
+fn yes() -> bool {
+    true
+}
+
+fn default_max_output() -> u32 {
+    8_192
 }
 
 fn default_context() -> u32 {
@@ -154,7 +177,57 @@ fn m(
         profiles: s(profiles),
         lifecycle: active(),
         context_window,
+        max_output_tokens: default_max_output(),
+        tool_use: true,
+        tool_choice: true,
+        system_prompt: true,
+        batch_supported: false,
     }
+}
+
+/// What a model can do through `Converse` and batch inference, as AWS
+/// documents it per model.
+fn capabilities(s: &mut ModelSpec) {
+    use Family::*;
+    let id = s.model_id.as_str();
+    let (tools, choice, system, max_out, batch) = match s.family {
+        Anthropic => {
+            let max = if id.contains("claude-3-haiku") || id.contains("claude-3-5-sonnet") {
+                4_096
+            } else if id.contains("claude-3-5-haiku") {
+                8_192
+            } else if id.contains("opus-4-2025") || id.contains("opus-4-1") {
+                32_000
+            } else {
+                64_000
+            };
+            (true, true, true, max, true)
+        }
+        Nova => (true, true, true, if id.contains("premier") { 32_000 } else { 10_000 }, true),
+        TitanText => (false, false, false, if id.contains("lite") { 4_096 } else { 8_192 }, false),
+        Llama => {
+            let llama3 = id.starts_with("meta.llama3-8b") || id.starts_with("meta.llama3-70b");
+            let small = id.contains("3-2-1b") || id.contains("3-2-3b");
+            (!llama3 && !small, false, true, if id.contains("llama4") { 8_192 } else { 2_048 }, !llama3)
+        }
+        Mistral => {
+            let chat = id.contains("large") || id.contains("small");
+            (chat, chat, chat, if id.contains("mixtral") { 4_096 } else { 8_192 }, chat)
+        }
+        MistralChat => (true, true, true, 8_192, false),
+        CohereCommand => (true, false, true, 4_000, false),
+        Jamba => (true, false, true, 4_096, false),
+        DeepSeek => (false, false, true, 32_768, false),
+        OpenAi => (true, true, true, 32_768, true),
+        TitanEmbed => (false, false, false, 0, id.ends_with("v2:0")),
+        TitanEmbedImage => (false, false, false, 0, true),
+        _ => (false, false, false, 0, false),
+    };
+    s.tool_use = tools;
+    s.tool_choice = choice;
+    s.system_prompt = system;
+    s.max_output_tokens = max_out;
+    s.batch_supported = batch;
 }
 
 fn builtin() -> Vec<ModelSpec> {
@@ -670,6 +743,7 @@ fn builtin() -> Vec<ModelSpec> {
             s.lifecycle = "LEGACY".into();
         }
     }
+    v.iter_mut().for_each(capabilities);
     v
 }
 
