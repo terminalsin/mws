@@ -68,6 +68,7 @@ mod kms_xks;
 mod lambda;
 mod lambda_destinations;
 mod lambda_durable;
+mod lambda_efs_docker;
 mod lambda_images;
 mod lambda_runtimes_docker;
 mod lambda_sqs;

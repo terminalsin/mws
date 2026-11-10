@@ -117,12 +117,14 @@ pub(super) fn command(
     function_arn: &str,
     memory_mb: i32,
     env: &BTreeMap<String, String>,
+    mounts: &[super::Mount],
 ) -> Result<Command, LaunchError> {
     let argv: Vec<&String> = c.entrypoint.iter().chain(&c.command).collect();
     let Some((program, rest)) = argv.split_first() else {
         return Err(LaunchError::InvalidEntrypoint("No command specified".into()));
     };
     let mut args = run_args(&RunArgs { name, function_arn, memory_mb, ephemeral_mb: c.ephemeral_mb, platform: None });
+    push_mounts(&mut args, mounts);
     args.push("--entrypoint".into());
     args.push(program.to_string());
     if let Some(w) = c.working_dir.as_ref().filter(|w| !w.is_empty()) {
@@ -134,6 +136,35 @@ pub(super) fn command(
     args.push(c.image.clone());
     args.extend(rest.iter().map(|s| s.to_string()));
     Ok(Command { program: docker(), args, env: by_name })
+}
+
+/// `-v host:path[:ro]` for each mounted file system.
+pub(super) fn push_mounts(args: &mut Vec<String>, mounts: &[super::Mount]) {
+    for m in mounts {
+        args.push("-v".into());
+        args.push(format!("{}:{}{}", m.host.display(), m.path, if m.read_only { ":ro" } else { "" }));
+    }
+}
+
+/// Give mounted directories their owner as root, in a one-off container
+/// of the environment's own image, when MWS (not running as root) could
+/// not: an EFS access point's root directory belongs to its creation
+/// info's owner. Best effort: an image without `chown` keeps the owner.
+pub(super) fn chown_mounts(image: &str, platform: Option<&str>, mounts: &[super::Mount]) {
+    for m in mounts {
+        let Some((uid, gid)) = m.owner else { continue };
+        let mut cmd = std::process::Command::new(docker());
+        cmd.args(["run", "--rm", "--user", "0", "--network", "none", "--entrypoint", "chown"]);
+        if let Some(p) = platform {
+            cmd.args(["--platform", p]);
+        }
+        cmd.arg("-v")
+            .arg(format!("{}:/mws-mount", m.host.display()))
+            .arg(image)
+            .arg(format!("{uid}:{gid}"))
+            .arg("/mws-mount");
+        let _ = cmd.stdout(std::process::Stdio::null()).stderr(std::process::Stdio::null()).status();
+    }
 }
 
 /// What every Lambda container gets.

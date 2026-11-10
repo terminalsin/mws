@@ -29,6 +29,7 @@ mod destinations;
 mod durable;
 mod esm;
 mod esm_stream;
+mod file_systems;
 mod function_url;
 mod functions;
 mod handler;
@@ -50,6 +51,7 @@ use mws_core::{HttpRequest, HttpResponse, RequestContext, Service, ServiceError}
 pub use destinations::{DestinationMessage, DestinationSink};
 pub use esm::{QueueFacts, QueueMessage, QueueMessageAttribute, QueueSource};
 pub use esm_stream::{StreamPosition, StreamRead, StreamRecord, StreamShard, StreamSource};
+pub use file_systems::{FileSystemMountError, FileSystemMountRequest, FileSystems, MountedFileSystem};
 pub use image::{ContainerImage, ImageBlob, ImageError, ImageSource};
 pub use names::FunctionRef;
 pub use runtime::RuntimeExecutor;
@@ -78,6 +80,8 @@ pub(crate) struct Inner {
     metrics: mws_core::metrics::MetricOutlet,
     /// Durable executions' background work.
     durable: durable::Runtime,
+    /// Where `FileSystemConfigs` mount from, when EFS is wired in.
+    file_systems: std::sync::OnceLock<Arc<dyn FileSystems>>,
 }
 
 /// The Lambda service. Cheap to clone; clones share state.
@@ -120,6 +124,7 @@ impl Lambda {
                 images: std::sync::OnceLock::new(),
                 metrics: Default::default(),
                 durable: Default::default(),
+                file_systems: std::sync::OnceLock::new(),
             }),
         }
     }
@@ -155,6 +160,11 @@ impl Lambda {
     /// `publisher`.
     pub fn set_metric_publisher(&self, publisher: Arc<dyn mws_core::metrics::MetricPublisher>) {
         self.inner.metrics.connect(publisher);
+    }
+
+    /// Mount Amazon EFS access points for functions' `FileSystemConfigs`.
+    pub fn set_file_systems(&self, file_systems: Arc<dyn FileSystems>) {
+        let _ = self.inner.file_systems.set(file_systems);
     }
 
     pub fn set_logs(&self, logs: mws_logs::Logs) {

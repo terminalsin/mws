@@ -29,6 +29,7 @@ mod handler;
 pub mod mount;
 mod mount_targets;
 mod replication;
+pub mod service_mount;
 mod settings;
 mod state;
 pub mod storage;

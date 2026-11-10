@@ -561,6 +561,7 @@ fn build_with_store(config: Config, store: Option<Arc<Store>>) -> Mws {
     }
     let efs = Efs::new(ec2.clone(), kms.clone(), config.efs_dir.clone().unwrap_or_else(Efs::default_root));
     ec2.add_launch_extension(efs.instance_support());
+    lambda.set_file_systems(Arc::new(links::LambdaFileSystems(efs.clone())));
     let cloudtrail = CloudTrail::new()
         .with_s3(s3.clone())
         .with_logs(logs.clone())

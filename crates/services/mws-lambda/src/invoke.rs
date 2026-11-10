@@ -137,6 +137,7 @@ impl Lambda {
             (None, Some(_)) => EnvKind::BaseImage,
             (None, None) => EnvKind::Process,
         };
+        let mounts = self.mount_file_systems(ctx, f, config, kind)?;
         let env = self.environment(ctx, f, config, &executed_version, kind)?;
         let log_target = (
             env.get("AWS_LAMBDA_LOG_GROUP_NAME").cloned(),
@@ -158,6 +159,7 @@ impl Lambda {
             container,
             managed,
             ephemeral_mb: config.ephemeral_storage.as_ref().map_or(512, |e| e.size),
+            mounts,
         };
         let job = Job {
             request_id: uuid::Uuid::new_v4().to_string(),
@@ -225,6 +227,61 @@ impl Lambda {
             working_dir: overrides.and_then(|o| o.working_directory.clone()).or_else(|| run.working_dir.clone()),
             ephemeral_mb: config.ephemeral_storage.as_ref().map_or(512, |e| e.size),
         })
+    }
+
+    /// Mount the function's EFS file systems (`FileSystemConfigs`):
+    /// `(host directory, LocalMountPath, read-only)` for each.
+    fn mount_file_systems(
+        &self,
+        ctx: &RequestContext,
+        f: &FunctionRef,
+        config: &types::FunctionConfiguration,
+        kind: EnvKind,
+    ) -> Result<Vec<crate::runtime::Mount>, ServiceError> {
+        let configs = config.file_system_configs.clone().unwrap_or_default();
+        if configs.is_empty() {
+            return Ok(Vec::new());
+        }
+        let Some(file_systems) = self.inner.file_systems.get() else {
+            return Err(errors::efs_mount_failure("Amazon EFS is not available to mount the function's file systems."));
+        };
+        let vpc = config.vpc_config.clone().unwrap_or_default();
+        let mut out = Vec::new();
+        for c in configs {
+            let req = crate::FileSystemMountRequest {
+                account: f.account.clone(),
+                region: f.region.clone(),
+                access_point_arn: c.arn.clone(),
+                subnet_ids: vpc.subnet_ids.clone().unwrap_or_default(),
+                security_group_ids: vpc.security_group_ids.clone().unwrap_or_default(),
+                role_arn: config.role.clone(),
+                session_name: f.name.clone(),
+            };
+            match file_systems.mount(&req) {
+                Ok(m) => out.push(crate::runtime::Mount {
+                    host: m.dir,
+                    path: c.local_mount_path.clone(),
+                    read_only: m.read_only,
+                    owner: m.owner,
+                }),
+                Err(e) => {
+                    self.publish_invocation_metrics(ctx, f, crate::metrics::Result::Failed);
+                    return Err(match e {
+                        crate::FileSystemMountError::Connectivity(m) => errors::efs_mount_connectivity(m),
+                        crate::FileSystemMountError::Failure(m) => errors::efs_mount_failure(m),
+                    });
+                }
+            }
+        }
+        // The network path and permissions check out, but a local process
+        // can't see a bind mount at LocalMountPath.
+        if kind == EnvKind::Process {
+            self.publish_invocation_metrics(ctx, f, crate::metrics::Result::Failed);
+            return Err(errors::efs_mount_failure(
+                "MWS mounts EFS file systems only into functions that run in containers: run managed runtimes in AWS's base images (MWS_LAMBDA_RUNTIME_EXECUTOR=auto or docker, with Docker running) or use a container image.",
+            ));
+        }
+        Ok(out)
     }
 
     /// The function's environment: Lambda's reserved variables, role
