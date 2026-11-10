@@ -13,6 +13,11 @@ import { redirect } from "next/navigation";
 
 import { secrets } from "../../lib/clients";
 
+// Members (and error codes) to the form fields they concern. A KMS key
+// Secrets Manager can't use fails as EncryptionFailure; a name scheduled for
+// deletion as InvalidRequestException.
+const CREATE_FIELDS = { Name: "name", SecretString: "value", Description: "description", KmsKeyId: "kmsKeyId", EncryptionFailure: "kmsKeyId", InvalidRequestException: "name" };
+
 export async function createSecret(_: ActionResult | null, form: FormData) {
   return act(async () => {
     const name = required(form, "name", "Name");
@@ -25,14 +30,14 @@ export async function createSecret(_: ActionResult | null, form: FormData) {
       }),
     );
     return `Created ${name}`;
-  }, "/secrets");
+  }, { revalidate: ["/secrets"], fields: CREATE_FIELDS });
 }
 
 export async function putValue(id: string, _: ActionResult | null, form: FormData) {
   return act(async () => {
     const out = await (await secrets()).send(new PutSecretValueCommand({ SecretId: id, SecretString: text(form, "value") }));
     return `Stored version ${out.VersionId}`;
-  }, "/secrets/secret");
+  }, { revalidate: ["/secrets/secret"], fields: { SecretString: "value", EncryptionFailure: "value" } });
 }
 
 export async function updateSecret(id: string, _: ActionResult | null, form: FormData) {
@@ -41,7 +46,7 @@ export async function updateSecret(id: string, _: ActionResult | null, form: For
       new UpdateSecretCommand({ SecretId: id, Description: text(form, "description"), KmsKeyId: text(form, "kmsKeyId") || undefined }),
     );
     return "Saved";
-  }, "/secrets/secret");
+  }, { revalidate: ["/secrets/secret"], fields: { Description: "description", KmsKeyId: "kmsKeyId", EncryptionFailure: "kmsKeyId" } });
 }
 
 export async function rotate(id: string, _: ActionResult | null, form: FormData) {
@@ -56,7 +61,12 @@ export async function rotate(id: string, _: ActionResult | null, form: FormData)
       }),
     );
     return `Rotated to ${out.VersionId}`;
-  }, "/secrets/secret");
+  }, {
+    revalidate: ["/secrets/secret"],
+    // AccessDenied here is the function policy not letting Secrets Manager
+    // invoke it; InvalidParameter, rotation rules it rejects.
+    fields: { RotationLambdaARN: "lambda", "RotationRules.AutomaticallyAfterDays": "days", AccessDeniedException: "lambda", InvalidParameterException: "days" },
+  });
 }
 
 export async function restore(id: string) {
@@ -73,5 +83,5 @@ export async function deleteSecret(id: string, _: ActionResult | null, form: For
       new DeleteSecretCommand({ SecretId: id, ...(force ? { ForceDeleteWithoutRecovery: true } : { RecoveryWindowInDays: Number(text(form, "days") || 30) }) }),
     );
     redirect("/secrets");
-  });
+  }, { fields: { RecoveryWindowInDays: "days" } });
 }

@@ -1,16 +1,23 @@
 import { DescribeSecretCommand, GetSecretValueCommand } from "@aws-sdk/client-secrets-manager";
 import { ago, load } from "@mws-dashboard/aws";
-import { ActionForm, AwsIcon, CodeBlock, ErrorNotice, Facts, Field, List, Page, Pill, Section, Sheet, Tags } from "@mws-dashboard/ui";
+import { ActionForm, AwsIcon, CodeBlock, ErrorNotice, Facts, Field, List, Page, Pill, Section, Sheet, Tags, type Rule } from "@mws-dashboard/ui";
+import { DeleteSecret, PutSecretValue, RotateSecret } from "@mws-dashboard/ui/model/secretsmanager";
 import { Eye, EyeOff, Pencil, RotateCw, Trash2, Undo2 } from "lucide-react";
 import type { Metadata } from "next";
 import Link from "next/link";
 
 import { ICONS, secrets } from "../../../lib/clients";
+import { functionArns } from "../../../lib/known";
 import { deleteSecret, putValue, restore, rotate } from "../actions";
 
 type Props = { searchParams: Promise<{ id?: string; reveal?: string }> };
 
 export const metadata: Metadata = { title: "Secret" };
+
+const VALUE: Rule = { ...PutSecretValue.SecretString, format: "jsonish", generate: "password" };
+const DAYS: Rule = RotateSecret.RotationRules.fields!.AutomaticallyAfterDays;
+// AWS's documented recovery window; the model has no range.
+const WINDOW: Rule = { ...DeleteSecret.RecoveryWindowInDays, min: 7, max: 30, default: 30 };
 
 export default async function Secret({ searchParams }: Props) {
   const { id = "", reveal } = await searchParams;
@@ -29,6 +36,10 @@ export default async function Secret({ searchParams }: Props) {
   const value = reveal && !deleted ? await load(() => client.send(new GetSecretValueCommand({ SecretId: id }))) : null;
   const self = `/secrets/secret?id=${encodeURIComponent(id)}`;
   const versions = Object.entries(s.VersionIdsToStages ?? {});
+  const functions = deleted ? [] : await functionArns();
+  // A bare function name expands to an ARN in the secret's account and Region.
+  const [, , , secretRegion, account] = (s.ARN ?? "").split(":");
+  const lambdaArn = `arn:aws:lambda:${secretRegion}:${account}:function:{}`;
 
   return (
     <Page
@@ -43,23 +54,26 @@ export default async function Secret({ searchParams }: Props) {
           <>
             <Sheet title="New value" label="Store a new value" icon={<Pencil size={16} />} testId="put-secret-value">
               <ActionForm action={putValue.bind(null, id)} submit="Store" testId="put-secret-value">
-                <textarea name="value" rows={8} aria-label="Secret value" required />
+                <Field label="Value" rule={VALUE} member="SecretString">
+                  <textarea name="value" rows={8} required />
+                </Field>
               </ActionForm>
             </Sheet>
             <Sheet title="Rotate" label="Rotate" icon={<RotateCw size={16} />} testId="rotate-secret">
               <ActionForm action={rotate.bind(null, id)} submit="Rotate now" testId="rotate-secret">
-                <Field label="Rotation function ARN">
-                  <input name="lambda" defaultValue={s.RotationLambdaARN} placeholder="arn:aws:lambda:…" />
+                <Field label="Rotation function" rule={RotateSecret.RotationLambdaARN} format="arn" arn={lambdaArn} known={functions} member="RotationLambdaARN">
+                  {/* Without a function already set, rotation needs one. */}
+                  <input name="lambda" defaultValue={s.RotationLambdaARN} required={!s.RotationLambdaARN} placeholder="arn:aws:lambda:…" />
                 </Field>
-                <Field label="Every (days)">
-                  <input name="days" type="number" min={1} max={1000} defaultValue={s.RotationRules?.AutomaticallyAfterDays} />
+                <Field label="Every (days)" rule={DAYS} member="RotationRules.AutomaticallyAfterDays">
+                  <input name="days" type="number" defaultValue={s.RotationRules?.AutomaticallyAfterDays} />
                 </Field>
               </ActionForm>
             </Sheet>
             <Sheet title="Delete secret" label="Delete secret" icon={<Trash2 size={16} />} testId="delete-secret">
               <ActionForm action={deleteSecret.bind(null, id)} submit="Delete" tone="danger" testId="delete-secret">
-                <Field label="Recovery window (days)">
-                  <input name="days" type="number" min={7} max={30} defaultValue={30} />
+                <Field label="Recovery window (days)" rule={WINDOW} member="RecoveryWindowInDays">
+                  <input name="days" type="number" defaultValue={30} />
                 </Field>
                 <label className="check">
                   <input type="checkbox" name="force" /> Delete now, without recovery

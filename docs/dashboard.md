@@ -114,7 +114,8 @@ Fields validate in place, and say how to fix what they reject. `Field`
    `import { CreateFunction } from "@mws-dashboard/ui/model/lambda"`, then
    `<Field rule={CreateFunction.FunctionName}>`;
 2. the control's own attributes (`required`, `maxLength`, `min`, `type`...);
-3. what the page adds: `format` (`json`, `yaml` (YAML or JSON documents),
+3. what the page adds: `format` (`json`, `jsonish` (text, JSON once it
+   starts with `{` or `[`), `yaml` (YAML or JSON documents),
    `keyvalue` (one `Key=value` per line), `policy`, `path` (IAM), `dir`, `arn`, `cidr`,
    `ipv4`, `email`, `emails` (a comma-separated list), `domain`,
    `email-or-domain`, `dnsName` (wildcards allowed), `url`, `s3url`, `bucket`, `name`, `port`, `ports` (a port or range), `semver`, `cron` (AWS's six fields), `phone`,
