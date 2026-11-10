@@ -106,7 +106,7 @@ async fn pass_role_is_required_for_roles_handed_to_ssm() {
 
     let window = root
         .create_maintenance_window()
-        .name("w")
+        .name("window")
         .schedule("rate(1 day)")
         .duration(2)
         .cutoff(1)

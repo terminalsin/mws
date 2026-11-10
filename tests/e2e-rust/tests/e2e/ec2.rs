@@ -762,6 +762,7 @@ async fn images() {
 
     let run = ec2.run_instances().image_id(&ami).min_count(1).max_count(1).send().await.unwrap();
     let id = run.instances()[0].instance_id().unwrap().to_string();
+    wait_state(&ec2, &id, InstanceStateName::Running).await;
     let made = ec2.create_image().instance_id(&id).name("golden").description("baked").send().await.unwrap();
     let image_id = made.image_id().unwrap().to_string();
     let mine = ec2.describe_images().owners("self").send().await.unwrap();

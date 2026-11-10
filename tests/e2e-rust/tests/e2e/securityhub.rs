@@ -441,14 +441,23 @@ async fn findings_import_filters_workflow_history_and_events_body() {
     assert_eq!(failed.id(), Some("f-3"));
     assert!(failed.error_code().is_some());
 
-    let events = receive_events(&sqs, &url, 1).await;
+    // Each imported finding gets its own event (control findings may send
+    // events too).
+    let mut events = Vec::new();
+    let mut ids: Vec<serde_json::Value> = Vec::new();
+    for _ in 0..20 {
+        events.extend(receive_events(&sqs, &url, 1).await);
+        ids = events
+            .iter()
+            .flat_map(|e| e["detail"]["findings"].as_array().unwrap().iter().map(|f| f["Id"].clone()))
+            .collect();
+        if ids.contains(&serde_json::json!("f-1")) && ids.contains(&serde_json::json!("f-2")) {
+            break;
+        }
+    }
     let imported_event = events.iter().find(|e| e["detail-type"] == "Security Hub Findings - Imported").expect("event");
     assert_eq!(imported_event["source"], "aws.securityhub");
     assert_eq!(imported_event["account"], ACCOUNT);
-    let ids: Vec<_> = events
-        .iter()
-        .flat_map(|e| e["detail"]["findings"].as_array().unwrap().iter().map(|f| f["Id"].clone()))
-        .collect();
     assert!(ids.contains(&serde_json::json!("f-1")) && ids.contains(&serde_json::json!("f-2")), "{ids:?}");
 
     // Filters, sorting and paging.
@@ -801,10 +810,11 @@ async fn members_through_invitations_body() {
         .unwrap();
     let seen = admin
         .get_findings()
-        .filters(AwsSecurityFindingFilters::builder().aws_account_id(eq(&member_id)).build())
+        .filters(AwsSecurityFindingFilters::builder().aws_account_id(eq(&member_id)).id(eq("member-1")).build())
         .send()
         .await
         .unwrap();
+    // (The member's enabled standards add control findings of their own.)
     assert_eq!(seen.findings().len(), 1);
     let got = admin.get_members().account_ids(&member_id).account_ids("000000000000").send().await.unwrap();
     assert_eq!(got.members()[0].member_status(), Some("Enabled"));

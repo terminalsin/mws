@@ -336,6 +336,8 @@ async fn vended_metrics_and_masked_subscription_deliveries() {
     let cw = aws_sdk_cloudwatch::Client::new(&cfg);
 
     kinesis.create_stream().stream_name("sink").shard_count(1).send().await.unwrap();
+    // Subscriptions test-deliver to the stream, which must be ACTIVE.
+    crate::kinesis::wait_active(&kinesis, "sink").await;
     let stream_arn = kinesis
         .describe_stream_summary()
         .stream_name("sink")

@@ -456,6 +456,9 @@ export function repairs(value: string, rule: Rule, code: IssueCode): Repair[] {
       // better fix. Otherwise the least invasive cleanup that works; a
       // second one would only be a worse version of it.
       if (rule.format) for (const r of FORMATS[rule.format].repair?.(value, rule) ?? []) offer(r);
+      // A known value one slip away (":MyApp" for the namespace MyApp) is
+      // what was meant, more likely than any cleanup of the slip.
+      if (out.length === 0 && code === "pattern") for (const s of closest(value, rule.known ?? [])) offer({ value: s, label: `Did you mean ${s}?`, kind: "suggest" });
       if (out.length === 0) for (const r of reshape(value, rule).slice(0, 1)) offer(r);
       if (out.length === 0 && (code === "tooShort" || code === "pattern")) offer(fresh(rule));
   }

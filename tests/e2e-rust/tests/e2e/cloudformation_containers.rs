@@ -25,7 +25,14 @@ async fn settle(cfn: &Client, stack: &str) -> aws_sdk_cloudformation::types::Sta
         }
         tokio::time::sleep(Duration::from_millis(100)).await;
     }
-    panic!("stack {stack} did not settle");
+    let resources = cfn.describe_stack_resources().stack_name(stack).send().await.unwrap();
+    let pending: Vec<_> = resources
+        .stack_resources()
+        .iter()
+        .filter(|r| r.resource_status().is_some_and(|s| s.as_str().ends_with("_IN_PROGRESS")))
+        .map(|r| format!("{} {:?}", r.logical_resource_id().unwrap_or_default(), r.resource_status_reason()))
+        .collect();
+    panic!("stack {stack} did not settle: {pending:?}");
 }
 
 fn output(s: &aws_sdk_cloudformation::types::Stack, key: &str) -> String {
@@ -157,17 +164,29 @@ Resources:
       Cluster: !Ref Cluster
       CapacityProviders: [FARGATE, FARGATE_SPOT]
       DefaultCapacityProviderStrategy: [{CapacityProvider: FARGATE, Weight: 1}]
+  ExecutionRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - {Effect: Allow, Principal: {Service: ecs-tasks.amazonaws.com}, Action: "sts:AssumeRole"}
+      ManagedPolicyArns: ["arn:aws:iam::aws:policy/service-role/AmazonECSTaskExecutionRolePolicy"]
   TaskDef:
     Type: AWS::ECS::TaskDefinition
     Properties:
       Family: cfn-web
+      # Fargate pulls ECR images with the execution role.
+      ExecutionRoleArn: !GetAtt ExecutionRole.Arn
       Cpu: 256
       Memory: 512
       NetworkMode: awsvpc
       RequiresCompatibilities: [FARGATE]
       ContainerDefinitions:
         - Name: web
-          Image: !Sub "${Repo.RepositoryUri}:latest"
+          # The stack's own repository is empty, and ECS can't pull from
+          # it until something pushes an image.
+          Image: public.ecr.aws/nginx/nginx:latest
           Essential: true
           PortMappings: [{ContainerPort: 80}]
           DockerLabels: {com.example.Team: web}
@@ -277,6 +296,7 @@ async fn ecs_service_behind_an_alb_with_ecr_and_efs_deploys_updates_and_deletes(
         .stack_name("web")
         .template_body(TEMPLATE)
         .set_parameters(Some(net.clone()))
+        .capabilities(aws_sdk_cloudformation::types::Capability::CapabilityIam)
         .send()
         .await
         .unwrap();
@@ -384,7 +404,7 @@ async fn ecs_service_behind_an_alb_with_ecr_and_efs_deploys_updates_and_deletes(
     let td = td.task_definition().unwrap();
     assert_eq!(td.cpu(), Some("256"));
     let cd = &td.container_definitions()[0];
-    assert_eq!(cd.image(), Some(format!("{}:latest", output(&stack, "RepoUri")).as_str()));
+    assert_eq!(cd.image(), Some("public.ecr.aws/nginx/nginx:latest"));
     assert_eq!(cd.docker_labels().unwrap().get("com.example.Team").map(String::as_str), Some("web"));
     let efs_vol = td.volumes()[0].efs_volume_configuration().unwrap();
     assert_eq!(efs_vol.file_system_id(), fs_id);
@@ -410,7 +430,15 @@ async fn ecs_service_behind_an_alb_with_ecr_and_efs_deploys_updates_and_deletes(
         param("IdleTimeout", "90"),
         param("Mutability", "MUTABLE"),
     ]);
-    c.cfn.update_stack().stack_name("web").template_body(TEMPLATE).set_parameters(Some(update)).send().await.unwrap();
+    c.cfn
+        .update_stack()
+        .stack_name("web")
+        .template_body(TEMPLATE)
+        .set_parameters(Some(update))
+        .capabilities(aws_sdk_cloudformation::types::Capability::CapabilityIam)
+        .send()
+        .await
+        .unwrap();
     let stack = settle(&c.cfn, "web").await;
     assert_eq!(stack.stack_status(), Some(&StackStatus::UpdateComplete), "{:?}", failures(&c.cfn, "web").await);
     assert_eq!(output(&stack, "ServiceArn"), service_arn);

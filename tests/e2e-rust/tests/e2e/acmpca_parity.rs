@@ -59,7 +59,7 @@ async fn root_with(
         .certificate_authority_arn()
         .unwrap()
         .to_string();
-    let csr = crate::acmpca::wait_csr(&pca, &ca).await;
+    let csr = crate::acmpca::wait_csr(pca, &ca).await;
     let cert_arn = pca
         .issue_certificate()
         .certificate_authority_arn(&ca)
@@ -73,7 +73,7 @@ async fn root_with(
         .certificate_arn()
         .unwrap()
         .to_string();
-    let cert = crate::acmpca::wait_cert(&pca, &ca, &cert_arn).await;
+    let cert = crate::acmpca::wait_cert(pca, &ca, &cert_arn).await;
     let pem = cert.certificate().unwrap().to_string();
     pca.import_certificate_authority_certificate()
         .certificate_authority_arn(&ca)
@@ -116,7 +116,7 @@ async fn issue_pem(
         .certificate_arn()
         .unwrap()
         .to_string();
-    let cert = crate::acmpca::wait_cert(&pca, &ca, &arn).await;
+    let cert = crate::acmpca::wait_cert(pca, ca, &arn).await;
     Ok(cert.certificate().unwrap().to_string())
 }
 

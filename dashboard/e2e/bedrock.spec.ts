@@ -159,14 +159,18 @@ test("Bedrock validation: a logging bucket that does not exist suggests the one 
 
 test("Bedrock: customize a model, then buy, rename and delete its Provisioned Throughput", async ({ page }) => {
   const bucket = unique("dash-tune").toLowerCase();
-  await new S3Client({ ...sdk, forcePathStyle: true }).send(new CreateBucketCommand({ Bucket: bucket }));
+  const s3 = new S3Client({ ...sdk, forcePathStyle: true });
+  await s3.send(new CreateBucketCommand({ Bucket: bucket }));
+  // The job reads and checks its training data: Claude takes "messages" records.
+  const example = { system: "Answer briefly.", messages: [{ role: "user", content: "hi" }, { role: "assistant", content: "hello" }] };
+  await s3.send(new PutObjectCommand({ Bucket: bucket, Key: "train.jsonl", Body: `${JSON.stringify(example)}\n` }));
   const job = unique("dash-job");
   const model = unique("dashmodel").replace(/-/g, "_");
   await page.goto("/bedrock/custom-models");
   await submit(page, "create-customization", { jobName: job, modelName: model, training: `s3://${bucket}/train.jsonl`, output: `s3://${bucket}/out/` });
   await expect(page.getByRole("heading", { level: 1, name: job })).toBeVisible();
   await expect(page.getByRole("link", { name: `s3://${bucket}/train.jsonl` })).toBeVisible();
-  await expect(page.getByText("Completed")).toBeVisible({ timeout: 30_000 });
+  await expect(page.getByRole("listitem", { name: "Status" }).getByText("Completed")).toBeVisible({ timeout: 30_000 });
   await page.getByRole("link", { name: model }).click();
   await expect(page.getByRole("heading", { level: 1, name: model })).toBeVisible();
   await expect(page.getByRole("link", { name: job })).toBeVisible();

@@ -9,7 +9,7 @@
 //! it, as on AWS.
 //!
 //! The transition takes `MWS_LAMBDA_STATE_TRANSITION_MS` milliseconds (one
-//! second unless set).
+//! second unless set; `MWS_ASYNC_DELAY_MS=0` also makes it instant).
 
 use std::time::Duration;
 
@@ -25,7 +25,10 @@ use crate::Lambda;
 pub(crate) fn transition() -> Duration {
     static MS: std::sync::OnceLock<u64> = std::sync::OnceLock::new();
     Duration::from_millis(*MS.get_or_init(|| {
-        std::env::var("MWS_LAMBDA_STATE_TRANSITION_MS").ok().and_then(|v| v.trim().parse().ok()).unwrap_or(1000)
+        std::env::var("MWS_LAMBDA_STATE_TRANSITION_MS")
+            .ok()
+            .and_then(|v| v.trim().parse().ok())
+            .unwrap_or_else(|| mws_core::settle::window(Duration::from_millis(1000)).as_millis() as u64)
     }))
 }
 

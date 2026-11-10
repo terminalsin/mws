@@ -99,6 +99,8 @@ test("EFS: mount targets, their security groups, the file system policy and life
   await expect(page.locator('ul[aria-label="Mount targets"] li.row')).toHaveCount(zones.size);
   const efs = new EFSClient(sdk);
   const target = (await efs.send(new DescribeMountTargetsCommand({ FileSystemId: id }))).MountTargets![0];
+  // Mount targets take a moment to become available; until then EFS refuses changes.
+  await expect.poll(async () => (await efs.send(new DescribeMountTargetsCommand({ MountTargetId: target.MountTargetId }))).MountTargets![0].LifeCycleState, { timeout: 30_000 }).toBe("available");
   await expect(page.getByRole("link", { name: target.SubnetId! })).toHaveAttribute("href", `/vpc/subnet?id=${target.SubnetId}`);
   await page.getByTestId(`edit-sgs-${target.AvailabilityZoneName}-open`).click();
   const form = page.locator("dialog[open]").getByTestId(`edit-sgs-${target.AvailabilityZoneName}`).and(page.locator("form"));

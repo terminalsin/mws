@@ -106,7 +106,7 @@ async fn durable_function(cfg: &aws_config::SdkConfig, name: &str) -> String {
         .send()
         .await
         .unwrap();
-    mws_e2e::function_active(&lambda, &name).await;
+    mws_e2e::function_active(&lambda, name).await;
     f.function_arn().unwrap().to_string()
 }
 

@@ -57,6 +57,20 @@ export function decode(data: Uint8Array | undefined): {
 
 /** Every record of a shard from `iterator` to the tip, keeping the newest
  * `keep` (at most `calls` GetRecords calls). */
+/** GetRecords, backing off when the shard's five reads a second are used
+ * up (`ProvisionedThroughputExceededException`), as the AWS console does. */
+async function getRecords(input: { ShardIterator: string | undefined; Limit: number }) {
+  const c = await kinesis();
+  for (let attempt = 0; ; attempt++) {
+    try {
+      return await c.send(new GetRecordsCommand(input));
+    } catch (e) {
+      if ((e as { name?: string }).name !== "ProvisionedThroughputExceededException" || attempt >= 4) throw e;
+      await new Promise((r) => setTimeout(r, 1000));
+    }
+  }
+}
+
 async function tail(
   stream: string,
   shard: string,
@@ -79,9 +93,7 @@ async function tail(
   let out: Rec[] = [];
   let complete = false;
   for (let i = 0; i < calls && it; i++) {
-    const r = await c.send(
-      new GetRecordsCommand({ ShardIterator: it, Limit: 10_000 }),
-    );
+    const r = await getRecords({ ShardIterator: it, Limit: 10_000 });
     out = out.concat((r.Records ?? []).map((x) => ({ ...x, shard })));
     if (out.length > keep) out = out.slice(-keep);
     it = r.NextShardIterator;
@@ -168,9 +180,7 @@ export async function shardPage(
         }),
       )
     ).ShardIterator;
-  const r = await c.send(
-    new GetRecordsCommand({ ShardIterator: it, Limit: limit }),
-  );
+  const r = await getRecords({ ShardIterator: it, Limit: limit });
   return {
     records: (r.Records ?? []).map((x) => ({ ...x, shard })),
     next: r.NextShardIterator,

@@ -8,7 +8,9 @@ use serde::{Deserialize, Serialize};
 
 /// How long an accelerator stays `IN_PROGRESS` after a change, and a BYOIP
 /// address range in a `PENDING_*` state, in milliseconds.
-pub const TRANSITION_MS: i64 = 1_000;
+pub fn transition_ms() -> i64 {
+    mws_core::settle::window_ms(1_000)
+}
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 #[serde(default)]
@@ -103,7 +105,7 @@ impl Accelerator {
     /// A change was made: the accelerator deploys it.
     pub fn touch(&mut self, now: i64) {
         self.status = "IN_PROGRESS".into();
-        self.settles_at = now + TRANSITION_MS;
+        self.settles_at = now + transition_ms();
         self.modified = now;
     }
 }

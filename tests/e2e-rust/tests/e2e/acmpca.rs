@@ -108,10 +108,10 @@ pub(crate) async fn active_root(pca: &Client) -> (String, String) {
         SigningAlgorithm::Sha256Withrsa,
     )
     .await;
-    let csr = wait_csr(&pca, &ca).await;
+    let csr = wait_csr(pca, &ca).await;
     let cert_arn =
         issue(pca, &ca, csr.csr().unwrap(), Some(ROOT_TEMPLATE), SigningAlgorithm::Sha256Withrsa, 3650).await;
-    let cert = wait_cert(&pca, &ca, &cert_arn).await;
+    let cert = wait_cert(pca, &ca, &cert_arn).await;
     let pem = cert.certificate().unwrap().to_string();
     pca.import_certificate_authority_certificate()
         .certificate_authority_arn(&ca)

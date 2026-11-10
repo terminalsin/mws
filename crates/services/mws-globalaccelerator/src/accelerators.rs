@@ -244,7 +244,7 @@ impl GlobalAccelerator {
             dns_name: names::dns_name(),
             dual_stack_dns_name: (dual && !custom).then(names::dual_stack_dns_name),
             status: "IN_PROGRESS".into(),
-            settles_at: now + crate::state::TRANSITION_MS,
+            settles_at: now + crate::state::transition_ms(),
             created: now,
             modified: now,
             tags,

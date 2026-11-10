@@ -230,7 +230,8 @@ pub fn validate_basic(selectors: &[types::EventSelector]) -> Result<(), ServiceE
             }
             for v in d.values.iter().flatten() {
                 let ok = match t {
-                    "AWS::S3::Object" => v.starts_with("arn:") && v.contains(":s3:"),
+                    // `arn:aws:s3` / `arn:aws:lambda` stand for every bucket or function.
+                    "AWS::S3::Object" => v.starts_with("arn:") && (v.contains(":s3:") || v.ends_with(":s3")),
                     "AWS::Lambda::Function" => v.starts_with("arn:") && v.contains(":lambda"),
                     _ => v.starts_with("arn:"),
                 };
@@ -292,6 +293,17 @@ mod tests {
         }];
         let put = |k: &str| event("s3.amazonaws.com", "PutObject", false, vec![("AWS::S3::Object", k)]);
         assert!(basic_matches(&s, &put("arn:aws:s3:::b/logs/x")));
+        let all = |v: &str| types::EventSelector {
+            data_resources: Some(vec![types::DataResource {
+                r#type: Some("AWS::S3::Object".into()),
+                values: Some(vec![v.into()]),
+            }]),
+            ..Default::default()
+        };
+        for v in ["arn:aws:s3", "arn:aws:s3:::"] {
+            validate_basic(&[all(v)]).unwrap();
+            assert!(basic_matches(&[all(v)], &put("arn:aws:s3:::any/key")));
+        }
         assert!(!basic_matches(&s, &put("arn:aws:s3:::b/other")));
         assert!(!basic_matches(&s, &event("iam.amazonaws.com", "CreateUser", false, vec![])));
     }

@@ -584,7 +584,7 @@ async fn private_certificates_come_from_private_ca() {
         .await
         .unwrap();
     let root_pem =
-        crate::acmpca::wait_cert(&pca, &ca, &root.certificate_arn().unwrap()).await.certificate().unwrap().to_string();
+        crate::acmpca::wait_cert(&pca, &ca, root.certificate_arn().unwrap()).await.certificate().unwrap().to_string();
     pca.import_certificate_authority_certificate()
         .certificate_authority_arn(&ca)
         .certificate(aws_sdk_acmpca::primitives::Blob::new(root_pem.as_bytes()))

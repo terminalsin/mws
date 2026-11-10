@@ -183,7 +183,7 @@ impl Efs {
             lifecycle: Vec::new(),
             throughput_changed_at: None,
             throughput_restricted_at: None,
-            transition_ends: Some(ctx.received_at + crate::state::FILE_SYSTEM_CREATE),
+            transition_ends: Some(ctx.received_at + crate::state::file_system_create()),
         };
         region.file_systems.insert(id.clone(), fs.clone());
         self.storage().create(&id);
@@ -364,7 +364,7 @@ impl Efs {
         // `deleting` for a moment, then gone (see `State::settle`).
         if let Some(f) = region.file_systems.get_mut(&id).filter(|f| f.description.life_cycle_state != "deleting") {
             f.description.life_cycle_state = "deleting".into();
-            f.transition_ends = Some(ctx.received_at + crate::state::FILE_SYSTEM_DELETE);
+            f.transition_ends = Some(ctx.received_at + crate::state::file_system_delete());
         }
         Ok(())
     }

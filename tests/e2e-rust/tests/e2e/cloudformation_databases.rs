@@ -62,6 +62,8 @@ Resources:
     DeletionPolicy: Delete
     Properties:
       Engine: aurora-postgresql
+      # The parameter group's family must match the engine's major version.
+      EngineVersion: "16.8"
       MasterUsername: app
       MasterUserPassword: correct-horse-battery
       DBSubnetGroupName: !Ref DbSubnets
@@ -263,9 +265,11 @@ async fn body() {
     assert_eq!(g.replication_groups()[0].description(), Some("user sessions"));
 
     // Delete: the instance's `Snapshot` policy leaves a final snapshot.
+    // A deleted stack is found by its id only, as on AWS.
+    let id = stack.stack_id().unwrap().to_string();
     cfn.delete_stack().stack_name("data").send().await.unwrap();
-    let stack = settle(&cfn, "data").await;
-    assert_eq!(stack.stack_status(), Some(&StackStatus::DeleteComplete), "{:?}", failures(&cfn, "data").await);
+    let stack = settle(&cfn, &id).await;
+    assert_eq!(stack.stack_status(), Some(&StackStatus::DeleteComplete), "{:?}", failures(&cfn, &id).await);
     let gone = rds.describe_db_instances().db_instance_identifier(&db_id).send().await.unwrap_err();
     assert_eq!(gone.into_service_error().meta().code(), Some("DBInstanceNotFound"));
     let gone = rds.describe_db_clusters().db_cluster_identifier(&cluster_id).send().await.unwrap_err();

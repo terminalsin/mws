@@ -123,7 +123,7 @@ pub(crate) struct InsightsRefresh {
 /// How long transitions take on the emulated clock, in seconds. Real EKS
 /// takes about ten minutes for a cluster and a few for a node group; these
 /// are shorter so SDK waiters finish within a few polls, and advancing
-/// `/_mws/clock` skips them.
+/// `/_mws/clock` skips them; `MWS_ASYNC_DELAY_MS=0` makes them instant.
 pub(crate) mod durations {
     pub const CLUSTER_CREATE: i64 = 120;
     pub const CLUSTER_UPDATE: i64 = 60;
@@ -144,7 +144,7 @@ impl ClusterRec {
     /// Start a transition of `key` that lasts `secs` from `now`; returns
     /// when it finishes.
     pub fn begin(&mut self, key: impl Into<String>, now: DateTime<Utc>, secs: i64) -> DateTime<Utc> {
-        let at = now + chrono::Duration::seconds(secs);
+        let at = now + chrono::Duration::milliseconds(mws_core::settle::window_ms(secs * 1000));
         self.settle_at.insert(key.into(), at);
         at
     }

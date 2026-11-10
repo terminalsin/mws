@@ -84,13 +84,19 @@ pub struct MountTarget {
 }
 
 /// How long a new file system stays `creating` (AWS: a few seconds).
-pub const FILE_SYSTEM_CREATE: chrono::Duration = chrono::Duration::seconds(2);
+pub fn file_system_create() -> chrono::Duration {
+    chrono::Duration::milliseconds(mws_core::settle::window_ms(2_000))
+}
 /// How long a deleted file system stays `deleting`.
-pub const FILE_SYSTEM_DELETE: chrono::Duration = chrono::Duration::seconds(2);
+pub fn file_system_delete() -> chrono::Duration {
+    chrono::Duration::milliseconds(mws_core::settle::window_ms(2_000))
+}
 /// How long a new mount target stays `creating`. AWS takes about 90
 /// seconds; MWS keeps it short, and advancing the emulated clock
-/// (`/_mws/clock`) finishes it at once.
-pub const MOUNT_TARGET_CREATE: chrono::Duration = chrono::Duration::seconds(4);
+/// (`/_mws/clock`) finishes it at once, as does `MWS_ASYNC_DELAY_MS=0`.
+pub fn mount_target_create() -> chrono::Duration {
+    chrono::Duration::milliseconds(mws_core::settle::window_ms(4_000))
+}
 
 impl State {
     /// Finish the transitions due by `now`: `creating` file systems and

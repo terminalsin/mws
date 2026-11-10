@@ -1,9 +1,9 @@
 import { DescribeSubnetsCommand, EC2Client } from "@aws-sdk/client-ec2";
-import { CreateClusterCommand, CreateNodegroupCommand, DescribeClusterCommand, DescribeNodegroupCommand, EKSClient, ListFargateProfilesCommand, UpdateClusterVersionCommand } from "@aws-sdk/client-eks";
+import { CreateClusterCommand, CreateNodegroupCommand, DescribeClusterCommand, DescribeFargateProfileCommand, DescribeNodegroupCommand, EKSClient, ListFargateProfilesCommand, UpdateClusterVersionCommand } from "@aws-sdk/client-eks";
 import { CreateRoleCommand, GetRoleCommand, IAMClient } from "@aws-sdk/client-iam";
 import { expect, test, type Page } from "@playwright/test";
 
-import { row, sdk, submit, unique } from "./helpers";
+import { row, sdk, settleWithClock, submit, unique } from "./helpers";
 
 async function openSheet(page: Page, path: string, testId: string) {
   await page.goto(path);
@@ -40,6 +40,9 @@ test("EKS: create a cluster with its service role made automatically", async ({ 
   const role = await new IAMClient(sdk).send(new GetRoleCommand({ RoleName: "AmazonEKSClusterRole" }));
   expect(decodeURIComponent(role.Role!.AssumeRolePolicyDocument!)).toContain("eks.amazonaws.com");
   cluster = name;
+  // Clusters take minutes to become ACTIVE; node groups need an active one.
+  const eks = new EKSClient(sdk);
+  await settleWithClock(async () => (await eks.send(new DescribeClusterCommand({ name }))).cluster?.status, "ACTIVE");
 
   // The name is now taken: the next free one is offered.
   const again = await openSheet(page, "/eks", "create-eks-cluster");
@@ -95,7 +98,7 @@ async function seedCluster(version: string) {
   const subnets = ((await new EC2Client(sdk).send(new DescribeSubnetsCommand({ Filters: [{ Name: "default-for-az", Values: ["true"] }] }))).Subnets ?? []).map((s) => s.SubnetId!);
   const name = unique("dash-eks");
   await eks.send(new CreateClusterCommand({ name, version, roleArn, resourcesVpcConfig: { subnetIds: subnets }, accessConfig: { authenticationMode: "API_AND_CONFIG_MAP" } }));
-  await expect.poll(async () => (await eks.send(new DescribeClusterCommand({ name }))).cluster?.status, { timeout: 60_000 }).toBe("ACTIVE");
+  await settleWithClock(async () => (await eks.send(new DescribeClusterCommand({ name }))).cluster?.status, "ACTIVE");
   return { eks, name, roleArn, subnets };
 }
 
@@ -114,9 +117,9 @@ test("EKS: a node group page links its Auto Scaling group and upgrades it to the
   const { eks, name, roleArn, subnets } = await seedCluster("1.33");
   const nodegroupName = unique("ng");
   await eks.send(new CreateNodegroupCommand({ clusterName: name, nodegroupName, nodeRole: roleArn, subnets, scalingConfig: { minSize: 1, desiredSize: 1, maxSize: 2 } }));
-  await expect.poll(async () => (await eks.send(new DescribeNodegroupCommand({ clusterName: name, nodegroupName }))).nodegroup?.status, { timeout: 90_000 }).toBe("ACTIVE");
+  await settleWithClock(async () => (await eks.send(new DescribeNodegroupCommand({ clusterName: name, nodegroupName }))).nodegroup?.status, "ACTIVE");
   await eks.send(new UpdateClusterVersionCommand({ name, version: "1.34" }));
-  await expect.poll(async () => (await eks.send(new DescribeClusterCommand({ name }))).cluster?.status, { timeout: 90_000 }).toBe("ACTIVE");
+  await settleWithClock(async () => (await eks.send(new DescribeClusterCommand({ name }))).cluster?.status, "ACTIVE");
 
   await page.goto(`/eks/cluster?name=${name}&tab=compute`);
   await row(page, nodegroupName).locator("a").click();
@@ -137,6 +140,9 @@ test("EKS: Fargate profiles, add-ons and access entries, then the cluster delete
   await page.goto(`/eks/cluster?name=${name}&tab=compute`);
   await submit(page, "create-fargate-profile", { name: "default-ns", namespace: "default" });
   await expect(page.getByLabel("Fargate profiles").locator("li.row").filter({ hasText: "default-ns" })).toBeVisible();
+  const eks = new EKSClient(sdk);
+  // Profiles take a minute to become ACTIVE, and can't be deleted before.
+  await settleWithClock(async () => (await eks.send(new DescribeFargateProfileCommand({ clusterName: name, fargateProfileName: "default-ns" }))).fargateProfile?.status, "ACTIVE");
 
   // Add-ons: the first one EKS offers, with its status.
   await page.goto(`/eks/cluster?name=${name}&tab=addons`);
@@ -152,8 +158,7 @@ test("EKS: Fargate profiles, add-ons and access entries, then the cluster delete
   await page.goto(`/eks/cluster?name=${name}&tab=compute`);
   page.once("dialog", (d) => d.accept().catch(() => {}));
   await page.getByLabel("Fargate profiles").locator("li.row").filter({ hasText: "default-ns" }).getByRole("button", { name: /Delete/ }).click();
-  const eks = new EKSClient(sdk);
-  await expect.poll(async () => (await eks.send(new ListFargateProfilesCommand({ clusterName: name }))).fargateProfileNames?.length, { timeout: 60_000 }).toBe(0);
+  await settleWithClock(async () => String((await eks.send(new ListFargateProfilesCommand({ clusterName: name }))).fargateProfileNames?.length), "0");
   await page.goto(`/eks/cluster?name=${name}`);
   page.once("dialog", (d) => d.accept().catch(() => {}));
   await page.getByTestId("delete-eks-cluster").locator('button[type="submit"]').click();

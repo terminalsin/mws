@@ -9,7 +9,7 @@ use mws_core::{ConditionContext, RequestContext, ServiceError};
 
 use crate::generated::{errors, types};
 use crate::names::{authorize, invalid_argument, now_ms, request_tag_context, validate_tags, StreamRef};
-use crate::state::{Channel, State, TRANSITION_MS};
+use crate::state::{transition_ms, Channel, State};
 use crate::Kinesis;
 
 pub const CHANNEL_LIMIT: i32 = 50;
@@ -122,7 +122,7 @@ impl Kinesis {
             account,
             region: ctx.region.clone(),
             created_at: now,
-            settles_at: now + TRANSITION_MS,
+            settles_at: now + transition_ms(),
             status: "CREATING".into(),
             description: desc,
             tags,
@@ -182,7 +182,7 @@ impl Kinesis {
             };
         }
         c.status = "UPDATING".into();
-        c.settles_at = now_ms(ctx) + TRANSITION_MS;
+        c.settles_at = now_ms(ctx) + transition_ms();
         Ok(types::UpdateChannelOutput { channel_description: description(c) })
     }
 
@@ -193,7 +193,7 @@ impl Kinesis {
         get(&st, &input.channel_arn)?;
         let c = st.channels.get_mut(&input.channel_arn).expect("checked above");
         c.status = "DELETING".into();
-        c.settles_at = now_ms(ctx) + TRANSITION_MS;
+        c.settles_at = now_ms(ctx) + transition_ms();
         Ok(())
     }
 

@@ -273,7 +273,29 @@ struct EventDestination;
 fn destination(props: &Props) -> Value {
     let d = obj(props, "EventDestination");
     let mut out = Map::new();
-    copy(&d, &mut out, &["Enabled", "MatchingEventTypes", "CloudWatchDestination", "EventBridgeDestination"]);
+    copy(&d, &mut out, &["Enabled", "CloudWatchDestination", "EventBridgeDestination"]);
+    // CloudFormation takes v1 event type names (`send`, `renderingFailure`);
+    // SES v2 wants `SEND`, `RENDERING_FAILURE`.
+    if let Some(Value::Array(types)) = d.get("MatchingEventTypes") {
+        let v2: Vec<Value> = types
+            .iter()
+            .map(|t| {
+                let t = text(t);
+                if t.chars().all(|c| !c.is_ascii_lowercase()) {
+                    return Value::String(t);
+                }
+                let mut upper = String::new();
+                for c in t.chars() {
+                    if c.is_ascii_uppercase() && !upper.is_empty() && !upper.ends_with('_') {
+                        upper.push('_');
+                    }
+                    upper.push(c.to_ascii_uppercase());
+                }
+                Value::String(upper)
+            })
+            .collect();
+        out.insert("MatchingEventTypes".into(), Value::Array(v2));
+    }
     if let Some(Value::Object(k)) = d.get("KinesisFirehoseDestination") {
         out.insert(
             "KinesisFirehoseDestination".into(),

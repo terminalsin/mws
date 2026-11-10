@@ -9,7 +9,7 @@ use serde_json::Value;
 use crate::config::{self, destination_of, merge, strip_nulls, update_of};
 use crate::generated::{errors, types};
 use crate::names::{authorize, invalid_argument, now_ms, request_tag_context, StreamRef};
-use crate::state::{DeliveryStream, Destination, Encryption, TRANSITION_MS};
+use crate::state::{transition_ms, DeliveryStream, Destination, Encryption};
 use crate::Firehose;
 
 const TAG_LIMIT: usize = 50;
@@ -165,7 +165,7 @@ impl Firehose {
                 partition: ctx.partition.clone(),
                 kind: kind.clone(),
                 status: "CREATING".into(),
-                settles_at: now + TRANSITION_MS,
+                settles_at: now + transition_ms(),
                 version: 1,
                 created_at: now,
                 updated_at: now,
@@ -219,7 +219,7 @@ impl Firehose {
             key_type: Some(e.key_type.clone()),
             key_arn,
             status: "ENABLING".into(),
-            settles_at: now_ms(ctx) + TRANSITION_MS,
+            settles_at: now_ms(ctx) + transition_ms(),
         })
     }
 
@@ -239,7 +239,7 @@ impl Firehose {
             )));
         }
         s.status = "DELETING".into();
-        s.settles_at = now_ms(ctx) + TRANSITION_MS;
+        s.settles_at = now_ms(ctx) + transition_ms();
         Ok(types::DeleteDeliveryStreamOutput {})
     }
 
@@ -425,7 +425,7 @@ impl Firehose {
         if let Some(e) = &mut s.encryption {
             if e.status != "DISABLED" {
                 e.status = "DISABLING".into();
-                e.settles_at = now_ms(ctx) + TRANSITION_MS;
+                e.settles_at = now_ms(ctx) + transition_ms();
             }
         }
         Ok(types::StopDeliveryStreamEncryptionOutput {})

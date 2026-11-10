@@ -9,7 +9,9 @@ use serde::{Deserialize, Serialize};
 
 /// How long a stream stays `CREATING` / `DELETING`, and encryption
 /// `ENABLING` / `DISABLING`, in milliseconds.
-pub const TRANSITION_MS: i64 = 500;
+pub fn transition_ms() -> i64 {
+    mws_core::settle::window_ms(500)
+}
 
 pub mod b64 {
     use base64::Engine;

@@ -225,6 +225,7 @@ async fn image_controls() {
     let ami = alpine_ami(&ec2).await;
     let run = ec2.run_instances().image_id(&ami).min_count(1).max_count(1).send().await.unwrap();
     let id = run.instances()[0].instance_id().unwrap().to_string();
+    crate::ec2::wait_state(&ec2, &id, InstanceStateName::Running).await;
     let image =
         ec2.create_image().instance_id(&id).name("golden").send().await.unwrap().image_id().unwrap().to_string();
 
@@ -411,6 +412,7 @@ async fn capacity_reservations() {
     let first = run.instances()[0].instance_id().unwrap().to_string();
     crate::ec2::wait_state(&ec2, &first, InstanceStateName::Running).await;
     ec2.stop_instances().instance_ids(&first).send().await.unwrap();
+    crate::ec2::wait_state(&ec2, &first, InstanceStateName::Stopped).await;
     let d = ec2.describe_capacity_reservations().capacity_reservation_ids(&cr_id).send().await.unwrap();
     assert_eq!(d.capacity_reservations()[0].available_instance_count(), Some(2));
     ec2.modify_instance_capacity_reservation_attributes()

@@ -11,6 +11,18 @@ use mws_e2e::{user_with_policy, Mws};
 const ACCOUNT: &str = "123456789012";
 const CIS12: &str = "arn:aws:securityhub:::ruleset/cis-aws-foundations-benchmark/v/1.2.0";
 
+/// Run a test on a thread with a large stack: the SDK's `AwsSecurityFinding`
+/// deserializer needs more than a test thread's 2 MiB in debug builds.
+fn on_big_stack<F: std::future::Future<Output = ()> + 'static>(test: fn() -> F) {
+    let thread = std::thread::Builder::new()
+        .stack_size(32 << 20)
+        .spawn(move || tokio::runtime::Builder::new_current_thread().enable_all().build().unwrap().block_on(test()))
+        .unwrap();
+    if let Err(panic) = thread.join() {
+        std::panic::resume_unwind(panic);
+    }
+}
+
 fn eq(v: &str) -> StringFilter {
     StringFilter::builder().value(v).comparison(StringFilterComparison::Equals).build()
 }
@@ -25,8 +37,12 @@ async fn control_findings(sh: &Client, control: &str, resource: Option<&str>) ->
     sh.get_findings().filters(f.build()).send().await.unwrap().findings().to_vec()
 }
 
-#[tokio::test]
-async fn catalogue_lists_the_real_controls() {
+#[test]
+fn catalogue_lists_the_real_controls() {
+    on_big_stack(catalogue_lists_the_real_controls_test)
+}
+
+async fn catalogue_lists_the_real_controls_test() {
     let mws = Mws::start().await;
     let sh = Client::new(&mws.root_sdk_config().await);
     sh.enable_security_hub().enable_default_standards(false).send().await.unwrap();
@@ -79,8 +95,12 @@ async fn catalogue_lists_the_real_controls() {
     assert_eq!(def.security_control_definition().unwrap().severity_rating(), Some(&SeverityRating::Critical));
 }
 
-#[tokio::test]
-async fn enabling_creates_the_service_linked_role() {
+#[test]
+fn enabling_creates_the_service_linked_role() {
+    on_big_stack(enabling_creates_the_service_linked_role_test)
+}
+
+async fn enabling_creates_the_service_linked_role_test() {
     let mws = Mws::start().await;
     let root = mws.root_sdk_config().await;
     let iam = aws_sdk_iam::Client::new(&root);
@@ -119,8 +139,12 @@ async fn enabling_creates_the_service_linked_role() {
     sh.enable_security_hub().enable_default_standards(false).send().await.unwrap();
 }
 
-#[tokio::test]
-async fn control_findings_follow_the_resources() {
+#[test]
+fn control_findings_follow_the_resources() {
+    on_big_stack(control_findings_follow_the_resources_test)
+}
+
+async fn control_findings_follow_the_resources_test() {
     let mws = Mws::start().await;
     let cfg = mws.root_sdk_config().await;
     let sh = Client::new(&cfg);
@@ -230,8 +254,12 @@ async fn control_findings_follow_the_resources() {
     assert!(control_findings(&sh, "CloudTrail.1", None).await.is_empty(), "consolidated findings archived");
 }
 
-#[tokio::test]
-async fn checks_rerun_periodically_and_on_changes() {
+#[test]
+fn checks_rerun_periodically_and_on_changes() {
+    on_big_stack(checks_rerun_periodically_and_on_changes_test)
+}
+
+async fn checks_rerun_periodically_and_on_changes_test() {
     let mws = Mws::start().await;
     let cfg = mws.root_sdk_config().await;
     let sh = Client::new(&cfg);

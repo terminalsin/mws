@@ -7,7 +7,7 @@ use crate::accelerators::{find, find_mut};
 use crate::generated::{errors, types};
 use crate::listeners::listener;
 use crate::names::{self, authorize, group_not_found, invalid, now_ms, page, resource_tags, EndpointKind, REGIONS};
-use crate::state::{Accelerator, Endpoint, EndpointGroup, Listener, State, TRANSITION_MS};
+use crate::state::{transition_ms, Accelerator, Endpoint, EndpointGroup, Listener, State};
 use crate::{EndpointHealth, GlobalAccelerator, Lookup};
 
 /// Endpoints per endpoint group, and port overrides per endpoint group.
@@ -222,7 +222,7 @@ impl GlobalAccelerator {
     }
 
     fn endpoint_description(&self, g: &EndpointGroup, e: &Endpoint, now: i64) -> types::EndpointDescription {
-        let (state, reason) = if now < e.added + TRANSITION_MS {
+        let (state, reason) = if now < e.added + transition_ms() {
             ("INITIAL", None)
         } else {
             match self.lookup_endpoint(&e.owner, &g.region, &e.id) {

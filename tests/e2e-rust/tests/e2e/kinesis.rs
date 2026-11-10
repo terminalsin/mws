@@ -23,7 +23,7 @@ fn arn(name: &str) -> String {
     format!("arn:aws:kinesis:us-east-1:{ACCOUNT}:stream/{name}")
 }
 
-async fn wait_active(k: &Client, name: &str) {
+pub(crate) async fn wait_active(k: &Client, name: &str) {
     for _ in 0..100 {
         let s = k.describe_stream_summary().stream_name(name).send().await.unwrap();
         if s.stream_description_summary().unwrap().stream_status() == &StreamStatus::Active {

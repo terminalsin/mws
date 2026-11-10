@@ -8,7 +8,9 @@ use serde::{Deserialize, Serialize};
 
 /// How long a stream or consumer stays `CREATING` (or `UPDATING`,
 /// `DELETING`) before it settles, in milliseconds.
-pub const TRANSITION_MS: i64 = 500;
+pub fn transition_ms() -> i64 {
+    mws_core::settle::window_ms(500)
+}
 
 /// Record payloads serialize as base64 in saved state.
 pub mod b64 {

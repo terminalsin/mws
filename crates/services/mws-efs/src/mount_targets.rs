@@ -182,7 +182,7 @@ impl Efs {
             MountTarget {
                 description: description.clone(),
                 security_groups: eni.security_groups,
-                transition_ends: Some(ctx.received_at + crate::state::MOUNT_TARGET_CREATE),
+                transition_ends: Some(ctx.received_at + crate::state::mount_target_create()),
             },
         );
         Ok(description)
