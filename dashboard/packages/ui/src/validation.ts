@@ -402,6 +402,9 @@ export function repairs(value: string, rule: Rule, code: IssueCode): Repair[] {
       const near = nearestNumbers(value, rule.enum ?? []);
       if (near) for (const s of near) offer({ value: s, label: `Use ${s}`, kind: "fix" });
       else for (const s of closest(value, rule.enum ?? [])) offer({ value: s, label: `Did you mean ${s}?`, kind: "suggest" });
+      // Nothing close: the allowed values that start the same way
+      // ("db.t4g.micro" where only larger sizes exist).
+      if (out.length === 0) for (const s of sharedPrefix(value, rule.enum ?? [])) offer({ value: s, label: `Use ${s}`, kind: "suggest" });
       break;
     }
     case "type":
@@ -560,7 +563,11 @@ export function allowedChars(rule: Rule): RegExp | null {
   if (rule.format === "bucket") return /[a-z0-9.-]/;
   if (rule.format === "name") return /[A-Za-z0-9_-]/;
   if (!rule.pattern) return null;
-  const classes = [...rule.pattern.matchAll(/\[((?:\\.|[^\]\\])+)\]/g)].map((m) => m[1]).filter((c) => !c.startsWith("^"));
+  const all = [...rule.pattern.matchAll(/\[((?:\\.|[^\]\\])+)\]/g)].map((m) => m[1]);
+  const classes = all.filter((c) => !c.startsWith("^"));
+  // A whole-value negated class (`^[^:*]*$`): anything but those.
+  const negated = classes.length === 0 && all.length === 1 ? all[0] : null;
+  if (negated && [`^[${negated}]*$`, `^[${negated}]+$`].includes(rule.pattern)) return regex(`[${negated}]`);
   // Separators spelled as literals between classes, as in ECR's
   // `[a-z0-9]+((\.|_|-+)[a-z0-9]+)*(\/...)*`.
   const literals = separatorLiterals(rule.pattern);
@@ -715,6 +722,20 @@ const squash = (s: string) => s.toLowerCase().replace(/[^\p{L}\p{N}]+/gu, "");
 
 /** The candidates closest to `value`, best first: same letters ignoring case
  * and separators, then prefixes and substrings, then small edit distances. */
+/** The candidates sharing the longest start with `value` (at least half of
+ * it, and three characters). */
+export function sharedPrefix(value: string, candidates: string[], limit = MAX_REPAIRS): string[] {
+  const common = (c: string) => {
+    let i = 0;
+    while (i < c.length && i < value.length && c[i].toLowerCase() === value[i].toLowerCase()) i++;
+    return i;
+  };
+  const scored = [...new Set(candidates)].filter((c) => c !== value).map((c) => [common(c), c] as const);
+  const best = Math.max(0, ...scored.map(([n]) => n));
+  if (best < 3 || best < value.length / 2) return [];
+  return scored.filter(([n]) => n === best).map(([, c]) => c).slice(0, limit);
+}
+
 export function closest(value: string, candidates: string[], limit = MAX_REPAIRS): string[] {
   const v = squash(value);
   if (!v) return [];
@@ -1343,6 +1364,7 @@ const SERVICE_PORTS: Record<string, number> = {
   redis: 6379, memcached: 11211, mongodb: 27017, elasticsearch: 9200, kafka: 9092,
 };
 
+
 const DOMAIN = /^(?=.{1,253}$)(?:[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\.)+[a-z]{2,63}$/i;
 /** Top-level domains people mistype, and what they meant. */
 const TLD_TYPOS: Record<string, string> = { con: "com", cmo: "com", ocm: "com", vom: "com", xom: "com", comm: "com", ogr: "org", rog: "org", nte: "net", ent: "net" };
@@ -1660,6 +1682,9 @@ export function parseServerIssues(message: string): FieldIssue[] {
     }
     if (out.length) return out;
   }
+  // "The parameter MasterUserPassword is not a valid password because it is shorter than 8 characters."
+  const notValid = message.match(/The parameter (\w+) is (not a valid \w+)(?: because (?:it is )?([^.]*))?/);
+  if (!param && notValid) return [{ member: notValid[1], code: "server", message: sentence(notValid[3] ? `${notValid[2]}: ${notValid[3]}` : notValid[2]) }];
   // "1 validation error detected: The parameter X ..." / "X is required" / "Missing required parameter X"
   const missing = message.match(/(?:Missing required (?:parameter|key|field)|The parameter|Parameter) '?([A-Za-z][\w.]*)'? (?:is (?:required|missing)|must be specified)/i) ??
     message.match(/^(?:\w+: )?'?([A-Za-z][\w.]*)'? (?:is required|must be specified|cannot be empty)/);

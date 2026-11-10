@@ -1,6 +1,7 @@
 import { sections } from "@mws-dashboard/ai";
 import { ago, bytes, load } from "@mws-dashboard/aws";
 import { ActionForm, AwsIcon, Curated, Empty, ErrorNotice, Field, Metric, Metrics, Page, Pill, Sheet } from "@mws-dashboard/ui";
+import { CreateLogGroup, DescribeLogGroups, PutRetentionPolicy } from "@mws-dashboard/ui/model/logs";
 import type { Metadata } from "next";
 
 import { GROUP_KINDS, ICONS, groupHref, listGroups, sourceIcon } from "../../lib/clients";
@@ -14,13 +15,14 @@ type Props = { searchParams: Promise<{ prefix?: string }> };
 export default async function LogGroups({ searchParams }: Props) {
   const prefix = (await searchParams).prefix ?? "";
   const groups = await load(() => listGroups(prefix));
+  const taken = groups.ok ? groups.value.map((g) => g.logGroupName!) : [];
   const create = (
     <Sheet title="New log group" label="Create log group" testId="create-log-group">
       <ActionForm action={createGroup} submit="Create" testId="create-log-group">
-        <Field label="Name">
-          <input name="name" required placeholder="/app/api" autoFocus />
+        <Field label="Name" rule={CreateLogGroup.logGroupName} taken={taken} generate={{ prefix: "/app/" }} unique>
+          <input name="name" placeholder="/app/api" autoFocus />
         </Field>
-        <Field label="Retention">
+        <Field label="Retention" rule={PutRetentionPolicy.retentionInDays}>
           <select name="retention" defaultValue="0">
             {RETENTION.map((d) => (
               <option key={d} value={d}>
@@ -56,7 +58,9 @@ export default async function LogGroups({ searchParams }: Props) {
         </Metrics>
       )}
       <form className="search-page-form" action="/logs">
-        <input name="prefix" defaultValue={prefix} placeholder="Prefix" aria-label="Log group prefix" />
+        <Field label="Prefix" rule={DescribeLogGroups.logGroupNamePrefix} known={taken}>
+          <input name="prefix" defaultValue={prefix} placeholder="Prefix" aria-label="Log group prefix" />
+        </Field>
       </form>
       <Curated
         label="Log groups"

@@ -2,12 +2,20 @@ import "server-only";
 
 import { CloudWatchClient, DescribeAlarmsCommand, type Dimension } from "@aws-sdk/client-cloudwatch";
 import { CloudWatchLogsClient, DescribeLogGroupsCommand } from "@aws-sdk/client-cloudwatch-logs";
+import { ListTopicsCommand, SNSClient } from "@aws-sdk/client-sns";
 import { client, collect } from "@mws-dashboard/aws";
 import type { Tone } from "@mws-dashboard/ui";
 import { SERVICES } from "@mws-dashboard/ui";
 
 export const logs = () => client(CloudWatchLogsClient);
 export const cloudwatch = () => client(CloudWatchClient);
+const sns = () => client(SNSClient);
+
+/** SNS topic ARNs, the usual alarm actions. */
+export async function topicArns() {
+  const c = await sns();
+  return collect((NextToken) => c.send(new ListTopicsCommand({ NextToken })), (r) => r.Topics?.map((t) => t.TopicArn!) ?? [], (r) => r.NextToken, 500);
+}
 
 export const groupHref = (name: string, extra: Record<string, string> = {}) => `/logs/group?${new URLSearchParams({ name, ...extra })}`;
 

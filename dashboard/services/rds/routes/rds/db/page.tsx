@@ -6,9 +6,12 @@ import type { Metadata } from "next";
 import Link from "next/link";
 
 import { ICONS, STATUS_TONE, engineIcon, rds } from "../../../lib/clients";
+import { identifier } from "../../../lib/rules";
 import { changeCluster, changeInstance, deleteDatabase, snapshot } from "../actions";
 
 export const metadata: Metadata = { title: "Database" };
+
+const SNAPSHOT = identifier(255);
 
 type Props = { searchParams: Promise<{ id?: string; cluster?: string }> };
 
@@ -64,8 +67,8 @@ export default async function DbPage({ searchParams }: Props) {
         <>
           <Sheet title="Take snapshot" label="Take snapshot" icon={<Camera size={16} />} testId="take-snapshot">
             <ActionForm action={snapshot.bind(null, kind, name)} submit="Take snapshot" testId="take-snapshot">
-              <Field label="Snapshot name">
-                <input name="name" required defaultValue={`${name}-${new Date().toISOString().slice(0, 10)}`} />
+              <Field label="Snapshot name" rule={SNAPSHOT} generate={{ prefix: `${name}-` }} taken={snaps.map((s) => s.id)} unique>
+                <input name="name" required spellCheck={false} defaultValue={`${name}-${new Date().toISOString().slice(0, 10)}`} />
               </Field>
             </ActionForm>
           </Sheet>
