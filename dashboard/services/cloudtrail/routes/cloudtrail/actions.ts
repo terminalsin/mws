@@ -13,7 +13,7 @@ export async function createTrail(_: ActionResult | null, form: FormData) {
     await client.send(new CreateTrailCommand({ Name, S3BucketName: await bucketFrom(form, "bucket", "aws-cloudtrail-logs", cloudTrailBucketPolicy), IsMultiRegionTrail: text(form, "multi") === "on", IncludeGlobalServiceEvents: true }));
     await client.send(new StartLoggingCommand({ Name }));
     return `Trail ${Name} logging`;
-  }, "/cloudtrail");
+  }, { revalidate: ["/cloudtrail"], fields: { Name: "name", InvalidTrailNameException: "name" } });
 }
 
 export async function setLogging(name: string, on: boolean) {

@@ -26,6 +26,10 @@ test("pattern mismatches are reshaped to fit", () => {
   assert.deepEqual(values({ pattern: "^[a-zA-Z0-9_-]{1,75}\\.fifo$" }, "jobs"), ["jobs.fifo"]);
   assert.deepEqual(values({ pattern: "^[a-zA-Z0-9_-]{1,75}\\.fifo$" }, "my jobs"), ["my-jobs.fifo"]);
   assert.deepEqual(values({ pattern: "^[A-Za-z0-9_-]{1,80}$|^[A-Za-z0-9_-]{1,75}\\.fifo$" }, "Orders Queue (prod)"), ["Orders-Queue-prod"]);
+  // Separators side by side or at the ends (CloudTrail trail names).
+  const trail: Rule = { pattern: "^[A-Za-z0-9](?:[A-Za-z0-9]|[._-](?=[A-Za-z0-9]))*$" };
+  assert.deepEqual(values(trail, "my-_trail."), ["my-trail"]);
+  assert.deepEqual(values(trail, "_audit  logs"), ["audit-logs"]);
 });
 
 test("too long values are shortened", () => {

@@ -319,6 +319,8 @@ function reshape(value: string, rule: Rule): Repair[] {
   const steps: [string, (v: string) => string][] = [
     ["Trim spaces", (v) => v.trim()],
     ["Replace spaces", (v) => v.trim().replace(/\s+/g, sep)],
+    // Names that forbid separators side by side or at the ends ("my-_trail").
+    ["Tidy separators", (v) => v.trim().replace(/\s+/g, sep).replace(/([-_.])[-_.]+/g, "$1").replace(/^[-_.]+|[-_.]+$/g, "")],
     ["Lowercase", (v) => v.trim().replace(/\s+/g, sep).toLowerCase()],
     ["Uppercase", (v) => v.trim().replace(/\s+/g, sep).toUpperCase()],
     ["Remove unsupported characters", (v) => clean(v, allowed, sep, false)],
