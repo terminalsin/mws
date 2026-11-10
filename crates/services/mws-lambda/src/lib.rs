@@ -88,6 +88,9 @@ pub(crate) struct Inner {
     authorizer: std::sync::OnceLock<Arc<dyn mws_core::Authorizer>>,
     /// The URL MWS serves on, for background work whose template has none.
     endpoint: std::sync::OnceLock<EndpointSource>,
+    /// Retries asynchronous invocations on the emulated clock (the shared
+    /// delivery queue once wired in, else a private one).
+    jobs: std::sync::OnceLock<mws_core::ServiceClient>,
 }
 
 /// Where the URL MWS serves on comes from.
@@ -136,6 +139,7 @@ impl Lambda {
                 file_systems: std::sync::OnceLock::new(),
                 authorizer: std::sync::OnceLock::new(),
                 endpoint: std::sync::OnceLock::new(),
+                jobs: std::sync::OnceLock::new(),
             }),
         }
     }
@@ -151,6 +155,21 @@ impl Lambda {
     /// Send function logs to CloudWatch Logs, written as the function's
     /// execution role like AWS does (so the role needs
     /// `logs:CreateLogGroup`, `logs:CreateLogStream` and `logs:PutLogEvents`).
+    /// Retry asynchronous invocations through the shared delivery queue,
+    /// so they follow the emulated clock and are kept in snapshots.
+    pub fn set_service_client(&self, client: mws_core::ServiceClient) {
+        client.register_retrier(invoke::RETRIER, Arc::new(self.clone()));
+        let _ = self.inner.jobs.set(client);
+    }
+
+    pub(crate) fn jobs(&self) -> &mws_core::ServiceClient {
+        self.inner.jobs.get_or_init(|| {
+            let client = mws_core::ServiceClient::new();
+            client.register_retrier(invoke::RETRIER, Arc::new(self.clone()));
+            client
+        })
+    }
+
     /// Read the concurrent executions quota from Service Quotas.
     pub fn set_service_quotas(&self, quotas: mws_servicequotas::ServiceQuotas) {
         let _ = self.inner.quotas.set(quotas);

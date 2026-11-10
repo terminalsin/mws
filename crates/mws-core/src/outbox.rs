@@ -9,6 +9,12 @@
 //! pending call now. Queued calls are part of the emulator's state (the
 //! `deliveries` entry of `/_mws/state`), so snapshots and `MWS_DB` keep
 //! them. `GET /_mws/deliveries` lists pending and failed calls.
+//!
+//! Services also retry their own work here (EventBridge targets, Lambda
+//! asynchronous invocations, SNS HTTP deliveries): a [`Retrier`] registered
+//! under a name makes each attempt, and [`ServiceClient::run_job`] queues
+//! the job, so it follows the emulated clock and survives a snapshot like
+//! a queued call.
 
 use std::sync::atomic::Ordering;
 
@@ -39,13 +45,76 @@ impl Default for RetryPolicy {
     }
 }
 
-/// One queued call.
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+/// Why a service's job failed one attempt.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct JobError {
+    pub code: String,
+    pub message: String,
+    /// Whether to try again.
+    pub retryable: bool,
+    /// Try again after this long, rather than after the policy's backoff.
+    pub retry_after_secs: Option<i64>,
+    /// Whether the attempt counts against the policy's `max_attempts`
+    /// (Lambda does not count throttles).
+    pub counts: bool,
+}
+
+impl JobError {
+    pub fn permanent(code: impl Into<String>, message: impl Into<String>) -> Self {
+        Self { code: code.into(), message: message.into(), retryable: false, retry_after_secs: None, counts: true }
+    }
+
+    pub fn retryable(code: impl Into<String>, message: impl Into<String>) -> Self {
+        Self { retryable: true, ..Self::permanent(code, message) }
+    }
+
+    pub fn after(mut self, secs: i64) -> Self {
+        self.retry_after_secs = Some(secs);
+        self
+    }
+
+    /// The attempt does not count against `max_attempts`.
+    pub fn uncounted(mut self) -> Self {
+        self.counts = false;
+        self
+    }
+}
+
+/// Why the queue stopped retrying a job.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum GiveUp {
+    /// The last attempt failed for a reason not worth retrying.
+    NotRetryable,
+    /// The policy's `max_attempts` were made.
+    MaxAttempts,
+    /// The job grew older than the policy's `max_age_secs`.
+    MaxAge,
+}
+
+/// A service that retries its own work through the queue.
+#[async_trait::async_trait]
+pub trait Retrier: Send + Sync {
+    /// Make one attempt. `job` may be updated to carry what the attempt
+    /// learned (it is what the next attempt, and a snapshot, sees);
+    /// `attempt` counts from 1.
+    async fn attempt(&self, ctx: &RequestContext, job: &mut Value, attempt: u32) -> Result<(), JobError>;
+
+    /// The queue stopped retrying: dead-letter or report the job.
+    /// `attempts` is how many counted attempts were made.
+    async fn give_up(&self, ctx: &RequestContext, job: Value, error: JobError, why: GiveUp, attempts: u32);
+}
+
+/// One queued call, or a service's own job (`handler` set).
+#[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(default)]
 pub struct Delivery {
     pub id: String,
     pub service: String,
     pub operation: String,
+    /// The [`Retrier`] that makes attempts at a job; `None` for a queued
+    /// call.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub handler: Option<String>,
     pub input: Value,
     pub caller: Caller,
     pub region: String,
@@ -57,6 +126,22 @@ pub struct Delivery {
     /// `pending`, or `failed` once the policy gave up.
     pub status: String,
     pub policy: RetryPolicy,
+    /// Every attempt, counted or not (it picks the backoff).
+    pub tries: u32,
+    /// The request the job came from, while this process runs; a restored
+    /// job gets a context made from its caller instead.
+    #[serde(skip)]
+    pub(crate) live: Option<Live>,
+}
+
+/// The context a job was queued in (not part of the saved state).
+#[derive(Clone)]
+pub(crate) struct Live(RequestContext);
+
+impl std::fmt::Debug for Live {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("RequestContext")
+    }
 }
 
 impl Default for Delivery {
@@ -75,6 +160,9 @@ impl Default for Delivery {
             last_error: None,
             status: "pending".into(),
             policy: RetryPolicy::default(),
+            handler: None,
+            tries: 0,
+            live: None,
         }
     }
 }
@@ -141,16 +229,108 @@ impl ServiceClient {
             last_error: Some(format!("{}: {}", error.code, error.message)),
             status: "pending".into(),
             policy,
+            tries: 1,
+            ..Delivery::default()
         };
+        self.enqueue(d);
+    }
+
+    fn enqueue(&self, d: Delivery) {
         if let Ok(mut q) = self.outbox.deliveries.lock() {
             q.push(d);
         }
         self.start_retrying();
     }
 
-    fn learn_clock(&self, emulated_now: DateTime<Utc>) {
+    /// Let `name` make the attempts at jobs queued with
+    /// [`ServiceClient::run_job`].
+    pub fn register_retrier(&self, name: &str, retrier: std::sync::Arc<dyn Retrier>) {
+        if let Ok(mut r) = self.outbox.retriers.write() {
+            r.insert(name.to_string(), retrier);
+        }
+    }
+
+    fn retrier(&self, name: &str) -> Option<std::sync::Arc<dyn Retrier>> {
+        self.outbox.retriers.read().ok()?.get(name).cloned()
+    }
+
+    /// Run a service's own job under `policy`: the first attempt now, with
+    /// `handler`'s [`Retrier`], and the retries from the queue on the
+    /// emulated clock. When the job fails for good the retrier's
+    /// `give_up` is called (at once, or later from the queue).
+    pub async fn run_job(&self, ctx: &RequestContext, handler: &str, mut job: Value, policy: RetryPolicy) {
+        self.learn_clock(ctx.received_at);
+        let now = ctx.received_at;
+        let mut d = Delivery {
+            id: crate::ids::request_id(),
+            service: handler.to_string(),
+            operation: "job".into(),
+            handler: Some(handler.to_string()),
+            caller: ctx.caller.clone(),
+            region: ctx.region.clone(),
+            partition: ctx.partition.clone(),
+            first_attempt_at: now,
+            next_attempt_at: now,
+            policy,
+            live: Some(Live(ctx.clone())),
+            ..Delivery::default()
+        };
+        let Some(retrier) = self.retrier(handler) else {
+            // Not wired in yet: the queue tries once it is.
+            d.input = job;
+            return self.enqueue(d);
+        };
+        let result = retrier.attempt(ctx, &mut job, 1).await;
+        d.input = job;
+        if let Some((d, error, why)) = Self::after_attempt(d, result, now) {
+            match why {
+                Some(why) => {
+                    let (job, attempts) = (d.input.clone(), d.attempts);
+                    self.keep(d);
+                    retrier.give_up(ctx, job, error, why, attempts).await
+                }
+                None => self.enqueue(d),
+            }
+        }
+    }
+
+    /// Book one attempt at a job. `None` when it succeeded; otherwise the
+    /// job, the error, and why it was given up (or `None` to retry it).
+    fn after_attempt(
+        mut d: Delivery,
+        result: Result<(), JobError>,
+        now: DateTime<Utc>,
+    ) -> Option<(Delivery, JobError, Option<GiveUp>)> {
+        d.tries += 1;
+        let error = match result {
+            Ok(()) => return None,
+            Err(e) => e,
+        };
+        if error.counts {
+            d.attempts += 1;
+        }
+        d.last_error = Some(format!("{}: {}", error.code, error.message));
+        let next =
+            now + error.retry_after_secs.map(chrono::Duration::seconds).unwrap_or_else(|| backoff(&d.policy, d.tries));
+        let why = if !error.retryable {
+            Some(GiveUp::NotRetryable)
+        } else if d.attempts >= d.policy.max_attempts {
+            Some(GiveUp::MaxAttempts)
+        } else if (next - d.first_attempt_at).num_seconds() > d.policy.max_age_secs {
+            Some(GiveUp::MaxAge)
+        } else {
+            None
+        };
+        d.next_attempt_at = next;
+        if why.is_some() {
+            d.status = "failed".into();
+        }
+        Some((d, error, why))
+    }
+
+    pub(crate) fn learn_clock(&self, emulated_now: DateTime<Utc>) {
         let offset = (emulated_now - Utc::now()).num_milliseconds().max(0);
-        self.outbox.clock_offset_ms.fetch_max(offset, Ordering::Relaxed);
+        self.outbox.clock_offset_ms.store(offset, Ordering::Relaxed);
     }
 
     fn now(&self) -> DateTime<Utc> {
@@ -198,6 +378,12 @@ impl ServiceClient {
         let mut delivered = 0;
         for mut d in due {
             let ctx = self.retry_context(&d, now);
+            if let Some(handler) = d.handler.clone() {
+                if self.retry_job(&ctx, &handler, d, now).await {
+                    delivered += 1;
+                }
+                continue;
+            }
             match self.call(&ctx, &d.service, &d.operation, d.input.clone()).await {
                 Ok(_) => delivered += 1,
                 Err(e) => {
@@ -210,22 +396,63 @@ impl ServiceClient {
                     } else {
                         d.next_attempt_at = next;
                     }
-                    if let Ok(mut q) = self.outbox.deliveries.lock() {
-                        q.push(d);
-                        let failed = q.iter().filter(|d| d.status == "failed").count();
-                        if failed > FAILED_KEPT {
-                            if let Some(i) = q.iter().position(|d| d.status == "failed") {
-                                q.remove(i);
-                            }
-                        }
-                    }
+                    self.keep(d);
                 }
             }
         }
         delivered
     }
 
+    /// Put a delivery back, dropping the oldest given-up ones past the cap.
+    fn keep(&self, d: Delivery) {
+        if let Ok(mut q) = self.outbox.deliveries.lock() {
+            q.push(d);
+            let failed = q.iter().filter(|d| d.status == "failed").count();
+            if failed > FAILED_KEPT {
+                if let Some(i) = q.iter().position(|d| d.status == "failed") {
+                    q.remove(i);
+                }
+            }
+        }
+    }
+
+    /// Retry one job; whether it succeeded.
+    async fn retry_job(&self, ctx: &RequestContext, handler: &str, mut d: Delivery, now: DateTime<Utc>) -> bool {
+        let Some(retrier) = self.retrier(handler) else {
+            // The service is not wired in (yet): keep the job.
+            d.next_attempt_at = now + backoff(&d.policy, d.tries.max(1));
+            self.keep(d);
+            return false;
+        };
+        if (now - d.first_attempt_at).num_seconds() > d.policy.max_age_secs {
+            let error = JobError::retryable("MaximumEventAgeExceeded", "The job is too old to retry.");
+            let attempts = d.attempts;
+            let job = d.input.clone();
+            d.status = "failed".into();
+            self.keep(d);
+            retrier.give_up(ctx, job, error, GiveUp::MaxAge, attempts).await;
+            return false;
+        }
+        let mut job = d.input.take();
+        let result = retrier.attempt(ctx, &mut job, d.tries + 1).await;
+        d.input = job;
+        match Self::after_attempt(d, result, now) {
+            None => true,
+            Some((d, error, why)) => {
+                let (job, attempts) = (d.input.clone(), d.attempts);
+                self.keep(d);
+                if let Some(why) = why {
+                    retrier.give_up(ctx, job, error, why, attempts).await;
+                }
+                false
+            }
+        }
+    }
+
     fn retry_context(&self, d: &Delivery, now: DateTime<Utc>) -> RequestContext {
+        if let Some(Live(live)) = &d.live {
+            return RequestContext { received_at: now, ..live.clone() };
+        }
         let authorizer = self
             .registry
             .read()
@@ -254,6 +481,14 @@ impl ServiceClient {
     /// answers the `/_mws/deliveries` control endpoints.
     pub fn deliveries_service(&self) -> std::sync::Arc<dyn Service> {
         std::sync::Arc::new(Deliveries(self.clone()))
+    }
+}
+
+/// Every request carries the emulated time, so watching them keeps the
+/// queue's clock in step with `/_mws/clock`.
+impl crate::RequestObserver for ServiceClient {
+    fn observe(&self, call: &crate::ApiCall) {
+        self.learn_clock(call.at);
     }
 }
 

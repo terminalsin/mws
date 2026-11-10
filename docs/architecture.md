@@ -168,9 +168,17 @@ you configured. MWS is moving all of them to work the same way:
   (`deliveries`); `GET /_mws/deliveries` lists them and
   `POST /_mws/deliveries/drain` retries every pending one now. S3 event
   notifications use it.
+- `ServiceClient::run_job` puts a service's own retries on the same queue:
+  the service registers an `mws_core::outbox::Retrier` that makes each
+  attempt and handles the give-up (dead-letter queue, on-failure
+  destination). EventBridge target deliveries, Lambda asynchronous
+  invocations and SNS HTTP/S deliveries retry this way, so their retries
+  follow `/_mws/clock` and survive a snapshot.
 
-S3, SNS and EventBridge deliveries to SQS and Lambda, and S3 and
-EventBridge deliveries to SNS, go through `ServiceClient`. Older integrations still call another
+S3, SNS and EventBridge deliveries to SQS and Lambda, S3 and EventBridge
+deliveries to SNS, and CloudWatch alarm actions on SNS and Lambda go
+through `ServiceClient`; those services no longer depend on the Lambda or
+SNS crates for it. Older integrations still call another
 crate's typed public API (for example `Kms::encrypt_via` from S3, or
 `Sts::assume_role_as_service` for service roles), or a small trait the
 producing service defines (such as `mws_s3::NotificationDestination` or

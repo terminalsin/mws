@@ -43,6 +43,8 @@ pub(crate) struct Outbox {
     pub clock_offset_ms: std::sync::atomic::AtomicI64,
     pub retrying: std::sync::atomic::AtomicBool,
     pub endpoint: std::sync::Mutex<Option<String>>,
+    /// Services that retry their own work through the queue, by name.
+    pub retriers: RwLock<HashMap<String, Arc<dyn crate::outbox::Retrier>>>,
 }
 
 impl std::fmt::Debug for ServiceClient {
@@ -82,6 +84,13 @@ impl ServiceClient {
         if let Ok(mut r) = self.registry.write() {
             r.authorizer = Some(authorizer);
         }
+    }
+
+    /// The authorizer set with [`ServiceClient::set_authorizer`], for
+    /// contexts the composition root builds for work services do on their
+    /// own (service-linked roles).
+    pub fn authorizer(&self) -> Option<Arc<dyn Authorizer>> {
+        self.registry.read().ok()?.authorizer.clone()
     }
 
     /// Whether a service is registered under `name`.

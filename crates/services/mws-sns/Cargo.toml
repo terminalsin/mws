@@ -16,7 +16,6 @@ mws-core.workspace = true
 mws-iam-policy.workspace = true
 mws-firehose.workspace = true
 mws-kms.workspace = true
-mws-lambda.workspace = true
 mws-logs.workspace = true
 mws-sts.workspace = true
 md5 = { package = "md-5", version = "0.10" }

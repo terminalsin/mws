@@ -2281,11 +2281,17 @@ impl mws_ecs::TaskPlatform for EcsPlatform {
 pub(crate) struct ElastiCacheLogs {
     pub logs: mws_logs::Logs,
     pub firehose: mws_firehose::Firehose,
+    pub client: ServiceClient,
 }
 
 const LOG_DELIVERY_POLICY: &str = "AWSLogDeliveryWrite20150319";
 
-fn log_delivery_ctx(b: &mws_elasticache::LogBatch) -> RequestContext {
+/// The context log delivery acts in: the `AWSServiceRoleForLogDelivery`
+/// service-linked role, which may do what it needs unless a policy
+/// explicitly denies it.
+fn log_delivery_ctx(client: &ServiceClient, b: &mws_elasticache::LogBatch) -> RequestContext {
+    let authorizer: std::sync::Arc<dyn mws_core::Authorizer> =
+        client.authorizer().unwrap_or_else(|| std::sync::Arc::new(mws_core::AllowAll));
     let role = "AWSServiceRoleForLogDelivery";
     RequestContext {
         request_id: uuid::Uuid::new_v4().to_string(),
@@ -2302,7 +2308,7 @@ fn log_delivery_ctx(b: &mws_elasticache::LogBatch) -> RequestContext {
         },
         source_ip: None,
         secure_transport: true,
-        authorizer: std::sync::Arc::new(mws_core::AllowAll),
+        authorizer: mws_core::ServiceLinkedRoleAuthorizer::wrap(authorizer),
         endpoint: None,
     }
 }
@@ -2311,7 +2317,7 @@ impl ElastiCacheLogs {
     /// Let `delivery.logs.amazonaws.com` write to `log_group`.
     async fn allow_delivery(&self, b: &mws_elasticache::LogBatch) -> Result<(), String> {
         use mws_core::Service;
-        let ctx = log_delivery_ctx(b);
+        let ctx = log_delivery_ctx(&self.client, b);
         let resource = format!("arn:{}:logs:{}:{}:log-group:{}:*", b.partition, b.region, b.account, b.destination);
         let existing = self
             .logs
@@ -2391,7 +2397,7 @@ impl mws_elasticache::LogDelivery for ElastiCacheLogs {
             }
             "kinesis-firehose" => {
                 use mws_core::Service;
-                let ctx = log_delivery_ctx(&b);
+                let ctx = log_delivery_ctx(&self.client, &b);
                 let tags = self
                     .firehose
                     .invoke(

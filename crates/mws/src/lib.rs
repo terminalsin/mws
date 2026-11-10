@@ -411,22 +411,22 @@ fn build_with_store(config: Config, store: Option<Arc<Store>>) -> Mws {
     s3.set_object_lambda_invoker(Arc::new(lambda.clone()));
     let ssm = Ssm::new(kms.clone());
     let codeartifact = CodeArtifact::new(Some(kms.clone()));
-    let events = Events::new().with_lambda(lambda.clone()).with_logs(logs.clone()).with_sts(sts.clone());
+    let events = Events::new().with_logs(logs.clone()).with_sts(sts.clone());
     events.register_target_sink("sqs", Arc::new(sinks::SqsTarget(client.clone())));
     events.register_target_sink("lambda", Arc::new(sinks::LambdaTarget(client.clone())));
     events.set_health_checks(Arc::new(sinks::Route53HealthChecks(route53.clone())));
     let secretsmanager = SecretsManager::new(kms.clone()).with_lambda(lambda.clone());
     ssm.set_secrets_manager(Arc::new(SsmSecretReferences(secretsmanager.clone())));
     firehose.set_secrets_manager(secretsmanager.clone());
-    let sns = Sns::new()
-        .with_lambda(lambda.clone())
-        .with_kms(kms.clone())
-        .with_firehose(firehose.clone())
-        .with_s3(s3.clone());
+    let sns = Sns::new().with_kms(kms.clone()).with_firehose(firehose.clone()).with_s3(s3.clone());
     s3.add_notification_destination(Arc::new(links::S3ToSns { sns: sns.clone(), client: client.clone() }));
     s3.add_notification_destination(Arc::new(links::S3ToLambda { lambda: lambda.clone(), client: client.clone() }));
     sns.set_queues(Arc::new(links::SnsToSqs(client.clone())));
     sns.set_service_client(client.clone());
+    // EventBridge target deliveries and Lambda asynchronous invocations
+    // retry through the shared delivery queue.
+    events.set_service_client(client.clone());
+    lambda.set_service_client(client.clone());
     s3.add_notification_destination(Arc::new(links::S3ToSqs { sqs: sqs.clone(), client: client.clone() }));
     events.register_target_sink("sns", Arc::new(sinks::SnsTarget(client.clone())));
     let guardduty = GuardDuty::new();
@@ -451,12 +451,9 @@ fn build_with_store(config: Config, store: Option<Arc<Store>>) -> Mws {
     events.register_target_sink("kinesis", Arc::new(sinks::KinesisTarget(kinesis.clone())));
     events.register_target_sink("firehose", Arc::new(sinks::FirehoseTarget(firehose.clone())));
     sns.set_delivery_status_logs(logs.clone(), sts.clone());
-    let cloudwatch = CloudWatch::new()
-        .with_sns(sns.clone())
-        .with_lambda(lambda.clone())
-        .with_events(events.clone())
-        .with_logs(logs.clone())
-        .with_kms(kms.clone());
+    let cloudwatch = CloudWatch::new().with_events(events.clone()).with_logs(logs.clone()).with_kms(kms.clone());
+    // Alarm actions call SNS's Publish and Lambda's Invoke.
+    cloudwatch.set_service_client(client.clone());
     events.register_clock_source(Arc::new(sinks::AcmEvents {
         acm: acm.clone(),
         cloudwatch: cloudwatch.clone(),
@@ -643,7 +640,11 @@ fn build_with_store(config: Config, store: Option<Arc<Store>>) -> Mws {
     ecr.set_upstream_credentials(Arc::new(links::EcrUpstreamCredentials(secretsmanager.clone())));
     imagebuilder.set_ecr(Arc::new(ecr.clone()));
     imagebuilder.set_instance_roles(Arc::new(links::ImageBuilderInstanceRoles { iam: iam.clone(), sts: sts.clone() }));
-    elasticache.set_log_delivery(Arc::new(links::ElastiCacheLogs { logs: logs.clone(), firehose: firehose.clone() }));
+    elasticache.set_log_delivery(Arc::new(links::ElastiCacheLogs {
+        logs: logs.clone(),
+        firehose: firehose.clone(),
+        client: client.clone(),
+    }));
     let ecs = mws_ecs::Ecs::new(config.ecs_backend.resolve(config.ecs_docker_cli.as_deref()));
     tracing::info!(backend = ecs.backend_name(), "ECS container backend");
     ecs.set_platform(Arc::new(links::EcsPlatform {
@@ -776,6 +777,8 @@ fn build_with_store(config: Config, store: Option<Arc<Store>>) -> Mws {
         .request_observer(Arc::new(servicequotas.clone()))
         .request_observer(Arc::new(ce.clone()))
         .request_observer(ec2_clock)
+        // The delivery queue follows the emulated clock requests carry.
+        .request_observer(Arc::new(client.clone()))
         // CloudTrail records every API call the gateway dispatches.
         .observer(Arc::new(cloudtrail.clone()))
         // Writes anywhere re-run Security Hub's checks for the account.

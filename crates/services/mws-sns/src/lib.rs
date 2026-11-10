@@ -47,9 +47,11 @@ use state::State;
 
 pub(crate) struct Inner {
     state: Mutex<State>,
-    lambda: OnceLock<mws_lambda::Lambda>,
     /// Calls other services' operations (Lambda's `Invoke`) as SNS.
     client: OnceLock<mws_core::ServiceClient>,
+    /// Retries HTTP/S deliveries on the emulated clock (the shared
+    /// delivery queue once wired in, else a private one).
+    jobs: OnceLock<mws_core::ServiceClient>,
     queues: OnceLock<Arc<dyn QueueDelivery>>,
     /// Where `firehose` subscriptions (and audit findings) go.
     firehose: OnceLock<mws_firehose::Firehose>,
@@ -84,8 +86,8 @@ impl Sns {
         Self {
             inner: Arc::new(Inner {
                 state: Mutex::new(State::default()),
-                lambda: OnceLock::new(),
                 client: OnceLock::new(),
+                jobs: OnceLock::new(),
                 queues: OnceLock::new(),
                 firehose: OnceLock::new(),
                 s3: OnceLock::new(),
@@ -132,13 +134,17 @@ impl Sns {
     /// Deliver to `lambda` subscriptions by calling Lambda's own `Invoke`
     /// as `sns.amazonaws.com` through `client`.
     pub fn set_service_client(&self, client: mws_core::ServiceClient) {
+        client.register_retrier(delivery::HTTP_RETRIER, Arc::new(self.clone()));
+        let _ = self.inner.jobs.set(client.clone());
         let _ = self.inner.client.set(client);
     }
 
-    /// Deliver to `lambda` subscriptions through Lambda.
-    pub fn with_lambda(self, lambda: mws_lambda::Lambda) -> Self {
-        let _ = self.inner.lambda.set(lambda);
-        self
+    pub(crate) fn jobs(&self) -> &mws_core::ServiceClient {
+        self.inner.jobs.get_or_init(|| {
+            let client = mws_core::ServiceClient::new();
+            client.register_retrier(delivery::HTTP_RETRIER, Arc::new(self.clone()));
+            client
+        })
     }
 
     /// Deliver to `firehose` subscriptions through Firehose, as each

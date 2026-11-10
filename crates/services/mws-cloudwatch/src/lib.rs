@@ -68,8 +68,8 @@ pub(crate) struct Inner {
     pub(crate) clock_offset_ms: AtomicI64,
     pub(crate) template: Mutex<Option<RequestContext>>,
     pub(crate) scheduler: AtomicBool,
-    pub(crate) sns: OnceLock<mws_sns::Sns>,
-    pub(crate) lambda: OnceLock<mws_lambda::Lambda>,
+    /// Calls SNS and Lambda for alarm actions.
+    pub(crate) client: OnceLock<mws_core::ServiceClient>,
     pub(crate) events: OnceLock<mws_events::Events>,
     pub(crate) logs: OnceLock<mws_logs::Logs>,
     pub(crate) kms: OnceLock<mws_kms::Kms>,
@@ -149,8 +149,7 @@ impl CloudWatch {
                 clock_offset_ms: AtomicI64::new(0),
                 template: Mutex::new(None),
                 scheduler: AtomicBool::new(false),
-                sns: OnceLock::new(),
-                lambda: OnceLock::new(),
+                client: OnceLock::new(),
                 events: OnceLock::new(),
                 logs: OnceLock::new(),
                 kms: OnceLock::new(),
@@ -162,16 +161,10 @@ impl CloudWatch {
         }
     }
 
-    /// SNS topics as alarm actions.
-    pub fn with_sns(self, sns: mws_sns::Sns) -> Self {
-        let _ = self.inner.sns.set(sns);
-        self
-    }
-
-    /// Lambda functions as alarm actions.
-    pub fn with_lambda(self, lambda: mws_lambda::Lambda) -> Self {
-        let _ = self.inner.lambda.set(lambda);
-        self
+    /// SNS topics and Lambda functions as alarm actions, called through
+    /// their own `Publish` and `Invoke`.
+    pub fn set_service_client(&self, client: mws_core::ServiceClient) {
+        let _ = self.inner.client.set(client);
     }
 
     /// EventBridge, for alarm state change events.

@@ -13,6 +13,8 @@ use crate::names::{self, FunctionRef};
 use crate::runtime::{image_tag, ContainerLaunch, Job, LaunchError, LaunchSpec, Outcome};
 use crate::Lambda;
 
+const B64: base64::engine::GeneralPurpose = base64::engine::general_purpose::STANDARD;
+
 /// Largest synchronous request payload (6 MB).
 const MAX_SYNC_PAYLOAD: usize = 6_291_456;
 /// Largest asynchronous request payload (1 MB).
@@ -25,6 +27,126 @@ const RETRY_DELAYS: [Duration; 2] = [Duration::from_secs(60), Duration::from_sec
 /// with exponential backoff up to 5 minutes.
 const THROTTLE_BACKOFF_START: Duration = Duration::from_secs(1);
 const THROTTLE_BACKOFF_MAX: Duration = Duration::from_secs(300);
+
+/// The name asynchronous invocations are queued under.
+pub(crate) const RETRIER: &str = "lambda";
+
+/// An asynchronous invocation as the retry queue keeps it.
+#[derive(serde::Serialize, serde::Deserialize)]
+struct AsyncJob {
+    function: FunctionRef,
+    /// The event, base64.
+    payload: String,
+    /// The `Invoke` request's id, which records and dead letters carry.
+    request_id: String,
+    /// Attempts that ran the function (throttles do not count).
+    attempts: usize,
+    throttle_backoff_secs: u64,
+    /// The last failed run: its payload (base64), error and version.
+    last: Option<(String, Option<String>, String)>,
+}
+
+impl AsyncJob {
+    fn last_ran(&self) -> Ran {
+        match &self.last {
+            Some((payload, function_error, version)) => Ran {
+                outcome: Outcome {
+                    payload: B64.decode(payload).unwrap_or_default(),
+                    function_error: function_error.clone(),
+                    logs: String::new(),
+                },
+                executed_version: version.clone(),
+            },
+            // An event that only ever met throttles and aged out still goes
+            // to the on-failure destination and dead-letter queue.
+            None => Ran {
+                outcome: Outcome { payload: Vec::new(), function_error: None, logs: String::new() },
+                executed_version: self.function.qualifier.clone().unwrap_or_else(|| "$LATEST".into()),
+            },
+        }
+    }
+}
+
+/// Each attempt at an asynchronous invocation, retried by the delivery
+/// queue: function errors after 1 and 2 minutes, throttles with backoff
+/// from 1 second to 5 minutes (not counted against
+/// `MaximumRetryAttempts`), until the event is too old.
+#[async_trait::async_trait]
+impl mws_core::outbox::Retrier for Lambda {
+    async fn attempt(
+        &self,
+        ctx: &RequestContext,
+        job: &mut serde_json::Value,
+        _attempt: u32,
+    ) -> Result<(), mws_core::outbox::JobError> {
+        use mws_core::outbox::JobError;
+        let mut j: AsyncJob =
+            serde_json::from_value(job.clone()).map_err(|e| JobError::permanent("ServiceException", e.to_string()))?;
+        let ctx = RequestContext { request_id: j.request_id.clone(), ..ctx.clone() };
+        let payload = B64.decode(&j.payload).unwrap_or_default();
+        let f = j.function.clone();
+        let result = match self.run(&ctx, &f, payload.clone(), None).await {
+            Ok(ran) if ran.outcome.function_error.is_none() => {
+                j.attempts += 1;
+                let (config, _) = self.event_settings(&f);
+                self.deliver(&ctx, &f, config.as_ref(), &payload, &ran, j.attempts, "Success").await;
+                Ok(())
+            }
+            Ok(ran) => {
+                j.attempts += 1;
+                j.last = Some((B64.encode(&ran.outcome.payload), ran.outcome.function_error, ran.executed_version));
+                Err(JobError::retryable("Unhandled", "The function returned an error."))
+            }
+            Err(e) if e.code == errors::TOO_MANY_REQUESTS => {
+                tracing::debug!(function = %f.qualified_arn(), "asynchronous invocation throttled; retrying");
+                let wait = j.throttle_backoff_secs;
+                j.throttle_backoff_secs = (wait * 2).min(THROTTLE_BACKOFF_MAX.as_secs());
+                Err(JobError::retryable(e.code, e.message).after(wait as i64).uncounted())
+            }
+            Err(e) => {
+                j.attempts += 1;
+                tracing::warn!(function = %f.qualified_arn(), "asynchronous invocation failed: {e}");
+                let error = serde_json::json!({ "errorType": e.code, "errorMessage": e.message });
+                let version = f.qualifier.clone().unwrap_or_else(|| "$LATEST".into());
+                j.last = Some((B64.encode(error.to_string()), Some("Unhandled".into()), version));
+                Err(JobError::retryable(e.code, e.message))
+            }
+        };
+        let result = result.map_err(|e| {
+            if e.counts {
+                let delay = RETRY_DELAYS[j.attempts.saturating_sub(1).min(RETRY_DELAYS.len() - 1)];
+                e.after(delay.as_secs() as i64)
+            } else {
+                e
+            }
+        });
+        if let Ok(v) = serde_json::to_value(&j) {
+            *job = v;
+        }
+        result
+    }
+
+    async fn give_up(
+        &self,
+        ctx: &RequestContext,
+        job: serde_json::Value,
+        _error: mws_core::outbox::JobError,
+        why: mws_core::outbox::GiveUp,
+        _attempts: u32,
+    ) {
+        let Ok(j) = serde_json::from_value::<AsyncJob>(job) else { return };
+        let ctx = RequestContext { request_id: j.request_id.clone(), ..ctx.clone() };
+        let condition = if why == mws_core::outbox::GiveUp::MaxAge { "EventAgeExceeded" } else { "RetriesExhausted" };
+        let f = j.function.clone();
+        let payload = B64.decode(&j.payload).unwrap_or_default();
+        let ran = j.last_ran();
+        let (config, dead_letter) = self.event_settings(&f);
+        self.deliver(&ctx, &f, config.as_ref(), &payload, &ran, j.attempts, condition).await;
+        if let Some(queue) = dead_letter {
+            self.send_dead_letter(&ctx, &f, &queue, &payload, &ran).await;
+        }
+    }
+}
 
 /// What a finished invocation produced.
 pub struct Ran {
@@ -547,90 +669,40 @@ impl Lambda {
     }
 
     async fn process_event(&self, ctx: RequestContext, f: FunctionRef, payload: Vec<u8>) {
-        let queued = std::time::Instant::now();
-        let (config, dead_letter) = {
-            let st = self.read();
-            let func = st.functions.get(&f.arn());
-            let q = f.qualifier.clone().unwrap_or_else(|| "$LATEST".into());
-            (
-                func.and_then(|func| func.event_invoke_configs.get(&q).cloned()),
-                func.and_then(|func| func.version_for(f.qualifier.as_deref()))
-                    .and_then(|v| v.config.dead_letter_config.as_ref())
-                    .and_then(|d| d.target_arn.clone())
-                    .filter(|a| !a.is_empty()),
-            )
+        let (config, _) = self.event_settings(&f);
+        let retries = config.as_ref().and_then(|c| c.maximum_retry_attempts).unwrap_or(2).clamp(0, 2) as u32;
+        let max_age = config.as_ref().and_then(|c| c.maximum_event_age_in_seconds).unwrap_or(21_600) as i64;
+        let policy = mws_core::outbox::RetryPolicy {
+            max_attempts: retries + 1,
+            base_delay_secs: RETRY_DELAYS[0].as_secs() as i64,
+            max_delay_secs: THROTTLE_BACKOFF_MAX.as_secs() as i64,
+            max_age_secs: max_age,
         };
-        let retries = config.as_ref().and_then(|c| c.maximum_retry_attempts).unwrap_or(2).clamp(0, 2) as usize;
-        let max_age =
-            Duration::from_secs(config.as_ref().and_then(|c| c.maximum_event_age_in_seconds).unwrap_or(21_600) as u64);
-        // The event's age, by the emulated clock (or the wall clock, if
-        // that is further along).
-        let age = |lambda: &Lambda| {
-            let emulated = (chrono::Utc::now() + lambda.clock_skew() - ctx.received_at).to_std().unwrap_or_default();
-            emulated.max(queued.elapsed())
+        let job = AsyncJob {
+            function: f,
+            payload: B64.encode(&payload),
+            request_id: ctx.request_id.clone(),
+            attempts: 0,
+            throttle_backoff_secs: THROTTLE_BACKOFF_START.as_secs(),
+            last: None,
         };
-        let mut attempts = 0;
-        let mut last: Option<Ran> = None;
-        let mut condition = "RetriesExhausted";
-        let mut throttle_backoff = THROTTLE_BACKOFF_START;
-        loop {
-            if age(self) > max_age {
-                condition = "EventAgeExceeded";
-                break;
-            }
-            match self.run(&ctx, &f, payload.clone(), None).await {
-                Ok(ran) if ran.outcome.function_error.is_none() => {
-                    attempts += 1;
-                    self.deliver(&ctx, &f, config.as_ref(), &payload, &ran, attempts, "Success").await;
-                    return;
-                }
-                Ok(ran) => {
-                    attempts += 1;
-                    last = Some(ran);
-                }
-                // Throttles do not count against `MaximumRetryAttempts`:
-                // Lambda retries them with backoff (1 s, doubling, up to
-                // 5 minutes) until the event is too old.
-                Err(e) if e.code == errors::TOO_MANY_REQUESTS => {
-                    tracing::debug!(function = %f.qualified_arn(), "asynchronous invocation throttled; retrying");
-                    let remaining = max_age.saturating_sub(age(self));
-                    tokio::time::sleep(throttle_backoff.min(remaining + Duration::from_millis(10))).await;
-                    throttle_backoff = (throttle_backoff * 2).min(THROTTLE_BACKOFF_MAX);
-                    continue;
-                }
-                Err(e) => {
-                    attempts += 1;
-                    tracing::warn!(function = %f.qualified_arn(), "asynchronous invocation failed: {e}");
-                    let error = serde_json::json!({ "errorType": e.code, "errorMessage": e.message });
-                    last = Some(Ran {
-                        outcome: Outcome {
-                            payload: error.to_string().into_bytes(),
-                            function_error: Some("Unhandled".into()),
-                            logs: String::new(),
-                        },
-                        executed_version: f.qualifier.clone().unwrap_or_else(|| "$LATEST".into()),
-                    });
-                }
-            }
-            if attempts > retries {
-                break;
-            }
-            let remaining = max_age.saturating_sub(age(self));
-            tokio::time::sleep(
-                RETRY_DELAYS[(attempts - 1).min(RETRY_DELAYS.len() - 1)].min(remaining + Duration::from_millis(10)),
-            )
-            .await;
-        }
-        // An event that only ever met throttles and aged out still goes to
-        // the on-failure destination and dead-letter queue.
-        let ran = last.unwrap_or_else(|| Ran {
-            outcome: Outcome { payload: Vec::new(), function_error: None, logs: String::new() },
-            executed_version: f.qualifier.clone().unwrap_or_else(|| "$LATEST".into()),
-        });
-        self.deliver(&ctx, &f, config.as_ref(), &payload, &ran, attempts, condition).await;
-        if let Some(queue) = dead_letter {
-            self.send_dead_letter(&ctx, &f, &queue, &payload, &ran).await;
-        }
+        let Ok(job) = serde_json::to_value(job) else { return };
+        self.jobs().run_job(&ctx, RETRIER, job, policy).await;
+    }
+
+    /// The function's asynchronous invocation config and dead-letter
+    /// target.
+    fn event_settings(&self, f: &FunctionRef) -> (Option<types::FunctionEventInvokeConfig>, Option<String>) {
+        let st = self.read();
+        let func = st.functions.get(&f.arn());
+        let q = f.qualifier.clone().unwrap_or_else(|| "$LATEST".into());
+        (
+            func.and_then(|func| func.event_invoke_configs.get(&q).cloned()),
+            func.and_then(|func| func.version_for(f.qualifier.as_deref()))
+                .and_then(|v| v.config.dead_letter_config.as_ref())
+                .and_then(|d| d.target_arn.clone())
+                .filter(|a| !a.is_empty()),
+        )
     }
 
     /// Send an event the function failed to its dead-letter queue or
