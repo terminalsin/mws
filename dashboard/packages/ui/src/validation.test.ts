@@ -109,3 +109,26 @@ test("fresh values fit the rule", () => {
   const fifo = fresh({ generate: { suffix: ".fifo" }, pattern: "^[a-zA-Z0-9_-]{1,75}\\.fifo$" });
   assert.ok(fifo?.value.endsWith(".fifo"));
 });
+
+test("country codes: capitals, names, withdrawn and alpha-3 codes", () => {
+  const rule: Rule = { format: "country" };
+  assert.equal(check("DE", rule), null);
+  assert.deepEqual(values(rule, "de"), ["DE"]);
+  assert.deepEqual(values(rule, "UK"), ["GB"]);
+  assert.equal(values(rule, "Germany")[0], "DE");
+  assert.equal(values(rule, "USA")[0], "US");
+  assert.ok(values(rule, "AUT").includes("AT"));
+  assert.match(check("QQ", rule)!.message, /two-letter/);
+});
+
+test("CSRs: headers added, surrounding text dropped, keys refused", () => {
+  const rule: Rule = { format: "csr" };
+  const body = "MIIBVjCB" + "A".repeat(100);
+  const tidy = `-----BEGIN CERTIFICATE REQUEST-----\n${body.slice(0, 64)}\n${body.slice(64)}\n-----END CERTIFICATE REQUEST-----`;
+  assert.equal(check(tidy, rule), null);
+  assert.deepEqual(values(rule, body), [tidy]);
+  assert.deepEqual(values(rule, `csr.pem:\n-----BEGIN CERTIFICATE REQUEST-----\n${body}\n-----END CERTIFICATE REQUEST-----\n$ `), [tidy]);
+  assert.deepEqual(values(rule, `-----BEGIN CERTIFICATE REQUEST----- ${body} -----END CERTIFICATE REQUEST-----`), [tidy]);
+  assert.match(check(`-----BEGIN PRIVATE KEY-----\n${body}\n-----END PRIVATE KEY-----`, rule)!.message, /private key/);
+  assert.match(check(`-----BEGIN CERTIFICATE-----\n${body}\n-----END CERTIFICATE-----`, rule)!.message, /certificate, not/);
+});

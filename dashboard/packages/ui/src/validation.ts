@@ -68,7 +68,7 @@ export interface Rule {
 
 export type Rules = Record<string, Rule>;
 
-export type Format = "json" | "arn" | "cidr" | "ipv4" | "email" | "url" | "bucket" | "name" | "port";
+export type Format = "json" | "arn" | "cidr" | "ipv4" | "email" | "url" | "bucket" | "name" | "port" | "country" | "csr";
 
 /** "name": a readable resource name; "token": random letters and digits;
  * "password": meets the usual complexity rules; or a fixed prefix/suffix
@@ -532,6 +532,59 @@ const ipOk = (o: number[] | undefined) => !!o && o.every((n) => n <= 255);
 
 const DOMAINS = ["gmail.com", "outlook.com", "hotmail.com", "yahoo.com", "icloud.com", "example.com", "amazon.com"];
 
+// ISO 3166 alpha-2 codes with their English names, from the runtime's
+// region names (codes it only knows as withdrawn or grouping regions left out).
+const NOT_COUNTRIES = new Set("AN BU CP CS DD DG EA EU EZ FX IC QO SU TA TP UK UN XA XB YD YU ZR ZZ".split(" "));
+let regions: Map<string, string> | null = null;
+function regionName(code: string): string | undefined {
+  try {
+    const name = new Intl.DisplayNames(["en"], { type: "region" }).of(code);
+    return name && name !== code ? name : undefined;
+  } catch {
+    return undefined;
+  }
+}
+function countries(): Map<string, string> {
+  if (regions) return regions;
+  regions = new Map();
+  for (let a = 65; a <= 90; a++)
+    for (let b = 65; b <= 90; b++) {
+      const code = String.fromCharCode(a, b);
+      const name = !NOT_COUNTRIES.has(code) && regionName(code);
+      if (name) regions.set(code, name);
+    }
+  return regions;
+}
+
+/** The country codes a value most likely means: its own letters in capitals,
+ * a withdrawn code's successor (UK → GB), a country name (Germany → DE), or
+ * an alpha-3 code's first letters (USA → US, AUT → AU or AT). */
+export function countryCodes(value: string): string[] {
+  const all = countries();
+  const v = value.trim();
+  const upper = v.toUpperCase();
+  const out: string[] = [];
+  const add = (c: string | undefined) => c && all.has(c) && !out.includes(c) && out.push(c);
+  if (/^[A-Za-z]{2}$/.test(v)) {
+    add(upper);
+    const old = regionName(upper);
+    if (old) for (const [code, name] of all) if (name === old) add(code);
+  }
+  if (/^[A-Za-z]{3}$/.test(v)) {
+    add(upper.slice(0, 2));
+    add(upper[0] + upper[2]);
+  }
+  if (v.length <= 3) return out.slice(0, MAX_REPAIRS);
+  const byName = new Map([...all].map(([code, name]) => [name, code]));
+  for (const [name, code] of byName) if (squash(name) === squash(v)) add(code);
+  for (const name of closest(v, [...byName.keys()])) add(byName.get(name));
+  return out.slice(0, MAX_REPAIRS);
+}
+
+const PEM_BLOCK = /-----BEGIN ([A-Z0-9 ]+)-----([\s\S]*?)-----END \1-----/;
+const CSR_LABEL = /^(NEW )?CERTIFICATE REQUEST$/;
+const pem = (label: string, body: string) => `-----BEGIN ${label}-----\n${body.replace(/\s+/g, "").match(/.{1,64}/g)?.join("\n") ?? ""}\n-----END ${label}-----`;
+
 export const FORMATS: Record<Format, FormatSpec> = {
   json: {
     check(value) {
@@ -644,6 +697,34 @@ export const FORMATS: Record<Format, FormatSpec> = {
   port: {
     check() {
       return null;
+    },
+  },
+  country: {
+    check(value) {
+      if (countries().has(value)) return null;
+      const [code] = countryCodes(value);
+      return code ? `Did you mean ${countries().get(code)}?` : "A two-letter country code, like US";
+    },
+    repair(value) {
+      return countryCodes(value).map((c) => ({ value: c, label: countries().get(c)!, kind: "suggest" as const }));
+    },
+  },
+  csr: {
+    check(value) {
+      const block = value.match(PEM_BLOCK);
+      if (!block) return /^\s*MII[A-Za-z0-9+/=\s]+$/.test(value) ? "Missing the BEGIN/END lines" : "A PEM certificate request (-----BEGIN CERTIFICATE REQUEST-----)";
+      if (/PRIVATE KEY/.test(block[1])) return "This is a private key: never paste it, paste its CSR";
+      if (!CSR_LABEL.test(block[1])) return `This is a ${block[1].toLowerCase()}, not a certificate request`;
+      if (/[^A-Za-z0-9+/=\r\n]/.test(block[2].trim())) return "Stray characters inside the request";
+      if (value.trim() !== block[0]) return "Text around the request";
+      if (!/^-----BEGIN [^\n]+-----\r?\n[\s\S]*\n-----END [^\n]+-----$/.test(block[0])) return "The BEGIN and END lines need lines of their own";
+      return null;
+    },
+    repair(value) {
+      const block = value.match(PEM_BLOCK);
+      if (!block) return /^\s*MII[A-Za-z0-9+/=\s]+$/.test(value) ? [{ value: pem("CERTIFICATE REQUEST", value), label: "Add the BEGIN/END lines", kind: "fix" }] : [];
+      if (!CSR_LABEL.test(block[1])) return [];
+      return [{ value: pem(block[1], block[2]), label: "Tidy the request", kind: "fix" }];
     },
   },
 };
