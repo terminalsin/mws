@@ -281,6 +281,7 @@ impl Eks {
         }
         rec.insights_refresh =
             Some(InsightsRefresh { status: "IN_PROGRESS".into(), started_at: Some(ctx.received_at), ended_at: None });
+        rec.begin("insights", ctx.received_at, crate::state::durations::INSIGHTS_REFRESH);
         Ok(types::StartInsightsRefreshResponse {
             message: Some("Insights refresh started.".into()),
             status: Some("IN_PROGRESS".into()),

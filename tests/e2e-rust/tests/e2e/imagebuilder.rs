@@ -138,16 +138,28 @@ async fn status_of(ib: &Client, arn: &str) -> ImageStatus {
     image.state().and_then(|s| s.status()).cloned().unwrap()
 }
 
+/// What build instances need to push container images and upload their
+/// logs (as `EC2InstanceProfileForImageBuilderECRContainerBuilds` and an
+/// S3 logging policy grant).
+const INSTANCE_POLICY: &str = r#"{"Version":"2012-10-17","Statement":[{"Effect":"Allow","Action":["ecr:BatchCheckLayerAvailability","ecr:BatchGetImage","ecr:CompleteLayerUpload","ecr:GetAuthorizationToken","ecr:GetDownloadUrlForLayer","ecr:InitiateLayerUpload","ecr:PutImage","ecr:UploadLayerPart","s3:PutObject","logs:CreateLogStream","logs:CreateLogGroup","logs:PutLogEvents"],"Resource":"*"}]}"#;
+
 /// The instance profile builds run with, as the Image Builder console
 /// creates it.
 async fn instance_profile(mws: &Mws) {
+    instance_profile_named(mws, "EC2InstanceProfileForImageBuilder", Some(INSTANCE_POLICY)).await;
+}
+
+/// An instance profile whose role EC2 may assume, with `policy` inline.
+async fn instance_profile_named(mws: &Mws, name: &str, policy: Option<&str>) {
     let iam = aws_sdk_iam::Client::new(&mws.root_sdk_config().await);
     let trust = r#"{"Version":"2012-10-17","Statement":[{"Effect":"Allow","Principal":{"Service":"ec2.amazonaws.com"},"Action":"sts:AssumeRole"}]}"#;
-    let name = "EC2InstanceProfileForImageBuilder";
     if iam.get_instance_profile().instance_profile_name(name).send().await.is_ok() {
         return;
     }
     iam.create_role().role_name(name).assume_role_policy_document(trust).send().await.unwrap();
+    if let Some(policy) = policy {
+        iam.put_role_policy().role_name(name).policy_name("builds").policy_document(policy).send().await.unwrap();
+    }
     iam.create_instance_profile().instance_profile_name(name).send().await.unwrap();
     iam.add_role_to_instance_profile().instance_profile_name(name).role_name(name).send().await.unwrap();
 }
@@ -2044,4 +2056,107 @@ async fn container_images_build_with_docker() {
         }
     }
     assert!(found, "no layer holds /etc/mws-container-built");
+}
+
+/// The build instance pushes the container image and uploads the build
+/// log with its instance profile's role, not Image Builder's: without ECR
+/// permissions the build fails, without `s3:PutObject` the log is lost.
+#[tokio::test]
+async fn build_instances_push_and_log_as_their_instance_profile() {
+    let mws = Mws::start().await;
+    let ib = client(&mws).await;
+    let s = setup(&mws, &ib, "role").await;
+    let config = mws.root_sdk_config().await;
+    let ecr = ecr_in(&config, "us-east-1");
+    let s3 = aws_sdk_s3::Client::new(&config);
+    ecr.create_repository().repository_name("app").send().await.unwrap();
+    s3.create_bucket().bucket("ib-logs").send().await.unwrap();
+    instance_profile_named(&mws, "NoPermissions", None).await;
+    let infra = |name: &str, profile: &str| {
+        ib.create_infrastructure_configuration()
+            .name(name)
+            .instance_types("t3.micro")
+            .instance_profile_name(profile)
+            .logging(
+                aws_sdk_imagebuilder::types::Logging::builder()
+                    .s3_logs(
+                        aws_sdk_imagebuilder::types::S3Logs::builder()
+                            .s3_bucket_name("ib-logs")
+                            .s3_key_prefix(name)
+                            .build(),
+                    )
+                    .build(),
+            )
+            .send()
+    };
+    let bare = infra("bare", "NoPermissions").await.unwrap().infrastructure_configuration_arn.unwrap();
+    let full =
+        infra("full", "EC2InstanceProfileForImageBuilder").await.unwrap().infrastructure_configuration_arn.unwrap();
+    let recipe = ib
+        .create_container_recipe()
+        .container_type(ContainerType::Docker)
+        .name("app")
+        .semantic_version("1.0.0")
+        .parent_image("alpine:3.20")
+        .dockerfile_template_data(
+            "FROM {{{ imagebuilder:parentImage }}}\n{{{ imagebuilder:environments }}}\n{{{ imagebuilder:components }}}\n",
+        )
+        .components(ComponentConfiguration::builder().component_arn(&s.component).build().unwrap())
+        .target_repository(
+            TargetContainerRepository::builder()
+                .service(ContainerRepositoryService::Ecr)
+                .repository_name("app")
+                .build()
+                .unwrap(),
+        )
+        .send()
+        .await
+        .unwrap()
+        .container_recipe_arn
+        .unwrap();
+    let logs = |prefix: &'static str| {
+        let s3 = s3.clone();
+        async move {
+            let listed = s3.list_objects_v2().bucket("ib-logs").prefix(prefix).send().await.unwrap();
+            listed.contents().iter().filter_map(|o| o.key().map(String::from)).collect::<Vec<_>>()
+        }
+    };
+
+    // An instance profile that may not push: the push fails the build, and
+    // the instance can't upload its log either.
+    let image = ib
+        .create_image()
+        .container_recipe_arn(&recipe)
+        .infrastructure_configuration_arn(&bare)
+        .send()
+        .await
+        .unwrap()
+        .image_build_version_arn
+        .unwrap();
+    let image = wait_for_image(&ib, &image).await;
+    assert_eq!(image.state().unwrap().status(), Some(&ImageStatus::Failed));
+    let reason = image.state().unwrap().reason().unwrap().to_string();
+    assert!(reason.contains("Pushing the image to ECR repository 'app' failed"), "{reason}");
+    assert!(reason.contains(&format!("arn:aws:sts::{ACCOUNT}:assumed-role/NoPermissions/i-")), "{reason}");
+    assert!(reason.contains("not authorized to perform: ecr:"), "{reason}");
+    assert!(ecr.describe_images().repository_name("app").send().await.unwrap().image_details().is_empty());
+    assert!(logs("bare/").await.is_empty());
+
+    // The console's instance profile may: the image is pushed and the log
+    // uploaded.
+    let image = ib
+        .create_image()
+        .container_recipe_arn(&recipe)
+        .infrastructure_configuration_arn(&full)
+        .send()
+        .await
+        .unwrap()
+        .image_build_version_arn
+        .unwrap();
+    let image = wait_for_image(&ib, &image).await;
+    assert_eq!(image.state().unwrap().status(), Some(&ImageStatus::Available), "{:?}", image.state());
+    assert_eq!(ecr.describe_images().repository_name("app").send().await.unwrap().image_details().len(), 1);
+    let keys = logs("full/").await;
+    assert_eq!(keys.len(), 1, "{keys:?}");
+    assert!(keys[0].ends_with("/console.log"), "{keys:?}");
 }

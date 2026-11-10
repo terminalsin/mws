@@ -41,7 +41,7 @@ Docker talks plain HTTP to `localhost` and `127.0.0.0/8` registries by default. 
 | Artifacts | ✅ | Manifests with `subject` and `artifactType`; `ListImageReferrers` with filters. |
 | Pull times | ✅ | `BatchGetImage` and pulls record `lastRecordedPullTime`, except for principals registered as pull-time update exclusions. |
 | Storage classes | ✅ | `UpdateImageStorageClass` archives images (they can't be pulled) and restores them in 20 minutes on the emulated clock. |
-| Scans | 🟡 | Basic scans (on push or `StartImageScan`, once a day) complete with no findings: there is no vulnerability database. Enhanced scanning is stored only. |
+| Scans | 🟡 | Basic scans (on push or `StartImageScan`, once a day) are `IN_PROGRESS` for 5 seconds on the emulated clock, then `COMPLETE` with no findings: there is no vulnerability database. With the registry's scan type `ENHANCED`, only the registry's rules apply (a repository's `scanOnPush` is ignored): pushed images are `PENDING` for 30 seconds, then `ACTIVE` (continuous scanning) or `COMPLETE` (scan on push), with empty `enhancedFindings`, an `aws.inspector2` "Inspector2 Scan" event, and no "Inspector2 Finding" events because nothing is found. `StartImageScan` answers `ValidationException` under enhanced scanning (the exact AWS message is not verified). Images already in the registry when enhanced scanning is turned on are not scanned, and `SCAN_ELIGIBILITY_EXPIRED` never happens. |
 | Signing | 🟡 | Signing configurations are stored and validated; images that match a rule report signing `FAILED`, since AWS Signer isn't emulated. |
 
 ## Registry
@@ -53,7 +53,7 @@ Docker talks plain HTTP to `localhost` and `127.0.0.0/8` registries by default. 
 | Registry policies and settings | ✅ | Registry policies, scanning configuration, account settings (`BASIC_SCAN_TYPE_VERSION`, `REGISTRY_POLICY_SCOPE`, `BLOB_MOUNTING`). |
 | Creation templates | ✅ | Prefix matching (longest first, then `ROOT`) for `CREATE_ON_PUSH`, `REPLICATION` and `PULL_THROUGH_CACHE`. |
 | Pull-through cache rules | ✅ | A registry pull of `<prefix>/<repository>` fetches the manifest, then each layer as Docker asks for it, from the upstream registry (bearer-token and Basic authentication, the rule's Secrets Manager credentials, redirects to blob stores), creating the repository on first pull from a `PULL_THROUGH_CACHE` template. Needs `ecr:BatchImportUpstreamImage` (and `ecr:CreateRepository` for a new repository). Upstream ECR registries are read from MWS itself; `customRoleArn` is not assumed. `MWS_ECR_UPSTREAM_ENDPOINTS` points upstreams at mirrors. Cached tags are checked upstream again after 24 hours on the emulated clock, and served from the cache when the upstream can't be reached. |
-| Events | ✅ | Image push, delete, scan and lifecycle actions go to EventBridge as `aws.ecr`. |
+| Events | ✅ | Image push, delete, basic scan and lifecycle actions go to EventBridge as `aws.ecr`; enhanced scans as `aws.inspector2`. |
 | Lambda | ✅ | Container image functions resolve and pull their images here, with the caller's pull permissions (see [Lambda](lambda.md#container-images)). |
 
 See also: [ECR Public](ecr-public.md) · [all services](README.md) · [authentication and authorization](../security.md).

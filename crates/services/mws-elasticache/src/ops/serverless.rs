@@ -96,6 +96,9 @@ pub(crate) async fn create(
             ("UserGroupId", input.user_group_id.clone()),
         ]),
     )?;
+    if let Some(k) = input.kms_key_id.as_deref() {
+        svc.check_kms_key(ctx, k)?;
+    }
     let key = region_key(ctx);
     let account = crate::account_of(ctx);
     let shown = svc.with_region(ctx, |r| {
@@ -412,6 +415,9 @@ pub(crate) async fn create_snapshot(
     check_tags(&tags)?;
     let resource = arn(ctx, "serverlesscachesnapshot", &snap);
     authorize_create(ctx, "CreateServerlessCacheSnapshot", &resource, &tags, Default::default())?;
+    if let Some(k) = input.kms_key_id.as_deref() {
+        svc.check_kms_key(ctx, k)?;
+    }
     let key = region_key(ctx);
     let info = svc.with_region(ctx, |r| {
         let c = r.serverless.get(&cache).ok_or_else(|| not_found(&cache))?;
@@ -468,6 +474,9 @@ pub(crate) async fn copy_snapshot(
     check_tags(&tags)?;
     let resource = arn(ctx, "serverlesscachesnapshot", &target);
     authorize_create(ctx, "CopyServerlessCacheSnapshot", &resource, &tags, Default::default())?;
+    if let Some(k) = input.kms_key_id.as_deref() {
+        svc.check_kms_key(ctx, k)?;
+    }
     svc.with_region(ctx, |r| {
         let s = r.serverless_snapshots.get(&src).cloned().ok_or_else(|| snapshot_not_found(&src))?;
         if s.info.status.as_deref() != Some("available") {

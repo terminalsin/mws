@@ -9,6 +9,7 @@ use serde_json::json;
 
 use crate::generated::{errors, types};
 use crate::names::{self, authorize_repo, dt, image_not_found, invalid_parameter, now_ms, repository_arn};
+use crate::scans::{self, SCAN_INTERVAL_MS};
 use crate::state::{ImageMeta, Registry, Repo, Scan, State};
 use crate::{Ecr, EcrEvent};
 
@@ -19,8 +20,6 @@ const MIN_PART_SIZE: u64 = 5 * 1024 * 1024;
 const MAX_PART_SIZE: usize = 20 * 1024 * 1024;
 /// How long a registry password lasts.
 pub(crate) const TOKEN_HOURS: i64 = 12;
-/// How often an image may be scanned with basic scanning.
-const SCAN_INTERVAL_MS: i64 = 24 * 3600 * 1000;
 
 /// How a manifest is being put.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -110,29 +109,12 @@ pub(crate) fn image_event(
     }
     EcrEvent {
         partition: partition.to_string(),
+        source: "aws.ecr".into(),
         account: reg.account.clone(),
         region: reg.region.clone(),
         detail_type: "ECR Image Action".into(),
         resources: vec![],
         detail,
-        time: dt(now),
-    }
-}
-
-fn scan_event(partition: &str, reg: &Registry, repo: &Repo, digest: &str, now: i64) -> EcrEvent {
-    EcrEvent {
-        partition: partition.to_string(),
-        account: reg.account.clone(),
-        region: reg.region.clone(),
-        detail_type: "ECR Image Scan".into(),
-        resources: vec![repo.arn.clone()],
-        detail: json!({
-            "scan-status": "COMPLETE",
-            "repository-name": repo.name,
-            "finding-severity-counts": {},
-            "image-digest": digest,
-            "image-tags": repo.content.tags_of(digest),
-        }),
         time: dt(now),
     }
 }
@@ -166,16 +148,6 @@ pub(crate) fn put_error(e: PutError, name: &str, account: &str) -> ServiceError 
             "The image tag '{tag}' already exists in the '{name}' repository and cannot be overwritten because the repository is immutable."
         )),
     }
-}
-
-/// Whether the registry's scanning rules scan `repo` on push.
-fn scans_on_push(reg: &Registry, repo: &Repo) -> bool {
-    let rules = reg.scanning.as_ref().and_then(|s| s.rules.clone()).unwrap_or_default();
-    repo.scan_on_push
-        || rules.iter().any(|r| {
-            matches!(r.scan_frequency.as_str(), "SCAN_ON_PUSH" | "CONTINUOUS_SCAN")
-                && r.repository_filters.iter().any(|f| names::wildcard(&f.filter, &repo.name))
-        })
 }
 
 impl Ecr {
@@ -222,7 +194,8 @@ impl Ecr {
         }
         let reg = st.registry(account, region).expect("exists");
         let repo = &reg.repositories[name];
-        let scan = !outcome.image_existed && scans_on_push(reg, repo) && via != Via::Replication;
+        let scan =
+            if !outcome.image_existed && via != Via::Replication { scans::on_push(reg, repo, now) } else { None };
         let signing: Vec<types::ImageSigningStatus> = reg
             .signing
             .iter()
@@ -242,15 +215,14 @@ impl Ecr {
         if via != Via::Replication {
             events.push(image_event(partition, reg, name, "PUSH", &d, tag.as_deref(), now));
         }
-        if scan {
-            let status =
-                if parsed.is_index() || parsed.artifact_type.is_some() { "UNSUPPORTED_IMAGE" } else { "COMPLETE" };
-            if status == "COMPLETE" {
-                events.push(scan_event(partition, reg, repo, &d, now));
+        if let Some(mut scan) = scan {
+            // The scan itself runs on the emulated clock (see `scans::settle`).
+            if parsed.is_index() || parsed.artifact_type.is_some() {
+                scan.status = "UNSUPPORTED_IMAGE".into();
+                scan.completed_at = Some(now);
             }
             let repo = st.registry_mut(account, region).repositories.get_mut(name).expect("exists");
-            let meta = repo.meta.entry(d.clone()).or_default();
-            meta.scan = Some(Scan { status: status.into(), started_at: now, completed_at: Some(now) });
+            repo.meta.entry(d.clone()).or_default().scan = Some(scan);
         }
         if !signing.is_empty() && !outcome.image_existed {
             let repo = st.registry_mut(account, region).repositories.get_mut(name).expect("exists");
@@ -483,8 +455,8 @@ impl Ecr {
             image_tags: (!tags.is_empty()).then_some(tags),
             image_size_in_bytes: Some(image.size),
             image_pushed_at: Some(dt(image.pushed_at)),
-            image_scan_status: scan.map(|s| scan_status(&s.status)),
-            image_scan_findings_summary: scan.filter(|s| s.status == "COMPLETE").map(|s| {
+            image_scan_status: scan.map(scans::status),
+            image_scan_findings_summary: scan.filter(|s| scans::has_findings(s)).map(|s| {
                 types::ImageScanFindingsSummary {
                     image_scan_completed_at: s.completed_at.map(dt),
                     vulnerability_source_updated_at: s.completed_at.map(dt),
@@ -855,6 +827,13 @@ impl Ecr {
             |_, reg, name| {
                 let d = find_image(reg, name, &input.image_id)?;
                 let account = reg.account.clone();
+                if scans::enhanced(reg) {
+                    // Amazon Inspector scans images itself; manual scans
+                    // are basic scans only.
+                    return Err(errors::validation(
+                        "StartImageScan is not supported when the registry scan type is ENHANCED.",
+                    ));
+                }
                 let repo = reg.repositories.get_mut(name).expect("checked");
                 let image = &repo.content.images[&d];
                 if !image.children.is_empty() || image.artifact_type.is_some() {
@@ -864,12 +843,14 @@ impl Ecr {
                     return Err(errors::image_archived("The image is archived and cannot be scanned."));
                 }
                 let meta = repo.meta.entry(d.clone()).or_default();
-                if meta.scan.as_ref().is_some_and(|s| now - s.started_at < SCAN_INTERVAL_MS) {
+                if meta.scan.as_ref().is_some_and(|s| !s.enhanced && now - s.started_at < SCAN_INTERVAL_MS) {
                     return Err(errors::limit_exceeded(
                         "The scan quota per image has been exceeded. Wait and try again.",
                     ));
                 }
-                meta.scan = Some(Scan { status: "IN_PROGRESS".into(), started_at: now, completed_at: None });
+                let scan = Scan { status: "IN_PROGRESS".into(), started_at: now, ..Default::default() };
+                let status = scans::status(&scan);
+                meta.scan = Some(scan);
                 Ok(types::StartImageScanResponse {
                     registry_id: Some(account),
                     repository_name: Some(name.to_string()),
@@ -877,7 +858,7 @@ impl Ecr {
                         image_digest: Some(d),
                         image_tag: input.image_id.image_tag.clone(),
                     }),
-                    image_scan_status: Some(scan_status("IN_PROGRESS")),
+                    image_scan_status: Some(status),
                 })
             },
         )
@@ -903,18 +884,12 @@ impl Ecr {
                         reg.account
                     ))
                 })?;
-                let findings = (scan.status == "COMPLETE").then(|| types::ImageScanFindings {
-                    image_scan_completed_at: scan.completed_at.map(dt),
-                    vulnerability_source_updated_at: scan.completed_at.map(dt),
-                    finding_severity_counts: Some(Default::default()),
-                    findings: Some(Vec::new()),
-                    enhanced_findings: None,
-                });
+                let findings = scans::findings(&scan);
                 Ok(types::DescribeImageScanFindingsResponse {
                     registry_id: Some(reg.account.clone()),
                     repository_name: Some(name.to_string()),
                     image_id: Some(types::ImageIdentifier { image_digest: Some(d), image_tag: input.image_id.image_tag.clone() }),
-                    image_scan_status: Some(scan_status(&scan.status)),
+                    image_scan_status: Some(scans::status(&scan)),
                     image_scan_findings: findings,
                     next_token: None,
                 })
@@ -1024,19 +999,6 @@ pub(crate) fn pull_time_excluded(reg: &Registry, ctx: &RequestContext) -> bool {
         _ => None,
     };
     reg.pull_time_exclusions.keys().any(|p| p == caller || Some(p) == role.as_ref())
-}
-
-pub(crate) fn scan_status(status: &str) -> types::ImageScanStatus {
-    let description = match status {
-        "COMPLETE" => "The scan was completed successfully.",
-        "IN_PROGRESS" => "The scan is in progress.",
-        "UNSUPPORTED_IMAGE" => "The operation is not supported for this image type.",
-        _ => "",
-    };
-    types::ImageScanStatus {
-        status: Some(status.to_string()),
-        description: (!description.is_empty()).then(|| description.to_string()),
-    }
 }
 
 /// The media type manifests in the repository give a blob.

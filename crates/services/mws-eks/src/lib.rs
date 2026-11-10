@@ -4,9 +4,10 @@
 //! entries, identity provider configs, Pod Identity associations,
 //! capabilities, certificate authorities, insights, EKS Anywhere
 //! subscriptions and registered (EKS Connector) clusters behave as the EKS
-//! API describes them. Resources move through their transitional states
-//! (`CREATING`, `UPDATING`, `DELETING`) and settle on the next request, so
-//! SDK waiters finish on their first poll.
+//! API describes them. Resources stay in their transitional states
+//! (`CREATING`, `UPDATING`, `DELETING`) for a while on the emulated clock
+//! (see `state::durations`; advancing `/_mws/clock` skips the wait), and
+//! calls that need a settled resource fail meanwhile as they do on AWS.
 //!
 //! What a cluster owns in the account is real when an [`Infrastructure`]
 //! is wired in (MWS wires EC2 and IAM): subnets are checked and give the
@@ -16,9 +17,10 @@
 //! configuration changes. There is no Kubernetes API server behind the
 //! cluster endpoint.
 //!
-//! AWS couples EKS to IAM (cluster, node and pod roles, `iam:PassRole`) and
-//! STS (whether `eks.amazonaws.com` and friends may assume those roles), so
-//! this crate uses STS's public API.
+//! AWS couples EKS to IAM (cluster, node and pod roles, `iam:PassRole`),
+//! STS (whether `eks.amazonaws.com` and friends may assume those roles) and
+//! KMS (envelope encryption keys, used as the caller), so this crate uses
+//! STS's and KMS's public APIs.
 
 #[allow(clippy::all, dead_code, unused_imports, non_snake_case, non_camel_case_types)]
 pub mod generated {
@@ -60,6 +62,8 @@ use state::State;
 pub(crate) struct Inner {
     state: RwLock<State>,
     sts: Option<mws_sts::Sts>,
+    /// KMS, for the keys of envelope encryption.
+    kms: OnceLock<mws_kms::Kms>,
     infra: OnceLock<Arc<dyn Infrastructure>>,
     /// Service Quotas: clusters, node groups and Fargate profiles.
     quotas: mws_servicequotas::QuotaLink,
@@ -74,6 +78,7 @@ impl Inner {
         Self {
             state: RwLock::new(State::default()),
             sts,
+            kms: OnceLock::new(),
             infra: OnceLock::new(),
             quotas: Default::default(),
             control_plane: OnceLock::new(),
@@ -106,6 +111,17 @@ impl Eks {
     /// the service that will assume them.
     pub fn with_sts(sts: mws_sts::Sts) -> Self {
         Self { inner: Arc::new(Inner::new(Some(sts))) }
+    }
+
+    /// KMS, which envelope encryption keys are looked up in (as the
+    /// caller: `kms:DescribeKey` and `kms:CreateGrant`). Without it only
+    /// the shape of the key ARN is checked.
+    pub fn set_kms(&self, kms: mws_kms::Kms) {
+        let _ = self.inner.kms.set(kms);
+    }
+
+    pub(crate) fn kms(&self) -> Option<&mws_kms::Kms> {
+        self.inner.kms.get()
     }
 
     /// Service Quotas, whose applied values limit clusters, node groups

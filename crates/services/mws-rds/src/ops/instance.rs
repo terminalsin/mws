@@ -6,6 +6,7 @@ use std::collections::BTreeMap;
 use chrono::Duration;
 use mws_core::{ConditionContext, RequestContext, ServiceError};
 
+use super::maintenance::operational;
 use super::pitr::Recovery;
 use super::{
     authorize, check_db_name, check_password, check_username, cond, db_arn, instance_host, instance_not_found,
@@ -157,7 +158,7 @@ impl Rds {
             db.endpoint = Some(self.endpoint_for(ctx, &instance_host(ctx, &id), rec.port, &listen));
         }
         // The log is archived continuously: restorable up to now.
-        if status == "available" && db.backup_retention_period.unwrap_or(0) > 0 && db.db_cluster_identifier.is_none() {
+        if operational(&status) && db.backup_retention_period.unwrap_or(0) > 0 && db.db_cluster_identifier.is_none() {
             db.latest_restorable_time = Some(ctx.received_at);
         }
         db
@@ -181,6 +182,7 @@ impl Rds {
             port: new.port,
             image: new.image,
             pending_reboot: false,
+            ..Default::default()
         };
         let max = self.quota(ctx, crate::quotas::DB_INSTANCES);
         let count = self.with_region(ctx, |r| r.instances.len()) as i64;
@@ -253,8 +255,15 @@ impl Rds {
                     match created {
                         Ok(l) => {
                             let listen = Listen { host: l.host, port: l.port };
-                            if this.set_instance_status(&ctx2, &id, 1, "available", Some(listen)) && first_backup {
-                                this.automated_snapshot(&ctx2, &id).await;
+                            // creating -> backing-up (the first automated
+                            // backup) -> available.
+                            if first_backup {
+                                if this.set_instance_status(&ctx2, &id, 1, "backing-up", Some(listen)) {
+                                    this.automated_snapshot(&ctx2, &id).await;
+                                    this.set_instance_status(&ctx2, &id, 1, "available", None);
+                                }
+                            } else {
+                                this.set_instance_status(&ctx2, &id, 1, "available", Some(listen));
                             }
                         }
                         Err(e) => {
@@ -310,11 +319,16 @@ impl Rds {
             if rec.generation != generation {
                 return false;
             }
+            // Back up after a storage change: optimization goes on.
+            let status = match status {
+                "available" if rec.storage_optimized_until.is_some_and(|u| u > now) => "storage-optimization",
+                s => s,
+            };
             rec.db.db_instance_status = Some(status.to_string());
             if listen.is_some() {
                 rec.listen = listen;
             }
-            if status == "available" {
+            if operational(status) {
                 if let Some(p) = rec.db.pending_modified_values.as_mut() {
                     p.master_user_password = None;
                 }
@@ -414,6 +428,7 @@ impl Rds {
         if self.with_region(ctx, |r| r.instances.contains_key(&id)) {
             return Err(errors::db_instance_already_exists_fault("DB instance already exists"));
         }
+        self.check_monitoring(ctx, input.monitoring_interval, input.monitoring_role_arn.as_deref(), &arn)?;
         let class = input.db_instance_class.clone();
         let manage = input.manage_master_user_password.unwrap_or(false);
         let cluster = match &input.db_cluster_identifier {
@@ -851,7 +866,7 @@ impl Rds {
         ]));
         authorize(ctx, "ModifyDBInstance", &arn, c)?;
         let status = rec.db.db_instance_status.clone().unwrap_or_default();
-        if status != "available" && status != "storage-optimization" {
+        if !operational(&status) {
             return Err(invalid_instance_state(&id, &status));
         }
         let engine = engine_of(rec.db.engine.as_deref().unwrap_or_default())?;
@@ -859,21 +874,19 @@ impl Rds {
         let immediate = input.apply_immediately.unwrap_or(false);
         let mut db = rec.db.clone();
         let mut pending = db.pending_modified_values.clone().unwrap_or_default();
-        let mut restart = false;
         let mut new_password: Option<String> = None;
-        let mut new_image: Option<String> = None;
         let version =
             engine.version(db.engine_version.as_deref().unwrap_or_default()).unwrap_or(engine.default_version());
 
         if let Some(class) = &input.db_instance_class {
             check_class(engine, version, class)?;
+            // Applied by `apply_instance_changes`: at once with
+            // ApplyImmediately (the response still shows the old class),
+            // in the maintenance window otherwise.
             if Some(class) != db.db_instance_class.as_ref() {
-                if immediate {
-                    db.db_instance_class = Some(class.clone());
-                    restart = true;
-                } else {
-                    pending.db_instance_class = Some(class.clone());
-                }
+                pending.db_instance_class = Some(class.clone());
+            } else {
+                pending.db_instance_class = None;
             }
         }
         if !in_cluster
@@ -903,12 +916,23 @@ impl Rds {
                 None if st.as_deref() == Some("gp3") => storage(engine, &st, size, None, None),
                 _ => Err(e),
             })?;
-            if immediate {
-                db.storage_type = Some(st);
-                db.allocated_storage = Some(size);
-                db.iops = iops;
-                db.storage_throughput = throughput;
-            } else {
+            let changed = Some(&st) != db.storage_type.as_ref()
+                || Some(size) != db.allocated_storage
+                || iops != db.iops
+                || throughput != db.storage_throughput;
+            if changed {
+                let current = db.allocated_storage.unwrap_or(0);
+                // Increases must be at least 10%.
+                if size > current && (size as i64) * 10 < (current as i64) * 11 {
+                    return Err(invalid_combination(format!(
+                        "Invalid storage size for engine name {} and storage type {st}: {size}",
+                        engine.name
+                    )));
+                }
+                if rec.storage_optimized_until.is_some_and(|u| u > ctx.received_at) || status == "storage-optimization"
+                {
+                    return Err(super::maintenance::storage_being_optimized());
+                }
                 pending.storage_type = Some(st);
                 pending.allocated_storage = Some(size);
                 pending.iops = iops;
@@ -1020,14 +1044,7 @@ impl Rds {
             if in_cluster {
                 return Err(invalid_combination("Multi-AZ is set at the DB cluster level for Aurora instances."));
             }
-            if immediate {
-                db.multi_az = Some(m);
-                let az = db.availability_zone.clone().unwrap_or_default();
-                db.secondary_availability_zone =
-                    m.then(|| crate::util::zones(&ctx.region).into_iter().find(|z| *z != az)).flatten();
-            } else {
-                pending.multi_az = Some(m);
-            }
+            pending.multi_az = (Some(m) != db.multi_az).then_some(m);
         }
         if let Some(v) = &input.engine_version {
             if in_cluster {
@@ -1058,13 +1075,7 @@ impl Rds {
                         parameter_apply_status: Some("in-sync".into()),
                     }]);
                 }
-                if immediate {
-                    db.engine_version = Some(target.version.into());
-                    new_image = Some(target.image.to_string());
-                    restart = true;
-                } else {
-                    pending.engine_version = Some(target.version.into());
-                }
+                pending.engine_version = Some(target.version.into());
             }
         }
         if let Some(b) = input.auto_minor_version_upgrade {
@@ -1079,16 +1090,12 @@ impl Rds {
         if let Some(b) = input.publicly_accessible {
             db.publicly_accessible = Some(b);
         }
-        if let Some(n) = input.monitoring_interval {
-            if ![0, 1, 5, 10, 15, 30, 60].contains(&n) {
-                return Err(invalid_parameter(format!(
-                    "Invalid MonitoringInterval {n}. Valid values are 0, 1, 5, 10, 15, 30, 60."
-                )));
-            }
-            db.monitoring_interval = Some(n);
-        }
-        if let Some(r) = &input.monitoring_role_arn {
-            db.monitoring_role_arn = Some(r.clone());
+        if input.monitoring_interval.is_some() || input.monitoring_role_arn.is_some() {
+            let interval = input.monitoring_interval.or(db.monitoring_interval);
+            let role = input.monitoring_role_arn.clone().or(db.monitoring_role_arn.clone());
+            self.check_monitoring(ctx, interval, role.as_deref().filter(|r| !r.is_empty()), &arn)?;
+            db.monitoring_interval = interval;
+            db.monitoring_role_arn = role.filter(|r| !r.is_empty());
         }
         if let Some(n) = input.promotion_tier {
             if !(0..=15).contains(&n) {
@@ -1154,15 +1161,14 @@ impl Rds {
         {
             pending.master_user_password = Some("****".into());
         }
+        let deferred = super::maintenance::instance_has_deferred(&pending);
+        let apply_now = immediate && deferred;
         db.pending_modified_values = Some(pending);
         let port_change = input.db_port_number.filter(|p| *p != rec.port);
         let old_password = rec.master_password.clone();
-        let generation = self.with_region(ctx, |r| {
+        self.with_region(ctx, |r| {
             let rec = r.instances.get_mut(&id).expect("looked up above");
             rec.db = db.clone();
-            if let Some(image) = &new_image {
-                rec.image = image.clone();
-            }
             if let Some(pw) = &new_password {
                 rec.master_password = pw.clone();
             }
@@ -1170,25 +1176,20 @@ impl Rds {
                 rec.port = p;
             }
             rec.generation += 1;
-            if restart {
+            if deferred {
+                rec.pending_since.get_or_insert(ctx.received_at);
+            } else {
+                rec.pending_since = None;
+            }
+            if apply_now {
                 rec.db.db_instance_status = Some("modifying".into());
             }
-            rec.generation
         });
         let mut id = id;
         if let Some(n) = new_id {
             self.rename_instance(ctx, &id, &n);
             id = n;
         }
-        self.emit(
-            ctx,
-            "db-instance",
-            &id,
-            &db_arn(ctx, &id),
-            &["configuration change"],
-            "Finished applying modification to DB instance class",
-            "RDS-EVENT-0014",
-        );
         let view = self.instance_view(ctx, &self.instance(ctx, &id)?);
         if new_password.is_some() {
             self.apply_password(ctx, Some(id.clone()), None, old_password);
@@ -1204,8 +1205,8 @@ impl Rds {
             })
             .await;
         }
-        if restart {
-            self.restart_instance(ctx, &id, generation, ("DB instance restarted", "RDS-EVENT-0006")).await;
+        if apply_now {
+            self.apply_instance_changes(ctx, &id, super::maintenance::Scope::All).await;
         }
         Ok(t::ModifyDBInstanceResult { db_instance: Some(view) })
     }
@@ -1284,7 +1285,7 @@ impl Rds {
                     "Cannot create the snapshot because a snapshot with the identifier {s} already exists."
                 )));
             }
-            if status != "available" && status != "stopped" {
+            if !operational(&status) && status != "stopped" {
                 return Err(invalid_instance_state(&id, &status));
             }
         }
@@ -1404,7 +1405,7 @@ impl Rds {
             ));
         }
         let status = rec.db.db_instance_status.clone().unwrap_or_default();
-        if status != "available" {
+        if !operational(&status) {
             return Err(invalid_instance_state(&id, &status));
         }
         if let Some(s) = &input.db_snapshot_identifier {
@@ -1479,7 +1480,7 @@ impl Rds {
         let rec = self.instance(ctx, &id)?;
         authorize(ctx, "RebootDBInstance", &db_arn(ctx, &id), resource_tag_context("db", &rec.db.tag_list))?;
         let status = rec.db.db_instance_status.clone().unwrap_or_default();
-        if status != "available" {
+        if !operational(&status) {
             return Err(invalid_instance_state(&id, &status));
         }
         if input.force_failover == Some(true) && rec.db.multi_az != Some(true) {
@@ -1522,7 +1523,7 @@ impl Rds {
                 "Read replicas of Aurora DB instances are created by adding DB instances to the DB cluster.",
             ));
         }
-        if src.db_instance_status.as_deref() != Some("available") {
+        if !operational(src.db_instance_status.as_deref().unwrap_or_default()) {
             return Err(invalid_instance_state(&source_name, src.db_instance_status.as_deref().unwrap_or_default()));
         }
         if src.backup_retention_period.unwrap_or(0) == 0 {
@@ -1643,7 +1644,7 @@ impl Rds {
             return Err(errors::invalid_db_instance_state_fault(format!("DB Instance {id} is not a read replica.")));
         };
         let status = rec.db.db_instance_status.clone().unwrap_or_default();
-        if status != "available" {
+        if !operational(&status) {
             return Err(invalid_instance_state(&id, &status));
         }
         let retention = input.backup_retention_period.unwrap_or(1);

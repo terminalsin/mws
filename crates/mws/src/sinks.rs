@@ -376,8 +376,9 @@ impl mws_imagebuilder::ImageEvents for ImageBuilderEvents {
     }
 }
 
-/// ECR's `aws.ecr` events (image pushes, deletes, scans), put on the
-/// registry's account's default bus.
+/// ECR's `aws.ecr` events (image pushes, deletes, scans) and the
+/// `aws.inspector2` events of enhanced scans, put on the registry's
+/// account's default bus.
 pub struct EcrToEvents(pub Events);
 
 impl mws_ecr::EventSink for EcrToEvents {
@@ -388,7 +389,7 @@ impl mws_ecr::EventSink for EcrToEvents {
                 partition: e.partition,
                 account: e.account,
                 region: e.region,
-                source: "aws.ecr".into(),
+                source: e.source,
                 detail_type: e.detail_type,
                 resources: e.resources,
                 detail: e.detail,

@@ -4,6 +4,7 @@
 use mws_core::{ConditionContext, RequestContext, ServiceError};
 
 use crate::generated::{errors, types};
+use crate::state::durations;
 use crate::util::{self, text};
 use crate::Eks;
 
@@ -108,6 +109,7 @@ impl Eks {
         let mut st = self.write();
         let rec = util::cluster(&mut st, ctx, &cluster)?;
         crate::access::ensure_node_entry(ctx, rec, &cluster, &role, "FARGATE_LINUX");
+        rec.begin(format!("fargate/{name}"), ctx.received_at, durations::FARGATE_PROFILE);
         rec.fargate_profiles.insert(name, profile.clone());
         Ok(types::CreateFargateProfileResponse { fargate_profile: Some(profile) })
     }
@@ -168,6 +170,8 @@ impl Eks {
             ConditionContext::new(),
         )?;
         f.status = Some("DELETING".into());
-        Ok(types::DeleteFargateProfileResponse { fargate_profile: Some(f.clone()) })
+        let response = f.clone();
+        rec.begin(format!("fargate/{}", input.fargate_profile_name), ctx.received_at, durations::FARGATE_PROFILE);
+        Ok(types::DeleteFargateProfileResponse { fargate_profile: Some(response) })
     }
 }

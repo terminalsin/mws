@@ -4,6 +4,12 @@
 //! instance's EC2 instance and host port), deregisters them when they are
 //! asked to stop, and replaces tasks that fail the target group's health
 //! checks after the service's health check grace period.
+//!
+//! While a task is registered ECS follows its target health: a service
+//! task behind a load balancer only counts as healthy (for
+//! `minimumHealthyPercent`, steady state and the deployment's completion)
+//! once its targets are `healthy`, and a task replaced for failing ELB
+//! health checks counts as a failed launch for the circuit breaker.
 
 use chrono::{DateTime, Duration, Utc};
 use mws_core::RequestContext;
@@ -19,8 +25,18 @@ use crate::Ecs;
 pub(crate) struct LbPlan {
     /// (targets, register?)
     pub changes: Vec<(Vec<LbTarget>, bool)>,
-    /// Running service tasks past their grace period: (task, service, targets).
-    pub probes: Vec<(String, String, Vec<LbTarget>)>,
+    /// Registered running service tasks: (task, service, targets, past
+    /// the service's health check grace period?).
+    pub probes: Vec<(String, String, Vec<LbTarget>, bool)>,
+}
+
+/// Whether a service task counts as healthy as far as its load balancers
+/// are concerned: it has none, or all its targets are `healthy`.
+pub(crate) fn lb_healthy(r: &Region, rec: &TaskRecord) -> bool {
+    if load_balancers(r, rec).iter().all(|lb| lb.target_group_arn.is_none()) {
+        return true;
+    }
+    !rec.lb_targets.is_empty() && rec.lb_health.as_deref() == Some("healthy")
 }
 
 /// The load balancers a service task belongs to: its task set's, or the
@@ -110,9 +126,8 @@ impl Ecs {
             let service = rec.service_arn.clone().unwrap_or_default();
             let grace = r.services.get(&service).and_then(|s| s.service.health_check_grace_period_seconds).unwrap_or(0);
             let started = rec.task.started_at.unwrap_or(now);
-            if started + Duration::seconds(grace as i64) <= now {
-                plan.probes.push((arn.clone(), service, rec.lb_targets.clone()));
-            }
+            let past_grace = started + Duration::seconds(grace as i64) <= now;
+            plan.probes.push((arn.clone(), service, rec.lb_targets.clone(), past_grace));
         }
         plan
     }
@@ -132,17 +147,37 @@ impl Ecs {
                 }
             }
         }
-        // With nothing running the tasks, health checks could only fail.
-        if self.backend_name() == "metadata" {
-            return;
-        }
+        // With nothing running the tasks, health checks could only fail:
+        // the targets count as healthy.
+        let metadata_only = self.backend_name() == "metadata";
+        let mut states: Vec<(String, String)> = Vec::new();
         let mut unhealthy = Vec::new();
-        for (task, service, targets) in plan.probes {
+        for (task, service, targets, past_grace) in plan.probes {
+            let mut state = "healthy".to_string();
             for t in targets {
-                if platform.target_health(ctx, &t.target_group_arn, &t.id, t.port).await.as_deref() == Some("unhealthy")
-                {
-                    unhealthy.push((task.clone(), service.clone(), t));
+                if metadata_only {
                     break;
+                }
+                let s = platform.target_health(ctx, &t.target_group_arn, &t.id, t.port).await.unwrap_or_default();
+                if s == "unhealthy" && past_grace {
+                    unhealthy.push((task.clone(), service.clone(), t));
+                    state = s;
+                    break;
+                }
+                if s != "healthy" {
+                    state = s;
+                }
+            }
+            states.push((task, state));
+        }
+        {
+            let mut st = self.lock();
+            if let Some(r) = st.regions.get_mut(key) {
+                for (task, state) in states {
+                    if let Some(rec) = r.tasks.get_mut(&task) {
+                        rec.lb_ever_healthy |= state == "healthy";
+                        rec.lb_health = Some(state);
+                    }
                 }
             }
         }
@@ -156,6 +191,11 @@ impl Ecs {
             let reason = format!("Task failed ELB health checks in (target-group {})", t.target_group_arn);
             if !self.request_stop(r, &task, "ServiceSchedulerInitiated", &reason, now) {
                 continue;
+            }
+            // A task that never passed its ELB health checks failed to
+            // launch, for the deployment circuit breaker.
+            if let Some(rec) = r.tasks.get_mut(&task) {
+                rec.failed_elb_checks = !rec.lb_ever_healthy;
             }
             if let Some(rec) = r.services.get_mut(&service) {
                 let name = rec.service.service_name.clone().unwrap_or_default();
@@ -171,5 +211,145 @@ impl Ecs {
         }
         drop(st);
         self.kick();
+    }
+}
+
+/// Why a service's `loadBalancers` cannot be used, as ECS words it.
+fn load_balancer_problem(
+    lb: &t::LoadBalancer,
+    group: Option<&crate::platform::TargetGroupInfo>,
+    def: Option<&t::TaskDefinition>,
+) -> Option<String> {
+    let arn = lb.target_group_arn.as_deref()?;
+    let Some(group) = group else {
+        return Some(
+            "Unable to assume role and validate the specified targetGroupArn. Please verify that the ECS service role being passed has the proper permissions."
+                .into(),
+        );
+    };
+    if group.load_balancer_arns.is_empty() {
+        return Some(format!("The target group with targetGroupArn {arn} does not have an associated load balancer."));
+    }
+    let def = def?;
+    let mode = def.network_mode.clone().unwrap_or_else(|| "bridge".into());
+    let compatible = match mode.as_str() {
+        "awsvpc" => group.target_type == "ip",
+        _ => group.target_type == "instance",
+    };
+    if !compatible {
+        return Some(format!(
+            "The provided target group {arn} has target type {}, which is incompatible with the {mode} network mode specified in the task definition.",
+            group.target_type
+        ));
+    }
+    let name = lb.container_name.as_deref().unwrap_or_default();
+    let Some(container) = def.container_definitions.iter().flatten().find(|c| c.name.as_deref() == Some(name)) else {
+        return Some(format!("The container {name} does not exist in the task definition."));
+    };
+    let port = lb.container_port.unwrap_or_default();
+    if !container.port_mappings.iter().flatten().any(|m| m.container_port == Some(port)) {
+        return Some(format!("The container {name} did not have a container port {port} defined."));
+    }
+    None
+}
+
+impl Ecs {
+    /// Check a service's `loadBalancers` against Elastic Load Balancing
+    /// and the task definition, as `CreateService` and `UpdateService` do.
+    pub(crate) async fn check_load_balancers(
+        &self,
+        ctx: &RequestContext,
+        def: Option<&t::TaskDefinition>,
+        lbs: &[t::LoadBalancer],
+    ) -> Result<(), mws_core::ServiceError> {
+        let Some(platform) = self.platform() else { return Ok(()) };
+        for lb in lbs {
+            let Some(arn) = lb.target_group_arn.as_deref() else { continue };
+            let group = platform.target_group(ctx, arn).await;
+            if let Some(problem) = load_balancer_problem(lb, group.as_ref(), def) {
+                return Err(crate::names::invalid(problem));
+            }
+        }
+        Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::platform::TargetGroupInfo;
+
+    fn def(mode: &str, port: i32) -> t::TaskDefinition {
+        t::TaskDefinition {
+            network_mode: Some(mode.into()),
+            container_definitions: Some(vec![t::ContainerDefinition {
+                name: Some("web".into()),
+                port_mappings: Some(vec![t::PortMapping { container_port: Some(port), ..Default::default() }]),
+                ..Default::default()
+            }]),
+            ..Default::default()
+        }
+    }
+
+    fn lb(name: &str, port: i32) -> t::LoadBalancer {
+        t::LoadBalancer {
+            target_group_arn: Some("arn:tg".into()),
+            container_name: Some(name.into()),
+            container_port: Some(port),
+            ..Default::default()
+        }
+    }
+
+    fn group(target_type: &str, with_lb: bool) -> TargetGroupInfo {
+        TargetGroupInfo {
+            target_group_arn: "arn:tg".into(),
+            target_type: target_type.into(),
+            load_balancer_arns: if with_lb { vec!["arn:lb".into()] } else { Vec::new() },
+        }
+    }
+
+    #[test]
+    fn load_balancers_are_checked_as_ecs_does() {
+        let d = def("awsvpc", 80);
+        assert_eq!(load_balancer_problem(&lb("web", 80), Some(&group("ip", true)), Some(&d)), None);
+        assert!(load_balancer_problem(&lb("web", 80), None, Some(&d)).unwrap().starts_with("Unable to assume role"));
+        assert_eq!(
+            load_balancer_problem(&lb("web", 80), Some(&group("ip", false)), Some(&d)).unwrap(),
+            "The target group with targetGroupArn arn:tg does not have an associated load balancer."
+        );
+        assert_eq!(
+            load_balancer_problem(&lb("web", 80), Some(&group("instance", true)), Some(&d)).unwrap(),
+            "The provided target group arn:tg has target type instance, which is incompatible with the awsvpc network mode specified in the task definition."
+        );
+        assert_eq!(
+            load_balancer_problem(&lb("api", 80), Some(&group("ip", true)), Some(&d)).unwrap(),
+            "The container api does not exist in the task definition."
+        );
+        assert_eq!(
+            load_balancer_problem(&lb("web", 8080), Some(&group("ip", true)), Some(&d)).unwrap(),
+            "The container web did not have a container port 8080 defined."
+        );
+        let bridge = def("bridge", 80);
+        assert_eq!(load_balancer_problem(&lb("web", 80), Some(&group("instance", true)), Some(&bridge)), None);
+        assert!(load_balancer_problem(&lb("web", 80), Some(&group("ip", true)), Some(&bridge)).is_some());
+    }
+
+    #[test]
+    fn tasks_behind_a_load_balancer_count_once_their_targets_are_healthy() {
+        let mut r = Region::default();
+        let svc = crate::state::ServiceRecord {
+            service: t::Service { load_balancers: Some(vec![lb("web", 80)]), ..Default::default() },
+            ..Default::default()
+        };
+        r.services.insert("svc".into(), svc);
+        let mut task = TaskRecord { service_arn: Some("svc".into()), ..Default::default() };
+        assert!(!lb_healthy(&r, &task), "not registered yet");
+        task.lb_targets = vec![LbTarget { target_group_arn: "arn:tg".into(), id: "10.0.0.1".into(), port: 80 }];
+        task.lb_health = Some("initial".into());
+        assert!(!lb_healthy(&r, &task));
+        task.lb_health = Some("healthy".into());
+        assert!(lb_healthy(&r, &task));
+        let plain = TaskRecord::default();
+        assert!(lb_healthy(&r, &plain), "tasks without load balancers");
     }
 }

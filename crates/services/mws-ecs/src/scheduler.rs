@@ -31,6 +31,8 @@ struct Live {
     arn: String,
     deployment: Option<String>,
     running: bool,
+    /// Running, and healthy in its target groups (if any).
+    healthy: bool,
     unhealthy: bool,
     protected: bool,
     instance: Option<String>,
@@ -109,6 +111,7 @@ impl Ecs {
                 arn: t.task.task_arn.clone().unwrap_or_default(),
                 deployment: t.deployment_id.clone(),
                 running: t.task.last_status.as_deref() == Some("RUNNING"),
+                healthy: t.task.last_status.as_deref() == Some("RUNNING") && crate::loadbalancing::lb_healthy(r, t),
                 unhealthy: t.task.health_status.as_deref() == Some("UNHEALTHY"),
                 protected: t.protection.as_ref().is_some_and(|p| p.enabled),
                 instance: t.task.container_instance_arn.clone(),
@@ -316,7 +319,7 @@ impl Ecs {
             if t.service_arn.as_deref() == Some(arn)
                 && t.deployment_id.as_deref() == Some(primary_id.as_str())
                 && t.task.last_status.as_deref() == Some("STOPPED")
-                && !t.reached_running
+                && (!t.reached_running || t.failed_elb_checks)
                 && !t.failure_counted
             {
                 t.failure_counted = true;
@@ -486,8 +489,10 @@ impl Ecs {
                 self.start_service_tasks(ctx, r, scope, arn, &config, need.min(room), None, now);
             }
             // Retire old deployments' tasks while enough keep running.
-            let prim_running = prim.iter().filter(|l| l.running).count();
-            let old_running = old.iter().filter(|l| l.running).count();
+            // Behind a load balancer, a task counts once its targets are
+            // healthy.
+            let prim_running = prim.iter().filter(|l| l.healthy).count();
+            let old_running = old.iter().filter(|l| l.healthy).count();
             let mut stoppable = (prim_running + old_running).saturating_sub(min_running);
             let mut retire: Vec<String> = old.iter().filter(|l| !l.running).map(|l| l.arn.clone()).collect();
             for l in old.iter().filter(|l| l.running && !l.protected) {
@@ -517,10 +522,12 @@ impl Ecs {
         }
         let prim_running =
             live_after.iter().filter(|l| l.deployment.as_deref() == Some(primary_id.as_str()) && l.running).count();
+        let prim_healthy =
+            live_after.iter().filter(|l| l.deployment.as_deref() == Some(primary_id.as_str()) && l.healthy).count();
         let prim_live = live_after.iter().filter(|l| l.deployment.as_deref() == Some(primary_id.as_str())).count();
         let only_primary = rec.service.deployments.iter().flatten().count() == 1;
         let desired = rec.service.desired_count.max(0) as usize;
-        let steady = only_primary && prim_running == desired && prim_live == desired;
+        let steady = only_primary && prim_healthy == desired && prim_running == desired && prim_live == desired;
         if steady && rollout == "IN_PROGRESS" {
             for d in rec.service.deployments.iter_mut().flatten() {
                 d.rollout_state = Some("COMPLETED".into());

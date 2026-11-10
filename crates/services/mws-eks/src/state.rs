@@ -45,6 +45,12 @@ pub(crate) struct ClusterRec {
     pub insights_refresh: Option<InsightsRefresh>,
     /// The Kubernetes API server, when a control plane backend runs one.
     pub control_plane: Option<ControlPlaneRec>,
+    /// When each transition in progress finishes on the emulated clock,
+    /// keyed by what is moving (`cluster`, `nodegroup/<name>`,
+    /// `addon/<name>`, `fargate/<name>`, `idp/<name>`, `capability/<name>`,
+    /// `certs`, `insights`). A transition without an entry (state saved by
+    /// an older MWS) finishes on the next request.
+    pub settle_at: BTreeMap<String, DateTime<Utc>>,
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
@@ -95,6 +101,9 @@ pub(crate) struct UpdateRec {
     pub nodegroup: Option<String>,
     pub addon: Option<String>,
     pub capability: Option<String>,
+    /// When the update finishes on the emulated clock (`None`: on the next
+    /// request).
+    pub done_at: Option<DateTime<Utc>>,
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
@@ -109,6 +118,41 @@ pub(crate) struct InsightsRefresh {
     pub status: String,
     pub started_at: Option<DateTime<Utc>>,
     pub ended_at: Option<DateTime<Utc>>,
+}
+
+/// How long transitions take on the emulated clock, in seconds. Real EKS
+/// takes about ten minutes for a cluster and a few for a node group; these
+/// are shorter so SDK waiters finish within a few polls, and advancing
+/// `/_mws/clock` skips them.
+pub(crate) mod durations {
+    pub const CLUSTER_CREATE: i64 = 120;
+    pub const CLUSTER_UPDATE: i64 = 60;
+    pub const CLUSTER_VERSION_UPDATE: i64 = 120;
+    pub const CLUSTER_DELETE: i64 = 60;
+    pub const NODEGROUP_CREATE: i64 = 90;
+    pub const NODEGROUP_UPDATE: i64 = 60;
+    pub const NODEGROUP_DELETE: i64 = 60;
+    pub const ADDON: i64 = 30;
+    pub const FARGATE_PROFILE: i64 = 60;
+    pub const IDENTITY_PROVIDER: i64 = 60;
+    pub const CAPABILITY: i64 = 60;
+    pub const CERTIFICATE_AUTHORITY: i64 = 30;
+    pub const INSIGHTS_REFRESH: i64 = 30;
+}
+
+impl ClusterRec {
+    /// Start a transition of `key` that lasts `secs` from `now`; returns
+    /// when it finishes.
+    pub fn begin(&mut self, key: impl Into<String>, now: DateTime<Utc>, secs: i64) -> DateTime<Utc> {
+        let at = now + chrono::Duration::seconds(secs);
+        self.settle_at.insert(key.into(), at);
+        at
+    }
+
+    /// Whether the transition of `key` is over at `now`.
+    pub fn due(&self, key: &str, now: DateTime<Utc>) -> bool {
+        self.settle_at.get(key).is_none_or(|at| now >= *at)
+    }
 }
 
 impl State {

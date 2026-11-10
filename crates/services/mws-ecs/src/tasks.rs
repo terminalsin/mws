@@ -557,7 +557,9 @@ impl Ecs {
         true
     }
 
-    fn authorize_pass_roles(
+    /// `iam:PassRole` on the task and execution roles a task will use,
+    /// passed to `ecs-tasks.amazonaws.com`.
+    pub(crate) fn authorize_pass_roles(
         &self,
         ctx: &RequestContext,
         def: &t::TaskDefinition,
@@ -1080,7 +1082,7 @@ impl Ecs {
         if !input.interactive {
             return Err(invalid("Interactive is the only mode supported currently."));
         }
-        let (container, runtime_id, container_arn) = self.with_region(ctx, |r, _| {
+        let (container, runtime_id, container_arn, credentials) = self.with_region(ctx, |r, _| {
             let rec = r.tasks.get(&arn).ok_or_else(|| invalid("The referenced task was not found."))?;
             if !rec.task.enable_execute_command || rec.task.last_status.as_deref() != Some("RUNNING") {
                 return Err(invalid(
@@ -1101,8 +1103,26 @@ impl Ecs {
                 }
             };
             let name = c.name.clone().unwrap_or_default();
-            Ok((name.clone(), rec.runtime_ids.get(&name).cloned(), c.container_arn.clone()))
+            Ok((name.clone(), rec.runtime_ids.get(&name).cloned(), c.container_arn.clone(), rec.credentials.clone()))
         })?;
+        // The SSM agent in the task opens its Session Manager channels with
+        // the task role: without `ssmmessages:*` it never connects.
+        if let Some(p) = self.platform() {
+            let connected = credentials
+                .map(|c| crate::platform::RoleCredentials {
+                    access_key_id: c.access_key_id,
+                    secret_access_key: c.secret_access_key,
+                    session_token: c.session_token,
+                    expiration: c.expiration.unwrap_or(ctx.received_at),
+                })
+                .and_then(|c| p.role_context(ctx, &c))
+                .is_some_and(|role| session_channels_allowed(&role));
+            if !connected {
+                return Err(crate::generated::errors::target_not_connected(
+                    "The execute command failed due to an internal error. Try again later.",
+                ));
+            }
+        }
         // There is no Session Manager to attach to: the command runs once
         // in the container, and the session describes where AWS would
         // stream it.
@@ -1317,4 +1337,12 @@ pub fn account_of_arn(arn: &str) -> String {
 
 pub fn region_of_arn(arn: &str) -> String {
     arn.split(':').nth(3).unwrap_or_default().to_string()
+}
+
+/// Whether a task role session may open the Session Manager channels the
+/// SSM agent needs for `ExecuteCommand`.
+fn session_channels_allowed(role: &RequestContext) -> bool {
+    ["CreateControlChannel", "CreateDataChannel", "OpenControlChannel", "OpenDataChannel"]
+        .iter()
+        .all(|a| role.authorize(&format!("ssmmessages:{a}"), "*", mws_core::ConditionContext::new()).is_ok())
 }

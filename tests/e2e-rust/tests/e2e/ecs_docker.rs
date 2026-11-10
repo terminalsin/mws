@@ -66,7 +66,7 @@ async fn tasks_run_as_containers() {
         .unwrap();
     let subnet = subnets.subnets()[0].subnet_id().unwrap().to_string();
 
-    let script = r#"echo "secret=$DB_PASS"; echo "key=$AWS_ACCESS_KEY_ID"; echo "meta=$(wget -qO- "$ECS_CONTAINER_METADATA_URI_V4/task")"; echo done"#;
+    let script = r#"echo "secret=$DB_PASS"; echo "key=$AWS_ACCESS_KEY_ID"; echo "creds=$(wget -qO- "$AWS_CONTAINER_CREDENTIALS_FULL_URI")"; echo "meta=$(wget -qO- "$ECS_CONTAINER_METADATA_URI_V4/task")"; echo done"#;
     ecs.create_cluster().send().await.unwrap();
     ecs.register_task_definition()
         .family("job")
@@ -144,7 +144,10 @@ async fn tasks_run_as_containers() {
         tokio::time::sleep(Duration::from_millis(250)).await;
     }
     assert!(text.contains("secret=hunter2"), "logs: {text}");
-    assert!(text.contains("key=ASIA"), "the task role's session: {text}");
+    // The task role's session comes from the credentials endpoint, not
+    // the environment.
+    assert!(text.lines().any(|l| l == "key="), "no static keys: {text}");
+    assert!(text.contains(r#""AccessKeyId":"ASIA"#), "the task role's session: {text}");
     assert!(text.contains(&format!("\"TaskARN\":\"{arn}\"")), "task metadata: {text}");
 
     for _ in 0..40 {

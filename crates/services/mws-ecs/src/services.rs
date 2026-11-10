@@ -299,7 +299,7 @@ impl Ecs {
         Ok((lt, strategy))
     }
 
-    pub(crate) fn create_service_op(
+    pub(crate) async fn create_service_op(
         &self,
         ctx: &RequestContext,
         input: t::CreateServiceRequest,
@@ -362,8 +362,13 @@ impl Ecs {
                 )
                 .extend(request_tags(input.tags.as_ref())),
         )?;
+        // The legacy service role goes to ECS; the task and execution roles
+        // to the tasks the service will run.
         if let Some(role) = &input.role {
-            ctx.authorize("iam:PassRole", role, mws_core::ConditionContext::new()).map_err(crate::names::ecs_denial)?;
+            self.pass_role(ctx, role, "ecs.amazonaws.com")?;
+        }
+        if let Some(d) = &def {
+            self.authorize_pass_roles(ctx, d, None)?;
         }
         self.authorize_create_tags(ctx, &arn, "CreateService", input.tags.as_ref())?;
         if controller != "EXTERNAL" && def.is_none() {
@@ -394,6 +399,9 @@ impl Ecs {
         }
         if input.launch_type.as_deref() == Some("FARGATE") && daemon {
             return Err(invalid("The daemon scheduling strategy is not supported for the FARGATE launch type."));
+        }
+        if controller != "EXTERNAL" {
+            self.check_load_balancers(ctx, def.as_ref(), input.load_balancers.as_deref().unwrap_or_default()).await?;
         }
         let now = ctx.received_at;
         let me = self.clone();
@@ -626,7 +634,7 @@ impl Ecs {
         })
     }
 
-    pub(crate) fn update_service_op(
+    pub(crate) async fn update_service_op(
         &self,
         ctx: &RequestContext,
         input: t::UpdateServiceRequest,
@@ -634,8 +642,13 @@ impl Ecs {
         let scope = Scope::of(ctx);
         let cluster = cluster_name(input.cluster.as_deref());
         let arn = service_arn(&scope, &cluster, last_segment(&input.service));
-        let (tags, new_def, cluster_obj) = self.with_region(ctx, |r, _| {
+        let (tags, new_def, cluster_obj, current) = self.with_region(ctx, |r, _| {
             let c = clusters::active(r, input.cluster.as_deref())?.clone();
+            // The service's load balancers and task definition, for checks.
+            let current = r.services.get(&arn).map(|s| {
+                let def = taskdefs::resolve(r, s.service.task_definition.as_deref().unwrap_or_default()).cloned();
+                (s.service.load_balancers.clone().unwrap_or_default(), def)
+            });
             let d = match input.task_definition.as_deref() {
                 Some(td) => Some(
                     taskdefs::resolve(r, td)
@@ -645,7 +658,7 @@ impl Ecs {
                 ),
                 None => None,
             };
-            Ok::<_, ServiceError>((r.tags.get(&arn).cloned(), d, c))
+            Ok::<_, ServiceError>((r.tags.get(&arn).cloned(), d, c, current))
         })?;
         let awsvpc = input.network_configuration.as_ref().and_then(|n| n.awsvpc_configuration.as_ref());
         authorize(
@@ -668,6 +681,14 @@ impl Ecs {
                 .with_list("ecs:subnet", awsvpc.map(|a| a.subnets.clone()).unwrap_or_default())
                 .extend(resource_tags(tags.as_ref())),
         )?;
+        if let Some(d) = &new_def {
+            self.authorize_pass_roles(ctx, d, None)?;
+        }
+        if let (Some((lbs, current_def)), true) = (&current, input.load_balancers.is_some() || new_def.is_some()) {
+            let lbs = input.load_balancers.as_deref().unwrap_or(lbs);
+            let def = new_def.as_ref().or(current_def.as_ref());
+            self.check_load_balancers(ctx, def, lbs).await?;
+        }
         let now = ctx.received_at;
         let me = self.clone();
         let out = self.with_region(ctx, |r, scope| {

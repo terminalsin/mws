@@ -190,6 +190,28 @@ pub fn check_maintenance_window(w: &str) -> Result<String, ServiceError> {
     }
 }
 
+/// The first start of a `ddd:hh24:mi-ddd:hh24:mi` maintenance window
+/// strictly after `after`.
+pub fn next_window_start(window: &str, after: chrono::DateTime<chrono::Utc>) -> Option<chrono::DateTime<chrono::Utc>> {
+    use chrono::{Datelike, Duration, TimeZone};
+    const DAYS: [&str; 7] = ["sun", "mon", "tue", "wed", "thu", "fri", "sat"];
+    let start = window.split('-').next()?;
+    let f: Vec<&str> = start.split(':').collect();
+    let first = f.first()?.to_ascii_lowercase();
+    let day = DAYS.iter().position(|d| *d == first)? as i64;
+    let (h, m): (u32, u32) = (f.get(1)?.parse().ok()?, f.get(2)?.parse().ok()?);
+    let midnight = chrono::Utc.with_ymd_and_hms(after.year(), after.month(), after.day(), 0, 0, 0).single()?;
+    let today = after.weekday().num_days_from_sunday() as i64;
+    let mut at = midnight
+        + Duration::days((day - today).rem_euclid(7))
+        + Duration::hours(h as i64)
+        + Duration::minutes(m as i64);
+    if at <= after {
+        at += Duration::days(7);
+    }
+    Some(at)
+}
+
 // ---- tags --------------------------------------------------------------
 
 /// Tags from `Tags` and `TagSpecifications` (whose resource type must be
@@ -313,4 +335,20 @@ pub fn paginate<T: Clone>(
     let page: Vec<T> = items.iter().skip(start).take(max).cloned().collect();
     let next = (start + max < items.len()).then(|| (start + max).to_string());
     Ok((page, next))
+}
+
+#[cfg(test)]
+mod window_tests {
+    use chrono::{TimeZone, Utc};
+
+    #[test]
+    fn next_window_start_wraps_the_week() {
+        // 2026-11-10 is a Tuesday.
+        let tue = Utc.with_ymd_and_hms(2026, 11, 10, 12, 0, 0).unwrap();
+        let w = |s| super::next_window_start(s, tue).unwrap();
+        assert_eq!(w("tue:13:00-tue:13:30"), Utc.with_ymd_and_hms(2026, 11, 10, 13, 0, 0).unwrap());
+        assert_eq!(w("tue:11:00-tue:11:30"), Utc.with_ymd_and_hms(2026, 11, 17, 11, 0, 0).unwrap());
+        assert_eq!(w("sun:05:00-sun:05:30"), Utc.with_ymd_and_hms(2026, 11, 15, 5, 0, 0).unwrap());
+        assert_eq!(w("mon:23:45-tue:00:15"), Utc.with_ymd_and_hms(2026, 11, 16, 23, 45, 0).unwrap());
+    }
 }

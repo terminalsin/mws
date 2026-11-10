@@ -160,6 +160,11 @@ fn validate(input: &t::RegisterTaskDefinitionRequest) -> Result<(Vec<t::Attribut
             }
         }
         if c.image.as_deref().is_some_and(|i| i.contains(".dkr.ecr.")) {
+            if fargate && input.execution_role_arn.is_none() {
+                return Err(client(
+                    "Fargate requires task definition to have execution role ARN to support ECR images.",
+                ));
+            }
             need("com.amazonaws.ecs.capability.ecr-auth");
             if input.execution_role_arn.is_some() {
                 need("ecs.capability.execution-role-ecr-pull");

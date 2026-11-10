@@ -508,7 +508,7 @@ impl Rds {
         let rec = self.instance(ctx, &id)?;
         authorize(ctx, "CreateDBSnapshot", &db_arn(ctx, &id), resource_tag_context("db", &rec.db.tag_list))?;
         let status = rec.db.db_instance_status.clone().unwrap_or_default();
-        if status != "available" && status != "stopped" {
+        if !super::maintenance::operational(&status) && status != "stopped" {
             return Err(super::invalid_instance_state(&id, &status));
         }
         let s = self.snapshot_instance(ctx, &id, &snap, "manual", tags).await?;
@@ -1744,6 +1744,7 @@ impl Rds {
             generation: 1,
             image,
             pending_reboot: false,
+            ..Default::default()
         };
         let launch = super::cluster::Launch {
             from_snapshot: source.has_data.then(|| source.backend_name.clone()),

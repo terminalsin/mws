@@ -191,6 +191,8 @@ async fn clusters_run_a_kubernetes_api_server() {
 
     // The cluster becomes ACTIVE once its API server answers (pulling the
     // k3s image the first time can take a while).
+    // (Its creation also takes minutes on the emulated clock.)
+    e.settle().await;
     let mut cluster = None;
     for _ in 0..600 {
         let c = e.eks.describe_cluster().name("kube").send().await.unwrap().cluster().unwrap().clone();
@@ -394,6 +396,7 @@ async fn clusters_run_a_kubernetes_api_server() {
     assert_eq!(events("authenticator-").await.len(), before);
 
     // Managed node group instances register as Nodes.
+    e.settle().await;
     e.eks
         .create_nodegroup()
         .cluster_name("kube")
@@ -424,6 +427,7 @@ async fn clusters_run_a_kubernetes_api_server() {
     }
 
     // Scaling the node group removes the Node of the terminated instance.
+    e.settle().await;
     e.eks
         .update_nodegroup_config()
         .cluster_name("kube")
@@ -435,7 +439,9 @@ async fn clusters_run_a_kubernetes_api_server() {
     node_names(&kube, &admin, 1).await;
 
     // Deleting the cluster removes its API server.
+    e.settle().await;
     e.eks.delete_nodegroup().cluster_name("kube").nodegroup_name("workers").send().await.unwrap();
+    e.settle().await;
     for _ in 0..120 {
         if e.eks.describe_nodegroup().cluster_name("kube").nodegroup_name("workers").send().await.is_err() {
             break;

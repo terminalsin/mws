@@ -91,6 +91,65 @@ fn container_endpoint(endpoint: &str, network: &TaskNetwork) -> String {
     endpoint.replace("://127.0.0.1", "://host.docker.internal").replace("://localhost", "://host.docker.internal")
 }
 
+/// The endpoint containers fetch task role credentials from. The SDKs'
+/// container credentials provider talks plain HTTP only to loopback and
+/// ECS's link-local `169.254.170.2`, which the Docker backend routes to the
+/// host for containers outside the host network.
+pub(crate) fn credentials_endpoint(endpoint: &str, network: &TaskNetwork) -> String {
+    if matches!(network, TaskNetwork::Host) {
+        return endpoint.to_string();
+    }
+    let Some(rest) = endpoint.strip_prefix("http://") else {
+        return container_endpoint(endpoint, network);
+    };
+    let (authority, path) = match rest.find('/') {
+        Some(i) => rest.split_at(i),
+        None => (rest, ""),
+    };
+    let port = match authority.rsplit_once(':') {
+        Some((host, port)) if !host.ends_with(']') || authority.starts_with('[') => format!(":{port}"),
+        _ => String::new(),
+    };
+    format!("http://169.254.170.2{port}{path}")
+}
+
+/// `repositoryCredentials` secrets hold `{"username": ..., "password": ...}`.
+fn registry_auth(secret: &str) -> Option<crate::backend::RegistryAuth> {
+    let v: serde_json::Value = serde_json::from_str(secret).ok()?;
+    Some(crate::backend::RegistryAuth {
+        username: v.get("username")?.as_str()?.to_string(),
+        password: v.get("password")?.as_str()?.to_string(),
+    })
+}
+
+/// Why an ECR pull failed, as the ECS agent words it.
+fn registry_failure(image: &str, architecture: &str, e: crate::platform::RegistryPullError) -> StartFailure {
+    use crate::platform::RegistryPullError as E;
+    let (host, rest) = image.split_once('/').unwrap_or(("", image));
+    let (repo, reference) = match rest.rsplit_once('@') {
+        Some((r, d)) => (r, d),
+        None => match rest.rsplit_once(':') {
+            Some((r, t)) if !t.contains('/') => (r, t),
+            _ => (rest, "latest"),
+        },
+    };
+    let sep = if reference.starts_with("sha256:") { "@" } else { ":" };
+    let full = format!("{host}/{repo}{sep}{reference}");
+    match e {
+        E::Auth(e) => StartFailure::Secrets(format!(
+            "unable to retrieve ecr registry auth: service call has been retried 3 time(s): {}: {}",
+            e.code, e.message
+        )),
+        E::Denied => StartFailure::Pull(format!(
+            "failed to resolve ref {full}: pulling from host {host} failed with status code [manifests {reference}]: 403 Forbidden"
+        )),
+        E::NotFound => StartFailure::Pull(format!("failed to resolve ref {full}: {full}: not found")),
+        E::Unsupported => StartFailure::Pull(format!(
+            "failed to resolve ref {full}: no match for platform in manifest linux/{architecture}: not found"
+        )),
+    }
+}
+
 /// Why a task failed to start, as ECS words it.
 enum StartFailure {
     Pull(String),
@@ -363,40 +422,102 @@ impl Ecs {
             };
             self.update_task(key, arn, |r| r.credentials = Some(stored));
         }
-        // The execution role pulls secrets and writes awslogs output.
-        let needs_exec = def
-            .container_definitions
-            .iter()
-            .flatten()
-            .any(|c| c.secrets.as_ref().is_some_and(|s| !s.is_empty()) || is_awslogs(c));
+        // The execution role pulls images from ECR, reads secrets and
+        // registry credentials, and writes awslogs output. ECS assumes it
+        // whenever the task definition names one; failing to is fatal only
+        // for what needs it.
         let mut exec_ctx: Option<RequestContext> = None;
-        if let (true, Some(role), Some(p), Some(base)) =
-            (needs_exec, def.execution_role_arn.as_deref(), platform.as_ref(), ctx)
-        {
+        let mut exec_error: Option<String> = None;
+        if let (Some(role), Some(p), Some(base)) = (def.execution_role_arn.as_deref(), platform.as_ref(), ctx) {
             match p.assume_task_role(role, arn, &spec.account_id, now) {
                 Ok(c) => exec_ctx = p.role_context(base, &c),
-                Err(e) => {
-                    let has_secrets = def.container_definitions.iter().flatten().any(|c| c.secrets.is_some());
-                    if has_secrets {
+                Err(e) => exec_error = Some(e),
+            }
+        }
+        let exec_failure = |what: &str| {
+            let why = match &exec_error {
+                Some(e) => format!("unable to assume the execution role: {e}"),
+                None => "the task has no usable execution role".to_string(),
+            };
+            StartFailure::Secrets(format!("{what}{why}"))
+        };
+        if exec_error.is_some() && def.container_definitions.iter().flatten().any(|c| c.secrets.is_some()) {
+            return Err((Some(exec_failure("")), None, Vec::new()));
+        }
+        if let (Some(e), true) = (&exec_error, def.container_definitions.iter().flatten().any(is_awslogs)) {
+            tracing::warn!(task = arn, "ECS cannot assume the execution role: {e}");
+        }
+
+        // Pull images: ECR images from MWS's own registry as the execution
+        // role, others from their registry (logged in with
+        // `repositoryCredentials`).
+        self.update_task(key, arn, |r| r.task.pull_started_at = Some(self.now()));
+        let architecture = match def.runtime_platform.as_ref().and_then(|p| p.cpu_architecture.as_deref()) {
+            Some("ARM64") => "arm64",
+            _ => "amd64",
+        };
+        let fargate = rec.task.launch_type.as_deref() == Some("FARGATE");
+        let mut digests = BTreeMap::new();
+        let mut local_images: BTreeMap<String, String> = BTreeMap::new();
+        for c in def.container_definitions.iter().flatten() {
+            let image = c.image.clone().unwrap_or_default();
+            let name = c.name.clone().unwrap_or_default();
+            if let Some(p) = platform.as_ref().filter(|p| p.is_registry_image(&image, &spec.account_id, &spec.region)) {
+                // Fargate pulls ECR images with the execution role; EC2
+                // container instances without one use their instance role,
+                // which MWS does not model.
+                let pull_ctx = match (def.execution_role_arn.is_some(), exec_ctx.as_ref()) {
+                    (true, Some(c)) => Some(c),
+                    (false, _) if !fargate => None,
+                    _ => {
+                        return Err((Some(exec_failure("unable to retrieve ecr registry auth: ")), None, Vec::new()));
+                    }
+                };
+                match p.pull_registry_image(pull_ctx, &image, &spec.account_id, &spec.region, architecture) {
+                    Ok(pulled) => {
+                        let tag = crate::backend::local_tag(&pulled.digest);
+                        if let Err(e) = backend.load_image(&tag, &pulled).await {
+                            return Err((Some(StartFailure::Pull(format!("{image}: {e}"))), None, Vec::new()));
+                        }
+                        digests.insert(name.clone(), Some(pulled.resolved_digest.clone()));
+                        local_images.insert(name, tag);
+                        continue;
+                    }
+                    Err(e) => return Err((Some(registry_failure(&image, architecture, e)), None, Vec::new())),
+                }
+            }
+            let mut auth = None;
+            if let (Some(rc), Some(p)) = (c.repository_credentials.as_ref(), platform.as_ref()) {
+                let Some(ectx) = exec_ctx.as_ref() else {
+                    return Err((Some(exec_failure("")), None, Vec::new()));
+                };
+                match p.read_secret(ectx, &rc.credentials_parameter).await {
+                    Ok(v) => auth = registry_auth(&v),
+                    Err(e) => {
                         return Err((
-                            Some(StartFailure::Secrets(format!("unable to assume the execution role: {e}"))),
+                            Some(StartFailure::Secrets(format!(
+                                "unable to retrieve secret from asm: service call has been retried 1 time(s): {}: {}",
+                                e.code, e.message
+                            ))),
                             None,
                             Vec::new(),
                         ));
                     }
-                    tracing::warn!(task = arn, "ECS cannot assume the execution role: {e}");
+                }
+                if auth.is_none() {
+                    return Err((
+                        Some(StartFailure::Secrets(format!(
+                            "unable to retrieve secret from asm: the secret {} does not hold a username and password",
+                            rc.credentials_parameter
+                        ))),
+                        None,
+                        Vec::new(),
+                    ));
                 }
             }
-        }
-
-        // Pull images.
-        self.update_task(key, arn, |r| r.task.pull_started_at = Some(self.now()));
-        let mut digests = BTreeMap::new();
-        for c in def.container_definitions.iter().flatten() {
-            let image = c.image.clone().unwrap_or_default();
-            match backend.pull(&image).await {
+            match backend.pull(&image, auth.as_ref()).await {
                 Ok(d) => {
-                    digests.insert(c.name.clone().unwrap_or_default(), d);
+                    digests.insert(name, d);
                 }
                 Err(e) => return Err((Some(StartFailure::Pull(format!("{image}: {e}"))), None, Vec::new())),
             }
@@ -469,12 +590,24 @@ impl Ecs {
                 _ => "AWS_ECS_EC2",
             };
             env.push(("AWS_EXECUTION_ENV".into(), exec_env.into()));
-            if let Some(cr) = &task_creds {
-                env.push(("AWS_ACCESS_KEY_ID".into(), cr.access_key_id.clone()));
-                env.push(("AWS_SECRET_ACCESS_KEY".into(), cr.secret_access_key.clone()));
-                env.push(("AWS_SESSION_TOKEN".into(), cr.session_token.clone()));
+            // The SDKs' container credentials provider fetches (and
+            // refreshes) the task role session; no keys are in the
+            // environment.
+            if let (Some(_), Some(ep)) = (&task_creds, &endpoint) {
+                env.push((
+                    "AWS_CONTAINER_CREDENTIALS_FULL_URI".into(),
+                    format!(
+                        "{}{}{task_id}/credentials",
+                        credentials_endpoint(ep, &spec.network),
+                        crate::metadata::PREFIX
+                    ),
+                ));
             }
-            specs.push(container_spec(def, c, env));
+            let mut cspec = container_spec(def, c, env);
+            if let Some(tag) = local_images.get(&name) {
+                cspec.image = tag.clone();
+            }
+            specs.push(cspec);
         }
 
         // Shared namespace, then the containers.
@@ -835,5 +968,49 @@ fn container_spec(def: &t::TaskDefinition, c: &t::ContainerDefinition, env: Vec<
             retries: h.retries.unwrap_or(3),
             start_period: h.start_period.unwrap_or(0),
         }),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::platform::RegistryPullError;
+
+    #[test]
+    fn credentials_go_through_the_link_local_endpoint() {
+        let bridge = TaskNetwork::Bridge;
+        assert_eq!(credentials_endpoint("http://127.0.0.1:4566", &bridge), "http://169.254.170.2:4566");
+        assert_eq!(credentials_endpoint("http://localhost:4566/", &bridge), "http://169.254.170.2:4566/");
+        assert_eq!(credentials_endpoint("http://10.0.0.5", &bridge), "http://169.254.170.2");
+        assert_eq!(credentials_endpoint("http://127.0.0.1:4566", &TaskNetwork::Host), "http://127.0.0.1:4566");
+    }
+
+    #[test]
+    fn registry_failures_read_as_the_agent_words_them() {
+        let image = "123456789012.dkr.ecr.us-east-1.amazonaws.com/app";
+        assert_eq!(
+            registry_failure(image, "amd64", RegistryPullError::NotFound).reason(),
+            "CannotPullContainerError: pull image manifest has been retried 1 time(s): failed to resolve ref 123456789012.dkr.ecr.us-east-1.amazonaws.com/app:latest: 123456789012.dkr.ecr.us-east-1.amazonaws.com/app:latest: not found"
+        );
+        assert_eq!(
+            registry_failure(&format!("{image}:v1"), "amd64", RegistryPullError::Denied).reason(),
+            "CannotPullContainerError: pull image manifest has been retried 1 time(s): failed to resolve ref 123456789012.dkr.ecr.us-east-1.amazonaws.com/app:v1: pulling from host 123456789012.dkr.ecr.us-east-1.amazonaws.com failed with status code [manifests v1]: 403 Forbidden"
+        );
+        let denied = mws_core::ServiceError::new(
+            "AccessDeniedException",
+            400,
+            mws_core::ErrorFault::Client,
+            "not authorized to perform: ecr:GetAuthorizationToken",
+        );
+        assert!(registry_failure(image, "amd64", RegistryPullError::Auth(denied)).reason().starts_with(
+            "ResourceInitializationError: unable to pull secrets or registry auth: execution resource retrieval failed: unable to retrieve ecr registry auth: service call has been retried 3 time(s): AccessDeniedException"
+        ));
+    }
+
+    #[test]
+    fn registry_credentials_hold_a_username_and_password() {
+        let a = registry_auth(r#"{"username":"u","password":"p"}"#).unwrap();
+        assert_eq!((a.username.as_str(), a.password.as_str()), ("u", "p"));
+        assert!(registry_auth("plain").is_none());
     }
 }

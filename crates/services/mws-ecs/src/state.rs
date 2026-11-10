@@ -97,6 +97,13 @@ pub struct TaskRecord {
     pub lb_targets: Vec<LbTarget>,
     /// Whether ECS has deregistered those targets.
     pub lb_deregistered: bool,
+    /// The targets' health as ECS last saw it (`healthy` once all are).
+    pub lb_health: Option<String>,
+    /// Whether all its targets were ever `healthy`.
+    pub lb_ever_healthy: bool,
+    /// Whether the task was stopped for failing ELB health checks before it
+    /// ever passed them (a failed launch, for the circuit breaker).
+    pub failed_elb_checks: bool,
 }
 
 /// One target group registration of a service task.

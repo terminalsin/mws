@@ -8,7 +8,7 @@ use super::instance::engine_of;
 use super::{authorize, db_arn};
 use crate::catalog::{self, Kind, ENGINES};
 use crate::generated::{errors, types as t};
-use crate::util::{account_of, invalid_parameter, name_of, opt, paginate, zones, Filters};
+use crate::util::{invalid_parameter, name_of, opt, paginate, zones, Filters};
 use crate::Rds;
 
 const REGIONS: &[&str] = &[
@@ -410,53 +410,6 @@ impl Rds {
             .collect();
         let (page, marker) = paginate(all, &input.marker, input.max_records)?;
         Ok(t::SourceRegionMessage { marker, source_regions: Some(page) })
-    }
-
-    pub(crate) fn describe_pending_maintenance_actions_op(
-        &self,
-        ctx: &RequestContext,
-        input: t::DescribePendingMaintenanceActionsMessage,
-    ) -> Result<t::PendingMaintenanceActionsMessage, ServiceError> {
-        authorize(ctx, "DescribePendingMaintenanceActions", "*", ConditionContext::new())?;
-        Filters::new(&input.filters, &["db-cluster-id", "db-instance-id"])?;
-        if let Some(r) = &input.resource_identifier {
-            self.resource_exists(ctx, r)?;
-        }
-        // MWS schedules no maintenance.
-        Ok(t::PendingMaintenanceActionsMessage { pending_maintenance_actions: Some(Vec::new()), marker: None })
-    }
-
-    pub(crate) fn apply_pending_maintenance_action_op(
-        &self,
-        ctx: &RequestContext,
-        input: t::ApplyPendingMaintenanceActionMessage,
-    ) -> Result<t::ApplyPendingMaintenanceActionResult, ServiceError> {
-        authorize(ctx, "ApplyPendingMaintenanceAction", &input.resource_identifier, ConditionContext::new())?;
-        self.resource_exists(ctx, &input.resource_identifier)?;
-        if !["immediate", "next-maintenance", "undo-opt-in"].contains(&input.opt_in_type.as_str()) {
-            return Err(invalid_parameter(format!("Invalid opt-in type: {}", input.opt_in_type)));
-        }
-        Err(invalid_parameter(format!(
-            "No pending maintenance action {} for resource {}.",
-            input.apply_action, input.resource_identifier
-        )))
-    }
-
-    fn resource_exists(&self, ctx: &RequestContext, arn: &str) -> Result<(), ServiceError> {
-        let Some((_, account, kind, name)) = crate::util::parse_arn(arn) else {
-            return Err(errors::resource_not_found_fault(format!("The resource {arn} could not be found.")));
-        };
-        let found = account == account_of(ctx)
-            && self.with_region(ctx, |r| match kind.as_str() {
-                "db" => r.instances.contains_key(&name),
-                "cluster" => r.clusters.contains_key(&name),
-                _ => false,
-            });
-        if found {
-            Ok(())
-        } else {
-            Err(errors::resource_not_found_fault(format!("The resource {arn} could not be found.")))
-        }
     }
 
     pub(crate) async fn describe_db_log_files_op(

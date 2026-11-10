@@ -75,6 +75,22 @@ pub trait ImageEvents: Send + Sync {
     fn image_state_changed(&self, ctx: &RequestContext, change: &ImageStateChange);
 }
 
+/// What a build instance acts as when it pushes container images or
+/// uploads its logs: its instance profile's role, as instance metadata
+/// hands it to the instance. MWS wires this to IAM and STS.
+pub trait InstanceRoles: Send + Sync {
+    /// `base` acting as the role of `instance_profile` (a name or ARN) in
+    /// `account`, assumed by EC2 for instance `instance_id`. An error says
+    /// why the instance has no credentials.
+    fn instance_context(
+        &self,
+        base: &RequestContext,
+        account: &str,
+        instance_profile: &str,
+        instance_id: &str,
+    ) -> Result<RequestContext, String>;
+}
+
 pub(crate) struct Inner {
     state: Mutex<State>,
     ec2: Option<mws_ec2::Ec2>,
@@ -84,6 +100,7 @@ pub(crate) struct Inner {
     logs: OnceLock<Arc<dyn Service>>,
     ecr: OnceLock<Arc<dyn Service>>,
     events: OnceLock<Arc<dyn ImageEvents>>,
+    instance_roles: OnceLock<Arc<dyn InstanceRoles>>,
     /// Emulated clock minus wall clock, in milliseconds.
     clock_offset_ms: AtomicI64,
     scheduler: AtomicBool,
@@ -124,6 +141,7 @@ impl ImageBuilder {
                 logs: OnceLock::new(),
                 ecr: OnceLock::new(),
                 events: OnceLock::new(),
+                instance_roles: OnceLock::new(),
                 clock_offset_ms: AtomicI64::new(0),
                 scheduler: AtomicBool::new(false),
                 template: Mutex::new(None),
@@ -160,6 +178,16 @@ impl ImageBuilder {
     /// Where image state change events go.
     pub fn set_events(&self, events: Arc<dyn ImageEvents>) {
         let _ = self.inner.events.set(events);
+    }
+
+    /// Build instances act as their instance profile's role through this.
+    /// Without it they act as Image Builder's service-linked role.
+    pub fn set_instance_roles(&self, roles: Arc<dyn InstanceRoles>) {
+        let _ = self.inner.instance_roles.set(roles);
+    }
+
+    pub(crate) fn instance_roles(&self) -> Option<&Arc<dyn InstanceRoles>> {
+        self.inner.instance_roles.get()
     }
 
     pub(crate) fn ec2(&self) -> Option<&mws_ec2::Ec2> {

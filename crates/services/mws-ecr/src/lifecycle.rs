@@ -239,32 +239,16 @@ pub(crate) fn settle(st: &mut State, partition: &str, now: i64) -> Vec<EcrEvent>
     let mut events = Vec::new();
     for reg in st.registries.values_mut() {
         let snapshot = reg.clone();
-        for repo in reg.repositories.values_mut() {
+        for (key, repo) in reg.repositories.iter_mut() {
+            let snap_repo = &snapshot.repositories[key];
             for (d, meta) in repo.meta.iter_mut() {
                 if meta.status == "ACTIVATING" && meta.activates_at.is_some_and(|t| t <= now) {
                     meta.status = "ACTIVE".into();
                     meta.activates_at = None;
                     meta.last_activated_at = Some(now);
                 }
-                if let Some(scan) = meta.scan.as_mut().filter(|s| s.status == "IN_PROGRESS") {
-                    scan.status = "COMPLETE".into();
-                    scan.completed_at = Some(now);
-                    let tags = repo.content.tags_of(d);
-                    events.push(EcrEvent {
-                        partition: partition.to_string(),
-                        account: snapshot.account.clone(),
-                        region: snapshot.region.clone(),
-                        detail_type: "ECR Image Scan".into(),
-                        resources: vec![repo.arn.clone()],
-                        detail: serde_json::json!({
-                            "scan-status": "COMPLETE",
-                            "repository-name": repo.name,
-                            "finding-severity-counts": {},
-                            "image-digest": d,
-                            "image-tags": tags,
-                        }),
-                        time: dt(now),
-                    });
+                if let Some(scan) = meta.scan.as_mut() {
+                    events.extend(crate::scans::settle(partition, &snapshot, snap_repo, d, scan, now));
                 }
             }
             let Some(text) = repo.lifecycle.clone() else { continue };

@@ -11,6 +11,7 @@ bytes.workspace = true
 async-trait.workspace = true
 chrono.workspace = true
 mws-core.workspace = true
+mws-kms.workspace = true
 mws-proto-json.workspace = true
 mws-proto-query.workspace = true
 rand.workspace = true

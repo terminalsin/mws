@@ -19,10 +19,12 @@ pub(crate) enum Target<'a> {
     Capability(&'a str),
 }
 
-/// Record an update that is `InProgress` and return it.
+/// Record an update that is `InProgress` until `done_at` (emulated
+/// clock) and return it.
 pub(crate) fn push(
     rec: &mut ClusterRec,
     now: DateTime<Utc>,
+    done_at: DateTime<Utc>,
     kind: &str,
     params: Vec<types::UpdateParam>,
     target: Option<Target<'_>>,
@@ -36,7 +38,7 @@ pub(crate) fn push(
         errors: Some(Vec::new()),
         cancellation: None,
     };
-    let mut r = UpdateRec { update: update.clone(), ..Default::default() };
+    let mut r = UpdateRec { update: update.clone(), done_at: Some(done_at), ..Default::default() };
     match target.unwrap_or_default() {
         Target::Cluster => {}
         Target::Nodegroup(n) => r.nodegroup = Some(n.into()),
@@ -47,10 +49,10 @@ pub(crate) fn push(
     update
 }
 
-/// Finish every update in progress.
-pub(crate) fn settle(rec: &mut ClusterRec) {
+/// Finish the updates whose time is up at `now`.
+pub(crate) fn settle(rec: &mut ClusterRec, now: DateTime<Utc>) {
     for u in &mut rec.updates {
-        if u.update.status.as_deref() == Some("InProgress") {
+        if u.update.status.as_deref() == Some("InProgress") && u.done_at.is_none_or(|at| now >= at) {
             u.update.status = Some("Successful".into());
         }
     }

@@ -4,6 +4,7 @@
 use mws_core::{ConditionContext, RequestContext, ServiceError};
 
 use crate::generated::{errors, types};
+use crate::state::durations;
 use crate::updates::Target;
 use crate::util::{self, param, text};
 use crate::Eks;
@@ -153,6 +154,7 @@ impl Eks {
             ))
             .with_field("clusterName", text(&cluster)));
         }
+        rec.begin(format!("capability/{name}"), now, durations::CAPABILITY);
         rec.capabilities.insert(name, capability.clone());
         Ok(types::CreateCapabilityResponse { capability: Some(capability) })
     }
@@ -283,8 +285,15 @@ impl Eks {
         }
         c.status = Some("UPDATING".into());
         c.modified_at = Some(ctx.received_at);
-        let update =
-            crate::updates::push(rec, ctx.received_at, "CapabilityUpdate", params, Some(Target::Capability(&name)));
+        let done_at = rec.begin(format!("capability/{name}"), ctx.received_at, durations::CAPABILITY);
+        let update = crate::updates::push(
+            rec,
+            ctx.received_at,
+            done_at,
+            "CapabilityUpdate",
+            params,
+            Some(Target::Capability(&name)),
+        );
         Ok(types::UpdateCapabilityResponse { update: Some(update) })
     }
 
@@ -306,6 +315,8 @@ impl Eks {
         )?;
         c.status = Some("DELETING".into());
         c.modified_at = Some(ctx.received_at);
-        Ok(types::DeleteCapabilityResponse { capability: Some(c.clone()) })
+        let response = c.clone();
+        rec.begin(format!("capability/{}", input.capability_name), ctx.received_at, durations::CAPABILITY);
+        Ok(types::DeleteCapabilityResponse { capability: Some(response) })
     }
 }

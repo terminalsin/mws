@@ -111,10 +111,14 @@ pub struct ImageMeta {
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 #[serde(default)]
 pub struct Scan {
-    /// `IN_PROGRESS`, `COMPLETE`, `UNSUPPORTED_IMAGE`, ...
+    /// `IN_PROGRESS`, `COMPLETE`, `UNSUPPORTED_IMAGE`, `PENDING`, `ACTIVE`, ...
     pub status: String,
     pub started_at: i64,
     pub completed_at: Option<i64>,
+    /// An Amazon Inspector (enhanced) scan rather than a basic one.
+    pub enhanced: bool,
+    /// For enhanced scans: `SCAN_ON_PUSH` or `CONTINUOUS_SCAN`.
+    pub frequency: String,
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]

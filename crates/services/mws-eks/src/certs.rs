@@ -8,7 +8,7 @@ use mws_core::{ConditionContext, RequestContext, ServiceError};
 use rcgen::{CertificateParams, DistinguishedName, DnType, IsCa, KeyPair, KeyUsagePurpose, RsaKeySize};
 
 use crate::generated::{errors, types};
-use crate::state::{CaRec, ClusterRec};
+use crate::state::{durations, CaRec, ClusterRec};
 use crate::util::{self, param, text};
 use crate::Eks;
 
@@ -134,9 +134,11 @@ impl Eks {
         let id = ca.ca.id.clone().unwrap_or_default();
         let s = summary(&ca.ca);
         rec.certificate_authorities.push(ca);
+        let done_at = rec.begin("certs", ctx.received_at, durations::CERTIFICATE_AUTHORITY);
         let update = crate::updates::push(
             rec,
             ctx.received_at,
+            done_at,
             "CertificateAuthorityUpdate",
             vec![param("CertificateAuthorityId", id)],
             None,
@@ -181,9 +183,11 @@ impl Eks {
         ca.activated_at = Some(now);
         ca.activated_by = Some("CUSTOMER".into());
         let s = summary(ca);
+        let done_at = rec.begin("certs", now, durations::CERTIFICATE_AUTHORITY);
         let update = crate::updates::push(
             rec,
             now,
+            done_at,
             "CertificateAuthorityUpdate",
             vec![param("ActiveCertificateAuthority", input.certificate_authority_id.clone())],
             None,
@@ -216,9 +220,11 @@ impl Eks {
         }
         rec.certificate_authorities[i].ca.distribution_status = Some("DELETING".into());
         let s = summary(&rec.certificate_authorities[i].ca);
+        let done_at = rec.begin("certs", ctx.received_at, durations::CERTIFICATE_AUTHORITY);
         let update = crate::updates::push(
             rec,
             ctx.received_at,
+            done_at,
             "CertificateAuthorityUpdate",
             vec![param("CertificateAuthorityId", input.certificate_authority_id.clone())],
             None,

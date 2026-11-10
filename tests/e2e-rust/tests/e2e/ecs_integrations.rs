@@ -85,6 +85,31 @@ async fn service_tasks_join_target_groups() {
         .await
         .unwrap();
     let tg_arn = tg.target_groups()[0].target_group_arn().unwrap().to_string();
+    // ECS only takes target groups that a load balancer forwards to.
+    let zones = c
+        .ec2
+        .describe_subnets()
+        .filters(aws_sdk_ec2::types::Filter::builder().name("default-for-az").values("true").build())
+        .send()
+        .await
+        .unwrap();
+    let lb_subnets: Vec<String> =
+        zones.subnets().iter().take(2).filter_map(|s| s.subnet_id().map(String::from)).collect();
+    let lb = c.elb.create_load_balancer().name("web").set_subnets(Some(lb_subnets)).send().await.unwrap();
+    c.elb
+        .create_listener()
+        .load_balancer_arn(lb.load_balancers()[0].load_balancer_arn().unwrap())
+        .protocol(ProtocolEnum::Http)
+        .port(80)
+        .default_actions(
+            aws_sdk_elasticloadbalancingv2::types::Action::builder()
+                .r#type(aws_sdk_elasticloadbalancingv2::types::ActionTypeEnum::Forward)
+                .target_group_arn(&tg_arn)
+                .build(),
+        )
+        .send()
+        .await
+        .unwrap();
 
     c.ecs.create_cluster().send().await.unwrap();
     c.ecs
