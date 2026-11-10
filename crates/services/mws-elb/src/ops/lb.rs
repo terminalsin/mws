@@ -19,6 +19,12 @@ pub(crate) fn find_lb<'a>(r: &'a RegionState, arn: &str) -> Result<&'a LoadBalan
 }
 
 /// Subnets resolved through EC2: `(subnet id, AZ, VPC)` per mapping.
+/// How long a new load balancer is `provisioning` (AWS: a few minutes).
+/// Advancing the emulated clock finishes it, as does `MWS_ASYNC_DELAY_MS=0`.
+fn provisioning_time() -> chrono::Duration {
+    chrono::Duration::milliseconds(mws_core::settle::window_ms(2_000))
+}
+
 struct Placement {
     vpc_id: String,
     zones: Vec<t::AvailabilityZone>,
@@ -331,13 +337,14 @@ impl Elb {
                 LoadBalancerRecord {
                     lb: lb.clone(),
                     attributes: catalog::load_balancer_attributes(&ty, &scheme, &ip_type),
+                    active_at: Some(ctx.received_at + provisioning_time()),
                     ..Default::default()
                 },
             );
             if !tags.is_empty() {
                 r.tags.insert(arn.clone(), tags.clone());
             }
-            // A new load balancer is provisioning until its first describe.
+            // A new load balancer is provisioning for a while.
             let mut out = lb;
             out.state = Some(t::LoadBalancerState { code: Some("provisioning".into()), reason: None });
             Ok(out)
@@ -381,13 +388,13 @@ impl Elb {
         }
         let all: Vec<t::LoadBalancer> = self.with_region(ctx, |r| {
             if !arns.is_empty() {
-                arns.iter().map(|a| find_lb(r, a).map(|l| l.lb.clone())).collect::<Result<Vec<_>, _>>()
+                arns.iter().map(|a| find_lb(r, a).map(|l| l.shown(ctx.received_at))).collect::<Result<Vec<_>, _>>()
             } else if !wanted_names.is_empty() {
                 let mut out = Vec::new();
                 let mut missing = Vec::new();
                 for n in &wanted_names {
                     match r.load_balancers.values().find(|l| l.name() == n) {
-                        Some(l) => out.push(l.lb.clone()),
+                        Some(l) => out.push(l.shown(ctx.received_at)),
                         None => missing.push(format!("'{n}'")),
                     }
                 }
@@ -399,7 +406,7 @@ impl Elb {
                 }
                 Ok(out)
             } else {
-                let mut v: Vec<_> = r.load_balancers.values().map(|l| l.lb.clone()).collect();
+                let mut v: Vec<_> = r.load_balancers.values().map(|l| l.shown(ctx.received_at)).collect();
                 v.sort_by_key(|l| l.created_time);
                 Ok(v)
             }

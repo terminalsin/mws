@@ -50,9 +50,21 @@ pub struct LoadBalancerRecord {
     /// The requester-managed network interface in each enabled subnet, by
     /// subnet id.
     pub network_interfaces: BTreeMap<String, String>,
+    /// When a new load balancer finishes provisioning (emulated clock); it
+    /// shows `provisioning` until then.
+    pub active_at: Option<DateTime<Utc>>,
 }
 
 impl LoadBalancerRecord {
+    /// The load balancer as DescribeLoadBalancers shows it at `now`.
+    pub fn shown(&self, now: DateTime<Utc>) -> t::LoadBalancer {
+        let mut lb = self.lb.clone();
+        if self.active_at.is_some_and(|at| now < at) {
+            lb.state = Some(t::LoadBalancerState { code: Some("provisioning".into()), reason: None });
+        }
+        lb
+    }
+
     pub fn arn(&self) -> &str {
         self.lb.load_balancer_arn.as_deref().unwrap_or_default()
     }
