@@ -63,7 +63,7 @@ Each provider has an API (`openai` for any OpenAI-compatible chat completions se
 
 `claude-code` and `codex` run the CLI installed where MWS runs (`command`, default `claude` / `codex`, plus extra `args`), once per request, in an empty scratch directory with the CLI's own tools off, using the CLI's existing login. The conversation goes in on stdin as a transcript; Bedrock tools become an instruction to answer with a `{"tool_use": {...}}` JSON object, which comes back as a real tool call. Claude Code gets the system prompt as `--system-prompt` and the Claude model a Bedrock `anthropic.*` id names, unless `model`/`modelMap` say otherwise; Codex uses its configured model unless one is set. Token counts are the CLI's own.
 
-The console's Add provider sheet starts from presets (Claude Code, Codex, Ollama, LM Studio, vLLM, Anthropic, OpenAI, OpenRouter, Gemini, Mistral, Groq, DeepSeek, xAI, Together, Fireworks, Cerebras, Perplexity) that fill in the API, URL, models and upstream model; local tools MWS found are marked.
+The console's Add provider sheet starts from presets (Claude Code, Codex, Ollama, LM Studio, vLLM, Anthropic, OpenAI, OpenRouter, Gemini, Mistral, Groq, DeepSeek, xAI, Fireworks, Cerebras, Perplexity) that fill in the API, URL, models and upstream model; local tools MWS found are marked.
 
 Providers come from environment variables (see [configuration](../configuration.md#bedrock)) and from stored settings, which override them field by field and persist with MWS state (`MWS_DB`). The console edits them on Bedrock → Settings. The unsigned endpoint:
 

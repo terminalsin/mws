@@ -1742,8 +1742,20 @@
   }
   .preset-grid {
     display: grid;
-    grid-template-columns: repeat(auto-fill, minmax(84px, 1fr));
+    grid-template-columns: repeat(6, minmax(0, 1fr));
     gap: 4px;
+  }
+  @media (max-width: 560px) {
+    .preset-grid {
+      grid-template-columns: repeat(4, minmax(0, 1fr));
+    }
+  }
+  /* The gallery sits right under the sheet's title. */
+  .sheet:has(.presets) .sheet-head {
+    margin-bottom: 0;
+  }
+  .action-form:has(> .presets) > .form-actions {
+    justify-content: flex-end;
   }
   .preset {
     position: relative;
