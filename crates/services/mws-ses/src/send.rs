@@ -766,7 +766,7 @@ fn caller_name(ctx: &RequestContext) -> String {
         mws_core::CallerKind::AssumedRole { role_name, .. } => role_name.clone(),
         mws_core::CallerKind::FederatedUser { name, .. } => name.clone(),
         mws_core::CallerKind::Root => "root".into(),
-        mws_core::CallerKind::Anonymous => String::new(),
+        mws_core::CallerKind::Anonymous | mws_core::CallerKind::Service { .. } => String::new(),
     }
 }
 

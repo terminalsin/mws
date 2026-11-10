@@ -1,90 +1,89 @@
 //! Adapters that let one service deliver to another where AWS couples
 //! them, kept here so the service crates stay independent.
 
-use std::collections::BTreeMap;
-
-use mws_core::RequestContext;
+use mws_core::{RequestContext, ServiceClient};
 use mws_events::{Events, ServiceEvent, TargetError, TargetInvocation, TargetSink};
 use mws_s3::{EventBridgeSink, ObjectEvent};
-use mws_sns::{ServicePublish, ServicePublishError, Sns};
-use mws_sqs::{ServiceMessage, ServiceMessageAttribute, ServiceSendError, Sqs};
 
-/// EventBridge targets and dead-letter queues that are SQS queues.
-pub struct SqsTarget(pub Sqs);
+use crate::links::{send_message, OutgoingMessage};
+
+/// EventBridge targets and dead-letter queues that are SQS queues:
+/// EventBridge calls SQS's own `SendMessage` as `events.amazonaws.com`.
+pub struct SqsTarget(pub ServiceClient);
 
 #[async_trait::async_trait]
 impl TargetSink for SqsTarget {
     async fn deliver(&self, inv: TargetInvocation<'_>) -> Result<(), TargetError> {
         let fifo = inv.target_arn.ends_with(".fifo");
-        let message_attributes: BTreeMap<String, ServiceMessageAttribute> = inv
-            .message_attributes
-            .iter()
-            .map(|(k, v)| {
-                let attr = ServiceMessageAttribute {
-                    data_type: "String".into(),
-                    string_value: Some(v.clone()),
-                    binary_value: None,
-                };
-                (k.clone(), attr)
-            })
-            .collect();
-        let message = ServiceMessage {
-            queue_arn: inv.target_arn,
-            service_principal: inv.service_principal,
-            source_arn: inv.source_arn,
-            source_account: inv.source_account,
+        let message = OutgoingMessage {
             body: inv.payload.to_string(),
-            message_attributes,
-            message_group_id: inv.message_group_id.map(str::to_string),
-            message_deduplication_id: fifo.then(|| uuid::Uuid::new_v4().to_string()),
-            now: inv.ctx.received_at,
+            attributes: inv
+                .message_attributes
+                .iter()
+                .map(|(k, v)| (k.clone(), ("String".to_string(), Some(v.clone()), None)))
+                .collect(),
+            group_id: inv.message_group_id.map(str::to_string),
+            dedup_id: fifo.then(|| uuid::Uuid::new_v4().to_string()),
         };
-        match self.0.send_message_as_service(message) {
+        let mut ctx = inv.ctx.as_service(inv.service_principal, inv.source_account, Some(inv.source_arn));
+        ctx.received_at = inv.ctx.received_at;
+        match send_message(&self.0, ctx, inv.target_arn, message).await {
             Ok(_) => Ok(()),
-            Err(ServiceSendError::NoSuchQueue) => Err(TargetError::permanent(
-                "ResourceNotFoundException",
-                format!("The queue {} does not exist.", inv.target_arn),
-            )),
-            Err(ServiceSendError::AccessDenied { reason }) => {
-                Err(TargetError::permanent("AccessDeniedException", reason))
+            Err(e) if e.code.contains("QueueDoesNotExist") || e.code.contains("NonExistentQueue") => {
+                Err(TargetError::permanent(
+                    "ResourceNotFoundException",
+                    format!("The queue {} does not exist.", inv.target_arn),
+                ))
             }
-            Err(ServiceSendError::Rejected(m)) => Err(TargetError::permanent("SQSException", m)),
+            Err(e) if e.code == "AccessDenied" || e.status == 403 => {
+                Err(TargetError::permanent("AccessDeniedException", e.message.to_string()))
+            }
+            Err(e) => Err(TargetError::permanent("SQSException", e.message.to_string())),
         }
     }
 }
 
-/// EventBridge targets that are SNS topics.
-pub struct SnsTarget(pub Sns);
+/// EventBridge targets that are SNS topics: EventBridge calls SNS's own
+/// `Publish` as `events.amazonaws.com`, which the topic policy must allow.
+pub struct SnsTarget(pub ServiceClient);
 
 #[async_trait::async_trait]
 impl TargetSink for SnsTarget {
     async fn deliver(&self, inv: TargetInvocation<'_>) -> Result<(), TargetError> {
         let fifo = inv.target_arn.ends_with(".fifo");
-        let publish = ServicePublish {
-            topic_arn: inv.target_arn,
-            service_principal: inv.service_principal,
-            source_arn: inv.source_arn,
-            source_account: inv.source_account,
-            message: inv.payload.to_string(),
-            subject: None,
-            attributes: inv.message_attributes.iter().map(|(k, v)| (k.clone(), ("String".into(), v.clone()))).collect(),
-            message_group_id: inv.message_group_id.map(str::to_string),
-            message_deduplication_id: fifo.then(|| uuid::Uuid::new_v4().to_string()),
-        };
-        match self.0.publish_as_service(inv.ctx, &publish) {
+        let mut ctx = inv.ctx.as_service(inv.service_principal, inv.source_account, Some(inv.source_arn));
+        if let Some(region) = inv.target_arn.split(':').nth(3) {
+            ctx.region = region.to_string();
+        }
+        let mut input = serde_json::json!({ "TopicArn": inv.target_arn, "Message": inv.payload.to_string() });
+        if !inv.message_attributes.is_empty() {
+            let attributes: serde_json::Map<String, serde_json::Value> = inv
+                .message_attributes
+                .iter()
+                .map(|(k, v)| (k.clone(), serde_json::json!({ "DataType": "String", "StringValue": v })))
+                .collect();
+            input["MessageAttributes"] = attributes.into();
+        }
+        if let Some(g) = inv.message_group_id {
+            input["MessageGroupId"] = g.into();
+        }
+        if fifo {
+            input["MessageDeduplicationId"] = uuid::Uuid::new_v4().to_string().into();
+        }
+        match self.0.call(&ctx, "sns", "Publish", input).await {
             Ok(_) => Ok(()),
-            Err(ServicePublishError::NoSuchTopic) => Err(TargetError::permanent(
+            Err(e) if e.code == "NotFound" => Err(TargetError::permanent(
                 "ResourceNotFoundException",
                 format!("The topic {} does not exist.", inv.target_arn),
             )),
-            Err(ServicePublishError::AccessDenied) => Err(TargetError::permanent(
+            Err(e) if e.status == 403 => Err(TargetError::permanent(
                 "AccessDeniedException",
                 format!(
                     "events.amazonaws.com is not authorized to perform: SNS:Publish on resource: {}",
                     inv.target_arn
                 ),
             )),
-            Err(ServicePublishError::Rejected(m)) => Err(TargetError::permanent("SNSException", m)),
+            Err(e) => Err(TargetError::permanent("SNSException", e.message.to_string())),
         }
     }
 }

@@ -275,18 +275,23 @@ impl Sns {
                     let env = self.envelope(ctx, origin, sub, msg, &body).to_string();
                     self.queue_message(origin, &sub.endpoint, env, msg, false)
                 };
-                match self.send_to_queue(message) {
-                    Ok(id) => {
-                        let response = json!({"sqsRequestId": "Unrecorded", "sqsMessageId": id}).to_string();
-                        self.log_delivery(ctx, msg, self.attempt(origin, sub, true, 200, response, 1));
+                // SNS calls SQS's SendMessage once the publish is done.
+                let (sns, ctx, origin, sub, msg) =
+                    (self.clone(), ctx.clone(), origin.clone(), sub.clone(), msg.clone());
+                mws_core::deferred::defer(async move {
+                    match sns.send_to_queue(&ctx, message).await {
+                        Ok(id) => {
+                            let response = json!({"sqsRequestId": "Unrecorded", "sqsMessageId": id}).to_string();
+                            sns.log_delivery(&ctx, &msg, sns.attempt(&origin, &sub, true, 200, response, 1));
+                        }
+                        Err(e) => {
+                            let response = json!({"ErrorCode": "AccessDenied", "ErrorMessage": e}).to_string();
+                            sns.log_delivery(&ctx, &msg, sns.attempt(&origin, &sub, false, 403, response, 1));
+                            tracing::warn!(subscription = %sub.arn, "SNS could not deliver to {}: {e}", sub.endpoint);
+                            sns.redrive(&ctx, &origin, &sub, &msg);
+                        }
                     }
-                    Err(e) => {
-                        let response = json!({"ErrorCode": "AccessDenied", "ErrorMessage": e}).to_string();
-                        self.log_delivery(ctx, msg, self.attempt(origin, sub, false, 403, response, 1));
-                        tracing::warn!(subscription = %sub.arn, "SNS could not deliver to {}: {e}", sub.endpoint);
-                        self.redrive(ctx, origin, sub, msg);
-                    }
-                }
+                });
             }
             "http" | "https" => {
                 let raw = Self::raw(sub);
@@ -465,11 +470,22 @@ impl Sns {
             .map_err(|e| (e.status, format!("{}: {}", e.code, e.message)))
     }
 
-    fn send_to_queue(&self, m: QueueMessage) -> Result<String, String> {
+    async fn send_to_queue(&self, ctx: &RequestContext, m: QueueMessage) -> Result<String, String> {
         match self.inner.queues.get() {
-            Some(q) => q.send(m),
+            Some(q) => q.send(ctx, m).await,
             None => Err("the queue service is not wired in".to_string()),
         }
+    }
+
+    /// Send `m` once the current request is done, logging a failure.
+    fn send_to_queue_later(&self, ctx: &RequestContext, m: QueueMessage, what: &'static str, subscription: &str) {
+        let (sns, ctx, subscription) = (self.clone(), ctx.clone(), subscription.to_string());
+        mws_core::deferred::defer(async move {
+            let queue = m.queue_arn.clone();
+            if let Err(e) = sns.send_to_queue(&ctx, m).await {
+                tracing::warn!(subscription, "SNS could not send {what} to {queue}: {e}");
+            }
+        });
     }
 
     /// Send a message that could not be delivered to the subscription's
@@ -489,9 +505,7 @@ impl Sns {
             let env = self.envelope(ctx, origin, sub, msg, &body).to_string();
             self.queue_message(origin, &dlq, env, msg, false)
         };
-        if let Err(e) = self.send_to_queue(m) {
-            tracing::warn!(subscription = %sub.arn, "SNS could not move a message to {dlq}: {e}");
-        }
+        self.send_to_queue_later(ctx, m, "a failed message", &sub.arn);
     }
 
     fn post_with_retries(
@@ -634,9 +648,7 @@ impl Sns {
                     message_deduplication_id: origin.fifo.then(|| sub.arn.clone()),
                     now: ctx.received_at,
                 };
-                if let Err(e) = self.send_to_queue(m) {
-                    tracing::warn!(subscription = %sub.arn, "SNS could not send the confirmation: {e}");
-                }
+                self.send_to_queue_later(ctx, m, "the confirmation", &sub.arn);
             }
             _ => {}
         }

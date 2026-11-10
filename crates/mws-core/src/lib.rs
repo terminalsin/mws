@@ -6,6 +6,8 @@
 //! [`Authorizer`]) or who a caller is (a [`CredentialStore`]).
 
 mod auth;
+pub mod client;
+pub mod deferred;
 mod error;
 pub mod eventstream;
 pub mod ids;
@@ -20,6 +22,7 @@ pub use auth::{
     AllowAll, Authorizer, AuthzDecision, AuthzRequest, Caller, CallerKind, ConditionContext, CredentialError,
     CredentialStore, ResolvedCredential, ResourcePolicyMode, SessionInfo, SessionKind,
 };
+pub use client::ServiceClient;
 pub use error::{ErrorFault, ErrorField, ErrorValue, ServiceError};
 pub use observe::{ApiCall, RecordingAuthorizer, RequestObserver};
 pub use service::{AlternateSignature, HttpRequest, HttpResponse, RequestContext, Service, StreamingBody};

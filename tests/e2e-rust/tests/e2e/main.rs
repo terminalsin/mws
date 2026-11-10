@@ -107,6 +107,7 @@ mod sns_encryption;
 mod sns_parity;
 mod sns_status_logs;
 mod sqs;
+mod sqs_service_principals;
 mod ssm;
 mod ssm_automation;
 mod ssm_run_command;

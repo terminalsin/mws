@@ -1,48 +1,94 @@
 //! Glue between services whose crates cannot depend on each other (the
 //! dependency would run in a cycle), wired where AWS couples them.
 
-use mws_core::RequestContext;
+use mws_core::{RequestContext, ServiceClient};
 use mws_s3::{NotificationDestination, NotificationSource};
 use mws_sns::{QueueDelivery, QueueMessage};
-use mws_sqs::{ServiceMessage, ServiceMessageAttribute, ServiceSendError, Sqs};
+use mws_sqs::{ServiceSendError, Sqs};
 
-/// SNS delivering to `sqs` subscriptions and dead-letter queues.
-pub(crate) struct SnsToSqs(pub Sqs);
+/// SNS delivering to `sqs` subscriptions and dead-letter queues: SNS calls
+/// SQS's own `SendMessage` as `sns.amazonaws.com`, which the queue policy
+/// (and the queue's KMS key policy) must allow for the topic.
+pub(crate) struct SnsToSqs(pub ServiceClient);
 
+#[async_trait::async_trait]
 impl QueueDelivery for SnsToSqs {
-    fn send(&self, m: QueueMessage) -> Result<String, String> {
-        let attributes = m
-            .message_attributes
-            .into_iter()
-            .map(|(k, v)| {
-                (
-                    k,
-                    ServiceMessageAttribute {
-                        data_type: v.data_type,
-                        string_value: v.string_value,
-                        binary_value: v.binary_value,
-                    },
-                )
-            })
-            .collect();
-        self.0
-            .send_message_as_service(ServiceMessage {
-                queue_arn: &m.queue_arn,
-                service_principal: &m.service_principal,
-                source_arn: &m.source_arn,
-                source_account: &m.source_account,
-                body: m.body,
-                message_attributes: attributes,
-                message_group_id: m.message_group_id,
-                message_deduplication_id: m.message_deduplication_id,
-                now: m.now,
-            })
-            .map_err(|e| e.to_string())
+    async fn send(&self, ctx: &RequestContext, m: QueueMessage) -> Result<String, String> {
+        let mut ctx = ctx.as_service(&m.service_principal, &m.source_account, Some(&m.source_arn));
+        ctx.received_at = m.now;
+        let attributes =
+            m.message_attributes.into_iter().map(|(k, v)| (k, (v.data_type, v.string_value, v.binary_value)));
+        let message = OutgoingMessage {
+            body: m.body,
+            attributes: attributes.collect(),
+            group_id: m.message_group_id,
+            dedup_id: m.message_deduplication_id,
+        };
+        send_message(&self.0, ctx, &m.queue_arn, message).await.map_err(|e| e.message.to_string())
     }
 }
 
-/// S3 event notifications sent to queues as `s3.amazonaws.com`.
-pub(crate) struct S3ToSqs(pub Sqs);
+/// A message attribute: `(data type, string value, binary value)`.
+pub(crate) type Attribute = (String, Option<String>, Option<Vec<u8>>);
+
+/// A message one service sends to a queue.
+pub(crate) struct OutgoingMessage {
+    pub body: String,
+    pub attributes: std::collections::BTreeMap<String, Attribute>,
+    pub group_id: Option<String>,
+    pub dedup_id: Option<String>,
+}
+
+/// Call SQS's `SendMessage` on `queue_arn` as `ctx`'s caller (normally a
+/// service principal). Returns the message id.
+pub(crate) async fn send_message(
+    client: &ServiceClient,
+    mut ctx: RequestContext,
+    queue_arn: &str,
+    m: OutgoingMessage,
+) -> Result<String, mws_core::ServiceError> {
+    use base64::Engine;
+    if let Some(region) = queue_arn.split(':').nth(3) {
+        ctx.region = region.to_string();
+    }
+    let queue_url = Sqs::queue_url_for(&ctx, queue_arn).ok_or_else(|| {
+        mws_core::ServiceError::client("QueueDoesNotExist", 400, "The specified queue does not exist.")
+    })?;
+    let mut input = serde_json::json!({ "QueueUrl": queue_url, "MessageBody": m.body });
+    if !m.attributes.is_empty() {
+        let attributes: serde_json::Map<String, serde_json::Value> = m
+            .attributes
+            .into_iter()
+            .map(|(k, (data_type, string, binary))| {
+                let mut a = serde_json::json!({ "DataType": data_type });
+                if let Some(s) = string {
+                    a["StringValue"] = s.into();
+                }
+                if let Some(b) = binary {
+                    a["BinaryValue"] = base64::engine::general_purpose::STANDARD.encode(b).into();
+                }
+                (k, a)
+            })
+            .collect();
+        input["MessageAttributes"] = attributes.into();
+    }
+    if let Some(g) = m.group_id {
+        input["MessageGroupId"] = g.into();
+    }
+    if let Some(d) = m.dedup_id {
+        input["MessageDeduplicationId"] = d.into();
+    }
+    let out = client.call(&ctx, "sqs", "SendMessage", input).await?;
+    Ok(out.get("MessageId").and_then(serde_json::Value::as_str).unwrap_or_default().to_string())
+}
+
+/// S3 event notifications sent to queues as `s3.amazonaws.com`: S3 calls
+/// SQS's own `SendMessage`, which the queue policy (and the queue's KMS key
+/// policy) must allow for the bucket.
+pub(crate) struct S3ToSqs {
+    pub sqs: Sqs,
+    pub client: ServiceClient,
+}
 
 const S3_PRINCIPAL: &str = "s3.amazonaws.com";
 
@@ -55,7 +101,7 @@ impl NotificationDestination for S3ToSqs {
         if arn.ends_with(".fifo") {
             return Err("FIFO SQS queues are not supported as notification destinations".to_string());
         }
-        self.0.check_service_access(arn, S3_PRINCIPAL, source.bucket_arn, source.bucket_owner).map_err(|e| match e {
+        self.sqs.check_service_access(arn, S3_PRINCIPAL, source.bucket_arn, source.bucket_owner).map_err(|e| match e {
             ServiceSendError::NoSuchQueue => "The destination queue does not exist".to_string(),
             _ => "Permissions on the destination queue do not allow S3 to publish notifications from this bucket"
                 .to_string(),
@@ -63,20 +109,15 @@ impl NotificationDestination for S3ToSqs {
     }
 
     fn deliver(&self, ctx: &RequestContext, arn: &str, source: &NotificationSource<'_>, message: String) {
-        let sent = self.0.send_message_as_service(ServiceMessage {
-            queue_arn: arn,
-            service_principal: S3_PRINCIPAL,
-            source_arn: source.bucket_arn,
-            source_account: source.bucket_owner,
-            body: message,
-            message_attributes: Default::default(),
-            message_group_id: None,
-            message_deduplication_id: None,
-            now: ctx.received_at,
+        let ctx = ctx.as_service(S3_PRINCIPAL, source.bucket_owner, Some(source.bucket_arn));
+        let (client, queue) = (self.client.clone(), arn.to_string());
+        mws_core::deferred::defer(async move {
+            let message =
+                OutgoingMessage { body: message, attributes: Default::default(), group_id: None, dedup_id: None };
+            if let Err(e) = send_message(&client, ctx, &queue, message).await {
+                tracing::warn!(queue, "S3 could not send a notification: {}", e.message);
+            }
         });
-        if let Err(e) = sent {
-            tracing::warn!(queue = arn, "S3 could not send a notification: {e}");
-        }
     }
 }
 

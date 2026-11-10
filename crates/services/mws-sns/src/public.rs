@@ -36,10 +36,11 @@ pub struct QueueMessageAttribute {
 }
 
 /// Where `sqs` subscriptions go (implemented over the queue service).
+#[async_trait::async_trait]
 pub trait QueueDelivery: Send + Sync {
     /// Send a message as the service principal, judged by the queue policy.
-    /// Returns the message id.
-    fn send(&self, message: QueueMessage) -> Result<String, String>;
+    /// `ctx` is the request the delivery comes from. Returns the message id.
+    async fn send(&self, ctx: &mws_core::RequestContext, message: QueueMessage) -> Result<String, String>;
 }
 
 /// A service principal publishing to a topic.

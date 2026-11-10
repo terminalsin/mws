@@ -187,6 +187,10 @@ pub fn user_identity(caller: &Caller, partition: &str) -> Value {
             m.insert("type".into(), "Unknown".into());
             m.insert("principalId".into(), "".into());
         }
+        CallerKind::Service { principal, .. } => {
+            m.insert("type".into(), "AWSService".into());
+            m.insert("invokedBy".into(), principal.clone().into());
+        }
     }
     Value::Object(m)
 }
@@ -199,6 +203,7 @@ fn username(caller: &Caller) -> Option<String> {
         CallerKind::AssumedRole { session_name, .. } => Some(session_name.clone()),
         CallerKind::FederatedUser { name, .. } => Some(name.clone()),
         CallerKind::Anonymous => None,
+        CallerKind::Service { principal, .. } => Some(principal.clone()),
     }
 }
 
@@ -360,7 +365,13 @@ pub fn build(ctx: &RequestContext, call: &ApiCall, http: &HttpFacts) -> Option<R
     r.insert("eventSource".into(), source.into());
     r.insert("eventName".into(), call.operation.into());
     r.insert("awsRegion".into(), region.clone().into());
-    r.insert("sourceIPAddress".into(), ctx.source_ip.clone().unwrap_or_else(|| "AWS Internal".into()).into());
+    // Calls an AWS service makes as itself come from the service.
+    let source_ip = match (&ctx.source_ip, ctx.caller.service_principal()) {
+        (Some(ip), _) => ip.clone(),
+        (None, Some(principal)) => principal.to_string(),
+        (None, None) => "AWS Internal".to_string(),
+    };
+    r.insert("sourceIPAddress".into(), source_ip.into());
     r.insert("userAgent".into(), http.user_agent.clone().unwrap_or_default().into());
     if let Some((code, message)) = &call.error {
         r.insert("errorCode".into(), code.clone().into());

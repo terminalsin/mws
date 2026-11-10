@@ -143,17 +143,34 @@ tests/
 ## Cross-service behaviour
 
 Many AWS features span services: S3 event notifications land in SQS, alarms
-publish to SNS, Firehose writes to S3. Where one service crate can depend on
-another without a cycle, it calls the other's public API directly (for
-example `Kms::encrypt_via` from S3, or `Sts::assume_role_as_service` for
-service roles). Where a dependency would form a cycle, the producing service
-defines a small trait (such as `mws_s3::NotificationDestination` or
-`mws_lambda::DestinationSink`) and the `mws` binary implements it in
-[`crates/mws/src/links.rs`](../crates/mws/src/links.rs).
+publish to SNS, Firehose writes to S3. In AWS each of these is an API call
+that one service makes to another, as its service principal or with a role
+you configured. MWS is moving all of them to work the same way:
 
-Services acting on your behalf do so as AWS does: as their service principal,
-judged by the target's resource policy, or by assuming the role you
-configured.
+- `mws_core::ServiceClient` calls any service's operation by name
+  (`client.call(&ctx, "sqs", "SendMessage", json)`), through the target's
+  own generated `invoke`. The target validates and authorizes the call like
+  an SDK request, and CloudTrail records it as a call of its own. The caller
+  needs no crate dependency on the target.
+- `RequestContext::as_service(principal, source_account, source_arn)` makes
+  the caller an AWS service principal (`CallerKind::Service`). The IAM
+  authorizer then evaluates only the resource policy (and KMS key policy),
+  with `aws:PrincipalIsAWSService`, `aws:PrincipalServiceName`,
+  `aws:SourceArn`, `aws:SourceAccount` and `aws:SourceOrgID`, and no SCPs
+  or RCPs, as in AWS.
+- `mws_core::deferred::defer` queues a delivery to run once the handler has
+  returned (and dropped its locks), before the response goes out. The front
+  door and `ServiceClient` run deferred work; outside a request it is
+  spawned.
+
+S3, SNS and EventBridge deliveries to SQS, and EventBridge deliveries to
+SNS, go through `ServiceClient`. Older integrations still call another
+crate's typed public API (for example `Kms::encrypt_via` from S3, or
+`Sts::assume_role_as_service` for service roles), or a small trait the
+producing service defines (such as `mws_s3::NotificationDestination` or
+`mws_lambda::DestinationSink`) that the `mws` binary implements in
+[`crates/mws/src/links.rs`](../crates/mws/src/links.rs). New integrations
+should use `ServiceClient`.
 
 ## State
 

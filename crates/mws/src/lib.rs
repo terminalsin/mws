@@ -373,6 +373,9 @@ fn build_with_store(config: Config, store: Option<Arc<Store>>) -> Mws {
     let organizations = Organizations::new(iam.clone());
     iam.set_organizations(organizations.view());
     let ram = Ram::new(iam.clone(), organizations.clone());
+    // Services call each other's operations through this, as AWS services
+    // do; it learns every service once they all exist.
+    let client = mws_core::ServiceClient::new();
     let s3 = S3::new().with_kms(kms.clone());
     let logs = Logs::new().with_s3(s3.clone()).with_kms(kms.clone()).with_sts(sts.clone());
     let route53 = Route53::new().with_kms(kms.clone()).with_logs(logs.clone());
@@ -400,7 +403,7 @@ fn build_with_store(config: Config, store: Option<Arc<Store>>) -> Mws {
     let ssm = Ssm::new(kms.clone());
     let codeartifact = CodeArtifact::new(Some(kms.clone()));
     let events = Events::new().with_lambda(lambda.clone()).with_logs(logs.clone()).with_sts(sts.clone());
-    events.register_target_sink("sqs", Arc::new(sinks::SqsTarget(sqs.clone())));
+    events.register_target_sink("sqs", Arc::new(sinks::SqsTarget(client.clone())));
     events.set_health_checks(Arc::new(sinks::Route53HealthChecks(route53.clone())));
     let secretsmanager = SecretsManager::new(kms.clone()).with_lambda(lambda.clone());
     ssm.set_secrets_manager(Arc::new(SsmSecretReferences(secretsmanager.clone())));
@@ -412,9 +415,9 @@ fn build_with_store(config: Config, store: Option<Arc<Store>>) -> Mws {
         .with_s3(s3.clone());
     s3.add_notification_destination(Arc::new(sns.clone()));
     s3.add_notification_destination(Arc::new(lambda.clone()));
-    sns.set_queues(Arc::new(links::SnsToSqs(sqs.clone())));
-    s3.add_notification_destination(Arc::new(links::S3ToSqs(sqs.clone())));
-    events.register_target_sink("sns", Arc::new(sinks::SnsTarget(sns.clone())));
+    sns.set_queues(Arc::new(links::SnsToSqs(client.clone())));
+    s3.add_notification_destination(Arc::new(links::S3ToSqs { sqs: sqs.clone(), client: client.clone() }));
+    events.register_target_sink("sns", Arc::new(sinks::SnsTarget(client.clone())));
     let guardduty = GuardDuty::new();
     s3.set_eventbridge_sink(Arc::new(links::S3ObjectEvents {
         events: sinks::S3ToEvents(events.clone()),
@@ -682,6 +685,11 @@ fn build_with_store(config: Config, store: Option<Arc<Store>>) -> Mws {
         Arc::new(bedrock.clone()),
         Arc::new(cloudformation.clone()),
     ];
+    for s in &services {
+        client.register(s.clone());
+    }
+    // Calls services make to each other are recorded like any other.
+    client.observe_with(Arc::new(cloudtrail.clone()));
     // CloudFormation deploys resources through the other services' APIs.
     cloudformation.set_services(services.iter().cloned());
     // Automation runbooks call the other services' APIs too.

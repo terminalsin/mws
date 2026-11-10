@@ -197,7 +197,7 @@ impl Gateway {
                 .or_else(|| scenario.region.clone())
                 .unwrap_or_else(|| self.env.default_region.clone());
             let ctx = self.context(uuid::Uuid::new_v4().to_string(), region, caller, None, Utc::now());
-            let output = svc.invoke(ctx, &step.action, input).await.map_err(|e| {
+            let output = mws_core::deferred::run(svc.invoke(ctx, &step.action, input)).await.map_err(|e| {
                 fail(
                     format!("{}:{} failed: {}: {}", step.service, step.action, e.code, e.message),
                     Some(e.code.to_string()),
