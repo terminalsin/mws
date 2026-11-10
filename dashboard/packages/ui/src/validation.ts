@@ -51,6 +51,9 @@ export interface Rule {
   arn?: string;
   /** Values that already exist (a create form's name field). */
   taken?: string[];
+  /** `taken` ignores case (the service treats `Alice` and `alice` as the
+   * same name, as Identity Store does). */
+  takenIgnoreCase?: boolean;
   /** Values the field usually refers to (existing roles, keys, queues):
    * close ones are offered when a value is rejected as unknown. */
   known?: string[];
@@ -211,7 +214,7 @@ function problem(value: string, rule: Rule, options: Options): Omit<Issue, "repa
     if (rule.required && !options.partial) return { code: "required", message: "Required" };
     return null;
   }
-  if (rule.taken?.includes(value)) return { code: "taken", message: "Already exists" };
+  if (isTaken(value, rule)) return { code: "taken", message: "Already exists" };
   if (rule.enum && rule.enum.length > 0 && !rule.enum.includes(value)) {
     return { code: "enum", message: rule.enum.length <= 4 ? `One of ${rule.enum.join(", ")}` : "Not an allowed value" };
   }
@@ -428,6 +431,13 @@ function numeric(value: string, rule: Rule): Repair | null {
   return { value: String(n), label, kind: "fix" };
 }
 
+function isTaken(value: string, rule: Rule): boolean {
+  if (!rule.taken) return false;
+  if (!rule.takenIgnoreCase) return rule.taken.includes(value);
+  const v = value.toLowerCase();
+  return rule.taken.some((t) => t.toLowerCase() === v);
+}
+
 /** The next free variant of a taken name: queue → queue-2 → queue-3. */
 function nextFree(value: string, rule: Rule): Repair | null {
   const allowed = allowedChars(rule);
@@ -443,7 +453,7 @@ function nextFree(value: string, rule: Rule): Repair | null {
     const suffix = `${sep}${n}`;
     for (const end of ending || !required ? [ending] : ["", required]) {
       const v = fit(stem, rule.maxLength, suffix.length + end.length, sep) + suffix + end;
-      if (!rule.taken?.includes(v) && valid(v, rule)) return { value: v, label: `Use ${v}`, kind: "fix" };
+      if (!isTaken(v, rule) && valid(v, rule)) return { value: v, label: `Use ${v}`, kind: "fix" };
     }
   }
   return null;

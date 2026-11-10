@@ -1,7 +1,9 @@
 import { ListGroupsCommand, ListUsersCommand } from "@aws-sdk/client-identitystore";
 import { DescribePermissionSetCommand, ListInstancesCommand, ListManagedPoliciesInPermissionSetCommand, ListPermissionSetsCommand } from "@aws-sdk/client-sso-admin";
 import { load } from "@mws-dashboard/aws";
-import { ActionForm, AwsIcon, Empty, ErrorNotice, Field, List, Page, Pill, Sheet } from "@mws-dashboard/ui";
+import { ActionForm, AwsIcon, Empty, ErrorNotice, Field, List, Page, Pill, Sheet, type Rule } from "@mws-dashboard/ui";
+import { CreateGroup, CreateUser } from "@mws-dashboard/ui/model/identitystore";
+import { CreatePermissionSet } from "@mws-dashboard/ui/model/sso-admin";
 import { Timer, Trash2 } from "lucide-react";
 import type { Metadata } from "next";
 
@@ -11,6 +13,12 @@ import { createGroup, createPermissionSet, createUser, deleteGroup, deletePermis
 export const metadata: Metadata = { title: "IAM Identity Center" };
 
 type Props = { searchParams: Promise<{ tab?: string }> };
+
+// The identity store's patterns allow any visible character; spell out what
+// they reject. It compares user and group names ignoring case.
+const USERNAME: Rule = { ...CreateUser.UserName, hint: "No spaces", takenIgnoreCase: true };
+const PERMISSION_SET_NAME: Rule = { ...CreatePermissionSet.Name, hint: "Letters, digits and +=,.@-_", generate: "name" };
+const GROUP_NAME: Rule = { ...CreateGroup.DisplayName, generate: "name", takenIgnoreCase: true };
 
 const POLICIES = ["arn:aws:iam::aws:policy/AdministratorAccess", "arn:aws:iam::aws:policy/PowerUserAccess", "arn:aws:iam::aws:policy/ReadOnlyAccess", "arn:aws:iam::aws:policy/job-function/ViewOnlyAccess", "arn:aws:iam::aws:policy/job-function/Billing"];
 
@@ -35,13 +43,14 @@ export default async function IdentityCenter({ searchParams }: Props) {
   const arn = instance.value.InstanceArn!;
   if (tab === "groups") {
     const groups = await load(async () => (await (await identitystore()).send(new ListGroupsCommand({ IdentityStoreId: store }))).Groups ?? []);
+    const taken = groups.ok ? groups.value.map((g) => g.DisplayName!).filter(Boolean) : [];
     const create = (
       <Sheet title="Create group" label="Create group" testId="create-sso-group">
         <ActionForm action={createGroup.bind(null, store)} submit="Create group" testId="create-sso-group">
-          <Field label="Group name">
+          <Field label="Group name" rule={GROUP_NAME} member="DisplayName" taken={taken} unique>
             <input name="name" required autoFocus />
           </Field>
-          <Field label="Description">
+          <Field label="Description" rule={CreateGroup.Description} member="Description">
             <input name="description" />
           </Field>
         </ActionForm>
@@ -78,11 +87,15 @@ export default async function IdentityCenter({ searchParams }: Props) {
         })),
       );
     });
+    const taken = sets.ok ? sets.value.map(({ p }) => p.Name!).filter(Boolean) : [];
     const create = (
       <Sheet title="Create permission set" label="Create permission set" testId="create-permission-set">
         <ActionForm action={createPermissionSet.bind(null, arn)} submit="Create" testId="create-permission-set">
-          <Field label="Name">
-            <input name="name" required pattern="[\w+=,.@\-]+" autoFocus />
+          <Field label="Name" rule={PERMISSION_SET_NAME} member="Name" taken={taken} unique>
+            <input name="name" required autoFocus />
+          </Field>
+          <Field label="Description" rule={CreatePermissionSet.Description} member="Description">
+            <input name="description" />
           </Field>
           <Field label="AWS managed policy">
             <select name="policy" defaultValue={POLICIES[2]}>
@@ -126,21 +139,22 @@ export default async function IdentityCenter({ searchParams }: Props) {
     );
   }
   const users = await load(async () => (await (await identitystore()).send(new ListUsersCommand({ IdentityStoreId: store }))).Users ?? []);
+  const taken = users.ok ? users.value.map((u) => u.UserName!).filter(Boolean) : [];
   const create = (
     <Sheet title="Add user" label="Add user" testId="create-sso-user">
       <ActionForm action={createUser.bind(null, store)} submit="Add user" testId="create-sso-user">
-        <Field label="Username">
+        <Field label="Username" rule={USERNAME} member="UserName" taken={taken} unique>
           <input name="username" required autoFocus />
         </Field>
         <div className="form-row">
-          <Field label="First name">
+          <Field label="First name" rule={CreateUser.Name.fields?.GivenName} member="Name.GivenName">
             <input name="given" required />
           </Field>
-          <Field label="Last name">
+          <Field label="Last name" rule={CreateUser.Name.fields?.FamilyName} member="Name.FamilyName">
             <input name="family" required />
           </Field>
         </div>
-        <Field label="Email address">
+        <Field label="Email address" rule={CreateUser.Emails.item?.fields?.Value} member="Emails.Value" format="email">
           <input name="email" type="email" />
         </Field>
       </ActionForm>

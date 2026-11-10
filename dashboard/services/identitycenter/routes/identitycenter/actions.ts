@@ -22,7 +22,7 @@ export async function createUser(store: string, _: ActionResult | null, form: Fo
       new CreateUserCommand({ IdentityStoreId: store, UserName, DisplayName: `${given} ${family}`, Name: { GivenName: given, FamilyName: family }, Emails: text(form, "email") ? [{ Value: text(form, "email"), Primary: true, Type: "work" }] : undefined }),
     );
     return `Added ${UserName}`;
-  }, "/identitycenter");
+  }, { revalidate: ["/identitycenter"], fields: { UserName: "username", "Name.GivenName": "given", "Name.FamilyName": "family", "Emails.Value": "email" } });
 }
 
 export async function deleteUser(store: string, id: string) {
@@ -37,7 +37,7 @@ export async function createGroup(store: string, _: ActionResult | null, form: F
     const DisplayName = required(form, "name", "Group name");
     await (await identitystore()).send(new CreateGroupCommand({ IdentityStoreId: store, DisplayName, Description: text(form, "description") || undefined }));
     return `Created ${DisplayName}`;
-  }, "/identitycenter");
+  }, { revalidate: ["/identitycenter"], fields: { DisplayName: "name", Description: "description" } });
 }
 
 export async function deleteGroup(store: string, id: string) {
@@ -55,7 +55,7 @@ export async function createPermissionSet(instance: string, _: ActionResult | nu
     const policy = text(form, "policy");
     if (policy) await client.send(new AttachManagedPolicyToPermissionSetCommand({ InstanceArn: instance, PermissionSetArn: out.PermissionSet!.PermissionSetArn, ManagedPolicyArn: policy }));
     return `Created ${Name}`;
-  }, "/identitycenter");
+  }, { revalidate: ["/identitycenter"], fields: { Name: "name", Description: "description", SessionDuration: "hours", ManagedPolicyArn: "policy" } });
 }
 
 export async function deletePermissionSet(instance: string, arn: string) {
