@@ -116,7 +116,7 @@ test("state export downloads a JSON document", async ({ request }) => {
   expect(typeof (await response.json())).toBe("object");
 });
 
-test("feedback: a sheet's success becomes a toast, rows rise in, and / opens search", async ({ page }) => {
+test("feedback: a sheet's success becomes a toast, menus close with an exit, and / opens search", async ({ page }) => {
   const queue = unique("dash-toast");
   await page.goto("/messaging/sqs");
   await submit(page, "create-queue", { name: queue });
@@ -130,6 +130,13 @@ test("feedback: a sheet's success becomes a toast, rows rise in, and / opens sea
   await expect(page.getByRole("heading", { level: 1, name: queue })).toBeVisible();
   await expect(page.locator(".route-progress")).toHaveAttribute("data-state", "idle");
 
+  const services = page.getByRole("button", { name: "Services" });
+  await services.click();
+  await expect(page.getByRole("menu")).toBeVisible();
+  await page.keyboard.press("Escape");
+  await expect(page.locator(".services-panel")).toHaveAttribute("data-open", "false");
+  await expect(page.getByRole("menu")).toBeHidden();
+
   await page.locator("body").press("/");
   const palette = page.getByRole("dialog", { name: "Search resources" });
   await expect(palette).toBeVisible();
@@ -138,9 +145,33 @@ test("feedback: a sheet's success becomes a toast, rows rise in, and / opens sea
   await expect(palette).toBeHidden();
 });
 
+test("content appears without entry animations", async ({ page }) => {
+  await page.goto("/messaging/sqs");
+  await expect(page.getByRole("heading", { level: 1, name: "Queues" })).toBeVisible();
+  const names = await page.locator(".content > :not(.page-skeleton), li.row").evaluateAll((els) => els.map((e) => getComputedStyle(e).animationName));
+  expect(names.filter((n) => n !== "none")).toEqual([]);
+});
+
 test("motion respects reduced motion", async ({ page }) => {
   await page.emulateMedia({ reducedMotion: "reduce" });
   await page.goto("/messaging/sqs");
   const duration = await page.locator(".content > *").first().evaluate((e) => getComputedStyle(e).animationDuration);
   expect(duration).toBe("0.001s");
+});
+
+test("tabs: the indicator slides to the chosen tab and stays with it", async ({ page }) => {
+  await page.goto("/platform/codeartifact");
+  const tabs = page.getByRole("navigation").filter({ has: page.locator(".segment-indicator") });
+  await expect(tabs).toHaveAttribute("data-ready", "true");
+  const indicator = tabs.locator(".segment-indicator");
+  const before = await indicator.boundingBox();
+  await tabs.getByRole("link", { name: /Domains/ }).click();
+  await expect(page).toHaveURL(/tab=domains/);
+  await expect(tabs.getByRole("link", { name: /Domains/ })).toHaveAttribute("aria-current", "page");
+  await expect(async () => {
+    const after = await indicator.boundingBox();
+    const domains = await tabs.getByRole("link", { name: /Domains/ }).boundingBox();
+    expect(after!.x).not.toBe(before!.x);
+    expect(Math.abs(after!.x - domains!.x)).toBeLessThan(2);
+  }).toPass();
 });

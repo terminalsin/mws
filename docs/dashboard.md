@@ -126,11 +126,34 @@ components are classes composed with `@apply`. Each zone has a
   navigation runs a progress bar across the top, and toasts enter, wait
   (paused on hover) and leave. Every page has a `loading.tsx` that renders a
   `PageSkeleton` shaped like it (list, resource or home), so a click shows the
-  next page's outline at once. Motion uses Carbon's curves and durations:
-  pages and rows rise in, sheets and the palette rise and sink, charts draw,
-  transitional statuses ("creating", "pending") breathe, and moving between
-  zones cross-fades with the top bar and sidebar held still (cross-document
-  view transitions). `prefers-reduced-motion` turns all of it off.
+  next page's outline at once.
+- **Motion only with a purpose** (Apple's rule). Content never animates in:
+  pages, rows and charts appear as they are, and a skeleton is replaced in
+  place, so a load is one transition, not a skeleton followed by staggered
+  fades. Sheets, the search palette and the Services menu open at once and
+  animate as they close. Controls morph between states (the submit button's
+  spinner to a check, a deleting row fading back, a failed submit shaking).
+  Motion that carries information stays: the progress bar, skeleton shimmer,
+  a breathing dot on states still changing ("creating", "pending"), numbers
+  counting to a new value, a toast's remaining time. Moving between zones
+  keeps the top bar and sidebar still (cross-document view transitions).
+  `prefers-reduced-motion` turns all of it off.
+- **Recipes, not improvisation.** Timings and curves follow
+  [transitions.dev](https://transitions.dev): one smooth-out curve
+  (`cubic-bezier(0.22, 1, 0.36, 1)`) for surfaces, ease-in-out for swaps,
+  durations by role (`--duration-quick` 150ms for closing, `--duration-fast`
+  250ms for swaps and the tab indicator, `--duration-emphasis` 500ms for the
+  success check), closing quicker than opening. Pieces live in
+  `packages/ui/src/motion.tsx` (`Segments` with a sliding indicator that moves
+  on the click, `CountUp` whose changed digits swap in place, `CheckMark`,
+  `Asciify`) and `loaders.tsx` (`DotMatrix`, 4×4 dot loaders whose pattern
+  names the wait: `scan` for search, `orbit` for a running command, `pulse`
+  for an answer, `twinkle` for a listing). States reserve their space, so a
+  button keeps its width from label to spinner to check, and anything that can
+  reverse (dialogs, menus, disclosures) uses transitions, which turn around
+  from where they are. Image previews (S3 objects, instance files) carry an
+  ASCII lens under the pointer (`Asciify`, after canvasui.dev's), which runs
+  only while someone points at the image.
 
 ## Curation
 

@@ -13,19 +13,21 @@ import {
   SlidersHorizontal,
 } from "lucide-react";
 import Link from "next/link";
-import { Suspense, type CSSProperties, type ReactNode } from "react";
+import { Suspense, type ReactNode } from "react";
 
 import { navigation, iconUrl } from "./catalog";
-import { CommandPalette, CopyButton, CountUp, NavLink, RegionPicker, RouteProgress, ServicesMenu, SideNav, Toasts, type NavGroup } from "./client";
+import { CommandPalette, CopyButton, NavLink, RegionPicker, RouteProgress, ServicesMenu, SideNav, Toasts, type NavGroup } from "./client";
+import { CountUp } from "./motion";
 import { zoneHref, type ZoneId } from "./zones";
 
 export { AUTO } from "./zones";
+export { Asciify, CheckMark, CountUp, Segments } from "./motion";
+export { DotMatrix, type DotPattern } from "./loaders";
 export {
   ActionForm,
   AutoPick,
   CommandPalette,
   CopyButton,
-  CountUp,
   ErrorView,
   NavLink,
   RegionPicker,
@@ -236,7 +238,7 @@ export function List({ rows, label, empty }: { rows: Row[]; label?: string; empt
   if (rows.length === 0) return empty ? <>{empty}</> : null;
   return (
     <ul className="list" aria-label={label}>
-      {rows.map((r, index) => {
+      {rows.map((r) => {
         const body = (
           <>
             {r.icon && <span className="row-icon">{r.icon}</span>}
@@ -249,7 +251,7 @@ export function List({ rows, label, empty }: { rows: Row[]; label?: string; empt
           </>
         );
         return (
-          <li key={r.key} className="row" style={index < 16 ? ({ "--i": index } as CSSProperties) : undefined}>
+          <li key={r.key} className="row">
             {r.href ? (
               r.external ? (
                 <a className="row-main" href={r.href}>
@@ -449,20 +451,6 @@ export function Metrics({ children }: { children: ReactNode }) {
   return <div className="metrics">{children}</div>;
 }
 
-/** A segmented control of links (Apple-style tabs). */
-export function Segments({ items, label }: { items: { label: ReactNode; href: string; active: boolean; count?: number }[]; label?: string }) {
-  return (
-    <nav className="segments" aria-label={label}>
-      {items.map((t) => (
-        <Link key={t.href} href={t.href} className={t.active ? "segment active" : "segment"} aria-current={t.active ? "page" : undefined}>
-          {t.label}
-          {t.count !== undefined && <span className="count">{t.count}</span>}
-        </Link>
-      ))}
-    </nav>
-  );
-}
-
 export function Field({ label, hint, children }: { label: string; hint?: ReactNode; children: ReactNode }) {
   return (
     <label className="field">
@@ -568,7 +556,7 @@ export function PageSkeleton({ variant = "list" }: { variant?: "list" | "detail"
       </div>
       {variant === "detail" && (
         <>
-          <div className="specs">
+          <div className="skeleton-specs">
             {[110, 90, 130, 100].map((w, i) => (
               <span key={i} className="skeleton-spec">
                 <Skeleton block width={16} height={16} />
@@ -598,7 +586,7 @@ export function PageSkeleton({ variant = "list" }: { variant?: "list" | "detail"
       {variant === "home" && (
         <div className="tiles">
           {[0, 1, 2, 3, 4, 5, 6, 7].map((i) => (
-            <span key={i} className="tile skeleton-tile" style={{ "--i": i } as CSSProperties}>
+            <span key={i} className="tile skeleton-tile">
               <Skeleton block width={32} height={32} />
               <Skeleton width="60%" />
               <Skeleton width={40} height={28} />
@@ -609,7 +597,7 @@ export function PageSkeleton({ variant = "list" }: { variant?: "list" | "detail"
       {variant !== "detail" && (
         <ul className="list skeleton-list">
           {rows.slice(0, variant === "home" ? 4 : rows.length).map((w, i) => (
-            <li key={i} className="row" style={{ "--i": i } as CSSProperties}>
+            <li key={i} className="row">
               <span className="row-main">
                 <span className="row-icon">
                   <Skeleton block width={24} height={24} />

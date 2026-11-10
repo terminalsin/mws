@@ -1,6 +1,6 @@
 import { GetObjectCommand, GetObjectTaggingCommand, HeadObjectCommand, ListObjectVersionsCommand } from "@aws-sdk/client-s3";
 import { ago, bytes, load } from "@mws-dashboard/aws";
-import { ActionForm, CodeBlock, ErrorNotice, Facts, Field, FileIcon, List, Page, Pill, Section, Sheet, Tags } from "@mws-dashboard/ui";
+import { ActionForm, Asciify, CodeBlock, ErrorNotice, Facts, Field, FileIcon, List, Page, Pill, Section, Sheet, Tags } from "@mws-dashboard/ui";
 import { Download, Link2, Trash2 } from "lucide-react";
 import type { Metadata } from "next";
 import type { ReactNode } from "react";
@@ -72,7 +72,7 @@ export default async function S3Object({ params, searchParams }: Props) {
         <>
           {isImage(head.value.h.ContentType) && (
             <Section plain>
-              <img className="preview-image" src={`${download}&inline=1`} alt={name} />
+              <Asciify className="preview-image" src={`${download}&inline=1`} alt={name} />
             </Section>
           )}
           {preview !== null && (

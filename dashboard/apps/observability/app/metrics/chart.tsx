@@ -40,7 +40,7 @@ export function LineChart({ points, label, unit }: { points: { t: Date; v: numbe
         </>
       )}
       <path d={area} className="chart-area" />
-      <path d={line} className="chart-line" pathLength={1} />
+      <path d={line} className="chart-line" />
       {points.map((p, i) => (
         <g key={i} className="chart-point">
           <circle cx={x(p.t.getTime())} cy={y(p.v)} r={points.length < 40 ? 4 : 0} className="chart-dot" />
