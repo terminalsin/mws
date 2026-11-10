@@ -13,9 +13,9 @@
 //! (`AWS.SimpleQueueService.NonExistentQueue`) in `x-amzn-query-error`, as
 //! SDKs expect.
 //!
-//! Other services (SNS, S3 event notifications) deliver messages through
-//! [`Sqs::send_message_as_service`], judged by the queue policy alone, as
-//! AWS service principals are.
+//! Other services (SNS, S3 event notifications, EventBridge) deliver
+//! messages through `SendMessage` as AWS service principals, judged by the
+//! queue policy alone, as in AWS.
 
 #[allow(clippy::all, dead_code, unused_imports, non_snake_case, non_camel_case_types)]
 pub mod generated {
@@ -46,7 +46,7 @@ use mws_kms::Kms;
 
 pub use md5::{md5_of_attributes, md5_of_body};
 pub use metrics::{MetricPublisher, QueueMetric};
-pub use public::{ServiceMessage, ServiceMessageAttribute, ServiceSendError};
+pub use public::ServiceSendError;
 use state::State;
 
 /// The SQS service. Cheap to clone; clones share state.

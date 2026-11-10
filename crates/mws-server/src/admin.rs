@@ -110,6 +110,19 @@ impl Gateway {
                     return error(400, "the emulated clock cannot run behind the wall clock");
                 }
                 self.set_clock_offset(offset);
+                // The delivery queue retries on the emulated clock: show it
+                // the new time (a `GET` it answers with its list).
+                if let Some(svc) = self.named.get("deliveries").cloned() {
+                    let ctx = self.context(
+                        uuid::Uuid::new_v4().to_string(),
+                        self.env.default_region.clone(),
+                        mws_core::Caller::anonymous(),
+                        None,
+                        chrono::Utc::now(),
+                    );
+                    let peek = http::Request::get("/_mws/deliveries").body(Bytes::new()).expect("valid request");
+                    let _ = svc.handle(ctx, peek).await;
+                }
                 self.clock_doc()
             }
             (&Method::GET, ["state"]) => {

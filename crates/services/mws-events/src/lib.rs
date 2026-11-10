@@ -59,7 +59,6 @@ use state::State;
 
 pub(crate) struct Inner {
     state: Mutex<State>,
-    lambda: OnceLock<mws_lambda::Lambda>,
     logs: OnceLock<mws_logs::Logs>,
     sts: OnceLock<mws_sts::Sts>,
     sinks: RwLock<BTreeMap<String, Arc<dyn TargetSink>>>,
@@ -73,6 +72,9 @@ pub(crate) struct Inner {
     scheduler: AtomicBool,
     /// Where the `AWS/Events` metrics go.
     pub(crate) metrics: mws_core::metrics::MetricOutlet,
+    /// Retries target deliveries on the emulated clock (the shared queue
+    /// once wired in, else a private one).
+    jobs: OnceLock<mws_core::ServiceClient>,
 }
 
 /// The EventBridge service. Cheap to clone; clones share state.
@@ -92,7 +94,6 @@ impl Events {
         Self {
             inner: Arc::new(Inner {
                 state: Mutex::new(State::default()),
-                lambda: OnceLock::new(),
                 logs: OnceLock::new(),
                 sts: OnceLock::new(),
                 sinks: RwLock::new(BTreeMap::new()),
@@ -102,20 +103,30 @@ impl Events {
                 clock_offset_ms: AtomicI64::new(0),
                 scheduler: AtomicBool::new(false),
                 metrics: Default::default(),
+                jobs: OnceLock::new(),
             }),
         }
-    }
-
-    /// Lambda functions as targets.
-    pub fn with_lambda(self, lambda: mws_lambda::Lambda) -> Self {
-        let _ = self.inner.lambda.set(lambda);
-        self
     }
 
     /// CloudWatch Logs log groups as targets.
     pub fn with_logs(self, logs: mws_logs::Logs) -> Self {
         let _ = self.inner.logs.set(logs);
         self
+    }
+
+    /// Retry target deliveries through the shared delivery queue, so they
+    /// follow the emulated clock and are kept in snapshots.
+    pub fn set_service_client(&self, client: mws_core::ServiceClient) {
+        client.register_retrier(deliver::RETRIER, Arc::new(self.clone()));
+        let _ = self.inner.jobs.set(client);
+    }
+
+    pub(crate) fn jobs(&self) -> &mws_core::ServiceClient {
+        self.inner.jobs.get_or_init(|| {
+            let client = mws_core::ServiceClient::new();
+            client.register_retrier(deliver::RETRIER, Arc::new(self.clone()));
+            client
+        })
     }
 
     /// STS, for targets that EventBridge reaches through a role.

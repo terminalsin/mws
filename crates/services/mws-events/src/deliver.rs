@@ -2,7 +2,6 @@
 //! dead-letter queue.
 
 use std::collections::BTreeMap;
-use std::time::Duration;
 
 use mws_core::{ConditionContext, RequestContext};
 use mws_iam_policy::{Policy, PolicyKind, PrincipalInfo, Request};
@@ -82,6 +81,37 @@ pub trait TargetSink: Send + Sync {
     async fn deliver(&self, invocation: TargetInvocation<'_>) -> Result<(), TargetError>;
 }
 
+/// The name EventBridge's deliveries are queued under.
+pub(crate) const RETRIER: &str = "events";
+
+/// A delivery as the retry queue keeps it (the context comes from the
+/// queue).
+#[derive(serde::Serialize, serde::Deserialize)]
+struct Job {
+    bus: BusRef,
+    rule_arn: String,
+    rule_name: String,
+    target: types::Target,
+    event: Value,
+    ingested: chrono::DateTime<chrono::Utc>,
+    hops: u8,
+}
+
+impl Job {
+    fn delivery(self, ctx: &RequestContext) -> Delivery {
+        Delivery {
+            ctx: ctx.clone(),
+            bus: self.bus,
+            rule_arn: self.rule_arn,
+            rule_name: self.rule_name,
+            target: self.target,
+            event: self.event,
+            ingested: self.ingested,
+            hops: self.hops,
+        }
+    }
+}
+
 #[derive(Clone)]
 pub(crate) struct Delivery {
     pub ctx: RequestContext,
@@ -97,6 +127,65 @@ pub(crate) struct Delivery {
 
 const MAX_HOPS: u8 = 2;
 
+/// Each attempt at a target, retried by the delivery queue with the
+/// target's `RetryPolicy`; given-up events go to its dead-letter queue.
+#[async_trait::async_trait]
+impl mws_core::outbox::Retrier for Events {
+    async fn attempt(
+        &self,
+        ctx: &RequestContext,
+        job: &mut Value,
+        attempt: u32,
+    ) -> Result<(), mws_core::outbox::JobError> {
+        let d = match serde_json::from_value::<Job>(job.clone()) {
+            Ok(j) => j.delivery(ctx),
+            Err(e) => return Err(mws_core::outbox::JobError::permanent("InternalException", e.to_string())),
+        };
+        let result = self.deliver_once(&d).await;
+        self.publish_rule_metric(&d, "InvocationAttempts", 1.0);
+        if attempt > 1 {
+            self.publish_rule_metric(&d, "RetryInvocationAttempts", 1.0);
+        }
+        match result {
+            Ok(()) => {
+                self.publish_rule_metric(&d, "SuccessfulInvocationAttempts", 1.0);
+                self.publish_rule_metric(&d, "Invocations", 1.0);
+                let latency = (self.now() - d.ingested).num_milliseconds().max(0) as f64;
+                self.publish_rule_metric(&d, "IngestionToInvocationSuccessLatency", latency);
+                Ok(())
+            }
+            Err(e) if e.retryable => Err(mws_core::outbox::JobError::retryable(e.code, e.message)),
+            Err(e) => Err(mws_core::outbox::JobError::permanent(e.code, e.message)),
+        }
+    }
+
+    async fn give_up(
+        &self,
+        ctx: &RequestContext,
+        job: Value,
+        error: mws_core::outbox::JobError,
+        why: mws_core::outbox::GiveUp,
+        attempts: u32,
+    ) {
+        let Ok(job) = serde_json::from_value::<Job>(job) else { return };
+        let d = job.delivery(ctx);
+        let condition = match why {
+            mws_core::outbox::GiveUp::NotRetryable => "RetriesExhausted",
+            mws_core::outbox::GiveUp::MaxAttempts => "MaximumRetryAttemptsExceeded",
+            mws_core::outbox::GiveUp::MaxAge => "MaximumEventAgeExceeded",
+        };
+        let error = TargetError { code: error.code, message: error.message, retryable: error.retryable };
+        tracing::info!(
+            rule = %d.rule_arn, target = %d.target.arn, code = %error.code,
+            "EventBridge could not deliver an event: {}", error.message
+        );
+        self.publish_rule_metric(&d, "Invocations", 1.0);
+        self.publish_rule_metric(&d, "FailedInvocations", 1.0);
+        // The dead-letter message counts retries, not the first attempt.
+        self.dead_letter(&d, &error, condition, attempts.saturating_sub(1)).await;
+    }
+}
+
 impl Events {
     #[allow(clippy::too_many_arguments)]
     pub(crate) fn spawn_delivery(
@@ -109,8 +198,17 @@ impl Events {
         ingested: chrono::DateTime<chrono::Utc>,
         hops: u8,
     ) {
-        let d = Delivery {
-            ctx: ctx.clone(),
+        if tokio::runtime::Handle::try_current().is_err() {
+            return;
+        }
+        let retry = target.retry_policy.clone().unwrap_or_default();
+        let policy = mws_core::outbox::RetryPolicy {
+            max_attempts: retry.maximum_retry_attempts.unwrap_or(185).max(0) as u32 + 1,
+            base_delay_secs: 1,
+            max_delay_secs: 30,
+            max_age_secs: retry.maximum_event_age_in_seconds.unwrap_or(86_400).max(0) as i64,
+        };
+        let job = Job {
             bus: bus.clone(),
             rule_arn: rule.arn.clone(),
             rule_name: rule.name.clone(),
@@ -119,54 +217,9 @@ impl Events {
             ingested,
             hops,
         };
-        if tokio::runtime::Handle::try_current().is_err() {
-            return;
-        }
-        let me = self.clone();
-        tokio::spawn(async move { me.deliver_with_retries(d).await });
-    }
-
-    async fn deliver_with_retries(&self, d: Delivery) {
-        let retry = d.target.retry_policy.clone().unwrap_or_default();
-        let max_retries = retry.maximum_retry_attempts.unwrap_or(185).max(0) as u32;
-        let max_age = Duration::from_secs(retry.maximum_event_age_in_seconds.unwrap_or(86_400).max(0) as u64);
-        let started = std::time::Instant::now();
-        let mut attempt = 0u32;
-        let (error, condition) = loop {
-            let result = self.deliver_once(&d).await;
-            self.publish_rule_metric(&d, "InvocationAttempts", 1.0);
-            if attempt > 0 {
-                self.publish_rule_metric(&d, "RetryInvocationAttempts", 1.0);
-            }
-            match result {
-                Ok(()) => {
-                    self.publish_rule_metric(&d, "SuccessfulInvocationAttempts", 1.0);
-                    self.publish_rule_metric(&d, "Invocations", 1.0);
-                    let latency = (self.now() - d.ingested).num_milliseconds().max(0) as f64;
-                    self.publish_rule_metric(&d, "IngestionToInvocationSuccessLatency", latency);
-                    return;
-                }
-                Err(e) if !e.retryable => break (e, "RetriesExhausted"),
-                Err(e) => {
-                    if attempt >= max_retries {
-                        break (e, "MaximumRetryAttemptsExceeded");
-                    }
-                    let delay = Duration::from_millis(500u64 << attempt.min(6)).min(Duration::from_secs(30));
-                    if started.elapsed() + delay > max_age {
-                        break (e, "MaximumEventAgeExceeded");
-                    }
-                    attempt += 1;
-                    tokio::time::sleep(delay).await;
-                }
-            }
-        };
-        tracing::info!(
-            rule = %d.rule_arn, target = %d.target.arn, code = %error.code,
-            "EventBridge could not deliver an event: {}", error.message
-        );
-        self.publish_rule_metric(&d, "Invocations", 1.0);
-        self.publish_rule_metric(&d, "FailedInvocations", 1.0);
-        self.dead_letter(&d, &error, condition, attempt).await;
+        let Ok(job) = serde_json::to_value(job) else { return };
+        let (me, ctx) = (self.clone(), ctx.clone());
+        tokio::spawn(async move { me.jobs().run_job(&ctx, RETRIER, job, policy).await });
     }
 
     /// One `AWS/Events` data point for a rule's delivery, by rule name and
@@ -289,9 +342,6 @@ impl Events {
             return Err(TargetError::permanent("InvalidTarget", "The target ARN is not valid."));
         };
         match service {
-            // A registered sink calls Lambda's own Invoke; otherwise Lambda's
-            // typed API is used directly.
-            "lambda" if self.sink("lambda").is_none() => self.deliver_lambda(&ctx, d, payload),
             "logs" => self.deliver_logs(&ctx, d, &payload),
             "events" if resource.starts_with("event-bus/") => self.deliver_bus(&ctx, d),
             "events" if resource.starts_with("api-destination/") => {
@@ -336,38 +386,6 @@ impl Events {
                 )),
             },
         }
-    }
-
-    fn deliver_lambda(&self, ctx: &RequestContext, d: &Delivery, payload: String) -> Result<(), TargetError> {
-        let Some(lambda) = self.inner.lambda.get() else {
-            return Err(TargetError::permanent("ResourceNotFoundException", "Lambda is not available."));
-        };
-        // EventBridge invokes asynchronously: once Lambda accepts the
-        // event, the function's own outcome is not a delivery failure.
-        lambda
-            .invoke_event_as_service(
-                ctx,
-                mws_lambda::ServiceInvocation {
-                    function: &d.target.arn,
-                    service_principal: SERVICE_PRINCIPAL,
-                    source_account: Some(&d.bus.account),
-                    source_arn: Some(&d.rule_arn),
-                    payload: payload.into_bytes(),
-                },
-            )
-            .map_err(|e| match e {
-                mws_lambda::ServiceInvokeError::NotFound => {
-                    TargetError::permanent("ResourceNotFoundException", format!("Function not found: {}", d.target.arn))
-                }
-                mws_lambda::ServiceInvokeError::AccessDenied => TargetError::permanent(
-                    "AccessDeniedException",
-                    format!("EventBridge is not authorized to invoke {}", d.target.arn),
-                ),
-                mws_lambda::ServiceInvokeError::Failed(m) => {
-                    TargetError::permanent("InvalidParameterValueException", m)
-                }
-            })?;
-        Ok(())
     }
 
     fn deliver_logs(&self, ctx: &RequestContext, d: &Delivery, payload: &str) -> Result<(), TargetError> {

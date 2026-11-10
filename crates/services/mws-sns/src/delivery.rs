@@ -39,7 +39,7 @@ fn enc(s: &str) -> String {
 }
 
 /// Facts about the topic a delivery comes from.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 struct Origin {
     topic_arn: String,
     account: String,
@@ -289,7 +289,7 @@ impl Sns {
             "lambda" if self.inner.client.get().is_some() => {
                 // SNS calls Lambda's Invoke (Event) once the publish is done.
                 let event = self.lambda_event(ctx, origin, sub, msg);
-                let client = self.inner.client.get().cloned().expect("checked above");
+                let Some(client) = self.inner.client.get().cloned() else { return };
                 let mut sctx = ctx.as_service(SERVICE_PRINCIPAL, &origin.account, Some(&origin.topic_arn));
                 if let Some(region) = sub.endpoint.split(':').nth(3) {
                     sctx.region = region.to_string();
@@ -323,38 +323,7 @@ impl Sns {
                 });
             }
             "lambda" => {
-                let Some(lambda) = self.inner.lambda.get() else {
-                    tracing::warn!(subscription = %sub.arn, "Lambda is not wired in; dropping the message");
-                    return;
-                };
-                let event = self.lambda_event(ctx, origin, sub, msg);
-                let inv = mws_lambda::ServiceInvocation {
-                    function: &sub.endpoint,
-                    service_principal: SERVICE_PRINCIPAL,
-                    source_account: Some(&origin.account),
-                    source_arn: Some(&origin.topic_arn),
-                    payload: event.to_string().into_bytes(),
-                };
-                let outcome = lambda.invoke_event_as_service(ctx, inv);
-                let (success, status_code, response) = match &outcome {
-                    Ok(()) => (true, 202, json!({"lambdaRequestId": uuid::Uuid::new_v4().to_string()})),
-                    Err(mws_lambda::ServiceInvokeError::NotFound) => (
-                        false,
-                        404,
-                        json!({"ErrorCode": "ResourceNotFoundException", "ErrorMessage": "Function not found"}),
-                    ),
-                    Err(mws_lambda::ServiceInvokeError::AccessDenied) => {
-                        (false, 403, json!({"ErrorCode": "AccessDeniedException", "ErrorMessage": "Access denied"}))
-                    }
-                    Err(mws_lambda::ServiceInvokeError::Failed(m)) => {
-                        (false, 500, json!({"ErrorCode": "ServiceException", "ErrorMessage": m}))
-                    }
-                };
-                self.log_delivery(ctx, msg, self.attempt(origin, sub, success, status_code, response.to_string(), 1));
-                if let Err(e) = outcome {
-                    tracing::warn!(subscription = %sub.arn, "SNS could not invoke {}: {e}", sub.endpoint);
-                    self.redrive(ctx, origin, sub, msg);
-                }
+                tracing::warn!(subscription = %sub.arn, "Lambda is not wired in; dropping the message");
             }
             "sqs" => {
                 let message = if Self::raw(sub) {
@@ -606,40 +575,29 @@ impl Sns {
         payload: String,
     ) {
         let policy = self.http_policy(&sub);
+        let retry = mws_core::outbox::RetryPolicy {
+            max_attempts: 1 + policy.retries,
+            base_delay_secs: policy.delay.as_secs() as i64,
+            max_delay_secs: policy.delay.as_secs() as i64,
+            // SNS keeps retrying an HTTP endpoint for up to an hour.
+            max_age_secs: 3600,
+        };
+        let job = HttpJob {
+            origin,
+            subscription: sub,
+            message: msg,
+            headers,
+            payload,
+            content_type: policy.content_type,
+            delay_secs: policy.delay.as_secs(),
+            last_status: 0,
+        };
+        let Ok(job) = serde_json::to_value(job) else { return };
+        if tokio::runtime::Handle::try_current().is_err() {
+            return;
+        }
         let sns = self.clone();
-        tokio::spawn(async move {
-            let attempts = 1 + policy.retries;
-            let mut last = (0u16, String::new());
-            let mut made = 0;
-            for attempt in 0..attempts {
-                if attempt > 0 {
-                    tokio::time::sleep(policy.delay).await;
-                }
-                made += 1;
-                match crate::webhook::post(&sub.endpoint, &headers, &policy.content_type, payload.as_bytes()).await {
-                    Ok(status) if (200..300).contains(&status) => {
-                        let a = sns.attempt(&origin, &sub, true, status, "Accepted".into(), made);
-                        sns.log_delivery(&ctx, &msg, a);
-                        return;
-                    }
-                    Ok(status) if (400..500).contains(&status) && !matches!(status, 404 | 408 | 429) => {
-                        last = (status, format!("Response status code {status}"));
-                        break;
-                    }
-                    Ok(status) => {
-                        last = (status, format!("Response status code {status}"));
-                        tracing::debug!(endpoint = %sub.endpoint, "HTTP delivery answered {status}")
-                    }
-                    Err(e) => {
-                        last = (0, e.to_string());
-                        tracing::debug!(endpoint = %sub.endpoint, "HTTP delivery failed: {e}")
-                    }
-                }
-            }
-            let a = sns.attempt(&origin, &sub, false, last.0, last.1, made);
-            sns.log_delivery(&ctx, &msg, a);
-            sns.redrive(&ctx, &origin, &sub, &msg);
-        });
+        tokio::spawn(async move { sns.jobs().run_job(&ctx, HTTP_RETRIER, job, retry).await });
     }
 
     fn http_policy(&self, sub: &Subscription) -> HttpPolicy {
@@ -779,6 +737,81 @@ impl Sns {
         tokio::spawn(async move {
             let _ = crate::webhook::post(&endpoint, &headers, "text/plain; charset=UTF-8", doc.as_bytes()).await;
         });
+    }
+}
+
+/// The name SNS's HTTP deliveries are queued under.
+pub(crate) const HTTP_RETRIER: &str = "sns";
+
+/// An HTTP/S delivery as the retry queue keeps it.
+#[derive(serde::Serialize, serde::Deserialize)]
+struct HttpJob {
+    origin: Origin,
+    subscription: Subscription,
+    message: Outgoing,
+    headers: Vec<(String, String)>,
+    payload: String,
+    content_type: String,
+    delay_secs: u64,
+    /// The status code of the last answer (0 when there was none).
+    last_status: u16,
+}
+
+/// Each HTTP/S delivery attempt, retried by the delivery queue under the
+/// subscription's (or topic's) delivery policy; given-up messages go to the
+/// subscription's dead-letter queue.
+#[async_trait::async_trait]
+impl mws_core::outbox::Retrier for Sns {
+    async fn attempt(
+        &self,
+        ctx: &RequestContext,
+        job: &mut Value,
+        attempt: u32,
+    ) -> Result<(), mws_core::outbox::JobError> {
+        use mws_core::outbox::JobError;
+        let mut j: HttpJob =
+            serde_json::from_value(job.clone()).map_err(|e| JobError::permanent("InternalError", e.to_string()))?;
+        let sub = &j.subscription;
+        let result = match crate::webhook::post(&sub.endpoint, &j.headers, &j.content_type, j.payload.as_bytes()).await
+        {
+            Ok(status) if (200..300).contains(&status) => {
+                let a = self.attempt(&j.origin, sub, true, status, "Accepted".into(), attempt);
+                self.log_delivery(ctx, &j.message, a);
+                return Ok(());
+            }
+            Ok(status) if (400..500).contains(&status) && !matches!(status, 404 | 408 | 429) => {
+                j.last_status = status;
+                Err(JobError::permanent(status.to_string(), format!("Response status code {status}")))
+            }
+            Ok(status) => {
+                tracing::debug!(endpoint = %sub.endpoint, "HTTP delivery answered {status}");
+                j.last_status = status;
+                Err(JobError::retryable(status.to_string(), format!("Response status code {status}")))
+            }
+            Err(e) => {
+                tracing::debug!(endpoint = %sub.endpoint, "HTTP delivery failed: {e}");
+                j.last_status = 0;
+                Err(JobError::retryable("0", e.to_string()))
+            }
+        };
+        if let Ok(v) = serde_json::to_value(&j) {
+            *job = v;
+        }
+        result.map_err(|e| e.after(j.delay_secs as i64))
+    }
+
+    async fn give_up(
+        &self,
+        ctx: &RequestContext,
+        job: Value,
+        error: mws_core::outbox::JobError,
+        _why: mws_core::outbox::GiveUp,
+        attempts: u32,
+    ) {
+        let Ok(j) = serde_json::from_value::<HttpJob>(job) else { return };
+        let a = self.attempt(&j.origin, &j.subscription, false, j.last_status, error.message, attempts);
+        self.log_delivery(ctx, &j.message, a);
+        self.redrive(ctx, &j.origin, &j.subscription, &j.message);
     }
 }
 

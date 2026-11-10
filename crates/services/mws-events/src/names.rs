@@ -18,7 +18,7 @@ pub fn not_found(message: impl Into<String>) -> ServiceError {
 }
 
 /// An event bus addressed by name or ARN.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct BusRef {
     pub partition: String,
     pub account: String,

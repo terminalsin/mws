@@ -549,89 +549,99 @@ impl CloudWatch {
             let ctx = RequestContext { region: t.region.clone(), ..ctx.clone() };
             self.state_change_event(&ctx, &t);
             for action in &t.actions {
+                let service = action.split(':').nth(2).unwrap_or_default();
+                if matches!(service, "sns" | "lambda") {
+                    // CloudWatch calls SNS's Publish or Lambda's Invoke
+                    // once the current request is done.
+                    let (cw, ctx, t, action) = (self.clone(), ctx.clone(), t.clone(), action.clone());
+                    mws_core::deferred::defer(async move {
+                        let result = cw.call_action(&ctx, &t, &action).await;
+                        cw.record_action(&ctx, &t, &action, result);
+                    });
+                    continue;
+                }
                 let result = self.run_action(&ctx, &t, action);
-                let (state, summary) = match &result {
-                    Ok(()) => ("Succeeded", format!("Successfully executed action {action}")),
-                    Err(e) => ("Failed", format!("Failed to execute action {action}. Received error: \"{e}\"")),
-                };
-                let mut st = self.lock();
-                push_history(
-                    st.region(&t.account, &t.region),
-                    types::AlarmHistoryItem {
-                        alarm_name: Some(t.alarm.name().to_string()),
-                        alarm_type: Some(t.alarm.alarm_type.clone()),
-                        timestamp: Some(ctx.received_at),
-                        history_item_type: Some("Action".into()),
-                        history_summary: Some(summary.chars().take(255).collect()),
-                        history_data: Some(
-                            json!({
-                                "actionState": state,
-                                "stateUpdateTimestamp": t.alarm.state_updated.timestamp_millis(),
-                                "notificationResource": action,
-                                "error": result.err(),
-                            })
-                            .to_string(),
-                        ),
-                        ..Default::default()
-                    },
-                );
+                self.record_action(&ctx, &t, action, result);
             }
         }
+    }
+
+    /// The alarm history item for one action.
+    fn record_action(&self, ctx: &RequestContext, t: &Transition, action: &str, result: Result<(), String>) {
+        let (state, summary) = match &result {
+            Ok(()) => ("Succeeded", format!("Successfully executed action {action}")),
+            Err(e) => ("Failed", format!("Failed to execute action {action}. Received error: \"{e}\"")),
+        };
+        let mut st = self.lock();
+        push_history(
+            st.region(&t.account, &t.region),
+            types::AlarmHistoryItem {
+                alarm_name: Some(t.alarm.name().to_string()),
+                alarm_type: Some(t.alarm.alarm_type.clone()),
+                timestamp: Some(ctx.received_at),
+                history_item_type: Some("Action".into()),
+                history_summary: Some(summary.chars().take(255).collect()),
+                history_data: Some(
+                    json!({
+                        "actionState": state,
+                        "stateUpdateTimestamp": t.alarm.state_updated.timestamp_millis(),
+                        "notificationResource": action,
+                        "error": result.err(),
+                    })
+                    .to_string(),
+                ),
+                ..Default::default()
+            },
+        );
+    }
+
+    /// Run an SNS or Lambda action through the target's own API, as
+    /// CloudWatch's service principal.
+    async fn call_action(&self, ctx: &RequestContext, t: &Transition, action: &str) -> Result<(), String> {
+        let client = self.inner.client.get().ok_or("The target service is not available")?;
+        let parts: Vec<&str> = action.split(':').collect();
+        let (service, region) = (parts.get(2).copied().unwrap_or_default(), parts.get(3).copied().unwrap_or_default());
+        let principal =
+            if service == "lambda" { "lambda.alarms.cloudwatch.amazonaws.com" } else { "cloudwatch.amazonaws.com" };
+        let mut sctx = ctx.as_service(principal, &t.account, Some(&t.alarm.arn));
+        if !region.is_empty() {
+            sctx.region = region.to_string();
+        }
+        if service == "lambda" {
+            use base64::Engine;
+            let input = json!({
+                "FunctionName": action,
+                "InvocationType": "Event",
+                "Payload": base64::engine::general_purpose::STANDARD.encode(lambda_event(t).to_string()),
+            });
+            return client.call(&sctx, "lambda", "Invoke", input).await.map(|_| ()).map_err(|e| {
+                if e.status == 403 {
+                    "CloudWatch Alarms is not authorized to perform: lambda:InvokeFunction on the resource".to_string()
+                } else if e.code.contains("NotFound") {
+                    "Function not found".to_string()
+                } else {
+                    e.message
+                }
+            });
+        }
+        let message = sns_message(t, &ctx.region);
+        let subject: String =
+            format!("{}: \"{}\" in {}", t.alarm.state_value, t.alarm.name(), region_display_name(&t.region))
+                .chars()
+                .take(100)
+                .collect();
+        let mut input = json!({ "TopicArn": action, "Message": message.to_string(), "Subject": subject });
+        if action.ends_with(".fifo") {
+            input["MessageGroupId"] = json!(t.alarm.name());
+            input["MessageDeduplicationId"] =
+                json!(format!("{}-{}", t.alarm.name(), t.alarm.state_updated.timestamp_millis()));
+        }
+        client.call(&sctx, "sns", "Publish", input).await.map(|_| ()).map_err(|e| e.message)
     }
 
     fn run_action(&self, ctx: &RequestContext, t: &Transition, action: &str) -> Result<(), String> {
         let service = action.split(':').nth(2).unwrap_or_default();
         match service {
-            "sns" => {
-                let sns = self.inner.sns.get().ok_or("SNS is not available")?;
-                let message = sns_message(t, &ctx.region);
-                let subject: String =
-                    format!("{}: \"{}\" in {}", t.alarm.state_value, t.alarm.name(), region_display_name(&t.region))
-                        .chars()
-                        .take(100)
-                        .collect();
-                sns.publish_as_service(
-                    ctx,
-                    &mws_sns::ServicePublish {
-                        topic_arn: action,
-                        service_principal: "cloudwatch.amazonaws.com",
-                        source_arn: &t.alarm.arn,
-                        source_account: &t.account,
-                        message: message.to_string(),
-                        subject: Some(subject),
-                        attributes: Default::default(),
-                        message_group_id: action.ends_with(".fifo").then(|| t.alarm.name().to_string()),
-                        message_deduplication_id: action
-                            .ends_with(".fifo")
-                            .then(|| format!("{}-{}", t.alarm.name(), t.alarm.state_updated.timestamp_millis())),
-                    },
-                )
-                .map(|_| ())
-                .map_err(|e| e.to_string())
-            }
-            "lambda" => {
-                let lambda = self.inner.lambda.get().ok_or("Lambda is not available")?;
-                let payload = lambda_event(t);
-                lambda
-                    .invoke_event_as_service(
-                        ctx,
-                        mws_lambda::ServiceInvocation {
-                            function: action,
-                            service_principal: "lambda.alarms.cloudwatch.amazonaws.com",
-                            source_account: Some(&t.account),
-                            source_arn: Some(&t.alarm.arn),
-                            payload: payload.to_string().into_bytes(),
-                        },
-                    )
-                    .map_err(|e| match e {
-                        mws_lambda::ServiceInvokeError::NotFound => "Function not found".to_string(),
-                        mws_lambda::ServiceInvokeError::AccessDenied => {
-                            "CloudWatch Alarms is not authorized to perform: lambda:InvokeFunction on the resource"
-                                .to_string()
-                        }
-                        mws_lambda::ServiceInvokeError::Failed(m) => m,
-                    })
-            }
             "ssm" if action.split(':').nth(5).is_some_and(|r| r.starts_with("opsitem:")) => {
                 let sink = self.inner.ops_items.get().ok_or("Systems Manager is not available")?;
                 sink.create(ops_item(ctx, t, action)?).map(|_| ())

@@ -6,7 +6,7 @@ use crate::generated::errors;
 
 /// A function named by name, ARN or partial ARN, with an optional
 /// qualifier (version or alias).
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct FunctionRef {
     pub partition: String,
     pub account: String,
