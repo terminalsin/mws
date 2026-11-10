@@ -8,7 +8,6 @@
 //! terminated, and requests whose instances end close. MWS does not
 //! interrupt Spot Instances.
 
-use std::sync::Arc;
 
 use chrono::{DateTime, Utc};
 use mws_core::{ConditionContext, RequestContext, ServiceError};
@@ -28,7 +27,7 @@ pub(crate) const PRODUCT: &str = "Linux/UNIX";
 /// persistent request relaunching, a fleet keeping its capacity): the
 /// request was authorized when it was made.
 pub(crate) fn service_ctx(ctx: &RequestContext) -> RequestContext {
-    RequestContext { authorizer: Arc::new(mws_core::AllowAll), ..ctx.clone() }
+    ctx.on_behalf()
 }
 
 fn status(code: &str, message: impl Into<String>, at: DateTime<Utc>) -> Option<t::SpotInstanceStatus> {

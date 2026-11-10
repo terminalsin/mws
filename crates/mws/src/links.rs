@@ -1835,7 +1835,7 @@ pub(crate) struct EcsPlatform {
 impl EcsPlatform {
     /// ECS acting through its service-linked role: no caller policy applies.
     fn service_linked(ctx: &RequestContext) -> RequestContext {
-        RequestContext { authorizer: std::sync::Arc::new(mws_core::AllowAll), ..ctx.clone() }
+        ctx.on_behalf()
     }
 }
 

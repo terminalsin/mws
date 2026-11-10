@@ -5,9 +5,8 @@
 //! the tasks run like any other service's; the load balancer, certificate
 //! and auto scaling ECS would manage are reported but not created.
 
-use std::sync::Arc;
 
-use mws_core::{AllowAll, RequestContext, ServiceError};
+use mws_core::{RequestContext, ServiceError};
 
 use crate::generated::types as t;
 use crate::names::{authorize, check_tags, client, cluster_name, invalid, request_tags, resource_tags, Cond, Scope};
@@ -79,9 +78,7 @@ fn name_from_image(image: &str) -> String {
 /// What ECS acts with on the caller's behalf: the caller's identity, with
 /// the checks already done.
 fn on_behalf(ctx: &RequestContext) -> RequestContext {
-    let mut c = ctx.clone();
-    c.authorizer = Arc::new(AllowAll);
-    c
+    ctx.on_behalf()
 }
 
 struct Config {
