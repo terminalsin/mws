@@ -6,6 +6,7 @@ import type { Metadata } from "next";
 
 import { ICONS, ec2, nameTag } from "../../lib/clients";
 import { STATE_TONE, describeRule, listInstances } from "../../lib/ec2";
+import { COUNT, GROUP_DESCRIPTION, GROUP_NAME, IMAGE, INSTANCE_TYPE, KEY_NAME, PORTS, SOURCE_CIDR, TAG_VALUE } from "../../lib/rules";
 import { allowIngress, changeState, createKeyPair, createSecurityGroup, deleteKeyPair, deleteSecurityGroup, launch, revokeIngress } from "./actions";
 
 export const metadata: Metadata = { title: "EC2" };
@@ -59,13 +60,19 @@ export default async function Ec2({ searchParams }: Props) {
     load(async () => (await client.send(new DescribeSecurityGroupsCommand({}))).SecurityGroups ?? []),
   ]);
   const imageList = images.ok ? images.value : [];
+  // An image's name stands for its ID: typing one offers the ID.
+  const imageRule = {
+    ...IMAGE,
+    known: imageList.map((i) => i.ImageId!),
+    aliases: Object.fromEntries(imageList.filter((i) => i.Name).map((i) => [i.Name!, i.ImageId!])),
+  };
   const launchSheet = (
     <Sheet title="Launch instance" label="Launch instance" testId="launch-instance">
       <ActionForm action={launch} submit="Launch" testId="launch-instance">
-        <Field label="Name">
+        <Field label="Name" rule={TAG_VALUE}>
           <input name="name" autoFocus />
         </Field>
-        <Field label="Image">
+        <Field label="Image" rule={imageRule} member="ImageId">
           <input name="image" required list="images" defaultValue={imageList[0]?.ImageId} />
         </Field>
         <datalist id="images">
@@ -75,7 +82,7 @@ export default async function Ec2({ searchParams }: Props) {
             </option>
           ))}
         </datalist>
-        <Field label="Type">
+        <Field label="Type" rule={INSTANCE_TYPE} member="InstanceType">
           <input name="type" defaultValue="t3.micro" list="types" />
         </Field>
         <datalist id="types">
@@ -100,7 +107,7 @@ export default async function Ec2({ searchParams }: Props) {
               ))}
           </select>
         </Field>
-        <Field label="Count">
+        <Field label="Count" rule={COUNT} member="MaxCount">
           <input name="count" type="number" min={1} max={20} defaultValue={1} />
         </Field>
         <textarea name="userData" rows={4} aria-label="User data" placeholder="#!/bin/bash" className="code-editor" />
@@ -136,8 +143,8 @@ export default async function Ec2({ searchParams }: Props) {
     actions = (
       <Sheet title="New key pair" label="Create key pair" icon={<KeyRound size={16} />} testId="create-key-pair">
         <ActionForm action={createKeyPair} submit="Create" testId="create-key-pair">
-          <Field label="Name">
-            <input name="name" required />
+          <Field label="Name" rule={KEY_NAME} member="KeyName" taken={keys.ok ? keys.value.map((k) => k.KeyName!) : []} unique>
+            <input name="name" required autoFocus />
           </Field>
           <Field label="Type">
             <select name="type" defaultValue="ed25519">
@@ -169,17 +176,24 @@ export default async function Ec2({ searchParams }: Props) {
       load(async () => (await client.send(new DescribeSecurityGroupRulesCommand({}))).SecurityGroupRules ?? []),
       load(async () => (await client.send(new DescribeVpcsCommand({}))).Vpcs ?? []),
     ]);
+    // Names in use in every VPC ("default") are taken whichever VPC is picked;
+    // others are checked by EC2 per VPC.
+    const vpcIds = vpcs.ok ? vpcs.value.map((v) => v.VpcId) : [];
+    const everywhere = [...new Set((groups.ok ? groups.value : []).map((g) => g.GroupName!))].filter((n) =>
+      vpcIds.every((v) => groups.ok && groups.value.some((g) => g.GroupName === n && g.VpcId === v)),
+    );
+    const defaultVpc = vpcs.ok ? vpcs.value.find((v) => v.IsDefault)?.VpcId : undefined;
     actions = (
       <Sheet title="New security group" label="Create security group" testId="create-security-group">
         <ActionForm action={createSecurityGroup} submit="Create" testId="create-security-group">
-          <Field label="Name">
-            <input name="name" required />
+          <Field label="Name" rule={GROUP_NAME} member="GroupName" taken={everywhere} unique>
+            <input name="name" required autoFocus />
           </Field>
-          <Field label="Description">
+          <Field label="Description" rule={GROUP_DESCRIPTION} member="Description">
             <input name="description" />
           </Field>
-          <Field label="VPC">
-            <select name="vpc">
+          <Field label="VPC" member="VpcId">
+            <select name="vpc" defaultValue={defaultVpc}>
               {vpcs.ok &&
                 vpcs.value.map((v) => (
                   <option key={v.VpcId} value={v.VpcId}>
@@ -192,6 +206,15 @@ export default async function Ec2({ searchParams }: Props) {
         </ActionForm>
       </Sheet>
     );
+    // "anywhere" or a VPC's name stand for their CIDR blocks.
+    const cidrRule = {
+      ...SOURCE_CIDR,
+      aliases: {
+        anywhere: "0.0.0.0/0",
+        internet: "0.0.0.0/0",
+        ...Object.fromEntries((vpcs.ok ? vpcs.value : []).flatMap((v) => (v.CidrBlock ? [[nameTag(v) ?? v.VpcId!, v.CidrBlock]] : []))),
+      },
+    };
     const inbound = (id: string) => (rules.ok ? rules.value.filter((r) => r.GroupId === id && !r.IsEgress) : []);
     body = groups.ok ? (
       <List
@@ -226,11 +249,11 @@ export default async function Ec2({ searchParams }: Props) {
                         <option value="-1">all</option>
                       </select>
                     </Field>
-                    <Field label="Ports">
-                      <input name="ports" placeholder="443 or 8000-8080" required />
+                    <Field label="Ports" rule={PORTS} member="portRange">
+                      <input name="ports" placeholder="443 or 8000-8080" />
                     </Field>
-                    <Field label="Source CIDR">
-                      <input name="cidr" defaultValue="10.0.0.0/8" />
+                    <Field label="Source CIDR" rule={cidrRule} member="CidrIp">
+                      <input name="cidr" defaultValue="10.0.0.0/8" required />
                     </Field>
                   </ActionForm>
                 </Sheet>
