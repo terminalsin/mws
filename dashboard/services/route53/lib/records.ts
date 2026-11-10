@@ -61,7 +61,7 @@ export function nameIssue(value: string, zone: string, type: string): Issue | nu
   const problem = dnsNameProblem(value.trim());
   if (problem) {
     const h = host(value);
-    return issue(problem, h && h !== value && fix(h, "Use the host name"));
+    return issue(problem, h && h !== value ? fix(h, "Use the host name") : null);
   }
   if (v === z && type === "CNAME") return issue("No CNAME at the zone apex; use an alias or another name", fix(`www.${z}`, "Use www"));
   if (v === z || v.endsWith(`.${z}`)) return null;
