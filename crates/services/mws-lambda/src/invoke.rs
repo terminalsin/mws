@@ -231,7 +231,7 @@ impl Lambda {
         f: &FunctionRef,
         config: &types::FunctionConfiguration,
         kind: EnvKind,
-    ) -> Result<Vec<(std::path::PathBuf, String, bool)>, ServiceError> {
+    ) -> Result<Vec<crate::runtime::Mount>, ServiceError> {
         let configs = config.file_system_configs.clone().unwrap_or_default();
         if configs.is_empty() {
             return Ok(Vec::new());
@@ -252,7 +252,12 @@ impl Lambda {
                 session_name: f.name.clone(),
             };
             match file_systems.mount(&req) {
-                Ok(m) => out.push((m.dir, c.local_mount_path.clone(), m.read_only)),
+                Ok(m) => out.push(crate::runtime::Mount {
+                    host: m.dir,
+                    path: c.local_mount_path.clone(),
+                    read_only: m.read_only,
+                    owner: m.owner,
+                }),
                 Err(e) => {
                     self.publish_invocation_metrics(ctx, f, crate::metrics::Result::Failed);
                     return Err(match e {

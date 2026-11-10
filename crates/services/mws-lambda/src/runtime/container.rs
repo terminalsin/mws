@@ -117,7 +117,7 @@ pub(super) fn command(
     function_arn: &str,
     memory_mb: i32,
     env: &BTreeMap<String, String>,
-    mounts: &[(std::path::PathBuf, String, bool)],
+    mounts: &[super::Mount],
 ) -> Result<Command, LaunchError> {
     let argv: Vec<&String> = c.entrypoint.iter().chain(&c.command).collect();
     let Some((program, rest)) = argv.split_first() else {
@@ -139,10 +139,31 @@ pub(super) fn command(
 }
 
 /// `-v host:path[:ro]` for each mounted file system.
-pub(super) fn push_mounts(args: &mut Vec<String>, mounts: &[(std::path::PathBuf, String, bool)]) {
-    for (host, path, read_only) in mounts {
+pub(super) fn push_mounts(args: &mut Vec<String>, mounts: &[super::Mount]) {
+    for m in mounts {
         args.push("-v".into());
-        args.push(format!("{}:{path}{}", host.display(), if *read_only { ":ro" } else { "" }));
+        args.push(format!("{}:{}{}", m.host.display(), m.path, if m.read_only { ":ro" } else { "" }));
+    }
+}
+
+/// Give mounted directories their owner as root, in a one-off container
+/// of the environment's own image, when MWS (not running as root) could
+/// not: an EFS access point's root directory belongs to its creation
+/// info's owner. Best effort: an image without `chown` keeps the owner.
+pub(super) fn chown_mounts(image: &str, platform: Option<&str>, mounts: &[super::Mount]) {
+    for m in mounts {
+        let Some((uid, gid)) = m.owner else { continue };
+        let mut cmd = std::process::Command::new(docker());
+        cmd.args(["run", "--rm", "--user", "0", "--network", "none", "--entrypoint", "chown"]);
+        if let Some(p) = platform {
+            cmd.args(["--platform", p]);
+        }
+        cmd.arg("-v")
+            .arg(format!("{}:/mws-mount", m.host.display()))
+            .arg(image)
+            .arg(format!("{uid}:{gid}"))
+            .arg("/mws-mount");
+        let _ = cmd.stdout(std::process::Stdio::null()).stderr(std::process::Stdio::null()).status();
     }
 }
 

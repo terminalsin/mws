@@ -47,6 +47,10 @@ pub enum ServiceMountError {
 pub struct ServiceMounted {
     pub dir: PathBuf,
     pub read_only: bool,
+    /// `(uid, gid)` the root directory still has to be given: MWS creates
+    /// it, but could not change its owner itself (it does not run as root),
+    /// so the caller does that as root inside its container.
+    pub owner: Option<(u32, u32)>,
 }
 
 /// The first usable address of a subnet (AWS reserves the first four).
@@ -163,6 +167,7 @@ impl Efs {
         let root = ap.root_directory.as_ref().and_then(|r| r.path.clone()).unwrap_or_else(|| "/".into());
         let rel = relative(&root).ok_or_else(|| Failure("Access denied.".into()))?;
         let dir = self.storage().dir(fs.id()).join(rel);
+        let mut owner = None;
         if !dir.exists() {
             let Some(info) = ap.root_directory.as_ref().and_then(|r| r.creation_info.clone()) else {
                 return Err(Failure(format!(
@@ -175,8 +180,12 @@ impl Efs {
                 use std::os::unix::fs::PermissionsExt;
                 let mode = u32::from_str_radix(&info.permissions, 8).unwrap_or(0o755);
                 let _ = std::fs::set_permissions(&dir, std::fs::Permissions::from_mode(mode));
+                let (uid, gid) = (info.owner_uid as u32, info.owner_gid as u32);
+                if std::os::unix::fs::chown(&dir, Some(uid), Some(gid)).is_err() {
+                    owner = Some((uid, gid));
+                }
             }
         }
-        Ok(ServiceMounted { dir, read_only })
+        Ok(ServiceMounted { dir, read_only, owner })
     }
 }

@@ -2406,7 +2406,7 @@ impl mws_lambda::FileSystems for LambdaFileSystems {
             session_name: req.session_name.clone(),
         };
         match self.0.mount_for_service(&m) {
-            Ok(m) => Ok(mws_lambda::MountedFileSystem { dir: m.dir, read_only: m.read_only }),
+            Ok(m) => Ok(mws_lambda::MountedFileSystem { dir: m.dir, read_only: m.read_only, owner: m.owner }),
             Err(mws_efs::service_mount::ServiceMountError::Connectivity(e)) => {
                 Err(mws_lambda::FileSystemMountError::Connectivity(e))
             }

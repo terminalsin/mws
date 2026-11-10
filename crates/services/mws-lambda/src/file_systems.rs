@@ -34,6 +34,9 @@ pub enum FileSystemMountError {
 pub struct MountedFileSystem {
     pub dir: PathBuf,
     pub read_only: bool,
+    /// `(uid, gid)` to give `dir` as root before the environment starts,
+    /// when the file system could not do that itself.
+    pub owner: Option<(u32, u32)>,
 }
 
 /// Where file systems come from: Amazon EFS, wired in by the server.
