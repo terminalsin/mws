@@ -9,7 +9,7 @@
 import { CircleAlert, Lightbulb, Sparkles, WandSparkles } from "lucide-react";
 import { createContext, useCallback, useContext, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 
-import { check, didYouMean, mergeRules, sameMember, type FieldIssue, type Issue, type Repair, type Rule } from "./validation";
+import { check, didYouMean, mergeRules, sameMember, valid, type FieldIssue, type Issue, type Repair, type Rule } from "./validation";
 
 // ---------------------------------------------------------------------------
 // The form side: server issues in, claims out.
@@ -105,6 +105,10 @@ export interface FieldRules {
   arn?: string;
   /** This field is the resource's name: "already exists" errors land here. */
   unique?: boolean;
+  /** A check of the page's own, run once the rule passes (from a client
+   * component): a problem with repairs, or null. Only repairs that pass
+   * both are offered. */
+  validate?: (value: string) => Issue | null;
 }
 
 const LEAVE_MS = 160;
@@ -121,6 +125,7 @@ export function FieldShell({
   generate,
   arn,
   unique,
+  validate,
 }: FieldRules & { label: string; hint?: ReactNode; children: ReactNode }) {
   const box = useRef<HTMLDivElement>(null);
   const control = useRef<Control | null>(null);
@@ -154,10 +159,12 @@ export function FieldShell({
       next = check(value, serverRule) ?? { code: server.issue.code, message: server.issue.message, repairs: server.issue.repairs ?? didYouMean(value, serverRule) };
     } else {
       next = check(value, rule);
+      const own = next || !validate ? null : validate(value);
+      if (own) next = { ...own, repairs: own.repairs.filter((r) => r.value !== value && valid(r.value, rule) && !validate!(r.value)) };
     }
     el.setCustomValidity(next ? next.message : "");
     return next;
-  }, [fullRule, server]);
+  }, [fullRule, server, validate]);
 
   const last = useRef<Issue | null>(null);
   const refresh = useCallback(() => {

@@ -705,6 +705,10 @@
   .form-grid {
     @apply grid grid-cols-[repeat(auto-fill,minmax(140px,1fr))] gap-x-4 gap-y-3;
   }
+  /* The grid sizes its fields; their own minimum would overflow a column. */
+  .form-grid > .field {
+    @apply min-w-0;
+  }
   .field {
     @apply grid min-w-40 flex-1 gap-2;
   }
@@ -1020,6 +1024,10 @@
   }
   .search-page-form input {
     @apply h-12! w-full text-base!;
+  }
+  /* A search box is its own label; a Field around it only validates. */
+  .search-page-form .field-label {
+    @apply sr-only;
   }
   code.clip {
     @apply block max-w-[56ch] truncate;

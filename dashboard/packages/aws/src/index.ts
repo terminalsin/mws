@@ -135,6 +135,9 @@ export function fieldIssues(e: unknown, fields: Record<string, string> = {}): Fi
   };
   const parsed = parseServerIssues(e.message).map((i) => ({ ...i, field: i.member ? byMember(i.member) : undefined }));
   if (parsed.length) return parsed;
+  // "The value supplied for parameter 'scheduleExpression' is not valid."
+  const named = e.message.match(/\bparameter '([\w.]+)'/)?.[1];
+  if (named) return [{ field: byMember(named), member: named, code: "server", message: e.message }];
   const field = fields[e.name];
   if (CONFLICT.test(e.name)) return [{ field, code: "taken", message: "Already exists" }];
   if (field) return [{ field, code: /NotFound|NoSuch/i.test(e.name) ? "missing" : "server", message: e.message || e.name }];

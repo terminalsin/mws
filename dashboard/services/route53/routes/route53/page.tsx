@@ -3,12 +3,15 @@ import { GetHealthCheckStatusCommand, ListHealthChecksCommand, ListHostedZonesCo
 import { collect, load } from "@mws-dashboard/aws";
 import { ActionForm, AwsIcon, Curated, Empty, ErrorNotice, Field, List, Page, Pill, Sheet, Status } from "@mws-dashboard/ui";
 import { HeartPulse, Lock, Trash2 } from "lucide-react";
+import { CreateHealthCheck, CreateHostedZone } from "@mws-dashboard/ui/model/route53";
 import type { Metadata } from "next";
 
 import { ICONS, ec2, nameTag, route53 } from "../../lib/clients";
 import { createHealthCheck, createZone, deleteHealthCheck } from "./actions";
 
 export const metadata: Metadata = { title: "Route 53" };
+
+const CHECK = CreateHealthCheck.HealthCheckConfig.fields!;
 
 type Props = { searchParams: Promise<{ tab?: string }> };
 
@@ -66,9 +69,20 @@ export default async function Route53({ searchParams }: Props) {
         actions={
           <Sheet title="Create health check" label="Create health check" testId="create-health-check">
             <ActionForm action={createHealthCheck} submit="Create" testId="create-health-check">
-              <Field label="Endpoint URL">
-                <input name="url" type="url" required placeholder="https://example.com/health" />
+              <Field label="Endpoint URL" format="url" member="FullyQualifiedDomainName">
+                <input name="url" required placeholder="https://example.com/health" />
               </Field>
+              <div className="form-row">
+                <Field label="Interval" rule={CHECK.RequestInterval} member="RequestInterval">
+                  <select name="interval" defaultValue="30">
+                    <option value="30">30 seconds</option>
+                    <option value="10">10 seconds</option>
+                  </select>
+                </Field>
+                <Field label="Failure threshold" rule={CHECK.FailureThreshold} member="FailureThreshold">
+                  <input name="threshold" type="number" defaultValue={3} />
+                </Field>
+              </div>
             </ActionForm>
           </Sheet>
         }
@@ -91,8 +105,8 @@ export default async function Route53({ searchParams }: Props) {
   const create = (
     <Sheet title="Create hosted zone" label="Create hosted zone" testId="create-zone">
       <ActionForm action={createZone} submit="Create hosted zone" testId="create-zone">
-        <Field label="Domain name">
-          <input name="name" required placeholder="example.com" autoFocus />
+        <Field label="Domain name" rule={CreateHostedZone.Name} format="domain" unique>
+          <input name="name" placeholder="example.com" autoFocus />
         </Field>
         <Field label="Type">
           <select name="vpc" defaultValue="">
@@ -104,6 +118,9 @@ export default async function Route53({ searchParams }: Props) {
                 </option>
               ))}
           </select>
+        </Field>
+        <Field label="Description" rule={CreateHostedZone.HostedZoneConfig.fields?.Comment} member="HostedZoneConfig.Comment">
+          <input name="comment" />
         </Field>
       </ActionForm>
     </Sheet>
