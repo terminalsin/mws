@@ -23,6 +23,56 @@ pub fn register(m: &mut BTreeMap<&'static str, Arc<dyn Provider>>) {
     m.insert("AWS::CloudFormation::WaitConditionHandle", Arc::new(WaitConditionHandle));
     m.insert("AWS::CloudFormation::WaitCondition", Arc::new(WaitCondition));
     m.insert(STACK_TYPE, Arc::new(NestedStack));
+    m.insert("AWS::CloudFormation::Macro", Arc::new(Macro));
+}
+
+/// A template macro: transforms that name it run its Lambda function.
+struct Macro;
+
+#[async_trait::async_trait]
+impl Provider for Macro {
+    fn required(&self) -> &'static [&'static str] {
+        &["FunctionName", "Name"]
+    }
+
+    fn create_only(&self) -> &'static [&'static str] {
+        &["Name"]
+    }
+
+    fn name_property(&self) -> Option<&'static str> {
+        Some("Name")
+    }
+
+    async fn create(&self, cx: &Cx<'_>, props: &Props) -> HResult<Created> {
+        let name = req(props, "Name")?;
+        let function = req(props, "FunctionName")?;
+        let key = crate::transform::macro_key(cx.account(), cx.region(), &name);
+        let mut st = cx.cfn.state();
+        if let Some(existing) = st.macros.get(&key) {
+            if existing.stack_id != cx.stack_id {
+                return Err(HandlerError::handler("AlreadyExists", format!("Macro {name} already exists")));
+            }
+        }
+        st.macros.insert(
+            key,
+            crate::state::MacroDef { name: name.clone(), function_name: function, stack_id: cx.stack_id.to_string() },
+        );
+        Ok(Created::new(name))
+    }
+
+    async fn update(&self, cx: &Cx<'_>, physical_id: &str, _old: &Props, new: &Props, attrs: &Props) -> HResult<Props> {
+        let key = crate::transform::macro_key(cx.account(), cx.region(), physical_id);
+        if let Some(m) = cx.cfn.state().macros.get_mut(&key) {
+            m.function_name = req(new, "FunctionName")?;
+        }
+        Ok(attrs.clone())
+    }
+
+    async fn delete(&self, cx: &Cx<'_>, physical_id: &str, _props: &Props, _attrs: &Props) -> HResult<()> {
+        let key = crate::transform::macro_key(cx.account(), cx.region(), physical_id);
+        cx.cfn.state().macros.remove(&key);
+        Ok(())
+    }
 }
 
 pub fn custom_resource_provider() -> Arc<dyn Provider> {
@@ -226,18 +276,16 @@ impl NestedStack {
                     .collect()
             })
             .unwrap_or_default();
-        let caps = vec![
-            "CAPABILITY_IAM".to_string(),
-            "CAPABILITY_NAMED_IAM".to_string(),
-            "CAPABILITY_AUTO_EXPAND".to_string(),
-        ];
         let notifications = super::list(props, "NotificationARNs");
-        let (parent_root, parent_tags) = {
+        // Nested stacks run with the capabilities the root stack was
+        // given (each parent passes on its own).
+        let (parent_root, parent_tags, caps) = {
             let st = cx.cfn.state();
             let p = st.stacks.get(cx.stack_id);
             (
                 p.and_then(|p| p.root_id.clone()).unwrap_or_else(|| cx.stack_id.to_string()),
                 p.map(|p| p.tags.clone()).unwrap_or_default(),
+                p.map(|p| p.capabilities.clone()).unwrap_or_default(),
             )
         };
         let mut tags = parent_tags;
@@ -267,7 +315,7 @@ impl NestedStack {
         };
         let (template, params, data) = cx
             .cfn
-            .prepare(cx.ctx, cx.ctx, &name, &id, &body, &provided, &previous, &caps, &notifications)
+            .prepare(cx.ctx, cx.ctx, &name, &id, &body, &provided, &previous, &caps, &notifications, true)
             .await
             .map_err(|e| HandlerError::invalid(e.message))?;
         let d = crate::engine::Deployment {
@@ -288,7 +336,8 @@ impl NestedStack {
                     status: "CREATE_IN_PROGRESS".into(),
                     created: d.now(),
                     description: template.description(),
-                    template_body: body,
+                    template_body: template.body(&body),
+                    original_template: template.original.clone(),
                     parameters: params,
                     tags,
                     capabilities: caps,
@@ -307,14 +356,10 @@ impl NestedStack {
                 {
                     let mut st = cx.cfn.state();
                     let s = st.stacks.get_mut(&id).expect("found above");
-                    s.previous = Some(Box::new(crate::state::Snapshot {
-                        template_body: s.template_body.clone(),
-                        parameters: s.parameters.clone(),
-                        resources: s.resources.clone(),
-                        outputs: s.outputs.clone(),
-                        tags: s.tags.clone(),
-                    }));
-                    s.template_body = body;
+                    s.keep_previous();
+                    s.template_body = template.body(&body);
+                    s.original_template = template.original.clone();
+                    s.capabilities = caps.clone();
                     s.parameters = params;
                     s.tags = tags;
                     s.imports = imports;

@@ -22,6 +22,10 @@ fn group_arn(cx: &Cx<'_>, name: &str) -> String {
 
 #[async_trait::async_trait]
 impl Provider for LogGroup {
+    fn name_property(&self) -> Option<&'static str> {
+        Some("LogGroupName")
+    }
+
     fn create_only(&self) -> &'static [&'static str] {
         &["LogGroupName", "LogGroupClass"]
     }
@@ -110,6 +114,10 @@ struct LogStream;
 
 #[async_trait::async_trait]
 impl Provider for LogStream {
+    fn name_property(&self) -> Option<&'static str> {
+        Some("LogStreamName")
+    }
+
     fn create_only(&self) -> &'static [&'static str] {
         &["LogGroupName", "LogStreamName"]
     }
@@ -182,6 +190,10 @@ struct MetricFilter;
 
 #[async_trait::async_trait]
 impl Provider for MetricFilter {
+    fn name_property(&self) -> Option<&'static str> {
+        Some("FilterName")
+    }
+
     fn create_only(&self) -> &'static [&'static str] {
         &["FilterName", "LogGroupName"]
     }
@@ -227,6 +239,10 @@ struct SubscriptionFilter;
 
 #[async_trait::async_trait]
 impl Provider for SubscriptionFilter {
+    fn name_property(&self) -> Option<&'static str> {
+        Some("FilterName")
+    }
+
     fn create_only(&self) -> &'static [&'static str] {
         &["FilterName", "LogGroupName"]
     }

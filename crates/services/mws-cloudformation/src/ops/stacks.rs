@@ -8,11 +8,11 @@ use mws_core::{RequestContext, ServiceError};
 use super::{condition_keys, convert, find, find_id, not_found, page, provided, stack_resource, validation};
 use crate::engine::{Deployment, STACK_TYPE};
 use crate::generated::{errors, types};
-use crate::state::{Snapshot, Stack, Tag};
+use crate::state::{Stack, Tag};
 use crate::template::Template;
 use crate::CloudFormation;
 
-const UPDATABLE: &[&str] = &[
+pub(crate) const UPDATABLE: &[&str] = &[
     "CREATE_COMPLETE",
     "UPDATE_COMPLETE",
     "UPDATE_ROLLBACK_COMPLETE",
@@ -142,7 +142,18 @@ impl CloudFormation {
         let caps = input.capabilities.clone().unwrap_or_default();
         let notifications = input.notification_ar_ns.clone().unwrap_or_default();
         let (template, params, data) = self
-            .prepare(ctx, &deploy, &name, &id, &body, &provided(input.parameters.clone()), &[], &caps, &notifications)
+            .prepare(
+                ctx,
+                &deploy,
+                &name,
+                &id,
+                &body,
+                &provided(input.parameters.clone()),
+                &[],
+                &caps,
+                &notifications,
+                true,
+            )
             .await?;
         let operation_id = uuid::Uuid::new_v4().to_string();
         let stack = Stack {
@@ -154,7 +165,9 @@ impl CloudFormation {
             status_reason: Some("User Initiated".into()),
             created: ctx.received_at,
             description: template.description(),
-            template_body: body,
+            template_body: template.body(&body),
+            original_template: template.original.clone(),
+            rollback_configuration: convert::rollback_config_of(input.rollback_configuration.clone()),
             parameters: params,
             tags,
             capabilities: caps,
@@ -189,7 +202,7 @@ impl CloudFormation {
             if input.template_body.is_some() || input.template_url.is_some() {
                 return Err(validation("You cannot specify both usePreviousTemplate and Template Body/Template URL"));
             }
-            current.template_body.clone()
+            current.original_template.clone().unwrap_or_else(|| current.template_body.clone())
         } else if input.template_body.is_none() && input.template_url.is_none() {
             return Err(validation("Either Template URL or Template Body must be specified."));
         } else {
@@ -236,6 +249,7 @@ impl CloudFormation {
                 &current.parameters,
                 &caps,
                 &notifications,
+                true,
             )
             .await?;
         let same_template = Template::parse(&current.template_body).map(|t| t.root == template.root).unwrap_or(false);
@@ -254,14 +268,12 @@ impl CloudFormation {
         {
             let mut st = self.state();
             let s = st.stacks.get_mut(&current.id).expect("found above");
-            s.previous = Some(Box::new(Snapshot {
-                template_body: s.template_body.clone(),
-                parameters: s.parameters.clone(),
-                resources: s.resources.clone(),
-                outputs: s.outputs.clone(),
-                tags: s.tags.clone(),
-            }));
-            s.template_body = body;
+            s.keep_previous();
+            s.template_body = template.body(&body);
+            s.original_template = template.original.clone();
+            if let Some(c) = convert::rollback_config_of(input.rollback_configuration.clone()) {
+                s.rollback_configuration = Some(c);
+            }
             s.description = template.description();
             s.parameters = params;
             s.tags = tags;
@@ -496,15 +508,14 @@ impl CloudFormation {
         if let Some(cs) = &input.change_set_name {
             let (stack, change_set) = super::change_sets::find_change_set(&st, ctx, cs, input.stack_name.as_deref())?;
             ctx.authorize("cloudformation:GetTemplate", &stack.id, Default::default())?;
-            return Ok(types::GetTemplateOutput {
-                template_body: Some(change_set.template_body.clone()),
-                stages_available: stages,
-            });
+            let body = stage(&input.template_stage, &change_set.template_body, change_set.original_template.as_ref());
+            return Ok(types::GetTemplateOutput { template_body: Some(body), stages_available: stages });
         }
         let name = input.stack_name.as_deref().ok_or_else(|| validation("StackName must be specified"))?;
         let s = find(&st, ctx, name)?;
         ctx.authorize("cloudformation:GetTemplate", &s.id, Default::default())?;
-        Ok(types::GetTemplateOutput { template_body: Some(s.template_body.clone()), stages_available: stages })
+        let body = stage(&input.template_stage, &s.template_body, s.original_template.as_ref());
+        Ok(types::GetTemplateOutput { template_body: Some(body), stages_available: stages })
     }
 
     pub(crate) fn update_termination_protection_op(
@@ -727,6 +738,15 @@ impl CloudFormation {
             d.cfn.finished(&d.stack_id);
         });
         Ok(types::RollbackStackOutput { stack_id: Some(current.id), operation_id: Some(operation_id) })
+    }
+}
+
+/// The template a `TemplateStage` asks for: the submitted one
+/// (`Original`, the default) or the one transforms produced.
+fn stage(stage: &Option<String>, processed: &str, original: Option<&String>) -> String {
+    match (stage.as_deref(), original) {
+        (Some("Processed"), _) | (_, None) => processed.to_string(),
+        (_, Some(o)) => o.clone(),
     }
 }
 

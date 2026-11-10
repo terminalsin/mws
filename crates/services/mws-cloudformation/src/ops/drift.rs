@@ -106,7 +106,11 @@ impl CloudFormation {
                 d.status = "DELETED".into();
                 d
             }
-            Some(Err(_)) => d,
+            // The resource could not be read (access denied, throttled...).
+            Some(Err(_)) => {
+                d.status = "UNKNOWN".into();
+                d
+            }
             Some(Ok(actual)) => {
                 // Only properties the template set are compared.
                 let mut compared = Map::new();

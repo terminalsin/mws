@@ -384,6 +384,10 @@ impl Bucket {
 
 #[async_trait::async_trait]
 impl Provider for Bucket {
+    fn name_property(&self) -> Option<&'static str> {
+        Some("BucketName")
+    }
+
     fn create_only(&self) -> &'static [&'static str] {
         &["BucketName", "ObjectLockEnabled"]
     }

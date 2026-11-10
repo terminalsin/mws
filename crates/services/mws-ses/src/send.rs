@@ -89,6 +89,8 @@ pub enum SendError {
     NoTemplate(String),
     MailFromNotVerified(String),
     Quota,
+    /// More messages in the last second than the maximum send rate.
+    Throttled,
     NotFound(String),
     Denied(ServiceError),
 }
@@ -113,6 +115,7 @@ impl SendError {
                 .with_field("TemplateName", ErrorValue::String(n)),
             SendError::MailFromNotVerified(m) => v1::errors::mail_from_domain_not_verified(m),
             SendError::Quota => ServiceError::client("Throttling", 400, "Daily message quota exceeded."),
+            SendError::Throttled => ServiceError::client("Throttling", 400, "Maximum sending rate exceeded."),
             SendError::NotFound(m) => names::invalid_parameter(m),
             SendError::Denied(e) => e,
         }
@@ -130,6 +133,7 @@ impl SendError {
             SendError::NoTemplate(n) => v2::errors::not_found(format!("Template {n} does not exist.")),
             SendError::MailFromNotVerified(m) => v2::errors::mail_from_domain_not_verified(m),
             SendError::Quota => v2::errors::limit_exceeded("Daily message quota exceeded."),
+            SendError::Throttled => v2::errors::too_many_requests("Maximum sending rate exceeded."),
             SendError::NotFound(m) => v2::errors::not_found(m),
             SendError::Denied(e) => e,
         }
@@ -145,6 +149,7 @@ impl SendError {
             SendError::NoTemplate(_) => "TemplateDoesNotExist",
             SendError::MailFromNotVerified(_) => "MailFromDomainNotVerified",
             SendError::Quota => "AccountDailyQuotaExceeded",
+            SendError::Throttled => "AccountThrottled",
             SendError::NotFound(_) | SendError::Denied(_) => "Failed",
         }
     }
@@ -159,6 +164,7 @@ impl SendError {
             SendError::NoTemplate(_) => "TEMPLATE_NOT_FOUND",
             SendError::MailFromNotVerified(_) => "MAIL_FROM_DOMAIN_NOT_VERIFIED",
             SendError::Quota => "ACCOUNT_DAILY_QUOTA_EXCEEDED",
+            SendError::Throttled => "ACCOUNT_THROTTLED",
             SendError::NotFound(_) | SendError::Denied(_) => "FAILED",
         }
     }
@@ -193,6 +199,18 @@ pub fn sent_last_24h(r: &Region, now: chrono::DateTime<chrono::Utc>) -> f64 {
     r.sends
         .iter()
         .filter(|s| !s.rejected && now - s.timestamp < Duration::hours(24))
+        .map(|s| s.recipients.len() as f64)
+        .sum()
+}
+
+/// Recipients of messages accepted in the second before `now`: what the
+/// maximum send rate is measured against.
+pub fn sent_last_second(r: &Region, now: chrono::DateTime<chrono::Utc>) -> f64 {
+    r.sends
+        .iter()
+        .rev()
+        .take_while(|s| now - s.timestamp < Duration::seconds(1))
+        .filter(|s| !s.rejected && s.timestamp <= now)
         .map(|s| s.recipients.len() as f64)
         .sum()
 }
@@ -417,6 +435,12 @@ impl Ses {
         }
         if sent_last_24h(r, now) + recipients.len() as f64 > max_24h(r) {
             return Err(SendError::Quota);
+        }
+        // The maximum send rate, per second and counted in recipients. A
+        // message on its own always fits, whatever its recipient count.
+        let last_second = sent_last_second(r, now);
+        if last_second > 0.0 && last_second + recipients.len() as f64 > max_rate(r) {
+            return Err(SendError::Throttled);
         }
 
         // The template, if any.

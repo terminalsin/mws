@@ -45,6 +45,10 @@ fn put_input(name: &str, props: &Props, overwrite: bool) -> HResult<Value> {
 
 #[async_trait::async_trait]
 impl Provider for Parameter {
+    fn name_property(&self) -> Option<&'static str> {
+        Some("Name")
+    }
+
     fn create_only(&self) -> &'static [&'static str] {
         &["Name"]
     }

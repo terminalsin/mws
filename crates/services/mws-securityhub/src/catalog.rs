@@ -1,8 +1,9 @@
 //! What Security Hub ships with: its standards, the security controls in
 //! them, the product integrations findings come from, and the managed
-//! insights. The control catalogue is a representative subset of AWS's
-//! (the controls for the services MWS emulates and the common CIS ones),
-//! with AWS's IDs, titles and severities.
+//! insights. The control catalogue (`controls.txt`) lists every AWS
+//! Foundational Security Best Practices control and the CIS controls,
+//! with AWS's IDs, titles, severities and standards mappings; PCI DSS and
+//! NIST 800-53 mappings are partial.
 
 /// A security standard. `key` is the part of its ARN after
 /// `standards/` (or `ruleset/` for CIS 1.2.0).
@@ -171,130 +172,190 @@ const RUNTIMES: &[&str] = &[
     "ruby3.2",
 ];
 
-macro_rules! c {
-    ($id:literal, $sev:literal, $title:literal, [$(($std:expr, $cid:literal, [$($req:literal),*])),*] $(, $params:expr)?) => {
-        Control { id: $id, severity: $sev, title: $title, in_standards: &[$(($std, $cid, &[$($req),*])),*], params: c!(@p $($params)?) }
-    };
-    (@p) => { &[] };
-    (@p $p:expr) => { $p };
+/// The security controls, one per line (see the file's header).
+const CONTROL_TABLE: &str = include_str!("controls.txt");
+
+/// Customizable parameters, by security control ID.
+fn params_of(id: &str) -> &'static [Param] {
+    match id {
+        "ACM.1" => &[Param::Integer {
+            name: "daysToExpiration",
+            description: "Number of days within which the ACM certificate must be renewed",
+            min: 14,
+            max: 365,
+            default: Some(30),
+        }],
+        "ACM.3" => &[Param::StringList {
+            name: "requiredTagKeys",
+            description:
+                "List of non-system tag keys that the evaluated resource must contain. Tag keys are case sensitive.",
+            default: &[],
+        }],
+        "Config.1" => &[Param::Boolean {
+            name: "includeConfigServiceLinkedRoleCheck",
+            description: "Whether the control checks if AWS Config uses the service-linked role",
+            default: true,
+        }],
+        "EC2.6" => &[Param::StringList {
+            name: "trafficType",
+            description: "Type of flow log traffic that the control evaluates",
+            default: &["REJECT"],
+        }],
+        "EC2.18" => &[
+            Param::IntegerList {
+                name: "authorizedTcpPorts",
+                description: "List of TCP ports that are allowed to be accessible from 0.0.0.0/0 or ::/0",
+                min: 1,
+                max: 65535,
+                default: &[80, 443],
+            },
+            Param::IntegerList {
+                name: "authorizedUdpPorts",
+                description: "List of UDP ports that are allowed to be accessible from 0.0.0.0/0 or ::/0",
+                min: 1,
+                max: 65535,
+                default: &[],
+            },
+        ],
+        "EKS.2" => &[Param::StringList {
+            name: "oldestVersionSupported",
+            description: "Oldest Kubernetes version the control treats as supported",
+            default: &["1.29"],
+        }],
+        "IAM.1" => &[Param::Boolean {
+            name: "excludePermissionBoundaryPolicy",
+            description: "Whether the control excludes policies used as permissions boundaries",
+            default: true,
+        }],
+        "IAM.7" => &[
+            Param::Boolean {
+                name: "RequireUppercaseCharacters",
+                description: "Require at least one uppercase character in password",
+                default: true,
+            },
+            Param::Boolean {
+                name: "RequireLowercaseCharacters",
+                description: "Require at least one lowercase character in password",
+                default: true,
+            },
+            Param::Boolean {
+                name: "RequireSymbols",
+                description: "Require at least one symbol in password",
+                default: true,
+            },
+            Param::Boolean {
+                name: "RequireNumbers",
+                description: "Require at least one number in password",
+                default: true,
+            },
+            Param::Integer {
+                name: "MinimumPasswordLength",
+                description: "Minimum number of characters in password",
+                min: 8,
+                max: 128,
+                default: Some(8),
+            },
+            Param::Integer {
+                name: "PasswordReusePrevention",
+                description: "Number of password iterations before a password can be reused",
+                min: 1,
+                max: 24,
+                default: None,
+            },
+            Param::Integer {
+                name: "MaxPasswordAge",
+                description: "Number of days before password expiration",
+                min: 1,
+                max: 1095,
+                default: None,
+            },
+        ],
+        "Lambda.2" => &[Param::EnumList {
+            name: "runtime",
+            description: "Supported runtimes for Lambda functions",
+            allowed: RUNTIMES,
+            default: RUNTIMES,
+        }],
+        "SecretsManager.1" => &[Param::Integer {
+            name: "maximumAllowedRotationFrequency",
+            description: "Maximum number of days allowed for the rotation frequency",
+            min: 1,
+            max: 365,
+            default: None,
+        }],
+        "SecretsManager.4" => &[Param::Integer {
+            name: "maxDaysSinceRotation",
+            description: "Maximum number of days within which the secret must be rotated",
+            min: 1,
+            max: 180,
+            default: Some(90),
+        }],
+        "Kinesis.3" => &[Param::Integer {
+            name: "minimumBackupRetentionPeriod",
+            description: "Minimum data retention period in hours",
+            min: 24,
+            max: 8760,
+            default: Some(168),
+        }],
+        _ => &[],
+    }
 }
 
-pub const CONTROLS: &[Control] = &[
-    c!("ACM.1", "MEDIUM", "Imported and ACM-issued certificates should be renewed after a specified time period",
-        [(FSBP, "ACM.1", []), (NIST_800_53, "ACM.1", ["NIST.800-53.r5 SC-28(3)", "NIST.800-53.r5 SC-7(16)"]), (PCI_3_2_1, "PCI.ACM.1", [])],
-        &[Param::Integer { name: "daysToExpiration", description: "Number of days within which the ACM certificate must be renewed", min: 14, max: 365, default: Some(30) }]),
-    c!("ACM.2", "HIGH", "RSA certificates managed by ACM should use a key length of at least 2,048 bits",
-        [(FSBP, "ACM.2", [])]),
-    c!("ACM.3", "LOW", "ACM certificates should be tagged",
-        [(TAGGING, "ACM.3", [])],
-        &[Param::StringList { name: "requiredTagKeys", description: "List of non-system tag keys that the evaluated resource must contain. Tag keys are case sensitive.", default: &[] }]),
-    c!("CloudTrail.1", "HIGH", "CloudTrail should be enabled and configured with at least one multi-Region trail that includes read and write management events",
-        [(FSBP, "CloudTrail.1", []), (CIS_1_2, "2.1", ["CIS AWS Foundations 2.1"]), (CIS_1_4, "3.1", ["CIS AWS Foundations Benchmark v1.4.0/3.1"]), (CIS_3_0, "3.1", ["CIS AWS Foundations Benchmark v3.0.0/3.1"]), (NIST_800_53, "CloudTrail.1", ["NIST.800-53.r5 AC-2(4)", "NIST.800-53.r5 AU-12"])]),
-    c!("CloudTrail.2", "MEDIUM", "CloudTrail should have encryption at-rest enabled",
-        [(FSBP, "CloudTrail.2", []), (CIS_1_2, "2.7", ["CIS AWS Foundations 2.7"]), (CIS_1_4, "3.7", ["CIS AWS Foundations Benchmark v1.4.0/3.7"]), (PCI_3_2_1, "PCI.CloudTrail.1", ["PCI DSS 3.4"]), (NIST_800_53, "CloudTrail.2", ["NIST.800-53.r5 AU-9", "NIST.800-53.r5 SC-28"])]),
-    c!("CloudTrail.4", "LOW", "CloudTrail log file validation should be enabled",
-        [(FSBP, "CloudTrail.4", []), (CIS_1_2, "2.2", ["CIS AWS Foundations 2.2"]), (CIS_1_4, "3.2", ["CIS AWS Foundations Benchmark v1.4.0/3.2"]), (PCI_3_2_1, "PCI.CloudTrail.3", ["PCI DSS 10.5.2", "PCI DSS 10.5.5"])]),
-    c!("CloudTrail.5", "LOW", "CloudTrail trails should be integrated with Amazon CloudWatch Logs",
-        [(FSBP, "CloudTrail.5", []), (CIS_1_2, "2.4", ["CIS AWS Foundations 2.4"]), (CIS_1_4, "3.4", ["CIS AWS Foundations Benchmark v1.4.0/3.4"]), (PCI_3_2_1, "PCI.CloudTrail.4", ["PCI DSS 10.1", "PCI DSS 10.2.1"])]),
-    c!("CloudWatch.1", "LOW", "A log metric filter and alarm should exist for usage of the \"root\" user",
-        [(CIS_1_2, "3.3", ["CIS AWS Foundations 1.1", "CIS AWS Foundations 3.3"]), (CIS_1_4, "4.3", ["CIS AWS Foundations Benchmark v1.4.0/1.7", "CIS AWS Foundations Benchmark v1.4.0/4.3"]), (PCI_3_2_1, "PCI.CW.1", ["PCI DSS 7.2.1"])]),
-    c!("CloudWatch.4", "LOW", "Ensure a log metric filter and alarm exist for IAM policy changes",
-        [(CIS_1_2, "3.4", ["CIS AWS Foundations 3.4"]), (CIS_1_4, "4.4", ["CIS AWS Foundations Benchmark v1.4.0/4.4"])]),
-    c!("Config.1", "MEDIUM", "AWS Config should be enabled and use the service-linked role for resource recording",
-        [(FSBP, "Config.1", []), (CIS_1_2, "2.5", ["CIS AWS Foundations 2.5"]), (CIS_1_4, "3.5", ["CIS AWS Foundations Benchmark v1.4.0/3.5"]), (PCI_3_2_1, "PCI.Config.1", ["PCI DSS 10.5.2", "PCI DSS 11.5"]), (NIST_800_53, "Config.1", ["NIST.800-53.r5 CM-3", "NIST.800-53.r5 CM-8"])],
-        &[Param::Boolean { name: "includeConfigServiceLinkedRoleCheck", description: "Whether the control checks if AWS Config uses the service-linked role", default: true }]),
-    c!("EC2.1", "CRITICAL", "Amazon EBS snapshots should not be publicly restorable",
-        [(FSBP, "EC2.1", []), (PCI_3_2_1, "PCI.EC2.1", ["PCI DSS 1.2.1", "PCI DSS 1.3.1"]), (NIST_800_53, "EC2.1", ["NIST.800-53.r5 AC-21", "NIST.800-53.r5 AC-3"])]),
-    c!("EC2.2", "HIGH", "VPC default security groups should not allow inbound or outbound traffic",
-        [(FSBP, "EC2.2", []), (CIS_1_2, "4.3", ["CIS AWS Foundations 4.3"]), (CIS_1_4, "5.3", ["CIS AWS Foundations Benchmark v1.4.0/5.3"]), (CIS_3_0, "5.4", ["CIS AWS Foundations Benchmark v3.0.0/5.4"]), (PCI_3_2_1, "PCI.EC2.2", ["PCI DSS 1.2.1", "PCI DSS 1.3.4", "PCI DSS 2.1"])]),
-    c!("EC2.6", "MEDIUM", "VPC flow logging should be enabled in all VPCs",
-        [(FSBP, "EC2.6", []), (CIS_1_2, "2.9", ["CIS AWS Foundations 2.9"]), (CIS_1_4, "3.9", ["CIS AWS Foundations Benchmark v1.4.0/3.9"]), (PCI_3_2_1, "PCI.EC2.6", ["PCI DSS 10.3.3", "PCI DSS 10.3.4"])],
-        &[Param::StringList { name: "trafficType", description: "Type of flow log traffic that the control evaluates", default: &["REJECT"] }]),
-    c!("EC2.7", "MEDIUM", "EBS default encryption should be enabled",
-        [(FSBP, "EC2.7", []), (CIS_1_4, "2.2.1", ["CIS AWS Foundations Benchmark v1.4.0/2.2.1"]), (CIS_3_0, "2.2.1", ["CIS AWS Foundations Benchmark v3.0.0/2.2.1"])]),
-    c!("EC2.8", "HIGH", "EC2 instances should use Instance Metadata Service Version 2 (IMDSv2)",
-        [(FSBP, "EC2.8", []), (CIS_3_0, "5.6", ["CIS AWS Foundations Benchmark v3.0.0/5.6"]), (NIST_800_53, "EC2.8", ["NIST.800-53.r5 AC-3", "NIST.800-53.r5 AC-6"])]),
-    c!("EC2.18", "HIGH", "Security groups should only allow unrestricted incoming traffic for authorized ports",
-        [(FSBP, "EC2.18", []), (NIST_800_53, "EC2.18", ["NIST.800-53.r5 AC-4", "NIST.800-53.r5 SC-7"])],
-        &[Param::IntegerList { name: "authorizedTcpPorts", description: "List of TCP ports that are allowed to be accessible from 0.0.0.0/0 or ::/0", min: 1, max: 65535, default: &[80, 443] },
-          Param::IntegerList { name: "authorizedUdpPorts", description: "List of UDP ports that are allowed to be accessible from 0.0.0.0/0 or ::/0", min: 1, max: 65535, default: &[] }]),
-    c!("EC2.19", "CRITICAL", "Security groups should not allow unrestricted access to ports with high risk",
-        [(FSBP, "EC2.19", []), (NIST_800_53, "EC2.19", ["NIST.800-53.r5 AC-4", "NIST.800-53.r5 SC-7"])]),
-    c!("ECR.1", "HIGH", "ECR private repositories should have image scanning configured",
-        [(FSBP, "ECR.1", []), (NIST_800_53, "ECR.1", ["NIST.800-53.r5 RA-5"])]),
-    c!("ECR.2", "MEDIUM", "ECR private repositories should have tag immutability configured",
-        [(FSBP, "ECR.2", []), (NIST_800_53, "ECR.2", ["NIST.800-53.r5 CA-9(1)", "NIST.800-53.r5 CM-2"])]),
-    c!("ECR.3", "MEDIUM", "ECR repositories should have at least one lifecycle policy configured",
-        [(FSBP, "ECR.3", [])]),
-    c!("EFS.1", "MEDIUM", "Elastic File System should be configured to encrypt file data at-rest using AWS KMS",
-        [(FSBP, "EFS.1", []), (CIS_1_4, "2.4.1", ["CIS AWS Foundations Benchmark v1.4.0/2.4.1"])]),
-    c!("EKS.1", "HIGH", "EKS cluster endpoints should not be publicly accessible",
-        [(FSBP, "EKS.1", []), (NIST_800_53, "EKS.1", ["NIST.800-53.r5 AC-21", "NIST.800-53.r5 SC-7"])]),
-    c!("EKS.2", "HIGH", "EKS clusters should run on a supported Kubernetes version",
-        [(FSBP, "EKS.2", [])],
-        &[Param::StringList { name: "oldestVersionSupported", description: "Oldest Kubernetes version the control treats as supported", default: &["1.29"] }]),
-    c!("ELB.1", "MEDIUM", "Application Load Balancer should be configured to redirect all HTTP requests to HTTPS",
-        [(FSBP, "ELB.1", []), (PCI_3_2_1, "PCI.ELBv2.1", ["PCI DSS 2.3", "PCI DSS 4.1"])]),
-    c!("GuardDuty.1", "HIGH", "GuardDuty should be enabled",
-        [(FSBP, "GuardDuty.1", []), (PCI_3_2_1, "PCI.GuardDuty.1", ["PCI DSS 11.4"]), (NIST_800_53, "GuardDuty.1", ["NIST.800-53.r5 AC-2(12)", "NIST.800-53.r5 SI-4"])]),
-    c!("IAM.1", "HIGH", "IAM policies should not allow full \"*\" administrative privileges",
-        [(FSBP, "IAM.1", []), (CIS_1_2, "1.22", ["CIS AWS Foundations 1.22"]), (CIS_1_4, "1.16", ["CIS AWS Foundations Benchmark v1.4.0/1.16"]), (PCI_3_2_1, "PCI.IAM.3", ["PCI DSS 7.2.1"]), (NIST_800_53, "IAM.1", ["NIST.800-53.r5 AC-2", "NIST.800-53.r5 AC-6"])],
-        &[Param::Boolean { name: "excludePermissionBoundaryPolicy", description: "Whether the control excludes policies used as permissions boundaries", default: true }]),
-    c!("IAM.2", "LOW", "IAM users should not have IAM policies attached",
-        [(FSBP, "IAM.2", []), (CIS_1_2, "1.16", ["CIS AWS Foundations 1.16"]), (PCI_3_2_1, "PCI.IAM.2", ["PCI DSS 7.2.1"])]),
-    c!("IAM.3", "MEDIUM", "IAM users' access keys should be rotated every 90 days or less",
-        [(FSBP, "IAM.3", []), (CIS_1_2, "1.4", ["CIS AWS Foundations 1.4"]), (CIS_1_4, "1.14", ["CIS AWS Foundations Benchmark v1.4.0/1.14"]), (CIS_3_0, "1.14", ["CIS AWS Foundations Benchmark v3.0.0/1.14"])]),
-    c!("IAM.4", "CRITICAL", "IAM root user access key should not exist",
-        [(FSBP, "IAM.4", []), (CIS_1_2, "1.12", ["CIS AWS Foundations 1.12"]), (CIS_1_4, "1.4", ["CIS AWS Foundations Benchmark v1.4.0/1.4"]), (CIS_3_0, "1.4", ["CIS AWS Foundations Benchmark v3.0.0/1.4"]), (PCI_3_2_1, "PCI.IAM.1", ["PCI DSS 2.1", "PCI DSS 2.2", "PCI DSS 7.2.1"])]),
-    c!("IAM.5", "MEDIUM", "MFA should be enabled for all IAM users that have a console password",
-        [(FSBP, "IAM.5", []), (CIS_1_2, "1.2", ["CIS AWS Foundations 1.2"]), (CIS_1_4, "1.10", ["CIS AWS Foundations Benchmark v1.4.0/1.10"]), (CIS_3_0, "1.10", ["CIS AWS Foundations Benchmark v3.0.0/1.10"])]),
-    c!("IAM.6", "CRITICAL", "Hardware MFA should be enabled for the root user",
-        [(FSBP, "IAM.6", []), (CIS_1_2, "1.14", ["CIS AWS Foundations 1.14"]), (CIS_1_4, "1.6", ["CIS AWS Foundations Benchmark v1.4.0/1.6"]), (PCI_3_2_1, "PCI.IAM.4", ["PCI DSS 8.3.1"])]),
-    c!("IAM.7", "MEDIUM", "Password policies for IAM users should have strong configurations",
-        [(FSBP, "IAM.7", []), (NIST_800_53, "IAM.7", ["NIST.800-53.r5 AC-2(1)", "NIST.800-53.r5 IA-5(1)"])],
-        &[Param::Boolean { name: "RequireUppercaseCharacters", description: "Require at least one uppercase character in password", default: true },
-          Param::Boolean { name: "RequireLowercaseCharacters", description: "Require at least one lowercase character in password", default: true },
-          Param::Boolean { name: "RequireSymbols", description: "Require at least one symbol in password", default: true },
-          Param::Boolean { name: "RequireNumbers", description: "Require at least one number in password", default: true },
-          Param::Integer { name: "MinimumPasswordLength", description: "Minimum number of characters in password", min: 8, max: 128, default: Some(8) },
-          Param::Integer { name: "PasswordReusePrevention", description: "Number of password iterations before a password can be reused", min: 1, max: 24, default: None },
-          Param::Integer { name: "MaxPasswordAge", description: "Number of days before password expiration", min: 1, max: 1095, default: None }]),
-    c!("IAM.9", "CRITICAL", "MFA should be enabled for the root user",
-        [(FSBP, "IAM.9", []), (CIS_1_2, "1.13", ["CIS AWS Foundations 1.13"]), (CIS_1_4, "1.5", ["CIS AWS Foundations Benchmark v1.4.0/1.5"]), (CIS_3_0, "1.5", ["CIS AWS Foundations Benchmark v3.0.0/1.5"]), (PCI_3_2_1, "PCI.IAM.5", ["PCI DSS 8.3.1"])]),
-    c!("KMS.4", "MEDIUM", "AWS KMS key rotation should be enabled",
-        [(FSBP, "KMS.4", []), (CIS_1_2, "2.8", ["CIS AWS Foundations 2.8"]), (CIS_1_4, "3.8", ["CIS AWS Foundations Benchmark v1.4.0/3.8"]), (CIS_3_0, "3.6", ["CIS AWS Foundations Benchmark v3.0.0/3.6"]), (PCI_3_2_1, "PCI.KMS.1", ["PCI DSS 3.6.4"])]),
-    c!("Lambda.1", "CRITICAL", "Lambda function policies should prohibit public access",
-        [(FSBP, "Lambda.1", []), (PCI_3_2_1, "PCI.Lambda.1", ["PCI DSS 1.2.1", "PCI DSS 1.3.1"]), (NIST_800_53, "Lambda.1", ["NIST.800-53.r5 AC-21", "NIST.800-53.r5 AC-3"])]),
-    c!("Lambda.2", "MEDIUM", "Lambda functions should use supported runtimes",
-        [(FSBP, "Lambda.2", []), (NIST_800_53, "Lambda.2", ["NIST.800-53.r5 CA-9(1)", "NIST.800-53.r5 CM-2"])],
-        &[Param::EnumList { name: "runtime", description: "Supported runtimes for Lambda functions", allowed: RUNTIMES, default: RUNTIMES }]),
-    c!("RDS.1", "CRITICAL", "RDS snapshot should be private",
-        [(FSBP, "RDS.1", []), (PCI_3_2_1, "PCI.RDS.1", ["PCI DSS 1.2.1", "PCI DSS 1.3.1"])]),
-    c!("RDS.3", "MEDIUM", "RDS DB instances should have encryption at-rest enabled",
-        [(FSBP, "RDS.3", []), (CIS_1_4, "2.3.1", ["CIS AWS Foundations Benchmark v1.4.0/2.3.1"]), (CIS_3_0, "2.3.1", ["CIS AWS Foundations Benchmark v3.0.0/2.3.1"])]),
-    c!("Route53.2", "MEDIUM", "Route 53 public hosted zones should log DNS queries",
-        [(FSBP, "Route53.2", []), (NIST_800_53, "Route53.2", ["NIST.800-53.r5 AU-2", "NIST.800-53.r5 AU-12"])]),
-    c!("S3.1", "MEDIUM", "S3 general purpose buckets should have block public access settings enabled",
-        [(FSBP, "S3.1", []), (CIS_1_4, "2.1.5", ["CIS AWS Foundations Benchmark v1.4.0/2.1.5"]), (CIS_3_0, "2.1.4", ["CIS AWS Foundations Benchmark v3.0.0/2.1.4"]), (PCI_3_2_1, "PCI.S3.6", ["PCI DSS 1.2.1", "PCI DSS 1.3.1"])]),
-    c!("S3.5", "MEDIUM", "S3 general purpose buckets should require requests to use SSL",
-        [(FSBP, "S3.5", []), (CIS_1_4, "2.1.2", ["CIS AWS Foundations Benchmark v1.4.0/2.1.2"]), (CIS_3_0, "2.1.1", ["CIS AWS Foundations Benchmark v3.0.0/2.1.1"]), (PCI_3_2_1, "PCI.S3.5", ["PCI DSS 4.1"])]),
-    c!("S3.8", "HIGH", "S3 general purpose buckets should block public access",
-        [(FSBP, "S3.8", []), (CIS_1_4, "2.1.5", ["CIS AWS Foundations Benchmark v1.4.0/2.1.5"]), (NIST_800_53, "S3.8", ["NIST.800-53.r5 AC-21", "NIST.800-53.r5 AC-3"])]),
-    c!("SecretsManager.1", "MEDIUM", "Secrets Manager secrets should have automatic rotation enabled",
-        [(FSBP, "SecretsManager.1", []), (NIST_800_53, "SecretsManager.1", ["NIST.800-53.r5 AC-2(1)", "NIST.800-53.r5 IA-5(1)"])],
-        &[Param::Integer { name: "maximumAllowedRotationFrequency", description: "Maximum number of days allowed for the rotation frequency", min: 1, max: 365, default: None }]),
-    c!("SecurityHub.1", "HIGH", "Security Hub should be enabled",
-        [(NIST_800_53, "SecurityHub.1", ["NIST.800-53.r5 CA-7", "NIST.800-53.r5 SI-4"])]),
-    c!("SNS.1", "MEDIUM", "SNS topics should be encrypted at-rest using AWS KMS",
-        [(FSBP, "SNS.1", []), (NIST_800_53, "SNS.1", ["NIST.800-53.r5 SC-28", "NIST.800-53.r5 SC-28(1)"])]),
-    c!("SQS.1", "MEDIUM", "Amazon SQS queues should be encrypted at rest",
-        [(FSBP, "SQS.1", []), (NIST_800_53, "SQS.1", ["NIST.800-53.r5 SC-28", "NIST.800-53.r5 SC-28(1)"])]),
-    c!("SSM.1", "MEDIUM", "Amazon EC2 instances should be managed by AWS Systems Manager",
-        [(FSBP, "SSM.1", []), (PCI_3_2_1, "PCI.SSM.3", ["PCI DSS 2.4"]), (NIST_800_53, "SSM.1", ["NIST.800-53.r5 CA-9(1)", "NIST.800-53.r5 CM-2"])]),
-];
+fn leak<T>(v: Vec<T>) -> &'static [T] {
+    Box::leak(v.into_boxed_slice())
+}
+
+/// One `standards` entry of the table: `(standard key, control ID,
+/// related requirements)`.
+fn parse_mapping(id: &'static str, entry: &'static str) -> (&'static str, &'static str, &'static [&'static str]) {
+    let (head, reqs) = match entry.split_once('[') {
+        Some((h, r)) => (h.trim(), Some(r.trim_end_matches(']'))),
+        None => (entry.trim(), None),
+    };
+    let (std, cid) = head.split_once('=').map_or((head, id), |(s, c)| (s.trim(), c.trim()));
+    let key = match std {
+        "FSBP" => FSBP,
+        "CIS12" => CIS_1_2,
+        "CIS14" => CIS_1_4,
+        "CIS30" => CIS_3_0,
+        "PCI" => PCI_3_2_1,
+        "NIST" => NIST_800_53,
+        "TAG" => TAGGING,
+        other => panic!("unknown standard {other} for control {id} in controls.txt"),
+    };
+    let requirements: Vec<&'static str> = match reqs {
+        Some(r) => r.split(',').map(str::trim).filter(|s| !s.is_empty()).collect(),
+        None => match std {
+            "CIS12" => vec![Box::leak(format!("CIS AWS Foundations {cid}").into_boxed_str())],
+            "CIS14" => vec![Box::leak(format!("CIS AWS Foundations Benchmark v1.4.0/{cid}").into_boxed_str())],
+            "CIS30" => vec![Box::leak(format!("CIS AWS Foundations Benchmark v3.0.0/{cid}").into_boxed_str())],
+            _ => Vec::new(),
+        },
+    };
+    (key, cid, leak(requirements))
+}
+
+/// Every security control in the catalogue, in the table's order.
+pub fn controls() -> &'static [Control] {
+    static CONTROLS: std::sync::OnceLock<&'static [Control]> = std::sync::OnceLock::new();
+    CONTROLS.get_or_init(|| {
+        let mut out = Vec::new();
+        for line in CONTROL_TABLE.lines().map(str::trim).filter(|l| !l.is_empty() && !l.starts_with('#')) {
+            let cols: Vec<&'static str> = line.splitn(4, '|').collect();
+            let [id, severity, title, standards] = cols[..] else {
+                panic!("malformed line in controls.txt: {line}");
+            };
+            let in_standards = leak(
+                standards.split(';').map(str::trim).filter(|s| !s.is_empty()).map(|e| parse_mapping(id, e)).collect(),
+            );
+            out.push(Control { id, severity, title, in_standards, params: params_of(id) });
+        }
+        leak(out)
+    })
+}
 
 pub fn control(id: &str) -> Option<&'static Control> {
-    CONTROLS.iter().find(|c| c.id == id)
+    controls().iter().find(|c| c.id == id)
 }
 
 /// The controls in a standard, with the standard's own control IDs.
@@ -302,12 +363,41 @@ pub fn controls_in(
     standard_key: &str,
 ) -> impl Iterator<Item = (&'static Control, &'static str, &'static [&'static str])> {
     let key = standard_key.to_string();
-    CONTROLS
+    controls()
         .iter()
         .filter_map(move |c| c.in_standards.iter().find(|(s, _, _)| *s == key).map(|(_, cid, reqs)| (c, *cid, *reqs)))
 }
 
+/// AWS's description of the controls MWS evaluates; others are derived
+/// from the title.
+fn known_description(id: &str) -> Option<&'static str> {
+    Some(match id {
+        "CloudTrail.1" => "This control checks whether there is at least one multi-Region AWS CloudTrail trail that captures read and write management events. The control fails if CloudTrail is disabled or if there isn't at least one CloudTrail trail that captures read and write management events.",
+        "CloudTrail.2" => "This control checks whether CloudTrail is configured to use the server-side encryption (SSE) AWS KMS key encryption. The control will fail if the KmsKeyId is not defined.",
+        "EC2.2" => "This control checks whether the default security group of a VPC allows inbound or outbound traffic. The control fails if the security group allows inbound or outbound traffic.",
+        "EC2.19" => "This control checks whether unrestricted incoming traffic for an Amazon EC2 security group is accessible to the specified ports that are considered to be high risk. This control fails if any of the rules in a security group allow ingress traffic from '0.0.0.0/0' or '::/0' to those ports.",
+        "IAM.1" => "This control checks whether the default version of IAM policies (also known as customer managed policies) has administrator access that includes a statement with \"Effect\": \"Allow\" with \"Action\": \"*\" over \"Resource\": \"*\". The control fails if you have IAM policies with such a statement.",
+        "IAM.2" => "This control checks whether your IAM users have policies attached. The control fails if your IAM users have policies attached. Instead, IAM users should inherit permissions from IAM groups or assume a role.",
+        "IAM.4" => "This control checks whether the root user access key is available. The control fails if the root user access key exists.",
+        "IAM.6" => "This control checks whether your AWS account is enabled to use a hardware multi-factor authentication (MFA) device to sign in with root user credentials. The control fails if MFA isn't enabled or if any virtual MFA devices are permitted for signing in with root user credentials.",
+        "IAM.9" => "This control checks whether multi-factor authentication (MFA) is enabled for the IAM root user of an AWS account to sign in to the AWS Management Console. The control fails if MFA isn't enabled for the root user of the account.",
+        "KMS.4" => "This control checks whether key rotation is enabled for each KMS key that you create, other than keys with imported key material and asymmetric keys. The control fails if key rotation is disabled.",
+        "Lambda.1" => "This control checks whether the Lambda function resource-based policy prohibits public access outside of your account. The control fails if public access is allowed.",
+        "RDS.3" => "This control checks whether storage encryption is enabled for your Amazon RDS DB instances. The control fails if an RDS DB instance isn't configured with storage encryption.",
+        "S3.1" => "This control checks whether the preceding Amazon S3 block public access settings are configured at the account level for an S3 general purpose bucket. The control fails if one or more of the block public access settings are set to false.",
+        "S3.5" => "This control checks whether an Amazon S3 general purpose bucket has a policy that requires requests to use SSL. The control fails if the bucket policy doesn't require requests to use SSL.",
+        "S3.8" => "This control checks whether an Amazon S3 general purpose bucket blocks public access at the bucket level. The control fails if any of the following settings are set to false: ignorePublicAcls, blockPublicPolicy, blockPublicAcls, restrictPublicBuckets.",
+        "SecretsManager.1" => "This control checks whether a secret stored in AWS Secrets Manager is configured with automatic rotation. The control fails if the secret isn't configured with automatic rotation.",
+        "SNS.1" => "This control checks whether an Amazon SNS topic is encrypted at rest using keys managed in AWS Key Management Service (AWS KMS). The control fails if the SNS topic doesn't use a KMS key for server-side encryption (SSE).",
+        "SQS.1" => "This control checks whether an Amazon SQS queue is encrypted at rest. The control fails if the queue isn't encrypted with an SQS-managed key (SSE-SQS) or an AWS Key Management Service (AWS KMS) key (SSE-KMS).",
+        _ => return None,
+    })
+}
+
 pub fn description(c: &Control) -> String {
+    if let Some(d) = known_description(c.id) {
+        return d.to_string();
+    }
     let mut t = c.title.to_string();
     if let Some(first) = t.get(..1) {
         t.replace_range(..1, &first.to_lowercase());
@@ -315,8 +405,12 @@ pub fn description(c: &Control) -> String {
     format!("This control checks whether {t}.")
 }
 
+/// The control's page in the Security Hub user guide:
+/// `<svc>-controls.html#<svc>-<n>`.
 pub fn remediation_url(c: &Control) -> String {
-    format!("https://docs.aws.amazon.com/console/securityhub/{}/remediation", c.id)
+    let (svc, n) = c.id.split_once('.').unwrap_or((c.id, ""));
+    let svc = svc.to_lowercase();
+    format!("https://docs.aws.amazon.com/securityhub/latest/userguide/{svc}-controls.html#{svc}-{n}")
 }
 
 /// A product that sends findings to (or receives them from) Security Hub.

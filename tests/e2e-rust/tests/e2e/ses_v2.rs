@@ -34,6 +34,12 @@ fn arn(resource: &str) -> String {
     format!("arn:aws:ses:us-east-1:{ACCOUNT}:{resource}")
 }
 
+/// Decide the account's production access review now (MWS control API).
+async fn grant_production_access(mws: &Mws) {
+    let (status, body) = mws.control("POST", "/_aws/ses/production-access?status=GRANTED", None).await;
+    assert_eq!(status, 200, "{body}");
+}
+
 async fn outbox(mws: &Mws, query: &str) -> Vec<serde_json::Value> {
     let (_, body) = mws.control("GET", &format!("/_aws/ses{query}"), None).await;
     body["messages"].as_array().cloned().unwrap_or_default()
@@ -194,6 +200,8 @@ async fn templates_custom_verification_and_bulk_sending() {
     let listed = ses.list_email_templates().send().await.unwrap();
     assert_eq!(listed.templates_metadata()[0].template_name(), Some("promo"));
 
+    // Two entries at once exceed the sandbox's one message a second.
+    grant_production_access(&mws).await;
     let bulk = ses
         .send_bulk_email()
         .from_email_address("deals@brand.test")
@@ -415,8 +423,16 @@ async fn account_suppression_list_and_insights() {
         .send()
         .await
         .unwrap();
+    // The request opens a review; the account stays in the sandbox.
+    let account = ses.get_account().send().await.unwrap();
+    assert!(!account.production_access_enabled());
+    let review = account.details().unwrap().review_details().unwrap();
+    assert_eq!(review.status().map(|s| s.as_str()), Some("PENDING"));
+    assert!(review.case_id().is_some());
+    grant_production_access(&mws).await;
     let account = ses.get_account().send().await.unwrap();
     assert!(account.production_access_enabled());
+    assert_eq!(account.details().unwrap().review_details().unwrap().status().map(|s| s.as_str()), Some("GRANTED"));
     assert_eq!(account.send_quota().unwrap().max24_hour_send(), 50000.0);
     assert_eq!(account.details().unwrap().website_url(), Some("https://shop.test"));
     let err = ses
@@ -552,6 +568,7 @@ async fn contact_lists_and_list_management() {
         .send()
         .await
         .unwrap();
+    grant_production_access(&mws).await;
     ses.create_email_identity().email_identity("news.test").send().await.unwrap();
     let sent = ses
         .send_email()

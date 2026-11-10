@@ -240,6 +240,7 @@ impl SecurityHub {
             let sub = &h.standards[&arn];
             out.push(subscription_wire(&arn, sub, if existed { "READY" } else { "PENDING" }));
         }
+        h.evaluation.dirty = true;
         Ok(types::BatchEnableStandardsResponse { standards_subscriptions: Some(out) })
     }
 
@@ -266,6 +267,7 @@ impl SecurityHub {
                 out.push(subscription_wire(&arn, &sub, "DELETING"));
             }
         }
+        h.evaluation.dirty = true;
         Ok(types::BatchDisableStandardsResponse { standards_subscriptions: Some(out) })
     }
 
@@ -357,6 +359,7 @@ impl SecurityHub {
                 updated_at: ctx.received_at,
             },
         );
+        h.evaluation.dirty = true;
         Ok(types::UpdateStandardsControlResponse {})
     }
 
@@ -427,7 +430,7 @@ impl SecurityHub {
                     .ok_or_else(|| invalid_input(format!("Invalid StandardsArn: {arn}")))?;
                 catalog::controls_in(s.key).map(|(c, _, _)| definition(c)).collect()
             }
-            None => catalog::CONTROLS.iter().map(definition).collect(),
+            None => catalog::controls().iter().map(definition).collect(),
         };
         let (page, next_token) = paginate(all, input.max_results, 100, input.next_token.as_deref())?;
         Ok(types::ListSecurityControlDefinitionsResponse { security_control_definitions: page, next_token })
@@ -448,6 +451,7 @@ impl SecurityHub {
         let rec = h.security_controls.entry(c.id.to_string()).or_default();
         rec.parameters.extend(input.parameters);
         rec.last_update_reason = input.last_update_reason;
+        h.evaluation.dirty = true;
         Ok(types::UpdateSecurityControlResponse {})
     }
 
@@ -577,6 +581,7 @@ impl SecurityHub {
                 },
             );
         }
+        h.evaluation.dirty = true;
         Ok(types::BatchUpdateStandardsControlAssociationsResponse {
             unprocessed_association_updates: Some(unprocessed),
         })
@@ -617,5 +622,6 @@ pub fn apply_control_policy(
             }
         }
     }
+    h.evaluation.dirty = true;
     let _ = partition;
 }

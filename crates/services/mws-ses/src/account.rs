@@ -9,10 +9,37 @@ use mws_core::{RequestContext, ServiceError};
 
 use crate::names::{self, authorize};
 use crate::send;
-use crate::state::Suppressed;
+use crate::state::{Region, Suppressed};
 use crate::v1::types as t1;
 use crate::v2::types as t2;
 use crate::{v2, Ses};
+
+/// How long AWS takes to review a production access request.
+pub const REVIEW_HOURS: i64 = 24;
+
+/// Decide a pending production access review whose time has come: it is
+/// granted (50,000 messages a day, 14 a second) once 24 hours have passed.
+pub(crate) fn settle_review(r: &mut Region, now: DateTime<Utc>) {
+    if r.account.review_opened.is_some_and(|t| now - t >= Duration::hours(REVIEW_HOURS)) {
+        decide_review(r, "GRANTED");
+    }
+}
+
+/// Close the account's production access review as `GRANTED` or `DENIED`
+/// (opening one first if none is pending, so tests can skip the request).
+pub(crate) fn decide_review(r: &mut Region, status: &str) {
+    r.account.review_opened = None;
+    let details = r.account.details.get_or_insert_with(|| t2::AccountDetails {
+        mail_type: Some("TRANSACTIONAL".into()),
+        website_url: Some("https://example.com".into()),
+        ..Default::default()
+    });
+    let case_id = details.review_details.as_ref().and_then(|v| v.case_id.clone()).unwrap_or_else(names::case_id);
+    details.review_details = Some(t2::ReviewDetails { status: Some(status.into()), case_id: Some(case_id) });
+    if status == "GRANTED" {
+        r.account.production_access = true;
+    }
+}
 
 impl Ses {
     // ------------------------------------------------------------ v1
@@ -132,24 +159,36 @@ impl Ses {
         if !matches!(input.mail_type.as_str(), "MARKETING" | "TRANSACTIONAL") {
             return Err(v2::errors::bad_request(format!("Invalid MailType {}.", input.mail_type)));
         }
-        let grant = input.production_access_enabled.unwrap_or(false);
+        let request = input.production_access_enabled.unwrap_or(false);
+        let now = ctx.received_at;
         self.with_region(ctx, |r| {
-            if r.account.production_access && grant && r.account.details.is_some() {
+            let review = r.account.details.as_ref().and_then(|d| d.review_details.clone());
+            let status = review.as_ref().and_then(|v| v.status.clone());
+            if request && r.account.production_access {
                 return Err(v2::errors::conflict("Production access has already been granted for this account."));
             }
-            let case_id = names::token(10);
+            if request && status.as_deref() == Some("PENDING") {
+                return Err(v2::errors::conflict(
+                    "A request for production access is already being reviewed for this account.",
+                ));
+            }
+            // Asking for production access opens a support case. The
+            // account stays in the sandbox while it is reviewed (24 hours
+            // on the emulated clock, or `POST /_aws/ses/production-access`).
+            let review_details = if request {
+                r.account.review_opened = Some(now);
+                Some(t2::ReviewDetails { status: Some("PENDING".into()), case_id: Some(names::case_id()) })
+            } else {
+                review
+            };
             r.account.details = Some(t2::AccountDetails {
                 mail_type: Some(input.mail_type),
                 website_url: Some(input.website_url),
                 contact_language: input.contact_language,
                 use_case_description: input.use_case_description,
                 additional_contact_email_addresses: input.additional_contact_email_addresses,
-                review_details: grant
-                    .then(|| t2::ReviewDetails { status: Some("GRANTED".into()), case_id: Some(case_id) }),
+                review_details,
             });
-            if grant {
-                r.account.production_access = true;
-            }
             Ok(Default::default())
         })
     }

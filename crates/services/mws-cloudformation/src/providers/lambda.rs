@@ -180,6 +180,10 @@ struct Function;
 
 #[async_trait::async_trait]
 impl Provider for Function {
+    fn name_property(&self) -> Option<&'static str> {
+        Some("FunctionName")
+    }
+
     fn create_only(&self) -> &'static [&'static str] {
         &["FunctionName", "PackageType"]
     }
@@ -461,6 +465,10 @@ struct Alias;
 
 #[async_trait::async_trait]
 impl Provider for Alias {
+    fn name_property(&self) -> Option<&'static str> {
+        Some("Name")
+    }
+
     fn create_only(&self) -> &'static [&'static str] {
         &["FunctionName", "Name"]
     }

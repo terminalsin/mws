@@ -21,6 +21,30 @@ pub fn parameters(p: &[crate::parameters::StackParameter]) -> Option<Vec<types::
     })
 }
 
+/// A request's rollback configuration as stored.
+pub fn rollback_config_of(c: Option<types::RollbackConfiguration>) -> Option<crate::state::RollbackConfig> {
+    c.map(|c| crate::state::RollbackConfig {
+        triggers: c.rollback_triggers.unwrap_or_default().into_iter().map(|t| (t.arn, t.r#type)).collect(),
+        monitoring_minutes: c.monitoring_time_in_minutes,
+    })
+}
+
+/// A stored rollback configuration as the API returns it.
+pub fn rollback_configuration(c: Option<&crate::state::RollbackConfig>) -> types::RollbackConfiguration {
+    match c {
+        None => types::RollbackConfiguration::default(),
+        Some(c) => types::RollbackConfiguration {
+            rollback_triggers: Some(
+                c.triggers
+                    .iter()
+                    .map(|(arn, ty)| types::RollbackTrigger { arn: arn.clone(), r#type: ty.clone() })
+                    .collect(),
+            ),
+            monitoring_time_in_minutes: c.monitoring_minutes,
+        },
+    }
+}
+
 pub fn stack(s: &Stack) -> types::Stack {
     let drift = types::StackDriftInformation {
         stack_drift_status: s.drift_status.clone().unwrap_or_else(|| "NOT_CHECKED".into()),
@@ -35,7 +59,7 @@ pub fn stack(s: &Stack) -> types::Stack {
         creation_time: s.created,
         deletion_time: s.deleted,
         last_updated_time: s.updated,
-        rollback_configuration: Some(types::RollbackConfiguration::default()),
+        rollback_configuration: Some(rollback_configuration(s.rollback_configuration.as_ref())),
         stack_status: s.status.clone(),
         stack_status_reason: s.status_reason.clone(),
         disable_rollback: Some(s.disable_rollback),

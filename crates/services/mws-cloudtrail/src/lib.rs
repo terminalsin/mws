@@ -74,6 +74,16 @@ struct Inner {
     /// Events waiting for EventBridge.
     bus: Mutex<Vec<(RequestContext, mws_events::ServiceEvent)>>,
     started: OnceLock<()>,
+    /// Who else wants every event as it is recorded.
+    subscribers: RwLock<Vec<Arc<dyn EventSubscriber>>>,
+}
+
+/// Something that wants every CloudTrail event as it is recorded, such as
+/// GuardDuty, which analyses management events for threats. It is called
+/// on the request's task after the event is in the event history, with no
+/// CloudTrail lock held: do slow work elsewhere.
+pub trait EventSubscriber: Send + Sync {
+    fn on_event(&self, ctx: &RequestContext, event: &record::Recorded);
 }
 
 impl CloudTrail {
@@ -121,6 +131,11 @@ impl CloudTrail {
     /// administrators, need the organization.
     pub fn set_organizations(&self, view: Arc<dyn mws_iam::OrganizationView>) {
         *self.inner.organizations.write().expect("CloudTrail organizations lock poisoned") = Some(view);
+    }
+
+    /// Hand every recorded event to `subscriber` too.
+    pub fn add_event_subscriber(&self, subscriber: Arc<dyn EventSubscriber>) {
+        self.inner.subscribers.write().expect("CloudTrail subscribers lock poisoned").push(subscriber);
     }
 
     fn lock(&self) -> MutexGuard<'_, State> {
@@ -175,7 +190,15 @@ impl ApiCallObserver for CloudTrail {
         let offset = (ctx.received_at - chrono::Utc::now()).num_milliseconds();
         *self.inner.template.lock().expect("template lock poisoned") = Some((ctx.clone(), offset.max(0)));
         if let Some(e) = record::build(ctx, call, http) {
-            self.ingest(ctx, e);
+            let subscribers = self.inner.subscribers.read().expect("CloudTrail subscribers lock poisoned").clone();
+            if subscribers.is_empty() {
+                self.ingest(ctx, e);
+            } else {
+                self.ingest(ctx, e.clone());
+                for s in &subscribers {
+                    s.on_event(ctx, &e);
+                }
+            }
         }
         self.ensure_started();
     }

@@ -120,6 +120,9 @@ pub struct Hub {
     /// rules, policies, aggregators, connectors can), by ARN.
     #[serde(default)]
     pub resource_tags: BTreeMap<String, Tags>,
+    /// When the security checks last ran, and whether they are due again.
+    #[serde(default)]
+    pub evaluation: crate::evaluation::EvaluationRec,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

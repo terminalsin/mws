@@ -43,6 +43,13 @@ fn v2_simple(subject: &str, text: &str) -> t2::EmailContent {
         .build()
 }
 
+/// Move the emulated clock one second on, past the sandbox's maximum
+/// send rate of one message a second.
+async fn next_second(mws: &Mws) {
+    let (status, _) = mws.control("POST", "/_mws/clock", Some(r#"{"advanceSeconds": 1}"#)).await;
+    assert_eq!(status, 200);
+}
+
 async fn outbox(mws: &Mws, query: &str) -> Vec<serde_json::Value> {
     let (status, body) = mws.control("GET", &format!("/_aws/ses{query}"), None).await;
     assert_eq!(status, 200);
@@ -193,6 +200,7 @@ async fn v1_email_verification_sandbox_and_outbox() {
     assert!(mails[0]["RawData"].as_str().unwrap().contains("Subject: Quarterly report"));
 
     let raw = "From: sender@example.com\r\nTo: success@simulator.amazonses.com\r\nSubject: Raw one\r\n\r\nraw body\r\n";
+    next_second(&mws).await;
     ses.send_raw_email()
         .raw_message(t1::RawMessage::builder().data(aws_sdk_ses::primitives::Blob::new(raw)).build().unwrap())
         .send()
@@ -374,6 +382,7 @@ async fn configuration_set_events_reach_sns_and_the_mailbox_simulator_bounces() 
             .send()
     };
     let ok = send("success@simulator.amazonses.com").await.unwrap();
+    next_second(&mws).await;
     let bounced = send("bounce@simulator.amazonses.com").await.unwrap();
 
     let events = drain(&cfg, &queue, 4).await;

@@ -495,8 +495,10 @@ impl Deployment {
         self.event(logical_id, ty, Some(&created.physical_id), status, reason, None).await;
     }
 
-    /// Delete one resource record's physical resource.
-    async fn delete_physical(&self, r: &Resource, events: bool) -> Result<(), String> {
+    /// Delete one resource record's physical resource, taking a final
+    /// snapshot first when `snapshot` is set and the type supports it
+    /// (types that do not are deleted, as AWS falls back to `Delete`).
+    async fn delete_physical(&self, r: &Resource, events: bool, snapshot: bool) -> Result<(), String> {
         let Some(physical) = r.physical_id.clone() else { return Ok(()) };
         let provider = match self.cfn.provider_in(&self.ctx.caller.account_id, &self.ctx.region, &r.resource_type) {
             Some(p) => p,
@@ -509,7 +511,16 @@ impl Deployment {
         let tags = Self::stack_tags(&stack);
         let cx = self.cx(&stack, &r.logical_id, &tags);
         let deleted = match self.hooks(&r.logical_id, &r.resource_type, "DELETE", &r.properties, None).await {
-            Ok(()) => provider.delete(&cx, &physical, &r.properties, &r.attributes).await,
+            Ok(()) => {
+                let snapped = match snapshot {
+                    true => provider.snapshot(&cx, &physical, &r.properties, &r.attributes).await,
+                    false => None,
+                };
+                match snapped {
+                    Some(Err(e)) => Err(e),
+                    _ => provider.delete(&cx, &physical, &r.properties, &r.attributes).await,
+                }
+            }
             Err(reason) => Err(providers::HandlerError::invalid(reason)),
         };
         match deleted {
@@ -542,14 +553,29 @@ impl Deployment {
         }
     }
 
-    /// Delete existing resources in reverse dependency order. Returns the
-    /// logical ids that failed.
+    /// The deletion policies that keep resources when an operation rolls
+    /// back what it created: `Retain`, unless the stack was created or
+    /// updated with `RetainExceptOnCreate`. Resources whose policy is
+    /// `RetainExceptOnCreate` are always deleted then.
+    fn rollback_retains(&self) -> &'static [&'static str] {
+        if self.with(|s| s.retain_except_on_create) {
+            &[]
+        } else {
+            &["Retain"]
+        }
+    }
+
+    /// Delete existing resources in reverse dependency order. Resources
+    /// whose `DeletionPolicy` is in `retain_policies` are kept
+    /// (`DELETE_SKIPPED`); `snapshots` honours `DeletionPolicy: Snapshot`.
+    /// Returns the logical ids that failed.
     async fn delete_resources(
         &self,
         template: Option<&Template>,
         only: Option<&BTreeSet<String>>,
         retain: &BTreeSet<String>,
-        honour_policies: bool,
+        retain_policies: &[&str],
+        snapshots: bool,
     ) -> Vec<String> {
         let stack = self.snapshot();
         let mut order: Vec<String> = match template {
@@ -589,14 +615,14 @@ impl Deployment {
                 .and_then(|t| t.resource(&logical))
                 .and_then(|d| d.get("DeletionPolicy"))
                 .and_then(Value::as_str)
-                .unwrap_or("Delete");
-            if retain.contains(&logical) || (honour_policies && matches!(policy, "Retain" | "RetainExceptOnCreate")) {
+                .unwrap_or_else(|| default_deletion_policy(&r));
+            if retain.contains(&logical) || retain_policies.contains(&policy) {
                 self.event(&logical, &r.resource_type, r.physical_id.as_deref(), "DELETE_SKIPPED", None, None).await;
                 self.update_resource(&logical, |x| x.status = "DELETE_SKIPPED".into());
                 continue;
             }
             self.update_resource(&logical, |x| x.status = "DELETE_IN_PROGRESS".into());
-            match self.delete_physical(&r, true).await {
+            match self.delete_physical(&r, true, snapshots && policy == "Snapshot").await {
                 Ok(()) => self.update_resource(&logical, |x| {
                     x.status = "DELETE_COMPLETE".into();
                     x.status_reason = None;
@@ -721,7 +747,9 @@ impl Deployment {
                     Some("DO_NOTHING") => self.stack_status("CREATE_FAILED", Some(&reason)).await,
                     Some("DELETE") => {
                         self.stack_status("DELETE_IN_PROGRESS", Some(&reason)).await;
-                        let failed = self.delete_resources(Some(&template), None, &BTreeSet::new(), false).await;
+                        let retains = self.rollback_retains();
+                        let failed =
+                            self.delete_resources(Some(&template), None, &BTreeSet::new(), retains, false).await;
                         if failed.is_empty() {
                             self.with(|s| s.deleted = Some(Utc::now() + self.offset));
                             self.stack_status("DELETE_COMPLETE", None).await;
@@ -803,16 +831,17 @@ impl Deployment {
             .creation_order(&|l| data.included(template, l))
             .map_err(|reason| Failure { logical_id: None, reason })?;
         for logical in order {
+            self.check_triggers().await?;
             self.create_resource(template, data, &logical, false).await?;
         }
-        Ok(())
+        self.monitor().await
     }
 
     /// Roll a failed creation back: delete what was created.
     pub async fn rollback_create(&self, template: &Template, reason: &str) {
         self.stack_status("ROLLBACK_IN_PROGRESS", Some(reason)).await;
-        let retain_except_on_create = self.with(|s| s.retain_except_on_create);
-        let failed = self.delete_resources(Some(template), None, &BTreeSet::new(), !retain_except_on_create).await;
+        let retains = self.rollback_retains();
+        let failed = self.delete_resources(Some(template), None, &BTreeSet::new(), retains, false).await;
         if failed.is_empty() {
             self.stack_status("ROLLBACK_COMPLETE", None).await;
         } else {
@@ -841,7 +870,8 @@ impl Deployment {
             return;
         }
         let template = Template::parse(&stack.template_body).ok();
-        let failed = self.delete_resources(template.as_ref(), None, &retain, true).await;
+        let failed =
+            self.delete_resources(template.as_ref(), None, &retain, &["Retain", "RetainExceptOnCreate"], true).await;
         if failed.is_empty() {
             self.with(|s| s.deleted = Some(Utc::now() + self.offset));
             self.stack_status("DELETE_COMPLETE", None).await;
@@ -908,6 +938,7 @@ impl Deployment {
         let policy = policy_override.map(str::to_string).or(stack_policy);
         let previous = self.with(|s| s.previous.clone()).expect("updates keep the previous deployment");
         for logical in order {
+            self.check_triggers().await?;
             if self.cfn.cancel_requested(&self.stack_id) {
                 return Err(Failure { logical_id: Some(logical.clone()), reason: "Resource update cancelled".into() });
             }
@@ -948,6 +979,18 @@ impl Deployment {
                 }
             }
             if replace {
+                // A new resource cannot take a name the template fixes.
+                if let Some(key) = provider.name_property() {
+                    if let Some(name) = props.get(key).filter(|v| !v.is_null() && old.properties.get(key) == Some(*v)) {
+                        let reason = format!(
+                            "CloudFormation cannot update a stack when a custom-named resource requires replacing. Rename {} and update the stack again.",
+                            providers::text(name)
+                        );
+                        self.event(&logical, &ty, old.physical_id.as_deref(), "UPDATE_FAILED", Some(&reason), None)
+                            .await;
+                        return Err(fail(reason));
+                    }
+                }
                 self.create_resource(template, data, &logical, true).await?;
                 // Keep the old physical resource for the cleanup phase.
                 self.with(|s| s.replaced.push(old.clone()));
@@ -993,6 +1036,59 @@ impl Deployment {
             }
         }
         let _ = previous;
+        self.monitor().await
+    }
+
+    /// Fail the operation when a rollback trigger's alarm is in ALARM.
+    async fn check_triggers(&self) -> Result<(), Failure> {
+        let config = self.with(|s| s.rollback_configuration.clone());
+        let Some(config) = config.filter(|c| !c.triggers.is_empty()) else { return Ok(()) };
+        let names: Vec<String> = config
+            .triggers
+            .iter()
+            .filter_map(|(arn, _)| arn.split_once(":alarm:").map(|(_, n)| n.to_string()))
+            .collect();
+        let input = serde_json::json!({"AlarmNames": names, "AlarmTypes": ["MetricAlarm", "CompositeAlarm"]});
+        let out = match self.cfn.call(&self.ctx, "monitoring", "DescribeAlarms", input).await {
+            Ok(o) => o,
+            Err(e) => {
+                tracing::debug!("rollback trigger check failed: {}", e.message);
+                return Ok(());
+            }
+        };
+        let alarming: Vec<String> = ["MetricAlarms", "CompositeAlarms"]
+            .iter()
+            .flat_map(|k| out[*k].as_array().cloned().unwrap_or_default())
+            .filter(|a| a["StateValue"] == "ALARM")
+            .filter_map(|a| a["AlarmArn"].as_str().map(str::to_string))
+            .collect();
+        if alarming.is_empty() {
+            return Ok(());
+        }
+        Err(Failure {
+            logical_id: None,
+            reason: format!(
+                "Rollback triggered: the rollback trigger alarm(s) [{}] went into ALARM state. ",
+                alarming.join(", ")
+            ),
+        })
+    }
+
+    /// Watch the rollback triggers for `MonitoringTimeInMinutes` (on the
+    /// emulated clock) after the resources are deployed.
+    async fn monitor(&self) -> Result<(), Failure> {
+        let config = self.with(|s| s.rollback_configuration.clone());
+        let Some(config) = config.filter(|c| !c.triggers.is_empty()) else { return Ok(()) };
+        self.check_triggers().await?;
+        let minutes = config.monitoring_minutes.unwrap_or(0).max(0);
+        let deadline = self.cfn.now().max(self.now()) + chrono::Duration::minutes(minutes as i64);
+        while self.cfn.now() < deadline {
+            if self.cfn.cancel_requested(&self.stack_id) {
+                return Err(Failure { logical_id: None, reason: "Resource update cancelled".into() });
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(250)).await;
+            self.check_triggers().await?;
+        }
         Ok(())
     }
 
@@ -1007,7 +1103,14 @@ impl Deployment {
             .filter(|l| !keep.contains(l))
             .collect();
         if !removed.is_empty() {
-            self.delete_resources(old_template.as_ref(), Some(&removed), &BTreeSet::new(), true).await;
+            self.delete_resources(
+                old_template.as_ref(),
+                Some(&removed),
+                &BTreeSet::new(),
+                &["Retain", "RetainExceptOnCreate"],
+                true,
+            )
+            .await;
         }
         for old in self.with(|s| std::mem::take(&mut s.replaced)) {
             let policy = template
@@ -1018,7 +1121,7 @@ impl Deployment {
             if matches!(policy, "Retain" | "RetainExceptOnCreate") {
                 continue;
             }
-            let _ = self.delete_physical(&old, true).await;
+            let _ = self.delete_physical(&old, true, policy == "Snapshot").await;
         }
     }
 
@@ -1101,6 +1204,7 @@ impl Deployment {
             s.parameters = previous.parameters.clone();
             s.outputs = previous.outputs.clone();
             s.tags = previous.tags.clone();
+            s.original_template = previous.original_template.clone();
             s.description = old_template.as_ref().and_then(Template::description);
         });
         self.stack_status("UPDATE_ROLLBACK_COMPLETE_CLEANUP_IN_PROGRESS", None).await;
@@ -1111,16 +1215,29 @@ impl Deployment {
             .filter(|l| !previous.resources.iter().any(|r| &r.logical_id == l))
             .collect();
         if !added.is_empty() {
-            self.delete_resources(new_template.as_ref(), Some(&added), &BTreeSet::new(), false).await;
+            let retains = self.rollback_retains();
+            self.delete_resources(new_template.as_ref(), Some(&added), &BTreeSet::new(), retains, false).await;
         }
         for r in created_now {
-            let _ = self.delete_physical(&r, true).await;
+            let _ = self.delete_physical(&r, true, false).await;
         }
         self.with(|s| {
             s.previous = None;
-            s.resources.retain(|r| r.status != "DELETE_COMPLETE");
+            s.resources.retain(|r| r.status != "DELETE_COMPLETE" && r.status != "DELETE_SKIPPED");
         });
         self.stack_status("UPDATE_ROLLBACK_COMPLETE", None).await;
+    }
+}
+
+/// The `DeletionPolicy` AWS applies when a template gives none: `Snapshot`
+/// for database clusters and stand-alone DB instances, `Delete` otherwise.
+fn default_deletion_policy(r: &Resource) -> &'static str {
+    match r.resource_type.as_str() {
+        "AWS::RDS::DBCluster" | "AWS::Redshift::Cluster" | "AWS::Neptune::DBCluster" | "AWS::DocDB::DBCluster" => {
+            "Snapshot"
+        }
+        "AWS::RDS::DBInstance" if !r.properties.contains_key("DBClusterIdentifier") => "Snapshot",
+        _ => "Delete",
     }
 }
 

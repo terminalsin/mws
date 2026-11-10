@@ -126,7 +126,12 @@ impl CloudFormation {
         String::from_utf8(body).map_err(|_| validation("Template format error: unsupported structure."))
     }
 
-    /// Parse and check a template and its parameters for a deployment.
+    /// Parse and check a template and its parameters for a deployment,
+    /// running its transforms. `direct` is true for CreateStack and
+    /// UpdateStack, which need `CAPABILITY_AUTO_EXPAND` to run transforms
+    /// (a change set lets the caller review the processed template
+    /// instead). The template returned is the processed one; its
+    /// `original` holds `body` when transforms changed it.
     #[allow(clippy::too_many_arguments)]
     pub(crate) async fn prepare(
         &self,
@@ -139,11 +144,11 @@ impl CloudFormation {
         previous: &[StackParameter],
         capabilities: &[String],
         notification_arns: &[String],
+        direct: bool,
     ) -> Result<(Template, Vec<StackParameter>, EvalData), ServiceError> {
-        let template = Template::parse(body).map_err(validation)?;
-        self.check_template(ctx, &template)?;
-        check_capabilities(&template, capabilities)?;
-        let mut params = parameters::assign(&template, provided, previous).map_err(validation)?;
+        let raw = Template::parse(body).map_err(validation)?;
+        check_auto_expand(&raw, capabilities, direct)?;
+        let mut params = parameters::assign(&raw, provided, previous).map_err(validation)?;
         for p in params.iter_mut() {
             if parameters::ssm_value_type(&p.ty).is_some() {
                 let out =
@@ -156,6 +161,17 @@ impl CloudFormation {
                 p.resolved = out["Parameter"]["Value"].as_str().map(str::to_string);
             }
         }
+        let template = if raw.needs_processing() {
+            let mut t = crate::transform::process(self, deploy_ctx, &raw, &params, stack_name, stack_id)
+                .await
+                .map_err(validation)?;
+            t.original = Some(body.to_string());
+            t
+        } else {
+            raw
+        };
+        self.check_template(ctx, &template)?;
+        check_capabilities(&template, capabilities)?;
         let data = self.eval_data(ctx, &template, &params, stack_name, stack_id, notification_arns).await?;
         template.creation_order(&|l| data.included(&template, l)).map_err(validation)?;
         Ok((template, params, data))
@@ -291,10 +307,22 @@ const IAM_TYPES: &[(&str, Option<&str>)] = &[
     ("AWS::IAM::UserToGroupAddition", None),
 ];
 
+/// Resource types that expand into templates of their own.
+const EXPANDING_TYPES: &[&str] = &["AWS::CloudFormation::Stack", "AWS::Serverless::Application"];
+
+fn has_snippet_transform(v: &Value) -> bool {
+    match v {
+        Value::Object(o) => o.iter().any(|(k, v)| k == "Fn::Transform" || has_snippet_transform(v)),
+        Value::Array(a) => a.iter().any(has_snippet_transform),
+        _ => false,
+    }
+}
+
 /// The capabilities a template needs, and the resources that need them.
 pub(crate) fn required_capabilities(template: &Template) -> (Vec<String>, Vec<String>) {
     let mut iam = BTreeSet::new();
     let mut named = false;
+    let mut expand = BTreeSet::new();
     for r in template.resources().values() {
         let Some(ty) = r.get("Type").and_then(Value::as_str) else { continue };
         if let Some((_, name_prop)) = IAM_TYPES.iter().find(|(t, _)| *t == ty) {
@@ -305,24 +333,61 @@ pub(crate) fn required_capabilities(template: &Template) -> (Vec<String>, Vec<St
                 }
             }
         }
+        if EXPANDING_TYPES.contains(&ty) {
+            expand.insert(ty.to_string());
+        }
     }
     let mut caps = Vec::new();
     if !iam.is_empty() {
         caps.push(if named { "CAPABILITY_NAMED_IAM".to_string() } else { "CAPABILITY_IAM".to_string() });
     }
-    (caps, iam.into_iter().collect())
+    if !expand.is_empty()
+        || !template.transforms().is_empty()
+        || has_snippet_transform(&Value::Object(template.root.clone()))
+    {
+        caps.push("CAPABILITY_AUTO_EXPAND".to_string());
+    }
+    let mut resources: Vec<String> = iam.into_iter().collect();
+    resources.extend(expand);
+    (caps, resources)
 }
 
+fn insufficient(c: &str) -> ServiceError {
+    ServiceError::client("InsufficientCapabilitiesException", 400, format!("Requires capabilities : [{c}]"))
+}
+
+/// Transforms run straight into a stack (CreateStack, UpdateStack) need
+/// `CAPABILITY_AUTO_EXPAND`; a change set processes them for review
+/// without it.
+pub(crate) fn check_auto_expand(template: &Template, given: &[String], direct: bool) -> Result<(), ServiceError> {
+    let transforms = !template.transforms().is_empty() || has_snippet_transform(&Value::Object(template.root.clone()));
+    if direct && transforms && !given.iter().any(|c| c == "CAPABILITY_AUTO_EXPAND") {
+        return Err(insufficient("CAPABILITY_AUTO_EXPAND"));
+    }
+    Ok(())
+}
+
+/// The IAM capabilities a (processed) template needs, and
+/// `CAPABILITY_AUTO_EXPAND` for nested stacks. `CAPABILITY_NAMED_IAM`
+/// covers `CAPABILITY_IAM`.
 pub(crate) fn check_capabilities(template: &Template, given: &[String]) -> Result<(), ServiceError> {
     let (needed, _) = required_capabilities(template);
+    let has = |c: &str| given.iter().any(|g| g == c);
     for c in needed {
-        let ok = given.contains(&c);
+        let ok = match c.as_str() {
+            "CAPABILITY_IAM" => has("CAPABILITY_IAM") || has("CAPABILITY_NAMED_IAM"),
+            // Transforms are checked before processing (`check_auto_expand`).
+            "CAPABILITY_AUTO_EXPAND" => {
+                has(&c)
+                    || !template
+                        .resources()
+                        .values()
+                        .any(|r| r.get("Type").and_then(Value::as_str).is_some_and(|t| EXPANDING_TYPES.contains(&t)))
+            }
+            _ => has(&c),
+        };
         if !ok {
-            return Err(ServiceError::client(
-                "InsufficientCapabilitiesException",
-                400,
-                format!("Requires capabilities : [{c}]"),
-            ));
+            return Err(insufficient(&c));
         }
     }
     Ok(())

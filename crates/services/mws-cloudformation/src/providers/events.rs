@@ -67,6 +67,10 @@ impl Rule {
 
 #[async_trait::async_trait]
 impl Provider for Rule {
+    fn name_property(&self) -> Option<&'static str> {
+        Some("Name")
+    }
+
     fn create_only(&self) -> &'static [&'static str] {
         &["Name", "EventBusName"]
     }
@@ -131,6 +135,10 @@ struct EventBus;
 
 #[async_trait::async_trait]
 impl Provider for EventBus {
+    fn name_property(&self) -> Option<&'static str> {
+        Some("Name")
+    }
+
     fn create_only(&self) -> &'static [&'static str] {
         &["Name", "EventSourceName"]
     }

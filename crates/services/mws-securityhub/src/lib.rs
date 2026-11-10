@@ -7,8 +7,9 @@
 //! state, finding history and automation rules applied in order. Filters,
 //! sorting, insights and their results are evaluated over the stored
 //! findings. Standards, controls and their parameters come from a built-in
-//! catalogue (see [`catalog`]); Security Hub does not evaluate resources
-//! itself, so control findings only appear when something imports them.
+//! catalogue (see [`catalog`]). Enabled controls are evaluated against
+//! the emulated services through a [`ControlEvidence`] link (see
+//! [`evaluation`]), producing control findings with `Compliance.Status`.
 //!
 //! Accounts relate the way AWS relates them: administrators invite
 //! members or, as an organization's delegated administrator (set through
@@ -34,6 +35,7 @@ pub mod catalog;
 mod common;
 mod config_policies;
 mod connectors;
+pub mod evaluation;
 mod filters;
 mod findings;
 mod handler;
@@ -50,6 +52,7 @@ use mws_core::{HttpRequest, HttpResponse, RequestContext, Service, ServiceError}
 
 use state::State;
 
+pub use evaluation::{ControlEvidence, ResourceEvaluation};
 pub use findings::ServiceImportResult;
 
 /// An organization as Security Hub sees it.
@@ -113,8 +116,20 @@ pub trait ExportSink: Send + Sync {
     ) -> Result<(), String>;
 }
 
+/// Security Hub's service-linked role in IAM (`AWSServiceRoleForSecurityHub`).
+pub trait ServiceLinkedRoles: Send + Sync {
+    /// Whether the role exists in `account`.
+    fn exists(&self, partition: &str, account: &str) -> bool;
+    /// Create it (the caller's permission was checked).
+    fn create(&self, account: &str);
+}
+
 pub(crate) struct Inner {
     state: RwLock<State>,
+    evidence: OnceLock<Arc<dyn ControlEvidence>>,
+    roles: OnceLock<Arc<dyn ServiceLinkedRoles>>,
+    /// Accounts that changed while the state lock was busy.
+    pending_changes: std::sync::Mutex<std::collections::BTreeSet<String>>,
     organizations: OnceLock<Arc<dyn OrganizationLink>>,
     events: OnceLock<Arc<dyn FindingEventSink>>,
     exports: OnceLock<Arc<dyn ExportSink>>,
@@ -137,6 +152,9 @@ impl SecurityHub {
         Self {
             inner: Arc::new(Inner {
                 state: RwLock::new(State::default()),
+                evidence: OnceLock::new(),
+                roles: OnceLock::new(),
+                pending_changes: Default::default(),
                 organizations: OnceLock::new(),
                 events: OnceLock::new(),
                 exports: OnceLock::new(),
@@ -158,6 +176,16 @@ impl SecurityHub {
     /// Write V2 export jobs to S3.
     pub fn set_export_sink(&self, sink: Arc<dyn ExportSink>) {
         let _ = self.inner.exports.set(sink);
+    }
+
+    /// Evaluate security controls against the emulated services.
+    pub fn set_control_evidence(&self, evidence: Arc<dyn ControlEvidence>) {
+        let _ = self.inner.evidence.set(evidence);
+    }
+
+    /// Create the service-linked role in IAM on `EnableSecurityHub`.
+    pub fn set_service_linked_roles(&self, roles: Arc<dyn ServiceLinkedRoles>) {
+        let _ = self.inner.roles.set(roles);
     }
 
     pub(crate) fn organizations(&self) -> Option<&Arc<dyn OrganizationLink>> {
@@ -185,6 +213,7 @@ impl Service for SecurityHub {
     }
 
     async fn handle(&self, ctx: RequestContext, request: HttpRequest) -> HttpResponse {
+        self.evaluate_due(&ctx).await;
         generated::dispatch(self, &ctx, &request).await
     }
 
@@ -205,6 +234,7 @@ impl Service for SecurityHub {
         operation: &str,
         input: serde_json::Value,
     ) -> Result<serde_json::Value, ServiceError> {
+        self.evaluate_due(&ctx).await;
         generated::invoke(self, &ctx, operation, input).await
     }
 

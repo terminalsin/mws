@@ -459,78 +459,177 @@ impl GuardDuty {
         Ok(types::GetFindingsStatisticsResponse { finding_statistics: stats, next_token: None })
     }
 
+    /// `account`'s administrator, while it is an enabled member of one.
+    pub(crate) fn admin_of(state: &State, account: &str, region: &str) -> Option<String> {
+        state.account(account, region).and_then(|a| a.administrator.as_ref()).map(|l| l.account.clone()).filter(
+            |admin| {
+                state
+                    .detector(admin, region)
+                    .and_then(|d| d.members.get(account))
+                    .is_some_and(|m| m.status == "Enabled")
+            },
+        )
+    }
+
+    /// The suppression rules (archive filters) of `account` and its
+    /// administrator, by rank.
+    fn suppression_rules(
+        state: &State,
+        account: &str,
+        admin: Option<&str>,
+        region: &str,
+    ) -> Vec<types::FindingCriteria> {
+        let mut rules: Vec<types::FindingCriteria> = Vec::new();
+        for a in std::iter::once(account).chain(admin) {
+            if let Some(d) = state.detector(a, region) {
+                let mut filters: Vec<_> = d.filters.values().filter(|f| f.action == "ARCHIVE").collect();
+                filters.sort_by_key(|f| f.rank);
+                rules.extend(filters.into_iter().map(|f| f.criteria.clone()));
+            }
+        }
+        rules
+    }
+
+    /// Store `findings` in `account`'s detector: new ones that a
+    /// suppression rule matches are archived. Returns the findings stored,
+    /// each with whether it is new and whether it is suppressed.
+    fn store_findings(
+        state: &mut State,
+        account: &str,
+        region: &str,
+        findings: Vec<types::Finding>,
+    ) -> Option<(Option<String>, Vec<Stored>)> {
+        let admin = Self::admin_of(state, account, region);
+        let rules = Self::suppression_rules(state, account, admin.as_deref(), region);
+        let det = state.detector_mut(account, region)?;
+        let mut out = Vec::new();
+        for mut f in findings {
+            let new = !det.findings.contains_key(&f.id);
+            let detail = event_detail(&f);
+            if new && rules.iter().any(|r| criteria_match(r, &detail)) {
+                if let Some(s) = f.service.as_mut() {
+                    s.archived = Some(true);
+                }
+            }
+            let suppressed = f.service.as_ref().and_then(|s| s.archived) == Some(true);
+            det.findings.insert(f.id.clone(), f.clone());
+            out.push((f, new, suppressed));
+        }
+        Some((admin, out))
+    }
+
     /// Record findings generated in `account` (new ones, or updates of
-    /// existing ones), then publish them: suppression rules of the account
-    /// and its administrator archive matches, which are then not sent;
-    /// the rest go to EventBridge in the account and its administrator
-    /// account, and to the detector's publishing destinations.
+    /// existing ones), then publish them at once: suppression rules of the
+    /// account and its administrator archive matches, which are then not
+    /// sent; the rest go to EventBridge in the account and its
+    /// administrator account, and to the detector's publishing
+    /// destinations.
     pub(crate) fn record_findings(&self, ctx: &RequestContext, account: &str, findings: Vec<types::Finding>) {
-        let mut publish = Vec::new();
+        let stored = Self::store_findings(&mut self.lock(), account, &ctx.region, findings);
+        let Some((admin, stored)) = stored else { return };
+        let publish: Vec<types::Finding> = stored.into_iter().filter(|(_, _, s)| !s).map(|(f, _, _)| f).collect();
+        self.publish(ctx, account, admin.as_deref(), &publish);
+    }
+
+    /// Record findings that threat detection generated in `account`. As
+    /// in AWS, a new finding is published within five minutes of being
+    /// first seen, and updates of a recurring finding on the detector's
+    /// `FindingPublishingFrequency` (see [`GuardDuty::flush_due`]).
+    pub(crate) fn record_detected(&self, ctx: &RequestContext, account: &str, findings: Vec<types::Finding>) {
+        let now = ctx.received_at;
         {
             let mut state = self.lock();
-            let admin = state
-                .account(account, &ctx.region)
-                .and_then(|a| a.administrator.as_ref())
-                .map(|l| l.account.clone())
-                .filter(|admin| {
-                    state
-                        .detector(admin, &ctx.region)
-                        .and_then(|d| d.members.get(account))
-                        .is_some_and(|m| m.status == "Enabled")
-                });
-            let mut rules: Vec<types::FindingCriteria> = Vec::new();
-            for a in std::iter::once(account).chain(admin.as_deref()) {
-                if let Some(d) = state.detector(a, &ctx.region) {
-                    let mut filters: Vec<_> = d.filters.values().filter(|f| f.action == "ARCHIVE").collect();
-                    filters.sort_by_key(|f| f.rank);
-                    rules.extend(filters.into_iter().map(|f| f.criteria.clone()));
-                }
-            }
+            let Some((_, stored)) = Self::store_findings(&mut state, account, &ctx.region, findings) else { return };
             let Some(det) = state.detector_mut(account, &ctx.region) else { return };
-            for mut f in findings {
-                let new = !det.findings.contains_key(&f.id);
-                let detail = event_detail(&f);
-                if new && rules.iter().any(|r| criteria_match(r, &detail)) {
-                    if let Some(s) = f.service.as_mut() {
-                        s.archived = Some(true);
-                    }
+            let every = crate::detection::frequency(&det.frequency);
+            for (f, new, suppressed) in stored {
+                if suppressed || det.publish_due.contains_key(&f.id) {
+                    continue;
                 }
-                let suppressed = f.service.as_ref().and_then(|s| s.archived) == Some(true);
-                det.findings.insert(f.id.clone(), f.clone());
-                if !suppressed {
-                    publish.push(f);
+                let due = match det.published_at.get(&f.id) {
+                    Some(last) if !new => *last + every,
+                    _ => now + chrono::Duration::seconds(crate::detection::NEW_FINDING_DELAY_SECONDS),
+                };
+                det.publish_due.insert(f.id.clone(), due);
+            }
+        }
+        self.flush_due(ctx);
+    }
+
+    /// Publish the detected findings (and updates) that are due by
+    /// `ctx.received_at`, in every account and Region.
+    pub(crate) fn flush_due(&self, ctx: &RequestContext) {
+        let now = ctx.received_at;
+        let batches: Vec<(String, String, Option<String>, Vec<types::Finding>)> = {
+            let mut state = self.lock();
+            let keys: Vec<String> = state
+                .accounts
+                .iter()
+                .filter(|(_, a)| a.detector.as_ref().is_some_and(|d| d.publish_due.values().any(|t| *t <= now)))
+                .map(|(k, _)| k.clone())
+                .collect();
+            let mut out = Vec::new();
+            for key in keys {
+                let (account, region) = key.split_once('/').unwrap_or((&key, ""));
+                let (account, region) = (account.to_string(), region.to_string());
+                let admin = Self::admin_of(&state, &account, &region);
+                let Some(det) = state.detector_mut(&account, &region) else { continue };
+                let due: Vec<String> =
+                    det.publish_due.iter().filter(|(_, t)| **t <= now).map(|(k, _)| k.clone()).collect();
+                let mut batch = Vec::new();
+                for id in due {
+                    det.publish_due.remove(&id);
+                    let Some(f) = det.findings.get(&id) else { continue };
+                    if f.service.as_ref().and_then(|s| s.archived) == Some(true) || !det.enabled {
+                        continue;
+                    }
+                    det.published_at.insert(id.clone(), now);
+                    batch.push(f.clone());
+                }
+                if !batch.is_empty() {
+                    out.push((account, region, admin, batch));
                 }
             }
-            drop(state);
-            let events = self.events();
-            for f in &publish {
+            out
+        };
+        for (account, region, admin, batch) in batches {
+            let rctx = RequestContext { region, ..ctx.clone() };
+            self.publish(&rctx, &account, admin.as_deref(), &batch);
+        }
+    }
+
+    /// Send `publish` (findings of `account`) to EventBridge in the account
+    /// and its administrator, to Security Hub and to publishing
+    /// destinations.
+    fn publish(&self, ctx: &RequestContext, account: &str, admin: Option<&str>, publish: &[types::Finding]) {
+        if publish.is_empty() {
+            return;
+        }
+        if let Some(sink) = self.events() {
+            for f in publish {
                 let detail = event_detail(f);
-                if let Some(sink) = &events {
-                    for target in std::iter::once(account).chain(admin.as_deref()) {
-                        sink.put_event(
-                            ctx,
-                            GuardDutyEvent {
-                                partition: ctx.partition.clone(),
-                                account: target.to_string(),
-                                region: ctx.region.clone(),
-                                detail_type: "GuardDuty Finding".into(),
-                                detail: detail.clone(),
-                                time: ctx.received_at,
-                            },
-                        );
-                    }
+                for target in std::iter::once(account).chain(admin) {
+                    sink.put_event(
+                        ctx,
+                        GuardDutyEvent {
+                            partition: ctx.partition.clone(),
+                            account: target.to_string(),
+                            region: ctx.region.clone(),
+                            detail_type: "GuardDuty Finding".into(),
+                            detail: detail.clone(),
+                            time: ctx.received_at,
+                        },
+                    );
                 }
             }
-            if let (Some(hub), false) = (self.security_hub(), publish.is_empty()) {
-                // Security Hub aggregates members' findings into its own
-                // administrator, so only the finding's account imports them.
-                hub.import_findings(ctx, account, &ctx.region, publish.iter().map(crate::asff::to_asff).collect());
-            }
-            if !publish.is_empty() {
-                for target in std::iter::once(account).chain(admin.as_deref()) {
-                    self.export_findings(ctx, target, &publish);
-                }
-            }
+        }
+        if let Some(hub) = self.security_hub() {
+            // Security Hub aggregates members' findings into its own
+            // administrator, so only the finding's account imports them.
+            hub.import_findings(ctx, account, &ctx.region, publish.iter().map(crate::asff::to_asff).collect());
+        }
+        for target in std::iter::once(account).chain(admin) {
+            self.export_findings(ctx, target, publish);
         }
     }
 
@@ -592,6 +691,10 @@ impl GuardDuty {
         }
     }
 }
+
+/// A finding as stored: with whether it is new and whether a suppression
+/// rule archived it.
+type Stored = (types::Finding, bool, bool);
 
 /// The resource a finding is about: (resource id, `account|type`).
 fn resource_key(f: &types::Finding) -> (String, String) {

@@ -362,6 +362,10 @@ impl SecurityGroup {
 
 #[async_trait::async_trait]
 impl Provider for SecurityGroup {
+    fn name_property(&self) -> Option<&'static str> {
+        Some("GroupName")
+    }
+
     fn create_only(&self) -> &'static [&'static str] {
         &["GroupDescription", "GroupName", "VpcId"]
     }
@@ -1061,6 +1065,10 @@ struct KeyPair;
 
 #[async_trait::async_trait]
 impl Provider for KeyPair {
+    fn name_property(&self) -> Option<&'static str> {
+        Some("KeyName")
+    }
+
     fn updatable(&self) -> bool {
         false
     }
@@ -1166,6 +1174,35 @@ impl Provider for Volume {
     async fn update(&self, cx: &Cx<'_>, id: &str, old: &Props, new: &Props, attrs: &Props) -> HResult<Props> {
         retag(cx, id, old, new).await?;
         Ok(attrs.clone())
+    }
+
+    /// `DeletionPolicy: Snapshot`: a snapshot of the volume, completed
+    /// before the volume goes.
+    async fn snapshot(&self, cx: &Cx<'_>, id: &str, _props: &Props, _attrs: &Props) -> Option<HResult<()>> {
+        Some(
+            async {
+                let input = json!({
+                    "VolumeId": id,
+                    "Description": format!("Created by CloudFormation for stack {} resource {}", cx.stack_name, cx.logical_id),
+                });
+                let out = cx.call("ec2", "CreateSnapshot", input).await?;
+                let snap = text(&out["SnapshotId"]);
+                stabilize("Snapshot", || async {
+                    let d = cx.call("ec2", "DescribeSnapshots", json!({"SnapshotIds": [snap]})).await?;
+                    match d["Snapshots"][0]["State"].as_str() {
+                        Some("error") => Err(HandlerError::handler(
+                            "NotStabilized",
+                            format!("Snapshot {snap} of volume {id} failed"),
+                        )),
+                        Some("completed") | None => Ok(Some(Value::Null)),
+                        _ => Ok(None),
+                    }
+                })
+                .await?;
+                Ok(())
+            }
+            .await,
+        )
     }
 
     async fn delete(&self, cx: &Cx<'_>, id: &str, _props: &Props, _attrs: &Props) -> HResult<()> {
