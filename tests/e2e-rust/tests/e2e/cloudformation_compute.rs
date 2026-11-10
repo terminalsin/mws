@@ -349,3 +349,58 @@ async fn clusters_groups_and_security_services_deploy_update_and_delete() {
     assert!(detectors.detector_ids().is_empty());
     assert!(sh.describe_hub().send().await.is_err());
 }
+
+/// A group that gets no signal within its creation policy's timeout fails,
+/// and the rollback deletes it (it exists in Auto Scaling by then).
+#[tokio::test]
+async fn rollback_deletes_a_group_that_failed_its_creation_policy() {
+    let mws = Mws::start().await;
+    let config = mws.root_sdk_config().await;
+    let cfn = Client::new(&config);
+    let ec2 = aws_sdk_ec2::Client::new(&config);
+    let asg = aws_sdk_autoscaling::Client::new(&config);
+    let images = ec2
+        .describe_images()
+        .owners("amazon")
+        .filters(Filter::builder().name("name").values("mws-alpine-*").build())
+        .send()
+        .await
+        .unwrap();
+    let ami = images.images()[0].image_id().unwrap().to_string();
+    let template = r#"
+Parameters:
+  Ami: {Type: String}
+Resources:
+  Vpc:
+    Type: AWS::EC2::VPC
+    Properties: {CidrBlock: 10.60.0.0/16}
+  Subnet:
+    Type: AWS::EC2::Subnet
+    Properties: {VpcId: !Ref Vpc, CidrBlock: 10.60.1.0/24, AvailabilityZone: us-east-1a}
+  Config:
+    Type: AWS::AutoScaling::LaunchConfiguration
+    Properties: {ImageId: !Ref Ami, InstanceType: t3.micro}
+  Group:
+    Type: AWS::AutoScaling::AutoScalingGroup
+    CreationPolicy:
+      ResourceSignal: {Count: 1, Timeout: PT1S}
+    Properties:
+      AutoScalingGroupName: signalled
+      LaunchConfigurationName: !Ref Config
+      MinSize: "0"
+      MaxSize: "1"
+      DesiredCapacity: "0"
+      VPCZoneIdentifier: [!Ref Subnet]
+"#;
+    cfn.create_stack()
+        .stack_name("signals")
+        .template_body(template)
+        .parameters(param("Ami", &ami))
+        .send()
+        .await
+        .unwrap();
+    let stack = settle(&mws, &cfn, "signals").await;
+    assert_eq!(stack.stack_status(), Some(&StackStatus::RollbackComplete), "{:?}", failures(&cfn, "signals").await);
+    let groups = asg.describe_auto_scaling_groups().auto_scaling_group_names("signalled").send().await.unwrap();
+    assert!(groups.auto_scaling_groups().is_empty(), "the group was left behind");
+}

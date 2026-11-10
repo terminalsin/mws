@@ -74,6 +74,29 @@ pub(crate) fn root_group(ctx: &RequestContext, owner: &str, domain: &str) -> Pac
 }
 
 impl CodeArtifact {
+    /// A customer managed key for a domain: CodeArtifact describes it and
+    /// creates a grant on it as the caller (through
+    /// `codeartifact.<region>.amazonaws.com`), so the caller needs
+    /// `kms:DescribeKey` and `kms:CreateGrant`, and the key must be an
+    /// enabled symmetric encryption key.
+    fn check_encryption_key(&self, ctx: &RequestContext, key: &str) -> Result<(), ServiceError> {
+        let Some(kms) = &self.inner.kms else { return Ok(()) };
+        let k =
+            kms.key_via(ctx, "codeartifact", key, &["kms:DescribeKey", "kms:CreateGrant"]).map_err(|e| {
+                match &*e.code {
+                    "AccessDeniedException" => ServiceError::client("AccessDeniedException", 403, e.message),
+                    _ => validation(format!("The KMS key {key} is not valid: {}", e.message)),
+                }
+            })?;
+        if k.key_spec != "SYMMETRIC_DEFAULT" || k.key_usage != "ENCRYPT_DECRYPT" {
+            return Err(validation(format!("The KMS key {key} is not a symmetric encryption key.")));
+        }
+        if k.key_state != "Enabled" {
+            return Err(validation(format!("The KMS key {key} is not enabled. Its state is {}.", k.key_state)));
+        }
+        Ok(())
+    }
+
     pub(crate) fn create_domain(
         &self,
         ctx: &RequestContext,
@@ -99,6 +122,7 @@ impl CodeArtifact {
                 if !k.starts_with("arn:") {
                     return Err(validation("encryptionKey must be the ARN of a KMS key."));
                 }
+                self.check_encryption_key(ctx, &k)?;
                 k
             }
             None => match &self.inner.kms {

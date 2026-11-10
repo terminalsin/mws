@@ -97,7 +97,7 @@ impl Provider for Detector {
     }
 
     async fn delete(&self, cx: &Cx<'_>, id: &str, _props: &Props, _attrs: &Props) -> HResult<()> {
-        gone_ok(cx.call("guardduty", "DeleteDetector", json!({"DetectorId": id})).await)
+        gone_gd(cx.call("guardduty", "DeleteDetector", json!({"DetectorId": id})).await)
     }
 }
 
@@ -162,7 +162,7 @@ impl Provider for List {
 
     async fn delete(&self, cx: &Cx<'_>, id: &str, props: &Props, _attrs: &Props) -> HResult<()> {
         let detector = req(props, "DetectorId")?;
-        gone_ok(
+        gone_gd(
             cx.call(
                 "guardduty",
                 &format!("Delete{}", self.0.noun),
@@ -237,7 +237,7 @@ impl Provider for Filter {
 
     async fn delete(&self, cx: &Cx<'_>, name: &str, props: &Props, _attrs: &Props) -> HResult<()> {
         let detector = req(props, "DetectorId")?;
-        gone_ok(cx.call("guardduty", "DeleteFilter", json!({"DetectorId": detector, "FilterName": name})).await)
+        gone_gd(cx.call("guardduty", "DeleteFilter", json!({"DetectorId": detector, "FilterName": name})).await)
     }
 }
 
@@ -294,6 +294,22 @@ impl Provider for MalwareProtectionPlan {
     }
 
     async fn delete(&self, cx: &Cx<'_>, id: &str, _props: &Props, _attrs: &Props) -> HResult<()> {
-        gone_ok(cx.call("guardduty", "DeleteMalwareProtectionPlan", json!({"MalwareProtectionPlanId": id})).await)
+        gone_gd(cx.call("guardduty", "DeleteMalwareProtectionPlan", json!({"MalwareProtectionPlanId": id})).await)
+    }
+}
+
+/// [`gone_ok`], also for GuardDuty's answer when the detector (or the
+/// list or filter under it) no longer exists: a `BadRequestException`,
+/// which the GuardDuty resource handlers treat as NotFound.
+fn gone_gd(r: HResult<Value>) -> HResult<()> {
+    match r {
+        Err(e)
+            if e.code == "BadRequestException"
+                && (e.message.contains("is not owned by the current account")
+                    || e.message.contains("no such resource found")) =>
+        {
+            Ok(())
+        }
+        r => gone_ok(r),
     }
 }

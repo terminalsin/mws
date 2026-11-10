@@ -804,29 +804,33 @@ impl Provider for DbInstance {
         };
         let out = cx.call("rds", op, Value::Object(pick(&p, members))).await?;
         let id = text(&out["DBInstance"]["DBInstanceIdentifier"]);
-        wait_instance(cx, &id).await?;
-        // What a restore or replica could not set is applied afterwards,
-        // as CloudFormation does.
-        if op != "CreateDBInstance" {
-            let mut rest: Map<String, Value> =
-                pick(&p, MODIFY_DB_INSTANCE).into_iter().filter(|(k, _)| !members.contains(&k.as_str())).collect();
-            if !rest.is_empty() {
-                rest.insert("DBInstanceIdentifier".into(), json!(id));
-                rest.insert("ApplyImmediately".into(), json!(true));
-                cx.call("rds", "ModifyDBInstance", Value::Object(rest)).await?;
-                wait_instance(cx, &id).await?;
+        let attributes = async {
+            wait_instance(cx, &id).await?;
+            // What a restore or replica could not set is applied afterwards,
+            // as CloudFormation does.
+            if op != "CreateDBInstance" {
+                let mut rest: Map<String, Value> =
+                    pick(&p, MODIFY_DB_INSTANCE).into_iter().filter(|(k, _)| !members.contains(&k.as_str())).collect();
+                if !rest.is_empty() {
+                    rest.insert("DBInstanceIdentifier".into(), json!(id));
+                    rest.insert("ApplyImmediately".into(), json!(true));
+                    cx.call("rds", "ModifyDBInstance", Value::Object(rest)).await?;
+                    wait_instance(cx, &id).await?;
+                }
             }
+            for r in role_diff(&Props::new(), props).0 {
+                cx.call(
+                    "rds",
+                    "AddRoleToDBInstance",
+                    json!({"DBInstanceIdentifier": id, "RoleArn": text(&r["RoleArn"]), "FeatureName": text(&r["FeatureName"])}),
+                )
+                .await?;
+            }
+            Ok::<_, HandlerError>(instance_attributes(&wait_instance(cx, &id).await?))
         }
-        for r in role_diff(&Props::new(), props).0 {
-            cx.call(
-                "rds",
-                "AddRoleToDBInstance",
-                json!({"DBInstanceIdentifier": id, "RoleArn": text(&r["RoleArn"]), "FeatureName": text(&r["FeatureName"])}),
-            )
-            .await?;
-        }
-        let db = wait_instance(cx, &id).await?;
-        Ok(Created { physical_id: id, attributes: instance_attributes(&db) })
+        .await
+        .map_err(|e| e.created(&id))?;
+        Ok(Created { physical_id: id, attributes })
     }
 
     async fn update(&self, cx: &Cx<'_>, id: &str, old: &Props, new: &Props, _attrs: &Props) -> HResult<Props> {
@@ -1011,26 +1015,30 @@ impl Provider for DbCluster {
         };
         let out = cx.call("rds", op, Value::Object(pick(&p, members))).await?;
         let id = text(&out["DBCluster"]["DBClusterIdentifier"]);
-        wait_cluster(cx, &id).await?;
-        if op != "CreateDBCluster" {
-            let mut rest: Map<String, Value> =
-                pick(&p, MODIFY_DB_CLUSTER).into_iter().filter(|(k, _)| !members.contains(&k.as_str())).collect();
-            if !rest.is_empty() {
-                rest.insert("DBClusterIdentifier".into(), json!(id));
-                rest.insert("ApplyImmediately".into(), json!(true));
-                cx.call("rds", "ModifyDBCluster", Value::Object(rest)).await?;
-                wait_cluster(cx, &id).await?;
+        let attributes = async {
+            wait_cluster(cx, &id).await?;
+            if op != "CreateDBCluster" {
+                let mut rest: Map<String, Value> =
+                    pick(&p, MODIFY_DB_CLUSTER).into_iter().filter(|(k, _)| !members.contains(&k.as_str())).collect();
+                if !rest.is_empty() {
+                    rest.insert("DBClusterIdentifier".into(), json!(id));
+                    rest.insert("ApplyImmediately".into(), json!(true));
+                    cx.call("rds", "ModifyDBCluster", Value::Object(rest)).await?;
+                    wait_cluster(cx, &id).await?;
+                }
             }
-        }
-        for r in role_diff(&Props::new(), props).0 {
-            let mut input = json!({"DBClusterIdentifier": id, "RoleArn": text(&r["RoleArn"])});
-            if let Some(f) = r.get("FeatureName") {
-                input["FeatureName"] = json!(text(f));
+            for r in role_diff(&Props::new(), props).0 {
+                let mut input = json!({"DBClusterIdentifier": id, "RoleArn": text(&r["RoleArn"])});
+                if let Some(f) = r.get("FeatureName") {
+                    input["FeatureName"] = json!(text(f));
+                }
+                cx.call("rds", "AddRoleToDBCluster", input).await?;
             }
-            cx.call("rds", "AddRoleToDBCluster", input).await?;
+            Ok::<_, HandlerError>(cluster_attributes(&wait_cluster(cx, &id).await?))
         }
-        let c = wait_cluster(cx, &id).await?;
-        Ok(Created { physical_id: id, attributes: cluster_attributes(&c) })
+        .await
+        .map_err(|e| e.created(&id))?;
+        Ok(Created { physical_id: id, attributes })
     }
 
     async fn update(&self, cx: &Cx<'_>, id: &str, old: &Props, new: &Props, _attrs: &Props) -> HResult<Props> {
@@ -1461,7 +1469,7 @@ impl Provider for EventSubscription {
         }
         let out = cx.call("rds", "CreateEventSubscription", input).await?;
         let name = text(&out["EventSubscription"]["CustSubscriptionId"]);
-        wait_subscription(cx, &name).await?;
+        wait_subscription(cx, &name).await.map_err(|e| e.created(&name))?;
         Ok(Created::new(name))
     }
 

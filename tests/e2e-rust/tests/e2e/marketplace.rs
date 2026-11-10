@@ -352,6 +352,13 @@ async fn meter_usage_and_register_usage_from_the_buyer_account() {
     assert_eq!(err_code(&e.into_service_error()), "InvalidUsageDimensionException");
     let e = buyer.meter_usage().product_code("unknown").usage_dimension("x").timestamp(now()).send().await.unwrap_err();
     assert_eq!(err_code(&e.into_service_error()), "InvalidProductCodeException");
+    // MeterUsage is for AMI and container products, RegisterUsage for
+    // container products only.
+    let saas = product(&mws, "SaaS", &["users"]).await;
+    let e = buyer.meter_usage().product_code(&saas).usage_dimension("users").timestamp(now()).send().await.unwrap_err();
+    assert_eq!(err_code(&e.into_service_error()), "InvalidProductCodeException");
+    let e = buyer.register_usage().product_code(&ami).public_key_version(1).send().await.unwrap_err();
+    assert_eq!(err_code(&e.into_service_error()), "InvalidProductCodeException");
     let e = meter(2, hours_ago(1)).dry_run(true).send().await.unwrap_err();
     assert_eq!(err_code(&e.into_service_error()), "DryRunOperation");
 

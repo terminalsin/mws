@@ -137,7 +137,8 @@ impl Bedrock {
             ConditionContext::new(),
         )?;
         // Amazon models need no agreement; others report one once it exists
-        // (MWS lets every model be invoked either way).
+        // (created explicitly or by the first invocation; invocations only
+        // require it with MWS_BEDROCK_MODEL_ACCESS=enforce).
         let agreed = m.provider_name == "Amazon" || self.scope(ctx, |s| s.agreements.contains(&m.model_id));
         let status = if agreed { "AVAILABLE" } else { "NOT_AVAILABLE" };
         Ok(types::GetFoundationModelAvailabilityResponse {

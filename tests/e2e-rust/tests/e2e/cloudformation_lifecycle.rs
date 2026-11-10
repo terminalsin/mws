@@ -698,3 +698,28 @@ Outputs:
     let maps = lambda.list_event_source_mappings().send().await.unwrap();
     assert_eq!(maps.event_source_mappings().len(), 1);
 }
+
+/// A change set is not executable until it has been created: executing it
+/// straight away, without the waiter, is refused as on AWS.
+#[tokio::test]
+async fn executing_a_change_set_before_it_is_created_is_refused() {
+    let mws = Mws::start().await;
+    let cfn = client(&mws).await;
+    let cs = cfn
+        .create_change_set()
+        .stack_name("eager")
+        .change_set_name("now")
+        .change_set_type(ChangeSetType::Create)
+        .template_body(r#"{"Resources": {"Q": {"Type": "AWS::SQS::Queue"}}}"#)
+        .send()
+        .await
+        .unwrap();
+    let id = cs.id().unwrap().to_string();
+    let e = cfn.execute_change_set().change_set_name(&id).send().await.unwrap_err();
+    let e = e.into_service_error();
+    assert_eq!(code(&e), "InvalidChangeSetStatus");
+    assert!(message(&e).contains("cannot be executed in its current execution status of [UNAVAILABLE]"), "{e:?}");
+    cfn.wait_until_change_set_create_complete().change_set_name(&id).wait(Duration::from_secs(10)).await.unwrap();
+    cfn.execute_change_set().change_set_name(&id).send().await.unwrap();
+    assert_eq!(settle(&cfn, "eager").await.stack_status(), Some(&StackStatus::CreateComplete));
+}

@@ -92,9 +92,9 @@ impl BedrockRuntime {
         let key = format!("{account}/{region}/{rpm_code}");
         let mut windows = self.windows();
         let entries = windows.entries.entry(key.clone()).or_default();
-        while entries.front().is_some_and(|(t, _, _)| *t <= now - Duration::seconds(60)) {
-            entries.pop_front();
-        }
+        // Output tokens are charged at their request's (earlier) time, so
+        // the entries are not in time order: drop every expired one.
+        entries.retain(|(t, _, _)| *t > now - Duration::seconds(60));
         let requests = entries.iter().filter(|(_, r, _)| *r).count() as f64;
         let tokens: u64 = entries.iter().map(|(_, _, n)| n).sum();
         if requests + 1.0 > rpm {

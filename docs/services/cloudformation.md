@@ -12,9 +12,15 @@ Every operation is called by an official Rust SDK test.
 
 Stacks deploy real resources: every resource provider calls the owning MWS
 service's API, with the caller's identity (or the stack's service role, assumed
-as `cloudformation.amazonaws.com`, after an `iam:PassRole` check) and
-`aws:CalledVia` = `cloudformation.amazonaws.com`, so IAM, SCPs and resource
-policies apply exactly as they do to direct calls. Operations run in the
+as `cloudformation.amazonaws.com`, after an `iam:PassRole` check). Calls with
+the caller's identity carry `aws:CalledVia` = `cloudformation.amazonaws.com`
+(and `aws:ViaAWSService` = `true`); service role calls carry neither, as on
+AWS. IAM, SCPs and resource policies apply exactly as they do to direct calls,
+and CloudTrail records each call with user agent
+`cloudformation.amazonaws.com`. Resources that fail after the service created
+them (stabilization, creation policy signals, a failed nested stack) are
+deleted by the rollback. Stacks restored from saved state in the middle of an
+operation end in that operation's failed state. Operations run in the
 background on the emulated clock, so SDK waiters and `DescribeStackEvents`
 polling see the same status progression as on AWS.
 
@@ -102,14 +108,14 @@ Resource scans (and so `IMPORT` change sets) cover `AWS::CloudWatch::Alarm`,
 - `GetTemplate` returns templates with modules already expanded; AWS returns
   the original under `Original` and the expansion under `Processed`
   (transforms do keep both).
-- Change set creation runs right after the call returns, so a client
-  usually sees `CREATE_COMPLETE` on its first `DescribeChangeSet`; templates
-  with transforms (macro Lambda calls) take longer.
+- Change set creation takes the settle window (`MWS_ASYNC_DELAY_MS`, 500 ms
+  of emulated time by default), shorter than on AWS.
 - Template-level macros get no `params` (MWS only takes macro names in
   `Transform`, not `{Name, Parameters}` objects). The wording of the
   rollback-trigger stack reason is MWS's own.
-- Wait condition, creation policy, custom resource and `TimeoutInMinutes`
-  timers still use the wall clock.
+- `TimeoutInMinutes` is checked between resources and ends signal waits (wait
+  conditions, creation policies, custom resources); a resource that is
+  stabilizing when the stack times out finishes first.
 - Refactor actions don't list the system tag changes (`TagResources`), since
   MWS doesn't add system tags (below).
 - Resources are created one at a time in dependency order; AWS creates

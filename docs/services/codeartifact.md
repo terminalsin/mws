@@ -11,7 +11,7 @@ them.
 
 | Feature | Status | Details |
 | --- | --- | --- |
-| Domains | ✅ | Create, describe, list, delete (refused while repositories exist), KMS encryption key (`aws/codeartifact` by default), repository count and asset size |
+| Domains | ✅ | Create, describe, list, delete (refused while repositories exist), KMS encryption key (`aws/codeartifact` by default; a customer managed key must exist, be an enabled symmetric key, and allow the caller `kms:DescribeKey` and `kms:CreateGrant`), repository count and asset size |
 | Repositories | ✅ | Upstreams in priority order (must exist, at most 10, `codeartifact:AssociateWithDownstreamRepository` on each), descriptions, `ListRepositories`/`ListRepositoriesInDomain` with prefixes, deletion refused while another repository uses it as an upstream |
 | External connections | ✅ | Every `public:*` connection, one per repository, each really fetching from its registry (see below) |
 | Permissions policies | ✅ | Domain and repository policies, evaluated with IAM on every call (cross-account domains via `domainOwner`), `policyRevision` checks |

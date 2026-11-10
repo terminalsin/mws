@@ -98,6 +98,9 @@ pub trait RoleAssumer: Send + Sync {
 pub(crate) struct Inner {
     state: Mutex<State>,
     services: RwLock<BTreeMap<String, Arc<dyn Service>>>,
+    /// Calls to other services go through this, when set, so audit logs
+    /// and the target's deferred work see them as AWS does.
+    client: RwLock<Option<mws_core::ServiceClient>>,
     roles: RwLock<Option<Arc<dyn RoleAssumer>>>,
     providers: BTreeMap<&'static str, Arc<dyn Provider>>,
     /// Signals received for custom resources, wait conditions and
@@ -131,6 +134,7 @@ impl CloudFormation {
             inner: Arc::new(Inner {
                 state: Mutex::new(State::default()),
                 services: RwLock::new(BTreeMap::new()),
+                client: RwLock::new(None),
                 roles: RwLock::new(None),
                 providers: providers::registry(),
                 signals: Mutex::new(HashMap::new()),
@@ -149,6 +153,15 @@ impl CloudFormation {
         for s in services {
             m.insert(s.name().to_string(), s);
         }
+    }
+
+    /// Make the calls stacks make to other services through `client`:
+    /// CloudTrail then records them (user agent
+    /// `cloudformation.amazonaws.com`), and what the target defers runs
+    /// before the call returns. Without a client, the services given to
+    /// [`CloudFormation::set_services`] are invoked directly.
+    pub fn set_client(&self, client: mws_core::ServiceClient) {
+        *self.inner.client.write().expect("client lock poisoned") = Some(client);
     }
 
     pub fn set_role_assumer(&self, roles: Arc<dyn RoleAssumer>) {
@@ -222,6 +235,12 @@ impl CloudFormation {
         operation: &str,
         input: Value,
     ) -> Result<Value, ServiceError> {
+        let client = self.inner.client.read().expect("client lock poisoned").clone();
+        if let Some(client) = client.filter(|c| c.knows(service)) {
+            let mut c = ctx.clone();
+            c.request_id = mws_core::ids::request_id();
+            return client.call_with_agent(&c, Some("cloudformation.amazonaws.com"), service, operation, input).await;
+        }
         let svc = self.inner.services.read().expect("services lock poisoned").get(service).cloned();
         let Some(svc) = svc else {
             return Err(ServiceError::client(
@@ -247,7 +266,7 @@ impl CloudFormation {
     }
 
     /// The identity a stack deploys with: `ctx` marked as called via
-    /// CloudFormation, or the service role's session.
+    /// CloudFormation, or the service role's session (not marked).
     pub(crate) fn deploy_context(
         &self,
         ctx: &RequestContext,
@@ -266,7 +285,11 @@ impl CloudFormation {
             let caller = roles.assume(role, "AWSCloudFormation", ctx.received_at).map_err(|_| {
                 ServiceError::client("ValidationError", 400, format!("Role {role} is invalid or cannot be assumed"))
             })?;
+            // The role session's calls are its own: `aws:CalledVia` is
+            // only set for forward access sessions (the caller's own
+            // credentials), and `aws:ViaAWSService` is false.
             c.caller = caller;
+            return Ok(c);
         }
         c.authorizer = Arc::new(ViaCloudFormation(ctx.authorizer.clone()));
         Ok(c)
@@ -318,9 +341,16 @@ impl CloudFormation {
         self.inner.signals.lock().expect("lock").remove(key);
     }
 
-    /// Wait for `count` signals under `key`, at most `timeout_secs`.
-    pub(crate) async fn wait_for_signals(&self, key: &str, count: usize, timeout_secs: u64) -> Result<Vec<Value>, ()> {
-        let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(timeout_secs.max(1));
+    /// Wait for `count` signals under `key`, at most `timeout_secs` on the
+    /// emulated clock, and no later than the stack operation's `deadline`.
+    pub(crate) async fn wait_for_signals(
+        &self,
+        key: &str,
+        count: usize,
+        timeout_secs: u64,
+        deadline: Option<chrono::DateTime<chrono::Utc>>,
+    ) -> Result<Vec<Value>, NoSignals> {
+        let until = self.now() + chrono::Duration::seconds(timeout_secs.max(1) as i64);
         loop {
             let notified = self.inner.signalled.notified();
             tokio::pin!(notified);
@@ -329,11 +359,25 @@ impl CloudFormation {
             if got.len() >= count || got.iter().any(|s| s.get("Status").and_then(Value::as_str) == Some("FAILURE")) {
                 return Ok(got);
             }
-            if tokio::time::timeout_at(deadline, notified).await.is_err() {
-                return Err(());
+            let now = self.now();
+            if deadline.is_some_and(|d| now >= d) {
+                return Err(NoSignals::Cancelled);
             }
+            if now >= until {
+                return Err(NoSignals::TimedOut);
+            }
+            // Poll, so that an advance of the emulated clock is noticed.
+            let _ = tokio::time::timeout(std::time::Duration::from_millis(250), notified).await;
         }
     }
+}
+
+/// Why a wait for signals ended without them.
+pub(crate) enum NoSignals {
+    /// The wait's own timeout passed.
+    TimedOut,
+    /// The stack operation timed out (`TimeoutInMinutes`).
+    Cancelled,
 }
 
 /// The key `SignalResource` and creation policies use.
@@ -412,7 +456,14 @@ impl Service for CloudFormation {
     }
 
     fn import_state(&self, state: serde_json::Value) -> Result<(), String> {
-        let st: State = serde_json::from_value(state).map_err(|e| format!("invalid CloudFormation state: {e}"))?;
+        let mut st: State = serde_json::from_value(state).map_err(|e| format!("invalid CloudFormation state: {e}"))?;
+        // Deployments are not saved: stacks restored mid-operation end in
+        // the operation's failed state, so they can be deleted or rolled
+        // back again.
+        let running = self.inner.running.lock().expect("lock").clone();
+        for s in st.stacks.values_mut().filter(|s| !running.contains(&s.id)) {
+            s.interrupted();
+        }
         *self.state() = st;
         Ok(())
     }

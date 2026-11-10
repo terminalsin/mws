@@ -489,10 +489,14 @@ pub(crate) fn expand(root: &mut Value) -> Result<(), String> {
         let props = b.entry("Properties").or_insert_with(|| json!({}));
         let n = props
             .as_object_mut()
-            .expect("properties are objects")
+            .ok_or_else(|| invalid(&bucket, "Properties must be an object."))?
             .entry("NotificationConfiguration")
             .or_insert_with(|| json!({}));
-        let list = n.as_object_mut().expect("objects").entry("LambdaConfigurations").or_insert_with(|| json!([]));
+        let list = n
+            .as_object_mut()
+            .ok_or_else(|| invalid(&bucket, "NotificationConfiguration must be an object."))?
+            .entry("LambdaConfigurations")
+            .or_insert_with(|| json!([]));
         if let Value::Array(a) = list {
             a.push(entry["config"].clone());
         }

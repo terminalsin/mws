@@ -132,7 +132,13 @@ pub struct Deployment {
     pub token: Option<String>,
     /// Emulated clock minus wall clock.
     pub offset: chrono::Duration,
+    /// When the operation times out (`TimeoutInMinutes`), on the emulated
+    /// clock.
+    pub deadline: Option<DateTime<Utc>>,
 }
+
+/// Why resources still in progress fail when the stack times out.
+const CANCELLED: &str = "Resource creation cancelled";
 
 /// What a failed resource step reports.
 struct Failure {
@@ -143,6 +149,11 @@ struct Failure {
 impl Deployment {
     pub fn now(&self) -> DateTime<Utc> {
         Utc::now() + self.offset
+    }
+
+    /// Whether the operation's `TimeoutInMinutes` has passed.
+    fn timed_out(&self) -> bool {
+        self.deadline.is_some_and(|d| self.cfn.now().max(self.now()) >= d)
     }
 
     pub fn with<R>(&self, f: impl FnOnce(&mut Stack) -> R) -> R {
@@ -251,6 +262,7 @@ impl Deployment {
             logical_id,
             stack_tags: tags,
             offset: self.offset,
+            deadline: self.deadline,
         }
     }
 
@@ -424,16 +436,29 @@ impl Deployment {
         let created = match created {
             Ok(c) => c,
             Err(e) => {
-                self.event(logical_id, &ty, old_physical.as_deref(), failed, Some(&e.message), None).await;
-                if !replacing {
+                // A handler that created the resource before failing names
+                // it, so the rollback deletes it.
+                let physical = e.physical_id.clone().or(old_physical);
+                self.event(logical_id, &ty, physical.as_deref(), failed, Some(&e.message), None).await;
+                if !replacing || e.physical_id.is_some() {
                     self.update_resource(logical_id, |r| {
                         r.status = failed.into();
                         r.status_reason = Some(e.message.clone());
+                        if let Some(id) = &e.physical_id {
+                            r.physical_id = Some(id.clone());
+                            r.properties = props.clone();
+                        }
                     });
                 }
                 return Err(fail(e.message));
             }
         };
+        // Record the physical id at once: if the deployment fails or times
+        // out while the resource stabilizes, the rollback deletes it.
+        self.update_resource(logical_id, |r| {
+            r.physical_id = Some(created.physical_id.clone());
+            r.properties = props.clone();
+        });
         let initiated = if replacing { None } else { Some("Resource creation Initiated") };
         if !replacing {
             self.event(logical_id, &ty, Some(&created.physical_id), in_progress, initiated, None).await;
@@ -443,7 +468,7 @@ impl Deployment {
             let count = policy.get("Count").and_then(|c| c.as_u64().or_else(|| c.as_str()?.parse().ok())).unwrap_or(1);
             let timeout = policy.get("Timeout").and_then(Value::as_str).map(parse_iso_duration).unwrap_or(300);
             let key = crate::signal_key(&self.stack_id, logical_id);
-            match self.cfn.wait_for_signals(&key, count as usize, timeout).await {
+            match self.cfn.wait_for_signals(&key, count as usize, timeout, self.deadline).await {
                 Ok(signals) => {
                     for s in &signals {
                         if s.get("Status").and_then(Value::as_str) == Some("FAILURE") {
@@ -456,7 +481,11 @@ impl Deployment {
                         }
                     }
                 }
-                Err(()) => {
+                Err(crate::NoSignals::Cancelled) => {
+                    self.record_created(logical_id, &ty, &props, &created, failed, Some(CANCELLED), &def).await;
+                    return Err(fail(CANCELLED.into()));
+                }
+                Err(crate::NoSignals::TimedOut) => {
                     let reason = format!("Failed to receive {count} resource signal(s) within the specified duration");
                     self.record_created(logical_id, &ty, &props, &created, failed, Some(&reason), &def).await;
                     return Err(fail(reason));
@@ -601,7 +630,12 @@ impl Deployment {
                     continue;
                 }
             }
-            if !r.exists() {
+            // Resources that failed after the service created them (for
+            // example a CreationPolicy timeout) still have a physical
+            // resource to delete.
+            let gone =
+                r.physical_id.is_none() || matches!(r.status.as_str(), "DELETE_COMPLETE" | "DELETE_SKIPPED" | "");
+            if gone {
                 if r.status != "DELETE_COMPLETE" && r.status != "DELETE_SKIPPED" {
                     self.update_resource(&logical, |x| x.status = "DELETE_COMPLETE".into());
                     if r.status == "CREATE_FAILED" {
@@ -715,16 +749,15 @@ impl Deployment {
     // ----- Stack operations -----
 
     /// Create every resource of a new stack.
-    pub async fn create(self, template: Template, data: EvalData) {
-        let timeout = self.with(|s| s.timeout_in_minutes);
-        let work = self.create_resources(&template, &data);
-        let result = match timeout {
-            Some(m) if m > 0 => match tokio::time::timeout(std::time::Duration::from_secs(m as u64 * 60), work).await {
-                Ok(r) => r,
-                Err(_) => Err(Failure { logical_id: None, reason: "Resource creation cancelled".into() }),
-            },
-            _ => work.await,
-        };
+    pub async fn create(mut self, template: Template, data: EvalData) {
+        // `TimeoutInMinutes` runs on the emulated clock. It is checked
+        // between resources and ends signal waits, so the resource being
+        // created is recorded (and rolled back) rather than dropped.
+        if let Some(m) = self.with(|s| s.timeout_in_minutes).filter(|m| *m > 0) {
+            let own = self.cfn.now().max(self.now()) + chrono::Duration::minutes(m as i64);
+            self.deadline = Some(self.deadline.map_or(own, |d| d.min(own)));
+        }
+        let result = self.create_resources(&template, &data).await;
         let result = match result {
             Ok(()) => match self.outputs(&template, &data).and_then(|o| self.check_exports(&[], &o).map(|_| o)) {
                 Ok(outputs) => {
@@ -831,6 +864,9 @@ impl Deployment {
             .creation_order(&|l| data.included(template, l))
             .map_err(|reason| Failure { logical_id: None, reason })?;
         for logical in order {
+            if self.timed_out() {
+                return Err(Failure { logical_id: None, reason: CANCELLED.into() });
+            }
             self.check_triggers().await?;
             self.create_resource(template, data, &logical, false).await?;
         }
