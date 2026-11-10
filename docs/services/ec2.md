@@ -15,7 +15,7 @@
 | Security groups | ✅ | Rules with `sgr-` ids, the legacy flat form and `IpPermissions`, group references, `ModifySecurityGroupRules`, descriptions, duplicate and limit errors. |
 | Route tables and gateways | ✅ | Routes to internet gateways, NAT gateways on Elastic IPs, interfaces and instances; main and subnet associations. |
 | Network ACLs, DHCP options, interfaces, Elastic IPs | ✅ | Managed with EC2's rules; interface permissions for other accounts and services, and attribute resets. |
-| NAT gateways | ✅ | On Elastic IPs; deleting one leaves blackhole routes, and deleted gateways stay listed for an hour. Internet gateways cannot be detached while the VPC has public addresses. |
+| NAT gateways | ✅ | On Elastic IPs; `pending` then `available`, and `deleting` then `deleted`, for the instance transition delay on the emulated clock (so the `nat_gateway_available` waiter has something to wait for); deleting one leaves blackhole routes, and deleted gateways stay listed for an hour. Internet gateways cannot be detached while the VPC has public addresses. |
 | Elastic IP reverse DNS | ✅ | `ModifyAddressAttribute`, `DescribeAddressesAttribute`, `ResetAddressAttribute`. |
 | Gateway endpoints | ✅ | S3 and DynamoDB: routes to the service's AWS-managed prefix list (`pl-63a5400a` for S3 in us-east-1, as in AWS) in the route tables named; one per service and VPC. |
 | Interface endpoints | ✅ | A requester-managed interface per subnet (one per Availability Zone) in the endpoint's security groups, regional and zonal `vpce.amazonaws.com` DNS entries, private DNS (on by default) that needs the VPC's DNS support and hostnames and conflicts with another private-DNS endpoint for the service. `DescribeVpcEndpointServices` lists about 45 AWS services. |

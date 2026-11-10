@@ -440,6 +440,10 @@ async fn nat_gateways_and_elastic_ip_attributes() {
     let nat_id = nat.nat_gateway_id().unwrap().to_string();
     assert_eq!(nat.state().map(|s| s.as_str()), Some("pending"));
     let d = ec2.describe_nat_gateways().nat_gateway_ids(&nat_id).send().await.unwrap();
+    assert_eq!(d.nat_gateways()[0].state().map(|s| s.as_str()), Some("pending"));
+    let (status, _) = mws.control("POST", "/_mws/clock", Some(r#"{"advanceSeconds": 5}"#)).await;
+    assert_eq!(status, 200);
+    let d = ec2.describe_nat_gateways().nat_gateway_ids(&nat_id).send().await.unwrap();
     let got = &d.nat_gateways()[0];
     assert_eq!(got.state().map(|s| s.as_str()), Some("available"));
     assert_eq!(got.nat_gateway_addresses()[0].public_ip(), Some(ip.as_str()));
@@ -466,6 +470,11 @@ async fn nat_gateways_and_elastic_ip_attributes() {
     let e = ec2.delete_vpc().vpc_id(&vpc_id).send().await.unwrap_err();
     assert_eq!(code(&e.into_service_error()), "DependencyViolation");
     ec2.delete_nat_gateway().nat_gateway_id(&nat_id).send().await.unwrap();
+    // `deleting`, then `deleted` once the emulated clock moves on.
+    let d = ec2.describe_nat_gateways().nat_gateway_ids(&nat_id).send().await.unwrap();
+    assert_eq!(d.nat_gateways()[0].state().map(|s| s.as_str()), Some("deleting"));
+    let (status, _) = mws.control("POST", "/_mws/clock", Some(r#"{"advanceSeconds": 5}"#)).await;
+    assert_eq!(status, 200);
     let d = ec2.describe_nat_gateways().filter(filter("state", "deleted")).send().await.unwrap();
     assert_eq!(d.nat_gateways()[0].nat_gateway_id(), Some(nat_id.as_str()));
     let rt = ec2.describe_route_tables().route_table_ids(&main_rt).send().await.unwrap();

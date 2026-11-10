@@ -230,6 +230,11 @@ async fn vpcs_subnets_gateways_and_routes() {
     let alloc = eip.allocation_id().unwrap().to_string();
     let nat = ec2.create_nat_gateway().subnet_id(&subnet_id).allocation_id(&alloc).send().await.unwrap();
     let nat_id = nat.nat_gateway().unwrap().nat_gateway_id().unwrap().to_string();
+    // `pending`, then `available` once the emulated clock moves on.
+    let nats = ec2.describe_nat_gateways().nat_gateway_ids(&nat_id).send().await.unwrap();
+    assert_eq!(nats.nat_gateways()[0].state().map(|s| s.as_str()), Some("pending"));
+    let (status, _) = mws.control("POST", "/_mws/clock", Some(r#"{"advanceSeconds": 5}"#)).await;
+    assert_eq!(status, 200);
     let nats = ec2.describe_nat_gateways().nat_gateway_ids(&nat_id).send().await.unwrap();
     assert_eq!(nats.nat_gateways()[0].state().map(|s| s.as_str()), Some("available"));
     assert_eq!(nats.nat_gateways()[0].nat_gateway_addresses()[0].public_ip(), eip.public_ip());
