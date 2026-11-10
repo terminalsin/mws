@@ -8,7 +8,11 @@
     "./routes/*": "./routes/*"
   },
   "dependencies": {
+    "@aws-sdk/client-cloudwatch-logs": "^3.1164.0",
     "@aws-sdk/client-ec2": "^3.1164.0",
+    "@aws-sdk/client-elastic-load-balancing-v2": "^3.1164.0",
+    "@aws-sdk/client-global-accelerator": "^3.1164.0",
+    "@aws-sdk/client-kms": "^3.1164.0",
     "@aws-sdk/client-route-53": "^3.1164.0",
     "@mws-dashboard/aws": "*",
     "@mws-dashboard/ui": "*",

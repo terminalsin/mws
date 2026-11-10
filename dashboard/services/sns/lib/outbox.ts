@@ -28,3 +28,17 @@ export async function snsEmails() {
 export async function snsSms() {
   return (await mws<{ smsMessages: SnsSms[] }>("/_aws/sns/sms-messages")).smsMessages;
 }
+
+export interface SnsPush {
+  messageId: string;
+  endpointArn: string;
+  platform: string;
+  token: string;
+  message: string;
+  topicArn?: string | null;
+  timestamp: string;
+}
+
+export async function snsPush() {
+  return (await mws<{ platformEndpointMessages: SnsPush[] }>("/_aws/sns/platform-endpoint-messages")).platformEndpointMessages;
+}

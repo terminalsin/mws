@@ -1,7 +1,9 @@
-import { CreatePermissionSetCommand, ListInstancesCommand, SSOAdminClient } from "@aws-sdk/client-sso-admin";
+import { CreateGroupCommand, CreateUserCommand, IdentitystoreClient } from "@aws-sdk/client-identitystore";
+import { CreatePermissionSetCommand, ListAccountAssignmentsCommand, ListInstancesCommand, SSOAdminClient } from "@aws-sdk/client-sso-admin";
+import { GetCallerIdentityCommand, STSClient } from "@aws-sdk/client-sts";
 import { expect, test, type Page } from "@playwright/test";
 
-import { enableOnce, ensureOrganization, row, sdk, submit, unique } from "./helpers";
+import { enableOnce, ensureOrganization, row, rowAction, sdk, submit, unique } from "./helpers";
 
 test("Identity Center: add a user and a permission set", async ({ page }) => {
   await ensureOrganization();
@@ -90,4 +92,71 @@ test("Identity Center: permission set names are fixed in place, server conflicts
   await form.locator('button[type="submit"]').click();
   await expect(page.locator("dialog[open]")).toHaveCount(0);
   await expect(row(page, `${set}-2`)).toBeVisible();
+});
+
+/** The instance (enabled through the console if needed) and a fresh user, group and set. */
+async function seed(page: Page) {
+  await ensureOrganization();
+  await page.goto("/identitycenter");
+  await enableOnce(page, "enable-identity-center", "create-sso-user");
+  const admin = new SSOAdminClient(sdk);
+  const inst = (await admin.send(new ListInstancesCommand({}))).Instances![0];
+  const store = new IdentitystoreClient(sdk);
+  const userName = unique("dash.assignee");
+  const user = (await store.send(new CreateUserCommand({ IdentityStoreId: inst.IdentityStoreId, UserName: userName, DisplayName: "Dash Assignee", Name: { GivenName: "Dash", FamilyName: "Assignee" } }))).UserId!;
+  const groupName = unique("dash-team");
+  const group = (await store.send(new CreateGroupCommand({ IdentityStoreId: inst.IdentityStoreId, DisplayName: groupName }))).GroupId!;
+  const setName = unique("Dash").slice(0, 28);
+  const set = (await admin.send(new CreatePermissionSetCommand({ InstanceArn: inst.InstanceArn, Name: setName, SessionDuration: "PT1H" }))).PermissionSet!.PermissionSetArn!;
+  const account = (await new STSClient(sdk).send(new GetCallerIdentityCommand({}))).Account!;
+  return { admin, inst, user, userName, group, groupName, set, setName, account };
+}
+
+test("Identity Center: a user is added to a group and given a permission set in an account", async ({ page }) => {
+  const s = await seed(page);
+  await page.goto(`/identitycenter/groups/${s.group}`);
+  await submit(page, "add-sso-member", { user: s.user });
+  await expect(row(page, s.userName)).toBeVisible();
+
+  await page.goto(`/identitycenter/accounts/${s.account}`);
+  await submit(page, "create-assignment", { principal: `GROUP:${s.group}`, set: s.set });
+  await expect(row(page, s.groupName)).toContainText(s.setName);
+  const assigned = await s.admin.send(new ListAccountAssignmentsCommand({ InstanceArn: s.inst.InstanceArn, AccountId: s.account, PermissionSetArn: s.set }));
+  expect(assigned.AccountAssignments?.some((a) => a.PrincipalId === s.group)).toBe(true);
+
+  // The group's page lists the assignment; removing it empties the account's list.
+  await page.goto(`/identitycenter/groups/${s.group}?tab=assignments`);
+  await expect(row(page, s.setName)).toBeVisible();
+  await rowAction(page, s.setName, /^Remove /);
+  await expect(row(page, s.setName)).toHaveCount(0);
+
+  // The user's groups show the membership.
+  await page.goto(`/identitycenter/users/${s.user}`);
+  await expect(row(page, s.groupName)).toBeVisible();
+});
+
+test("Identity Center: a permission set is edited, given policies, and provisioned again", async ({ page }) => {
+  const s = await seed(page);
+  await page.goto(`/identitycenter/users/${s.user}?tab=assignments`);
+  await submit(page, "create-assignment", { account: s.account, set: s.set });
+  await expect(row(page, s.setName)).toBeVisible();
+
+  await page.goto(`/identitycenter/permissionset?arn=${encodeURIComponent(s.set)}`);
+  await submit(page, "edit-permission-set", { description: "Dash edited", hours: "4" });
+  await expect(page.locator(".facts")).toContainText("4h");
+  await submit(page, "attach-managed-policy", { policy: "arn:aws:iam::aws:policy/ReadOnlyAccess" });
+  await expect(row(page, "ReadOnlyAccess")).toBeVisible();
+  await submit(page, "inline-policy", { document: JSON.stringify({ Version: "2012-10-17", Statement: [{ Effect: "Allow", Action: "s3:ListAllMyBuckets", Resource: "*" }] }) });
+  await expect(page.locator("pre[aria-label='Inline policy']")).toContainText("s3:ListAllMyBuckets");
+
+  // The account's role is older than the set now: provisioning brings it up to date.
+  await expect(page.getByText(/1 account/)).toBeVisible();
+  await page.getByTestId("provision").locator("button").click();
+  await expect(page.getByText(/1 account/)).toHaveCount(0, { timeout: 20_000 });
+});
+
+test("Identity Center: settings show the access portal URL", async ({ page }) => {
+  const s = await seed(page);
+  await page.goto("/identitycenter/settings");
+  await expect(page.getByTestId("start-url")).toHaveText(`https://${s.inst.IdentityStoreId}.awsapps.com/start`);
 });

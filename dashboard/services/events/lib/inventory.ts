@@ -1,17 +1,18 @@
 import "server-only";
 
-import { ListEventBusesCommand, ListRulesCommand } from "@aws-sdk/client-eventbridge";
-import { type InventoryItem } from "@mws-dashboard/aws";
+import { ListRulesCommand } from "@aws-sdk/client-eventbridge";
+import { all, type InventoryItem } from "@mws-dashboard/aws";
 
 import { events } from "./clients";
+import { buses as listBuses } from "./targets";
 
 export async function eventItems(): Promise<InventoryItem[]> {
   const client = await events();
-  const buses = (await client.send(new ListEventBusesCommand({}))).EventBuses ?? [];
+  const buses = await listBuses();
   const rules = (
     await Promise.all(
       buses.map(async (b) =>
-        ((await client.send(new ListRulesCommand({ EventBusName: b.Name }))).Rules ?? []).map((r) => ({ bus: b.Name!, rule: r })),
+        (await all((NextToken) => client.send(new ListRulesCommand({ EventBusName: b.Name, NextToken })), (r) => r.Rules, (r) => r.NextToken)).map((r) => ({ bus: b.Name!, rule: r })),
       ),
     )
   ).flat();
@@ -25,7 +26,7 @@ export async function eventItems(): Promise<InventoryItem[]> {
       id: rule.Arn!,
       name: rule.Name!,
       detail: rule.ScheduleExpression ?? bus,
-      href: `/events?bus=${encodeURIComponent(bus)}`,
+      href: `/events/rule?bus=${encodeURIComponent(bus)}&name=${encodeURIComponent(rule.Name!)}`,
     })),
   ];
 }

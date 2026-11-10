@@ -1,15 +1,18 @@
 import { ago, load } from "@mws-dashboard/aws";
 import { ActionForm, AwsIcon, Curated, Empty, ErrorNotice, Field, Page, Pill, Sheet } from "@mws-dashboard/ui";
+import { LiveRefresh } from "@mws-dashboard/ui/client";
 import { ArrowRight } from "lucide-react";
 import type { Metadata } from "next";
 
 import { ICONS, isDlq, queues, type QueueInfo } from "../../lib/clients";
-import { MAX_RECEIVES, QUEUE_NAME } from "../../lib/rules";
+import { arnName } from "../../lib/links";
+import { ATTRIBUTE_RULES as RULES, KMS_KEY, KMS_REUSE, MAX_RECEIVES, QUEUE_NAME, SOURCE_ARNS } from "../../lib/rules";
+import { QueueSettings } from "../../lib/settings";
 import { createQueue } from "./actions";
 
 export const metadata: Metadata = { title: "SQS" };
 
-function CreateQueue({ dlqs, names }: { dlqs: QueueInfo[]; names: string[] }) {
+function CreateQueue({ all, names }: { all: QueueInfo[]; names: string[] }) {
   return (
     <Sheet title="New queue" label="Create queue" testId="create-queue">
       <ActionForm action={createQueue} submit="Create" testId="create-queue">
@@ -17,30 +20,23 @@ function CreateQueue({ dlqs, names }: { dlqs: QueueInfo[]; names: string[] }) {
           <input name="name" required maxLength={80} autoFocus />
         </Field>
         <div className="form-row">
-          <label className="check">
-            <input type="checkbox" name="fifo" /> FIFO
-          </label>
-          <label className="check">
-            <input type="checkbox" name="dedup" /> Content-based deduplication
-          </label>
+          <Field label="Visibility timeout (s)" rule={RULES.VisibilityTimeout}>
+            <input name="VisibilityTimeout" inputMode="numeric" placeholder="30" />
+          </Field>
+          <Field label="Retention (s)" rule={RULES.MessageRetentionPeriod}>
+            <input name="MessageRetentionPeriod" inputMode="numeric" placeholder="345600" />
+          </Field>
+          <Field label="Delay (s)" rule={RULES.DelaySeconds}>
+            <input name="DelaySeconds" inputMode="numeric" placeholder="0" />
+          </Field>
+          <Field label="Receive wait (s)" rule={RULES.ReceiveMessageWaitTimeSeconds}>
+            <input name="ReceiveMessageWaitTimeSeconds" inputMode="numeric" placeholder="0" />
+          </Field>
         </div>
-        {dlqs.length > 0 && (
-          <div className="form-row">
-            <Field label="Dead-letter queue">
-              <select name="dlq" defaultValue="">
-                <option value="">None</option>
-                {dlqs.map((q) => (
-                  <option key={q.arn} value={q.arn}>
-                    {q.name}
-                  </option>
-                ))}
-              </select>
-            </Field>
-            <Field label="Max receives" rule={MAX_RECEIVES}>
-              <input name="maxReceiveCount" inputMode="numeric" defaultValue="5" />
-            </Field>
-          </div>
-        )}
+        <QueueSettings
+          queues={all.map((q) => ({ name: q.name, arn: q.arn, fifo: q.attrs.FifoQueue === "true" }))}
+          rules={{ maxReceives: MAX_RECEIVES, kmsKey: KMS_KEY, kmsReuse: KMS_REUSE, sources: SOURCE_ARNS }}
+        />
       </ActionForm>
     </Sheet>
   );
@@ -56,17 +52,18 @@ export default async function Queues() {
     );
   }
   const all = list.value.sort((a, b) => a.name.localeCompare(b.name));
-  const dlqs = all.filter(isDlq);
   const sections = [
     { id: "work", title: "Queues", items: all.filter((q) => !isDlq(q)) },
-    { id: "dlq", title: "Dead-letter queues", items: dlqs },
+    { id: "dlq", title: "Dead-letter queues", items: all.filter(isDlq) },
   ].filter((s) => s.items.length);
+  const busy = all.some((q) => Number(q.attrs.ApproximateNumberOfMessagesNotVisible ?? 0) > 0 || Number(q.attrs.ApproximateNumberOfMessagesDelayed ?? 0) > 0);
   return (
-    <Page title="Queues" actions={<CreateQueue dlqs={all} names={all.map((q) => q.name)} />}>
+    <Page title="Queues" actions={<CreateQueue all={all} names={all.map((q) => q.name)} />}>
+      <LiveRefresh when={busy} />
       <Curated
         label="Queues"
         sections={sections}
-        empty={<Empty icon={ICONS.queue} action={<CreateQueue dlqs={[]} names={[]} />} />}
+        empty={<Empty icon={ICONS.queue} action={<CreateQueue all={[]} names={[]} />} />}
         row={(q) => {
           const visible = Number(q.attrs.ApproximateNumberOfMessages ?? 0);
           const inflight = Number(q.attrs.ApproximateNumberOfMessagesNotVisible ?? 0);
@@ -77,15 +74,16 @@ export default async function Queues() {
             title: q.name,
             subtitle: q.dlq ? (
               <>
-                <ArrowRight size={11} aria-hidden /> {q.dlq}
+                <ArrowRight size={11} aria-hidden /> {arnName(q.dlq)}
               </>
             ) : q.sources.length ? (
-              `from ${q.sources.join(", ")}`
+              `from ${q.sources.map(arnName).join(", ")}`
             ) : undefined,
             href: `/sqs/${encodeURIComponent(q.name)}`,
             meta: (
               <>
                 {q.attrs.FifoQueue === "true" && <Pill tone="info">FIFO</Pill>}
+                {!q.attrs.KmsMasterKeyId && q.attrs.SqsManagedSseEnabled !== "true" && <Pill tone="warn" title="Not encrypted">unencrypted</Pill>}
                 {inflight > 0 && <Pill title="In flight">{inflight} in flight</Pill>}
                 <Pill tone={dlq && visible > 0 ? "bad" : visible > 0 ? "info" : "neutral"} title="Available">
                   {visible}

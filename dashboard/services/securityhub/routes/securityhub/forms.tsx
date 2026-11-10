@@ -1,7 +1,8 @@
 import { ActionForm, Field, Sheet, type Rule } from "@mws-dashboard/ui";
+import { Pencil, Upload } from "lucide-react";
 import { CreateActionTarget, CreateAutomationRule, CreateInsight } from "@mws-dashboard/ui/model/securityhub";
 
-import { createActionTarget, createAutomationRule, createInsight } from "./actions";
+import { createActionTarget, createAutomationRule, createInsight, importFindings, updateAutomationRule, updateInsight } from "./actions";
 
 /** The finding attributes an insight can group by (the ASFF filter names). */
 export const GROUP_BY = [
@@ -15,10 +16,10 @@ export const GROUP_BY = [
 export const SEVERITIES = ["CRITICAL", "HIGH", "MEDIUM", "LOW", "INFORMATIONAL"] as const;
 const label = (s: string) => s[0] + s.slice(1).toLowerCase();
 
-function Severity({ any }: { any: string }) {
+function Severity({ any, value = "" }: { any: string; value?: string }) {
   return (
     <Field label="Severity">
-      <select name="severity" defaultValue="">
+      <select name="severity" defaultValue={value}>
         <option value="">{any}</option>
         {SEVERITIES.map((s) => (
           <option key={s} value={s}>
@@ -103,6 +104,89 @@ export function NewActionTarget({ ids }: { ids: string[] }) {
         </div>
         <Field label="Description" rule={ACTION_DESCRIPTION}>
           <input name="description" />
+        </Field>
+      </ActionForm>
+    </Sheet>
+  );
+}
+
+export function EditInsight({ arn, name, group, severity }: { arn: string; name: string; group: string; severity?: string }) {
+  return (
+    <Sheet title="Edit insight" label="Edit insight" icon={<Pencil size={16} />} testId="edit-insight">
+      <ActionForm action={updateInsight.bind(null, arn)} submit="Save" testId="edit-insight">
+        <Field label="Name" rule={INSIGHT_NAME}>
+          <input name="name" required defaultValue={name} />
+        </Field>
+        <div className="form-row">
+          <Field label="Group by" rule={GROUP}>
+            <input name="group" required defaultValue={group} spellCheck={false} />
+          </Field>
+          <Severity any="Any severity" value={severity} />
+        </div>
+      </ActionForm>
+    </Sheet>
+  );
+}
+
+export function EditAutomationRule({ arn, name, description, order, severity, status }: { arn: string; name: string; description?: string; order: number; severity?: string; status?: string }) {
+  return (
+    <Sheet title="Edit automation rule" label="Edit rule" icon={<Pencil size={16} />} testId="edit-rule">
+      <ActionForm action={updateAutomationRule.bind(null, arn)} submit="Save" testId="edit-rule">
+        <Field label="Name" rule={RULE_NAME}>
+          <input name="name" required defaultValue={name} />
+        </Field>
+        <Field label="Description" rule={RULE_DESCRIPTION}>
+          <input name="description" defaultValue={description} />
+        </Field>
+        <div className="form-row">
+          <Severity any="Every finding" value={severity} />
+          <Field label="Set workflow to">
+            <select name="status" defaultValue={status ?? "SUPPRESSED"}>
+              {["NEW", "NOTIFIED", "RESOLVED", "SUPPRESSED"].map((s) => (
+                <option key={s} value={s}>
+                  {label(s)}
+                </option>
+              ))}
+            </select>
+          </Field>
+          <Field label="Order" rule={CreateAutomationRule.RuleOrder}>
+            <input name="order" type="number" required defaultValue={String(order)} />
+          </Field>
+        </div>
+      </ActionForm>
+    </Sheet>
+  );
+}
+
+const SAMPLE_FINDING = (account: string, region: string) =>
+  JSON.stringify(
+    [
+      {
+        SchemaVersion: "2018-10-08",
+        Id: "my-scanner/finding-1",
+        ProductArn: `arn:aws:securityhub:${region}:${account}:product/${account}/default`,
+        GeneratorId: "my-scanner",
+        AwsAccountId: account,
+        Types: ["Software and Configuration Checks/Vulnerabilities/CVE"],
+        CreatedAt: "2026-01-01T00:00:00Z",
+        UpdatedAt: "2026-01-01T00:00:00Z",
+        Severity: { Label: "HIGH" },
+        Title: "Outdated package",
+        Description: "A package with a known CVE is installed",
+        Resources: [{ Type: "AwsAccount", Id: `AWS::::Account:${account}` }],
+      },
+    ],
+    null,
+    2,
+  );
+
+/** Findings in ASFF from a developer's own tool, through BatchImportFindings. */
+export function ImportFindings({ account = "123456789012", region = "us-east-1" }: { account?: string; region?: string }) {
+  return (
+    <Sheet title="Import findings" label="Import findings" icon={<Upload size={16} />} testId="import-findings">
+      <ActionForm action={importFindings} submit="Import" testId="import-findings">
+        <Field label="Findings (ASFF JSON)" format="json">
+          <textarea name="findings" rows={18} className="code-editor" spellCheck={false} required defaultValue={SAMPLE_FINDING(account, region)} />
         </Field>
       </ActionForm>
     </Sheet>

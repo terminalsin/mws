@@ -8,6 +8,10 @@
     "./routes/*": "./routes/*"
   },
   "dependencies": {
+    "@aws-sdk/client-eventbridge": "^3.1164.0",
+    "@aws-sdk/client-iam": "^3.1164.0",
+    "@aws-sdk/client-lambda": "^3.1164.0",
+    "@aws-sdk/client-sns": "^3.1164.0",
     "@aws-sdk/client-sqs": "^3.1164.0",
     "@mws-dashboard/aws": "*",
     "@mws-dashboard/ui": "*",

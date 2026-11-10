@@ -1,9 +1,27 @@
 import "server-only";
 
-import { DescribeRouteTablesCommand, DescribeSubnetsCommand, DescribeVpcsCommand, type RouteTable, type Subnet, type Vpc } from "@aws-sdk/client-ec2";
+import {
+  DescribeAddressesCommand,
+  DescribeInternetGatewaysCommand,
+  DescribeNatGatewaysCommand,
+  DescribeNetworkAclsCommand,
+  DescribeRouteTablesCommand,
+  DescribeSecurityGroupsCommand,
+  DescribeSubnetsCommand,
+  DescribeVpcEndpointsCommand,
+  DescribeVpcPeeringConnectionsCommand,
+  DescribeVpcsCommand,
+  type Filter,
+  type RouteTable,
+  type Subnet,
+  type Vpc,
+} from "@aws-sdk/client-ec2";
+import { all } from "@mws-dashboard/aws";
 
 import { ec2, nameTag } from "./clients";
 import type { VpcChoice } from "./forms";
+
+export { destinationOf, ROUTE_TARGETS, targetKey, routeTarget } from "./routes";
 
 /** The route table that governs a subnet: its explicit association, else
  * its VPC's main table. */
@@ -20,22 +38,54 @@ export function isPublic(subnet: Subnet, tables: RouteTable[]) {
   return !!tableFor(subnet, tables)?.Routes?.some((r) => (r.DestinationCidrBlock === "0.0.0.0/0" || r.DestinationIpv6CidrBlock === "::/0") && r.GatewayId?.startsWith("igw-"));
 }
 
-export async function network(vpcId?: string) {
-  const client = await ec2();
-  const Filters = vpcId ? [{ Name: "vpc-id", Values: [vpcId] }] : undefined;
-  const [vpcs, subnets, tables] = await Promise.all([
-    client.send(new DescribeVpcsCommand(vpcId ? { VpcIds: [vpcId] } : {})).then((r) => r.Vpcs ?? []),
-    client.send(new DescribeSubnetsCommand({ Filters })).then((r) => r.Subnets ?? []),
-    client.send(new DescribeRouteTablesCommand({ Filters })).then((r) => r.RouteTables ?? []),
-  ]);
-  return { vpcs, subnets, tables };
+const byVpc = (vpcId?: string): Filter[] | undefined => (vpcId ? [{ Name: "vpc-id", Values: [vpcId] }] : undefined);
+
+// Every list follows NextToken: AWS pages these calls.
+export async function listVpcs(VpcIds?: string[]) {
+  const c = await ec2();
+  return all((NextToken) => c.send(new DescribeVpcsCommand({ VpcIds, NextToken })), (r) => r.Vpcs, (r) => r.NextToken);
+}
+export async function listSubnets(vpcId?: string, SubnetIds?: string[]) {
+  const c = await ec2();
+  return all((NextToken) => c.send(new DescribeSubnetsCommand({ Filters: byVpc(vpcId), SubnetIds, NextToken })), (r) => r.Subnets, (r) => r.NextToken);
+}
+export async function listTables(vpcId?: string) {
+  const c = await ec2();
+  return all((NextToken) => c.send(new DescribeRouteTablesCommand({ Filters: byVpc(vpcId), NextToken })), (r) => r.RouteTables, (r) => r.NextToken);
+}
+export async function listIgws(vpcId?: string) {
+  const c = await ec2();
+  const Filters = vpcId ? [{ Name: "attachment.vpc-id", Values: [vpcId] }] : undefined;
+  return all((NextToken) => c.send(new DescribeInternetGatewaysCommand({ Filters, NextToken })), (r) => r.InternetGateways, (r) => r.NextToken);
+}
+export async function listNats(vpcId?: string) {
+  const c = await ec2();
+  return all((NextToken) => c.send(new DescribeNatGatewaysCommand({ Filter: byVpc(vpcId), NextToken })), (r) => r.NatGateways, (r) => r.NextToken);
+}
+export async function listEndpoints(vpcId?: string) {
+  const c = await ec2();
+  return all((NextToken) => c.send(new DescribeVpcEndpointsCommand({ Filters: byVpc(vpcId), NextToken })), (r) => r.VpcEndpoints, (r) => r.NextToken);
+}
+export async function listPeerings() {
+  const c = await ec2();
+  return all((NextToken) => c.send(new DescribeVpcPeeringConnectionsCommand({ NextToken })), (r) => r.VpcPeeringConnections, (r) => r.NextToken);
+}
+export async function listAcls(vpcId?: string) {
+  const c = await ec2();
+  return all((NextToken) => c.send(new DescribeNetworkAclsCommand({ Filters: byVpc(vpcId), NextToken })), (r) => r.NetworkAcls, (r) => r.NextToken);
+}
+export async function listGroups(vpcId?: string) {
+  const c = await ec2();
+  return all((NextToken) => c.send(new DescribeSecurityGroupsCommand({ Filters: byVpc(vpcId), NextToken })), (r) => r.SecurityGroups, (r) => r.NextToken);
+}
+/** DescribeAddresses is not paginated. */
+export async function listAddresses() {
+  return (await (await ec2()).send(new DescribeAddressesCommand({}))).Addresses ?? [];
 }
 
-/** Where a route sends traffic, as a short target id and its kind. */
-export function routeTarget(r: NonNullable<RouteTable["Routes"]>[number]) {
-  const id =
-    r.GatewayId ?? r.NatGatewayId ?? r.TransitGatewayId ?? r.VpcPeeringConnectionId ?? r.NetworkInterfaceId ?? r.InstanceId ?? r.EgressOnlyInternetGatewayId ?? r.CarrierGatewayId ?? "";
-  return id;
+export async function network(vpcId?: string) {
+  const [vpcs, subnets, tables] = await Promise.all([listVpcs(vpcId ? [vpcId] : undefined), listSubnets(vpcId), listTables(vpcId)]);
+  return { vpcs, subnets, tables };
 }
 
 /** A VPC's associated IPv4 blocks. */
@@ -53,3 +103,6 @@ export function choices(vpcs: Vpc[], subnets: Subnet[]): VpcChoice[] {
     subnets: subnets.filter((s) => s.VpcId === v.VpcId && s.CidrBlock).map((s) => s.CidrBlock!),
   }));
 }
+
+/** A resource's name, or its id. */
+export const label = (r: { Tags?: { Key?: string; Value?: string }[] } | undefined, id: string | undefined) => (r && nameTag(r)) ?? id ?? "";

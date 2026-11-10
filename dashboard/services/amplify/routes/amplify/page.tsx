@@ -1,5 +1,6 @@
 import { ListAppsCommand } from "@aws-sdk/client-amplify";
-import { ago, load } from "@mws-dashboard/aws";
+import { ago, all, load } from "@mws-dashboard/aws";
+import { roleOptions } from "@mws-dashboard/aws/auto";
 import { ActionForm, AwsIcon, Empty, ErrorNotice, Field, List, Page, Pill, Sheet } from "@mws-dashboard/ui";
 import { GitBranch } from "lucide-react";
 import type { Metadata } from "next";
@@ -11,7 +12,11 @@ import { createApp } from "./actions";
 export const metadata: Metadata = { title: "Amplify" };
 
 export default async function Apps() {
-  const apps = await load(async () => ((await (await amplify()).send(new ListAppsCommand({ maxResults: 100 }))).apps ?? []));
+  const apps = await load(async () => {
+    const client = await amplify();
+    return all((nextToken) => client.send(new ListAppsCommand({ maxResults: 100, nextToken })), (r) => r.apps, (r) => r.nextToken);
+  });
+  const roles = await roleOptions("amplify.amazonaws.com");
   const create = (
     <Sheet title="Create app" label="Create new app" testId="create-app">
       <ActionForm action={createApp} submit="Create app" testId="create-app">
@@ -26,6 +31,28 @@ export default async function Apps() {
         </Field>
         <Field label="Access token" rule={CreateApp.accessToken} member="accessToken">
           <input name="token" type="password" autoComplete="off" />
+        </Field>
+        <div className="form-row">
+          <Field label="Platform" rule={CreateApp.platform}>
+            <select name="platform" defaultValue="WEB">
+              <option value="WEB">Static (WEB)</option>
+              <option value="WEB_COMPUTE">SSR (WEB_COMPUTE)</option>
+              <option value="WEB_DYNAMIC">WEB_DYNAMIC</option>
+            </select>
+          </Field>
+          <Field label="Service role">
+            <select name="role" defaultValue="">
+              <option value="">None</option>
+              {roles.map((r) => (
+                <option key={r.value} value={r.value}>
+                  {r.label}
+                </option>
+              ))}
+            </select>
+          </Field>
+        </div>
+        <Field label="Environment variables" format="env">
+          <textarea name="env" rows={2} placeholder="API_URL=https://api.example.com" />
         </Field>
       </ActionForm>
     </Sheet>

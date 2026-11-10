@@ -10,6 +10,7 @@
   "dependencies": {
     "@aws-sdk/client-acm": "^3.1164.0",
     "@aws-sdk/client-acm-pca": "^3.1164.0",
+    "@aws-sdk/client-route-53": "^3.1164.0",
     "@mws-dashboard/aws": "*",
     "@mws-dashboard/ui": "*",
     "lucide-react": "^1.70.0"

@@ -1,4 +1,4 @@
-import { PutParameterCommand, SSMClient } from "@aws-sdk/client-ssm";
+import { GetParameterHistoryCommand, PutParameterCommand, SSMClient } from "@aws-sdk/client-ssm";
 import { expect, test, type Page } from "@playwright/test";
 
 import { row, sdk, submit, unique } from "./helpers";
@@ -78,4 +78,46 @@ test("Parameter Store: existing names suggest the next free one", async ({ page 
   await expect(name).toHaveValue(`${later}-2`);
   await form.locator('button[type="submit"]').click();
   await expect(page.locator("dialog[open]")).toHaveCount(0);
+});
+
+test("Parameter Store: a parameter's page shows its history and labels a version", async ({ page }) => {
+  const ssm = new SSMClient(sdk);
+  const name = `/${unique("dash")}/feature`;
+  await ssm.send(new PutParameterCommand({ Name: name, Type: "String", Value: "off" }));
+  await ssm.send(new PutParameterCommand({ Name: name, Type: "String", Value: "on", Overwrite: true }));
+  await page.goto(`/ssm/parameter?name=${encodeURIComponent(name)}&tab=history`);
+  await expect(page.locator("li.row")).toHaveCount(2);
+  await submit(page, "label-1", { labels: "stable" });
+  await expect(page.locator("li.row").filter({ hasText: "stable" })).toBeVisible();
+  const { Parameters } = await ssm.send(new GetParameterHistoryCommand({ Name: name }));
+  expect(Parameters?.find((p) => p.Version === 1)?.Labels).toEqual(["stable"]);
+});
+
+test("Systems Manager: create a document, a maintenance window, an association and an OpsItem", async ({ page }) => {
+  test.setTimeout(120_000);
+  const doc = unique("Dash-Doc");
+  await page.goto("/ssm/documents");
+  await submit(page, "create-document", { name: doc });
+  await expect(page).toHaveURL(/\/ssm\/document\?/);
+  await expect(page.getByRole("heading", { name: doc })).toBeVisible();
+
+  const window = unique("dash-window");
+  await page.goto("/ssm/windows");
+  await submit(page, "create-window", { name: window });
+  await expect(page.getByRole("heading", { name: window })).toBeVisible();
+  await submit(page, "register-target", { targets: "tag:env=dash", name: "dash-targets" });
+  await expect(page.locator("li.row").filter({ hasText: "dash-targets" })).toBeVisible();
+
+  const association = unique("dash-assoc");
+  await page.goto("/ssm/associations");
+  await submit(page, "create-association", { name: association, targets: "tag:env=dash", schedule: "rate(30 minutes)", parameters: "commands=uptime" });
+  await expect(page).toHaveURL(/\/ssm\/association\?/);
+  await expect(page.getByRole("heading", { name: association })).toBeVisible();
+
+  const title = unique("dash-ops");
+  await page.goto("/ssm/opsitems");
+  await submit(page, "create-opsitem", { title, description: "disk full" });
+  await expect(page.getByRole("heading", { name: title })).toBeVisible();
+  await page.getByTestId("opsitem-resolve").locator('button[type="submit"]').click();
+  await expect(page.getByText("Resolved", { exact: true }).first()).toBeVisible();
 });

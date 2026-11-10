@@ -1,6 +1,6 @@
 import "server-only";
 
-import { guardrails } from "./lib/inventory";
+import { customModels, guardrails, provisioned } from "./lib/inventory";
 
 /** What the console's home page and search list for this service. */
-export const inventory = [guardrails];
+export const inventory = [guardrails, customModels, provisioned];

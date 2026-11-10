@@ -1,83 +1,110 @@
-import { load } from "@mws-dashboard/aws";
-import { ActionForm, AwsIcon, Curated, Empty, ErrorNotice, Field, Page, Pill, Sheet, Status, type Rule } from "@mws-dashboard/ui";
-import { CreateCacheCluster, CreateServerlessCache } from "@mws-dashboard/ui/model/elasticache";
-import { Lock } from "lucide-react";
+import { ago, load } from "@mws-dashboard/aws";
+import { ActionForm, AwsIcon, Curated, Empty, ErrorNotice, Page, Pill, Segments, Sheet, Status } from "@mws-dashboard/ui";
+import { Lock, Trash2 } from "lucide-react";
 import type { Metadata } from "next";
 
 import { ICONS, STATUS_TONE, engineIcon } from "../../lib/clients";
-import { listCaches, nodeTypes } from "../../lib/elasticache";
-import { createCache } from "./actions";
+import { engineVersions, listCaches, nodeTypes, snapshots, type Snap } from "../../lib/elasticache";
+import { deleteSnapshot } from "./actions";
+import { CreateCacheForm } from "./create-cache.tsx";
+import { CopySnapshot, RestoreSnapshot } from "./forms.tsx";
 
 export const metadata: Metadata = { title: "ElastiCache" };
 
-// The model leaves identifiers unconstrained; ElastiCache's rules are in its
-// docs (and MWS enforces them): a letter first, then letters, digits and
-// single hyphens, no hyphen at the end, at most 40 characters.
-const NAME: Rule = {
-  ...CreateServerlessCache.ServerlessCacheName,
-  maxLength: 40,
-  pattern: "^[a-zA-Z](?!.*--)[a-zA-Z0-9-]*(?<!-)$",
-  hint: "Starts with a letter; letters, digits and single hyphens",
-  generate: "name",
-};
+type Props = { searchParams: Promise<{ tab?: string }> };
 
-function CreateCache({ names = [], types = [], list }: { names?: string[]; types?: string[]; list: string }) {
-  const nodeType: Rule = { ...CreateCacheCluster.CacheNodeType, ...(types.length ? { enum: types } : {}) };
-  return (
-    <Sheet title="Create cache" label="Create cache" testId="create-cache">
-      <ActionForm action={createCache} submit="Create" testId="create-cache">
-        <div className="form-row">
-          <Field label="Engine">
-            <select name="engine" defaultValue="valkey">
-              <option value="valkey">Valkey</option>
-              <option value="redis">Redis OSS</option>
-              <option value="memcached">Memcached</option>
-            </select>
-          </Field>
-          <Field label="Deployment">
-            <select name="mode" defaultValue="serverless">
-              <option value="serverless">Serverless</option>
-              <option value="nodes">Design your own cache</option>
-            </select>
-          </Field>
-        </div>
-        <Field label="Name" rule={NAME} taken={names} unique>
-          <input name="name" required maxLength={40} autoFocus />
-        </Field>
-        <div className="form-row">
-          <Field label="Node type" rule={nodeType} known={types}>
-            <input name="nodeType" defaultValue="cache.t4g.micro" list={list} autoComplete="off" />
-            <datalist id={list}>
-              {types.map((t) => (
-                <option key={t} value={t} />
-              ))}
-            </datalist>
-          </Field>
-          <Field label="Nodes" rule={CreateCacheCluster.NumCacheNodes}>
-            <input name="nodes" type="number" min={1} max={40} defaultValue={1} />
-          </Field>
-        </div>
-        <label className="check">
-          <input type="checkbox" name="tls" /> Encryption in transit
-        </label>
-      </ActionForm>
-    </Sheet>
-  );
+async function offers() {
+  const [redis, memcached, valkeyV, redisV, memcachedV] = await Promise.all([
+    nodeTypes("redis"),
+    nodeTypes("memcached").catch(() => [] as string[]),
+    engineVersions("valkey").catch(() => [] as string[]),
+    engineVersions("redis").catch(() => [] as string[]),
+    engineVersions("memcached").catch(() => [] as string[]),
+  ]);
+  return { types: { redis, memcached: memcached.length ? memcached : redis }, versions: { valkey: valkeyV, redis: redisV, memcached: memcachedV } };
 }
 
-export default async function Caches() {
-  const [caches, types] = await Promise.all([load(listCaches), load(nodeTypes)]);
-  const known = { names: caches.ok ? caches.value.map((c) => c.name) : [], types: types.ok ? types.value : [] };
-  const create = <CreateCache {...known} list="node-types" />;
+export default async function Caches({ searchParams }: Props) {
+  const { tab = "caches" } = await searchParams;
+  const [caches, offered, snaps] = await Promise.all([load(listCaches), load(offers), load(() => snapshots())]);
+  const names = caches.ok ? caches.value.map((c) => c.name) : [];
+  const snapList: Snap[] = snaps.ok ? snaps.value : [];
+  const create = (
+    <Sheet title="Create cache" label="Create cache" testId="create-cache">
+      <CreateCacheForm
+        names={names}
+        types={offered.ok ? offered.value.types : {}}
+        versions={offered.ok ? offered.value.versions : {}}
+        snapshots={snapList.filter((s) => s.status === "available").map((s) => ({ kind: s.kind, name: s.name, arn: s.arn, engine: s.engine }))}
+      />
+    </Sheet>
+  );
+  const tabs = (
+    <Segments
+      label="ElastiCache"
+      items={[
+        { label: "Caches", href: "/elasticache", active: tab !== "snapshots", count: caches.ok ? caches.value.length || undefined : undefined },
+        { label: "Snapshots", href: "/elasticache?tab=snapshots", active: tab === "snapshots", count: snapList.length || undefined },
+      ]}
+    />
+  );
+  if (tab === "snapshots") {
+    const live = new Set(names);
+    const types = offered.ok ? offered.value.types.redis : [];
+    return (
+      <Page title="Snapshots" actions={create}>
+        {tabs}
+        {snaps.ok ? (
+          <Curated
+            label="Snapshots"
+            sections={[
+              { id: "manual", title: "Manual", items: snapList.filter((s) => s.type === "manual") },
+              { id: "automatic", title: "Automatic", items: snapList.filter((s) => s.type !== "manual") },
+            ]}
+            empty={<Empty icon={ICONS.elasticache} />}
+            row={(s) => {
+              const href = s.source && live.has(s.source) ? `/elasticache/cache?${s.kind === "serverless" ? "serverless" : "id"}=${encodeURIComponent(s.source)}` : undefined;
+              return {
+                key: `${s.kind}:${s.name}`,
+                icon: <AwsIcon icon={engineIcon(s.engine)} size={22} />,
+                title: s.name,
+                subtitle: s.source ? (href ? s.source : `${s.source} (deleted)`) : undefined,
+                href,
+                meta: (
+                  <>
+                    {s.kind === "serverless" ? <Pill tone="info">Serverless</Pill> : s.nodeType && <span>{s.nodeType}</span>}
+                    {s.version && <span>{s.version}</span>}
+                    <Status tone={STATUS_TONE(s.status)}>{s.status ?? ""}</Status>
+                    <span>{ago(s.at)}</span>
+                  </>
+                ),
+                actions: (
+                  <>
+                    {s.status === "available" && <RestoreSnapshot snap={s} taken={names} types={types} />}
+                    {s.status === "available" && <CopySnapshot kind={s.kind} name={s.name} taken={snapList.map((x) => x.name)} />}
+                    <ActionForm action={deleteSnapshot.bind(null, s.kind, s.name)} submit={`Delete ${s.name}`} icon={<Trash2 size={15} />} tone="danger" confirm={`Delete ${s.name}?`} />
+                  </>
+                ),
+              };
+            }}
+          />
+        ) : (
+          <ErrorNotice error={snaps.error} />
+        )}
+      </Page>
+    );
+  }
   if (!caches.ok) {
     return (
       <Page title="Caches" actions={create}>
+        {tabs}
         <ErrorNotice error={caches.error} />
       </Page>
     );
   }
   return (
     <Page title="Caches" actions={create}>
+      {tabs}
       <Curated
         label="Caches"
         sections={[
@@ -85,7 +112,7 @@ export default async function Caches() {
           { id: "redis", title: "Redis OSS", items: caches.value.filter((c) => c.engine === "redis") },
           { id: "memcached", title: "Memcached", items: caches.value.filter((c) => c.engine === "memcached") },
         ]}
-        empty={<Empty icon={ICONS.elasticache} action={<CreateCache {...known} list="node-types-empty" />} />}
+        empty={<Empty icon={ICONS.elasticache} />}
         row={(c) => ({
           key: `${c.kind}:${c.name}`,
           icon: <AwsIcon icon={engineIcon(c.engine)} size={24} />,
@@ -94,9 +121,20 @@ export default async function Caches() {
           href: c.href,
           meta: (
             <>
-              {c.kind === "serverless" ? <Pill tone="info">Serverless</Pill> : <span>{c.nodes} × {c.nodeType}</span>}
+              {c.kind === "serverless" ? (
+                <Pill tone="info">Serverless</Pill>
+              ) : c.clusterMode ? (
+                <span>
+                  {c.shards} shards · {c.nodes} × {c.nodeType}
+                </span>
+              ) : (
+                <span>
+                  {c.nodes} × {c.nodeType}
+                </span>
+              )}
+              {c.version && <span>{c.version}</span>}
               {c.tls && <Lock size={13} aria-label="TLS" />}
-              <Status tone={STATUS_TONE(c.status)}>{c.status}</Status>
+              <Status tone={STATUS_TONE(c.status)}>{c.status ?? ""}</Status>
             </>
           ),
         })}

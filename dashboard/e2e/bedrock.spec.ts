@@ -1,5 +1,10 @@
-import { CreateGuardrailCommand, BedrockClient } from "@aws-sdk/client-bedrock";
-import { CreateBucketCommand, S3Client } from "@aws-sdk/client-s3";
+import {
+  BedrockClient,
+  CreateGuardrailCommand,
+  GetModelInvocationLoggingConfigurationCommand,
+  PutModelInvocationLoggingConfigurationCommand,
+} from "@aws-sdk/client-bedrock";
+import { CreateBucketCommand, PutObjectCommand, S3Client } from "@aws-sdk/client-s3";
 import { expect, test, type Page } from "@playwright/test";
 
 import { row, rowAction, sdk, submit, submitInline, unique } from "./helpers";
@@ -150,4 +155,97 @@ test("Bedrock validation: a logging bucket that does not exist suggests the one 
   await expect(form.locator(".result.error")).toHaveCount(0);
   await field("bucket").getByRole("button", { name: /Did you mean/ }).click();
   await expect(control("bucket")).toHaveValue(bucket);
+});
+
+test("Bedrock: customize a model, then buy, rename and delete its Provisioned Throughput", async ({ page }) => {
+  const bucket = unique("dash-tune").toLowerCase();
+  await new S3Client({ ...sdk, forcePathStyle: true }).send(new CreateBucketCommand({ Bucket: bucket }));
+  const job = unique("dash-job");
+  const model = unique("dashmodel").replace(/-/g, "_");
+  await page.goto("/bedrock/custom-models");
+  await submit(page, "create-customization", { jobName: job, modelName: model, training: `s3://${bucket}/train.jsonl`, output: `s3://${bucket}/out/` });
+  await expect(page.getByRole("heading", { level: 1, name: job })).toBeVisible();
+  await expect(page.getByRole("link", { name: `s3://${bucket}/train.jsonl` })).toBeVisible();
+  await expect(page.getByText("Completed")).toBeVisible({ timeout: 30_000 });
+  await page.getByRole("link", { name: model }).click();
+  await expect(page.getByRole("heading", { level: 1, name: model })).toBeVisible();
+  await expect(page.getByRole("link", { name: job })).toBeVisible();
+  await expect(page.getByRole("link", { name: "Purchase Provisioned Throughput" })).toBeVisible({ timeout: 30_000 });
+  await page.getByRole("link", { name: "Purchase Provisioned Throughput" }).click();
+  const pt = unique("dash-pt");
+  await submit(page, "create-provisioned", { name: pt, units: "1" });
+  await expect(page.getByRole("heading", { level: 1, name: pt })).toBeVisible();
+  await expect(page.getByText("InService")).toBeVisible({ timeout: 30_000 });
+  await submit(page, "edit-provisioned", { name: `${pt}-x` });
+  await expect(page.getByRole("heading", { level: 1, name: `${pt}-x` })).toBeVisible();
+  page.once("dialog", (d) => d.accept().catch(() => {}));
+  await page.getByRole("button", { name: "Delete", exact: true }).click();
+  await expect(page).toHaveURL(/\/bedrock\/provisioned$/);
+  await expect(row(page, `${pt}-x`)).toHaveCount(0);
+});
+
+test("Bedrock: a batch inference job runs over S3 records", async ({ page }) => {
+  const bucket = unique("dash-batch").toLowerCase();
+  const s3 = new S3Client({ ...sdk, forcePathStyle: true });
+  await s3.send(new CreateBucketCommand({ Bucket: bucket }));
+  const record = { recordId: "r1", modelInput: { anthropic_version: "bedrock-2023-05-31", max_tokens: 50, messages: [{ role: "user", content: "hi" }] } };
+  await s3.send(new PutObjectCommand({ Bucket: bucket, Key: "in/records.jsonl", Body: JSON.stringify(record) + "\n" }));
+  const job = unique("dash-batch");
+  await page.goto("/bedrock/batch");
+  await submit(page, "create-batch", { jobName: job, input: `s3://${bucket}/in/records.jsonl`, output: `s3://${bucket}/out/` });
+  await expect(page.getByRole("heading", { level: 1, name: job })).toBeVisible();
+  await expect(page.getByText(/^(Completed|PartiallyCompleted|Failed)$/)).toBeVisible({ timeout: 40_000 });
+  await page.getByRole("link", { name: "Batch inference" }).first().click();
+  await expect(row(page, job)).toBeVisible();
+});
+
+test("Bedrock: start an async invocation and open it", async ({ page }) => {
+  const bucket = unique("dash-async").toLowerCase();
+  await new S3Client({ ...sdk, forcePathStyle: true }).send(new CreateBucketCommand({ Bucket: bucket }));
+  await page.goto("/bedrock/async");
+  await submit(page, "start-async", { output: `s3://${bucket}/videos/` });
+  await expect(page.getByRole("link", { name: new RegExp(`s3://${bucket}/videos/`) })).toBeVisible();
+  await expect(page.getByText(/^(InProgress|Completed|Failed)$/)).toBeVisible();
+});
+
+test("Bedrock: edit a guardrail's word filter and test the draft", async ({ page }) => {
+  const name = unique("dash-guard-edit");
+  await page.goto("/bedrock/guardrails");
+  await submit(page, "create-guardrail", { name, words: "pineapple", description: "edits" });
+  await expect(page.getByRole("heading", { level: 1, name })).toBeVisible();
+  await submit(page, "edit-guardrail", { words: "anchovy", regexes: "Order: ORD-[0-9]{6}", grounding: "0.5" });
+  await expect(page.getByRole("heading", { level: 2, name: /Contextual grounding/ })).toBeVisible();
+  const blocked = await submitInline(page, "test-guardrail", { text: "Extra anchovy please" });
+  await expect(blocked).toContainText("Intervened");
+  const passed = await submitInline(page, "test-guardrail", { text: "Extra pineapple please" });
+  await expect(passed).toContainText("Passed");
+});
+
+test("Bedrock: saving the logging sheet keeps an S3-only configuration as it was", async ({ page }) => {
+  const bucket = unique("dash-invlogs").toLowerCase();
+  await new S3Client({ ...sdk, forcePathStyle: true }).send(new CreateBucketCommand({ Bucket: bucket }));
+  const client = new BedrockClient(sdk);
+  await client.send(
+    new PutModelInvocationLoggingConfigurationCommand({
+      loggingConfig: { s3Config: { bucketName: bucket, keyPrefix: "logs" }, textDataDeliveryEnabled: false, videoDataDeliveryEnabled: true, imageDataDeliveryEnabled: true, embeddingDataDeliveryEnabled: false },
+    }),
+  );
+  await page.goto("/bedrock/settings");
+  await submit(page, "edit-logging");
+  const after = (await client.send(new GetModelInvocationLoggingConfigurationCommand({}))).loggingConfig;
+  expect(after?.cloudWatchConfig).toBeUndefined();
+  expect(after).toMatchObject({ s3Config: { bucketName: bucket, keyPrefix: "logs" }, textDataDeliveryEnabled: false, videoDataDeliveryEnabled: true, imageDataDeliveryEnabled: true, embeddingDataDeliveryEnabled: false });
+});
+
+test("Bedrock: an application inference profile has its own page with tags", async ({ page }) => {
+  const name = unique("dash-profile");
+  await page.goto("/bedrock/profiles?tab=application");
+  await submit(page, "create-profile", { name, description: "team profile", tags: "CostCenter=ml" });
+  await row(page, name).getByRole("link").first().click();
+  await expect(page.getByRole("heading", { level: 1, name })).toBeVisible();
+  await expect(page.getByText("team profile")).toBeVisible();
+  await expect(page.locator(".tag").filter({ hasText: "CostCenter" })).toBeVisible();
+  await submit(page, "manage-tags", { tags: "CostCenter=ml\nteam=search" });
+  await expect(page.locator(".tag").filter({ hasText: "team" })).toContainText("search");
+  await expect(page.getByRole("link", { name: "Open in playground" })).toHaveAttribute("href", /inference-profile/);
 });

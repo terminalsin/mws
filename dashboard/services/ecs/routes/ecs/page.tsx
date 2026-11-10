@@ -1,11 +1,11 @@
-import { DescribeClustersCommand, ListClustersCommand, ListTaskDefinitionFamiliesCommand, ListTaskDefinitionsCommand } from "@aws-sdk/client-ecs";
 import { load } from "@mws-dashboard/aws";
 import { ActionForm, AwsIcon, Empty, ErrorNotice, Field, List, Page, Pill, Sheet, Status } from "@mws-dashboard/ui";
 import { Trash2 } from "lucide-react";
 import { RegisterTaskDefinition } from "@mws-dashboard/ui/model/ecs";
 import type { Metadata } from "next";
 
-import { ICONS, STATUS_TONE, ecs } from "../../lib/clients";
+import { ICONS, STATUS_TONE } from "../../lib/clients";
+import { clusters as listClusters, families as listFamilies, revisionOf, revisions } from "../../lib/ecs";
 import { NAME, IMAGE } from "../../lib/rules";
 import { FargateSize } from "../../lib/size.tsx";
 import { createCluster, deregisterTaskDefinition, registerTaskDefinition } from "./actions";
@@ -16,13 +16,12 @@ type Props = { searchParams: Promise<{ tab?: string }> };
 
 export default async function Clusters({ searchParams }: Props) {
   const { tab = "clusters" } = await searchParams;
-  const client = await ecs();
   if (tab === "taskdefs") {
     const defs = await load(async () => {
-      const families = (await client.send(new ListTaskDefinitionFamiliesCommand({ status: "ACTIVE" }))).families ?? [];
+      const families = await listFamilies("ACTIVE");
       return Promise.all(
         families.map(async (family) => {
-          const arns = (await client.send(new ListTaskDefinitionsCommand({ familyPrefix: family, status: "ACTIVE", sort: "DESC" }))).taskDefinitionArns ?? [];
+          const arns = await revisions(family);
           return { family, latest: arns[0], revisions: arns.length };
         }),
       );
@@ -46,6 +45,12 @@ export default async function Clusters({ searchParams }: Props) {
               <input name="command" placeholder="optional" />
             </Field>
           </div>
+          <Field label="Environment" format="env">
+            <textarea name="env" rows={3} spellCheck={false} placeholder="KEY=value" />
+          </Field>
+          <label className="check">
+            <input type="checkbox" name="logs" defaultChecked /> Send output to CloudWatch Logs
+          </label>
         </ActionForm>
       </Sheet>
     );
@@ -59,7 +64,8 @@ export default async function Clusters({ searchParams }: Props) {
               key: d.family,
               icon: <AwsIcon icon={ICONS.task} size={24} />,
               title: d.family,
-              subtitle: d.latest?.split("/").pop(),
+              subtitle: revisionOf(d.latest),
+              href: `/ecs/taskdef?family=${encodeURIComponent(d.family)}`,
               meta: <span>{d.revisions} revisions</span>,
               actions: d.latest ? <ActionForm action={deregisterTaskDefinition.bind(null, d.latest)} submit={`Deregister ${d.latest.split("/").pop()}`} icon={<Trash2 size={15} />} tone="danger" confirm="Deregister the latest revision?" /> : undefined,
             }))}
@@ -70,10 +76,7 @@ export default async function Clusters({ searchParams }: Props) {
       </Page>
     );
   }
-  const clusters = await load(async () => {
-    const arns = (await client.send(new ListClustersCommand({}))).clusterArns ?? [];
-    return arns.length ? ((await client.send(new DescribeClustersCommand({ clusters: arns }))).clusters ?? []) : [];
-  });
+  const clusters = await load(() => listClusters());
   const create = (
     <Sheet title="Create cluster" label="Create cluster" testId="create-ecs-cluster">
       <ActionForm action={createCluster} submit="Create" testId="create-ecs-cluster">

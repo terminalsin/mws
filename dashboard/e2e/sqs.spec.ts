@@ -1,4 +1,4 @@
-import { CreateQueueCommand, GetQueueAttributesCommand, SQSClient } from "@aws-sdk/client-sqs";
+import { CreateQueueCommand, GetQueueAttributesCommand, ReceiveMessageCommand, SendMessageCommand, SQSClient } from "@aws-sdk/client-sqs";
 import { expect, test, type Page } from "@playwright/test";
 
 import { sdk, submit, unique } from "./helpers";
@@ -101,4 +101,64 @@ test("SQS: a .fifo name makes a FIFO queue without ticking FIFO", async ({ page 
   await page.goto("/sqs");
   await submit(page, "create-queue", { name: queue });
   await expect(page.locator("li.row").filter({ hasText: queue }).getByText("FIFO", { exact: true })).toBeVisible();
+});
+
+test("SQS: attach a dead-letter queue, poll and hold, then redrive", async ({ page }) => {
+  const source = unique("dash-src");
+  const dlq = unique("dash-dlq");
+  const sqs = new SQSClient(sdk);
+  const { QueueUrl: sourceUrl } = await sqs.send(new CreateQueueCommand({ QueueName: source }));
+  const { QueueUrl: dlqUrl } = await sqs.send(new CreateQueueCommand({ QueueName: dlq }));
+  const dlqArn = (await sqs.send(new GetQueueAttributesCommand({ QueueUrl: dlqUrl, AttributeNames: ["QueueArn"] }))).Attributes!.QueueArn!;
+
+  // The edit form sets the redrive policy (and can change it later).
+  await page.goto(`/sqs/${source}`);
+  await submit(page, "queue-config", { dlq: dlqArn, maxReceiveCount: "2" });
+  const { Attributes } = await sqs.send(new GetQueueAttributesCommand({ QueueUrl: sourceUrl, AttributeNames: ["RedrivePolicy"] }));
+  expect(JSON.parse(Attributes!.RedrivePolicy!)).toEqual({ deadLetterTargetArn: dlqArn, maxReceiveCount: 2 });
+
+  // Polling counts receives; held messages can be deleted one by one.
+  await sqs.send(new SendMessageCommand({ QueueUrl: sourceUrl, MessageBody: "keep", MessageAttributes: { kind: { DataType: "String", StringValue: "test" } } }));
+  await page.reload();
+  const peek = await submit(page, "receive-messages", { mode: "peek" });
+  await expect(peek.getByRole("table", { name: "Messages" })).toContainText("1 / 2");
+  await expect(peek).toContainText("kind=test");
+  const held = await submit(page, "receive-messages", { mode: "poll" });
+  await expect(held.getByRole("table", { name: "Messages" })).toContainText("2 / 2");
+  await held.getByRole("button", { name: /^Delete / }).click();
+  await expect(held).toContainText("Deleted");
+
+  // The DLQ knows its source authoritatively and redrives back to it.
+  // A message that fails twice moves to the DLQ on its next receive.
+  await sqs.send(new SendMessageCommand({ QueueUrl: sourceUrl, MessageBody: "failed" }));
+  for (let i = 0; i < 3; i++) await sqs.send(new ReceiveMessageCommand({ QueueUrl: sourceUrl, VisibilityTimeout: 0 }));
+  await expect(async () => {
+    const n = (await sqs.send(new GetQueueAttributesCommand({ QueueUrl: dlqUrl, AttributeNames: ["ApproximateNumberOfMessages"] }))).Attributes!.ApproximateNumberOfMessages;
+    expect(n).toBe("1");
+  }).toPass({ timeout: 10_000 });
+  await page.goto(`/sqs/${dlq}`);
+  await expect(page.getByText("Dead letters from")).toBeVisible();
+  await submit(page, "redrive", {});
+  await expect(async () => {
+    const n = (await sqs.send(new GetQueueAttributesCommand({ QueueUrl: sourceUrl, AttributeNames: ["ApproximateNumberOfMessages"] }))).Attributes!.ApproximateNumberOfMessages;
+    expect(n).toBe("1");
+  }).toPass({ timeout: 15_000 });
+  await page.reload();
+  await expect(page.getByRole("list", { name: "Redrive tasks" })).toContainText(/COMPLETED|RUNNING/);
+});
+
+test("SQS: send a message with attributes and switch encryption to SSE-KMS", async ({ page }) => {
+  const queue = unique("dash-attrs");
+  const sqs = new SQSClient(sdk);
+  const { QueueUrl } = await sqs.send(new CreateQueueCommand({ QueueName: queue }));
+  await page.goto(`/sqs/${queue}`);
+  await submit(page, "send-message", { body: "with attributes", attributes: "type=order\npriority:Number=3" });
+  const out = await sqs.send(new ReceiveMessageCommand({ QueueUrl, MessageAttributeNames: ["All"] }));
+  expect(out.Messages?.[0]?.MessageAttributes?.priority).toMatchObject({ DataType: "Number", StringValue: "3" });
+  expect(out.Messages?.[0]?.MessageAttributes?.type).toMatchObject({ DataType: "String", StringValue: "order" });
+
+  await submit(page, "queue-config", { encryption: "kms" });
+  const { Attributes } = await sqs.send(new GetQueueAttributesCommand({ QueueUrl, AttributeNames: ["All"] }));
+  expect(Attributes?.KmsMasterKeyId).toBe("alias/aws/sqs");
+  expect(Attributes?.SqsManagedSseEnabled).toBe("false");
 });

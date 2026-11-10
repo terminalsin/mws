@@ -35,3 +35,11 @@ export const SEND = {
   MessageGroupId: { ...SendMessage.MessageGroupId, ...FIFO_ID, generate: "name" },
   MessageDeduplicationId: { ...SendMessage.MessageDeduplicationId, ...FIFO_ID, generate: "uuid" },
 } satisfies Record<string, Rule>;
+
+export const KMS_KEY: Rule = { pattern: "^[a-zA-Z0-9:/_-]+$", hint: "Key ID, alias or ARN", known: ["alias/aws/sqs"] };
+export const KMS_REUSE: Rule = seconds(60, 86_400);
+export const SOURCE_ARNS: Rule = { format: "list", item: { format: "arn" }, hint: "Queue ARNs, up to 10" };
+export const MOVE_RATE: Rule = { type: "integer", min: 1, max: 500, hint: "Messages per second; empty for as fast as possible" };
+export const MESSAGE_ATTRIBUTES: Rule = { format: "keyvalue", hint: "Name=value; Name:Number=42 for numbers" };
+export const COPIES: Rule = { type: "integer", min: 1, max: 10 };
+export const BATCH_SIZE: Rule = { type: "integer", min: 1, max: 10_000 };

@@ -1,11 +1,12 @@
 import { GetIPSetCommand, GetThreatIntelSetCommand, ListIPSetsCommand, ListThreatIntelSetsCommand } from "@aws-sdk/client-guardduty";
-import { load } from "@mws-dashboard/aws";
+import { all, load } from "@mws-dashboard/aws";
 import { ActionForm, AwsIcon, Curated, Empty, ErrorNotice, Field, Page, Sheet, Status, type Rule } from "@mws-dashboard/ui";
 import { CreateIPSet } from "@mws-dashboard/ui/model/guardduty";
 import { Pause, Play, ShieldAlert, ShieldCheck, Trash2 } from "lucide-react";
 import type { Metadata } from "next";
 
 import { ICONS, detectorId, guardduty, s3Objects } from "../../../lib/clients";
+import { GuardDutyNav } from "../../../lib/nav";
 import { createList, deleteList, enableGuardDuty, setListActive, type ListKind } from "../actions";
 
 export const metadata: Metadata = { title: "Lists · GuardDuty" };
@@ -63,8 +64,16 @@ export default async function Lists() {
     if (!detector) return undefined;
     const client = await guardduty();
     const [ipSets, threatSets, objects] = await Promise.all([
-      client.send(new ListIPSetsCommand({ DetectorId: detector })).then((r) => r.IpSetIds ?? []),
-      client.send(new ListThreatIntelSetsCommand({ DetectorId: detector })).then((r) => r.ThreatIntelSetIds ?? []),
+      all(
+        (NextToken) => client.send(new ListIPSetsCommand({ DetectorId: detector, NextToken })),
+        (r) => r.IpSetIds,
+        (r) => r.NextToken,
+      ),
+      all(
+        (NextToken) => client.send(new ListThreatIntelSetsCommand({ DetectorId: detector, NextToken })),
+        (r) => r.ThreatIntelSetIds,
+        (r) => r.NextToken,
+      ),
       s3Objects(),
     ]);
     const lists: List[] = await Promise.all([
@@ -82,6 +91,7 @@ export default async function Lists() {
   if (!data.ok) {
     return (
       <Page title="Lists">
+        <GuardDutyNav active="lists" />
         <ErrorNotice error={data.error} />
       </Page>
     );
@@ -106,6 +116,7 @@ export default async function Lists() {
         </>
       }
     >
+      <GuardDutyNav active="lists" />
       <Curated
         label="Lists"
         sections={[

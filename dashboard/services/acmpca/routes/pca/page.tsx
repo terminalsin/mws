@@ -1,11 +1,14 @@
-import { ListCertificateAuthoritiesCommand } from "@aws-sdk/client-acm-pca";
 import { ago, load } from "@mws-dashboard/aws";
 import { ActionForm, AwsIcon, Curated, Empty, ErrorNotice, Field, Page, Pill, Sheet, Status, type Rule } from "@mws-dashboard/ui";
 import { CreateCertificateAuthority } from "@mws-dashboard/ui/model/acm-pca";
+import { Smartphone } from "lucide-react";
 import type { Metadata } from "next";
+import Link from "next/link";
 
-import { ICONS, pca } from "../../lib/clients";
-import { CA_TONE } from "../../lib/pca";
+import { listAuthorities } from "../../lib/cas";
+import { ICONS } from "../../lib/clients";
+import { CA_TONE, KEY_ALGORITHMS } from "../../lib/pca";
+import { RevocationFields } from "./revocation";
 import { createAuthority } from "./actions";
 
 export const metadata: Metadata = { title: "Private CA" };
@@ -16,7 +19,7 @@ const SUBJECT = CreateCertificateAuthority.CertificateAuthorityConfiguration.fie
 const COUNTRY: Rule = { format: "country" };
 
 export default async function Authorities() {
-  const cas = await load(async () => (await (await pca()).send(new ListCertificateAuthoritiesCommand({}))).CertificateAuthorities ?? []);
+  const cas = await load(listAuthorities);
   const create = (
     <Sheet title="Create private CA" label="Create CA" testId="create-ca">
       <ActionForm action={createAuthority} submit="Create CA" testId="create-ca">
@@ -41,17 +44,45 @@ export default async function Authorities() {
           <Field label="Organization" rule={SUBJECT.Organization} member="Subject.Organization">
             <input name="org" />
           </Field>
+          <Field label="Organizational unit" rule={SUBJECT.OrganizationalUnit} member="Subject.OrganizationalUnit">
+            <input name="ou" />
+          </Field>
+        </div>
+        <div className="form-row">
           <Field label="Country" rule={COUNTRY} member="Subject.Country">
             <input name="country" placeholder="US" />
           </Field>
+          <Field label="State" rule={SUBJECT.State} member="Subject.State">
+            <input name="state" />
+          </Field>
+          <Field label="Locality" rule={SUBJECT.Locality} member="Subject.Locality">
+            <input name="locality" />
+          </Field>
         </div>
-        <Field label="Key algorithm">
-          <select name="key" defaultValue="RSA_2048">
-            <option value="RSA_2048">RSA 2048</option>
-            <option value="RSA_4096">RSA 4096</option>
-            <option value="EC_prime256v1">ECDSA P-256</option>
-            <option value="EC_secp384r1">ECDSA P-384</option>
-          </select>
+        <div className="form-row">
+          <Field label="Key algorithm" member="KeyAlgorithm">
+            <select name="key" defaultValue="RSA_2048">
+              {KEY_ALGORITHMS.map((k) => (
+                <option key={k} value={k}>
+                  {k.replace(/_/g, " ").replace("EC prime256v1", "ECDSA P-256").replace("EC secp384r1", "ECDSA P-384").replace("EC secp521r1", "ECDSA P-521")}
+                </option>
+              ))}
+            </select>
+          </Field>
+          <Field label="Key storage" member="KeyStorageSecurityStandard">
+            <select name="storage" defaultValue="">
+              <option value="">FIPS 140-2 level 3 or higher</option>
+              <option value="FIPS_140_2_LEVEL_2_OR_HIGHER">FIPS 140-2 level 2 or higher</option>
+              <option value="CCPC_LEVEL_1_OR_HIGHER">CCPC level 1 or higher</option>
+            </select>
+          </Field>
+        </div>
+        <details>
+          <summary>Revocation</summary>
+          <RevocationFields />
+        </details>
+        <Field label="Tags" format="tags">
+          <textarea name="tags" rows={2} placeholder="team=pki" />
         </Field>
       </ActionForm>
     </Sheet>
@@ -65,7 +96,17 @@ export default async function Authorities() {
   }
   const all = cas.value;
   return (
-    <Page title="Private certificate authorities" actions={create}>
+    <Page
+      title="Private certificate authorities"
+      actions={
+        <>
+          <Link className="icon-button plain" href="/pca/connectors" aria-label="Connectors for SCEP" title="Connectors for SCEP">
+            <Smartphone size={16} />
+          </Link>
+          {create}
+        </>
+      }
+    >
       <Curated
         label="Certificate authorities"
         sections={[

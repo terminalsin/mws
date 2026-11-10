@@ -1,116 +1,212 @@
-import { ListAWSDefaultServiceQuotasCommand, ListRequestedServiceQuotaChangeHistoryCommand, ListServiceQuotasCommand, ListServicesCommand } from "@aws-sdk/client-service-quotas";
-import { ago, collect, load } from "@mws-dashboard/aws";
-import { ActionForm, AwsIcon, Empty, ErrorNotice, Field, List, Page, Pill, Sheet, Status, SERVICES } from "@mws-dashboard/ui";
+import {
+  GetQuotaUtilizationReportCommand,
+  ListAWSDefaultServiceQuotasCommand,
+  ListRequestedServiceQuotaChangeHistoryCommand,
+  ListServiceQuotasCommand,
+  ListServicesCommand,
+} from "@aws-sdk/client-service-quotas";
+import { ago, all, load, region } from "@mws-dashboard/aws";
+import { ActionForm, AwsIcon, Empty, ErrorNotice, Facts, Field, List, More, Page, Pill, Segments, Sheet, Status } from "@mws-dashboard/ui";
+import { LiveRefresh } from "@mws-dashboard/ui/client";
 import { RequestServiceQuotaIncrease } from "@mws-dashboard/ui/model/servicequotas";
-import { ArrowUp } from "lucide-react";
+import { ArrowUp, Bot, Gauge, Globe } from "lucide-react";
 import type { Metadata } from "next";
 import Link from "next/link";
 
 import { ICONS, quotas } from "../../lib/clients";
-import { requestIncrease } from "./actions";
+import { openRequests, statusWord, tone, usage, utilization } from "../../lib/quotas";
+import { requestIncrease, startUtilizationReport } from "./actions";
+import { iconOf, requestRow } from "./rows";
 
 export const metadata: Metadata = { title: "Service Quotas" };
 
-type Props = { searchParams: Promise<{ tab?: string; service?: string }> };
+type Props = { searchParams: Promise<{ tab?: string; service?: string; token?: string; status?: string; report?: string }> };
 
-const iconOf = (code: string | undefined) => SERVICES.find((s) => s.id === code || s.endpoints.includes(code ?? ""))?.icon ?? ICONS.quotas;
+const PAGE = 50;
+
+const links = (
+  <>
+    <Link className="icon-button plain" href="/servicequotas?tab=utilization" aria-label="Quota utilization" title="Quota utilization">
+      <Gauge size={16} aria-hidden />
+    </Link>
+    <Link className="icon-button plain" href="/servicequotas/automatic" aria-label="Automatic management" title="Automatic management">
+      <Bot size={16} aria-hidden />
+    </Link>
+  </>
+);
 
 export default async function Quotas({ searchParams }: Props) {
-  const { tab = "services", service } = await searchParams;
+  const { tab = "services", service, token, status, report } = await searchParams;
   const client = await quotas();
+  const where = await region();
+
   if (service) {
     const list = await load(async () => {
-      const [applied, defaults] = await Promise.all([
-        collect(
-          (NextToken) => client.send(new ListServiceQuotasCommand({ ServiceCode: service, NextToken })),
-          (r) => r.Quotas,
-          (r) => r.NextToken,
-        ),
-        collect(
-          (NextToken) => client.send(new ListAWSDefaultServiceQuotasCommand({ ServiceCode: service, NextToken })),
-          (r) => r.Quotas,
-          (r) => r.NextToken,
-        ),
+      const [applied, defaults, open] = await Promise.all([
+        all((NextToken) => client.send(new ListServiceQuotasCommand({ ServiceCode: service, NextToken })), (r) => r.Quotas, (r) => r.NextToken),
+        all((NextToken) => client.send(new ListAWSDefaultServiceQuotasCommand({ ServiceCode: service, NextToken })), (r) => r.Quotas, (r) => r.NextToken),
+        openRequests(service),
       ]);
-      const byCode = new Map(applied.map((q) => [q.QuotaCode, q]));
-      return defaults.map((d) => ({ d, applied: byCode.get(d.QuotaCode) }));
+      // Rows are every quota either list knows, applied values first.
+      const byCode = new Map(defaults.map((q) => [q.QuotaCode, q]));
+      const codes = [...new Set([...defaults.map((q) => q.QuotaCode!), ...applied.map((q) => q.QuotaCode!)])];
+      const appliedBy = new Map(applied.map((q) => [q.QuotaCode, q]));
+      const used = await usage([...appliedBy.values(), ...defaults.filter((d) => !appliedBy.has(d.QuotaCode))]).catch(() => new Map<string, number>());
+      return codes.map((code) => ({ d: byCode.get(code), applied: appliedBy.get(code), open: open.get(code), used: used.get(code) }));
     });
+    const name = list.ok ? (list.value[0]?.d?.ServiceName ?? list.value[0]?.applied?.ServiceName ?? service) : service;
     return (
-      <Page title={service} icon={iconOf(service)} back={{ href: "/servicequotas", label: "AWS services" }}>
+      <Page title={name} icon={iconOf(service)} back={{ href: "/servicequotas", label: "AWS services" }} actions={links}>
+        <Facts items={[["Region", where]]} />
         {list.ok ? (
-          <List
-            label="Quotas"
-            empty={<Empty icon={ICONS.quotas} />}
-            rows={list.value.map(({ d, applied }) => {
-              const value = applied?.Value ?? d.Value;
-              const raised = applied && applied.Value !== d.Value;
-              return {
-                key: d.QuotaCode!,
-                title: d.QuotaName,
-                subtitle: d.QuotaCode,
-                meta: (
-                  <>
-                    {raised && <span className="muted">default {d.Value}</span>}
-                    <Pill tone={raised ? "info" : "neutral"}>{value}</Pill>
-                    {d.Unit && d.Unit !== "None" && <span>{d.Unit}</span>}
-                  </>
-                ),
-                actions: d.Adjustable ? (
-                  <Sheet title={`Request increase: ${d.QuotaName}`} label={`Request increase ${d.QuotaCode}`} icon={<ArrowUp size={15} />} testId={`increase-${d.QuotaCode}`}>
-                    <ActionForm action={requestIncrease.bind(null, service, d.QuotaCode!)} submit="Request" testId={`increase-${d.QuotaCode}`}>
-                      <Field label="New value" hint={`Now ${value ?? 0}`} rule={{ ...RequestServiceQuotaIncrease.DesiredValue, min: Math.floor(value ?? 0) + 1 }} member="DesiredValue">
-                        <input name="value" type="number" step="any" min={Math.floor(value ?? 0) + 1} defaultValue={(value ?? 0) * 2 || 1} required />
-                      </Field>
-                    </ActionForm>
-                  </Sheet>
-                ) : undefined,
-              };
-            })}
-          />
+          <>
+            <LiveRefresh when={list.value.some((q) => q.open?.Status === "PENDING")} />
+            <List
+              label="Quotas"
+              empty={<Empty icon={ICONS.quotas} />}
+              rows={list.value.map(({ d, applied, open, used }) => {
+                const q = (applied ?? d)!;
+                const value = applied?.Value ?? d?.Value;
+                const raised = applied && d && applied.Value !== d.Value;
+                const pct = utilization(used, value);
+                return {
+                  key: q.QuotaCode!,
+                  title: q.QuotaName,
+                  subtitle: q.QuotaCode,
+                  href: `/servicequotas/quota?service=${service}&code=${q.QuotaCode}`,
+                  meta: (
+                    <>
+                      {q.GlobalQuota && <Globe size={13} aria-label="Global quota" />}
+                      {open && (
+                        <Status tone="info">{`${statusWord(open.Status)} → ${open.DesiredValue}`}</Status>
+                      )}
+                      {pct !== undefined && (
+                        <Pill tone={tone(pct)} title={`Using ${used}`}>
+                          {pct}%
+                        </Pill>
+                      )}
+                      {raised && <span className="muted">default {d?.Value}</span>}
+                      <Pill tone={raised ? "info" : "neutral"}>{value}</Pill>
+                      {q.Unit && q.Unit !== "None" && <span>{q.Unit}</span>}
+                    </>
+                  ),
+                  actions:
+                    q.Adjustable && !open ? (
+                      <Sheet title={`Request increase: ${q.QuotaName}`} label={`Request increase ${q.QuotaCode}`} icon={<ArrowUp size={15} />} testId={`increase-${q.QuotaCode}`}>
+                        <ActionForm action={requestIncrease.bind(null, service, q.QuotaCode!)} submit="Request" testId={`increase-${q.QuotaCode}`}>
+                          <Field label="New value" hint={`Now ${value ?? 0}`} rule={{ ...RequestServiceQuotaIncrease.DesiredValue, min: Math.floor(value ?? 0) + 1 }} member="DesiredValue">
+                            <input name="value" type="number" step="any" min={Math.floor(value ?? 0) + 1} defaultValue={(value ?? 0) * 2 || 1} required />
+                          </Field>
+                        </ActionForm>
+                      </Sheet>
+                    ) : undefined,
+                };
+              })}
+            />
+          </>
         ) : (
           <ErrorNotice error={list.error} />
         )}
       </Page>
     );
   }
+
   if (tab === "requests") {
-    const history = await load(async () => (await client.send(new ListRequestedServiceQuotaChangeHistoryCommand({}))).RequestedQuotas ?? []);
+    const history = await load(async () => {
+      const r = await client.send(new ListRequestedServiceQuotaChangeHistoryCommand({ NextToken: token, MaxResults: PAGE, Status: (status || undefined) as "PENDING" | undefined }));
+      return { items: r.RequestedQuotas ?? [], next: r.NextToken };
+    });
+    const href = (s: string | undefined) => `/servicequotas?tab=requests${s ? `&status=${s}` : ""}`;
     return (
-      <Page title="Quota request history">
+      <Page title="Quota request history" actions={links}>
+        <Segments
+          label="Status"
+          items={[
+            { label: "All", href: href(undefined), active: !status },
+            { label: "Pending", href: href("PENDING"), active: status === "PENDING" },
+            { label: "Case opened", href: href("CASE_OPENED"), active: status === "CASE_OPENED" },
+            { label: "Approved", href: href("APPROVED"), active: status === "APPROVED" },
+            { label: "Denied", href: href("DENIED"), active: status === "DENIED" },
+          ]}
+        />
         {history.ok ? (
-          <List
-            label="Requests"
-            empty={<Empty icon={ICONS.quotas} />}
-            rows={history.value.map((r) => ({
-              key: r.Id!,
-              icon: <AwsIcon icon={iconOf(r.ServiceCode)} size={22} />,
-              title: r.QuotaName,
-              subtitle: r.ServiceName,
-              href: `/servicequotas?service=${r.ServiceCode}`,
-              meta: (
-                <>
-                  <Pill>→ {r.DesiredValue}</Pill>
-                  <Status tone={r.Status === "APPROVED" ? "good" : r.Status === "DENIED" || r.Status === "INVALID_REQUEST" ? "bad" : "warn"}>{r.Status?.toLowerCase().replace(/_/g, " ")}</Status>
-                  <span>{ago(r.Created)}</span>
-                </>
-              ),
-            }))}
-          />
+          <>
+            <LiveRefresh when={history.value.items.some((r) => r.Status === "PENDING")} />
+            <List label="Requests" empty={<Empty icon={ICONS.quotas} />} rows={history.value.items.map((r) => requestRow(r))} />
+            <More
+              shown={history.value.items.length}
+              noun="requests"
+              href={history.value.next ? `${href(status)}&token=${encodeURIComponent(history.value.next)}` : undefined}
+            />
+          </>
         ) : (
           <ErrorNotice error={history.error} />
         )}
       </Page>
     );
   }
-  const services = await load(async () =>
-    collect(
-      (NextToken) => client.send(new ListServicesCommand({ NextToken })),
-      (r) => r.Services,
-      (r) => r.NextToken,
-    ),
-  );
+
+  if (tab === "utilization") {
+    const data = report
+      ? await load(async () => {
+          const pages = await all(
+            (NextToken) => client.send(new GetQuotaUtilizationReportCommand({ ReportId: report, NextToken })),
+            (r) => [r],
+            (r) => r.NextToken,
+          );
+          return { status: pages[0]?.Status, generated: pages[0]?.GeneratedAt, error: pages[0]?.ErrorMessage, quotas: pages.flatMap((p) => p.Quotas ?? []) };
+        })
+      : null;
+    const pending = data?.ok && (data.value.status === "PENDING" || data.value.status === "IN_PROGRESS");
+    return (
+      <Page
+        title="Quota utilization"
+        back={{ href: "/servicequotas", label: "AWS services" }}
+        actions={<ActionForm action={startUtilizationReport} submit="Generate report" icon={<Gauge size={16} />} tone="primary" testId="generate-report" />}
+      >
+        {!data ? (
+          <Empty icon={ICONS.quotas} action={<ActionForm action={startUtilizationReport} submit="Generate report" testId="generate-report-empty" />} />
+        ) : !data.ok ? (
+          <ErrorNotice error={data.error} />
+        ) : (
+          <>
+            <Facts
+              items={[
+                ["Report", <Status key="s" tone={data.value.status === "COMPLETED" ? "good" : data.value.status === "FAILED" ? "bad" : "info"}>{statusWord(data.value.status)}</Status>],
+                data.value.generated && ["Generated", ago(data.value.generated)],
+                data.value.error && ["Error", data.value.error],
+                ["Region", where],
+              ]}
+            />
+            <LiveRefresh when={!!pending} />
+            <List
+              label="Utilization"
+              empty={<Empty icon={ICONS.quotas}>{pending ? undefined : "No quota with usage"}</Empty>}
+              rows={[...data.value.quotas]
+                .sort((a, b) => (b.Utilization ?? 0) - (a.Utilization ?? 0))
+                .map((q) => ({
+                  key: `${q.ServiceCode}:${q.QuotaCode}`,
+                  icon: <AwsIcon icon={iconOf(q.ServiceCode)} size={22} />,
+                  title: q.QuotaName,
+                  subtitle: `${q.ServiceName ?? q.ServiceCode} · ${q.QuotaCode}`,
+                  href: `/servicequotas/quota?service=${q.ServiceCode}&code=${q.QuotaCode}`,
+                  meta: (
+                    <>
+                      <Pill tone={tone(q.Utilization)}>{Math.round((q.Utilization ?? 0) * 10) / 10}%</Pill>
+                      <span>of {q.AppliedValue ?? q.DefaultValue}</span>
+                    </>
+                  ),
+                }))}
+            />
+          </>
+        )}
+      </Page>
+    );
+  }
+
+  const services = await load(() => all((NextToken) => client.send(new ListServicesCommand({ NextToken })), (r) => r.Services, (r) => r.NextToken));
   return (
-    <Page title="AWS services">
+    <Page title="AWS services" actions={links}>
       {services.ok ? (
         <div className="tiles compact" aria-label="Services">
           {services.value.map((s) => (
@@ -126,3 +222,4 @@ export default async function Quotas({ searchParams }: Props) {
     </Page>
   );
 }
+

@@ -1,7 +1,7 @@
 import "server-only";
 
 import { ListCertificatesCommand } from "@aws-sdk/client-acm";
-import { collect } from "@mws-dashboard/aws";
+import { all } from "@mws-dashboard/aws";
 
 import { acm } from "./clients";
 
@@ -19,7 +19,7 @@ export const KEY_TYPES = ["RSA_1024", "RSA_2048", "RSA_3072", "RSA_4096", "EC_pr
 
 export async function listCertificates() {
   const client = await acm();
-  return collect(
+  return all(
     (NextToken) => client.send(new ListCertificatesCommand({ NextToken, Includes: { keyTypes: [...KEY_TYPES] } })),
     (r) => r.CertificateSummaryList,
     (r) => r.NextToken,

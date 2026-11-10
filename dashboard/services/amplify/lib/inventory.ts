@@ -1,13 +1,14 @@
 import "server-only";
 
 import { ListAppsCommand } from "@aws-sdk/client-amplify";
-import { type InventoryItem } from "@mws-dashboard/aws";
+import { all, type InventoryItem } from "@mws-dashboard/aws";
 
 import { amplify } from "./clients";
 
 export async function apps(): Promise<InventoryItem[]> {
-  const out = await (await amplify()).send(new ListAppsCommand({ maxResults: 100 }));
-  return (out.apps ?? []).map((a) => ({
+  const client = await amplify();
+  const list = await all((nextToken) => client.send(new ListAppsCommand({ maxResults: 100, nextToken })), (r) => r.apps, (r) => r.nextToken);
+  return list.map((a) => ({
     service: "amplify",
     type: "App",
     id: a.appArn!,

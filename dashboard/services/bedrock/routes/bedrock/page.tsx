@@ -1,7 +1,7 @@
 import { ListFoundationModelsCommand, type FoundationModelSummary } from "@aws-sdk/client-bedrock";
 import { load } from "@mws-dashboard/aws";
 import { AwsIcon, Curated, Empty, ErrorNotice, Page, Pill, Segments } from "@mws-dashboard/ui";
-import { AudioLines, Binary, FileText, Image as ImageIcon, MessageSquareText, Radio, Video } from "lucide-react";
+import { AudioLines, Binary, FileText, FlaskConical, Gauge, Image as ImageIcon, Layers, MessageSquareText, Radio, Video } from "lucide-react";
 import type { Metadata } from "next";
 import Link from "next/link";
 
@@ -44,8 +44,21 @@ export default async function Models({ searchParams }: Props) {
   const byOutput = (o: string) => models.value.filter((m) => m.outputModalities?.includes(o as never));
   const shown = byOutput(output);
   const providers = [...new Set(shown.map((m) => m.providerName ?? "Other"))].sort();
+  const links = (
+    <>
+      <Link className="icon-button plain" href="/bedrock/custom-models" aria-label="Custom models" title="Custom models">
+        <FlaskConical size={16} />
+      </Link>
+      <Link className="icon-button plain" href="/bedrock/provisioned" aria-label="Provisioned Throughput" title="Provisioned Throughput">
+        <Gauge size={16} />
+      </Link>
+      <Link className="icon-button plain" href="/bedrock/batch" aria-label="Batch inference" title="Batch inference">
+        <Layers size={16} />
+      </Link>
+    </>
+  );
   return (
-    <Page title="Model catalog">
+    <Page title="Model catalog" actions={links}>
       <Segments
         label="Output"
         items={["TEXT", "IMAGE", "EMBEDDING", "VIDEO"]
@@ -68,7 +81,11 @@ export default async function Models({ searchParams }: Props) {
               <>
                 <Modalities list={m.inputModalities} />
                 {m.responseStreamingSupported && <Radio size={13} aria-label="Streaming"><title>Streaming</title></Radio>}
-                {m.inferenceTypesSupported?.includes("PROVISIONED") && <Pill title="Provisioned Throughput">PT</Pill>}
+                {m.inferenceTypesSupported?.includes("PROVISIONED") && (
+                  <Link href={`/bedrock/provisioned?model=${encodeURIComponent(m.modelArn!)}`} title="Purchase Provisioned Throughput">
+                    <Pill>PT</Pill>
+                  </Link>
+                )}
                 {legacy && <Pill tone="warn">legacy</Pill>}
               </>
             ),

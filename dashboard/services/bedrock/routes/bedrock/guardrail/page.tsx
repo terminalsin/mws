@@ -1,11 +1,14 @@
 import { GetGuardrailCommand, ListGuardrailsCommand } from "@aws-sdk/client-bedrock";
 import { ago, load } from "@mws-dashboard/aws";
-import { ActionForm, AwsIcon, ErrorNotice, Field, List, Page, Pill, Section, Specs } from "@mws-dashboard/ui";
-import { Ban, Clock, EyeOff, GitCommitVertical, MessageSquareOff, ShieldAlert, Trash2, Upload } from "lucide-react";
+import { ActionForm, AwsIcon, ErrorNotice, Facts, Field, List, Page, Pill, Section, Sheet, Specs, Status } from "@mws-dashboard/ui";
+import { Anchor, Ban, Clock, EyeOff, GitCommitVertical, MessageSquareOff, Pencil, ShieldAlert, Trash2, Upload } from "lucide-react";
 import type { Metadata } from "next";
 
-import { bedrock, ICONS } from "../../../lib/clients";
-import { deleteGuardrail, publishGuardrail, testGuardrail } from "../actions";
+import { bedrock, ICONS, tone } from "../../../lib/clients";
+import { GuardrailFields } from "../../../lib/guardrail-form";
+import { KmsLink } from "../../../lib/links";
+import { TagsSection } from "../../../lib/tags";
+import { deleteGuardrail, publishGuardrail, testGuardrail, updateGuardrail } from "../actions";
 
 export const metadata: Metadata = { title: "Guardrail" };
 
@@ -38,6 +41,7 @@ export default async function Guardrail({ searchParams }: Props) {
   const managed = g.wordPolicy?.managedWordLists ?? [];
   const pii = g.sensitiveInformationPolicy?.piiEntities ?? [];
   const regexes = g.sensitiveInformationPolicy?.regexes ?? [];
+  const grounding = g.contextualGroundingPolicy?.filters ?? [];
   return (
     <Page
       title={g.name!}
@@ -46,6 +50,11 @@ export default async function Guardrail({ searchParams }: Props) {
       subtitle={g.guardrailArn}
       actions={
         <>
+          <Sheet title="Edit guardrail" label="Edit guardrail" icon={<Pencil size={15} />} testId="edit-guardrail">
+            <ActionForm action={updateGuardrail.bind(null, id)} submit="Save draft" testId="edit-guardrail">
+              <GuardrailFields g={g} />
+            </ActionForm>
+          </Sheet>
           <ActionForm action={publishGuardrail.bind(null, id)} submit="Create version" icon={<Upload size={16} />} testId="publish-guardrail" />
           <ActionForm action={deleteGuardrail.bind(null, id)} submit="Delete guardrail" icon={<Trash2 size={16} />} tone="danger" confirm={`Delete ${g.name}?`} />
         </>
@@ -57,10 +66,24 @@ export default async function Guardrail({ searchParams }: Props) {
           topics.length > 0 && { label: "Denied topics", icon: <MessageSquareOff size={15} />, value: topics.length },
           words.length + managed.length > 0 && { label: "Word filters", icon: <Ban size={15} />, value: words.length + managed.length },
           pii.length + regexes.length > 0 && { label: "Sensitive information", icon: <EyeOff size={15} />, value: pii.length + regexes.length },
+          grounding.length > 0 && { label: "Contextual grounding", icon: <Anchor size={15} />, value: grounding.length },
+          g.status !== "READY" && { label: "Status", icon: <ShieldAlert size={15} />, value: <Status tone={tone(g.status)}>{g.status?.toLowerCase() ?? ""}</Status> },
           versions.length > 0 && { label: "Versions", icon: <GitCommitVertical size={15} />, value: versions.length },
           { label: "Updated", icon: <Clock size={15} />, value: ago(g.updatedAt) },
         ]}
       />
+      {(g.statusReasons?.length ?? 0) > 0 && <ErrorNotice error={[...(g.statusReasons ?? []), ...(g.failureRecommendations ?? [])].join(" ")} />}
+      {(g.description || g.kmsKeyArn || g.crossRegionDetails) && (
+        <Section>
+          <Facts
+            items={[
+              g.description && ["Description", g.description],
+              g.kmsKeyArn && ["KMS key", <KmsLink key="k" arn={g.kmsKeyArn} />],
+              g.crossRegionDetails && ["Cross-Region profile", <code key="c">{g.crossRegionDetails.guardrailProfileId ?? g.crossRegionDetails.guardrailProfileArn}</code>],
+            ]}
+          />
+        </Section>
+      )}
       <Section title="Test">
         <ActionForm action={testGuardrail.bind(null, id)} submit="Test" testId="test-guardrail">
           <div className="form-row">
@@ -142,6 +165,24 @@ export default async function Guardrail({ searchParams }: Props) {
           />
         </Section>
       )}
+      {grounding.length > 0 && (
+        <Section title="Contextual grounding" count={grounding.length} plain>
+          <List
+            label="Contextual grounding"
+            rows={grounding.map((f) => ({
+              key: f.type!,
+              icon: <Anchor size={18} />,
+              title: f.type!.toLowerCase(),
+              meta: (
+                <>
+                  <Pill title="Threshold">≥ {f.threshold}</Pill>
+                  {f.action && <Pill tone={f.action === "BLOCK" ? "bad" : "neutral"}>{f.action.toLowerCase()}</Pill>}
+                </>
+              ),
+            }))}
+          />
+        </Section>
+      )}
       <Section title="Messages">
         <List
           label="Blocked messages"
@@ -151,6 +192,7 @@ export default async function Guardrail({ searchParams }: Props) {
           ]}
         />
       </Section>
+      <TagsSection arn={g.guardrailArn!} path="/bedrock/guardrail" />
     </Page>
   );
 }

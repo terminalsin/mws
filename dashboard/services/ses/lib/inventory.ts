@@ -1,18 +1,23 @@
 import "server-only";
 
 import { ListEmailIdentitiesCommand } from "@aws-sdk/client-sesv2";
-import { type InventoryItem } from "@mws-dashboard/aws";
+import { all, type InventoryItem } from "@mws-dashboard/aws";
 
-import { ses } from "./clients";
+import { identityHref, ses, verificationLabel } from "./clients";
 
 export async function identityItems(): Promise<InventoryItem[]> {
-  const out = await (await ses()).send(new ListEmailIdentitiesCommand({}));
-  return (out.EmailIdentities ?? []).map((i) => ({
+  const client = await ses();
+  const list = await all(
+    (NextToken) => client.send(new ListEmailIdentitiesCommand({ NextToken })),
+    (r) => r.EmailIdentities,
+    (r) => r.NextToken,
+  );
+  return list.map((i) => ({
     service: "ses",
     type: i.IdentityType === "DOMAIN" ? "Domain identity" : "Email identity",
     id: `ses:${i.IdentityName}`,
     name: i.IdentityName!,
-    href: "/ses",
-    detail: i.VerificationStatus?.toLowerCase(),
+    href: identityHref(i.IdentityName),
+    detail: verificationLabel(i.VerificationStatus),
   }));
 }

@@ -4,9 +4,11 @@
   "private": true,
   "description": "Service Quotas pages for the MWS console",
   "exports": {
+    "./inventory": "./inventory.ts",
     "./routes/*": "./routes/*"
   },
   "dependencies": {
+    "@aws-sdk/client-cloudwatch": "^3.1164.0",
     "@aws-sdk/client-service-quotas": "^3.1164.0",
     "@mws-dashboard/aws": "*",
     "@mws-dashboard/ui": "*",

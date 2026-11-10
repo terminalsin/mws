@@ -1,13 +1,14 @@
+import { GetAccountConfigurationCommand } from "@aws-sdk/client-acm";
 import { ListCertificateAuthoritiesCommand } from "@aws-sdk/client-acm-pca";
-import { load } from "@mws-dashboard/aws";
+import { all as every, load } from "@mws-dashboard/aws";
 import { ActionForm, AwsIcon, Curated, Empty, ErrorNotice, Field, Page, Pill, Sheet, Status, type Rule } from "@mws-dashboard/ui";
-import { ImportCertificate, RequestCertificate } from "@mws-dashboard/ui/model/acm";
-import { Upload } from "lucide-react";
+import { ImportCertificate, PutAccountConfiguration, RequestCertificate } from "@mws-dashboard/ui/model/acm";
+import { BellRing, Upload } from "lucide-react";
 import type { Metadata } from "next";
 
-import { ICONS, daysUntil, pca } from "../../lib/clients";
+import { ICONS, acm, daysUntil, pca } from "../../lib/clients";
 import { CERT_TONE, listCertificates, statusText } from "../../lib/acm";
-import { importCertificate, requestCertificate } from "./actions";
+import { importCertificate, requestCertificate, saveExpiryEvents } from "./actions";
 
 export const metadata: Metadata = { title: "Certificate Manager" };
 
@@ -25,9 +26,14 @@ const PEM = {
 } satisfies Record<string, Rule>;
 
 export default async function Certificates() {
-  const [certs, cas] = await Promise.all([
+  const [certs, cas, config] = await Promise.all([
     load(listCertificates),
-    load(async () => ((await (await pca()).send(new ListCertificateAuthoritiesCommand({}))).CertificateAuthorities ?? []).filter((c) => c.Status === "ACTIVE")),
+    load(async () => {
+      const c = await pca();
+      const list = await every((NextToken) => c.send(new ListCertificateAuthoritiesCommand({ NextToken })), (r) => r.CertificateAuthorities, (r) => r.NextToken);
+      return list.filter((ca) => ca.Status === "ACTIVE");
+    }),
+    (await acm()).send(new GetAccountConfigurationCommand({})).then((r) => r.ExpiryEvents, () => undefined),
   ]);
   const request = (
     <Sheet title="Request certificate" label="Request certificate" testId="request-certificate">
@@ -61,12 +67,26 @@ export default async function Certificates() {
             </select>
           </Field>
         </div>
+        <div className="form-row">
+          <label className="check">
+            <input type="checkbox" name="export" /> Allow export (public)
+          </label>
+          <Field label="Transparency logging" member="Options.CertificateTransparencyLoggingPreference">
+            <select name="ct" defaultValue="on">
+              <option value="on">Enabled</option>
+              <option value="off">Disabled</option>
+            </select>
+          </Field>
+        </div>
+        <Field label="Tags" format="tags">
+          <textarea name="tags" rows={2} placeholder="team=web" />
+        </Field>
       </ActionForm>
     </Sheet>
   );
   const importSheet = (
     <Sheet title="Import certificate" label="Import certificate" icon={<Upload size={16} />} testId="import-certificate">
-      <ActionForm action={importCertificate} submit="Import" testId="import-certificate">
+      <ActionForm action={importCertificate.bind(null, undefined)} submit="Import" testId="import-certificate">
         <Field label="Certificate body" rule={PEM.certificate}>
           <textarea name="certificate" rows={5} required placeholder="-----BEGIN CERTIFICATE-----" className="code-editor" spellCheck={false} />
         </Field>
@@ -76,11 +96,21 @@ export default async function Certificates() {
         <Field label="Certificate chain" rule={PEM.chain}>
           <textarea name="chain" rows={3} placeholder="-----BEGIN CERTIFICATE-----" className="code-editor" spellCheck={false} />
         </Field>
+        <Field label="Tags" format="tags">
+          <textarea name="tags" rows={2} />
+        </Field>
       </ActionForm>
     </Sheet>
   );
   const actions = (
     <>
+      <Sheet title="Expiry events" label="Expiry events" icon={<BellRing size={16} />} testId="expiry-events">
+        <ActionForm action={saveExpiryEvents} submit="Save" testId="expiry-events">
+          <Field label="Days before expiry" rule={PutAccountConfiguration.ExpiryEvents.fields!.DaysBeforeExpiry} member="ExpiryEvents.DaysBeforeExpiry" hint="When ACM starts sending daily expiry events to EventBridge">
+            <input name="days" type="number" required defaultValue={config?.DaysBeforeExpiry ?? 45} />
+          </Field>
+        </ActionForm>
+      </Sheet>
       {importSheet}
       {request}
     </>

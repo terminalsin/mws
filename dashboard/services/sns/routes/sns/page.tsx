@@ -1,13 +1,14 @@
 import { GetTopicAttributesCommand, ListTopicsCommand } from "@aws-sdk/client-sns";
 import { sections } from "@mws-dashboard/ai";
-import { ago, collect, load, shortName } from "@mws-dashboard/aws";
+import { ago, all, load, shortName } from "@mws-dashboard/aws";
 import { ActionForm, AwsIcon, Curated, Empty, ErrorNotice, Field, List, Page, Pill, Section, Sheet } from "@mws-dashboard/ui";
-import { Eraser, Mail, MessageSquare } from "lucide-react";
+import { Eraser, Mail, MessageSquare, Smartphone } from "lucide-react";
 import type { Metadata } from "next";
 
 import { ICONS, sns } from "../../lib/clients";
-import { snsEmails, snsSms } from "../../lib/outbox";
-import { TOPIC_NAME } from "../../lib/rules";
+import { snsEmails, snsPush, snsSms } from "../../lib/outbox";
+import { DISPLAY_NAME, TOPIC_NAME } from "../../lib/rules";
+import { SnsTabs } from "../../lib/view";
 import { clearOutbox, createTopic } from "./actions";
 
 export const metadata: Metadata = { title: "SNS" };
@@ -26,9 +27,17 @@ function CreateTopic({ names = [] }: { names?: string[] }) {
         <Field label="Name" rule={TOPIC_NAME} taken={names} unique>
           <input name="name" required maxLength={256} autoFocus />
         </Field>
-        <label className="check">
-          <input type="checkbox" name="fifo" /> FIFO
-        </label>
+        <Field label="Display name" rule={DISPLAY_NAME} member="DisplayName">
+          <input name="displayName" />
+        </Field>
+        <div className="form-row">
+          <label className="check">
+            <input type="checkbox" name="fifo" /> FIFO
+          </label>
+          <label className="check">
+            <input type="checkbox" name="dedup" /> Content-based deduplication (FIFO)
+          </label>
+        </div>
       </ActionForm>
     </Sheet>
   );
@@ -36,7 +45,7 @@ function CreateTopic({ names = [] }: { names?: string[] }) {
 
 async function topicArns() {
   const client = await sns();
-  return collect(
+  return all(
     (NextToken) => client.send(new ListTopicsCommand({ NextToken })),
     (r) => r.Topics?.map((t) => t.TopicArn!),
     (r) => r.NextToken,
@@ -81,7 +90,7 @@ async function Topics() {
 }
 
 async function Outbox() {
-  const [emails, sms] = await Promise.all([load(snsEmails), load(snsSms)]);
+  const [emails, sms, push] = await Promise.all([load(snsEmails), load(snsSms), load(snsPush)]);
   return (
     <>
       <Section
@@ -135,6 +144,33 @@ async function Outbox() {
           <ErrorNotice error={sms.error} />
         )}
       </Section>
+      <Section
+        title="Mobile push"
+        count={push.ok ? push.value.length : undefined}
+        plain
+        actions={<ActionForm action={clearOutbox.bind(null, "platform-endpoint-messages")} submit="Clear push" icon={<Eraser size={16} aria-hidden />} tone="danger" />}
+      >
+        {push.ok ? (
+          <List
+            label="SNS push"
+            empty={<Empty>—</Empty>}
+            rows={[...push.value].reverse().map((m) => ({
+              key: m.messageId,
+              icon: <Smartphone size={18} aria-hidden />,
+              title: `${m.platform} · ${shortName(m.endpointArn)}`,
+              subtitle: (
+                <details>
+                  <summary>{m.token.slice(0, 24)}</summary>
+                  <pre className="code">{m.message}</pre>
+                </details>
+              ),
+              meta: ago(m.timestamp),
+            }))}
+          />
+        ) : (
+          <ErrorNotice error={push.error} />
+        )}
+      </Section>
     </>
   );
 }
@@ -144,6 +180,7 @@ export default async function Sns({ searchParams }: Props) {
   const names = tab === "topics" ? await topicArns().then((arns) => arns.map((a) => shortName(a)), () => []) : [];
   return (
     <Page title={tab === "outbox" ? "Deliveries" : "Topics"} actions={tab === "topics" ? <CreateTopic names={names} /> : undefined}>
+      <SnsTabs active={tab === "outbox" ? "outbox" : "topics"} />
       {tab === "outbox" ? <Outbox /> : <Topics />}
     </Page>
   );

@@ -14,6 +14,7 @@
 @source "../../../apps/*/app";
 @source "../../../apps/*/lib";
 @source "./";
+@source "../../../services";
 
 /* Carbon g10 (light) and g100 (dark). */
 :root {
@@ -342,6 +343,9 @@
   }
   .banner.error {
     @apply border-bad bg-[var(--bad-soft)] text-primary;
+  }
+  .banner.warn {
+    @apply border-[var(--warn)] bg-[var(--warn-soft)] text-primary;
   }
 
   /* Page header. */

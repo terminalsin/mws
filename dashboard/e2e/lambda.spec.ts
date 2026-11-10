@@ -1,9 +1,18 @@
 import { CreateRoleCommand, GetRoleCommand, IAMClient, PutRolePolicyCommand } from "@aws-sdk/client-iam";
-import { CreateFunctionCommand, GetFunctionCommand, LambdaClient, waitUntilFunctionActiveV2 } from "@aws-sdk/client-lambda";
+import {
+  CreateFunctionCommand,
+  GetAliasCommand,
+  GetFunctionCommand,
+  GetPolicyCommand,
+  LambdaClient,
+  ListEventSourceMappingsCommand,
+  waitUntilFunctionActiveV2,
+} from "@aws-sdk/client-lambda";
+import { CreateQueueCommand, GetQueueAttributesCommand, SQSClient } from "@aws-sdk/client-sqs";
 import { expect, test, type Locator, type Page } from "@playwright/test";
 import { strToU8, zipSync } from "fflate";
 
-import { sdk, submit, unique } from "./helpers";
+import { rowAction, sdk, submit, unique } from "./helpers";
 
 const CODE = `exports.handler = async (event) => {
   console.log("got", JSON.stringify(event));
@@ -186,4 +195,67 @@ test("Lambda: configuration and test event fields offer repairs", async ({ page 
   const cfg = await lambda.send(new GetFunctionCommand({ FunctionName: name }));
   expect(cfg.Configuration!.MemorySize).toBe(10240);
   expect(cfg.Configuration!.Environment!.Variables).toEqual({ LOG_LEVEL: "debug" });
+});
+
+async function seededFunction(prefix: string, code = CODE) {
+  const name = unique(prefix);
+  const lambda = new LambdaClient(sdk);
+  await lambda.send(
+    new CreateFunctionCommand({ FunctionName: name, Runtime: "nodejs22.x", Handler: "index.handler", Role: await lambdaRole(name), Code: { ZipFile: zipSync({ "index.js": strToU8(code) }) } }),
+  );
+  await waitUntilFunctionActiveV2({ client: lambda, maxWaitTime: 60 }, { FunctionName: name });
+  return { name, lambda };
+}
+
+test("Lambda: a public function URL gets the policy AWS's console adds and answers on MWS", async ({ page }) => {
+  const { name, lambda } = await seededFunction("dash-url", `exports.handler = async () => ({ statusCode: 200, body: "from the url" });`);
+  await page.goto(`/lambda/${name}?tab=config`);
+  await submit(page, "create-url", { auth: "NONE" });
+  const policy = JSON.parse((await lambda.send(new GetPolicyCommand({ FunctionName: name }))).Policy!);
+  const sids = policy.Statement.map((s: { Sid: string }) => s.Sid);
+  expect(sids).toEqual(expect.arrayContaining(["FunctionURLAllowPublicAccess", "FunctionURLAllowInvokeAction"]));
+  await page.reload();
+  const href = await page.getByTestId("function-url").getAttribute("href");
+  expect(href).toContain("/_aws/lambda-url/");
+  const response = await fetch(href!);
+  expect(response.status).toBe(200);
+  expect(await response.text()).toBe("from the url");
+});
+
+test("Lambda: add an SQS trigger and a resource-based permission", async ({ page }) => {
+  const { name, lambda } = await seededFunction("dash-trig");
+  const queue = unique("dash-trig-q");
+  const sqs = new SQSClient(sdk);
+  const { QueueUrl } = await sqs.send(new CreateQueueCommand({ QueueName: queue }));
+  const queueArn = (await sqs.send(new GetQueueAttributesCommand({ QueueUrl, AttributeNames: ["QueueArn"] }))).Attributes!.QueueArn!;
+
+  await page.goto(`/lambda/${name}?tab=triggers`);
+  await submit(page, "add-trigger", { source: queueArn, batch: "5", grant: "on" });
+  const mappings = (await lambda.send(new ListEventSourceMappingsCommand({ FunctionName: name }))).EventSourceMappings ?? [];
+  expect(mappings.map((m) => [m.EventSourceArn, m.BatchSize])).toEqual([[queueArn, 5]]);
+  await page.reload();
+  await expect(page.locator("li.row").filter({ hasText: queue })).toBeVisible();
+
+  await page.goto(`/lambda/${name}?tab=permissions`);
+  const topicArn = queueArn.replace(":sqs:", ":sns:");
+  await submit(page, "add-permission", { sid: "from-sns", principal: "sns.amazonaws.com", sourceArn: topicArn });
+  const statement = JSON.parse((await lambda.send(new GetPolicyCommand({ FunctionName: name }))).Policy!).Statement.find((s: { Sid: string }) => s.Sid === "from-sns");
+  expect(statement.Principal).toEqual({ Service: "sns.amazonaws.com" });
+  expect(JSON.stringify(statement.Condition)).toContain(topicArn);
+  await page.reload();
+  await rowAction(page, "from-sns", "Remove from-sns");
+  await expect(page.locator("li.row").filter({ hasText: "from-sns" })).toHaveCount(0);
+});
+
+test("Lambda: publish a version, point an alias at it and invoke it", async ({ page }) => {
+  const { name, lambda } = await seededFunction("dash-alias");
+  await page.goto(`/lambda/${name}?tab=versions`);
+  await submit(page, "publish-version", { description: "first" });
+  await page.goto(`/lambda/${name}?tab=aliases`);
+  await submit(page, "create-alias", { alias: "live", version: "1" });
+  const alias = await lambda.send(new GetAliasCommand({ FunctionName: name, Name: "live" }));
+  expect(alias.FunctionVersion).toBe("1");
+  await page.goto(`/lambda/${name}?tab=test&qualifier=live`);
+  const result = await submit(page, "invoke", { payload: '{"name": "alias"}' });
+  await expect(result).toContainText("· 1");
 });

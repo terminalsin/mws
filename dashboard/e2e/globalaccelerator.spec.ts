@@ -1,6 +1,8 @@
 import { expect, test, type Page } from "@playwright/test";
 
-import { submit, unique } from "./helpers";
+import { AllocateAddressCommand, EC2Client, ReleaseAddressCommand } from "@aws-sdk/client-ec2";
+
+import { row, sdk, submit, unique } from "./helpers";
 
 test("Global Accelerator: create an accelerator with a listener", async ({ page }) => {
   const name = unique("dash-ga");
@@ -73,4 +75,47 @@ test("Global Accelerator: fields repair names, ports in use and unknown endpoint
   await group.control("endpoint").blur();
   await expect(group.field("endpoint")).toHaveAttribute("data-invalid", "pattern");
   await expect(group.field("endpoint").locator(".field-issue")).toContainText("load balancer ARN");
+});
+
+test("Global Accelerator: endpoint groups with several weighted endpoints, traffic dial and edits", async ({ page }) => {
+  test.setTimeout(240_000);
+  // Elastic IPs in a Region of their own (us-east-1's quota is shared with
+  // other specs), released at the end.
+  const region = "us-west-2";
+  const ec2 = new EC2Client({ ...sdk, region });
+  const [a, b] = await Promise.all([ec2.send(new AllocateAddressCommand({ Domain: "vpc" })), ec2.send(new AllocateAddressCommand({ Domain: "vpc" }))]);
+  try {
+    const name = unique("dash-ga-eg");
+    await page.goto("/ga");
+    await submit(page, "create-accelerator", { name });
+    await expect(page.getByRole("heading", { level: 1, name })).toBeVisible();
+    await submit(page, "add-ga-listener", { ports: "443" });
+    await expect(page.getByRole("heading", { name: "TCP 443" })).toBeVisible();
+    // The listener takes client affinity.
+    await submit(page, "edit-ga-listener-0", { ports: "443, 8443", affinity: "SOURCE_IP" });
+    await expect(page.getByRole("heading", { name: "TCP 443, 8443" })).toBeVisible();
+
+    // A group in another Region, with one weighted endpoint from there.
+    await submit(page, "add-endpoint-group-0", { region, endpoint: `${a.AllocationId}=200`, dial: "60" });
+    await expect(row(page, region)).toContainText("60%");
+    await row(page, region).getByRole("link").click();
+    await expect(page.getByRole("heading", { level: 1, name: region })).toBeVisible();
+    await expect(row(page, a.AllocationId!)).toContainText("200");
+
+    // Another endpoint, then new weights and dial for the group.
+    await submit(page, "add-endpoints", { endpoint: `${b.AllocationId}=50` });
+    await expect(row(page, b.AllocationId!)).toContainText("50");
+    await submit(page, "edit-endpoint-group", { dial: "25", [`weight:${a.AllocationId}`]: "10", overrides: "443=8443" });
+    await expect(page.getByText("25%").first()).toBeVisible();
+    await expect(page.getByText("443→8443")).toBeVisible();
+    await expect(row(page, a.AllocationId!)).toContainText("10");
+
+    // Removing an endpoint leaves the other.
+    page.once("dialog", (d) => d.accept().catch(() => {}));
+    await row(page, b.AllocationId!).getByRole("button", { name: /^Remove/ }).click();
+    await expect(row(page, b.AllocationId!)).toHaveCount(0);
+    await expect(row(page, a.AllocationId!)).toBeVisible();
+  } finally {
+    await Promise.all([a, b].map((x) => ec2.send(new ReleaseAddressCommand({ AllocationId: x.AllocationId })).catch(() => {})));
+  }
 });

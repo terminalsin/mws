@@ -1,10 +1,11 @@
-import { DescribeClusterCommand, DescribeClusterVersionsCommand, ListClustersCommand, ListNodegroupsCommand } from "@aws-sdk/client-eks";
-import { ago, load } from "@mws-dashboard/aws";
+import { DescribeClusterCommand, DescribeClusterVersionsCommand, ListNodegroupsCommand } from "@aws-sdk/client-eks";
+import { ago, all, load } from "@mws-dashboard/aws";
 import { ActionForm, AutoPick, AwsIcon, Empty, ErrorNotice, Field, List, Page, Pill, Sheet, Status, type Rule } from "@mws-dashboard/ui";
 import { CreateCluster } from "@mws-dashboard/ui/model/eks";
 import type { Metadata } from "next";
 
 import { ICONS, STATUS_TONE, eks } from "../../lib/clients";
+import { clusterNames } from "../../lib/data";
 import { clusterNetworks, rolesTrusting } from "../../lib/eks";
 import { createCluster } from "./actions";
 
@@ -16,15 +17,12 @@ export default async function Clusters() {
   const [clusters, roles, networks, versions] = await Promise.all([
     load(async () => {
       const client = await eks();
-      const names = (await client.send(new ListClustersCommand({}))).clusters ?? [];
+      const names = await clusterNames();
       return Promise.all(
         names.map(async (name) => {
           const [c, groups] = await Promise.all([
             client.send(new DescribeClusterCommand({ name })).then((r) => r.cluster!),
-            client.send(new ListNodegroupsCommand({ clusterName: name })).then(
-              (r) => r.nodegroups ?? [],
-              () => [],
-            ),
+            all((nextToken) => client.send(new ListNodegroupsCommand({ clusterName: name, nextToken })), (r) => r.nodegroups, (r) => r.nextToken),
           ]);
           return { c, groups };
         }),

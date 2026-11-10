@@ -1,22 +1,33 @@
-import { GetAccountCommand, ListEmailIdentitiesCommand, type GetAccountCommandOutput, type IdentityInfo } from "@aws-sdk/client-sesv2";
-import { ago, collect, load, type Loaded } from "@mws-dashboard/aws";
-import { ActionForm, AwsIcon, Empty, ErrorNotice, Field, List, Metric, Metrics, Page, Pill, Section, Sheet, Status, type Rule } from "@mws-dashboard/ui";
+import { ListEmailIdentitiesCommand, type IdentityInfo } from "@aws-sdk/client-sesv2";
+import { all, load, type Loaded } from "@mws-dashboard/aws";
+import { ActionForm, Empty, ErrorNotice, Field, List, Page, Section, Segments, Sheet, Status, type Rule } from "@mws-dashboard/ui";
+import { LiveRefresh } from "@mws-dashboard/ui/client";
 import { CreateEmailIdentity, SendEmail } from "@mws-dashboard/ui/model/sesv2";
-import { BadgeCheck, Eraser, Globe, Mail, Send, Trash2 } from "lucide-react";
+import { BadgeCheck, Globe, Mail, Send, Trash2 } from "lucide-react";
 import type { Metadata } from "next";
 
-import { ICONS, ses } from "../../lib/clients";
-import { sesMail } from "../../lib/outbox";
-import { clearOutbox, createIdentity, deleteIdentity, sendEmail, verifyIdentity } from "./actions";
+import { configSets, templates } from "../../lib/choices";
+import { ICONS, identityHref, ses, VERIFICATION_TONE, verificationLabel } from "../../lib/clients";
+import { AccountPanel, accountOf, ConfigSets, Outbox, Receiving, Suppression, Templates } from "./tabs";
+import { createIdentity, deleteIdentity, sendEmail, verifyIdentity } from "./actions";
 
 export const metadata: Metadata = { title: "SES" };
 
 type Props = { searchParams: Promise<{ tab?: string }> };
 
+const TABS = [
+  { id: "identities", label: "Identities", title: "Identities" },
+  { id: "configsets", label: "Configuration sets", title: "Configuration sets" },
+  { id: "templates", label: "Email templates", title: "Email templates" },
+  { id: "receiving", label: "Email receiving", title: "Email receiving" },
+  { id: "suppression", label: "Suppression list", title: "Suppression list" },
+  { id: "outbox", label: "Sent mail", title: "Sent mail" },
+];
+
 const listIdentities = () =>
   load(async () => {
     const client = await ses();
-    return collect(
+    return all(
       (NextToken) => client.send(new ListEmailIdentitiesCommand({ NextToken })),
       (r) => r.EmailIdentities,
       (r) => r.NextToken,
@@ -34,28 +45,30 @@ function verifiedAddress(emails: string[], domains: string[]): string {
 
 /** The send sheet's rules: SES sends only from verified identities and, in
  * the sandbox, only to verified addresses (or the mailbox simulator). */
-function sendRules(identities: Loaded<IdentityInfo[]>, sandbox: boolean): { from: Rule; to: Rule } {
+function sendRules(identities: Loaded<IdentityInfo[]>, sandbox: boolean): { from: Rule; to: Rule; cc: Rule } {
   const verified = identities.ok ? identities.value.filter((i) => i.VerificationStatus === "SUCCESS") : [];
   const emails = verified.filter((i) => i.IdentityType === "EMAIL_ADDRESS").map((i) => i.IdentityName!);
   const domains = verified.filter((i) => i.IdentityType === "DOMAIN").map((i) => i.IdentityName!);
   const senders = [...emails, ...domains.map((d) => `no-reply@${d}`)];
   const from: Rule = { ...SendEmail.FromEmailAddress, required: true, format: "email" };
   const to: Rule = { required: true, format: "emails" };
-  if (!identities.ok) return { from, to };
+  const cc: Rule = { format: "emails" };
+  if (!identities.ok) return { from, to, cc };
   const one = verifiedAddress(emails, domains);
   const recipient = verifiedAddress(emails, [...domains, SIMULATOR]);
+  const list = `^(?:${recipient})(?:,\\s*(?:${recipient}))*$`;
   return {
     from: one ? { ...from, pattern: `^(?:${one})$`, hint: "Not a verified identity", known: senders } : from,
-    to: sandbox
-      ? { ...to, pattern: `^(?:${recipient})(?:,\\s*(?:${recipient}))*$`, hint: "Sandbox: verified addresses only", known: [...emails, `success@${SIMULATOR}`] }
-      : { ...to, known: emails },
+    to: sandbox ? { ...to, pattern: list, hint: "Sandbox: verified addresses only", known: [...emails, `success@${SIMULATOR}`] } : { ...to, known: emails },
+    cc: sandbox ? { ...cc, pattern: list, hint: "Sandbox: verified addresses only", known: emails } : { ...cc, known: emails },
   };
 }
 
-function SendEmailSheet({ identities, sandbox }: { identities: Loaded<IdentityInfo[]>; sandbox: boolean }) {
+async function SendEmailSheet({ identities, sandbox }: { identities: Loaded<IdentityInfo[]>; sandbox: boolean }) {
   const rules = sendRules(identities, sandbox);
+  const [sets, temps] = await Promise.all([configSets(), templates()]);
   return (
-    <Sheet title="Send email" label="Send email" icon={<Send size={15} aria-hidden />} testId="send-email">
+    <Sheet title="Send test email" label="Send email" icon={<Send size={15} aria-hidden />} testId="send-email">
       <ActionForm action={sendEmail} submit="Send" testId="send-email">
         <div className="form-row">
           <Field label="From" rule={rules.from} member="FromEmailAddress">
@@ -65,129 +78,141 @@ function SendEmailSheet({ identities, sandbox }: { identities: Loaded<IdentityIn
             <input name="to" required />
           </Field>
         </div>
+        <div className="form-row">
+          <Field label="Cc" rule={rules.cc} member="CcAddresses">
+            <input name="cc" />
+          </Field>
+          <Field label="Bcc" rule={rules.cc} member="BccAddresses">
+            <input name="bcc" />
+          </Field>
+          <Field label="Reply-To" rule={{ format: "emails" }} member="ReplyToAddresses">
+            <input name="replyTo" />
+          </Field>
+        </div>
+        {temps.length > 0 && (
+          <div className="form-row">
+            <Field label="Template" member="TemplateName" hint="A template replaces subject and body">
+              <select name="template" defaultValue="">
+                <option value="">None (write the message)</option>
+                {temps.map((t) => (
+                  <option key={t.TemplateName}>{t.TemplateName}</option>
+                ))}
+              </select>
+            </Field>
+            <Field label="Template data" format="json" member="TemplateData">
+              <input name="templateData" placeholder='{"name":"Ana"}' />
+            </Field>
+          </div>
+        )}
         <Field label="Subject">
           <input name="subject" />
         </Field>
         <textarea name="body" aria-label="Body" />
+        <details>
+          <summary>HTML body</summary>
+          <Field label="HTML body">
+            <textarea name="html" rows={3} className="code-editor" />
+          </Field>
+        </details>
+        <div className="form-row">
+          {sets.length > 0 && (
+            <Field label="Configuration set" member="ConfigurationSetName">
+              <select name="configSet" defaultValue="">
+                <option value="">Identity default</option>
+                {sets.map((s) => (
+                  <option key={s}>{s}</option>
+                ))}
+              </select>
+            </Field>
+          )}
+          <Field label="Message tags (name=value)" rule={{ pattern: "^\\s*([\\w-]+=[\\w.@-]*\\s*(,\\s*|$))*$", hint: "Like campaign=spring" }} member="EmailTags">
+            <input name="tags" />
+          </Field>
+        </div>
       </ActionForm>
     </Sheet>
   );
 }
 
-function Identities({ identities, account }: { identities: Loaded<IdentityInfo[]>; account: Loaded<GetAccountCommandOutput> }) {
-  return (
-    <>
-      {account.ok && (
-        <Metrics>
-          <Metric label="Sending" value={account.value.ProductionAccessEnabled ? "Production" : "Sandbox"} tone={account.value.ProductionAccessEnabled ? "good" : "warn"} />
-          <Metric label="Sent in 24h" value={account.value.SendQuota?.SentLast24Hours ?? 0} />
-          <Metric label="Daily quota" value={account.value.SendQuota?.Max24HourSend ?? "—"} />
-        </Metrics>
-      )}
-      <Section
-        title="Identities"
-        plain
-        actions={
-          <Sheet title="New identity" label="Create identity" testId="create-identity">
-            <ActionForm action={createIdentity} submit="Create" testId="create-identity">
-              <Field
-                label="Email address or domain"
-                rule={CreateEmailIdentity.EmailIdentity}
-                format="email-or-domain"
-                taken={identities.ok ? identities.value.map((i) => i.IdentityName!) : undefined}
-                member="EmailIdentity"
-                unique
-              >
-                <input name="identity" required autoComplete="off" />
-              </Field>
-            </ActionForm>
-          </Sheet>
-        }
-      >
-        {identities.ok ? (
-          <List
-            label="Identities"
-            empty={<Empty icon={ICONS.email} />}
-            rows={identities.value.map((i) => {
-              const verified = i.VerificationStatus === "SUCCESS";
-              return {
-                key: i.IdentityName!,
-                icon: i.IdentityType === "DOMAIN" ? <Globe size={18} aria-hidden /> : <Mail size={18} aria-hidden />,
-                title: i.IdentityName,
-                meta: <Status tone={verified ? "good" : "warn"}>{verified ? "verified" : (i.VerificationStatus?.toLowerCase() ?? "pending")}</Status>,
-                actions: (
-                  <>
-                    {!verified && (
-                      <ActionForm
-                        action={verifyIdentity.bind(null, i.IdentityName!)}
-                        submit={`Verify ${i.IdentityName}`}
-                        icon={<BadgeCheck size={16} aria-hidden />}
-                      />
-                    )}
-                    <ActionForm
-                      action={deleteIdentity.bind(null, i.IdentityName!)}
-                      submit={`Delete ${i.IdentityName}`}
-                      icon={<Trash2 size={16} aria-hidden />}
-                      tone="danger"
-                      confirm={`Delete ${i.IdentityName}?`}
-                    />
-                  </>
-                ),
-              };
-            })}
-          />
-        ) : (
-          <ErrorNotice error={identities.error} />
-        )}
-      </Section>
-    </>
-  );
-}
-
-async function Outbox() {
-  const outbox = await load(sesMail);
-  if (!outbox.ok) return <ErrorNotice error={outbox.error} />;
+function Identities({ identities }: { identities: Loaded<IdentityInfo[]> }) {
+  const pending = identities.ok && identities.value.some((i) => i.VerificationStatus === "PENDING");
   return (
     <Section
-      title="Sent"
-      count={outbox.value.length}
+      title="Identities"
+      count={identities.ok ? identities.value.length : undefined}
       plain
-      actions={<ActionForm action={clearOutbox} submit="Clear" icon={<Eraser size={16} aria-hidden />} tone="danger" />}
+      actions={
+        <Sheet title="Create identity" label="Create identity" testId="create-identity">
+          <ActionForm action={createIdentity} submit="Create" testId="create-identity">
+            <Field
+              label="Email address or domain"
+              rule={CreateEmailIdentity.EmailIdentity}
+              format="email-or-domain"
+              taken={identities.ok ? identities.value.map((i) => i.IdentityName!) : undefined}
+              member="EmailIdentity"
+              unique
+            >
+              <input name="identity" required autoComplete="off" />
+            </Field>
+          </ActionForm>
+        </Sheet>
+      }
     >
-      <List
-        label="Outbox"
-        empty={<Empty icon={ICONS.email} />}
-        rows={[...outbox.value].reverse().map((m) => ({
-          key: m.Id,
-          icon: <AwsIcon icon={ICONS.email} size={24} />,
-          title: m.Subject || m.Template || "(no subject)",
-          subtitle: (
-            <details>
-              <summary>
-                {m.Source} → {m.Destination.ToAddresses.join(", ")}
-              </summary>
-              <pre className="code">{m.Body.text_part ?? m.Body.html_part ?? m.RawData}</pre>
-            </details>
-          ),
-          meta: (
-            <>
-              {m.Kind !== "Email" && <Pill tone="info">{m.Kind}</Pill>}
-              <span>{ago(m.Timestamp)}</span>
-            </>
-          ),
-        }))}
-      />
+      {pending && <LiveRefresh />}
+      {identities.ok ? (
+        <List
+          label="Identities"
+          empty={<Empty icon={ICONS.email} />}
+          rows={identities.value.map((i) => {
+            const verified = i.VerificationStatus === "SUCCESS";
+            return {
+              key: i.IdentityName!,
+              icon: i.IdentityType === "DOMAIN" ? <Globe size={18} aria-hidden /> : <Mail size={18} aria-hidden />,
+              title: i.IdentityName,
+              subtitle: i.IdentityType === "DOMAIN" ? "Domain" : "Email address",
+              href: identityHref(i.IdentityName),
+              meta: <Status tone={VERIFICATION_TONE[i.VerificationStatus ?? "PENDING"] ?? "warn"}>{verificationLabel(i.VerificationStatus)}</Status>,
+              actions: (
+                <>
+                  {!verified && (
+                    <ActionForm
+                      action={verifyIdentity.bind(null, i.IdentityName!)}
+                      submit={`Verify ${i.IdentityName} (MWS shortcut: skips the link or DNS records)`}
+                      icon={<BadgeCheck size={16} aria-hidden />}
+                    />
+                  )}
+                  <ActionForm action={deleteIdentity.bind(null, i.IdentityName!, false)} submit={`Delete ${i.IdentityName}`} icon={<Trash2 size={16} aria-hidden />} tone="danger" confirm={`Delete ${i.IdentityName}?`} />
+                </>
+              ),
+            };
+          })}
+        />
+      ) : (
+        <ErrorNotice error={identities.error} />
+      )}
     </Section>
   );
 }
 
 export default async function Ses({ searchParams }: Props) {
-  const tab = (await searchParams).tab ?? "identities";
-  const [identities, account] = await Promise.all([listIdentities(), load(async () => (await ses()).send(new GetAccountCommand({})))]);
+  const requested = (await searchParams).tab ?? "identities";
+  const tab = TABS.find((t) => t.id === requested) ?? TABS[0];
+  const [identities, account] = await Promise.all([listIdentities(), accountOf()]);
   const sandbox = !(account.ok && account.value.ProductionAccessEnabled);
   return (
-    <Page title={tab === "outbox" ? "Sent mail" : "Identities"} actions={<SendEmailSheet identities={identities} sandbox={sandbox} />}>
-      {tab === "outbox" ? <Outbox /> : <Identities identities={identities} account={account} />}
+    <Page title={tab.title} actions={<SendEmailSheet identities={identities} sandbox={sandbox} />}>
+      <Segments label="SES" items={TABS.map((t) => ({ label: t.label, href: t.id === "identities" ? "/ses" : `/ses?tab=${t.id}`, active: t.id === tab.id }))} />
+      {tab.id === "identities" && (
+        <>
+          {account.ok && <AccountPanel account={account.value} />}
+          <Identities identities={identities} />
+        </>
+      )}
+      {tab.id === "configsets" && <ConfigSets />}
+      {tab.id === "templates" && <Templates />}
+      {tab.id === "receiving" && <Receiving />}
+      {tab.id === "suppression" && <Suppression account={account.ok ? account.value : null} />}
+      {tab.id === "outbox" && <Outbox />}
     </Page>
   );
 }

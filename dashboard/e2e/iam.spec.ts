@@ -1,16 +1,29 @@
-import { CreateGroupCommand, CreatePolicyCommand, CreateUserCommand, IAMClient } from "@aws-sdk/client-iam";
+import {
+  AddUserToGroupCommand,
+  AttachUserPolicyCommand,
+  CreateAccessKeyCommand,
+  CreateGroupCommand,
+  CreateLoginProfileCommand,
+  CreatePolicyCommand,
+  CreateUserCommand,
+  GetUserCommand,
+  IAMClient,
+  ListPolicyVersionsCommand,
+  PutUserPolicyCommand,
+} from "@aws-sdk/client-iam";
 import { expect, test, type Page } from "@playwright/test";
 
-import { row, sdk, submit, unique } from "./helpers";
+import { row, rowAction, sdk, submit, unique } from "./helpers";
 
 test("IAM: create a role, attach a managed policy, group roles by who trusts them", async ({ page }) => {
   const role = unique("dash-role");
   await page.goto("/iam?tab=roles");
   await submit(page, "create-role", { name: role });
   await page.getByRole("link", { name: role }).click();
-  await expect(page.locator("pre[aria-label='Trust policy']")).toContainText("lambda.amazonaws.com");
   await submit(page, "attach-policy", { policyArn: "arn:aws:iam::aws:policy/ReadOnlyAccess" });
   await expect(row(page, "ReadOnlyAccess")).toBeVisible();
+  await page.getByRole("link", { name: "Trust relationships" }).click();
+  await expect(page.locator("pre[aria-label='Trust policy']")).toContainText("lambda.amazonaws.com");
 
   await page.goto("/iam?tab=roles");
   await expect(row(page, role)).toContainText("lambda.amazonaws.com");
@@ -21,6 +34,7 @@ test("IAM: a user gets an access key, shown once", async ({ page }) => {
   await page.goto("/iam");
   await submit(page, "create-user", { name: user });
   await page.getByRole("link", { name: user }).click();
+  await page.getByRole("link", { name: "Security credentials" }).click();
   const result = await submit(page, "create-access-key");
   await expect(result).toContainText("AWS_SECRET_ACCESS_KEY=");
 });
@@ -105,7 +119,7 @@ test("IAM validation: taken names, unknown policies and rejected documents land 
   await a.control("policyArn").fill(policy);
   await a.control("policyArn").blur();
   await expect(a.field("policyArn")).toHaveAttribute("data-invalid", "format");
-  await a.field("policyArn").getByRole("button", { name: /Did you mean/ }).click();
+  await a.field("policyArn").getByRole("button", { name: new RegExp(`Did you mean|Use ${policy}`) }).first().click();
   await expect(a.control("policyArn")).toHaveValue(new RegExp(`^arn:aws:iam::\\d{12}:policy/${policy}$`));
   await a.form.locator('button[type="submit"]').click();
   await expect(page.locator("dialog[open]")).toHaveCount(0);
@@ -118,4 +132,81 @@ test("IAM validation: taken names, unknown policies and rejected documents land 
   await b.form.locator('button[type="submit"]').click();
   await expect(b.field("policyArn")).toHaveAttribute("data-invalid", "missing");
   await expect(page.locator("dialog[open] .result.error")).toHaveCount(0);
+});
+
+const doc = (Action: string) => JSON.stringify({ Version: "2012-10-17", Statement: [{ Effect: "Allow", Action, Resource: "*" }] });
+
+test("IAM: editing a managed policy saves versions, which can be made default and deleted", async ({ page }) => {
+  const client = new IAMClient(sdk);
+  const name = unique("dash-versions");
+  const arn = (await client.send(new CreatePolicyCommand({ PolicyName: name, PolicyDocument: doc("s3:ListBucket") }))).Policy!.Arn!;
+  await page.goto(`/iam/policy?arn=${encodeURIComponent(arn)}`);
+  await expect(page.locator("pre[aria-label='Policy document']")).toContainText("s3:ListBucket");
+  await submit(page, "edit-policy", { document: doc("sqs:SendMessage") });
+  await expect(page.locator("pre[aria-label='Policy document']")).toContainText("sqs:SendMessage");
+
+  await page.getByRole("link", { name: /Policy versions/ }).click();
+  await expect(row(page, "v2")).toContainText("Default version");
+  await row(page, "v1").getByRole("button", { name: "Set v1 as default" }).click();
+  await expect(row(page, "v1")).toContainText("Default version");
+  await rowAction(page, "v2", "Delete v2");
+  await expect(row(page, "v2")).toHaveCount(0);
+  const versions = (await client.send(new ListPolicyVersionsCommand({ PolicyArn: arn }))).Versions!;
+  expect(versions.map((v) => v.VersionId)).toEqual(["v1"]);
+});
+
+test("IAM: a group's inline policy is created, read and edited", async ({ page }) => {
+  const group = unique("dash-inline");
+  await new IAMClient(sdk).send(new CreateGroupCommand({ GroupName: group }));
+  await page.goto(`/iam/groups/${group}?tab=permissions`);
+  await submit(page, "inline-policy", { policyName: "ReadQueues", document: doc("sqs:ReceiveMessage") });
+  await row(page, "ReadQueues").getByRole("link").click();
+  await expect(page.locator("pre[aria-label='Policy document']")).toContainText("sqs:ReceiveMessage");
+  await submit(page, "edit-inline-policy", { document: doc("sqs:DeleteMessage") });
+  await expect(page.locator("pre[aria-label='Policy document']")).toContainText("sqs:DeleteMessage");
+});
+
+test("IAM: a group's members are added and removed from the group", async ({ page }) => {
+  const client = new IAMClient(sdk);
+  const group = unique("dash-members");
+  const user = unique("dash-joiner");
+  await client.send(new CreateGroupCommand({ GroupName: group }));
+  await client.send(new CreateUserCommand({ UserName: user }));
+  await page.goto(`/iam/groups/${group}`);
+  await submit(page, "add-member", { user });
+  await expect(row(page, user)).toBeVisible();
+  await row(page, user).getByRole("button", { name: `Remove ${user}` }).click();
+  await expect(row(page, user)).toHaveCount(0);
+});
+
+test("IAM: deleting a user removes its keys, password, groups and policies first", async ({ page }) => {
+  const client = new IAMClient(sdk);
+  const user = unique("dash-busy");
+  const group = unique("dash-busy-group");
+  await client.send(new CreateUserCommand({ UserName: user }));
+  await client.send(new CreateGroupCommand({ GroupName: group }));
+  await client.send(new AddUserToGroupCommand({ UserName: user, GroupName: group }));
+  await client.send(new CreateAccessKeyCommand({ UserName: user }));
+  await client.send(new CreateLoginProfileCommand({ UserName: user, Password: "Dash-board-1234!" }));
+  await client.send(new AttachUserPolicyCommand({ UserName: user, PolicyArn: "arn:aws:iam::aws:policy/ReadOnlyAccess" }));
+  await client.send(new PutUserPolicyCommand({ UserName: user, PolicyName: "inline", PolicyDocument: doc("s3:ListBucket") }));
+
+  await page.goto(`/iam/users/${user}`);
+  await expect(page.getByText("enabled").first()).toBeVisible();
+  page.once("dialog", (d) => d.accept().catch(() => {}));
+  await page.getByTestId("delete-user").locator("button").click();
+  await expect(page).toHaveURL(/\/iam$/);
+  await expect(client.send(new GetUserCommand({ UserName: user }))).rejects.toMatchObject({ name: "NoSuchEntityException" });
+});
+
+test("IAM: the policy simulator tells which actions a user may take", async ({ page }) => {
+  const client = new IAMClient(sdk);
+  const user = unique("dash-sim");
+  await client.send(new CreateUserCommand({ UserName: user }));
+  await client.send(new PutUserPolicyCommand({ UserName: user, PolicyName: "queues", PolicyDocument: doc("sqs:SendMessage") }));
+  const arn = (await client.send(new GetUserCommand({ UserName: user }))).User!.Arn!;
+  await page.goto(`/iam/simulator?principal=${encodeURIComponent(arn)}&actions=${encodeURIComponent("sqs:SendMessage, s3:GetObject")}`);
+  const results = page.getByRole("table", { name: "Simulation results" });
+  await expect(results.locator("tr").filter({ hasText: "sqs:SendMessage" })).toContainText("allowed");
+  await expect(results.locator("tr").filter({ hasText: "s3:GetObject" })).toContainText("not allowed");
 });

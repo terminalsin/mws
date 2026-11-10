@@ -4,10 +4,12 @@
   "private": true,
   "description": "IAM Identity Center pages for the MWS console",
   "exports": {
+    "./inventory": "./inventory.ts",
     "./routes/*": "./routes/*"
   },
   "dependencies": {
     "@aws-sdk/client-identitystore": "^3.1164.0",
+    "@aws-sdk/client-organizations": "^3.1164.0",
     "@aws-sdk/client-sso-admin": "^3.1164.0",
     "@mws-dashboard/aws": "*",
     "@mws-dashboard/ui": "*",

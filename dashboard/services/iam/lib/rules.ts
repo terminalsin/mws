@@ -34,6 +34,8 @@ export const RULES = {
   groupName: { ...CreateGroup.GroupName, generate: "name" },
   policyName: { ...CreatePolicy.PolicyName, generate: "name" },
   inlinePolicyName: { ...PutRolePolicy.PolicyName, generate: "name" },
+  roleDescription: CreateRole.Description,
+  policyDescription: CreatePolicy.Description,
   path: { ...CreateUser.Path, pattern: undefined, format: "path" },
   /** A bare service name ("lambda") gets ".amazonaws.com" added. */
   service: {
@@ -47,4 +49,5 @@ export const RULES = {
   document: { ...CreatePolicy.PolicyDocument, format: "policy" },
   policyArn: { ...AttachRolePolicy.PolicyArn, format: "arn" },
   group: AddUserToGroup.GroupName,
+  member: AddUserToGroup.UserName,
 } satisfies Record<string, Rule>;

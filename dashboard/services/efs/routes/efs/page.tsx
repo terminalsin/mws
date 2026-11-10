@@ -1,13 +1,14 @@
-import { DescribeFileSystemsCommand } from "@aws-sdk/client-efs";
+import { DescribeAvailabilityZonesCommand } from "@aws-sdk/client-ec2";
 import { ago, bytes, load } from "@mws-dashboard/aws";
 import { ActionForm, AwsIcon, Empty, ErrorNotice, Field, List, Page, Pill, Sheet, Status, type Rule } from "@mws-dashboard/ui";
 import { ruleAt } from "@mws-dashboard/ui/validation";
 import { CreateFileSystem as Rules } from "@mws-dashboard/ui/model/efs";
-import { Lock } from "lucide-react";
+import { Lock, MapPin } from "lucide-react";
 import type { Metadata } from "next";
 
-import { ICONS, STATUS_TONE, efs } from "../../lib/clients";
-import { vpcs } from "../../lib/network";
+import { ICONS, STATUS_TONE, allFileSystems, ec2, fsHref } from "../../lib/clients";
+import { nameOf, vpcs } from "../../lib/network";
+import { IA_OPTIONS } from "../../lib/options";
 import { createFileSystem } from "./actions";
 
 export const metadata: Metadata = { title: "EFS" };
@@ -16,24 +17,32 @@ export const metadata: Metadata = { title: "EFS" };
 const NAME: Rule = { ...ruleAt(Rules, "Tags.Value"), required: false, hint: "Letters, digits, spaces and _ . : / = + - @" };
 
 export default async function FileSystems() {
-  const [list, networks] = await Promise.all([load(async () => (await (await efs()).send(new DescribeFileSystemsCommand({}))).FileSystems ?? []), load(vpcs)]);
+  const [list, networks, zones] = await Promise.all([
+    load(allFileSystems),
+    load(vpcs),
+    load(async () => ((await (await ec2()).send(new DescribeAvailabilityZonesCommand({}))).AvailabilityZones ?? []).map((z) => z.ZoneName!)),
+  ]);
   const create = (
     <Sheet title="Create file system" label="Create file system" testId="create-file-system">
       <ActionForm action={createFileSystem} submit="Create" testId="create-file-system">
         <Field label="Name" rule={NAME} member="Tags.Value">
           <input name="name" autoFocus />
         </Field>
-        <Field label="VPC" member="SubnetId">
+        <Field label="VPC" member="SubnetId" hint="A mount target in each Availability Zone">
           <select name="vpc" defaultValue={networks.ok ? networks.value.find((v) => v.IsDefault)?.VpcId : ""}>
             <option value="">No mount targets</option>
-            {networks.ok && networks.value.map((v) => <option key={v.VpcId} value={v.VpcId}>{v.Tags?.find((t) => t.Key === "Name")?.Value ?? v.VpcId}</option>)}
+            {networks.ok && networks.value.map((v) => <option key={v.VpcId} value={v.VpcId}>{nameOf(v.Tags) ?? v.VpcId}</option>)}
           </select>
         </Field>
         <div className="form-row">
-          <Field label="Throughput" rule={Rules.ThroughputMode}>
-            <select name="throughput" defaultValue="elastic">
-              <option value="elastic">Elastic</option>
-              <option value="bursting">Bursting</option>
+          <Field label="Storage" rule={Rules.AvailabilityZoneName} member="AvailabilityZoneName">
+            <select name="az" defaultValue="">
+              <option value="">Regional</option>
+              {(zones.ok ? zones.value : []).map((z) => (
+                <option key={z} value={z}>
+                  One Zone: {z}
+                </option>
+              ))}
             </select>
           </Field>
           <Field label="Performance" rule={Rules.PerformanceMode}>
@@ -43,8 +52,38 @@ export default async function FileSystems() {
             </select>
           </Field>
         </div>
+        <div className="form-row">
+          <Field label="Throughput" rule={Rules.ThroughputMode}>
+            <select name="throughput" defaultValue="elastic">
+              <option value="elastic">Elastic</option>
+              <option value="bursting">Bursting</option>
+              <option value="provisioned">Provisioned</option>
+            </select>
+          </Field>
+          <Field label="Provisioned MiB/s" rule={Rules.ProvisionedThroughputInMibps} hint="Provisioned only">
+            <input name="mibps" type="number" min={1} step="any" />
+          </Field>
+        </div>
+        <div className="form-row">
+          <Field label="Transition to Infrequent Access" member="LifecyclePolicies">
+            <select name="ia" defaultValue="AFTER_30_DAYS">
+              <option value="">None</option>
+              {IA_OPTIONS.map(([v, l]) => (
+                <option key={v} value={v}>
+                  {l}
+                </option>
+              ))}
+            </select>
+          </Field>
+          <Field label="KMS key" rule={Rules.KmsKeyId} hint="Empty uses aws/elasticfilesystem">
+            <input name="kms" />
+          </Field>
+        </div>
         <label className="check">
           <input type="checkbox" name="encrypted" defaultChecked /> Encrypted
+        </label>
+        <label className="check">
+          <input type="checkbox" name="backup" defaultChecked /> Automatic backups
         </label>
       </ActionForm>
     </Sheet>
@@ -60,13 +99,18 @@ export default async function FileSystems() {
             icon: <AwsIcon icon={ICONS.fileSystem} size={24} />,
             title: f.Name ?? f.FileSystemId,
             subtitle: f.Name ? f.FileSystemId : undefined,
-            href: `/efs/fs?id=${f.FileSystemId}`,
+            href: fsHref(f.FileSystemId!),
             meta: (
               <>
                 {f.Encrypted && <Lock size={13} aria-label="Encrypted" />}
+                {f.AvailabilityZoneName && (
+                  <Pill icon={<MapPin size={12} aria-hidden />} title="One Zone">
+                    {f.AvailabilityZoneName}
+                  </Pill>
+                )}
                 <span>{bytes(f.SizeInBytes?.Value)}</span>
                 <Pill>{f.NumberOfMountTargets} mount targets</Pill>
-                <Status tone={STATUS_TONE(f.LifeCycleState)}>{f.LifeCycleState}</Status>
+                <Status tone={STATUS_TONE(f.LifeCycleState)}>{f.LifeCycleState ?? ""}</Status>
                 <span>{ago(f.CreationTime)}</span>
               </>
             ),

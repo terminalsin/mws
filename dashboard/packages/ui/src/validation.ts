@@ -249,11 +249,19 @@ const cache = new Map<string, RegExp | null>();
 function regex(pattern: string): RegExp | null {
   if (!cache.has(pattern)) {
     let re: RegExp | null = null;
+    // Smithy models carry Java regex classes JavaScript lacks.
+    const js = pattern
+      .replace(/\\p\{IsWhitespace\}/g, "\\s")
+      .replace(/\\p\{Is(Alphabetic|Letter)\}/g, "\\p{L}")
+      .replace(/\\p\{IsDigit\}/g, "\\d")
+      .replace(/\\p\{(Alpha)\}/g, "\\p{L}")
+      .replace(/\\p\{Punct\}/g, "\\p{P}")
+      .replace(/\\p\{Space\}/g, "\\s");
     try {
-      re = new RegExp(pattern, "u");
+      re = new RegExp(js, "u");
     } catch {
       try {
-        re = new RegExp(pattern);
+        re = new RegExp(js);
       } catch {
         re = null;
       }

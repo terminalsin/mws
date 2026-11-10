@@ -1,7 +1,7 @@
-import { CloudTrailClient, DeleteTrailCommand } from "@aws-sdk/client-cloudtrail";
+import { CloudTrailClient, DeleteTrailCommand, GetTrailCommand } from "@aws-sdk/client-cloudtrail";
 import { expect, test, type Page } from "@playwright/test";
 
-import { sdk, unique } from "./helpers";
+import { row, sdk, submit, unique } from "./helpers";
 
 // AWS allows five trails per region, and the suites share one MWS: every
 // trail a test makes is deleted again.
@@ -86,4 +86,72 @@ test("CloudTrail: an existing trail name suggests the next free one", async ({ p
   await page.locator("dialog[open]").locator('button[type="submit"]').click();
   await expect(page.locator("dialog[open]")).toHaveCount(0);
   await expect(page.getByText(`${trail}-2`, { exact: true }).first()).toBeVisible();
+});
+
+test("CloudTrail: trail detail, edit, event selectors and delete", async ({ page }) => {
+  const trail = unique("dash-detail");
+  await page.goto("/cloudtrail?tab=trails");
+  await submit(page, "create-trail", { name: trail });
+  made.push(trail);
+  await row(page, trail).getByRole("link").first().click();
+  await expect(page.getByRole("heading", { level: 1, name: trail })).toBeVisible();
+  await expect(page.locator(".specs")).toContainText("Logging");
+  await expect(page.locator(".specs")).toContainText("Validated");
+
+  // Edit: a single-Region trail without global events or validation. (A key prefix would
+  // need the bucket policy to allow the prefixed path, as on AWS.)
+  await submit(page, "edit-trail", { multi: "off", global: "off", validation: "off" });
+  await expect(page.locator("main")).toContainText("Excluded");
+  await expect(page.locator(".specs")).not.toContainText("Validated");
+
+  // Basic selectors: write-only management events plus all S3 data events.
+  await submit(page, "edit-selectors", { rw: "WriteOnly", s3: "*" });
+  const selectors = page.locator("section").filter({ has: page.getByRole("heading", { name: "Event selectors" }) });
+  await expect(selectors).toContainText("Write");
+  await expect(selectors).toContainText("Data: AWS::S3::Object");
+
+  // Logging can be stopped and started again.
+  const toggle = page.getByTestId("toggle-logging").and(page.locator("form"));
+  await toggle.locator('button[type="submit"]').click();
+  await expect(page.locator(".specs")).toContainText("Off");
+
+  await submit(page, "edit-trail-tags", { tags: "team=dash" });
+  await expect(page.locator("main")).toContainText("team");
+
+  page.once("dialog", (d) => d.accept().catch(() => {}));
+  await page.getByTestId("delete-trail").and(page.locator("form")).locator('button[type="submit"]').click();
+  await expect(page).toHaveURL(/\/cloudtrail\?tab=trails|\/cloudtrail$/);
+  await expect(page.getByText(trail, { exact: true })).toHaveCount(0);
+});
+
+test("CloudTrail: event history lookup, time range and event detail", async ({ page }) => {
+  const trail = unique("dash-event");
+  const client = new CloudTrailClient(sdk);
+  await page.goto("/cloudtrail?tab=trails");
+  await submit(page, "create-trail", { name: trail });
+  made.push(trail);
+
+  // Look the CreateTrail call up by resource name: a write event.
+  await page.goto(`/cloudtrail?key=ResourceName&value=${encodeURIComponent(trail)}`);
+  const event = row(page, "CreateTrail");
+  await expect(event).toBeVisible();
+  await expect(event).toContainText("Write");
+
+  // A range that ends before the trail existed finds nothing.
+  await page.goto(`/cloudtrail?key=ResourceName&value=${encodeURIComponent(trail)}&end=2020-01-01T00:00`);
+  await expect(row(page, "CreateTrail")).toHaveCount(0);
+
+  // The detail page shows the record and its request parameters.
+  await page.goto(`/cloudtrail?key=ResourceName&value=${encodeURIComponent(trail)}`);
+  await row(page, "CreateTrail").getByRole("link").first().click();
+  await expect(page.getByRole("heading", { level: 1, name: "CreateTrail" })).toBeVisible();
+  await expect(page.locator("main")).toContainText("cloudtrail.amazonaws.com");
+  await expect(page.locator("pre[aria-label='Request parameters']")).toContainText(trail);
+
+  // Read-only calls carry no Write pill.
+  await client.send(new GetTrailCommand({ Name: trail }));
+  await page.goto(`/cloudtrail?key=EventName&value=GetTrail`);
+  const read = row(page, "GetTrail").first();
+  await expect(read).toBeVisible();
+  await expect(read).not.toContainText("Write");
 });

@@ -1,4 +1,4 @@
-import { ACMPCAClient, CreateCertificateAuthorityCommand, GetCertificateAuthorityCsrCommand } from "@aws-sdk/client-acm-pca";
+import { ACMPCAClient, CreateCertificateAuthorityCommand, DescribeCertificateAuthorityCommand, GetCertificateAuthorityCsrCommand, ListPermissionsCommand } from "@aws-sdk/client-acm-pca";
 import { expect, test, type Page } from "@playwright/test";
 
 import { sdk, submit, unique } from "./helpers";
@@ -104,4 +104,41 @@ test("Private CA: a pasted private key is refused before it is sent", async ({ p
   await expect(request.box).toHaveAttribute("data-invalid", "format");
   await expect(request.box).toContainText("private key");
   await expect(request.input).toBeFocused();
+});
+
+test("Private CA: an ECDSA root signs a subordinate, authorizes ACM and backs a SCEP connector", async ({ page }) => {
+  test.setTimeout(120_000);
+  const pca = new ACMPCAClient(sdk);
+  const arnOf = () => decodeURIComponent(new URL(page.url()).searchParams.get("arn")!);
+
+  const root = unique("Dash EC Root");
+  await page.goto("/pca");
+  await submit(page, "create-ca", { cn: root, key: "EC_prime256v1" });
+  await expect(page.getByRole("heading", { level: 1, name: root })).toBeVisible();
+  const rootArn = arnOf();
+  await submit(page, "install-ca-cert");
+  await expect(page.locator(".specs")).toContainText("active");
+
+  const sub = unique("Dash EC Issuing");
+  await page.goto("/pca");
+  await submit(page, "create-ca", { cn: sub, type: "SUBORDINATE", key: "EC_prime256v1" });
+  await expect(page.getByRole("heading", { level: 1, name: sub })).toBeVisible();
+  const subArn = arnOf();
+  await submit(page, "sign-subordinate", { parent: rootArn });
+  await expect(page.locator(".specs")).toContainText("active");
+  const d = await pca.send(new DescribeCertificateAuthorityCommand({ CertificateAuthorityArn: subArn }));
+  expect(d.CertificateAuthority?.Status).toBe("ACTIVE");
+
+  await page.goto(`/pca/ca?arn=${encodeURIComponent(subArn)}&tab=permissions`);
+  await submit(page, "grant-acm");
+  await expect(async () => {
+    const { Permissions } = await pca.send(new ListPermissionsCommand({ CertificateAuthorityArn: subArn }));
+    expect(Permissions?.[0]?.Principal).toBe("acm.amazonaws.com");
+  }).toPass();
+
+  await page.goto("/pca/connectors");
+  await submit(page, "create-connector", { ca: subArn });
+  await expect(page).toHaveURL(/\/pca\/connector\?arn=/);
+  await page.getByTestId("create-challenge").locator('button[type="submit"]').click();
+  await expect(page.getByTestId("challenge-password")).not.toBeEmpty();
 });

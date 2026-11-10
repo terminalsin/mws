@@ -1,7 +1,7 @@
 import { GetServiceQuotaCommand, RequestServiceQuotaIncreaseCommand, ServiceQuotasClient } from "@aws-sdk/client-service-quotas";
 import { expect, test, type Page } from "@playwright/test";
 
-import { sdk } from "./helpers";
+import { row, sdk, submit } from "./helpers";
 
 // The request-increase sheet validates the new value in place: it must be
 // above the quota's current value, and a value MWS rejects because the quota
@@ -57,4 +57,40 @@ test("service quotas: a quota raised since the page loaded moves the field's flo
   await expect(value).toHaveValue(String(raised + 1));
   await form.locator('button[type="submit"]').click();
   await expect(page.locator("dialog[open]")).toHaveCount(0);
+});
+
+test("service quotas: a request shows as pending, and the quota updates itself once approved", async ({ page }) => {
+  // VPCs per Region: adjustable, and no other spec raises it.
+  const [service, code] = ["vpc", "L-F678F1CE"];
+  const before = await current(service, code);
+  await page.goto(`/servicequotas?service=${service}`);
+  await submit(page, `increase-${code}`, { value: String(before + 1) });
+  // Approved a second later on MWS's clock: the row moves on without a reload.
+  await expect(row(page, code).locator(".pill").filter({ hasText: new RegExp(`^${before + 1}$`) })).toBeVisible({ timeout: 30_000 });
+
+  // The quota's page has the request in its history, approved.
+  await row(page, code).getByRole("link").click();
+  await expect(page).toHaveURL(new RegExp(`/servicequotas/quota\\?service=${service}&code=${code}`));
+  await expect(page.getByRole("list", { name: "Requests" })).toContainText("approved");
+
+  // The account-wide history links each request to its quota.
+  await page.goto("/servicequotas?tab=requests");
+  await expect(page.getByRole("list", { name: "Requests" }).locator(`a[href*="code=${code}"]`).first()).toBeVisible();
+});
+
+test("service quotas: a utilization report is generated", async ({ page }) => {
+  await page.goto("/servicequotas?tab=utilization");
+  await page.getByTestId("generate-report").locator("button").click();
+  await expect(page).toHaveURL(/report=/);
+  await expect(page.locator(".facts")).toContainText("completed", { timeout: 30_000 });
+});
+
+test("service quotas: automatic management starts and stops", async ({ page }) => {
+  await page.goto("/servicequotas/automatic");
+  await submit(page, "auto-management", { type: "NotifyOnly", exclude: "ec2=L-1216C47A" });
+  await expect(page.locator(".facts")).toContainText("enabled");
+  await expect(row(page, "L-1216C47A")).toBeVisible();
+  page.once("dialog", (d) => d.accept().catch(() => {}));
+  await page.getByTestId("stop-auto-management").locator("button").click();
+  await expect(page.locator(".facts")).toContainText("disabled");
 });
