@@ -1,9 +1,10 @@
-//! Access logs and connection logs delivered to S3.
+//! Access logs, connection logs and health check logs delivered to S3.
 //!
 //! Load balancers buffer one line per request (Application and Classic
 //! Load Balancers), per TLS connection (Network Load Balancer TLS
 //! listeners, Classic TCP/SSL listeners) or per TLS handshake (Application
-//! Load Balancer connection logs). Each buffer closes at the end of its
+//! Load Balancer connection logs) or per health check (Application Load
+//! Balancer health check logs). Each buffer closes at the end of its
 //! interval on the emulated clock (5 minutes; 5 or 60 for Classic) and is
 //! written to the bucket as ELB names it:
 //! `{prefix/}AWSLogs/{account}/elasticloadbalancing/{region}/yyyy/mm/dd/...`.
@@ -62,6 +63,7 @@ pub(crate) fn regional_account(region: &str) -> Option<&'static str> {
 pub(crate) enum Stream {
     Access,
     Connection,
+    Health,
 }
 
 /// Where a load balancer's log stream goes.
@@ -153,6 +155,7 @@ impl Elb {
         let kind = match stream {
             Stream::Access => "access_logs",
             Stream::Connection => "connection_logs",
+            Stream::Health => "health_check_logs",
         };
         if lb.attributes.get(&format!("{kind}.s3.enabled")).map(String::as_str) != Some("true") {
             return None;
@@ -219,6 +222,7 @@ impl Elb {
             let stream = match p.stream {
                 Stream::Access => "",
                 Stream::Connection => "conn_log.",
+                Stream::Health => "health_log.",
             };
             key.push_str(&format!(
                 "AWSLogs/{acct}/elasticloadbalancing/{region}/{date}/{stream}{acct}_elasticloadbalancing_{region}_{id}_{end}_{ip}_{random}.{suffix}",
@@ -317,5 +321,67 @@ fn deliver(
             None => Err(ServicePutError::AccessDenied { action }),
         },
         Err(e) => Err(e),
+    }
+}
+
+impl Elb {
+    /// Log one health check of an Application Load Balancer target to each
+    /// load balancer routing to its group that has health check logs on:
+    /// `type time latency target_addr target_group_id status status_code
+    /// reason_code`.
+    pub(crate) fn record_health_log(
+        &self,
+        p: &crate::health::Probe,
+        outcome: &Result<(), (String, String)>,
+        code: Option<u16>,
+        latency: std::time::Duration,
+    ) {
+        let region_key = format!("{}|{}", p.account, p.region);
+        let (lbs, kind) = {
+            let st = self.lock();
+            let Some(r) = st.regions.get(&region_key) else { return };
+            let Some(tg) = r.target_groups.get(&p.key.group) else { return };
+            let kind = match (tg.target_type(), tg.tg.health_check_protocol.as_deref()) {
+                ("lambda", _) => "lambda",
+                (_, Some("HTTPS")) => "https",
+                (_, Some("HTTP")) => "http",
+                _ => "tcp",
+            };
+            let lbs: Vec<String> = crate::ops::tg_load_balancers(r, &p.key.group)
+                .into_iter()
+                .filter(|a| r.load_balancers.get(a).and_then(|l| l.lb.r#type.as_deref()) == Some("application"))
+                .collect();
+            (lbs, kind)
+        };
+        let target = match p.address {
+            Some(a) => a.to_string(),
+            None => p.key.id.clone(),
+        };
+        let (status, reason) = match outcome {
+            Ok(()) => ("PASS", "-".to_string()),
+            Err((reason, _)) => ("FAIL", reason.clone()),
+        };
+        let line = format!(
+            "{kind} {} {:.3} {target} {} {status} {} {reason}",
+            micros(self.now()),
+            latency.as_secs_f64(),
+            crate::names::tg_dimension(&p.key.group),
+            code.map(|c| c.to_string()).unwrap_or_else(|| "-".into()),
+        );
+        for lb_arn in lbs {
+            let spec = FrontSpec {
+                key: String::new(),
+                region_key: region_key.clone(),
+                lb_arn,
+                lb_type: "application".into(),
+                dns: String::new(),
+                protocol: String::new(),
+                port: 0,
+                classic: None,
+            };
+            if let Some(dest) = self.log_destination(&spec, Stream::Health) {
+                self.record_log(&spec, Stream::Health, dest, line.clone());
+            }
+        }
     }
 }

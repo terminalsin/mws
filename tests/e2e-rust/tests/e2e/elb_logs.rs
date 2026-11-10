@@ -184,6 +184,9 @@ async fn application_load_balancer_access_and_connection_logs() {
         .attributes(attr("connection_logs.s3.enabled", "true"))
         .attributes(attr("connection_logs.s3.bucket", "alb-logs"))
         .attributes(attr("connection_logs.s3.prefix", "web"))
+        .attributes(attr("health_check_logs.s3.enabled", "true"))
+        .attributes(attr("health_check_logs.s3.bucket", "alb-logs"))
+        .attributes(attr("health_check_logs.s3.prefix", "web"))
         .send()
         .await
         .unwrap();
@@ -203,12 +206,16 @@ async fn application_load_balancer_access_and_connection_logs() {
     let tls_addr = listener_address(&mws, &https_arn).await;
     let secure = https_request(&tls_addr, "logs.example.com", "/secure", &[]).await;
     assert_eq!(secure.status, 200);
+    // At least one health check (every 5 seconds) while health check logs
+    // are on.
+    tokio::time::sleep(Duration::from_secs(6)).await;
 
     next_interval(&mws, 5).await;
     let region = "us-east-1";
     let dir = format!("web/AWSLogs/{ACCOUNT}/elasticloadbalancing/{region}/");
     let files = log_files(&s3, "alb-logs", &dir, ".log.gz").await;
-    let access: Vec<&(String, String)> = files.iter().filter(|(k, _)| !k.contains("/conn_log.")).collect();
+    let access: Vec<&(String, String)> =
+        files.iter().filter(|(k, _)| !k.contains("/conn_log.") && !k.contains("/health_log.")).collect();
     assert_eq!(access.len(), 1, "{files:?}");
     let (key, text) = access[0];
     let name = key.rsplit('/').next().unwrap();
@@ -261,6 +268,23 @@ async fn application_load_balancer_access_and_connection_logs() {
     assert!(entry[4].starts_with("TLSv1."), "{entry:?}");
     assert_eq!(entry[10], "Success");
     assert_eq!(entry[11], *https_line.last().unwrap());
+
+    // Health check log entries: one per check of the target.
+    let mut health = Vec::new();
+    for _ in 0..40 {
+        health = log_files(&s3, "alb-logs", &dir, ".log.gz").await;
+        health.retain(|(k, _)| k.contains("/health_log."));
+        if !health.is_empty() {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(250)).await;
+    }
+    assert_eq!(health.len(), 1, "{health:?}");
+    let check = fields(health[0].1.lines().next().unwrap());
+    assert_eq!(check[0], "http");
+    assert_eq!(check[3], format!("127.0.0.1:{}", backend.port()));
+    assert_eq!(check[4], tg.rsplit_once(':').unwrap().1);
+    assert_eq!(check[5..8], ["PASS", "200", "-"]);
     backend.stop();
 }
 
@@ -352,6 +376,7 @@ async fn classic_load_balancer_access_logs() {
     let classic = aws_sdk_elasticloadbalancing::Client::new(&cfg);
     let s3 = Mws::s3(&cfg);
     let ec2 = aws_sdk_ec2::Client::new(&cfg);
+    default_network(&mws).await;
     let zones = ec2.describe_availability_zones().send().await.unwrap();
     let zone = zones.availability_zones()[0].zone_name().unwrap().to_string();
     let http = Listener::builder().protocol("HTTP").load_balancer_port(80).instance_port(8080).build().unwrap();

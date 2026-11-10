@@ -25,9 +25,7 @@
 
 use regex::Regex;
 
-use crate::insights::{
-    self, contains_aggregate, tokenize, Command, Expr, Named, Query, Record, Tok, AGGREGATES, P, V,
-};
+use crate::insights::{self, contains_aggregate, tokenize, Command, Expr, Named, Query, Record, Tok, AGGREGATES, P, V};
 
 /// A query ready to run, and the log groups it names itself (SQL `FROM`,
 /// PPL `source`).
@@ -202,7 +200,11 @@ fn inline_subqueries(toks: Vec<Tok>, fetch: &mut Fetch) -> Result<Vec<Tok>, Stri
                 if not {
                     out.pop();
                 }
-                out.extend([Tok::Num(1.0), Tok::Op("=".into()), Tok::Num(if rows.is_empty() == not { 1.0 } else { 0.0 })]);
+                out.extend([
+                    Tok::Num(1.0),
+                    Tok::Op("=".into()),
+                    Tok::Num(if rows.is_empty() == not { 1.0 } else { 0.0 }),
+                ]);
             } else if is_kw(out.last(), "in") {
                 out.push(Tok::LParen);
                 if rows.is_empty() {
@@ -857,10 +859,8 @@ mod tests {
 
     #[test]
     fn sql_joins() {
-        let rows = run(
-            "SELECT l.path, o.owner, COUNT(*) AS n FROM `/x` AS l JOIN `/owners` o ON l.path = o.path \
-             GROUP BY l.path, o.owner ORDER BY n DESC",
-        );
+        let rows = run("SELECT l.path, o.owner, COUNT(*) AS n FROM `/x` AS l JOIN `/owners` o ON l.path = o.path \
+             GROUP BY l.path, o.owner ORDER BY n DESC");
         assert_eq!(
             rows,
             vec![
@@ -869,7 +869,8 @@ mod tests {
             ]
         );
         // Left joins keep unmatched rows.
-        let rows = run("SELECT l.path, o.owner FROM `/x` l LEFT JOIN `/owners` o ON l.path = o.path WHERE o.owner IS NULL");
+        let rows =
+            run("SELECT l.path, o.owner FROM `/x` l LEFT JOIN `/owners` o ON l.path = o.path WHERE o.owner IS NULL");
         assert_eq!(rows.len(), 1);
         assert_eq!(rows[0][0], ("l.path".into(), "/A".into()));
         assert_eq!(run("SELECT path FROM `/x`, `/owners`").len(), 8);
@@ -877,12 +878,15 @@ mod tests {
 
     #[test]
     fn sql_subqueries() {
-        let rows = run("SELECT status FROM `/x` WHERE path IN (SELECT path FROM `/owners` WHERE owner = 'bob') ORDER BY status");
+        let rows = run(
+            "SELECT status FROM `/x` WHERE path IN (SELECT path FROM `/owners` WHERE owner = 'bob') ORDER BY status",
+        );
         let statuses: Vec<_> = rows.iter().map(|r| r[0].1.clone()).collect();
         assert_eq!(statuses, vec!["200", "500"]);
         let rows = run("SELECT path FROM `/x` WHERE status = (SELECT MAX(status) FROM `/x`)");
         assert_eq!(rows, vec![vec![("path".into(), "/b".into())]]);
-        let rows = run("SELECT t.path, t.n FROM (SELECT path, COUNT(*) AS n FROM `/x` GROUP BY path) AS t WHERE t.n > 1");
+        let rows =
+            run("SELECT t.path, t.n FROM (SELECT path, COUNT(*) AS n FROM `/x` GROUP BY path) AS t WHERE t.n > 1");
         assert_eq!(rows, vec![vec![("t.path".into(), "/b".into()), ("t.n".into(), "2".into())]]);
         assert_eq!(run("SELECT path FROM `/x` WHERE NOT EXISTS (SELECT owner FROM `/owners`)").len(), 0);
         assert!(compile_with("SQL", "SELECT a FROM `/x` FULL OUTER JOIN `/owners` ON a = b", &mut fetch).is_err());

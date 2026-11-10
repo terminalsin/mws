@@ -119,7 +119,8 @@ impl Logs {
         let compiled = {
             let mut fetch = |ids: &[String]| -> Result<Vec<insights::Record>, String> {
                 let mut load = || -> Result<Vec<insights::Record>, ServiceError> {
-                    let groups: Vec<GroupRef> = ids.iter().map(|i| GroupRef::parse(ctx, i)).collect::<Result<_, _>>()?;
+                    let groups: Vec<GroupRef> =
+                        ids.iter().map(|i| GroupRef::parse(ctx, i)).collect::<Result<_, _>>()?;
                     let (records, bytes) = self.load_records(ctx, &groups, now, (from, to))?;
                     scanned_bytes += bytes;
                     scanned += records.len();
@@ -229,7 +230,10 @@ impl Logs {
         let st = self.lock();
         for g in groups {
             let group = st.group(g).map_err(|_| {
-                errors::resource_not_found(format!("Log group '{}' does not exist for account ID '{}'", g.name, g.account))
+                errors::resource_not_found(format!(
+                    "Log group '{}' does not exist for account ID '{}'",
+                    g.name, g.account
+                ))
             })?;
             let floor = cutoff(group, now).max(from);
             for s in group.streams.values() {

@@ -46,6 +46,7 @@ See [State, scenarios and snapshots](state.md) for how the two interact.
 | `MWS_EC2_HELPER_IMAGE` | `alpine:3.20` | With the Docker backend, the small image that copies EBS volume data when snapshots are taken and volumes are restored or copied. |
 | `MWS_ELB_BIND` | `127.0.0.1` | Address load balancer listeners bind. `GET /_aws/elb/listeners` lists where each listener is. |
 | `MWS_ELB_LISTENER_PORTS` | `ephemeral` | `listener` binds each listener on its own port (80, 443, ...) when free, falling back to an ephemeral port; `ephemeral` always picks a free port. |
+| `MWS_ELB_SECURITY_GROUPS` | `on` | `off` stops load balancers dropping connections their security groups don't allow. |
 | `MWS_SES_SMTP_LISTEN` | unset | An address such as `127.0.0.1:2525` starts the SES SMTP listener: unauthenticated mail goes to receipt rules, and clients authenticating with SES SMTP credentials send through SES. |
 | `MWS_SSM_SESSION_LISTEN` | unset | The address of the Session Manager data channel listener (for example `0.0.0.0:4580`). By default it binds a free port on the endpoint's host when the first session starts. |
 | `MWS_KMS_XKS_CONNECT_TO` | unset | `host=address` pairs (comma-separated) that send KMS's requests for an external key store proxy at `https://host` to `address` (for example `xks.example.com=127.0.0.1:8443`), since AWS only allows port 443. |

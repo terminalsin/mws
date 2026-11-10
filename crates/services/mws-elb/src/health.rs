@@ -376,7 +376,12 @@ fn tick(elb: &Elb) {
     for p in due {
         let elb = elb.clone();
         tokio::spawn(async move {
-            let outcome = run_probe(&elb, &p).await;
+            let started = Instant::now();
+            let mut code = None;
+            let outcome = run_probe(&elb, &p, &mut code).await;
+            if !p.key.group.starts_with("classic:") {
+                elb.record_health_log(&p, &outcome, code, started.elapsed());
+            }
             let mut runs = elb.inner.health.lock();
             let Some(run) = runs.get_mut(&p.key) else { return };
             run.in_flight = false;
@@ -416,7 +421,8 @@ fn timed_out() -> ProbeError {
     ("Target.Timeout".into(), "Request timed out".into())
 }
 
-async fn run_probe(elb: &Elb, p: &Probe) -> Result<(), ProbeError> {
+/// Probe a target, noting the HTTP status code it answered with in `code`.
+async fn run_probe(elb: &Elb, p: &Probe, status: &mut Option<u16>) -> Result<(), ProbeError> {
     match &p.kind {
         ProbeKind::Lambda { function, tg_arn, path, codes } => {
             let ctx = elb.background_context(&p.account, &p.region).ok_or_else(failed)?;
@@ -445,6 +451,7 @@ async fn run_probe(elb: &Elb, p: &Probe) -> Result<(), ProbeError> {
             }
             let v: serde_json::Value = serde_json::from_slice(&result.payload).unwrap_or_default();
             let code = v.get("statusCode").and_then(|c| c.as_u64()).unwrap_or(0) as u16;
+            *status = Some(code);
             if code_matches(codes, code) {
                 Ok(())
             } else {
@@ -465,11 +472,17 @@ async fn run_probe(elb: &Elb, p: &Probe) -> Result<(), ProbeError> {
             match tokio::time::timeout(p.timeout, fut).await {
                 Err(_) => Err(timed_out()),
                 Ok(Err(())) => Err(failed()),
-                Ok(Ok(code)) if code_matches(codes, code) => Ok(()),
-                Ok(Ok(code)) => Err((
-                    "Target.ResponseCodeMismatch".into(),
-                    format!("Health checks failed with these codes: [{code}]"),
-                )),
+                Ok(Ok(code)) if code_matches(codes, code) => {
+                    *status = Some(code);
+                    Ok(())
+                }
+                Ok(Ok(code)) => {
+                    *status = Some(code);
+                    Err((
+                        "Target.ResponseCodeMismatch".into(),
+                        format!("Health checks failed with these codes: [{code}]"),
+                    ))
+                }
             }
         }
     }

@@ -148,6 +148,9 @@ fn leak_flow(proto: &str) -> &'static str {
 pub(crate) async fn serve_tcp(elb: Elb, spec: FrontSpec, listener: tokio::net::TcpListener) {
     loop {
         let Ok((stream, client)) = listener.accept().await else { continue };
+        if !elb.front_allows(&spec, client) {
+            continue;
+        }
         let local = stream.local_addr().unwrap_or(client);
         let elb = elb.clone();
         let spec = spec.clone();
@@ -292,6 +295,9 @@ pub(crate) async fn serve_udp(elb: Elb, spec: FrontSpec, socket: UdpSocket) {
     let mut buf = vec![0u8; 65_536];
     loop {
         let Ok((n, client)) = socket.recv_from(&mut buf).await else { continue };
+        if !elb.front_allows(&spec, client) {
+            continue;
+        }
         let existing = {
             let mut f = flows.lock().expect("udp flows");
             f.retain(|_, flow| flow.last.elapsed() < Duration::from_secs(120));

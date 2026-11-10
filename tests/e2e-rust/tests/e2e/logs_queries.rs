@@ -173,7 +173,8 @@ async fn sql_joins_and_subqueries() {
     );
     // A left join keeps the requests no team owns.
     assert_eq!(
-        run("SELECT w.path FROM `/web` AS w LEFT OUTER JOIN `/owners` AS o ON w.path = o.path WHERE o.team IS NULL").await,
+        run("SELECT w.path FROM `/web` AS w LEFT OUTER JOIN `/owners` AS o ON w.path = o.path WHERE o.team IS NULL")
+            .await,
         vec![vec!["w.path=/c"]]
     );
     // Subqueries in WHERE and FROM.
@@ -181,12 +182,10 @@ async fn sql_joins_and_subqueries() {
         run("SELECT path, status FROM `/web` WHERE path IN (SELECT path FROM `/owners` WHERE team = 'core')").await,
         vec![vec!["path=/a", "status=200"]]
     );
+    assert_eq!(run("SELECT path FROM `/web` WHERE ms = (SELECT MAX(ms) FROM `/web`)").await, vec![vec!["path=/b"]]);
     assert_eq!(
-        run("SELECT path FROM `/web` WHERE ms = (SELECT MAX(ms) FROM `/web`)").await,
-        vec![vec!["path=/b"]]
-    );
-    assert_eq!(
-        run("SELECT t.path FROM (SELECT path, AVG(ms) AS avg_ms FROM `/web` GROUP BY path) t WHERE t.avg_ms > 50").await,
+        run("SELECT t.path FROM (SELECT path, AVG(ms) AS avg_ms FROM `/web` GROUP BY path) t WHERE t.avg_ms > 50")
+            .await,
         vec![vec!["t.path=/b"]]
     );
 

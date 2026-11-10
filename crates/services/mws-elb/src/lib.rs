@@ -77,16 +77,19 @@ pub struct ElbConfig {
     /// Bind each listener on its own port (`MWS_ELB_LISTENER_PORTS=listener`)
     /// when that port is free, instead of an ephemeral port (the default).
     pub use_listener_ports: bool,
+    /// Drop connections the load balancer's security groups don't allow
+    /// (`MWS_ELB_SECURITY_GROUPS=off` turns this off).
+    pub enforce_security_groups: bool,
 }
 
 impl Default for ElbConfig {
     fn default() -> Self {
-        Self { bind_host: "127.0.0.1".into(), use_listener_ports: false }
+        Self { bind_host: "127.0.0.1".into(), use_listener_ports: false, enforce_security_groups: true }
     }
 }
 
 impl ElbConfig {
-    /// Read `MWS_ELB_BIND` and `MWS_ELB_LISTENER_PORTS`.
+    /// Read `MWS_ELB_BIND`, `MWS_ELB_LISTENER_PORTS` and `MWS_ELB_SECURITY_GROUPS`.
     pub fn from_env() -> Self {
         let mut c = Self::default();
         if let Ok(v) = std::env::var("MWS_ELB_BIND") {
@@ -95,6 +98,7 @@ impl ElbConfig {
             }
         }
         c.use_listener_ports = std::env::var("MWS_ELB_LISTENER_PORTS").is_ok_and(|v| v == "listener");
+        c.enforce_security_groups = std::env::var("MWS_ELB_SECURITY_GROUPS").map_or(true, |v| v != "off");
         c
     }
 }

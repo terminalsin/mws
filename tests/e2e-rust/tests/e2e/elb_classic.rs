@@ -100,6 +100,16 @@ async fn classic_load_balancers() {
     assert_eq!(disabled.availability_zones(), [zone_names[0].clone()]);
     let sg = ec2.create_security_group().group_name("clb").description("clb").vpc_id(&vpc).send().await.unwrap();
     let sg = sg.group_id().unwrap().to_string();
+    // Its own group must let clients reach the listener.
+    ec2.authorize_security_group_ingress()
+        .group_id(&sg)
+        .ip_protocol("tcp")
+        .from_port(80)
+        .to_port(80)
+        .cidr_ip("0.0.0.0/0")
+        .send()
+        .await
+        .unwrap();
     let applied = elb
         .apply_security_groups_to_load_balancer()
         .load_balancer_name("classic")
