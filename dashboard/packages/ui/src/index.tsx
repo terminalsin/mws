@@ -16,16 +16,18 @@ import Link from "next/link";
 import { Suspense, type ReactNode } from "react";
 
 import { navigation, iconUrl } from "./catalog";
-import { CommandPalette, CopyButton, CountUp, NavLink, RegionPicker, RouteProgress, ServicesMenu, SideNav, Toasts, type NavGroup } from "./client";
+import { CommandPalette, CopyButton, NavLink, RegionPicker, RouteProgress, ServicesMenu, SideNav, Toasts, type NavGroup } from "./client";
+import { CountUp } from "./motion";
 import { zoneHref, type ZoneId } from "./zones";
 
 export { AUTO } from "./zones";
+export { Asciify, CheckMark, CountUp, Segments } from "./motion";
+export { DotMatrix, type DotPattern } from "./loaders";
 export {
   ActionForm,
   AutoPick,
   CommandPalette,
   CopyButton,
-  CountUp,
   ErrorView,
   NavLink,
   RegionPicker,
@@ -449,20 +451,6 @@ export function Metrics({ children }: { children: ReactNode }) {
   return <div className="metrics">{children}</div>;
 }
 
-/** A segmented control of links (Apple-style tabs). */
-export function Segments({ items, label }: { items: { label: ReactNode; href: string; active: boolean; count?: number }[]; label?: string }) {
-  return (
-    <nav className="segments" aria-label={label}>
-      {items.map((t) => (
-        <Link key={t.href} href={t.href} className={t.active ? "segment active" : "segment"} aria-current={t.active ? "page" : undefined}>
-          {t.label}
-          {t.count !== undefined && <span className="count">{t.count}</span>}
-        </Link>
-      ))}
-    </nav>
-  );
-}
-
 export function Field({ label, hint, children }: { label: string; hint?: ReactNode; children: ReactNode }) {
   return (
     <label className="field">
@@ -568,7 +556,7 @@ export function PageSkeleton({ variant = "list" }: { variant?: "list" | "detail"
       </div>
       {variant === "detail" && (
         <>
-          <div className="specs">
+          <div className="skeleton-specs">
             {[110, 90, 130, 100].map((w, i) => (
               <span key={i} className="skeleton-spec">
                 <Skeleton block width={16} height={16} />

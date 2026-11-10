@@ -68,13 +68,25 @@
   --ease-entrance: cubic-bezier(0, 0, 0.38, 0.9);
   --ease-exit: cubic-bezier(0.2, 0, 1, 0.9);
   --ease-expressive: cubic-bezier(0.4, 0.14, 0.3, 1);
-  --ease-spring: cubic-bezier(0.34, 1.56, 0.64, 1);
   --fast-01: 70ms;
   --fast-02: 110ms;
   --moderate-01: 150ms;
   --moderate-02: 240ms;
   --slow-01: 400ms;
-  --slow-02: 700ms;
+  /* Transition recipes, after transitions.dev: one smooth-out curve for
+     surfaces that move (open, close, slide, resize), ease-in-out for things
+     that swap in place, and durations by role. Closing is always quicker
+     than opening. */
+  --ease-smooth-out: cubic-bezier(0.22, 1, 0.36, 1);
+  --ease-swap: ease-in-out;
+  --ease-bounce: cubic-bezier(0.34, 1.36, 0.64, 1);
+  --duration-micro: 80ms; /* shake segment, tooltip delay */
+  --duration-quick: 150ms; /* modal and menu close, text swap */
+  --duration-fast: 250ms; /* icon swap, tab indicator, toast close */
+  --duration-medium: 350ms; /* panel close */
+  --duration-slow: 400ms; /* panel open */
+  --duration-emphasis: 500ms; /* success check */
+  interpolate-size: allow-keywords;
   color-scheme: light;
 }
 
@@ -642,7 +654,22 @@
 
   /* Line tabs. */
   .segments {
-    @apply mb-6 flex flex-wrap shadow-[inset_0_-2px_0_var(--separator)];
+    @apply relative mb-6 flex flex-wrap shadow-[inset_0_-2px_0_var(--separator)];
+  }
+  /* Once the sliding indicator is placed it marks the tab instead. */
+  .segments[data-ready] .segment.active {
+    @apply border-b-subtle;
+  }
+  .segments:not([data-ready]) .segment-indicator {
+    @apply invisible;
+  }
+  .segment-indicator {
+    @apply pointer-events-none absolute top-0 left-0 h-0.5 bg-interactive;
+  }
+  .segments[data-ready] .segment-indicator {
+    transition:
+      transform var(--duration-fast) var(--ease-smooth-out),
+      width var(--duration-fast) var(--ease-smooth-out);
   }
   .segment {
     @apply inline-flex items-center gap-1.5 border-b-2 border-subtle px-4 py-3 text-sm text-secondary hover:border-strong hover:text-primary hover:no-underline;
@@ -1173,6 +1200,9 @@
   .page-skeleton .page-title-text {
     @apply grid gap-2;
   }
+  .skeleton-specs {
+    @apply mb-6 flex flex-wrap gap-px;
+  }
   .skeleton-spec {
     @apply inline-flex items-center gap-2 bg-layer px-4 py-3;
   }
@@ -1210,21 +1240,87 @@
     opacity: 0;
   }
 
-  .dots {
-    @apply inline-flex items-center gap-1;
-  }
-  .dots i {
-    @apply block h-1.5 w-1.5 rounded-full bg-current;
-    animation: dot 1s var(--ease-standard) infinite;
-  }
-  .dots i:nth-child(2) {
-    animation-delay: 0.15s;
-  }
-  .dots i:nth-child(3) {
-    animation-delay: 0.3s;
-  }
   .button-glyph {
+    @apply inline-grid h-4 w-4 place-items-center;
+  }
+
+  /* Dot-matrix loaders (see loaders.tsx): 4×4 dots on a 1.2s cycle, each
+     dot's phase set by the pattern. */
+  .dot-matrix {
+    --dot: 3px;
+    @apply inline-grid flex-none align-middle;
+    grid-template-columns: repeat(4, var(--dot));
+    gap: calc(var(--dot) * 0.67);
+  }
+  .dot-matrix i {
+    @apply block rounded-full;
+    width: var(--dot);
+    height: var(--dot);
+    background: currentColor;
+    opacity: 0.2;
+    animation: dot-on 1200ms var(--ease-swap) infinite;
+    animation-delay: calc(var(--p, 0) * -1200ms);
+  }
+  .dot-matrix i[data-dim] {
+    animation: none;
+  }
+
+  /* Two glyphs in one slot: the one that leaves shrinks into a blur, the
+     one that arrives grows out of it. */
+  .icon-swap {
+    @apply inline-grid place-items-center;
+  }
+  .icon-swap > * {
+    grid-area: 1 / 1;
+    transition:
+      opacity var(--duration-fast) var(--ease-swap),
+      transform var(--duration-fast) var(--ease-swap),
+      filter var(--duration-fast) var(--ease-swap);
+  }
+  .icon-swap[data-state="idle"] > :last-child,
+  .icon-swap[data-state="busy"] > :first-child {
+    opacity: 0;
+    transform: scale(0.25);
+    filter: blur(2px);
+  }
+
+  /* A check that draws itself (CheckMark). */
+  .checkmark {
+    animation: check-in var(--duration-emphasis) var(--ease-smooth-out) both;
+  }
+  .checkmark path {
+    stroke-dasharray: 1;
+    animation: check-draw var(--duration-emphasis) var(--ease-smooth-out) var(--duration-micro) both;
+  }
+
+  /* A number's changed digits swap in place (CountUp). */
+  .number-change {
     @apply inline-flex;
+  }
+  .digit {
+    @apply relative inline-block;
+  }
+  .digit-in {
+    @apply inline-block;
+    animation: digit-in 455ms var(--ease-smooth-out) both;
+  }
+  .digit-out {
+    @apply absolute inset-0;
+    animation: digit-out 455ms var(--ease-smooth-out) both;
+  }
+  .number-change[data-dir="down"] .digit-in {
+    animation-name: digit-in-down;
+  }
+  .number-change[data-dir="down"] .digit-out {
+    animation-name: digit-out-down;
+  }
+
+  /* Asciify: the canvas lies over the image it redraws. */
+  .asciify {
+    @apply relative inline-block max-w-full align-top;
+  }
+  .asciify > canvas {
+    @apply pointer-events-none absolute inset-0;
   }
 }
 
@@ -1254,28 +1350,85 @@
     opacity: 1;
   }
 }
+/* transitions.dev's error shake: 6px out, overshoot back 4px, settle, in
+   80 + 80 + 60 + 60ms, each segment on the smooth-out curve. */
 @keyframes shake {
-  0%,
+  0% {
+    transform: translateX(0);
+    animation-timing-function: var(--ease-smooth-out);
+  }
+  28.6% {
+    transform: translateX(-6px);
+    animation-timing-function: var(--ease-smooth-out);
+  }
+  57.1% {
+    transform: translateX(4px);
+    animation-timing-function: var(--ease-smooth-out);
+  }
+  78.6% {
+    transform: translateX(-2px);
+    animation-timing-function: var(--ease-smooth-out);
+  }
   100% {
     transform: translateX(0);
   }
-  20%,
-  60% {
-    transform: translateX(-4px);
+}
+@keyframes dot-on {
+  0%,
+  60%,
+  100% {
+    opacity: 0.2;
   }
-  40%,
-  80% {
-    transform: translateX(4px);
+  20% {
+    opacity: 1;
   }
 }
-@keyframes dot {
-  0%,
-  80%,
-  100% {
-    opacity: 0.25;
+@keyframes check-in {
+  from {
+    opacity: 0;
+    filter: blur(4px);
+    transform: rotate(-80deg) scale(0.6);
   }
-  40% {
+  to {
     opacity: 1;
+    filter: none;
+    transform: none;
+  }
+}
+@keyframes check-draw {
+  from {
+    stroke-dashoffset: 1;
+  }
+  to {
+    stroke-dashoffset: 0;
+  }
+}
+@keyframes digit-in {
+  from {
+    opacity: 0;
+    filter: blur(0.042em);
+    transform: translateY(0.14em);
+  }
+}
+@keyframes digit-out {
+  to {
+    opacity: 0;
+    filter: blur(0.042em);
+    transform: translateY(-0.14em);
+  }
+}
+@keyframes digit-in-down {
+  from {
+    opacity: 0;
+    filter: blur(0.042em);
+    transform: translateY(-0.14em);
+  }
+}
+@keyframes digit-out-down {
+  to {
+    opacity: 0;
+    filter: blur(0.042em);
+    transform: translateY(0.14em);
   }
 }
 @keyframes breathe {
@@ -1306,20 +1459,11 @@
     transform: scaleX(0);
   }
 }
-@keyframes morph-in {
-  from {
-    opacity: 0;
-    transform: scale(0.6);
-  }
-  to {
-    opacity: 1;
-    transform: none;
-  }
-}
 @keyframes toast-out {
   to {
     opacity: 0;
-    transform: translateX(24px);
+    filter: blur(2px);
+    transform: translateY(16px) scale(0.97);
   }
 }
 @keyframes fade-out {
@@ -1388,11 +1532,8 @@
   .icon-button[data-state="succeeded"] {
     @apply bg-[var(--good)] text-white;
   }
-  .pop {
-    animation: morph-in var(--moderate-01) var(--ease-entrance) both;
-  }
   form[data-state="failed"] > .form-actions {
-    animation: shake 360ms var(--ease-standard);
+    animation: shake 280ms both;
   }
   /* A row being deleted fades back while its action runs, so its removal is
      the end of a motion that already started. */
@@ -1420,15 +1561,12 @@
      backdrop clears with them. */
   dialog {
     transition:
-      opacity var(--moderate-01) var(--ease-exit),
-      transform var(--moderate-01) var(--ease-exit),
-      overlay var(--moderate-01) allow-discrete,
-      display var(--moderate-01) allow-discrete;
+      opacity var(--duration-quick) var(--ease-smooth-out),
+      transform var(--duration-quick) var(--ease-smooth-out),
+      overlay var(--duration-quick) allow-discrete,
+      display var(--duration-quick) allow-discrete;
     opacity: 0;
-    transform: translateY(8px) scale(0.98);
-  }
-  .palette {
-    transform: translateY(-6px) scale(0.98);
+    transform: scale(0.96);
   }
   dialog[open] {
     opacity: 1;
@@ -1438,28 +1576,44 @@
   dialog::backdrop {
     background-color: rgba(22, 22, 22, 0);
     transition:
-      background-color var(--moderate-01) var(--ease-exit),
-      overlay var(--moderate-01) allow-discrete,
-      display var(--moderate-01) allow-discrete;
+      background-color var(--duration-quick) var(--ease-smooth-out),
+      overlay var(--duration-quick) allow-discrete,
+      display var(--duration-quick) allow-discrete;
   }
   dialog[open]::backdrop {
     background-color: rgba(22, 22, 22, 0.5);
     transition: none;
   }
 
-  /* The Services menu likewise: open at once, fade up and away on close. */
+  /* The Services menu likewise, shrinking back toward the button that
+     opened it (its origin). */
+  .services-panel {
+    transform-origin: top left;
+  }
   .services-panel[data-open="false"] {
     @apply pointer-events-none invisible opacity-0;
-    transform: translateY(-4px);
+    transform: scale(0.99);
     transition:
-      opacity var(--moderate-01) var(--ease-exit),
-      transform var(--moderate-01) var(--ease-exit),
-      visibility 0s linear var(--moderate-01);
+      opacity var(--duration-quick) var(--ease-smooth-out),
+      transform var(--duration-quick) var(--ease-smooth-out),
+      visibility 0s linear var(--duration-quick);
+  }
+
+  /* Disclosures grow and shrink to their content in both directions. */
+  details::details-content {
+    block-size: 0;
+    overflow-y: clip;
+    transition:
+      block-size var(--duration-fast) var(--ease-smooth-out),
+      content-visibility var(--duration-fast) allow-discrete;
+  }
+  details[open]::details-content {
+    block-size: auto;
   }
 
   /* Toasts arrive at once and slide off when they leave. */
   .toast[data-state="leaving"] {
-    animation: toast-out 200ms var(--ease-exit) both;
+    animation: toast-out var(--duration-fast) var(--ease-smooth-out) both;
   }
 }
 
@@ -1497,5 +1651,10 @@
   .skeleton-line,
   .skeleton-block {
     animation: none !important;
+  }
+  /* Loaders hold still but stay visible: the wait is still shown. */
+  .dot-matrix i {
+    animation: none !important;
+    opacity: 0.6;
   }
 }

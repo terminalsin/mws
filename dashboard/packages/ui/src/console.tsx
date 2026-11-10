@@ -2,8 +2,11 @@
 
 // A terminal and a file explorer for compute resources. The zone passes the
 // server actions (from @mws-dashboard/aws/shell-actions) and the target.
-import { ArrowUp, Download, File, FileSymlink, Folder, FolderPlus, LoaderCircle, RefreshCw, Trash2, Upload, X } from "lucide-react";
+import { ArrowUp, Download, File, FileSymlink, Folder, FolderPlus, RefreshCw, Trash2, Upload, X } from "lucide-react";
 import { useCallback, useEffect, useRef, useState, type KeyboardEvent } from "react";
+
+import { DotMatrix } from "./loaders";
+import { Asciify } from "./motion";
 
 export interface ShellTarget {
   service: "ec2" | "ecs";
@@ -135,7 +138,7 @@ export function Terminal({ target, actions, user = "root", host }: { target: She
           autoFocus
           disabled={busy}
         />
-        {busy && <LoaderCircle size={14} className="spin" aria-hidden />}
+        {busy && <DotMatrix pattern="orbit" label="Running" />}
       </label>
     </div>
   );
@@ -259,7 +262,7 @@ export function FileExplorer({ target, actions, start = "/" }: { target: ShellTa
     const bytes = bytesOf(open.data.base64);
     const ext = open.name.split(".").pop()?.toLowerCase() ?? "";
     if (IMAGE.test(open.name)) {
-      preview = <img className="file-image" alt={open.name} src={`data:${MIME[ext] ?? "image/png"};base64,${open.data.base64}`} />;
+      preview = <Asciify className="file-image" alt={open.name} src={`data:${MIME[ext] ?? "image/png"};base64,${open.data.base64}`} />;
     } else {
       const text = new TextDecoder("utf-8", { fatal: false }).decode(bytes.subarray(0, 512 * 1024));
       const binary = bytes.subarray(0, 4096).some((b) => b === 0);
@@ -283,7 +286,7 @@ export function FileExplorer({ target, actions, start = "/" }: { target: ShellTa
             </button>
           ))}
         </nav>
-        {busy && <LoaderCircle size={15} className="spin" aria-hidden />}
+        {busy && <DotMatrix pattern="twinkle" label="Loading" />}
         <button type="button" className="icon-button" aria-label="Refresh" title="Refresh" onClick={() => refresh(path)}>
           <RefreshCw size={15} />
         </button>

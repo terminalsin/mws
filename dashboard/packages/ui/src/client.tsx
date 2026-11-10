@@ -37,7 +37,9 @@ import {
 import { useFormStatus } from "react-dom";
 
 import { iconUrl } from "./catalog";
+import { DotMatrix } from "./loaders";
 import { machine, useMachine } from "./machine";
+import { CheckMark } from "./motion";
 import { AUTO, REGION_COOKIE, type ZoneId } from "./zones";
 
 /** A service as the navigation needs it (serializable, built on the server). */
@@ -336,7 +338,7 @@ function Submit({
   const glyph = busy ? (
     <LoaderCircle className="spin" size={15} aria-hidden />
   ) : phase === "succeeded" ? (
-    <Check className="pop" size={15} aria-hidden />
+    <CheckMark size={15} />
   ) : (
     icon
   );
@@ -354,7 +356,9 @@ function Submit({
     >
       {icon ? glyph : null}
       {(!icon || label) && <span className={icon ? "sr-only" : undefined}>{label}</span>}
-      {!icon && (busy || phase === "succeeded") && <span className="button-glyph">{glyph}</span>}
+      {/* The glyph slot is always there, so the button keeps its width as it
+          goes from label to spinner to check. */}
+      {!icon && <span className="button-glyph">{busy || phase === "succeeded" ? glyph : null}</span>}
     </button>
   );
 }
@@ -422,11 +426,7 @@ export function ActionForm({
       </div>
       {!quiet && phase === "pending" && (
         <div className="result pending" aria-hidden>
-          <span className="dots">
-            <i />
-            <i />
-            <i />
-          </span>
+          <DotMatrix pattern="pulse" />
         </div>
       )}
       {state && !quiet && phase !== "pending" && (
@@ -514,7 +514,7 @@ export function Sheet({
 type Toast = ActionResult & { id: number; phase: "shown" | "leaving" };
 const ToastContext = createContext<(r: ActionResult) => void>(() => {});
 const useToast = () => useContext(ToastContext);
-const LEAVE_MS = 200;
+const LEAVE_MS = 250;
 
 function ToastItem({ toast, dismiss }: { toast: Toast; dismiss: (id: number) => void }) {
   const [paused, setPaused] = useState(false);
@@ -690,7 +690,10 @@ export function CommandPalette() {
         }}
       >
         <div className="palette-input">
-          {phase === "loading" ? <LoaderCircle className="spin" size={18} aria-hidden /> : <Search size={18} aria-hidden />}
+          <span className="icon-swap" data-state={phase === "loading" ? "busy" : "idle"}>
+            <Search size={18} aria-hidden />
+            <DotMatrix pattern="scan" size={3} />
+          </span>
           <input
             ref={input}
             value={query}
@@ -825,41 +828,9 @@ export function CopyButton({ value, label = "Copy" }: { value: string; label?: s
         }
       }}
     >
-      {copied ? <Check className="pop" size={13} aria-hidden /> : <Copy size={13} aria-hidden />}
+      {copied ? <CheckMark size={13} /> : <Copy size={13} aria-hidden />}
     </button>
   );
-}
-
-/** A number that counts to its new value when it changes (after an action
- * refreshes the page), so the change is seen rather than swapped in. The
- * first render shows the value as-is. */
-export function CountUp({ value, duration = 700 }: { value: number; duration?: number }) {
-  const [shown, setShown] = useState(value);
-  const from = useRef(value);
-  useEffect(() => {
-    if (from.current === value) return;
-    if (!Number.isFinite(value) || window.matchMedia("(prefers-reduced-motion: reduce)").matches) {
-      from.current = value;
-      setShown(value);
-      return;
-    }
-    const start = performance.now();
-    const origin = from.current;
-    let frame = 0;
-    const tick = (now: number) => {
-      const t = Math.min(1, (now - start) / duration);
-      const eased = 1 - Math.pow(1 - t, 3);
-      // Where the count is now: an interrupted count resumes from here.
-      from.current = origin + (value - origin) * eased;
-      setShown(from.current);
-      if (t < 1) frame = requestAnimationFrame(tick);
-      else from.current = value;
-    };
-    frame = requestAnimationFrame(tick);
-    return () => cancelAnimationFrame(frame);
-  }, [value, duration]);
-  const decimals = Number.isInteger(value) ? 0 : Math.min(2, (String(value).split(".")[1] ?? "").length);
-  return <>{shown.toLocaleString(undefined, { minimumFractionDigits: decimals, maximumFractionDigits: decimals })}</>;
 }
 
 /** The navigation progress bar: starts when a link is followed, completes

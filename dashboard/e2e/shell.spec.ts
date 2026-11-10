@@ -158,3 +158,20 @@ test("motion respects reduced motion", async ({ page }) => {
   const duration = await page.locator(".content > *").first().evaluate((e) => getComputedStyle(e).animationDuration);
   expect(duration).toBe("0.001s");
 });
+
+test("tabs: the indicator slides to the chosen tab and stays with it", async ({ page }) => {
+  await page.goto("/platform/codeartifact");
+  const tabs = page.getByRole("navigation").filter({ has: page.locator(".segment-indicator") });
+  await expect(tabs).toHaveAttribute("data-ready", "true");
+  const indicator = tabs.locator(".segment-indicator");
+  const before = await indicator.boundingBox();
+  await tabs.getByRole("link", { name: /Domains/ }).click();
+  await expect(page).toHaveURL(/tab=domains/);
+  await expect(tabs.getByRole("link", { name: /Domains/ })).toHaveAttribute("aria-current", "page");
+  await expect(async () => {
+    const after = await indicator.boundingBox();
+    const domains = await tabs.getByRole("link", { name: /Domains/ }).boundingBox();
+    expect(after!.x).not.toBe(before!.x);
+    expect(Math.abs(after!.x - domains!.x)).toBeLessThan(2);
+  }).toPass();
+});

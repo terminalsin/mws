@@ -138,6 +138,22 @@ components are classes composed with `@apply`. Each zone has a
   counting to a new value, a toast's remaining time. Moving between zones
   keeps the top bar and sidebar still (cross-document view transitions).
   `prefers-reduced-motion` turns all of it off.
+- **Recipes, not improvisation.** Timings and curves follow
+  [transitions.dev](https://transitions.dev): one smooth-out curve
+  (`cubic-bezier(0.22, 1, 0.36, 1)`) for surfaces, ease-in-out for swaps,
+  durations by role (`--duration-quick` 150ms for closing, `--duration-fast`
+  250ms for swaps and the tab indicator, `--duration-emphasis` 500ms for the
+  success check), closing quicker than opening. Pieces live in
+  `packages/ui/src/motion.tsx` (`Segments` with a sliding indicator that moves
+  on the click, `CountUp` whose changed digits swap in place, `CheckMark`,
+  `Asciify`) and `loaders.tsx` (`DotMatrix`, 4×4 dot loaders whose pattern
+  names the wait: `scan` for search, `orbit` for a running command, `pulse`
+  for an answer, `twinkle` for a listing). States reserve their space, so a
+  button keeps its width from label to spinner to check, and anything that can
+  reverse (dialogs, menus, disclosures) uses transitions, which turn around
+  from where they are. Image previews (S3 objects, instance files) carry an
+  ASCII lens under the pointer (`Asciify`, after canvasui.dev's), which runs
+  only while someone points at the image.
 
 ## Curation
 
