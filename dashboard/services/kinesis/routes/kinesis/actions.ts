@@ -14,7 +14,7 @@ export async function createStream(_: ActionResult | null, form: FormData) {
       new CreateStreamCommand({ StreamName, StreamModeDetails: { StreamMode: onDemand ? "ON_DEMAND" : "PROVISIONED" }, ShardCount: onDemand ? undefined : Number(text(form, "shards") || 1) }),
     );
     redirect(`/kinesis/stream?name=${encodeURIComponent(StreamName)}`);
-  });
+  }, { fields: { StreamName: "name", ShardCount: "shards", LimitExceededException: "shards" } });
 }
 
 export async function deleteStream(name: string) {
@@ -30,7 +30,7 @@ export async function putRecord(name: string, _: ActionResult | null, form: Form
       new PutRecordCommand({ StreamName: name, PartitionKey: text(form, "key") || `${Date.now()}`, Data: new TextEncoder().encode(required(form, "data", "Data")) }),
     );
     return `Sent to ${out.ShardId}`;
-  }, "/kinesis/stream");
+  }, { revalidate: ["/kinesis/stream"], fields: { PartitionKey: "key", Data: "data" } });
 }
 
 export async function reshard(name: string, _: ActionResult | null, form: FormData) {
@@ -38,5 +38,5 @@ export async function reshard(name: string, _: ActionResult | null, form: FormDa
     const TargetShardCount = Number(required(form, "shards", "Shards"));
     await (await kinesis()).send(new UpdateShardCountCommand({ StreamName: name, TargetShardCount, ScalingType: "UNIFORM_SCALING" }));
     return `Resharding to ${TargetShardCount}`;
-  }, "/kinesis/stream");
+  }, { revalidate: ["/kinesis/stream"], fields: { TargetShardCount: "shards", LimitExceededException: "shards" } });
 }

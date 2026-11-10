@@ -1,11 +1,18 @@
 import { DescribeStreamSummaryCommand, GetRecordsCommand, GetShardIteratorCommand, ListShardsCommand } from "@aws-sdk/client-kinesis";
 import { ago, load } from "@mws-dashboard/aws";
-import { ActionForm, AwsIcon, ErrorNotice, Field, List, Page, Pill, Section, Sheet, Specs, Status } from "@mws-dashboard/ui";
+import { ActionForm, AwsIcon, ErrorNotice, Field, List, Page, Pill, Section, Sheet, Specs, Status, type Rule } from "@mws-dashboard/ui";
 import { Clock, Layers, Lock, Send, SlidersHorizontal, Trash2 } from "lucide-react";
+import { PutRecord, UpdateShardCount } from "@mws-dashboard/ui/model/kinesis";
 import type { Metadata } from "next";
 
 import { ICONS, STATUS_TONE, kinesis } from "../../../lib/clients";
 import { deleteStream, putRecord, reshard } from "../actions";
+
+/** UpdateShardCount scales at most to double and at least to half the open
+ * shards in one call (and to 10,000 shards per stream). */
+function reshardRule(open: number): Rule {
+  return { ...UpdateShardCount.TargetShardCount, min: Math.max(1, Math.ceil(open / 2)), max: Math.min(open * 2, 10000) };
+}
 
 export const metadata: Metadata = { title: "Data stream" };
 
@@ -59,17 +66,19 @@ export default async function Stream({ searchParams }: Props) {
         <>
           <Sheet title="Put record" label="Put record" icon={<Send size={16} />} testId="put-record">
             <ActionForm action={putRecord.bind(null, name)} submit="Put record" testId="put-record">
-              <Field label="Partition key">
+              <Field label="Partition key" rule={PutRecord.PartitionKey}>
                 <input name="key" placeholder="random" />
               </Field>
-              <textarea name="data" rows={5} required aria-label="Data" className="code-editor" defaultValue={'{\n  "event": "hello"\n}'} />
+              <Field label="Data" rule={PutRecord.Data}>
+                <textarea name="data" rows={5} required className="code-editor" defaultValue={'{\n  "event": "hello"\n}'} />
+              </Field>
             </ActionForm>
           </Sheet>
           {provisioned && (
             <Sheet title="Reshard" label="Reshard" icon={<SlidersHorizontal size={16} />} testId="reshard">
               <ActionForm action={reshard.bind(null, name)} submit="Update" testId="reshard">
-                <Field label="Open shards">
-                  <input name="shards" type="number" min={1} defaultValue={s.OpenShardCount} />
+                <Field label="Open shards" rule={reshardRule(s.OpenShardCount ?? 1)}>
+                  <input name="shards" type="number" defaultValue={s.OpenShardCount} />
                 </Field>
               </ActionForm>
             </Sheet>
