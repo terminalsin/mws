@@ -53,6 +53,12 @@ test("numbers are parsed and clamped", () => {
   assert.deepEqual(values({ type: "integer" }, "1,200"), ["1200"]);
 });
 
+test("taken names can ignore case", () => {
+  assert.equal(check("Alice", { taken: ["alice"] }), null);
+  assert.equal(check("Alice", { taken: ["alice"], takenIgnoreCase: true })?.code, "taken");
+  assert.deepEqual(values({ taken: ["alice", "ALICE-2"], takenIgnoreCase: true }, "Alice"), ["Alice-3"]);
+});
+
 test("taken names get the next free variant", () => {
   assert.deepEqual(values({ taken: ["orders", "orders-2"] }, "orders"), ["orders-3"]);
   assert.deepEqual(values({ taken: ["jobs.fifo"], pattern: "^[a-z-]+\\d*(\\.fifo)?$" }, "jobs.fifo")[0], "jobs-2.fifo".replace("-2", "-2"));
