@@ -2,10 +2,12 @@ import "server-only";
 
 import { FirehoseClient } from "@aws-sdk/client-firehose";
 import { IAMClient } from "@aws-sdk/client-iam";
+import { KinesisClient } from "@aws-sdk/client-kinesis";
 import { client } from "@mws-dashboard/aws";
 
 export const firehose = () => client(FirehoseClient);
 export const iam = () => client(IAMClient);
+export const kinesis = () => client(KinesisClient);
 
 export const ICONS = {
   kinesis: "service/AmazonKinesisDataStreams",

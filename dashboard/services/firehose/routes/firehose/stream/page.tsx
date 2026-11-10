@@ -1,6 +1,7 @@
 import { DescribeDeliveryStreamCommand } from "@aws-sdk/client-firehose";
 import { load } from "@mws-dashboard/aws";
-import { ActionForm, AwsIcon, ErrorNotice, Page, Sheet, Specs, Status } from "@mws-dashboard/ui";
+import { ActionForm, AwsIcon, ErrorNotice, Field, Page, Sheet, Specs, Status } from "@mws-dashboard/ui";
+import { PutRecord } from "@mws-dashboard/ui/model/firehose";
 import { ArrowRight, Clock, Lock, Send, Trash2 } from "lucide-react";
 import type { Metadata } from "next";
 
@@ -38,7 +39,9 @@ export default async function DeliveryStream({ searchParams }: Props) {
           {!source && (
             <Sheet title="Test with demo data" label="Put record" icon={<Send size={16} />} testId="put-firehose-record">
               <ActionForm action={putFirehoseRecord.bind(null, name)} submit="Put record" testId="put-firehose-record">
-                <textarea name="data" rows={5} required aria-label="Record" className="code-editor" defaultValue={'{"ticker":"AMZN","price":181.2}'} />
+                <Field label="Record" rule={PutRecord.Record.fields!.Data}>
+                  <textarea name="data" rows={5} required className="code-editor" defaultValue={'{"ticker":"AMZN","price":181.2}'} />
+                </Field>
               </ActionForm>
             </Sheet>
           )}

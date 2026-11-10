@@ -65,7 +65,7 @@ export const ROLES = {
     service: "firehose.amazonaws.com",
     statements: [
       { Effect: "Allow", Action: ["s3:AbortMultipartUpload", "s3:GetBucketLocation", "s3:GetObject", "s3:ListBucket", "s3:ListBucketMultipartUploads", "s3:PutObject"], Resource: [`arn:aws:s3:::${bucket}`, `arn:aws:s3:::${bucket}/*`] },
-      { Effect: "Allow", Action: ["logs:PutLogEvents", "kinesis:DescribeStream", "kinesis:GetShardIterator", "kinesis:GetRecords", "kinesis:ListShards", "kms:Decrypt", "kms:GenerateDataKey"], Resource: "*" },
+      { Effect: "Allow", Action: ["logs:PutLogEvents", "kinesis:DescribeStream", "kinesis:DescribeStreamSummary", "kinesis:GetShardIterator", "kinesis:GetRecords", "kinesis:ListShards", "kms:Decrypt", "kms:GenerateDataKey"], Resource: "*" },
     ],
   }),
   imageBuilderInstance: {
