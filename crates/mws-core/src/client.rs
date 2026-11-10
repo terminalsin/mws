@@ -17,12 +17,13 @@ use std::sync::{Arc, RwLock};
 use serde_json::Value;
 
 use crate::trail::{self, ApiCallObserver, HttpFacts};
-use crate::{Caller, RequestContext, Service, ServiceError};
+use crate::{Authorizer, Caller, RequestContext, Service, ServiceError};
 
 #[derive(Default)]
 struct Registry {
     services: HashMap<&'static str, Arc<dyn Service>>,
     observers: Vec<Arc<dyn ApiCallObserver>>,
+    authorizer: Option<Arc<dyn Authorizer>>,
 }
 
 /// Calls any registered service's operations by name. Cheap to clone; all
@@ -61,6 +62,17 @@ impl ServiceClient {
         }
     }
 
+    /// The authorizer that judges calls made as an AWS service principal.
+    /// Such calls are always judged by it, whatever authorizer the
+    /// request that caused them carried: a context built for a
+    /// service-linked role may allow everything, but a service principal
+    /// is never exempt from the target's resource policy.
+    pub fn set_authorizer(&self, authorizer: Arc<dyn Authorizer>) {
+        if let Ok(mut r) = self.registry.write() {
+            r.authorizer = Some(authorizer);
+        }
+    }
+
     /// Whether a service is registered under `name`.
     pub fn knows(&self, name: &str) -> bool {
         self.registry.read().is_ok_and(|r| r.services.contains_key(name))
@@ -77,11 +89,15 @@ impl ServiceClient {
         operation: &str,
         input: Value,
     ) -> Result<Value, ServiceError> {
-        let (target, observers) = {
+        let (target, observers, authorizer) = {
             let r = self.registry.read().map_err(|_| ServiceError::internal("service registry poisoned"))?;
-            let target = r.services.get(service).cloned();
-            (target, r.observers.clone())
+            (r.services.get(service).cloned(), r.observers.clone(), r.authorizer.clone())
         };
+        let mut ctx = ctx.clone();
+        if let (Some(a), Some(_)) = (authorizer, ctx.caller.service_principal()) {
+            ctx.authorizer = a;
+        }
+        let ctx = &ctx;
         let Some(target) = target else {
             return Err(ServiceError::internal(format!("no service named {service} is registered")));
         };
@@ -128,5 +144,67 @@ impl RequestContext {
             secure_transport: true,
             ..self.clone()
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::{AllowAll, AuthzDecision, AuthzRequest, HttpRequest, HttpResponse};
+
+    struct DenyAll;
+    impl Authorizer for DenyAll {
+        fn authorize(&self, _: &AuthzRequest<'_>) -> AuthzDecision {
+            AuthzDecision::Deny { reason: String::new(), explicit: false }
+        }
+    }
+
+    /// A service whose one operation only authorizes.
+    struct Guarded;
+    #[async_trait::async_trait]
+    impl Service for Guarded {
+        fn signing_name(&self) -> &'static str {
+            "guarded"
+        }
+        async fn handle(&self, _: RequestContext, _: HttpRequest) -> HttpResponse {
+            unreachable!()
+        }
+        fn render_error(&self, _: &str, _: &ServiceError) -> HttpResponse {
+            unreachable!()
+        }
+        async fn invoke(&self, ctx: RequestContext, _: &str, _: Value) -> Result<Value, ServiceError> {
+            ctx.authorize("guarded:Do", "*", Default::default())?;
+            Ok(Value::Null)
+        }
+    }
+
+    fn ctx() -> RequestContext {
+        RequestContext {
+            request_id: "r".into(),
+            region: "us-east-1".into(),
+            partition: "aws".into(),
+            received_at: chrono::Utc::now(),
+            caller: Caller::anonymous(),
+            source_ip: None,
+            secure_transport: true,
+            authorizer: Arc::new(AllowAll),
+            endpoint: None,
+        }
+    }
+
+    #[tokio::test]
+    async fn service_principals_are_judged_by_the_real_authorizer() {
+        let client = ServiceClient::new();
+        client.register(Arc::new(Guarded));
+        client.set_authorizer(Arc::new(DenyAll));
+        // A context built for a service-linked role allows everything...
+        let template = ctx();
+        assert!(client.call(&template, "guarded", "Do", Value::Null).await.is_ok());
+        // ...but a service principal acting from it is still judged.
+        let as_service = template.as_service("s3.amazonaws.com", "123456789012", None);
+        let err = client.call(&as_service, "guarded", "Do", Value::Null).await.unwrap_err();
+        assert_eq!(err.code, "AccessDenied");
+        let err = client.call(&template, "missing", "Do", Value::Null).await.unwrap_err();
+        assert_eq!(err.status, 500);
     }
 }
