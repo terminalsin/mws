@@ -40,6 +40,24 @@ pub(crate) async fn default_network(mws: &Mws) -> (String, Vec<String>) {
     let mut subnets: Vec<_> = subnets.subnets().to_vec();
     subnets.sort_by_key(|s| s.availability_zone().unwrap_or_default().to_string());
     let vpc = subnets[0].vpc_id().unwrap().to_string();
+    // Load balancers made without security groups get the VPC's default
+    // group, which only lets its own members in: open it, as a load
+    // balancer reachable from outside needs.
+    let groups = ec2
+        .describe_security_groups()
+        .filters(aws_sdk_ec2::types::Filter::builder().name("vpc-id").values(&vpc).build())
+        .filters(aws_sdk_ec2::types::Filter::builder().name("group-name").values("default").build())
+        .send()
+        .await
+        .unwrap();
+    let default_sg = groups.security_groups()[0].group_id().unwrap().to_string();
+    let _ = ec2
+        .authorize_security_group_ingress()
+        .group_id(&default_sg)
+        .ip_protocol("-1")
+        .cidr_ip("0.0.0.0/0")
+        .send()
+        .await;
     (vpc, subnets.iter().take(2).map(|s| s.subnet_id().unwrap().to_string()).collect())
 }
 
@@ -1054,4 +1072,76 @@ async fn lambda_targets_receive_alb_events() {
     let th = h.target_health_descriptions()[0].target_health().unwrap();
     assert_eq!(th.state(), Some(&TargetHealthStateEnum::Unavailable));
     assert_eq!(th.reason().map(|r| r.as_str()), Some("Target.HealthCheckDisabled"));
+}
+
+/// Whether a plain HTTP request to `addr` gets an answer (the load
+/// balancer's security groups drop disallowed connections).
+async fn answers(addr: &str) -> bool {
+    let Ok(mut s) = TcpStream::connect(addr).await else { return false };
+    if s.write_all(request_text("sg.example.com", "/", &[]).as_bytes()).await.is_err() {
+        return false;
+    }
+    let mut buf = [0u8; 16];
+    matches!(tokio::time::timeout(Duration::from_secs(2), s.read(&mut buf)).await, Ok(Ok(n)) if n > 0)
+}
+
+#[tokio::test]
+async fn security_groups_filter_listener_traffic() {
+    let mws = Mws::start().await;
+    let elb = client(&mws).await;
+    let ec2 = aws_sdk_ec2::Client::new(&mws.root_sdk_config().await);
+    let (vpc, subnets) = default_network(&mws).await;
+    let sg = ec2.create_security_group().group_name("alb-front").description("ALB").vpc_id(&vpc).send().await.unwrap();
+    let sg = sg.group_id().unwrap().to_string();
+
+    let lb = elb
+        .create_load_balancer()
+        .name("guarded")
+        .set_subnets(Some(subnets))
+        .security_groups(&sg)
+        .send()
+        .await
+        .unwrap();
+    let lb_arn = lb.load_balancers()[0].load_balancer_arn().unwrap().to_string();
+    let listener = elb
+        .create_listener()
+        .load_balancer_arn(&lb_arn)
+        .protocol(ProtocolEnum::Http)
+        .port(80)
+        .default_actions(
+            Action::builder()
+                .r#type(ActionTypeEnum::FixedResponse)
+                .fixed_response_config(FixedResponseActionConfig::builder().status_code("204").build())
+                .build(),
+        )
+        .send()
+        .await
+        .unwrap();
+    let addr = listener_address(&mws, listener.listeners()[0].listener_arn().unwrap()).await;
+
+    // A new security group lets nothing in.
+    assert!(!answers(&addr).await);
+    // A rule for another port doesn't help; one for the listener's does.
+    ec2.authorize_security_group_ingress()
+        .group_id(&sg)
+        .ip_protocol("tcp")
+        .from_port(443)
+        .to_port(443)
+        .cidr_ip("0.0.0.0/0")
+        .send()
+        .await
+        .unwrap();
+    assert!(!answers(&addr).await);
+    ec2.authorize_security_group_ingress()
+        .group_id(&sg)
+        .ip_protocol("tcp")
+        .from_port(80)
+        .to_port(80)
+        .cidr_ip("127.0.0.0/8")
+        .send()
+        .await
+        .unwrap();
+    assert!(answers(&addr).await);
+    let reply = get(&addr, "sg.example.com", "/", &[]).await;
+    assert_eq!(reply.status, 204);
 }

@@ -54,7 +54,7 @@ impl V {
         self.display().unwrap_or_default()
     }
 
-    fn truthy(&self) -> bool {
+    pub(crate) fn truthy(&self) -> bool {
         match self {
             V::Null => false,
             V::Bool(b) => *b,
@@ -891,7 +891,7 @@ fn cmp_values(a: &V, b: &V) -> Option<Ordering> {
     }
 }
 
-fn eval(e: &Expr, r: &Record) -> V {
+pub(crate) fn eval(e: &Expr, r: &Record) -> V {
     match e {
         Expr::Lit(v) => v.clone(),
         Expr::Field(f) => r.get(f).cloned().unwrap_or(V::Null),

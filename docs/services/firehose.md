@@ -25,7 +25,7 @@ All 12 operations are generated from the AWS model (awsJson1.1) and implemented.
 | OpenSearch and Elasticsearch | 🟡 | Clusters and Serverless collections with an endpoint, through `_bulk`; domains named only by ARN go to the S3 backup. |
 | Redshift | 🟡 | Written as its intermediate S3 objects. |
 | Snowflake and Iceberg | ❌ | Records go to the S3 backup. |
-| Format conversion | ❌ | Parquet and ORC conversion is not implemented. |
+| Format conversion | ❌ | Conversion reads its schema from the AWS Glue Data Catalog, which MWS does not have, so records go to the `format-conversion-failed` error output with `DataFormatConversion.EntityNotFound`, as when the table is missing on AWS. |
 
 ## Processing
 

@@ -34,6 +34,9 @@ pub(crate) fn full(b: impl Into<Bytes>) -> Body {
 pub(crate) async fn serve(elb: Elb, spec: FrontSpec, listener: tokio::net::TcpListener) {
     loop {
         let Ok((stream, peer)) = listener.accept().await else { continue };
+        if !elb.front_allows(&spec, peer) {
+            continue;
+        }
         let elb = elb.clone();
         let spec = spec.clone();
         tokio::spawn(async move {

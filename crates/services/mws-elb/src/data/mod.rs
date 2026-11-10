@@ -63,7 +63,7 @@ impl FrontSpec {
     fn layer7(&self) -> bool {
         matches!(self.protocol.as_str(), "HTTP" | "HTTPS")
     }
-    fn udp(&self) -> bool {
+    pub(crate) fn udp(&self) -> bool {
         matches!(self.protocol.as_str(), "UDP" | "TCP_UDP" | "QUIC" | "TCP_QUIC")
     }
     fn tcp(&self) -> bool {
@@ -376,4 +376,27 @@ fn percent_decode(s: &str) -> String {
         i += 1;
     }
     String::from_utf8_lossy(&out).into_owned()
+}
+
+impl crate::Elb {
+    /// Whether the load balancer's security groups let `client` reach the
+    /// listener (Application Load Balancers, Network Load Balancers made
+    /// with security groups, Classic Load Balancers in a VPC). Disallowed
+    /// connections are dropped, as the VPC drops them.
+    pub(crate) fn front_allows(&self, spec: &FrontSpec, client: std::net::SocketAddr) -> bool {
+        if !self.inner.config.enforce_security_groups {
+            return true;
+        }
+        let Some(ec2) = self.ec2() else { return true };
+        let groups: Vec<String> = {
+            let st = self.lock();
+            let Some(r) = st.regions.get(&spec.region_key) else { return true };
+            match &spec.classic {
+                Some(name) => r.classic.get(name).and_then(|c| c.description.security_groups.clone()),
+                None => r.load_balancers.get(&spec.lb_arn).and_then(|l| l.lb.security_groups.clone()),
+            }
+            .unwrap_or_default()
+        };
+        ec2.security_groups_allow(spec.account(), spec.region(), &groups, spec.udp(), spec.port as u16, client.ip())
+    }
 }

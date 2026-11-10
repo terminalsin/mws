@@ -355,3 +355,50 @@ async fn futures_join_all<F: std::future::Future<Output = ()> + Send + 'static>(
         let _ = h.await;
     }
 }
+
+impl Ec2 {
+    /// Whether security groups `groups` (in `account` and `region`) let
+    /// TCP or UDP traffic to `port` in from `source`, as for a load
+    /// balancer's front end. No groups means no filtering.
+    pub fn security_groups_allow(
+        &self,
+        account: &str,
+        region: &str,
+        groups: &[String],
+        udp: bool,
+        port: u16,
+        source: std::net::IpAddr,
+    ) -> bool {
+        if groups.is_empty() {
+            return true;
+        }
+        let source = match source {
+            std::net::IpAddr::V4(v4) => v4,
+            std::net::IpAddr::V6(v6) => match v6.to_ipv4_mapped() {
+                Some(v4) => v4,
+                None if v6.is_loopback() => std::net::Ipv4Addr::LOCALHOST,
+                // IPv6 sources: only rules open to every IPv6 address match.
+                None => {
+                    let st = self.lock();
+                    let Some(r) = st.regions.get(&State::key(account, region)) else { return false };
+                    return r
+                        .sg_rules
+                        .values()
+                        .any(|x| !x.egress && groups.contains(&x.group_id) && x.cidr_ipv6.as_deref() == Some("::/0"));
+                }
+            },
+        };
+        let ip = u32::from(source);
+        let st = self.lock();
+        let Some(r) = st.regions.get(&State::key(account, region)) else { return false };
+        sg_rules(r, region, groups, false).iter().any(|rule| {
+            let proto = match rule.protocol {
+                Protocol::All => true,
+                Protocol::Tcp(a, b) => !udp && (a..=b).contains(&port),
+                Protocol::Udp(a, b) => udp && (a..=b).contains(&port),
+                _ => false,
+            };
+            proto && Cidr::parse(&rule.cidr).is_some_and(|c| c.contains(ip))
+        })
+    }
+}
