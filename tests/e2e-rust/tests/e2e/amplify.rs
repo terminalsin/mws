@@ -705,4 +705,402 @@ async fn amplify_calls_are_authorized() {
     assert_eq!(err.code(), Some("AccessDeniedException"));
 }
 
+/// A repository whose build writes its environment, its `secrets` and its
+/// credentials into the deployed site.
+fn env_repo(name: &str) -> std::path::PathBuf {
+    let repo = std::env::temp_dir().join(format!("mws-amplify-{name}-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&repo);
+    std::fs::create_dir_all(&repo).unwrap();
+    std::fs::write(
+        repo.join("amplify.yml"),
+        "version: 1\nfrontend:\n  phases:\n    build:\n      commands:\n        - mkdir -p dist\n        - env > dist/env.txt\n        - printf '%s' \"$secrets\" > dist/secrets.txt\n        - printf '%s\\n%s\\n%s\\n' \"$AWS_ACCESS_KEY_ID\" \"$AWS_SECRET_ACCESS_KEY\" \"$AWS_SESSION_TOKEN\" > dist/creds.txt\n        - echo ok > dist/index.html\n  artifacts:\n    baseDirectory: dist\n",
+    )
+    .unwrap();
+    git(&repo, &["init", "-q"]);
+    git(&repo, &["add", "."]);
+    git(&repo, &["commit", "-q", "-m", "env"]);
+    repo
+}
+
+/// Start a build and record every status a fast poller sees.
+async fn build_and_watch(
+    amplify: &aws_sdk_amplify::Client,
+    app_id: &str,
+) -> (aws_sdk_amplify::types::Job, Vec<String>) {
+    let started =
+        amplify.start_job().app_id(app_id).branch_name("main").job_type(JobType::Release).send().await.unwrap();
+    let id = started.job_summary().unwrap().job_id().to_string();
+    let mut seen = vec![started.job_summary().unwrap().status().as_str().to_string()];
+    for _ in 0..3000 {
+        let j = amplify.get_job().app_id(app_id).branch_name("main").job_id(&id).send().await.unwrap();
+        let job = j.job.unwrap();
+        let status = job.summary().unwrap().status().as_str().to_string();
+        if seen.last() != Some(&status) {
+            seen.push(status.clone());
+        }
+        if matches!(status.as_str(), "SUCCEED" | "FAILED" | "CANCELLED") {
+            return (job, seen);
+        }
+        tokio::time::sleep(Duration::from_millis(20)).await;
+    }
+    panic!("job {id} did not finish");
+}
+
+#[tokio::test]
+async fn builds_run_as_the_service_role_without_the_host_environment() {
+    if std::process::Command::new("git").arg("--version").output().is_err() {
+        eprintln!("skipping: git is not installed");
+        return;
+    }
+    // A secret in MWS's own environment must never reach a build.
+    std::env::set_var("MWS_TEST_HOST_SECRET", "host-secret-7f3a");
+    let repo = env_repo("env");
+    let mws = Mws::start().await;
+    let cfg = mws.root_sdk_config().await;
+    let amplify = aws_sdk_amplify::Client::new(&cfg);
+    let iam = aws_sdk_iam::Client::new(&cfg);
+    let ssm = aws_sdk_ssm::Client::new(&cfg);
+    let role = iam
+        .create_role()
+        .role_name("AmplifyBuildRole")
+        .assume_role_policy_document(r#"{"Version":"2012-10-17","Statement":[{"Effect":"Allow","Principal":{"Service":"amplify.amazonaws.com"},"Action":"sts:AssumeRole"}]}"#)
+        .send()
+        .await
+        .unwrap()
+        .role
+        .unwrap();
+    iam.put_role_policy()
+        .role_name("AmplifyBuildRole")
+        .policy_name("secrets")
+        .policy_document(r#"{"Version":"2012-10-17","Statement":[{"Effect":"Allow","Action":"ssm:GetParametersByPath","Resource":"*"}]}"#)
+        .send()
+        .await
+        .unwrap();
+
+    let app_id = amplify
+        .create_app()
+        .name("with-role")
+        .repository(repo.to_string_lossy())
+        .access_token("local")
+        .iam_service_role_arn(role.arn())
+        .send()
+        .await
+        .unwrap()
+        .app
+        .unwrap()
+        .app_id()
+        .to_string();
+    amplify.create_branch().app_id(&app_id).branch_name("main").send().await.unwrap();
+    for (name, value) in [
+        (format!("/amplify/shared/{app_id}/SHARED"), "shared-value"),
+        (format!("/amplify/shared/{app_id}/TOKEN"), "shared-token"),
+        (format!("/amplify/{app_id}/main/TOKEN"), "branch-token"),
+    ] {
+        ssm.put_parameter()
+            .name(name)
+            .value(value)
+            .r#type(aws_sdk_ssm::types::ParameterType::String)
+            .send()
+            .await
+            .unwrap();
+    }
+
+    let (job, seen) = build_and_watch(&amplify, &app_id).await;
+    assert_eq!(job.summary().unwrap().status(), &JobStatus::Succeed, "{seen:?}");
+    let order: Vec<&str> = seen.iter().map(String::as_str).filter(|s| *s != "PENDING").collect();
+    assert_eq!(order, ["PROVISIONING", "RUNNING", "SUCCEED"], "{seen:?}");
+
+    let host = format!("main.{app_id}.amplifyapp.com");
+    let env = page(&mws, &host, "/env.txt", &[]).await.2;
+    assert!(!env.contains("MWS_TEST_HOST_SECRET") && !env.contains("host-secret-7f3a"), "{env}");
+    for var in [
+        format!("AWS_APP_ID={app_id}"),
+        "AWS_BRANCH=main".into(),
+        "AWS_REGION=us-east-1".into(),
+        "AWS_DEFAULT_REGION=us-east-1".into(),
+        "AWS_JOB_ID=0000000001".into(),
+        "AWS_ENDPOINT_URL=".into(),
+    ] {
+        assert!(env.lines().any(|l| l.starts_with(&var)), "{var} missing from {env}");
+    }
+    let home = std::env::var("HOME").unwrap_or_default();
+    if !home.is_empty() {
+        assert!(!env.lines().any(|l| l == format!("HOME={home}")), "{env}");
+    }
+
+    // Branch secrets override shared ones.
+    let secrets: serde_json::Value = serde_json::from_str(&page(&mws, &host, "/secrets.txt", &[]).await.2).unwrap();
+    assert_eq!(secrets, serde_json::json!({ "SHARED": "shared-value", "TOKEN": "branch-token" }));
+
+    // The credentials are the service role's, and they work.
+    let creds = page(&mws, &host, "/creds.txt", &[]).await.2;
+    let lines: Vec<&str> = creds.lines().collect();
+    assert!(lines[0].starts_with("ASIA"), "{creds}");
+    let role_cfg = mws.sdk_config(lines[0], lines[1], Some(lines[2])).await;
+    let me = aws_sdk_sts::Client::new(&role_cfg).get_caller_identity().send().await.unwrap();
+    assert!(me.arn().unwrap().contains(":assumed-role/AmplifyBuildRole/"), "{:?}", me.arn());
+
+    // Without a service role a build gets no credentials and no secrets.
+    let bare = amplify
+        .create_app()
+        .name("no-role")
+        .repository(repo.to_string_lossy())
+        .access_token("local")
+        .send()
+        .await
+        .unwrap()
+        .app
+        .unwrap()
+        .app_id()
+        .to_string();
+    amplify.create_branch().app_id(&bare).branch_name("main").send().await.unwrap();
+    let (job, _) = build_and_watch(&amplify, &bare).await;
+    assert_eq!(job.summary().unwrap().status(), &JobStatus::Succeed);
+    let env = page(&mws, &format!("main.{bare}.amplifyapp.com"), "/env.txt", &[]).await.2;
+    assert!(!env.contains("AWS_ACCESS_KEY_ID") && !env.contains("AWS_SECRET_ACCESS_KEY"), "{env}");
+    assert!(!env.lines().any(|l| l.starts_with("secrets=")), "{env}");
+
+    // A role Amplify may not assume fails the build.
+    iam.create_role()
+        .role_name("NotForAmplify")
+        .assume_role_policy_document(r#"{"Version":"2012-10-17","Statement":[{"Effect":"Allow","Principal":{"Service":"lambda.amazonaws.com"},"Action":"sts:AssumeRole"}]}"#)
+        .send()
+        .await
+        .unwrap();
+    let untrusted = format!("arn:aws:iam::{}:role/NotForAmplify", role.arn().split(':').nth(4).unwrap());
+    amplify.update_app().app_id(&bare).iam_service_role_arn(&untrusted).send().await.unwrap();
+    let (job, _) = build_and_watch(&amplify, &bare).await;
+    assert_eq!(job.summary().unwrap().status(), &JobStatus::Failed);
+    assert!(job.steps()[0].status_reason().unwrap_or_default().contains("Unable to assume specified IAM Role"));
+    let _ = std::fs::remove_dir_all(&repo);
+}
+
+#[tokio::test]
+async fn amplify_roles_need_pass_role_and_must_exist() {
+    let mws = Mws::start().await;
+    let cfg = mws.root_sdk_config().await;
+    let amplify = aws_sdk_amplify::Client::new(&cfg);
+    let iam = aws_sdk_iam::Client::new(&cfg);
+    let role = iam
+        .create_role()
+        .role_name("AmplifyRole")
+        .assume_role_policy_document(r#"{"Version":"2012-10-17","Statement":[{"Effect":"Allow","Principal":{"Service":"amplify.amazonaws.com"},"Action":"sts:AssumeRole"}]}"#)
+        .send()
+        .await
+        .unwrap()
+        .role
+        .unwrap();
+    let account = role.arn().split(':').nth(4).unwrap().to_string();
+    let missing = format!("arn:aws:iam::{account}:role/DoesNotExist");
+
+    // A role that does not exist is a bad request.
+    let err = amplify.create_app().name("bad").iam_service_role_arn(&missing).send().await.unwrap_err();
+    assert_eq!(err.code(), Some("BadRequestException"), "{err:?}");
+    let err = amplify.create_app().name("bad").compute_role_arn(&missing).send().await.unwrap_err();
+    assert_eq!(err.code(), Some("BadRequestException"), "{err:?}");
+    let app_id = amplify
+        .create_app()
+        .name("good")
+        .iam_service_role_arn(role.arn())
+        .send()
+        .await
+        .unwrap()
+        .app
+        .unwrap()
+        .app_id()
+        .to_string();
+    let err = amplify.update_app().app_id(&app_id).iam_service_role_arn(&missing).send().await.unwrap_err();
+    assert_eq!(err.code(), Some("BadRequestException"));
+    let err = amplify
+        .create_branch()
+        .app_id(&app_id)
+        .branch_name("main")
+        .compute_role_arn(&missing)
+        .send()
+        .await
+        .unwrap_err();
+    assert_eq!(err.code(), Some("BadRequestException"));
+
+    // Handing Amplify a role needs iam:PassRole for amplify.amazonaws.com.
+    let policy = |pass: bool| {
+        let pass = if pass {
+            format!(
+                r#",{{"Effect":"Allow","Action":"iam:PassRole","Resource":"{}","Condition":{{"StringEquals":{{"iam:PassedToService":"amplify.amazonaws.com"}}}}}}"#,
+                role.arn()
+            )
+        } else {
+            String::new()
+        };
+        format!(
+            r#"{{"Version":"2012-10-17","Statement":[{{"Effect":"Allow","Action":"amplify:*","Resource":"*"}}{pass}]}}"#
+        )
+    };
+    let (_, no_pass) = mws_e2e::user_with_policy(&mws, "no-pass", Some(&policy(false))).await;
+    let no_pass = aws_sdk_amplify::Client::new(&no_pass);
+    let err = no_pass.create_app().name("x").iam_service_role_arn(role.arn()).send().await.unwrap_err();
+    assert_eq!(err.code(), Some("AccessDeniedException"), "{err:?}");
+    let err = no_pass.update_app().app_id(&app_id).compute_role_arn(role.arn()).send().await.unwrap_err();
+    assert_eq!(err.code(), Some("AccessDeniedException"));
+    let err = no_pass
+        .create_branch()
+        .app_id(&app_id)
+        .branch_name("dev")
+        .compute_role_arn(role.arn())
+        .send()
+        .await
+        .unwrap_err();
+    assert_eq!(err.code(), Some("AccessDeniedException"));
+    no_pass.create_app().name("no-roles").send().await.unwrap();
+    let (_, with_pass) = mws_e2e::user_with_policy(&mws, "with-pass", Some(&policy(true))).await;
+    let with_pass = aws_sdk_amplify::Client::new(&with_pass);
+    with_pass.create_app().name("y").iam_service_role_arn(role.arn()).send().await.unwrap();
+    with_pass.create_branch().app_id(&app_id).branch_name("dev").compute_role_arn(role.arn()).send().await.unwrap();
+    with_pass.update_branch().app_id(&app_id).branch_name("dev").compute_role_arn(role.arn()).send().await.unwrap();
+
+    // Authorization comes before the lookup: a caller who may not read
+    // apps is denied whether or not the app exists.
+    let (_, nothing) = mws_e2e::user_with_policy(&mws, "nothing", None).await;
+    let nothing = aws_sdk_amplify::Client::new(&nothing);
+    for id in [app_id.as_str(), "dnotanappatall"] {
+        let err = nothing.get_app().app_id(id).send().await.unwrap_err();
+        assert_eq!(err.code(), Some("AccessDeniedException"), "{id}");
+        let err = nothing.delete_branch().app_id(id).branch_name("main").send().await.unwrap_err();
+        assert_eq!(err.code(), Some("AccessDeniedException"), "{id}");
+        let err = nothing.get_job().app_id(id).branch_name("main").job_id("1").send().await.unwrap_err();
+        assert_eq!(err.code(), Some("AccessDeniedException"), "{id}");
+    }
+    let err = amplify.get_app().app_id("dnotanappatall").send().await.unwrap_err();
+    assert_eq!(err.code(), Some("NotFoundException"));
+}
+
+#[tokio::test]
+async fn amplify_quotas_follow_service_quotas() {
+    let mws = Mws::start().await;
+    let cfg = mws.root_sdk_config().await;
+    let amplify = aws_sdk_amplify::Client::new(&cfg);
+    let quotas = aws_sdk_servicequotas::Client::new(&cfg);
+    let mut first = None;
+    for i in 0..25 {
+        let app = amplify.create_app().name(format!("app-{i}")).send().await.unwrap().app.unwrap();
+        first.get_or_insert(app.app_id().to_string());
+    }
+    let err = amplify.create_app().name("one-too-many").send().await.unwrap_err();
+    assert_eq!(err.code(), Some("LimitExceededException"), "{err:?}");
+    quotas
+        .request_service_quota_increase()
+        .service_code("amplify")
+        .quota_code("L-1BED97F3")
+        .desired_value(26.0)
+        .send()
+        .await
+        .unwrap();
+    let mut created = false;
+    for _ in 0..50 {
+        if amplify.create_app().name("after-increase").send().await.is_ok() {
+            created = true;
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(200)).await;
+    }
+    assert!(created, "the raised quota was never applied");
+
+    // Five domains per app.
+    let app_id = first.unwrap();
+    amplify.create_branch().app_id(&app_id).branch_name("main").send().await.unwrap();
+    let sub = SubDomainSetting::builder().prefix("www").branch_name("main").build().unwrap();
+    for i in 0..5 {
+        amplify
+            .create_domain_association()
+            .app_id(&app_id)
+            .domain_name(format!("quota{i}.example"))
+            .sub_domain_settings(sub.clone())
+            .send()
+            .await
+            .unwrap();
+    }
+    let err = amplify
+        .create_domain_association()
+        .app_id(&app_id)
+        .domain_name("quota5.example")
+        .sub_domain_settings(sub)
+        .send()
+        .await
+        .unwrap_err();
+    assert_eq!(err.code(), Some("LimitExceededException"), "{err:?}");
+}
+
+#[tokio::test]
+async fn custom_certificates_are_checked_in_acm() {
+    use aws_sdk_amplify::types::{CertificateSettings, CertificateType};
+    let mws = Mws::start().await;
+    let cfg = mws.root_sdk_config().await;
+    let amplify = aws_sdk_amplify::Client::new(&cfg);
+    let acm = aws_sdk_acm::Client::new(&cfg);
+    let import = |names: &'static [&'static str]| {
+        let acm = acm.clone();
+        async move {
+            let key = rcgen::KeyPair::generate().unwrap();
+            let mut params =
+                rcgen::CertificateParams::new(names.iter().map(|n| n.to_string()).collect::<Vec<_>>()).unwrap();
+            params.distinguished_name.push(rcgen::DnType::CommonName, names[0]);
+            let now = ::time::OffsetDateTime::now_utc();
+            params.not_before = now - ::time::Duration::days(1);
+            params.not_after = now + ::time::Duration::days(90);
+            let cert = params.self_signed(&key).unwrap().pem();
+            acm.import_certificate()
+                .certificate(aws_sdk_acm::primitives::Blob::new(cert.as_bytes()))
+                .private_key(aws_sdk_acm::primitives::Blob::new(key.serialize_pem().as_bytes()))
+                .send()
+                .await
+                .unwrap()
+                .certificate_arn()
+                .unwrap()
+                .to_string()
+        }
+    };
+    let wildcard = import(&["example.org", "*.example.org"]).await;
+    let other = import(&["other.example"]).await;
+    let app_id = amplify.create_app().name("certs").send().await.unwrap().app.unwrap().app_id().to_string();
+    amplify.create_branch().app_id(&app_id).branch_name("main").send().await.unwrap();
+    let custom = |arn: &str| {
+        CertificateSettings::builder().r#type(CertificateType::Custom).custom_certificate_arn(arn).build().unwrap()
+    };
+    let subs = [
+        SubDomainSetting::builder().prefix("").branch_name("main").build().unwrap(),
+        SubDomainSetting::builder().prefix("www").branch_name("main").build().unwrap(),
+    ];
+    let associate = |domain: &'static str, arn: String| {
+        amplify
+            .create_domain_association()
+            .app_id(&app_id)
+            .domain_name(domain)
+            .set_sub_domain_settings(Some(subs.to_vec()))
+            .certificate_settings(custom(&arn))
+            .send()
+    };
+
+    // A certificate that does not cover the domain, or does not exist.
+    let err = associate("example.org", other.clone()).await.unwrap_err();
+    assert_eq!(err.code(), Some("BadRequestException"), "{err:?}");
+    let missing = format!("{}0000", &wildcard[..wildcard.len() - 4]);
+    let err = associate("example.org", missing).await.unwrap_err();
+    assert_eq!(err.code(), Some("BadRequestException"), "{err:?}");
+    let err = associate("example.org", wildcard.replace("us-east-1", "eu-west-1")).await.unwrap_err();
+    assert_eq!(err.code(), Some("BadRequestException"), "{err:?}");
+
+    // The apex and one level under the wildcard are covered; two levels
+    // are not.
+    let created = associate("example.org", wildcard.clone()).await.unwrap().domain_association.unwrap();
+    assert_eq!(created.certificate().unwrap().custom_certificate_arn(), Some(wildcard.as_str()));
+    let err = amplify
+        .update_domain_association()
+        .app_id(&app_id)
+        .domain_name("example.org")
+        .sub_domain_settings(SubDomainSetting::builder().prefix("a.b").branch_name("main").build().unwrap())
+        .send()
+        .await
+        .unwrap_err();
+    assert_eq!(err.code(), Some("BadRequestException"), "{err:?}");
+}
+
 use md5::Digest as _;

@@ -6,6 +6,14 @@
 //! `appRoot`; the one named by the `AMPLIFY_MONOREPO_APP_ROOT` environment
 //! variable is built, else the first. `customHttp.yml` in the app root
 //! sets the site's custom headers.
+//!
+//! Builds never see MWS's own environment: each command starts from an
+//! empty environment with a `PATH`, a fresh `HOME` and a locale, then the
+//! app's and branch's variables, Amplify's (`AWS_APP_ID`, `AWS_BRANCH`,
+//! `AWS_JOB_ID`, ...), credentials for the app's service role
+//! (`iamServiceRoleArn`, assumed as `amplify.amazonaws.com`) and the
+//! Amplify secrets in Parameter Store as the `secrets` JSON map. Without a
+//! service role a build gets no credentials.
 
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
@@ -23,6 +31,40 @@ use crate::Amplify;
 /// Amplify's default build timeout.
 const BUILD_TIMEOUT: Duration = Duration::from_secs(30 * 60);
 const MAX_LOG: usize = 4 * 1024 * 1024;
+/// How long a job stays `PROVISIONING` while its build environment is set
+/// up, so pollers see the state as on Amplify.
+const PROVISION_TIME: Duration = Duration::from_millis(500);
+const DEFAULT_PATH: &str = "/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin";
+
+/// The environment every build command starts from: nothing of MWS's own
+/// but a `PATH` to find tools, a `HOME` inside the build directory (so no
+/// `~/.aws`, `~/.gitconfig` or `~/.npmrc` of the host is read) and a locale.
+fn base_env(dir: &Path) -> BTreeMap<String, String> {
+    let mut env = BTreeMap::new();
+    let path = std::env::var("PATH").ok().filter(|p| !p.is_empty()).unwrap_or_else(|| DEFAULT_PATH.into());
+    env.insert("PATH".into(), path);
+    env.insert("HOME".into(), dir.join("home").to_string_lossy().into_owned());
+    env.insert("TMPDIR".into(), dir.join("tmp").to_string_lossy().into_owned());
+    env.insert("LANG".into(), "C.UTF-8".into());
+    env.insert("CI".into(), "true".into());
+    env
+}
+
+/// A command that sees `env` and nothing else.
+fn command(program: &str, env: &BTreeMap<String, String>) -> tokio::process::Command {
+    let mut cmd = tokio::process::Command::new(program);
+    cmd.env_clear().envs(env);
+    cmd
+}
+
+/// The `secrets` map from parameters under `prefix`: names relative to it.
+fn add_secrets(secrets: &mut BTreeMap<String, String>, prefix: &str, params: Vec<(String, String)>) {
+    for (name, value) in params {
+        if let Some(key) = name.strip_prefix(prefix).filter(|k| !k.is_empty()) {
+            secrets.insert(key.to_string(), value);
+        }
+    }
+}
 
 #[derive(Debug, Default, Deserialize)]
 #[serde(default, rename_all = "camelCase")]
@@ -230,6 +272,14 @@ fn clone_url(repository: &str, token: Option<&str>) -> String {
     }
 }
 
+/// What a build needs to know about its app.
+struct AppFacts {
+    account: String,
+    region: String,
+    app_arn: String,
+    service_role: Option<String>,
+}
+
 impl Amplify {
     pub(crate) async fn run_build(&self, job: JobRef, stop: Arc<tokio::sync::Notify>) {
         let lock = self.branch_lock(&job.app_id, &job.branch);
@@ -244,6 +294,7 @@ impl Amplify {
             self.inner.running.lock().expect("running jobs lock").remove(&job.key());
             return;
         }
+        self.with_job(&job, |j| j.summary.status = "PROVISIONING".into());
         let dir = std::env::temp_dir().join("mws-amplify").join(format!(
             "{}-{}-{}-{}",
             job.app_id,
@@ -259,8 +310,67 @@ impl Amplify {
         }
     }
 
+    /// Set up the build's environment while the job is `PROVISIONING`: the
+    /// service role's credentials and the app's secrets.
+    async fn provision(
+        &self,
+        job: &JobRef,
+        stop: &tokio::sync::Notify,
+        dir: &Path,
+        app: &AppFacts,
+    ) -> Result<BTreeMap<String, String>, String> {
+        for d in ["home", "tmp"] {
+            std::fs::create_dir_all(dir.join(d)).map_err(|e| format!("Creating the build directory failed: {e}"))?;
+        }
+        let mut env = base_env(dir);
+        env.insert("AWS_REGION".into(), app.region.clone());
+        env.insert("AWS_DEFAULT_REGION".into(), app.region.clone());
+        let role = app.service_role.as_deref().filter(|r| !r.is_empty());
+        match (role, self.platform()) {
+            (Some(role), Some(platform)) => {
+                let mut template = job.ctx.clone();
+                template.region = app.region.clone();
+                template.received_at = job.clock.now();
+                template.source_ip = None;
+                let session_name = format!("amplify-{}-{}", job.app_id, job.job_id);
+                let session = platform
+                    .assume_role(&template, role, &session_name, &app.account, &app.app_arn)
+                    .map_err(|e| {
+                        tracing::debug!("Amplify could not assume {role}: {e}");
+                        "Unable to assume specified IAM Role. Please ensure the selected IAM Role has sufficient permissions and the Trust Relationship is configured correctly.".to_string()
+                    })?;
+                self.append_log(job, &format!("Assumed the service role {role}"));
+                env.insert("AWS_ACCESS_KEY_ID".into(), session.access_key_id.clone());
+                env.insert("AWS_SECRET_ACCESS_KEY".into(), session.secret_access_key.clone());
+                env.insert("AWS_SESSION_TOKEN".into(), session.session_token.clone());
+                let mut secrets = BTreeMap::new();
+                let shared = format!("/amplify/shared/{}/", job.app_id);
+                let own = format!("/amplify/{}/{}/", job.app_id, job.branch);
+                for prefix in [shared, own] {
+                    match platform.parameters_by_path(&session.context, &prefix).await {
+                        Ok(params) => add_secrets(&mut secrets, &prefix, params),
+                        Err(e) => self.append_log(job, &format!("Unable to read secrets under {prefix}: {e}")),
+                    }
+                }
+                if !secrets.is_empty() {
+                    self.append_log(job, &format!("Loaded {} secrets from Parameter Store", secrets.len()));
+                    env.insert("secrets".into(), serde_json::to_string(&secrets).unwrap_or_default());
+                }
+            }
+            _ => {
+                // No role, no credentials: SDKs in the build must not find
+                // any elsewhere either.
+                env.insert("AWS_EC2_METADATA_DISABLED".into(), "true".into());
+            }
+        }
+        tokio::select! {
+            _ = tokio::time::sleep(PROVISION_TIME) => Ok(env),
+            _ = stop.notified() => Err("The build was stopped.".into()),
+        }
+    }
+
     async fn run_build_steps(&self, job: &JobRef, stop: &tokio::sync::Notify, dir: &Path) -> Result<(), String> {
-        let (repository, token, branch_arn, spec, mut env, commit) = {
+        let (repository, token, branch_arn, spec, mut env, commit, app) = {
             let st = self.read();
             let rec = st.apps.get(&job.app_id).ok_or("The app was deleted.")?;
             let b = rec.branches.get(&job.branch).ok_or("The branch was deleted.")?;
@@ -268,6 +378,12 @@ impl Amplify {
             let mut env = rec.app.environment_variables.clone();
             env.extend(b.branch.environment_variables.clone());
             let spec = b.branch.build_spec.clone().or(rec.app.build_spec.clone());
+            let app = AppFacts {
+                account: rec.account.clone(),
+                region: rec.region.clone(),
+                app_arn: rec.app.app_arn.clone(),
+                service_role: rec.app.iam_service_role_arn.clone(),
+            };
             (
                 rec.app.repository.clone(),
                 rec.repository_token.clone(),
@@ -275,16 +391,20 @@ impl Amplify {
                 spec,
                 env,
                 j.summary.commit_id.clone(),
+                app,
             )
         };
+        let base = self.provision(job, stop, dir, &app).await?;
         self.with_job(job, |j| j.summary.status = "RUNNING".into());
         self.set_step(job, "BUILD", "RUNNING");
 
         self.append_log(job, &format!("Cloning repository: {repository}"));
-        std::fs::create_dir_all(dir).map_err(|e| format!("Creating the build directory failed: {e}"))?;
         let checkout = dir.join("src");
-        let mut clone = tokio::process::Command::new("git");
-        clone.env("GIT_TERMINAL_PROMPT", "0").arg("clone").arg("--quiet");
+        let mut git_env = base_env(dir);
+        git_env.insert("GIT_TERMINAL_PROMPT".into(), "0".into());
+        git_env.insert("GIT_CONFIG_NOSYSTEM".into(), "1".into());
+        let mut clone = command("git", &git_env);
+        clone.arg("clone").arg("--quiet");
         let pinned = !commit.is_empty() && commit != "HEAD";
         if !pinned {
             clone.args(["--depth", "1", "--branch", &job.branch]);
@@ -294,11 +414,11 @@ impl Amplify {
             .await
             .map_err(|e| e.replace(token.as_deref().unwrap_or("\u{0}"), "****"))?;
         if pinned {
-            let mut co = tokio::process::Command::new("git");
+            let mut co = command("git", &git_env);
             co.current_dir(&checkout).args(["checkout", "--quiet", &commit]);
             run(self, job, stop, co, "git checkout").await?;
         }
-        let mut rev = tokio::process::Command::new("git");
+        let mut rev = command("git", &git_env);
         rev.current_dir(&checkout).args(["log", "-1", "--format=%H%n%s"]);
         let head = run(self, job, stop, rev, "git log").await?;
         let mut lines = head.lines();
@@ -326,9 +446,12 @@ impl Amplify {
         env.insert("AWS_COMMIT_ID".into(), sha);
         env.insert("AWS_CLONE_URL".into(), repository.clone());
         env.insert("AWS_ENDPOINT_URL".into(), job.endpoint.clone());
-        let plan = plan(&spec, &checkout, &env)?;
-        let mut sh = tokio::process::Command::new(shell());
-        sh.current_dir(&plan.app_root).arg("-c").arg(&plan.script).envs(&plan.env);
+        // Amplify's own variables and the credentials win over the app's.
+        let mut build_env = env;
+        build_env.extend(base);
+        let plan = plan(&spec, &checkout, &build_env)?;
+        let mut sh = command(shell(), &plan.env);
+        sh.current_dir(&plan.app_root).arg("-c").arg(&plan.script);
         run(self, job, stop, sh, "The build").await?;
         let files = collect(&plan.base_directory, &plan.patterns)?;
         if files.is_empty() {

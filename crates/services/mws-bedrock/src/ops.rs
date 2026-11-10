@@ -405,6 +405,7 @@ impl Bedrock {
                     updated: now,
                     status: "Creating".into(),
                     transition: Some(("InService".into(), now + Duration::seconds(PROVISIONING_SECS))),
+                    steps: Vec::new(),
                     doc,
                 },
             );
@@ -578,6 +579,7 @@ impl Bedrock {
                     updated: now,
                     status: "AVAILABLE".into(),
                     transition: None,
+                    steps: Vec::new(),
                     doc,
                 },
             );
@@ -741,6 +743,7 @@ impl Bedrock {
                     updated: now,
                     status: "ACTIVE".into(),
                     transition: None,
+                    steps: Vec::new(),
                     doc,
                 },
             );
@@ -818,6 +821,7 @@ impl Bedrock {
                     updated: now,
                     status: "REGISTERED".into(),
                     transition: None,
+                    steps: Vec::new(),
                     doc,
                 },
             );
@@ -934,6 +938,7 @@ impl Bedrock {
                         updated: now,
                         status: "REGISTERED".into(),
                         transition: None,
+                        steps: Vec::new(),
                         doc,
                     },
                 );

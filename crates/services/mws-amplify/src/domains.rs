@@ -12,7 +12,7 @@ use mws_core::{ConditionContext, RequestContext, Service, ServiceError};
 use serde_json::json;
 
 use crate::apps::{app_mut, authorize, branch};
-use crate::generated::types;
+use crate::generated::{errors, types};
 use crate::names::{self, bad_request, not_found};
 use crate::state::{AppRecord, DomainRecord};
 use crate::Amplify;
@@ -34,18 +34,69 @@ fn sub_domain(setting: types::SubDomainSetting, distribution: &str) -> types::Su
     types::SubDomain { sub_domain_setting: setting, verified: false, dns_record }
 }
 
-fn check_certificate(settings: Option<&types::CertificateSettings>) -> Result<(), ServiceError> {
-    if let Some(c) = settings {
+/// Whether certificate name `pattern` (a DNS name or `*.` wildcard, which
+/// covers exactly one label) covers `host`.
+fn covers(pattern: &str, host: &str) -> bool {
+    let pattern = normalize(pattern);
+    match pattern.strip_prefix("*.") {
+        Some(rest) => host.split_once('.').is_some_and(|(label, parent)| !label.is_empty() && parent == rest),
+        None => pattern == host,
+    }
+}
+
+/// The ARN of the caller's domain association, to authorize on before the
+/// lookup.
+fn domain_arn(ctx: &RequestContext, app_id: &str, domain_name: &str) -> String {
+    format!("{}/domains/{domain_name}", names::caller_app_arn(ctx, app_id))
+}
+
+impl Amplify {
+    /// A custom certificate must be an ACM certificate of the caller's in
+    /// us-east-1 that is issued and covers every host of the association.
+    fn check_certificate(
+        &self,
+        ctx: &RequestContext,
+        settings: Option<&types::CertificateSettings>,
+        hosts: &[String],
+    ) -> Result<(), ServiceError> {
+        let Some(c) = settings else { return Ok(()) };
         if c.r#type == "CUSTOM" && c.custom_certificate_arn.as_deref().is_none_or(str::is_empty) {
             return Err(bad_request("customCertificateArn is required for a CUSTOM certificate."));
         }
-        if let Some(arn) = &c.custom_certificate_arn {
-            if !arn.starts_with("arn:aws:acm:us-east-1:") {
-                return Err(bad_request("The custom certificate must be an ACM certificate in us-east-1."));
-            }
+        let Some(arn) = c.custom_certificate_arn.as_deref().filter(|a| !a.is_empty() && c.r#type == "CUSTOM") else {
+            return Ok(());
+        };
+        let parts: Vec<&str> = arn.splitn(6, ':').collect();
+        let valid = parts.len() == 6
+            && parts[0] == "arn"
+            && parts[1] == ctx.partition
+            && parts[2] == "acm"
+            && parts[5].starts_with("certificate/");
+        if !valid {
+            return Err(bad_request(format!("Invalid certificate ARN: {arn}")));
         }
+        if parts[3] != "us-east-1" {
+            return Err(bad_request("The custom certificate must be an ACM certificate in us-east-1."));
+        }
+        let Some(platform) = self.platform() else { return Ok(()) };
+        let cert = platform
+            .certificate(arn)
+            .filter(|cert| cert.account == ctx.caller.account_id && cert.region == "us-east-1")
+            .ok_or_else(|| bad_request(format!("Certificate {arn} not found.")))?;
+        if cert.status != "ISSUED" {
+            return Err(bad_request(format!(
+                "Certificate {arn} is not valid. The certificate status is {}; it must be ISSUED.",
+                cert.status
+            )));
+        }
+        let names: Vec<&str> = std::iter::once(cert.domain_name.as_str())
+            .chain(cert.subject_alternative_names.iter().map(String::as_str))
+            .collect();
+        if let Some(host) = hosts.iter().find(|h| !names.iter().any(|n| covers(n, h))) {
+            return Err(bad_request(format!("Certificate {arn} is not valid. The certificate does not cover {host}.")));
+        }
+        Ok(())
     }
-    Ok(())
 }
 
 fn certificate(settings: Option<types::CertificateSettings>, record: &DomainRecord) -> types::Certificate {
@@ -164,6 +215,10 @@ impl Amplify {
         input: types::CreateDomainAssociationRequest,
     ) -> Result<types::CreateDomainAssociationResult, ServiceError> {
         let domain_name = normalize(&input.domain_name);
+        let arn = domain_arn(ctx, &input.app_id, &domain_name);
+        authorize(ctx, "CreateDomainAssociation", &arn, ConditionContext::new())?;
+        let limit = self.quota(ctx, "L-AD277529");
+        let hosts: Vec<String> = input.sub_domain_settings.iter().map(|s| fqdn(&s.prefix, &domain_name)).collect();
         let record = {
             let mut st = self.write();
             let taken = st
@@ -171,12 +226,13 @@ impl Amplify {
                 .values()
                 .any(|a| a.account == ctx.caller.account_id && a.domains.keys().any(|d| d == &domain_name));
             let rec = app_mut(ctx, &mut st, &input.app_id)?;
-            let arn = format!("{}/domains/{domain_name}", rec.app.app_arn);
-            authorize(ctx, "CreateDomainAssociation", &arn, ConditionContext::new())?;
             if taken {
                 return Err(bad_request(format!("Domain {domain_name} is already associated with an app.")));
             }
-            check_certificate(input.certificate_settings.as_ref())?;
+            if rec.domains.len() >= limit {
+                return Err(errors::limit_exceeded(format!("The number of domains has reached the limit of {limit}.")));
+            }
+            self.check_certificate(ctx, input.certificate_settings.as_ref(), &hosts)?;
             for s in &input.sub_domain_settings {
                 branch(rec, &s.branch_name)?;
             }
@@ -219,10 +275,11 @@ impl Amplify {
         input: types::GetDomainAssociationRequest,
     ) -> Result<types::GetDomainAssociationResult, ServiceError> {
         let domain_name = normalize(&input.domain_name);
+        let arn = domain_arn(ctx, &input.app_id, &domain_name);
+        authorize(ctx, "GetDomainAssociation", &arn, ConditionContext::new())?;
         let mut st = self.write();
         let rec = app_mut(ctx, &mut st, &input.app_id)?;
-        let d = rec.domains.get(&domain_name).ok_or_else(|| not_found("Domain association", &domain_name))?;
-        authorize(ctx, "GetDomainAssociation", &d.domain.domain_association_arn, ConditionContext::new())?;
+        rec.domains.get(&domain_name).ok_or_else(|| not_found("Domain association", &domain_name))?;
         self.refresh_domains(rec);
         Ok(types::GetDomainAssociationResult { domain_association: rec.domains[&domain_name].domain.clone() })
     }
@@ -232,9 +289,10 @@ impl Amplify {
         ctx: &RequestContext,
         input: types::ListDomainAssociationsRequest,
     ) -> Result<types::ListDomainAssociationsResult, ServiceError> {
+        let arn = format!("{}/domains/*", names::caller_app_arn(ctx, &input.app_id));
+        authorize(ctx, "ListDomainAssociations", &arn, ConditionContext::new())?;
         let mut st = self.write();
         let rec = app_mut(ctx, &mut st, &input.app_id)?;
-        authorize(ctx, "ListDomainAssociations", &format!("{}/domains/*", rec.app.app_arn), ConditionContext::new())?;
         self.refresh_domains(rec);
         let all: Vec<types::DomainAssociation> = rec.domains.values().map(|d| d.domain.clone()).collect();
         let (domain_associations, next_token) = names::paginate(&all, input.next_token.as_deref(), input.max_results)?;
@@ -247,12 +305,24 @@ impl Amplify {
         input: types::UpdateDomainAssociationRequest,
     ) -> Result<types::UpdateDomainAssociationResult, ServiceError> {
         let domain_name = normalize(&input.domain_name);
+        let arn = domain_arn(ctx, &input.app_id, &domain_name);
+        authorize(ctx, "UpdateDomainAssociation", &arn, ConditionContext::new())?;
         let record = {
             let mut st = self.write();
             let rec = app_mut(ctx, &mut st, &input.app_id)?;
             let d = rec.domains.get(&domain_name).ok_or_else(|| not_found("Domain association", &domain_name))?;
-            authorize(ctx, "UpdateDomainAssociation", &d.domain.domain_association_arn, ConditionContext::new())?;
-            check_certificate(input.certificate_settings.as_ref())?;
+            let hosts: Vec<String> = match &input.sub_domain_settings {
+                Some(settings) => settings.iter().map(|s| fqdn(&s.prefix, &domain_name)).collect(),
+                None => d.domain.sub_domains.iter().map(|s| fqdn(&s.sub_domain_setting.prefix, &domain_name)).collect(),
+            };
+            // New subdomains must be covered by the custom certificate kept.
+            let effective = input.certificate_settings.clone().or_else(|| {
+                d.domain.certificate.as_ref().filter(|c| c.r#type == "CUSTOM").map(|c| types::CertificateSettings {
+                    r#type: c.r#type.clone(),
+                    custom_certificate_arn: c.custom_certificate_arn.clone(),
+                })
+            });
+            self.check_certificate(ctx, effective.as_ref(), &hosts)?;
             if let Some(settings) = &input.sub_domain_settings {
                 for s in settings {
                     branch(rec, &s.branch_name)?;
@@ -293,11 +363,11 @@ impl Amplify {
         input: types::DeleteDomainAssociationRequest,
     ) -> Result<types::DeleteDomainAssociationResult, ServiceError> {
         let domain_name = normalize(&input.domain_name);
+        let arn = domain_arn(ctx, &input.app_id, &domain_name);
+        authorize(ctx, "DeleteDomainAssociation", &arn, ConditionContext::new())?;
         let mut st = self.write();
         let rec = app_mut(ctx, &mut st, &input.app_id)?;
-        let d = rec.domains.get(&domain_name).ok_or_else(|| not_found("Domain association", &domain_name))?;
-        authorize(ctx, "DeleteDomainAssociation", &d.domain.domain_association_arn, ConditionContext::new())?;
-        let removed = rec.domains.remove(&domain_name).expect("domain exists");
+        let removed = rec.domains.remove(&domain_name).ok_or_else(|| not_found("Domain association", &domain_name))?;
         sync_branch_domains(rec);
         Ok(types::DeleteDomainAssociationResult { domain_association: removed.domain })
     }

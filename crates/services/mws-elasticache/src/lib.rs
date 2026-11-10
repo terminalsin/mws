@@ -22,6 +22,7 @@ pub mod generated {
 }
 
 pub mod backend;
+mod billing;
 mod catalog;
 mod discovery;
 mod engine;
@@ -40,6 +41,7 @@ use std::sync::{Arc, Mutex, MutexGuard, OnceLock};
 use mws_core::{HttpRequest, HttpResponse, RequestContext, Service, ServiceError};
 
 pub use backend::{BackendChoice, DockerBackend, EngineBackend, EngineKind, MetadataBackend};
+pub use billing::BillableCacheCluster;
 pub use logdelivery::{LogBatch, LogDelivery};
 pub use metrics::{CacheMetric, MetricPublisher};
 use state::{RegionState, State};

@@ -36,6 +36,7 @@ mod logging;
 mod native;
 pub mod prompt;
 pub mod providers;
+mod quotas;
 
 use std::collections::BTreeMap;
 use std::sync::{Arc, Mutex, MutexGuard, OnceLock};
@@ -43,7 +44,7 @@ use std::sync::{Arc, Mutex, MutexGuard, OnceLock};
 use chrono::{DateTime, Utc};
 use mws_bedrock::catalog::Family;
 use mws_bedrock::guard::{self, Block, Source};
-use mws_bedrock::{Bedrock, InvocationTarget};
+use mws_bedrock::{Bedrock, InvocationTarget, TargetKind};
 use mws_core::{HttpRequest, HttpResponse, RequestContext, Service, ServiceError};
 use mws_s3::S3;
 use serde::{Deserialize, Serialize};
@@ -53,6 +54,7 @@ use backend::{Script, Scripted};
 use generated::types;
 use prompt::{Completion, OutPart, Prompt, StopReason};
 pub use providers::{ProviderConfig, Providers};
+pub use quotas::{TokenUsage, TokenUsageSink};
 
 pub const SIDE_CHANNEL: &str = "/_aws/bedrock/";
 
@@ -81,6 +83,10 @@ struct Inner {
     env_providers: Providers,
     script: Script,
     state: Mutex<State>,
+    /// On-demand throughput quotas, as Service Quotas applies them.
+    quotas: mws_servicequotas::QuotaLink,
+    windows: Mutex<quotas::Windows>,
+    usage: OnceLock<Arc<dyn quotas::TokenUsageSink>>,
 }
 
 #[derive(Debug, Default, Serialize, Deserialize)]
@@ -194,6 +200,25 @@ fn json_response(status: u16, body: Value) -> HttpResponse {
         .expect("valid response")
 }
 
+/// The ARN, with its version, of the guardrail an invocation names by id
+/// or ARN.
+fn guardrail_arn(ctx: &RequestContext, ident: &str, version: &str) -> String {
+    let base = if ident.starts_with("arn:") {
+        // A versioned ARN (`...:guardrail/id:1`) keeps its own version.
+        match ident.rsplit_once('/') {
+            Some((head, id)) if id.contains(':') => return format!("{head}/{id}"),
+            _ => ident.to_string(),
+        }
+    } else {
+        format!("arn:{}:bedrock:{}:{}:guardrail/{ident}", ctx.partition, ctx.region, ctx.caller.account_id)
+    };
+    if version.is_empty() {
+        base
+    } else {
+        format!("{base}:{version}")
+    }
+}
+
 fn not_chat_model() -> ServiceError {
     validation(
         "This action doesn't support the model that you provided. Try again with a supported text or chat model.",
@@ -214,6 +239,9 @@ impl BedrockRuntime {
                 logs: OnceLock::new(),
                 sts: OnceLock::new(),
                 state: Mutex::new(State::default()),
+                quotas: Default::default(),
+                windows: Default::default(),
+                usage: OnceLock::new(),
             }),
         };
         let weak = Arc::downgrade(&runtime.inner);
@@ -227,7 +255,19 @@ impl BedrockRuntime {
                 Err(_) => tracing::warn!("no async runtime to run batch inference job {}", job.job_arn),
             }
         }));
+        bedrock.set_job_storage(Arc::new(batch::JobS3 { runtime: Arc::downgrade(&runtime.inner) }));
         runtime
+    }
+
+    /// Throttle invocations at the requests- and tokens-per-minute quotas
+    /// Service Quotas applies.
+    pub fn set_service_quotas(&self, quotas: mws_servicequotas::ServiceQuotas) {
+        self.inner.quotas.set(quotas);
+    }
+
+    /// Report the tokens each on-demand invocation uses (to Cost Explorer).
+    pub fn set_usage_sink(&self, sink: Arc<dyn quotas::TokenUsageSink>) {
+        let _ = self.inner.usage.set(sink);
     }
 
     /// Deliver invocation logs to CloudWatch Logs.
@@ -303,11 +343,33 @@ impl BedrockRuntime {
     }
 
     /// Resolve a model identifier and authorize `action` on everything it
-    /// can route to.
-    fn target(&self, ctx: &RequestContext, model_id: &str, action: &str) -> Result<InvocationTarget, ServiceError> {
+    /// can route to, with the condition keys of the invocation: the
+    /// inference profile or prompt router it goes through and the
+    /// guardrail it names (`bedrock:GuardrailIdentifier`, the guardrail's
+    /// ARN with its version).
+    fn target(
+        &self,
+        ctx: &RequestContext,
+        model_id: &str,
+        action: &str,
+        guardrail: Option<(&str, &str)>,
+    ) -> Result<InvocationTarget, ServiceError> {
         let target = self.bedrock().resolve_invocation(ctx, model_id)?;
+        let mut keys = mws_core::ConditionContext::new();
+        match target.kind {
+            TargetKind::SystemProfile | TargetKind::ApplicationProfile => {
+                keys.insert("bedrock:InferenceProfileArn".into(), vec![target.arn.clone()]);
+            }
+            TargetKind::PromptRouter => {
+                keys.insert("bedrock:PromptRouterArn".into(), vec![target.arn.clone()]);
+            }
+            _ => {}
+        }
+        if let Some((id, version)) = guardrail.filter(|(id, _)| !id.is_empty()) {
+            keys.insert("bedrock:GuardrailIdentifier".into(), vec![guardrail_arn(ctx, id, version)]);
+        }
         for r in &target.resources {
-            ctx.authorize(action, r, Default::default())?;
+            ctx.authorize(action, r, keys.clone())?;
         }
         Ok(target)
     }
@@ -416,6 +478,9 @@ impl BedrockRuntime {
     ) -> Result<(Value, Option<Run>), ServiceError> {
         match native::parse(family, model_id, body)? {
             native::Native::Chat(p) => {
+                if let Some(spec) = mws_bedrock::catalog::model(model_id) {
+                    native::check_limits(spec, &p)?;
+                }
                 let blocks: Vec<Block> = p.texts().into_iter().map(Block::text).collect();
                 let run = self.run(&p, blocks, guards).await?;
                 let mut out = native::render(family, model_id, &run.completion);
@@ -466,7 +531,12 @@ impl BedrockRuntime {
         ctx: &RequestContext,
         input: types::InvokeModelRequest,
     ) -> Result<types::InvokeModelResponse, ServiceError> {
-        let target = self.target(ctx, &input.model_id, "bedrock:InvokeModel")?;
+        let target = self.target(
+            ctx,
+            &input.model_id,
+            "bedrock:InvokeModel",
+            input.guardrail_identifier.as_deref().zip(input.guardrail_version.as_deref()),
+        )?;
         let guards = self.guards(
             ctx,
             input.guardrail_identifier.as_deref(),
@@ -475,7 +545,12 @@ impl BedrockRuntime {
         )?;
         let model = target.model;
         let body = input.body.unwrap_or_default();
+        let input_tokens = prompt::tokens(&String::from_utf8_lossy(&body));
+        let admitted = self.admit(ctx, &target, input_tokens)?;
         let (out, run) = self.invoke_native(model.family, &model.model_id, &body, &guards).await?;
+        let output_tokens = run.as_ref().map_or(0, |r| r.completion.output_tokens);
+        self.charge(ctx, admitted, output_tokens);
+        self.bill(ctx, &target, "InvokeModel", input_tokens, output_tokens);
         self.log_invocation(
             ctx,
             logging::Invocation {
@@ -504,7 +579,12 @@ impl BedrockRuntime {
         ctx: &RequestContext,
         input: types::InvokeModelWithResponseStreamRequest,
     ) -> Result<types::InvokeModelWithResponseStreamResponse, ServiceError> {
-        let target = self.target(ctx, &input.model_id, "bedrock:InvokeModelWithResponseStream")?;
+        let target = self.target(
+            ctx,
+            &input.model_id,
+            "bedrock:InvokeModelWithResponseStream",
+            input.guardrail_identifier.as_deref().zip(input.guardrail_version.as_deref()),
+        )?;
         let model = target.model;
         if !model.response_streaming_supported || !model.family.conversational() {
             return Err(validation("The model is unsupported for streaming."));
@@ -519,8 +599,18 @@ impl BedrockRuntime {
         else {
             return Err(validation("The model is unsupported for streaming."));
         };
+        native::check_limits(model, &p)?;
+        let admitted = self.admit(ctx, &target, p.input_tokens())?;
         let blocks: Vec<Block> = p.texts().into_iter().map(Block::text).collect();
         let run = self.run(&p, blocks, &guards).await?;
+        self.charge(ctx, admitted, run.completion.output_tokens);
+        self.bill(
+            ctx,
+            &target,
+            "InvokeModelWithResponseStream",
+            run.completion.input_tokens,
+            run.completion.output_tokens,
+        );
         let mut chunks = native::stream_chunks(model.family, &model.model_id, &run.completion, run.latency_ms);
         if !guards.list.is_empty() {
             if let Some(last) = chunks.last_mut() {
@@ -564,7 +654,9 @@ impl BedrockRuntime {
         if !target.model.family.conversational() {
             return Err(not_chat_model());
         }
+        converse::check_capabilities(target.model, &input)?;
         let (prompt, guard_content) = converse::prompt(input)?;
+        converse::check_limits(target.model, &prompt)?;
         let (id, version, trace) = guardrail.unwrap_or_default();
         let trace = trace.eq_ignore_ascii_case("enabled") || trace.eq_ignore_ascii_case("enabled_full");
         let guards = self.guards(ctx, Some(id), Some(version), trace)?;
@@ -581,7 +673,10 @@ impl BedrockRuntime {
         } else {
             guard_content.blocks
         };
+        let admitted = self.admit(ctx, target, prompt.input_tokens())?;
         let run = self.run(&prompt, blocks, &guards).await?;
+        self.charge(ctx, admitted, run.completion.output_tokens);
+        self.bill(ctx, target, "Converse", run.completion.input_tokens, run.completion.output_tokens);
         Ok((run, trace && !guards.list.is_empty()))
     }
 
@@ -594,7 +689,12 @@ impl BedrockRuntime {
         ctx: &RequestContext,
         input: types::ConverseRequest,
     ) -> Result<types::ConverseResponse, ServiceError> {
-        let target = self.target(ctx, &input.model_id, "bedrock:InvokeModel")?;
+        let target = self.target(
+            ctx,
+            &input.model_id,
+            "bedrock:InvokeModel",
+            input.guardrail_config.as_ref().map(|g| (g.guardrail_identifier.as_str(), g.guardrail_version.as_str())),
+        )?;
         let model_id = target.model.model_id.clone();
         let guardrail = input
             .guardrail_config
@@ -611,6 +711,7 @@ impl BedrockRuntime {
                     inference: input.inference_config.as_ref(),
                     tools: input.tool_config.as_ref(),
                     prompt_variables: input.prompt_variables.as_ref(),
+                    additional_fields: input.additional_model_request_fields.as_deref(),
                 },
                 guardrail,
             )
@@ -651,7 +752,12 @@ impl BedrockRuntime {
         ctx: &RequestContext,
         input: types::ConverseStreamRequest,
     ) -> Result<types::ConverseStreamResponse, ServiceError> {
-        let target = self.target(ctx, &input.model_id, "bedrock:InvokeModelWithResponseStream")?;
+        let target = self.target(
+            ctx,
+            &input.model_id,
+            "bedrock:InvokeModelWithResponseStream",
+            input.guardrail_config.as_ref().map(|g| (g.guardrail_identifier.as_str(), g.guardrail_version.as_str())),
+        )?;
         if !target.model.response_streaming_supported {
             return Err(validation("The model is unsupported for streaming."));
         }
@@ -671,6 +777,7 @@ impl BedrockRuntime {
                     inference: input.inference_config.as_ref(),
                     tools: input.tool_config.as_ref(),
                     prompt_variables: input.prompt_variables.as_ref(),
+                    additional_fields: input.additional_model_request_fields.as_deref(),
                 },
                 guardrail,
             )
@@ -712,7 +819,7 @@ impl BedrockRuntime {
         ctx: &RequestContext,
         input: types::CountTokensRequest,
     ) -> Result<types::CountTokensResponse, ServiceError> {
-        let target = self.target(ctx, &input.model_id, "bedrock:CountTokens")?;
+        let target = self.target(ctx, &input.model_id, "bedrock:CountTokens", None)?;
         let model = target.model;
         if model.family != Family::Anthropic {
             return Err(validation(format!("The provided model {} doesn't support counting tokens.", input.model_id)));
@@ -730,6 +837,7 @@ impl BedrockRuntime {
                     inference: None,
                     tools: r.tool_config.as_ref(),
                     prompt_variables: None,
+                    additional_fields: r.additional_model_request_fields.as_deref(),
                 })?;
                 p.input_tokens()
             }
@@ -786,7 +894,7 @@ impl BedrockRuntime {
         ctx: &RequestContext,
         input: types::StartAsyncInvokeRequest,
     ) -> Result<types::StartAsyncInvokeResponse, ServiceError> {
-        let target = self.target(ctx, &input.model_id, "bedrock:InvokeModel")?;
+        let target = self.target(ctx, &input.model_id, "bedrock:InvokeModel", None)?;
         if let Some(token) = input.client_request_token.as_deref() {
             let st = self.lock();
             if let Some(existing) = st

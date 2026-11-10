@@ -3384,6 +3384,7 @@ dependencies = [
  "mws-proto-restjson",
  "mws-route53",
  "mws-s3",
+ "mws-servicequotas",
  "percent-encoding",
  "rand 0.8.8",
  "regex",
@@ -3464,6 +3465,7 @@ dependencies = [
  "mws-proto-json",
  "mws-proto-restjson",
  "mws-s3",
+ "mws-servicequotas",
  "mws-sts",
  "rustls 0.23.46",
  "rustls-native-certs",
@@ -4670,7 +4672,9 @@ name = "mws-servicequotas"
 version = "0.1.0"
 dependencies = [
  "async-trait",
+ "bytes",
  "chrono",
+ "http 1.5.0",
  "mws-codegen",
  "mws-core",
  "mws-proto-json",

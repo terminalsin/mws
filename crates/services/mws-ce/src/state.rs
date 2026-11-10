@@ -151,8 +151,13 @@ pub struct Account {
 pub struct State {
     /// Seeded records.
     pub records: Vec<CostRecord>,
-    /// Request charges MWS derived from API calls, aggregated by hour and
-    /// line item.
+    /// Charges MWS derived (API requests, resource-hours and storage,
+    /// usage other services charged), aggregated by hour and line item.
     pub derived: BTreeMap<String, CostRecord>,
+    /// How far each running resource has been accrued (epoch ms), by
+    /// `account|region|usage type|resource id`.
+    pub meters: BTreeMap<String, i64>,
+    /// When the resource sources were last sampled.
+    pub last_sample: i64,
     pub accounts: BTreeMap<String, Account>,
 }

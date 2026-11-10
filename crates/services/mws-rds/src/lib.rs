@@ -18,6 +18,7 @@ pub mod generated {
 }
 
 pub mod backend;
+mod billing;
 mod catalog;
 mod forward;
 mod handler;
@@ -34,6 +35,7 @@ use mws_kms::Kms;
 use mws_secretsmanager::SecretsManager;
 
 pub use backend::{BackendChoice, DatabaseBackend, DockerBackend, MetadataBackend};
+pub use billing::BillableDbInstance;
 use state::{RegionState, State};
 
 /// A VPC subnet, as RDS reads it from EC2.

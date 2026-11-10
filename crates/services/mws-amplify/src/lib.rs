@@ -21,7 +21,10 @@
 //! AWS couples Amplify to S3 (deploying from buckets, as the
 //! `amplify.amazonaws.com` service principal judged by the bucket policy)
 //! and Route 53 (custom domain records and verification), so this crate
-//! uses their public APIs.
+//! uses their public APIs. IAM, STS, SSM and ACM are reached through
+//! [`AmplifyPlatform`]: service and compute roles (`iam:PassRole`), build
+//! credentials from the app's service role, secrets from Parameter Store and
+//! custom certificates. Quotas come from Service Quotas.
 
 #[allow(clippy::all, dead_code, unused_imports, non_snake_case, non_camel_case_types)]
 pub mod generated {
@@ -37,14 +40,16 @@ mod hosting;
 mod http;
 mod jobs;
 mod names;
+mod platform;
 mod rules;
 mod state;
 
 use std::collections::HashMap;
-use std::sync::{Arc, Mutex, RwLock, RwLockReadGuard, RwLockWriteGuard};
+use std::sync::{Arc, Mutex, OnceLock, RwLock, RwLockReadGuard, RwLockWriteGuard};
 
 use mws_core::{HttpRequest, HttpResponse, RequestContext, Service, ServiceError};
 
+pub use platform::{AmplifyPlatform, CertificateInfo, RoleSession};
 use state::State;
 
 pub(crate) struct Inner {
@@ -55,6 +60,8 @@ pub(crate) struct Inner {
     running: Mutex<HashMap<String, Arc<tokio::sync::Notify>>>,
     /// One job at a time per branch, by `appId/branch`.
     branch_locks: Mutex<HashMap<String, Arc<tokio::sync::Mutex<()>>>>,
+    platform: OnceLock<Arc<dyn AmplifyPlatform>>,
+    quotas: mws_servicequotas::QuotaLink,
 }
 
 /// The Amplify service. Cheap to clone; clones share state.
@@ -88,8 +95,31 @@ impl Amplify {
                 route53,
                 running: Mutex::new(HashMap::new()),
                 branch_locks: Mutex::new(HashMap::new()),
+                platform: OnceLock::new(),
+                quotas: mws_servicequotas::QuotaLink::default(),
             }),
         }
+    }
+
+    /// Reach IAM, STS, SSM and ACM through `platform`.
+    pub fn set_platform(&self, platform: Arc<dyn AmplifyPlatform>) {
+        let _ = self.inner.platform.set(platform);
+    }
+
+    /// Enforce Amplify's quotas (apps, branches per app, domains per app)
+    /// as Service Quotas applies them.
+    pub fn set_service_quotas(&self, quotas: mws_servicequotas::ServiceQuotas) {
+        self.inner.quotas.set(quotas);
+    }
+
+    pub(crate) fn platform(&self) -> Option<&Arc<dyn AmplifyPlatform>> {
+        self.inner.platform.get()
+    }
+
+    /// The applied value of Amplify quota `code`. Never call while holding
+    /// the state lock.
+    pub(crate) fn quota(&self, ctx: &RequestContext, code: &str) -> usize {
+        self.inner.quotas.limit(&ctx.caller.account_id, &ctx.region, "amplify", code, ctx.received_at)
     }
 
     pub(crate) fn read(&self) -> RwLockReadGuard<'_, State> {

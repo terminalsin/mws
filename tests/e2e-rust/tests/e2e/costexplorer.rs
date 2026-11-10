@@ -820,3 +820,282 @@ async fn resources_settings_and_recommendations() {
     let analyses = ce.list_commitment_purchase_analyses().send().await.unwrap();
     assert!(analyses.analysis_summary_list().is_empty());
 }
+
+fn category_rule(value: &str, service: &str) -> CostCategoryRule {
+    CostCategoryRule::builder().value(value).rule(dims(Dimension::Service, &[service])).build()
+}
+
+async fn advance_clock(mws: &Mws, seconds: i64) {
+    let (status, _) = mws.control("POST", "/_mws/clock", Some(&format!(r#"{{"advanceSeconds": {seconds}}}"#))).await;
+    assert_eq!(status, 200);
+}
+
+async fn reset_clock(mws: &Mws) {
+    let _ = mws.control("POST", "/_mws/clock", Some(r#"{"offsetSeconds": 0}"#)).await;
+}
+
+#[tokio::test]
+async fn running_instances_accrue_hours_with_resource_ids_and_tags() {
+    let mws =
+        Mws::start_with(mws::Config { ec2_backend: mws_ec2::BackendChoice::Metadata, ..Default::default() }).await;
+    let cfg = mws.root_sdk_config().await;
+    let ec2 = aws_sdk_ec2::Client::new(&cfg);
+    let ce = Client::new(&cfg);
+    let images = ec2.describe_images().owners("amazon").send().await.unwrap();
+    let image = images.images()[0].image_id().unwrap().to_string();
+    let tag = aws_sdk_ec2::types::TagSpecification::builder()
+        .resource_type(aws_sdk_ec2::types::ResourceType::Instance)
+        .tags(aws_sdk_ec2::types::Tag::builder().key("team").value("web").build())
+        .build();
+    let run = ec2
+        .run_instances()
+        .image_id(image)
+        .instance_type(aws_sdk_ec2::types::InstanceType::T3Micro)
+        .tag_specifications(tag)
+        .min_count(1)
+        .max_count(1)
+        .send()
+        .await
+        .unwrap();
+    let id = run.instances()[0].instance_id().unwrap().to_string();
+    for _ in 0..100 {
+        let d = ec2.describe_instances().instance_ids(&id).send().await.unwrap();
+        if d.reservations()[0].instances()[0].state().and_then(|s| s.name()).map(|n| n.as_str()) == Some("running") {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(100)).await;
+    }
+
+    // An hour later the instance's tag shows up in the data and can be
+    // activated as a cost allocation tag; two more hours accrue with it.
+    advance_clock(&mws, 3600).await;
+    let tags = ce.list_cost_allocation_tags().send().await.unwrap();
+    assert!(tags.cost_allocation_tags().iter().any(|t| t.tag_key() == "team"), "{tags:?}");
+    ce.update_cost_allocation_tags_status()
+        .cost_allocation_tags_status(
+            CostAllocationTagStatusEntry::builder()
+                .tag_key("team")
+                .status(CostAllocationTagStatus::Active)
+                .build()
+                .unwrap(),
+        )
+        .send()
+        .await
+        .unwrap();
+    advance_clock(&mws, 2 * 3600).await;
+
+    let by_service = ce
+        .get_cost_and_usage()
+        .time_period(interval(day(-1), day(2)))
+        .granularity(Granularity::Monthly)
+        .metrics("UnblendedCost")
+        .metrics("UsageQuantity")
+        .group_by(group(GroupDefinitionType::Dimension, "SERVICE"))
+        .send()
+        .await
+        .unwrap();
+    let mut cost = 0.0;
+    let mut hours = 0.0;
+    for r in by_service.results_by_time() {
+        for g in r.groups() {
+            if g.keys() == [EC2] {
+                cost += amount(g.metrics().unwrap().get("UnblendedCost"));
+                hours += amount(g.metrics().unwrap().get("UsageQuantity"));
+            }
+        }
+    }
+    // Three hours of t3.micro at $0.0104 an hour.
+    assert!((2.95..3.2).contains(&hours), "{hours} hours");
+    assert!((0.0306..0.0333).contains(&cost), "${cost}");
+
+    let resources = ce
+        .get_cost_and_usage_with_resources()
+        .time_period(interval(day(-1), day(2)))
+        .granularity(Granularity::Daily)
+        .filter(dims(Dimension::Service, &[EC2]))
+        .metrics("UnblendedCost")
+        .group_by(group(GroupDefinitionType::Dimension, "RESOURCE_ID"))
+        .group_by(group(GroupDefinitionType::Tag, "team"))
+        .send()
+        .await
+        .unwrap();
+    let mut tagged = 0.0;
+    for r in resources.results_by_time() {
+        for g in r.groups() {
+            assert_eq!(g.keys()[0], id, "{:?}", g.keys());
+            if g.keys()[1] == "team$web" {
+                tagged += amount(g.metrics().unwrap().get("UnblendedCost"));
+            }
+        }
+    }
+    // The two hours since activation carry the tag.
+    assert!((0.019..0.0333).contains(&tagged), "${tagged}");
+    reset_clock(&mws).await;
+}
+
+#[tokio::test]
+async fn cost_category_permissions_follow_its_arn_and_tags() {
+    let mws = Mws::start().await;
+    let ce = Client::new(&mws.root_sdk_config().await);
+    let finance = aws_sdk_costexplorer::types::ResourceTag::builder().key("team").value("finance").build().unwrap();
+    let arn = ce
+        .create_cost_category_definition()
+        .name("Finance")
+        .rule_version(CostCategoryRuleVersion::CostCategoryExpressionV1)
+        .rules(category_rule("Compute", EC2))
+        .resource_tags(finance.clone())
+        .send()
+        .await
+        .unwrap()
+        .cost_category_arn()
+        .unwrap()
+        .to_string();
+    let policy = json!({"Version": "2012-10-17", "Statement": [
+        {"Effect": "Allow", "Action": "ce:*", "Resource": "*"},
+        {"Effect": "Deny", "Action": "ce:DescribeCostCategoryDefinition", "Resource": arn},
+        {"Effect": "Deny", "Action": "ce:DeleteCostCategoryDefinition", "Resource": "*",
+         "Condition": {"StringEquals": {"aws:ResourceTag/team": "finance"}}},
+        {"Effect": "Deny", "Action": "ce:CreateCostCategoryDefinition", "Resource": "*",
+         "Condition": {"StringEquals": {"aws:RequestTag/team": "finance"}}}
+    ]});
+    let (_, cfg) = mws_e2e::user_with_policy(&mws, "analyst", Some(&policy.to_string())).await;
+    let user = Client::new(&cfg);
+    let err = user.describe_cost_category_definition().cost_category_arn(&arn).send().await.unwrap_err();
+    assert_eq!(err.code(), Some("AccessDeniedException"), "{err:?}");
+    let err = user.delete_cost_category_definition().cost_category_arn(&arn).send().await.unwrap_err();
+    assert_eq!(err.code(), Some("AccessDeniedException"), "{err:?}");
+    let err = user
+        .create_cost_category_definition()
+        .name("More")
+        .rule_version(CostCategoryRuleVersion::CostCategoryExpressionV1)
+        .rules(category_rule("Compute", EC2))
+        .resource_tags(finance)
+        .send()
+        .await
+        .unwrap_err();
+    assert_eq!(err.code(), Some("AccessDeniedException"), "{err:?}");
+    let web = aws_sdk_costexplorer::types::ResourceTag::builder().key("team").value("web").build().unwrap();
+    let other = user
+        .create_cost_category_definition()
+        .name("Web")
+        .rule_version(CostCategoryRuleVersion::CostCategoryExpressionV1)
+        .rules(category_rule("Compute", EC2))
+        .resource_tags(web)
+        .send()
+        .await
+        .unwrap();
+    let other = other.cost_category_arn().unwrap();
+    user.describe_cost_category_definition().cost_category_arn(other).send().await.unwrap();
+    user.delete_cost_category_definition().cost_category_arn(other).send().await.unwrap();
+    assert_eq!(user.list_cost_category_definitions().send().await.unwrap().cost_category_references().len(), 1);
+}
+
+fn hour_str(t: chrono::DateTime<Utc>) -> String {
+    t.format("%Y-%m-%dT%H:00:00Z").to_string()
+}
+
+#[tokio::test]
+async fn time_windows_are_validated_and_results_paginate() {
+    let mws = Mws::start().await;
+    let ce = Client::new(&mws.root_sdk_config().await);
+    let now = Utc::now();
+    let hourly = |start: chrono::DateTime<Utc>| {
+        DateInterval::builder().start(hour_str(start)).end(hour_str(now)).build().unwrap()
+    };
+
+    // Hourly data covers the last 14 days.
+    let err = ce
+        .get_cost_and_usage()
+        .time_period(hourly(now - chrono::Duration::days(20)))
+        .granularity(Granularity::Hourly)
+        .metrics("UnblendedCost")
+        .send()
+        .await
+        .unwrap_err();
+    assert_eq!(err.code(), Some("ValidationException"), "{err:?}");
+    // History goes back 13 months.
+    let err = ce
+        .get_cost_and_usage()
+        .time_period(interval(day(-450), day(0)))
+        .granularity(Granularity::Monthly)
+        .metrics("UnblendedCost")
+        .send()
+        .await
+        .unwrap_err();
+    assert_eq!(err.code(), Some("DataUnavailableException"), "{err:?}");
+
+    // 120 hours come in pages of 100 periods.
+    let first = ce
+        .get_cost_and_usage()
+        .time_period(hourly(now - chrono::Duration::hours(120)))
+        .granularity(Granularity::Hourly)
+        .metrics("UnblendedCost")
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(first.results_by_time().len(), 100);
+    let token = first.next_page_token().expect("a second page").to_string();
+    let second = ce
+        .get_cost_and_usage()
+        .time_period(hourly(now - chrono::Duration::hours(120)))
+        .granularity(Granularity::Hourly)
+        .metrics("UnblendedCost")
+        .next_page_token(token)
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(second.results_by_time().len(), 20);
+    assert!(second.next_page_token().is_none());
+    assert_eq!(
+        second.results_by_time()[19].time_period().unwrap().end(),
+        hour_str(now),
+        "the last page ends where the period does"
+    );
+}
+
+#[tokio::test]
+async fn bedrock_tokens_are_charged_per_model() {
+    use aws_sdk_bedrockruntime::types::{ContentBlock, ConversationRole, Message};
+    let mws = Mws::start().await;
+    let cfg = mws.root_sdk_config().await;
+    let runtime = aws_sdk_bedrockruntime::Client::new(&cfg);
+    let ce = Client::new(&cfg);
+    let model = "amazon.nova-lite-v1:0";
+    let out = runtime
+        .converse()
+        .model_id(model)
+        .messages(
+            Message::builder()
+                .role(ConversationRole::User)
+                .content(ContentBlock::Text("Say something about cost allocation.".into()))
+                .build()
+                .unwrap(),
+        )
+        .send()
+        .await
+        .unwrap();
+    let usage = out.usage().unwrap();
+    let tokens = (usage.input_tokens() + usage.output_tokens()) as f64;
+
+    let costs = ce
+        .get_cost_and_usage_with_resources()
+        .time_period(interval(day(-1), day(2)))
+        .granularity(Granularity::Daily)
+        .filter(dims(Dimension::Service, &["Amazon Bedrock"]))
+        .metrics("UnblendedCost")
+        .metrics("UsageQuantity")
+        .group_by(group(GroupDefinitionType::Dimension, "RESOURCE_ID"))
+        .send()
+        .await
+        .unwrap();
+    let (mut cost, mut quantity) = (0.0, 0.0);
+    for r in costs.results_by_time() {
+        for g in r.groups() {
+            assert!(g.keys()[0].ends_with(&format!("foundation-model/{model}")), "{:?}", g.keys());
+            cost += amount(g.metrics().unwrap().get("UnblendedCost"));
+            quantity += amount(g.metrics().unwrap().get("UsageQuantity"));
+        }
+    }
+    assert_eq!(quantity, tokens, "{costs:?}");
+    assert!(cost > 0.0, "{costs:?}");
+}

@@ -182,8 +182,15 @@ fn echo(prompt: &Prompt, input_tokens: u32) -> Completion {
             stop = StopReason::MaxTokens;
         }
     }
-    let output_tokens = tokens(&text).max(1);
-    Completion { parts: vec![OutPart::Text(text)], stop_reason: stop, stop_sequence, input_tokens, output_tokens }
+    let mut parts = Vec::new();
+    // With extended thinking on, Claude thinks before it answers.
+    if crate::prompt::thinking_budget(&prompt.extra).is_some() {
+        let thought = format!("The user wrote: {}", prompt.last_user_text());
+        parts.push(OutPart::Reasoning(thought));
+    }
+    let output_tokens = parts.iter().map(out_tokens).sum::<u32>() + tokens(&text).max(1);
+    parts.push(OutPart::Text(text));
+    Completion { parts, stop_reason: stop, stop_sequence, input_tokens, output_tokens }
 }
 
 fn upstream_error(status: u16, body: &[u8]) -> BackendError {
@@ -295,6 +302,9 @@ impl Backend for OpenAiCompatible {
                 ToolChoice::Tool(n) => json!({"type": "function", "function": {"name": n}}),
                 _ => json!("auto"),
             };
+        }
+        for (k, v) in &prompt.extra {
+            body[k] = v.clone();
         }
         apply_params(&mut body, &self.provider);
         let mut headers = Vec::new();

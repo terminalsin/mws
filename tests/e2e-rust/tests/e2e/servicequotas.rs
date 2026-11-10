@@ -2,7 +2,9 @@
 //! defaults, increase requests that are approved and then enforced by the
 //! services (EC2 vCPUs, IAM managed policies, Lambda concurrency),
 //! `AWS/Usage` metrics with CloudWatch's `SERVICE_QUOTA()`, utilization
-//! reports, tags, automatic management and the organization's template.
+//! reports, tags, automatic management and the organization's template;
+//! large increases that become support cases and are decided through the
+//! control endpoint, and quotas of ECS, Fargate, ECR and Lambda.
 
 use std::time::Duration;
 
@@ -333,6 +335,10 @@ async fn tags_support_cases_and_auto_management() {
     assert!(got.requested_quota().unwrap().case_id().is_some());
     let e = sq.create_support_case().request_id(&id).send().await.unwrap_err();
     assert_eq!(code(&e), "ResourceAlreadyExistsException");
+    // Support cases are reviewed by people (a day by default); approve it.
+    let (status, _) =
+        mws.control("POST", &format!("/_aws/servicequotas/requests/{id}"), Some(r#"{"status":"APPROVED"}"#)).await;
+    assert_eq!(status, 200);
     approved(&sq, &id).await;
 
     let off = sq.get_auto_management_configuration().send().await.unwrap();
@@ -588,4 +594,105 @@ async fn automatic_management_raises_quotas_near_their_limit() {
     for _ in 0..6 {
         ec2.allocate_address().domain(aws_sdk_ec2::types::DomainType::Vpc).send().await.unwrap();
     }
+}
+
+async fn status_of(sq: &Client, id: &str) -> RequestStatus {
+    let r = sq.get_requested_service_quota_change().request_id(id).send().await.unwrap();
+    r.requested_quota().unwrap().status().unwrap().clone()
+}
+
+#[tokio::test]
+async fn large_increases_open_a_case_that_can_be_denied() {
+    let mws = Mws::start().await;
+    let sq = Client::new(&mws.root_sdk_config().await);
+    // Far beyond 20 times the starting value: no automatic approval.
+    let r = sq
+        .request_service_quota_increase()
+        .service_code("ec2")
+        .quota_code(VCPUS)
+        .desired_value(100_000.0)
+        .send()
+        .await
+        .unwrap();
+    let id = r.requested_quota().unwrap().id().unwrap().to_string();
+    assert_eq!(r.requested_quota().unwrap().status(), Some(&RequestStatus::Pending));
+    let mut opened = false;
+    for _ in 0..50 {
+        if status_of(&sq, &id).await == RequestStatus::CaseOpened {
+            opened = true;
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(100)).await;
+    }
+    assert!(opened, "the request became a support case");
+    let got = sq.get_requested_service_quota_change().request_id(&id).send().await.unwrap();
+    assert!(got.requested_quota().unwrap().case_id().is_some());
+
+    let (status, body) =
+        mws.control("POST", &format!("/_aws/servicequotas/requests/{id}"), Some(r#"{"status":"DENIED"}"#)).await;
+    assert_eq!(status, 200, "{body}");
+    assert_eq!(status_of(&sq, &id).await, RequestStatus::Denied);
+    let applied = sq.get_service_quota().service_code("ec2").quota_code(VCPUS).send().await.unwrap();
+    assert_eq!(applied.quota().unwrap().value(), Some(1152.0));
+    let (status, _) =
+        mws.control("POST", &format!("/_aws/servicequotas/requests/{id}"), Some(r#"{"status":"APPROVED"}"#)).await;
+    assert_eq!(status, 409, "a closed request can't be decided again");
+
+    // With automatic approval off, even small requests wait for a decision.
+    let (status, review) = mws.control("POST", "/_aws/servicequotas/review", Some(r#"{"autoApprove":false}"#)).await;
+    assert_eq!(status, 200);
+    assert_eq!(review["autoApprove"], false);
+    let r = sq
+        .request_service_quota_increase()
+        .service_code("lambda")
+        .quota_code("L-B99A9384")
+        .desired_value(1500.0)
+        .send()
+        .await
+        .unwrap();
+    let small = r.requested_quota().unwrap().id().unwrap().to_string();
+    tokio::time::sleep(Duration::from_millis(1500)).await;
+    assert_eq!(status_of(&sq, &small).await, RequestStatus::Pending);
+    let (_, listed) = mws.control("GET", "/_aws/servicequotas/requests", None).await;
+    assert_eq!(listed["requests"].as_array().unwrap().len(), 2);
+    let (status, _) =
+        mws.control("POST", &format!("/_aws/servicequotas/requests/{small}"), Some(r#"{"status":"APPROVED"}"#)).await;
+    assert_eq!(status, 200);
+    let applied = sq.get_service_quota().service_code("lambda").quota_code("L-B99A9384").send().await.unwrap();
+    assert_eq!(applied.quota().unwrap().value(), Some(1500.0));
+
+    // Cases are reviewed for a day of emulated time, then end as the
+    // policy says.
+    mws.control("POST", "/_aws/servicequotas/review", Some(r#"{"autoApprove":true,"caseOutcome":"NOT_APPROVED"}"#))
+        .await;
+    let r = sq
+        .request_service_quota_increase()
+        .service_code("vpc")
+        .quota_code("L-F678F1CE")
+        .desired_value(10.0)
+        .send()
+        .await
+        .unwrap();
+    let case = r.requested_quota().unwrap().id().unwrap().to_string();
+    sq.create_support_case().request_id(&case).send().await.unwrap();
+    let (status, _) = mws.control("POST", "/_mws/clock", Some(r#"{"advanceSeconds": 90000}"#)).await;
+    assert_eq!(status, 200);
+    assert_eq!(status_of(&sq, &case).await, RequestStatus::NotApproved);
+    let _ = mws.control("POST", "/_mws/clock", Some(r#"{"offsetSeconds": 0}"#)).await;
+}
+
+#[tokio::test]
+async fn container_quotas_are_in_the_catalogue() {
+    let mws = Mws::start().await;
+    let sq = Client::new(&mws.root_sdk_config().await);
+    let clusters = sq.get_service_quota().service_code("ecs").quota_code("L-21C621EB").send().await.unwrap();
+    assert_eq!(clusters.quota().unwrap().quota_name(), Some("Clusters per account"));
+    assert_eq!(clusters.quota().unwrap().value(), Some(10000.0));
+    let fargate = sq.list_service_quotas().service_code("fargate").send().await.unwrap();
+    let vcpu = fargate.quotas().iter().find(|q| q.quota_code() == Some("L-3032A538")).unwrap();
+    assert_eq!(vcpu.quota_name(), Some("Fargate On-Demand vCPU resource count"));
+    let ecr = sq.get_aws_default_service_quota().service_code("ecr").quota_code("L-03A36CE1").send().await.unwrap();
+    assert_eq!(ecr.quota().unwrap().value(), Some(20000.0));
+    let services = sq.list_services().send().await.unwrap();
+    assert!(services.services().iter().any(|s| s.service_code() == Some("fargate")));
 }

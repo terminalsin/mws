@@ -2,9 +2,13 @@
 //! each, and write `<file>.out` and `manifest.json.out` under
 //! `<output>/<job id>/`, as Bedrock does.
 
+use std::sync::{Arc, Weak};
+
+use mws_bedrock::storage::{JobStorage, RoleStorage};
 use mws_bedrock::BatchJob;
 use mws_core::RequestContext;
 use mws_s3::generated::types::{GetObjectRequest, ListObjectsV2Request, PutObjectRequest};
+use mws_s3::S3;
 use serde_json::{json, Value};
 
 use crate::{join_key, s3_location, BedrockRuntime, Guards};
@@ -19,9 +23,15 @@ impl BedrockRuntime {
         let now = job.submitted + chrono::Duration::seconds(1);
         match result {
             Ok(counts) => bedrock.finish_invocation_job(&job.account, &job.region, &job.job_arn, now, counts, None),
-            Err(message) => {
-                bedrock.finish_invocation_job(&job.account, &job.region, &job.job_arn, now, (0, 0, 0), Some(message))
-            }
+            // Validation failures end the job at once.
+            Err(message) => bedrock.finish_invocation_job(
+                &job.account,
+                &job.region,
+                &job.job_arn,
+                job.submitted,
+                (0, 0, 0),
+                Some(message),
+            ),
         }
     }
 
@@ -34,7 +44,7 @@ impl BedrockRuntime {
         let mut ctx = job.context.clone();
         ctx.received_at = job.submitted;
         let role = self.role_context(&ctx, &job.role_arn, &job.job_arn, "BedrockBatchInference")?;
-        let io = RoleS3 { runtime: self, ctx: &role };
+        let io = RoleS3 { s3: self.inner.s3.clone(), ctx: role };
         let keys = match io.get(&in_bucket, &in_key) {
             Ok(_) if !in_key.is_empty() => vec![in_key.clone()],
             _ => {
@@ -49,12 +59,27 @@ impl BedrockRuntime {
         if keys.is_empty() {
             return Err(format!("No .jsonl input files were found at {}.", job.input_uri));
         }
-        let guards = Guards { list: Vec::new(), trace: false };
-        let (mut total, mut ok, mut errors, mut tokens_in, mut tokens_out) = (0i64, 0i64, 0i64, 0i64, 0i64);
+        // Validate: read every file and count its records first.
+        let mut files = Vec::new();
         for key in keys {
             let body = io
                 .get(&in_bucket, &key)
                 .map_err(|e| format!("Unable to read the input S3 object s3://{in_bucket}/{key}: {e}"))?;
+            files.push((key, body));
+        }
+        let records = files
+            .iter()
+            .map(|(_, b)| String::from_utf8_lossy(b).lines().filter(|l| !l.trim().is_empty()).count())
+            .sum::<usize>();
+        let min = self.inner.quotas.value(&job.account, &job.region, "bedrock", MIN_RECORDS_QUOTA, job.submitted);
+        if min.is_finite() && (records as f64) < min {
+            return Err(format!(
+                "The number of records in the job's input files ({records}) is less than the minimum number of records per batch inference job ({min}). Add records and try again."
+            ));
+        }
+        let guards = Guards { list: Vec::new(), trace: false };
+        let (mut total, mut ok, mut errors, mut tokens_in, mut tokens_out) = (0i64, 0i64, 0i64, 0i64, 0i64);
+        for (key, body) in files {
             let mut out = String::new();
             for line in String::from_utf8_lossy(&body).lines().filter(|l| !l.trim().is_empty()) {
                 total += 1;
@@ -96,16 +121,55 @@ impl BedrockRuntime {
     }
 }
 
-/// S3 as the job role sees it.
-struct RoleS3<'a> {
-    runtime: &'a BedrockRuntime,
-    ctx: &'a RequestContext,
+/// The Service Quotas code of "Minimum number of records per batch
+/// inference job".
+const MIN_RECORDS_QUOTA: &str = "L-29806334";
+
+/// S3 as a job role sees it.
+struct RoleS3 {
+    s3: S3,
+    ctx: RequestContext,
 }
 
-impl RoleS3<'_> {
+/// Customization, import and evaluation jobs' S3 access, for the control
+/// plane: the job role assumed through STS.
+pub(crate) struct JobS3 {
+    pub(crate) runtime: Weak<crate::Inner>,
+}
+
+impl JobStorage for JobS3 {
+    fn assume(
+        &self,
+        ctx: &RequestContext,
+        role_arn: &str,
+        source_arn: &str,
+        session: &str,
+    ) -> Result<Arc<dyn RoleStorage>, String> {
+        let inner = self.runtime.upgrade().ok_or("Bedrock is shutting down")?;
+        let runtime = BedrockRuntime { inner };
+        let role = runtime.role_context(ctx, role_arn, source_arn, session)?;
+        Ok(Arc::new(RoleS3 { s3: runtime.inner.s3.clone(), ctx: role }))
+    }
+}
+
+impl RoleStorage for RoleS3 {
+    fn get(&self, bucket: &str, key: &str) -> Result<Vec<u8>, String> {
+        RoleS3::get(self, bucket, key)
+    }
+
+    fn list(&self, bucket: &str, prefix: &str) -> Result<Vec<String>, String> {
+        RoleS3::list(self, bucket, prefix)
+    }
+
+    fn put(&self, bucket: &str, key: &str, body: Vec<u8>, content_type: &str) -> Result<(), String> {
+        RoleS3::put(self, bucket, key, body, content_type)
+    }
+}
+
+impl RoleS3 {
     fn get(&self, bucket: &str, key: &str) -> Result<Vec<u8>, String> {
         let input = GetObjectRequest { bucket: bucket.into(), key: key.into(), ..Default::default() };
-        self.runtime.inner.s3.get_object_as_caller(self.ctx, input).map(|o| o.body).map_err(|e| e.message)
+        self.s3.get_object_as_caller(&self.ctx, input).map(|o| o.body).map_err(|e| e.message)
     }
 
     fn list(&self, bucket: &str, prefix: &str) -> Result<Vec<String>, String> {
@@ -118,7 +182,7 @@ impl RoleS3<'_> {
                 continuation_token: token.take(),
                 ..Default::default()
             };
-            let out = self.runtime.inner.s3.list_objects_as_caller(self.ctx, input).map_err(|e| e.message)?;
+            let out = self.s3.list_objects_as_caller(&self.ctx, input).map_err(|e| e.message)?;
             keys.extend(out.contents.unwrap_or_default().into_iter().filter_map(|o| o.key));
             match out.next_continuation_token {
                 Some(t) if out.is_truncated == Some(true) => token = Some(t),
@@ -135,6 +199,6 @@ impl RoleS3<'_> {
             content_type: Some(content_type.into()),
             ..Default::default()
         };
-        self.runtime.inner.s3.put_object_as_caller(self.ctx, input).map(|_| ()).map_err(|e| e.message)
+        self.s3.put_object_as_caller(&self.ctx, input).map(|_| ()).map_err(|e| e.message)
     }
 }

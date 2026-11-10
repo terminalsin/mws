@@ -20,6 +20,7 @@ mws-proto-json.workspace = true
 mws-proto-restjson.workspace = true
 mws-route53.workspace = true
 mws-s3.workspace = true
+mws-servicequotas.workspace = true
 percent-encoding.workspace = true
 rand.workspace = true
 regex.workspace = true

@@ -26,6 +26,7 @@ pub mod generated {
 
 mod asg;
 pub mod backend;
+mod billing;
 mod capacity;
 mod clusters;
 mod console;
@@ -54,6 +55,7 @@ use std::sync::{Arc, Mutex, MutexGuard, OnceLock};
 use mws_core::{HttpRequest, HttpResponse, RequestContext, Service, ServiceError};
 
 pub use backend::{BackendChoice, ContainerBackend, DockerBackend, MetadataBackend};
+pub use billing::BillableTask;
 pub use platform::TaskPlatform;
 use state::{Region, State};
 

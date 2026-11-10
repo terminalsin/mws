@@ -7,7 +7,7 @@ use mws_core::{RequestContext, ServiceError};
 
 use crate::catalog::{self, QuotaDef};
 use crate::generated::{types as t, Handler};
-use crate::state::{self, Account, AutoManagement, Report, ReportEntry, Request, APPROVAL_MS};
+use crate::state::{self, Account, AutoManagement, Report, ReportEntry, Request};
 use crate::ServiceQuotas;
 
 const MAX_TAGS: usize = 50;
@@ -106,8 +106,9 @@ impl ServiceQuotas {
     fn with_account<R>(&self, ctx: &RequestContext, f: impl FnOnce(&mut Account) -> R) -> R {
         self.apply_template(&ctx.caller.account_id, ctx.received_at);
         let mut st = self.lock();
+        let review = st.review.clone();
         let acct = st.accounts.entry(ctx.caller.account_id.clone()).or_default();
-        acct.settle(ctx.received_at.timestamp_millis());
+        acct.settle(ctx.received_at.timestamp_millis(), &review);
         f(acct)
     }
 
@@ -300,6 +301,9 @@ impl Handler for ServiceQuotas {
         }
         let now = ctx.received_at.timestamp_millis();
         let requester = format!("{{\"accountId\":\"{}\",\"callerArn\":\"{}\"}}", ctx.caller.account_id, ctx.caller.arn);
+        let review = self.review();
+        let (settles_at, escalate) =
+            state::review_of(&review, now, input.desired_value, def.starting_value(&ctx.region, self.profile()));
         let request = self.with_account(ctx, |acct| {
             if acct.requests.values().any(|r| {
                 r.open() && r.service == def.service && r.code == def.code && (def.global || r.region == ctx.region)
@@ -324,7 +328,8 @@ impl Handler for ServiceQuotas {
                 case_id: None,
                 requester,
                 request_type: None,
-                settles_at: now + APPROVAL_MS,
+                settles_at,
+                escalate,
             };
             acct.requests.insert(id, r.clone());
             Ok(r)
@@ -399,6 +404,7 @@ impl Handler for ServiceQuotas {
     ) -> Result<t::CreateSupportCaseResponse, ServiceError> {
         auth(ctx, "CreateSupportCase", "*")?;
         let now = ctx.received_at.timestamp_millis();
+        let review = self.review();
         self.with_account(ctx, |acct| {
             let r = acct.requests.get_mut(&input.request_id).ok_or_else(|| {
                 no_such_resource("The request failed because the specified request ID does not exist.")
@@ -417,11 +423,9 @@ impl Handler for ServiceQuotas {
                     format!("The request is in the {} state and can't be escalated to a support case.", r.status),
                 ));
             }
-            r.case_id = Some(format!("{}", 10_000_000_000u64 + (now as u64 % 1_000_000_000)));
-            r.status = "CASE_OPENED".into();
-            r.updated = now;
-            // The case is reviewed like the request was.
-            r.settles_at = now + APPROVAL_MS;
+            // A support case is reviewed by people: it takes the case review
+            // time and ends as the review policy says.
+            r.open_case(now, &review);
             Ok(())
         })?;
         Ok(t::CreateSupportCaseResponse {})

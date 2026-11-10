@@ -30,6 +30,7 @@ pub mod generated {
 mod access;
 mod addons;
 mod anywhere;
+mod billing;
 mod capabilities;
 mod catalog;
 mod certs;
@@ -51,6 +52,7 @@ use std::sync::{Arc, OnceLock, RwLock, RwLockReadGuard, RwLockWriteGuard};
 
 use mws_core::{HttpRequest, HttpResponse, RequestContext, Service, ServiceError};
 
+pub use billing::BillableCluster;
 pub use infra::{
     GroupState, Infrastructure, InfrastructureError, InstanceFacts, LaunchTemplateRef, NodeGroupSpec,
     NodeGroupTemplate, Scope, SubnetFacts,
