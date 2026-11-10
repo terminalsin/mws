@@ -1,7 +1,7 @@
 "use server";
 
 import { CreateDeliveryStreamCommand, DeleteDeliveryStreamCommand, PutRecordCommand } from "@aws-sdk/client-firehose";
-import { act, required, text, type ActionResult } from "@mws-dashboard/aws";
+import { FieldError, act, required, text, type ActionResult } from "@mws-dashboard/aws";
 import { ROLES, bucketFrom, roleFrom } from "@mws-dashboard/aws/auto";
 import { redirect } from "next/navigation";
 
@@ -13,7 +13,7 @@ export async function createDeliveryStream(_: ActionResult | null, form: FormDat
     const source = text(form, "source");
     const bucket = await bucketFrom(form, "bucket", "firehose");
     const role = await roleFrom(form, "role", ROLES.firehose(name, bucket.replace(/^arn:aws:s3:::/, "")));
-    await (await firehose()).send(
+    const create = (await firehose()).send(
       new CreateDeliveryStreamCommand({
         DeliveryStreamName: name,
         DeliveryStreamType: source ? "KinesisStreamAsSource" : "DirectPut",
@@ -26,9 +26,23 @@ export async function createDeliveryStream(_: ActionResult | null, form: FormDat
         },
       }),
     );
+    await create.catch((e: unknown) => {
+      // Firehose reads the source stream as the role; a stream it cannot
+      // reach is a problem with the source field, not the form.
+      if (source && e instanceof Error && /Kinesis stream/.test(e.message)) throw new FieldError("source", e.message, "missing");
+      throw e;
+    });
     redirect(`/firehose/stream?name=${encodeURIComponent(name)}`);
-  });
+  }, { fields: FIELDS });
 }
+
+/** Where the create form puts each API member, for errors MWS returns. */
+const FIELDS = {
+  DeliveryStreamName: "name",
+  KinesisStreamARN: "source",
+  Prefix: "prefix",
+  IntervalInSeconds: "interval",
+};
 
 export async function deleteDeliveryStream(name: string) {
   return act(async () => {
@@ -41,5 +55,5 @@ export async function putFirehoseRecord(name: string, _: ActionResult | null, fo
   return act(async () => {
     const out = await (await firehose()).send(new PutRecordCommand({ DeliveryStreamName: name, Record: { Data: new TextEncoder().encode(required(form, "data", "Data") + "\n") } }));
     return `Record ${out.RecordId?.slice(0, 12)}… accepted`;
-  }, "/firehose/stream");
+  }, { revalidate: ["/firehose/stream"], fields: { Data: "data" } });
 }
