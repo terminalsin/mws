@@ -891,6 +891,58 @@ export function RouteProgress() {
   return <div className="route-progress" data-state={phase} aria-hidden />;
 }
 
+/** Keeps a page current while something on it is changing: while any
+ * `LiveRefresh` is mounted (and `when` holds), the page re-renders on the
+ * server every few seconds, backing off from `every` ms to 15 s and stopping
+ * after ten minutes. One timer serves every instance on the page; it waits
+ * while the tab is hidden or the person is typing, so forms are not
+ * disturbed. `Status` mounts one for transitional words ("Creating",
+ * "CREATE_IN_PROGRESS"); pages add their own for states it can't tell. */
+export function LiveRefresh({ when = true, every = 2500 }: { when?: boolean; every?: number }) {
+  const router = useRouter();
+  useEffect(() => {
+    if (!when) return;
+    const entry = { every, refresh: () => router.refresh() };
+    live.watchers.add(entry);
+    schedule();
+    return () => {
+      live.watchers.delete(entry);
+      if (!live.watchers.size && live.timer) {
+        clearTimeout(live.timer);
+        live.timer = undefined;
+      }
+    };
+  }, [when, every, router]);
+  return null;
+}
+
+const live: {
+  watchers: Set<{ every: number; refresh: () => void }>;
+  timer?: ReturnType<typeof setTimeout>;
+  delay: number;
+  since: number;
+} = { watchers: new Set(), delay: 0, since: 0 };
+
+function schedule() {
+  if (live.timer || !live.watchers.size) return;
+  const first = Math.min(...[...live.watchers].map((w) => w.every));
+  if (!live.delay || Date.now() - live.since > 600_000 + live.delay) {
+    live.delay = first;
+    live.since = Date.now();
+  }
+  live.timer = setTimeout(() => {
+    live.timer = undefined;
+    if (!live.watchers.size || Date.now() - live.since > 600_000) return;
+    const typing = document.activeElement?.matches?.("input, textarea, select, [contenteditable]");
+    if (!document.hidden && !typing) {
+      const [w] = live.watchers;
+      w?.refresh();
+    }
+    live.delay = Math.min(15_000, Math.round(live.delay * 1.4));
+    schedule();
+  }, live.delay);
+}
+
 /** What a service shows when a page throws: the failure, and a retry that
  * re-renders the page on the server. */
 export function ErrorView({ error, reset }: { error: Error & { digest?: string }; reset: () => void }) {

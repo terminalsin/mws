@@ -233,6 +233,28 @@ export async function collect<T, R>(
   return out.slice(0, limit);
 }
 
+/** Every item of a paginated list call (up to `limit`, 10,000 by default):
+ * `all((NextToken) => c.send(new ListXCommand({ NextToken })), (r) => r.Items, (r) => r.NextToken)`.
+ * Use it wherever a count, a summary or a lookup needs the whole list. */
+export function all<T, R>(
+  page: (token: string | undefined) => Promise<R>,
+  items: (r: R) => T[] | undefined,
+  next: (r: R) => string | undefined,
+  limit = 10_000,
+): Promise<T[]> {
+  return collect(page, items, next, limit);
+}
+
+/** Batch calls answer 200 with per-item failures (`failures`,
+ * `failedVersions`, `Failed`, `UnprocessedItems`...): throw when there are
+ * any, so the form reports the failure instead of a false success.
+ * `checkFailures(r.failures, (f) => `${f.imageId?.imageTag}: ${f.failureReason}`)`. */
+export function checkFailures<F>(failures: F[] | Record<string, F> | undefined | null, describe: (f: F, key?: string) => string): void {
+  if (!failures) return;
+  const list = Array.isArray(failures) ? failures.map((f) => describe(f)) : Object.entries(failures).map(([k, f]) => describe(f, k));
+  if (list.length) throw new Error(list.length === 1 ? list[0] : `${list.length} failed: ${list.slice(0, 5).join("; ")}${list.length > 5 ? "; ..." : ""}`);
+}
+
 /** "3m ago", "2d ago", "in 4h": for timestamps where the gist is enough. */
 export function ago(d: Date | string | number | undefined | null): string {
   if (d == null || d === "") return "—";
