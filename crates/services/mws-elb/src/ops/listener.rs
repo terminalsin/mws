@@ -161,7 +161,7 @@ impl Elb {
         let account = account_of(ctx);
         let id = names::hex_id(16);
         let arn = names::arn(ctx, &account, &format!("listener/{lb_path}/{id}"));
-        self.authorize_create(ctx, "CreateListener", &arn, &tags)?;
+        self.authorize_create_in(ctx, "CreateListener", &input.load_balancer_arn, &arn, &tags)?;
         let out = self.with_region(ctx, |r| {
             let actions =
                 super::actions::normalize(r, &input.load_balancer_arn, &lb_type, &protocol, &input.default_actions)?;

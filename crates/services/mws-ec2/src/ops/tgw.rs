@@ -11,9 +11,7 @@ use mws_core::{ConditionContext, RequestContext, ServiceError};
 use crate::generated::types as t;
 use crate::ops::gateways::{authorize_create, authorize_on};
 use crate::state::{RegionState, State, TgwAttachmentRecord, TgwRouteTableRecord};
-use crate::util::{
-    arn, authorize, err, invalid_parameter, new_id, paginate, s, some_tags, tags_for, Cidr, Filters, Kind,
-};
+use crate::util::{arn, err, invalid_parameter, new_id, paginate, s, some_tags, tags_for, Cidr, Filters, Kind};
 use crate::{account_of, Ec2};
 
 const ENABLE: &str = "enable";
@@ -358,7 +356,7 @@ impl Ec2 {
             multicast_support: Some(enable_disable("MulticastSupport", &o.multicast_support, DISABLE)?),
             ..Default::default()
         };
-        authorize_create(ctx, "CreateTransitGateway", "transit-gateway", &tags, &[], input.dry_run)?;
+        authorize_create(self, ctx, "CreateTransitGateway", "transit-gateway", &tags, &[], input.dry_run)?;
         let account = account_of(ctx);
         let now = ctx.received_at;
         let id = new_id("tgw");
@@ -473,7 +471,7 @@ impl Ec2 {
         ctx: &RequestContext,
         input: t::DescribeTransitGatewaysRequest,
     ) -> Result<t::DescribeTransitGatewaysResult, ServiceError> {
-        authorize(ctx, "DescribeTransitGateways", &[("*".into(), ConditionContext::new())], input.dry_run)?;
+        self.authorize_known(ctx, "DescribeTransitGateways", &[("*".into(), ConditionContext::new())], input.dry_run)?;
         let filters = Filters::new(&input.filters);
         let ids = input.transit_gateway_ids.clone().unwrap_or_default();
         self.with_region(ctx, |r| {
@@ -631,6 +629,7 @@ impl Ec2 {
         };
         let account = account_of(ctx);
         authorize_create(
+            self,
             ctx,
             "CreateTransitGatewayVpcAttachment",
             "transit-gateway-attachment",
@@ -753,7 +752,7 @@ impl Ec2 {
         ctx: &RequestContext,
         input: t::DescribeTransitGatewayVpcAttachmentsRequest,
     ) -> Result<t::DescribeTransitGatewayVpcAttachmentsResult, ServiceError> {
-        authorize(
+        self.authorize_known(
             ctx,
             "DescribeTransitGatewayVpcAttachments",
             &[("*".into(), ConditionContext::new())],
@@ -922,6 +921,7 @@ impl Ec2 {
             return Err(invalid_parameter("A transit gateway cannot peer with itself."));
         }
         authorize_create(
+            self,
             ctx,
             "CreateTransitGatewayPeeringAttachment",
             "transit-gateway-attachment",
@@ -1136,7 +1136,7 @@ impl Ec2 {
         ctx: &RequestContext,
         input: t::DescribeTransitGatewayPeeringAttachmentsRequest,
     ) -> Result<t::DescribeTransitGatewayPeeringAttachmentsResult, ServiceError> {
-        authorize(
+        self.authorize_known(
             ctx,
             "DescribeTransitGatewayPeeringAttachments",
             &[("*".into(), ConditionContext::new())],
@@ -1185,7 +1185,12 @@ impl Ec2 {
         ctx: &RequestContext,
         input: t::DescribeTransitGatewayAttachmentsRequest,
     ) -> Result<t::DescribeTransitGatewayAttachmentsResult, ServiceError> {
-        authorize(ctx, "DescribeTransitGatewayAttachments", &[("*".into(), ConditionContext::new())], input.dry_run)?;
+        self.authorize_known(
+            ctx,
+            "DescribeTransitGatewayAttachments",
+            &[("*".into(), ConditionContext::new())],
+            input.dry_run,
+        )?;
         let filters = Filters::new(&input.filters);
         let ids = input.transit_gateway_attachment_ids.clone().unwrap_or_default();
         self.with_region(ctx, |r| {
@@ -1232,6 +1237,7 @@ impl Ec2 {
             tags_for(&input.tag_specifications, "transit-gateway-route-table", &["transit-gateway-route-table"])?;
         self.tgw_authorize(ctx, "CreateTransitGatewayRouteTable", &input.transit_gateway_id, None)?;
         authorize_create(
+            self,
             ctx,
             "CreateTransitGatewayRouteTable",
             "transit-gateway-route-table",
@@ -1296,7 +1302,12 @@ impl Ec2 {
         ctx: &RequestContext,
         input: t::DescribeTransitGatewayRouteTablesRequest,
     ) -> Result<t::DescribeTransitGatewayRouteTablesResult, ServiceError> {
-        authorize(ctx, "DescribeTransitGatewayRouteTables", &[("*".into(), ConditionContext::new())], input.dry_run)?;
+        self.authorize_known(
+            ctx,
+            "DescribeTransitGatewayRouteTables",
+            &[("*".into(), ConditionContext::new())],
+            input.dry_run,
+        )?;
         let filters = Filters::new(&input.filters);
         let ids = input.transit_gateway_route_table_ids.clone().unwrap_or_default();
         self.with_region(ctx, |r| {

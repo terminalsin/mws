@@ -1312,13 +1312,13 @@ async fn schedules_refreshes_and_warm_pools() {
         tokio::time::sleep(Duration::from_millis(250)).await;
     }
     assert_eq!(warm.len(), 1, "the warm pool never filled");
-    assert_eq!(ec2_state(&ec2, &warm[0]).await, Some(InstanceStateName::Stopped));
+    wait_ec2(&ec2, &warm[0], InstanceStateName::Stopped).await;
     assert_eq!(group(&asg, "fleet").await.warm_pool_size(), Some(1));
     asg.set_desired_capacity().auto_scaling_group_name("fleet").desired_capacity(4).send().await.unwrap();
     let g = wait_group(&asg, "fleet", "warm instance in service", |g| in_service(g) == 4 && ids(g).contains(&warm[0]))
         .await;
     let _ = g;
-    assert_eq!(ec2_state(&ec2, &warm[0]).await, Some(InstanceStateName::Running));
+    wait_ec2(&ec2, &warm[0], InstanceStateName::Running).await;
     asg.delete_warm_pool().auto_scaling_group_name("fleet").force_delete(true).send().await.unwrap();
     let wp = asg.describe_warm_pool().auto_scaling_group_name("fleet").send().await.unwrap();
     assert!(wp.warm_pool_configuration().is_none());

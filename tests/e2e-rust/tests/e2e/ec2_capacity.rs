@@ -51,6 +51,18 @@ async fn instance_state(ec2: &Client, id: &str) -> String {
 
 async fn terminate(ec2: &Client, id: &str) {
     ec2.terminate_instances().instance_ids(id).send().await.unwrap();
+    wait_for(ec2, id, "terminated").await;
+}
+
+/// Wait until instance `id` is in `want` (transitions take a moment).
+async fn wait_for(ec2: &Client, id: &str, want: &str) {
+    for _ in 0..200 {
+        if instance_state(ec2, id).await == want {
+            return;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+    }
+    panic!("{id} never became {want}");
 }
 
 #[tokio::test]
@@ -294,7 +306,7 @@ async fn spot_fleet_keeps_its_target_capacity() {
         Some("fleetRequestIdDoesNotExist")
     );
     let left = instances.active_instances()[0].instance_id().unwrap();
-    assert_eq!(instance_state(&ec2, left).await, "terminated");
+    wait_for(&ec2, left, "terminated").await;
     let fleets = ec2.describe_spot_fleet_requests().spot_fleet_request_ids(&id).send().await.unwrap();
     assert_eq!(
         fleets.spot_fleet_request_configs()[0].spot_fleet_request_state().map(|s| s.as_str()),
@@ -532,6 +544,7 @@ async fn dedicated_hosts_hold_the_instances_placed_on_them() {
         .to_string();
     let e = ec2.modify_instance_placement().instance_id(&moving).host_id(&family).send().await.unwrap_err();
     assert_eq!(code(&e.into_service_error()), "IncorrectInstanceState");
+    wait_for(&ec2, &moving, "running").await;
     ec2.stop_instances().instance_ids(&moving).send().await.unwrap();
     for _ in 0..50 {
         if instance_state(&ec2, &moving).await == "stopped" {

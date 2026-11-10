@@ -12,8 +12,8 @@ use crate::ops::gateways::{authorize_create, authorize_on};
 use crate::ops::vpc::{allocate_ip, check_ip, used_ips};
 use crate::state::RegionState;
 use crate::util::{
-    arn, authorize, err, invalid_parameter, ip_str, missing_parameter, new_id, paginate, resource_tag_context, s,
-    some_tags, tags_for, Cidr, Filters, Kind,
+    arn, err, invalid_parameter, ip_str, missing_parameter, new_id, paginate, resource_tag_context, s, some_tags,
+    tags_for, Cidr, Filters, Kind,
 };
 use crate::{account_of, Ec2};
 
@@ -256,7 +256,7 @@ impl Ec2 {
         ctx: &RequestContext,
         input: t::DisassociateSubnetCidrBlockRequest,
     ) -> Result<t::DisassociateSubnetCidrBlockResult, ServiceError> {
-        authorize(ctx, "DisassociateSubnetCidrBlock", &[("*".into(), ConditionContext::new())], None)?;
+        self.authorize_known(ctx, "DisassociateSubnetCidrBlock", &[("*".into(), ConditionContext::new())], None)?;
         let id = input.association_id.clone();
         self.with_region(ctx, |r| {
             let sid = r
@@ -312,6 +312,7 @@ impl Ec2 {
         }
         let account = account_of(ctx);
         authorize_create(
+            self,
             ctx,
             "CreateSubnetCidrReservation",
             "subnet-cidr-reservation",
@@ -442,7 +443,7 @@ impl Ec2 {
         Kind::NetworkInterface.check(eni)?;
         let tags = self.with_region(ctx, |r| r.network_interfaces.get(eni).map(|n| n.tag_set.clone()));
         let tags = tags.ok_or_else(|| Kind::NetworkInterface.not_found(eni))?;
-        authorize(
+        self.authorize_known(
             ctx,
             action,
             &[(arn(ctx, &account, &format!("network-interface/{eni}")), resource_tag_context(tags.as_ref()))],
@@ -726,7 +727,7 @@ impl Ec2 {
         let account = account_of(ctx);
         let tags = self.with_region(ctx, |r| r.network_interfaces.get(&eni_id).map(|n| n.tag_set.clone()));
         let tags = tags.ok_or_else(|| Kind::NetworkInterface.not_found(&eni_id))?;
-        authorize(
+        self.authorize_known(
             ctx,
             "DescribeNetworkInterfaceAttribute",
             &[(arn(ctx, &account, &format!("network-interface/{eni_id}")), resource_tag_context(tags.as_ref()))],
@@ -850,7 +851,7 @@ impl Ec2 {
         ctx: &RequestContext,
         input: t::DescribeVpcClassicLinkRequest,
     ) -> Result<t::DescribeVpcClassicLinkResult, ServiceError> {
-        authorize(ctx, "DescribeVpcClassicLink", &[("*".into(), ConditionContext::new())], input.dry_run)?;
+        self.authorize_known(ctx, "DescribeVpcClassicLink", &[("*".into(), ConditionContext::new())], input.dry_run)?;
         let ids = input.vpc_ids.clone().unwrap_or_default();
         let filters = Filters::new(&input.filters);
         self.with_region(ctx, |r| {
@@ -884,7 +885,7 @@ impl Ec2 {
         ctx: &RequestContext,
         input: t::DescribeVpcClassicLinkDnsSupportRequest,
     ) -> Result<t::DescribeVpcClassicLinkDnsSupportResult, ServiceError> {
-        authorize(ctx, "DescribeVpcClassicLinkDnsSupport", &[("*".into(), ConditionContext::new())], None)?;
+        self.authorize_known(ctx, "DescribeVpcClassicLinkDnsSupport", &[("*".into(), ConditionContext::new())], None)?;
         let ids = input.vpc_ids.clone().unwrap_or_default();
         self.with_region(ctx, |r| {
             Kind::Vpc.check_all(&ids, |id| r.vpcs.contains_key(id))?;

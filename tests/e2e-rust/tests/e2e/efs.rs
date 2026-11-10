@@ -40,6 +40,43 @@ fn data_dir(rel: &str) -> PathBuf {
     std::env::temp_dir().join("mws-efs").join(rel)
 }
 
+/// Poll DescribeFileSystems until the file system is `available`, as code
+/// must on AWS (the SDKs have no EFS waiters).
+pub(crate) async fn wait_file_system(efs: &Client, id: &str) {
+    for _ in 0..100 {
+        let d = efs.describe_file_systems().file_system_id(id).send().await.unwrap();
+        if d.file_systems()[0].life_cycle_state().as_str() == "available" {
+            return;
+        }
+        tokio::time::sleep(Duration::from_millis(250)).await;
+    }
+    panic!("file system {id} never became available");
+}
+
+/// Poll DescribeMountTargets until every mount target of the file system is
+/// `available`.
+pub(crate) async fn wait_mount_targets(efs: &Client, fs_id: &str) {
+    for _ in 0..100 {
+        let d = efs.describe_mount_targets().file_system_id(fs_id).send().await.unwrap();
+        if d.mount_targets().iter().all(|m| m.life_cycle_state().as_str() == "available") {
+            return;
+        }
+        tokio::time::sleep(Duration::from_millis(250)).await;
+    }
+    panic!("the mount targets of {fs_id} never became available");
+}
+
+/// Poll DescribeFileSystems until the file system is gone.
+pub(crate) async fn wait_file_system_deleted(efs: &Client, id: &str) {
+    for _ in 0..100 {
+        if efs.describe_file_systems().file_system_id(id).send().await.is_err() {
+            return;
+        }
+        tokio::time::sleep(Duration::from_millis(250)).await;
+    }
+    panic!("file system {id} was never deleted");
+}
+
 /// `(subnet id, zone)` of the default subnets, ordered by zone.
 async fn default_subnets(ec2: &aws_sdk_ec2::Client) -> Vec<(String, String)> {
     let s = ec2.describe_subnets().filters(filter("default-for-az", "true")).send().await.unwrap();
@@ -93,6 +130,7 @@ async fn file_systems_and_their_settings() {
     assert_eq!(exists.file_system_id(), id);
     assert_eq!(exists.error_code(), "FileSystemAlreadyExists");
 
+    wait_file_system(&efs, &id).await;
     let d = efs.describe_file_systems().file_system_id(&id).send().await.unwrap();
     let fs = &d.file_systems()[0];
     assert_eq!(fs.life_cycle_state().as_str(), "available");
@@ -264,8 +302,11 @@ async fn file_systems_and_their_settings() {
     let short = efs.create_file_system().creation_token("short").send().await.unwrap();
     assert_eq!(short.file_system_id().len(), 11, "{}", short.file_system_id());
 
-    // Deleting.
+    // Deleting: `deleting` for a moment, then gone.
     efs.delete_file_system().file_system_id(&id).send().await.unwrap();
+    let d = efs.describe_file_systems().file_system_id(&id).send().await.unwrap();
+    assert_eq!(d.file_systems()[0].life_cycle_state().as_str(), "deleting");
+    wait_file_system_deleted(&efs, &id).await;
     assert!(!data_dir(&id).exists());
     let e = efs.describe_file_systems().file_system_id(&id).send().await.unwrap_err().into_service_error();
     assert_eq!(code(&e), "FileSystemNotFound");
@@ -279,6 +320,7 @@ async fn mount_targets_and_access_points() {
     let subnets = default_subnets(&ec2).await;
     let fs = efs.create_file_system().creation_token("mt").send().await.unwrap();
     let id = fs.file_system_id().to_string();
+    wait_file_system(&efs, &id).await;
 
     let sg = ec2
         .create_security_group()
@@ -366,6 +408,7 @@ async fn mount_targets_and_access_points() {
         .into_service_error();
     assert_eq!(code(&e), "SecurityGroupNotFound");
     let other_fs = efs.create_file_system().creation_token("mt-other").send().await.unwrap();
+    wait_file_system(&efs, other_fs.file_system_id()).await;
     let e = efs
         .create_mount_target()
         .file_system_id(other_fs.file_system_id())
@@ -381,6 +424,7 @@ async fn mount_targets_and_access_points() {
 
     let e = efs.describe_mount_targets().send().await.unwrap_err().into_service_error();
     assert_eq!(code(&e), "BadRequest");
+    wait_mount_targets(&efs, &id).await;
     let d = efs.describe_mount_targets().file_system_id(&id).send().await.unwrap();
     assert_eq!(d.mount_targets().len(), 2);
     assert!(d.mount_targets().iter().all(|m| m.life_cycle_state().as_str() == "available"));
@@ -542,6 +586,7 @@ async fn mounts_follow_the_network_and_the_file_system_policy() {
 
     let fs = efs.create_file_system().creation_token("mounts").send().await.unwrap();
     let id = fs.file_system_id().to_string();
+    wait_file_system(&efs, &id).await;
     let dns = format!("{id}.efs.us-east-1.amazonaws.com");
 
     // No mount target yet: the name does not resolve.
@@ -561,6 +606,10 @@ async fn mounts_follow_the_network_and_the_file_system_policy() {
         .send()
         .await
         .unwrap();
+    // Until the mount target is available, nothing resolves.
+    let r = mount(&mws, &instance, "efs", &format!("{id}:/"), "tls").await;
+    assert!(r["error"].contains("Failed to resolve"), "{r:?}");
+    wait_mount_targets(&efs, &id).await;
     let r = mount(&mws, &instance, "nfs4", &format!("{dns}:/"), "").await;
     assert!(r["error"].contains("Failed to resolve server"), "{r:?}");
     let r = mount(&mws, &instance, "efs", &format!("{id}:/"), "tls").await;
@@ -670,6 +719,7 @@ async fn replication_copies_data_to_a_read_only_destination() {
     let (efs, _) = clients(&mws).await;
     let fs = efs.create_file_system().creation_token("repl-src").send().await.unwrap();
     let id = fs.file_system_id().to_string();
+    wait_file_system(&efs, &id).await;
     std::fs::create_dir_all(data_dir(&id).join("data")).unwrap();
     std::fs::write(data_dir(&id).join("data/one.txt"), "one").unwrap();
 
@@ -789,7 +839,9 @@ async fn instances_mount_and_share_a_file_system() {
         .unwrap();
     let fs = efs.create_file_system().creation_token("docker").send().await.unwrap();
     let id = fs.file_system_id().to_string();
+    wait_file_system(&efs, &id).await;
     efs.create_mount_target().file_system_id(&id).subnet_id(&subnets[0].0).security_groups(&sg).send().await.unwrap();
+    wait_mount_targets(&efs, &id).await;
 
     use base64::Engine;
     // The usual user data: mount with the NFS client and write a file.

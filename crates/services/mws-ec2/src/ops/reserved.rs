@@ -9,7 +9,7 @@ use mws_core::{ConditionContext, RequestContext, ServiceError};
 
 use crate::generated::types as t;
 use crate::pricing::{product_price, PRODUCTS};
-use crate::util::{authorize, err, invalid_parameter, s, Filters};
+use crate::util::{err, invalid_parameter, s, Filters};
 use crate::{account_of, Ec2};
 
 const YEAR: i64 = 31_536_000;
@@ -142,7 +142,12 @@ impl Ec2 {
         ctx: &RequestContext,
         input: t::DescribeReservedInstancesOfferingsRequest,
     ) -> Result<t::DescribeReservedInstancesOfferingsResult, ServiceError> {
-        authorize(ctx, "DescribeReservedInstancesOfferings", &[("*".into(), ConditionContext::new())], input.dry_run)?;
+        self.authorize_known(
+            ctx,
+            "DescribeReservedInstancesOfferings",
+            &[("*".into(), ConditionContext::new())],
+            input.dry_run,
+        )?;
         let ids = input.reserved_instances_offering_ids.clone().unwrap_or_default();
         let filters = Filters::new(&input.filters);
         let max = input.max_results.unwrap_or(100);
@@ -227,7 +232,7 @@ impl Ec2 {
         }
         let id = input.reserved_instances_offering_id.clone();
         let account = account_of(ctx);
-        authorize(
+        self.authorize_known(
             ctx,
             "PurchaseReservedInstancesOffering",
             &[(crate::util::arn(ctx, &account, "reserved-instances/*"), ConditionContext::new())],
@@ -295,7 +300,12 @@ impl Ec2 {
         ctx: &RequestContext,
         input: t::DescribeReservedInstancesRequest,
     ) -> Result<t::DescribeReservedInstancesResult, ServiceError> {
-        authorize(ctx, "DescribeReservedInstances", &[("*".into(), ConditionContext::new())], input.dry_run)?;
+        self.authorize_known(
+            ctx,
+            "DescribeReservedInstances",
+            &[("*".into(), ConditionContext::new())],
+            input.dry_run,
+        )?;
         let ids = input.reserved_instances_ids.clone().unwrap_or_default();
         let filters = Filters::new(&input.filters);
         let now = ctx.received_at;

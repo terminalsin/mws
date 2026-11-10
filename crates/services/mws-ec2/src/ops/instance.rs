@@ -12,7 +12,7 @@ use crate::catalog;
 use crate::generated::types as t;
 use crate::state::{InstanceRecord, RegionState};
 use crate::util::{
-    arn, authorize, b, err, invalid_parameter, missing_parameter, new_id, paginate, private_dns, request_tag_context,
+    arn, b, err, invalid_parameter, missing_parameter, new_id, paginate, private_dns, request_tag_context,
     resource_tag_context, s, some_tags, tags_for, Filters, Kind,
 };
 use crate::{account_of, Ec2};
@@ -35,6 +35,20 @@ pub fn state(name: &str) -> t::InstanceState {
 
 pub fn state_name(rec: &InstanceRecord) -> String {
     rec.instance.state.as_ref().and_then(|s| s.name.clone()).unwrap_or_default()
+}
+
+/// Finish every transition at once: what a restored state's instances do
+/// when nothing is left running them.
+pub fn settle_all(r: &mut RegionState) {
+    for rec in r.instances.values_mut() {
+        let next = match state_name(rec).as_str() {
+            "pending" => "running",
+            "stopping" => "stopped",
+            "shutting-down" => "terminated",
+            _ => continue,
+        };
+        rec.instance.state = Some(state(next));
+    }
 }
 
 /// Forget instances terminated more than an hour ago (emulated clock).
@@ -153,61 +167,260 @@ pub fn render(r: &RegionState, rec: &InstanceRecord) -> t::Instance {
     i
 }
 
-fn instance_filter(i: &t::Instance, rec: &InstanceRecord, name: &str) -> Option<Vec<String>> {
+fn time(t: Option<DateTime<Utc>>) -> Vec<String> {
+    t.map(|t| t.format("%Y-%m-%dT%H:%M:%S.000Z").to_string()).into_iter().collect()
+}
+
+fn num(n: Option<i32>) -> Vec<String> {
+    n.map(|n| n.to_string()).into_iter().collect()
+}
+
+/// The values of a DescribeInstances filter for one instance, `None` for a
+/// filter name EC2 does not document.
+fn instance_filter(r: &RegionState, i: &t::Instance, rec: &InstanceRecord, name: &str) -> Option<Vec<String>> {
     let enis = i.network_interfaces.clone().unwrap_or_default();
+    // The instance's interfaces as DescribeNetworkInterfaces shows them.
+    let full: Vec<&t::NetworkInterface> = enis
+        .iter()
+        .filter_map(|n| n.network_interface_id.as_ref().and_then(|id| r.network_interfaces.get(id)))
+        .collect();
+    let eni =
+        |f: &dyn Fn(&t::NetworkInterface) -> Vec<String>| -> Vec<String> { full.iter().flat_map(|n| f(n)).collect() };
+    let addrs = |f: &dyn Fn(&t::NetworkInterfacePrivateIpAddress) -> Vec<String>| -> Vec<String> {
+        full.iter().flat_map(|n| n.private_ip_addresses.iter().flatten()).flat_map(f).collect()
+    };
+    let attachment = |f: &dyn Fn(&t::InstanceNetworkInterfaceAttachment) -> Vec<String>| -> Vec<String> {
+        enis.iter().filter_map(|n| n.attachment.as_ref()).flat_map(f).collect()
+    };
+    let bdm = |f: &dyn Fn(&t::InstanceBlockDeviceMapping, &t::EbsInstanceBlockDevice) -> Vec<String>| -> Vec<String> {
+        i.block_device_mappings.iter().flatten().filter_map(|m| m.ebs.as_ref().map(|e| f(m, e))).flatten().collect()
+    };
     let groups = i.security_groups.clone().unwrap_or_default();
     let placement = i.placement.clone().unwrap_or_default();
     let st = i.state.clone().unwrap_or_default();
+    let md = i.metadata_options.clone().unwrap_or_default();
+    let crs = i.capacity_reservation_specification.clone().unwrap_or_default();
+    let dns_opts = i.private_dns_name_options.clone().unwrap_or_default();
+    let profile = i.iam_instance_profile.clone().unwrap_or_default();
+    if let Some(key) = name.strip_prefix("network-interface.tag:") {
+        return Some(eni(&|n| {
+            n.tag_set
+                .iter()
+                .flatten()
+                .filter(|t| t.key.as_deref() == Some(key))
+                .filter_map(|t| t.value.clone())
+                .collect()
+        }));
+    }
     Some(match name {
-        "instance-id" => s(&i.instance_id),
-        "instance-state-name" => s(&st.name),
-        "instance-state-code" => st.code.map(|c| c.to_string()).into_iter().collect(),
-        "instance-type" => s(&i.instance_type),
-        "image-id" => s(&i.image_id),
-        "vpc-id" => s(&i.vpc_id),
-        "subnet-id" => s(&i.subnet_id),
-        "private-ip-address" => s(&i.private_ip_address),
-        "ip-address" => s(&i.public_ip_address),
-        "private-dns-name" => s(&i.private_dns_name),
-        "dns-name" => s(&i.public_dns_name),
-        "key-name" => s(&i.key_name),
-        "availability-zone" => s(&placement.availability_zone),
-        "tenancy" => s(&placement.tenancy),
-        "placement-group-name" => s(&placement.group_name),
-        "reservation-id" => vec![rec.reservation_id.clone()],
-        "owner-id" => vec![rec.owner_id.clone()],
-        "requester-id" => rec.requester_id.clone().into_iter().collect(),
+        "affinity" => s(&placement.affinity),
         "architecture" => s(&i.architecture),
+        "availability-zone" => s(&placement.availability_zone),
+        "availability-zone-id" => s(&placement.availability_zone_id),
+        "block-device-mapping.attach-time" => bdm(&|_, e| time(e.attach_time)),
+        "block-device-mapping.delete-on-termination" => bdm(&|_, e| b(e.delete_on_termination)),
+        "block-device-mapping.device-name" => bdm(&|m, _| s(&m.device_name)),
+        "block-device-mapping.status" => bdm(&|_, e| s(&e.status)),
+        "block-device-mapping.volume-id" => bdm(&|_, e| s(&e.volume_id)),
+        "boot-mode" => s(&i.boot_mode),
+        "current-instance-boot-mode" => s(&i.current_instance_boot_mode),
+        "capacity-reservation-id" => s(&i.capacity_reservation_id),
+        "capacity-reservation-specification.capacity-reservation-preference" => s(&crs.capacity_reservation_preference),
+        "capacity-reservation-specification.capacity-reservation-target.capacity-reservation-id" => {
+            crs.capacity_reservation_target.as_ref().map(|t| s(&t.capacity_reservation_id)).unwrap_or_default()
+        }
+        "capacity-reservation-specification.capacity-reservation-target.capacity-reservation-resource-group-arn" => crs
+            .capacity_reservation_target
+            .as_ref()
+            .map(|t| s(&t.capacity_reservation_resource_group_arn))
+            .unwrap_or_default(),
         "client-token" => s(&i.client_token),
+        "dns-name" => s(&i.public_dns_name),
+        "ebs-optimized" => b(i.ebs_optimized),
+        "ena-support" => b(i.ena_support),
+        "enclave-options.enabled" => b(i.enclave_options.as_ref().and_then(|o| o.enabled)),
+        "hibernation-options.configured" => b(i.hibernation_options.as_ref().and_then(|o| o.configured)),
+        "host-id" => s(&placement.host_id),
         "hypervisor" => s(&i.hypervisor),
-        "virtualization-type" => s(&i.virtualization_type),
-        "root-device-type" => s(&i.root_device_type),
-        "root-device-name" => s(&i.root_device_name),
-        "platform-details" => s(&i.platform_details),
-        "launch-time" => i.launch_time.map(|t| t.format("%Y-%m-%dT%H:%M:%S.000Z").to_string()).into_iter().collect(),
-        "monitoring-state" => i.monitoring.as_ref().map(|m| s(&m.state)).unwrap_or_default(),
-        "ami-launch-index" => i.ami_launch_index.map(|x| x.to_string()).into_iter().collect(),
-        "source-dest-check" => b(i.source_dest_check),
-        "iam-instance-profile.arn" => i.iam_instance_profile.as_ref().map(|p| s(&p.arn)).unwrap_or_default(),
+        "iam-instance-profile.arn" => s(&profile.arn),
+        "iam-instance-profile.id" => s(&profile.id),
+        "image-id" => s(&i.image_id),
+        "instance-id" => s(&i.instance_id),
+        "instance-lifecycle" => s(&i.instance_lifecycle),
+        "instance-state-code" => num(st.code),
+        "instance-state-name" => s(&st.name),
+        "instance-type" => s(&i.instance_type),
         "instance.group-id" | "group-id" => groups.iter().filter_map(|g| g.group_id.clone()).collect(),
         "instance.group-name" | "group-name" => groups.iter().filter_map(|g| g.group_name.clone()).collect(),
+        "ip-address" => s(&i.public_ip_address),
+        "ipv6-address" => {
+            let mut v = s(&i.ipv6_address);
+            v.extend(
+                enis.iter().flat_map(|n| n.ipv6_addresses.iter().flatten()).filter_map(|a| a.ipv6_address.clone()),
+            );
+            v
+        }
+        "kernel-id" => s(&i.kernel_id),
+        "key-name" => s(&i.key_name),
+        "launch-index" | "ami-launch-index" => num(i.ami_launch_index),
+        "launch-time" => time(i.launch_time),
+        "maintenance-options.auto-recovery" => s(&i.maintenance_options.as_ref().and_then(|m| m.auto_recovery.clone())),
+        "metadata-options.http-endpoint" => s(&md.http_endpoint),
+        "metadata-options.http-protocol-ipv4" => {
+            if md.http_endpoint.is_some() {
+                vec!["enabled".into()]
+            } else {
+                Vec::new()
+            }
+        }
+        "metadata-options.http-protocol-ipv6" => s(&md.http_protocol_ipv6),
+        "metadata-options.http-put-response-hop-limit" => num(md.http_put_response_hop_limit),
+        "metadata-options.http-tokens" => s(&md.http_tokens),
+        "metadata-options.instance-metadata-tags" => s(&md.instance_metadata_tags),
+        "metadata-options.state" => s(&md.state),
+        "monitoring-state" => i.monitoring.as_ref().map(|m| s(&m.state)).unwrap_or_default(),
+        "network-interface.addresses.association.allocation-id" => {
+            addrs(&|a| a.association.as_ref().map(|x| s(&x.allocation_id)).unwrap_or_default())
+        }
+        "network-interface.addresses.association.association-id" => {
+            addrs(&|a| a.association.as_ref().map(|x| s(&x.association_id)).unwrap_or_default())
+        }
+        "network-interface.addresses.association.carrier-ip" => {
+            addrs(&|a| a.association.as_ref().map(|x| s(&x.carrier_ip)).unwrap_or_default())
+        }
+        "network-interface.addresses.association.customer-owned-ip" => {
+            addrs(&|a| a.association.as_ref().map(|x| s(&x.customer_owned_ip)).unwrap_or_default())
+        }
+        "network-interface.addresses.association.ip-owner-id" => {
+            addrs(&|a| a.association.as_ref().map(|x| s(&x.ip_owner_id)).unwrap_or_default())
+        }
+        "network-interface.addresses.association.public-dns-name" => {
+            addrs(&|a| a.association.as_ref().map(|x| s(&x.public_dns_name)).unwrap_or_default())
+        }
+        "network-interface.addresses.association.public-ip" => {
+            addrs(&|a| a.association.as_ref().map(|x| s(&x.public_ip)).unwrap_or_default())
+        }
+        "network-interface.addresses.primary" => addrs(&|a| b(a.primary)),
+        "network-interface.addresses.private-dns-name" => addrs(&|a| s(&a.private_dns_name)),
+        "network-interface.addresses.private-ip-address" | "network-interface.private-ip-address" => {
+            addrs(&|a| s(&a.private_ip_address))
+        }
+        "network-interface.association.allocation-id" => {
+            eni(&|n| n.association.as_ref().map(|x| s(&x.allocation_id)).unwrap_or_default())
+        }
+        "network-interface.association.association-id" => {
+            eni(&|n| n.association.as_ref().map(|x| s(&x.association_id)).unwrap_or_default())
+        }
+        "network-interface.association.carrier-ip" => {
+            eni(&|n| n.association.as_ref().map(|x| s(&x.carrier_ip)).unwrap_or_default())
+        }
+        "network-interface.association.customer-owned-ip" => {
+            eni(&|n| n.association.as_ref().map(|x| s(&x.customer_owned_ip)).unwrap_or_default())
+        }
+        "network-interface.association.ip-owner-id" => {
+            eni(&|n| n.association.as_ref().map(|x| s(&x.ip_owner_id)).unwrap_or_default())
+        }
+        "network-interface.association.public-dns-name" => {
+            eni(&|n| n.association.as_ref().map(|x| s(&x.public_dns_name)).unwrap_or_default())
+        }
+        "network-interface.association.public-ip" => {
+            eni(&|n| n.association.as_ref().map(|x| s(&x.public_ip)).unwrap_or_default())
+        }
+        "network-interface.attachment.attach-time" => attachment(&|a| time(a.attach_time)),
+        "network-interface.attachment.attachment-id" => attachment(&|a| s(&a.attachment_id)),
+        "network-interface.attachment.delete-on-termination" => attachment(&|a| b(a.delete_on_termination)),
+        "network-interface.attachment.device-index" => attachment(&|a| num(a.device_index)),
+        "network-interface.attachment.instance-id" => {
+            if enis.iter().any(|n| n.attachment.is_some()) {
+                s(&i.instance_id)
+            } else {
+                Vec::new()
+            }
+        }
+        "network-interface.attachment.instance-owner-id" => {
+            if enis.iter().any(|n| n.attachment.is_some()) {
+                vec![rec.owner_id.clone()]
+            } else {
+                Vec::new()
+            }
+        }
+        "network-interface.attachment.network-card-index" => attachment(&|a| num(a.network_card_index)),
+        "network-interface.attachment.status" => attachment(&|a| s(&a.status)),
+        "network-interface.availability-zone" => eni(&|n| s(&n.availability_zone)),
+        "network-interface.deny-all-igw-traffic" => eni(&|n| b(n.deny_all_igw_traffic)),
+        "network-interface.description" => eni(&|n| s(&n.description)),
+        "network-interface.group-id" => {
+            eni(&|n| n.groups.iter().flatten().filter_map(|g| g.group_id.clone()).collect())
+        }
+        "network-interface.group-name" => {
+            eni(&|n| n.groups.iter().flatten().filter_map(|g| g.group_name.clone()).collect())
+        }
+        "network-interface.ipv4-prefixes.ipv4-prefix" => {
+            enis.iter().flat_map(|n| n.ipv4_prefixes.iter().flatten()).filter_map(|p| p.ipv4_prefix.clone()).collect()
+        }
+        "network-interface.ipv6-address" | "network-interface.ipv6-addresses.ipv6-address" => {
+            enis.iter().flat_map(|n| n.ipv6_addresses.iter().flatten()).filter_map(|a| a.ipv6_address.clone()).collect()
+        }
+        "network-interface.ipv6-addresses.is-primary-ipv6" => {
+            enis.iter().flat_map(|n| n.ipv6_addresses.iter().flatten()).flat_map(|a| b(a.is_primary_ipv6)).collect()
+        }
+        "network-interface.ipv6-native" => eni(&|n| b(n.ipv6_native)),
+        "network-interface.ipv6-prefixes.ipv6-prefix" => {
+            enis.iter().flat_map(|n| n.ipv6_prefixes.iter().flatten()).filter_map(|p| p.ipv6_prefix.clone()).collect()
+        }
+        "network-interface.mac-address" => enis.iter().filter_map(|n| n.mac_address.clone()).collect(),
         "network-interface.network-interface-id" => {
             enis.iter().filter_map(|n| n.network_interface_id.clone()).collect()
         }
-        "network-interface.subnet-id" => enis.iter().filter_map(|n| n.subnet_id.clone()).collect(),
-        "network-interface.vpc-id" => enis.iter().filter_map(|n| n.vpc_id.clone()).collect(),
+        "network-interface.outpost-arn" => eni(&|n| s(&n.outpost_arn)),
+        "network-interface.owner-id" => enis.iter().filter_map(|n| n.owner_id.clone()).collect(),
         "network-interface.private-dns-name" => enis.iter().filter_map(|n| n.private_dns_name.clone()).collect(),
-        "network-interface.addresses.private-ip-address" => {
-            enis.iter().filter_map(|n| n.private_ip_address.clone()).collect()
+        "network-interface.public-dns-name" => eni(&|n| s(&n.public_dns_name)),
+        "network-interface.requester-id" => eni(&|n| s(&n.requester_id)),
+        "network-interface.requester-managed" => eni(&|n| b(n.requester_managed)),
+        "network-interface.status" => enis.iter().filter_map(|n| n.status.clone()).collect(),
+        "network-interface.source-dest-check" => enis.iter().flat_map(|n| b(n.source_dest_check)).collect(),
+        "network-interface.subnet-id" => enis.iter().filter_map(|n| n.subnet_id.clone()).collect(),
+        "network-interface.tag-key" => eni(&|n| n.tag_set.iter().flatten().filter_map(|t| t.key.clone()).collect()),
+        "network-interface.tag-value" => eni(&|n| n.tag_set.iter().flatten().filter_map(|t| t.value.clone()).collect()),
+        "network-interface.vpc-id" => enis.iter().filter_map(|n| n.vpc_id.clone()).collect(),
+        "network-performance-options.bandwidth-weighting" => {
+            s(&i.network_performance_options.as_ref().and_then(|o| o.bandwidth_weighting.clone()))
         }
-        "network-interface.mac-address" => enis.iter().filter_map(|n| n.mac_address.clone()).collect(),
+        "operator.managed" => b(i.operator.as_ref().and_then(|o| o.managed).or(Some(false))),
+        "operator.principal" => s(&i.operator.as_ref().and_then(|o| o.principal.clone())),
+        "outpost-arn" => s(&i.outpost_arn),
+        "owner-id" => vec![rec.owner_id.clone()],
+        "placement-group-name" => s(&placement.group_name),
+        "placement-partition-number" => num(placement.partition_number),
+        "platform" => s(&i.platform),
+        "platform-details" => s(&i.platform_details),
+        "private-dns-name" => s(&i.private_dns_name),
+        "private-dns-name-options.enable-resource-name-dns-a-record" => b(dns_opts.enable_resource_name_dns_a_record),
+        "private-dns-name-options.enable-resource-name-dns-aaaa-record" => {
+            b(dns_opts.enable_resource_name_dns_aaaa_record)
+        }
+        "private-dns-name-options.hostname-type" => s(&dns_opts.hostname_type),
+        "private-ip-address" => s(&i.private_ip_address),
+        "product-code" => i.product_codes.iter().flatten().filter_map(|p| p.product_code_id.clone()).collect(),
+        "product-code.type" => i.product_codes.iter().flatten().filter_map(|p| p.product_code_type.clone()).collect(),
+        "ramdisk-id" => s(&i.ramdisk_id),
+        "reason" => s(&i.state_transition_reason),
+        "requester-id" => rec.requester_id.clone().into_iter().collect(),
+        "reservation-id" => vec![rec.reservation_id.clone()],
+        "root-device-name" => s(&i.root_device_name),
+        "root-device-type" => s(&i.root_device_type),
+        "source-dest-check" => b(i.source_dest_check),
+        "spot-instance-request-id" => s(&i.spot_instance_request_id),
         "state-reason-code" => i.state_reason.as_ref().map(|r| s(&r.code)).unwrap_or_default(),
-        "instance-lifecycle" => i.instance_lifecycle.clone().into_iter().collect(),
-        "spot-instance-request-id" => i.spot_instance_request_id.clone().into_iter().collect(),
-        "metadata-options.http-tokens" => i.metadata_options.as_ref().map(|m| s(&m.http_tokens)).unwrap_or_default(),
-        "metadata-options.http-endpoint" => {
-            i.metadata_options.as_ref().map(|m| s(&m.http_endpoint)).unwrap_or_default()
-        }
+        "state-reason-message" => i.state_reason.as_ref().map(|r| s(&r.message)).unwrap_or_default(),
+        "subnet-id" => s(&i.subnet_id),
+        "tenancy" => s(&placement.tenancy),
+        "tpm-support" => s(&i.tpm_support),
+        "usage-operation" => s(&i.usage_operation),
+        "usage-operation-update-time" => time(i.usage_operation_update_time),
+        "virtualization-type" => s(&i.virtualization_type),
+        "vpc-id" => s(&i.vpc_id),
         _ => return None,
     })
 }
@@ -233,9 +446,11 @@ fn endpoint_for_instance(endpoint: &str) -> String {
 }
 
 impl Ec2 {
-    /// Run `transition` for an instance in the background (inline for the
-    /// metadata backend, which has nothing to wait for), then settle its
-    /// state unless something newer changed it meanwhile.
+    /// Run `transition` for an instance in the background, then settle its
+    /// state unless something newer changed it meanwhile. The metadata
+    /// backend has nothing to wait for: it settles after the configured
+    /// transition delay ([`Ec2::set_transition_delay`]), or inline when
+    /// that is zero.
     async fn transition(
         &self,
         ctx: &RequestContext,
@@ -250,7 +465,8 @@ impl Ec2 {
         let region = ctx.region.clone();
         let id = instance_id.to_string();
         let backend = self.backend();
-        let inline = backend.name() == "metadata";
+        let delay = if backend.name() == "metadata" { Some(self.transition_delay()) } else { None };
+        let inline = delay.is_some_and(|d| d.is_zero());
         let handle =
             self.with_region_of(&account, &region, &ctx, |r| r.instances.get(&id).and_then(|i| i.handle.clone()));
         let task = async move {
@@ -262,6 +478,9 @@ impl Ec2 {
                 (Transition::Reboot, Some(h)) => backend.reboot(h).await.map(|_| None),
                 (_, None) => Ok(None),
             };
+            if let Some(d) = delay.filter(|d| !d.is_zero() && !matches!(transition, Transition::Reboot)) {
+                tokio::time::sleep(d).await;
+            }
             if let Err(e) = &result {
                 tracing::warn!(instance = %id, backend = backend.name(), "instance backend operation failed: {e}");
             }
@@ -351,6 +570,7 @@ impl Ec2 {
     ) -> Result<t::Reservation, ServiceError> {
         let account = account_of(ctx);
         let mut template_resource = None;
+        let fingerprint = crate::idempotency::fingerprint(&input);
         let input = match input.launch_template.clone() {
             Some(spec) => {
                 let lt = self.resolve_launch_template(ctx, &spec)?;
@@ -377,31 +597,6 @@ impl Ec2 {
                 "Value ({}) for parameter maxCount is invalid. Expected a value greater than or equal to minCount.",
                 input.max_count
             )));
-        }
-        // Idempotency: the same client token returns the same reservation.
-        if let Some(token) = &input.client_token {
-            let existing = self.with_region(ctx, |r| {
-                let recs: Vec<InstanceRecord> = r
-                    .instances
-                    .values()
-                    .filter(|i| i.instance.client_token.as_deref() == Some(token.as_str()))
-                    .cloned()
-                    .collect();
-                if recs.is_empty() {
-                    None
-                } else {
-                    Some((recs[0].reservation_id.clone(), recs.iter().map(|rec| render(r, rec)).collect::<Vec<_>>()))
-                }
-            });
-            if let Some((rid, instances)) = existing {
-                return Ok(t::Reservation {
-                    reservation_id: Some(rid),
-                    owner_id: Some(account.clone()),
-                    groups: Some(Vec::new()),
-                    instances: Some(instances),
-                    requester_id: None,
-                });
-            }
         }
         let spot = match input.instance_market_options.as_ref().and_then(|m| m.market_type.as_deref()) {
             None => false,
@@ -473,6 +668,7 @@ impl Ec2 {
             }
             None => None,
         };
+        let groups_limit = self.quota(&account, &ctx.region, crate::quotas::GROUPS_PER_INTERFACE, ctx.received_at);
         let (subnet, groups, key) = self.with_region(ctx, |r| -> Result<_, ServiceError> {
             let subnet_id = primary_spec.as_ref().and_then(|p| p.subnet_id.clone()).or_else(|| input.subnet_id.clone());
             let subnet = match subnet_id {
@@ -520,6 +716,7 @@ impl Ec2 {
                 _ => None,
             };
             let groups = super::eni::resolve_groups(r, &vpc_id, group_ids.as_deref())?;
+            super::eni::check_groups_per_interface(&groups, groups_limit)?;
             let key = match &input.key_name {
                 Some(k) => Some(r.key_pairs.get(k).cloned().ok_or_else(|| err("InvalidKeyPair.NotFound", format!("The key pair '{k}' does not exist")))?),
                 None => None,
@@ -574,22 +771,102 @@ impl Ec2 {
         }
 
         // Authorize every resource RunInstances touches.
+        // The values the instance will launch with, as condition keys.
+        let (metadata_defaults, planned_volumes) = self.with_region(ctx, |r| {
+            let plans = super::ebs::plan_block_devices(
+                ctx,
+                &account,
+                r,
+                &image.record.image,
+                input.block_device_mappings.as_deref().unwrap_or_default(),
+            )
+            .unwrap_or_default();
+            (r.metadata_defaults.clone(), plans)
+        });
+        let image_v2 = image.record.image.imds_support.as_deref() == Some("v2.0");
+        let md = input.metadata_options.clone().unwrap_or_default();
         let mut instance_cond = request_tag_context(&tags);
-        instance_cond.insert("ec2:InstanceType".into(), vec![instance_type.clone()]);
-        instance_cond.insert("ec2:Vpc".into(), vec![arn(ctx, &account, &format!("vpc/{vpc_id}"))]);
-        instance_cond.insert("ec2:Subnet".into(), vec![arn(ctx, &account, &format!("subnet/{subnet_id}"))]);
-        instance_cond.insert("ec2:AvailabilityZone".into(), vec![subnet.availability_zone.clone().unwrap_or_default()]);
+        instance_cond.extend(crate::conditions::instance_keys(
+            ctx,
+            &account,
+            crate::conditions::InstanceKeys {
+                instance_type: Some(instance_type.clone()),
+                zone: subnet.availability_zone.clone(),
+                tenancy: Some(if wants_host {
+                    "host".into()
+                } else {
+                    input.placement.as_ref().and_then(|p| p.tenancy.clone()).unwrap_or_else(|| "default".into())
+                }),
+                instance_profile: profile.as_ref().map(|p| p.arn.clone()),
+                root_device_type: Some(image.record.image.root_device_type.clone().unwrap_or_else(|| "ebs".into())),
+                ebs_optimized: Some(input.ebs_optimized.unwrap_or(false)),
+                http_tokens: Some(
+                    md.http_tokens
+                        .clone()
+                        .or_else(|| image_v2.then(|| "required".into()))
+                        .or_else(|| metadata_defaults.http_tokens.clone())
+                        .unwrap_or_else(|| "optional".into()),
+                ),
+                http_endpoint: Some(
+                    md.http_endpoint
+                        .clone()
+                        .or_else(|| metadata_defaults.http_endpoint.clone())
+                        .unwrap_or_else(|| "enabled".into()),
+                ),
+                hop_limit: Some(
+                    md.http_put_response_hop_limit
+                        .or(image_v2.then_some(2))
+                        .or(metadata_defaults.http_put_response_hop_limit)
+                        .unwrap_or(1),
+                ),
+                metadata_tags: Some(
+                    md.instance_metadata_tags
+                        .clone()
+                        .or_else(|| metadata_defaults.instance_metadata_tags.clone())
+                        .unwrap_or_else(|| "disabled".into()),
+                ),
+                placement_group: input.placement.as_ref().and_then(|p| p.group_name.clone()),
+                vpc: Some(vpc_id.clone()),
+                subnet: Some(subnet_id.clone()),
+            },
+        ));
         instance_cond.insert("ec2:ImageID".into(), vec![image_id.clone()]);
         if let Some(lt) = &template_resource {
             instance_cond.insert("ec2:LaunchTemplate".into(), vec![lt.clone()]);
+        }
+        let mut eni_cond = request_tag_context(&eni_tags);
+        eni_cond.insert("ec2:Vpc".into(), vec![arn(ctx, &account, &format!("vpc/{vpc_id}"))]);
+        eni_cond.insert("ec2:Subnet".into(), vec![arn(ctx, &account, &format!("subnet/{subnet_id}"))]);
+        if let Some(z) = &subnet.availability_zone {
+            eni_cond.insert("ec2:AvailabilityZone".into(), vec![z.clone()]);
         }
         let mut resources = vec![
             (arn(ctx, &account, "instance/*"), instance_cond),
             (super::image::image_arn(ctx, &region, &image_id), resource_tag_context(image.record.image.tags.as_ref())),
             (arn(ctx, &account, &format!("subnet/{subnet_id}")), resource_tag_context(subnet.tags.as_ref())),
-            (arn(ctx, &account, "network-interface/*"), request_tag_context(&eni_tags)),
-            (arn(ctx, &account, "volume/*"), request_tag_context(&volume_tags)),
+            (arn(ctx, &account, "network-interface/*"), eni_cond),
         ];
+        // One `volume/*` per volume the launch creates, with its attributes.
+        if planned_volumes.is_empty() {
+            resources.push((arn(ctx, &account, "volume/*"), request_tag_context(&volume_tags)));
+        }
+        for v in &planned_volumes {
+            let mut c = request_tag_context(&volume_tags);
+            c.extend(crate::conditions::volume_keys(
+                ctx,
+                &crate::conditions::VolumeKeys {
+                    volume_type: &v.volume_type,
+                    size: Some(v.size),
+                    encrypted: v.encrypted,
+                    iops: v.iops,
+                    throughput: v.throughput,
+                    zone: subnet.availability_zone.as_deref(),
+                    snapshot_id: v.snapshot_id.as_deref(),
+                    kms_key_id: v.kms_key_id.as_deref(),
+                },
+            ));
+            resources.push((arn(ctx, &account, "volume/*"), c));
+        }
         for g in &groups {
             resources.push((
                 arn(ctx, &account, &format!("security-group/{}", g.group_id.clone().unwrap_or_default())),
@@ -605,7 +882,7 @@ impl Ec2 {
         if let Some(lt) = &template_resource {
             resources.push((lt.clone(), ConditionContext::new()));
         }
-        authorize(ctx, "RunInstances", &resources, input.dry_run)?;
+        self.authorize_known(ctx, "RunInstances", &resources, input.dry_run)?;
         if let Some(role) = profile.as_ref().and_then(|p| p.role_arn.clone()) {
             let mut c = ConditionContext::new();
             c.insert("iam:PassedToService".into(), vec!["ec2.amazonaws.com".into()]);
@@ -616,6 +893,28 @@ impl Ec2 {
                     format!("You are not authorized to perform this operation. {}", e.message),
                 )
             })?;
+        }
+        // Idempotency: the same client token and parameters return the same
+        // reservation.
+        let token = input.client_token.as_deref();
+        let existing = self.with_region(ctx, |r| {
+            let rid = crate::idempotency::replay(r, "RunInstances", token, &fingerprint, |rid| {
+                r.instances.values().any(|i| i.reservation_id == rid)
+            })?;
+            Ok::<_, ServiceError>(rid.map(|rid| {
+                let instances: Vec<t::Instance> =
+                    r.instances.values().filter(|i| i.reservation_id == rid).map(|rec| render(r, rec)).collect();
+                (rid, instances)
+            }))
+        })?;
+        if let Some((rid, instances)) = existing {
+            return Ok(t::Reservation {
+                reservation_id: Some(rid),
+                owner_id: Some(account.clone()),
+                groups: Some(Vec::new()),
+                instances: Some(instances),
+                requester_id: None,
+            });
         }
 
         let now = ctx.received_at;
@@ -832,7 +1131,7 @@ impl Ec2 {
                             }),
                         }
                     }),
-                    hibernation_options: Some(t::HibernationOptions { configured: Some(false) }),
+                    hibernation_options: Some(t::HibernationOptions { configured: Some(input.hibernation_options.as_ref().and_then(|h| h.configured).unwrap_or(false)) }),
                     metadata_options: Some({
                         let req = input.metadata_options.clone().unwrap_or_default();
                         t::InstanceMetadataOptionsResponse {
@@ -940,6 +1239,7 @@ impl Ec2 {
                 r.instances.insert(instance_id.clone(), rec);
                 out.push(render(r, &r.instances[&instance_id]));
             }
+            crate::idempotency::remember(r, "RunInstances", token, &fingerprint, &reservation_id);
             Ok(out)
         })?;
         for (id, gen, mut spec) in launched {
@@ -960,7 +1260,7 @@ impl Ec2 {
         ctx: &RequestContext,
         input: t::DescribeInstancesRequest,
     ) -> Result<t::DescribeInstancesResult, ServiceError> {
-        authorize(ctx, "DescribeInstances", &[("*".into(), ConditionContext::new())], input.dry_run)?;
+        self.authorize_known(ctx, "DescribeInstances", &[("*".into(), ConditionContext::new())], input.dry_run)?;
         let filters = Filters::new(&input.filters);
         let ids = input.instance_ids.clone().unwrap_or_default();
         if !ids.is_empty() && input.max_results.is_some() {
@@ -993,7 +1293,7 @@ impl Ec2 {
                     continue;
                 }
                 let i = render(r, rec);
-                if !filters.matches(i.tags.as_ref(), |name| instance_filter(&i, rec, name))? {
+                if !filters.matches(i.tags.as_ref(), |name| instance_filter(r, &i, rec, name))? {
                     continue;
                 }
                 match reservations
@@ -1024,16 +1324,17 @@ impl Ec2 {
         dry_run: Option<bool>,
     ) -> Result<(), ServiceError> {
         let account = account_of(ctx);
-        let tags = self.with_region(ctx, |r| {
+        let contexts = self.with_region(ctx, |r| {
             Kind::Instance.check_all(ids, |id| r.instances.contains_key(id))?;
-            Ok::<_, ServiceError>(ids.iter().map(|id| r.instances[id].instance.tags.clone()).collect::<Vec<_>>())
+            Ok::<_, ServiceError>(
+                ids.iter()
+                    .map(|id| crate::conditions::instance(ctx, &account, &r.instances[id].instance))
+                    .collect::<Vec<_>>(),
+            )
         })?;
-        let resources: Vec<(String, ConditionContext)> = ids
-            .iter()
-            .zip(tags)
-            .map(|(id, tags)| (arn(ctx, &account, &format!("instance/{id}")), resource_tag_context(tags.as_ref())))
-            .collect();
-        authorize(ctx, action, &resources, dry_run)
+        let resources: Vec<(String, ConditionContext)> =
+            ids.iter().zip(contexts).map(|(id, c)| (arn(ctx, &account, &format!("instance/{id}")), c)).collect();
+        self.authorize_known(ctx, action, &resources, dry_run)
     }
 
     pub(crate) async fn start_instances_op(
@@ -1240,7 +1541,7 @@ impl Ec2 {
         ctx: &RequestContext,
         input: t::DescribeInstanceStatusRequest,
     ) -> Result<t::DescribeInstanceStatusResult, ServiceError> {
-        authorize(ctx, "DescribeInstanceStatus", &[("*".into(), ConditionContext::new())], input.dry_run)?;
+        self.authorize_known(ctx, "DescribeInstanceStatus", &[("*".into(), ConditionContext::new())], input.dry_run)?;
         let filters = Filters::new(&input.filters);
         let ids = input.instance_ids.clone().unwrap_or_default();
         let all = input.include_all_instances == Some(true);
@@ -1377,6 +1678,8 @@ impl Ec2 {
             input.dry_run,
         )?;
         let id = input.instance_id.clone();
+        let groups_limit =
+            self.quota(&account_of(ctx), &ctx.region, crate::quotas::GROUPS_PER_INTERFACE, ctx.received_at);
         self.with_region(ctx, |r| {
             let st = state_name(&r.instances[&id]);
             let must_be_stopped = |what: &str| -> Result<(), ServiceError> {
@@ -1450,6 +1753,7 @@ impl Ec2 {
                 }
                 if let Some(g) = groups {
                     let resolved = super::eni::resolve_groups(r, &vpc_id, Some(&g))?;
+                    super::eni::check_groups_per_interface(&resolved, groups_limit)?;
                     if let Some(n) = r.network_interfaces.get_mut(&eni) {
                         n.groups = Some(resolved);
                     }
@@ -1616,7 +1920,7 @@ impl Ec2 {
         ctx: &RequestContext,
         input: t::ReplaceIamInstanceProfileAssociationRequest,
     ) -> Result<t::ReplaceIamInstanceProfileAssociationResult, ServiceError> {
-        authorize(
+        self.authorize_known(
             ctx,
             "ReplaceIamInstanceProfileAssociation",
             &[(arn(ctx, &account_of(ctx), "instance/*"), ConditionContext::new())],
@@ -1658,7 +1962,7 @@ impl Ec2 {
         ctx: &RequestContext,
         input: t::DisassociateIamInstanceProfileRequest,
     ) -> Result<t::DisassociateIamInstanceProfileResult, ServiceError> {
-        authorize(
+        self.authorize_known(
             ctx,
             "DisassociateIamInstanceProfile",
             &[(arn(ctx, &account_of(ctx), "instance/*"), ConditionContext::new())],
@@ -1689,7 +1993,12 @@ impl Ec2 {
         ctx: &RequestContext,
         input: t::DescribeIamInstanceProfileAssociationsRequest,
     ) -> Result<t::DescribeIamInstanceProfileAssociationsResult, ServiceError> {
-        authorize(ctx, "DescribeIamInstanceProfileAssociations", &[("*".into(), ConditionContext::new())], None)?;
+        self.authorize_known(
+            ctx,
+            "DescribeIamInstanceProfileAssociations",
+            &[("*".into(), ConditionContext::new())],
+            None,
+        )?;
         let filters = Filters::new(&input.filters);
         let ids = input.association_ids.clone().unwrap_or_default();
         self.with_region(ctx, |r| {

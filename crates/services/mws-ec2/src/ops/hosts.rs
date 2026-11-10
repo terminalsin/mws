@@ -9,8 +9,8 @@ use crate::generated::types as t;
 use crate::pricing::{family_of, host_size};
 use crate::state::RegionState;
 use crate::util::{
-    arn, authorize, err, invalid_parameter, missing_parameter, new_id, paginate, request_tag_context,
-    resource_tag_context, s, some_tags, tags_for, Filters, Kind,
+    arn, err, invalid_parameter, missing_parameter, new_id, paginate, request_tag_context, resource_tag_context, s,
+    some_tags, tags_for, Filters, Kind,
 };
 use crate::{account_of, Ec2};
 
@@ -213,9 +213,16 @@ impl Ec2 {
         let recovery = check("hostRecovery", &input.host_recovery, &["on", "off"], "off")?;
         let maintenance = check("hostMaintenance", &input.host_maintenance, &["on", "off"], "on")?;
         let account = account_of(ctx);
-        authorize(ctx, "AllocateHosts", &[(arn(ctx, &account, "dedicated-host/*"), request_tag_context(&tags))], None)?;
+        self.authorize_known(
+            ctx,
+            "AllocateHosts",
+            &[(arn(ctx, &account, "dedicated-host/*"), request_tag_context(&tags))],
+            None,
+        )?;
         let now = ctx.received_at;
+        let fp = crate::idempotency::fingerprint(&input);
         self.with_region(ctx, |r| {
+            crate::idempotency::replay(r, "AllocateHosts", input.client_token.as_deref(), &fp, |_| true)?;
             if let Some(token) = &input.client_token {
                 let ids: Vec<String> = r
                     .hosts
@@ -258,6 +265,7 @@ impl Ec2 {
                 );
                 ids.push(id);
             }
+            crate::idempotency::remember(r, "AllocateHosts", input.client_token.as_deref(), &fp, &ids.join(","));
             Ok(t::AllocateHostsResult { host_ids: Some(ids) })
         })
     }
@@ -267,7 +275,7 @@ impl Ec2 {
         ctx: &RequestContext,
         input: t::DescribeHostsRequest,
     ) -> Result<t::DescribeHostsResult, ServiceError> {
-        authorize(ctx, "DescribeHosts", &[("*".into(), ConditionContext::new())], None)?;
+        self.authorize_known(ctx, "DescribeHosts", &[("*".into(), ConditionContext::new())], None)?;
         let ids = input.host_ids.clone().unwrap_or_default();
         if !ids.is_empty() && input.max_results.is_some() {
             return Err(err(
@@ -350,7 +358,7 @@ impl Ec2 {
                 }
             }
         }
-        authorize(ctx, "ModifyHosts", &self.host_resources(ctx, &input.host_ids), None)?;
+        self.authorize_known(ctx, "ModifyHosts", &self.host_resources(ctx, &input.host_ids), None)?;
         self.with_region(ctx, |r| {
             let mut ok = Vec::new();
             let mut failed = Vec::new();
@@ -418,7 +426,7 @@ impl Ec2 {
         if input.host_ids.is_empty() {
             return Err(missing_parameter("HostIds"));
         }
-        authorize(ctx, "ReleaseHosts", &self.host_resources(ctx, &input.host_ids), None)?;
+        self.authorize_known(ctx, "ReleaseHosts", &self.host_resources(ctx, &input.host_ids), None)?;
         let now = ctx.received_at;
         self.with_region(ctx, |r| {
             let mut ok = Vec::new();
@@ -460,7 +468,7 @@ impl Ec2 {
         let tags = self.with_region(ctx, |r| {
             r.instances.get(&id).map(|i| i.instance.tags.clone()).ok_or_else(|| Kind::Instance.not_found(&id))
         })?;
-        authorize(
+        self.authorize_known(
             ctx,
             "ModifyInstancePlacement",
             &[(arn(ctx, &account, &format!("instance/{id}")), resource_tag_context(tags.as_ref()))],

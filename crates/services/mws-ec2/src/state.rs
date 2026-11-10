@@ -109,6 +109,8 @@ pub struct RegionState {
     pub capacity_reservation_tokens: BTreeMap<String, String>,
     /// Network interface permissions, by permission id.
     pub eni_permissions: BTreeMap<String, t::NetworkInterfacePermission>,
+    /// Client tokens of create calls, keyed by `{operation}/{token}`.
+    pub client_tokens: BTreeMap<String, crate::idempotency::TokenRecord>,
 }
 
 /// A PrivateLink endpoint service: its configuration, who may connect, and

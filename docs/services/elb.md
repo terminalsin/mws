@@ -1,6 +1,6 @@
 # Elastic Load Balancing
 
-> Crate: [`mws-elb`](../../crates/services/mws-elb) · Tests: [`elbv2.rs`](../../tests/e2e-rust/tests/e2e/elbv2.rs), [`elbv2_api.rs`](../../tests/e2e-rust/tests/e2e/elbv2_api.rs), [`elb_classic.rs`](../../tests/e2e-rust/tests/e2e/elb_classic.rs), [`elbv2_auth.rs`](../../tests/e2e-rust/tests/e2e/elbv2_auth.rs), [`elb_logs.rs`](../../tests/e2e-rust/tests/e2e/elb_logs.rs)
+> Crate: [`mws-elb`](../../crates/services/mws-elb) · Tests: [`elbv2.rs`](../../tests/e2e-rust/tests/e2e/elbv2.rs), [`elbv2_api.rs`](../../tests/e2e-rust/tests/e2e/elbv2_api.rs), [`elb_classic.rs`](../../tests/e2e-rust/tests/e2e/elb_classic.rs), [`elbv2_auth.rs`](../../tests/e2e-rust/tests/e2e/elbv2_auth.rs), [`elb_logs.rs`](../../tests/e2e-rust/tests/e2e/elb_logs.rs), [`elbv2_enis.rs`](../../tests/e2e-rust/tests/e2e/elbv2_enis.rs)
 
 All 51 ELBv2 operations (Application, Network and Gateway Load Balancers, API
 version 2015-12-01) and all 29 Classic Load Balancer operations (2012-06-01),
@@ -15,6 +15,7 @@ reach the registered targets.
 | Feature | Status | Details |
 | --- | :---: | --- |
 | Load balancers | ✅ | ARNs (`app/`, `net/`, `gwy/`), DNS names and canonical hosted zone ids per Region and type, `internal-` names, subnets resolved through EC2 (ALBs need two Availability Zones), the VPC's default security group, idempotent create, deletion protection, `SetSubnets`, `SetSecurityGroups`, `SetIpAddressType`. |
+| Network interfaces | ✅ | Each enabled subnet gets a requester-managed (`amazon-elb`) interface described `ELB app/<name>/<id>` (`net/`, `gwy/`) with an address from the subnet, the load balancer's security groups and a public IP when internet-facing, so `DescribeNetworkInterfaces` finds it and the subnet and security groups are in use (`DependencyViolation`). `SetSubnets` and `SetSecurityGroups` update the interfaces; `DeleteLoadBalancer` deletes them. NLB subnet mappings' `PrivateIPv4Address` is not applied to the interface's address. |
 | Attributes | ✅ | Load balancer, listener and target group attributes with each type's defaults and AWS's value checks. |
 | Listeners and rules | ✅ | Protocols per load balancer type, `DuplicateListener`, default rules, priorities and `SetRulePriorities`, condition and action validation (one terminal action, redirect loops, target group VPC and protocol), transforms. |
 | Target groups and targets | ✅ | Health check defaults per protocol, `instance`, `ip` (inside the VPC's CIDRs, or `AvailabilityZone: all` for other private ranges), `lambda` and `alb` targets, `ResourceInUse` while a listener forwards to them, draining for `deregistration_delay.timeout_seconds`. |
@@ -22,7 +23,7 @@ reach the registered targets.
 | Trust stores | ✅ | CA bundles and CRLs read from S3 with the caller's permissions, revocations, associations, content links served at `/_aws/elb/trust-stores/`. |
 | SSL policies, limits | ✅ | AWS's predefined policies (protocols and ciphers) and account limits. |
 | Capacity reservations, IPAM pools | ✅ | Validated and reported; they change nothing locally. |
-| Tags and authorization | ✅ | `elasticloadbalancing:*` actions on resource ARNs with `aws:ResourceTag`, `aws:RequestTag` and `elasticloadbalancing:CreateAction`. |
+| Tags and authorization | ✅ | `elasticloadbalancing:*` actions on resource ARNs with `aws:ResourceTag`, `aws:RequestTag` and `elasticloadbalancing:CreateAction`. `CreateListener` is authorized on its load balancer and `CreateRule` on its listener (with that resource's tags), as the Service Authorization Reference lists them. |
 | Resource policies (RAM sharing) | ❌ | Nothing is shared, so `GetResourcePolicy` finds none. |
 
 ## Data plane

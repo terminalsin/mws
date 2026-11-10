@@ -12,8 +12,8 @@ use super::instance::state_name;
 use crate::generated::types as t;
 use crate::state::RegionState;
 use crate::util::{
-    arn, authorize, err, invalid_parameter, new_id, paginate, request_tag_context, resource_tag_context, s, some_tags,
-    tags_for, Filters, Kind,
+    arn, err, invalid_parameter, new_id, paginate, request_tag_context, resource_tag_context, s, some_tags, tags_for,
+    Filters, Kind,
 };
 use crate::{account_of, Ec2};
 
@@ -245,7 +245,7 @@ impl Ec2 {
         ctx: &RequestContext,
         input: t::GetDefaultCreditSpecificationRequest,
     ) -> Result<t::GetDefaultCreditSpecificationResult, ServiceError> {
-        authorize(ctx, "GetDefaultCreditSpecification", &account_resource(ctx), input.dry_run)?;
+        self.authorize_known(ctx, "GetDefaultCreditSpecification", &account_resource(ctx), input.dry_run)?;
         let fallback = match input.instance_family.as_str() {
             "t2" => "standard",
             "t3" | "t3a" | "t4g" => "unlimited",
@@ -269,7 +269,7 @@ impl Ec2 {
         ctx: &RequestContext,
         input: t::ModifyDefaultCreditSpecificationRequest,
     ) -> Result<t::ModifyDefaultCreditSpecificationResult, ServiceError> {
-        authorize(ctx, "ModifyDefaultCreditSpecification", &account_resource(ctx), input.dry_run)?;
+        self.authorize_known(ctx, "ModifyDefaultCreditSpecification", &account_resource(ctx), input.dry_run)?;
         if !["t2", "t3", "t3a", "t4g"].contains(&input.instance_family.as_str()) {
             return Err(invalid_parameter(format!(
                 "Value ({}) for parameter instanceFamily is invalid. Valid values are t2, t3, t3a and t4g.",
@@ -298,7 +298,7 @@ impl Ec2 {
         ctx: &RequestContext,
         input: t::GetInstanceMetadataDefaultsRequest,
     ) -> Result<t::GetInstanceMetadataDefaultsResult, ServiceError> {
-        authorize(ctx, "GetInstanceMetadataDefaults", &account_resource(ctx), input.dry_run)?;
+        self.authorize_known(ctx, "GetInstanceMetadataDefaults", &account_resource(ctx), input.dry_run)?;
         let d = self.with_region(ctx, |r| r.metadata_defaults.clone());
         Ok(t::GetInstanceMetadataDefaultsResult {
             account_level: Some(t::InstanceMetadataDefaultsResponse { managed_by: Some("account".into()), ..d }),
@@ -310,7 +310,7 @@ impl Ec2 {
         ctx: &RequestContext,
         input: t::ModifyInstanceMetadataDefaultsRequest,
     ) -> Result<t::ModifyInstanceMetadataDefaultsResult, ServiceError> {
-        authorize(ctx, "ModifyInstanceMetadataDefaults", &account_resource(ctx), input.dry_run)?;
+        self.authorize_known(ctx, "ModifyInstanceMetadataDefaults", &account_resource(ctx), input.dry_run)?;
         let check = |v: &Option<String>, name: &str, allowed: &[&str]| -> Result<(), ServiceError> {
             match v {
                 Some(x) if !allowed.contains(&x.as_str()) => {
@@ -353,7 +353,7 @@ impl Ec2 {
         ctx: &RequestContext,
         input: t::EnableSerialConsoleAccessRequest,
     ) -> Result<t::EnableSerialConsoleAccessResult, ServiceError> {
-        authorize(ctx, "EnableSerialConsoleAccess", &account_resource(ctx), input.dry_run)?;
+        self.authorize_known(ctx, "EnableSerialConsoleAccess", &account_resource(ctx), input.dry_run)?;
         self.with_region(ctx, |r| r.serial_console_access = true);
         Ok(t::EnableSerialConsoleAccessResult { serial_console_access_enabled: Some(true) })
     }
@@ -363,7 +363,7 @@ impl Ec2 {
         ctx: &RequestContext,
         input: t::DisableSerialConsoleAccessRequest,
     ) -> Result<t::DisableSerialConsoleAccessResult, ServiceError> {
-        authorize(ctx, "DisableSerialConsoleAccess", &account_resource(ctx), input.dry_run)?;
+        self.authorize_known(ctx, "DisableSerialConsoleAccess", &account_resource(ctx), input.dry_run)?;
         self.with_region(ctx, |r| r.serial_console_access = false);
         Ok(t::DisableSerialConsoleAccessResult { serial_console_access_enabled: Some(false) })
     }
@@ -373,7 +373,7 @@ impl Ec2 {
         ctx: &RequestContext,
         input: t::GetSerialConsoleAccessStatusRequest,
     ) -> Result<t::GetSerialConsoleAccessStatusResult, ServiceError> {
-        authorize(ctx, "GetSerialConsoleAccessStatus", &account_resource(ctx), input.dry_run)?;
+        self.authorize_known(ctx, "GetSerialConsoleAccessStatus", &account_resource(ctx), input.dry_run)?;
         let on = self.with_region(ctx, |r| r.serial_console_access);
         Ok(t::GetSerialConsoleAccessStatusResult {
             serial_console_access_enabled: Some(on),
@@ -386,7 +386,7 @@ impl Ec2 {
         ctx: &RequestContext,
         input: t::EnableImageBlockPublicAccessRequest,
     ) -> Result<t::EnableImageBlockPublicAccessResult, ServiceError> {
-        authorize(ctx, "EnableImageBlockPublicAccess", &account_resource(ctx), input.dry_run)?;
+        self.authorize_known(ctx, "EnableImageBlockPublicAccess", &account_resource(ctx), input.dry_run)?;
         if input.image_block_public_access_state != "block-new-sharing" {
             return Err(invalid_parameter(format!(
                 "Value ({}) for parameter ImageBlockPublicAccessState is invalid. Valid value: block-new-sharing.",
@@ -402,7 +402,7 @@ impl Ec2 {
         ctx: &RequestContext,
         input: t::DisableImageBlockPublicAccessRequest,
     ) -> Result<t::DisableImageBlockPublicAccessResult, ServiceError> {
-        authorize(ctx, "DisableImageBlockPublicAccess", &account_resource(ctx), input.dry_run)?;
+        self.authorize_known(ctx, "DisableImageBlockPublicAccess", &account_resource(ctx), input.dry_run)?;
         self.with_region(ctx, |r| r.image_block_public_access = Some("unblocked".into()));
         Ok(t::DisableImageBlockPublicAccessResult { image_block_public_access_state: Some("unblocked".into()) })
     }
@@ -412,7 +412,7 @@ impl Ec2 {
         ctx: &RequestContext,
         input: t::GetImageBlockPublicAccessStateRequest,
     ) -> Result<t::GetImageBlockPublicAccessStateResult, ServiceError> {
-        authorize(ctx, "GetImageBlockPublicAccessState", &account_resource(ctx), input.dry_run)?;
+        self.authorize_known(ctx, "GetImageBlockPublicAccessState", &account_resource(ctx), input.dry_run)?;
         // Accounts created since late 2023 block new public sharing.
         let state = self
             .with_region(ctx, |r| r.image_block_public_access.clone())
@@ -428,7 +428,7 @@ impl Ec2 {
         ctx: &RequestContext,
         input: t::DescribeIdFormatRequest,
     ) -> Result<t::DescribeIdFormatResult, ServiceError> {
-        authorize(ctx, "DescribeIdFormat", &account_resource(ctx), None)?;
+        self.authorize_known(ctx, "DescribeIdFormat", &account_resource(ctx), None)?;
         let statuses = match &input.resource {
             Some(r) if !ID_FORMAT_RESOURCES.contains(&r.as_str()) => {
                 return Err(invalid_parameter(format!("Invalid resource type: {r}")));
@@ -444,7 +444,7 @@ impl Ec2 {
         ctx: &RequestContext,
         input: t::DescribeIdentityIdFormatRequest,
     ) -> Result<t::DescribeIdentityIdFormatResult, ServiceError> {
-        authorize(ctx, "DescribeIdentityIdFormat", &account_resource(ctx), None)?;
+        self.authorize_known(ctx, "DescribeIdentityIdFormat", &account_resource(ctx), None)?;
         let out = self.describe_id_format_op(ctx, t::DescribeIdFormatRequest { resource: input.resource })?;
         Ok(t::DescribeIdentityIdFormatResult { statuses: out.statuses })
     }
@@ -454,7 +454,7 @@ impl Ec2 {
         ctx: &RequestContext,
         input: t::DescribePrincipalIdFormatRequest,
     ) -> Result<t::DescribePrincipalIdFormatResult, ServiceError> {
-        authorize(ctx, "DescribePrincipalIdFormat", &account_resource(ctx), input.dry_run)?;
+        self.authorize_known(ctx, "DescribePrincipalIdFormat", &account_resource(ctx), input.dry_run)?;
         let resources: Vec<String> =
             input.resources.clone().unwrap_or_else(|| ID_FORMAT_RESOURCES.iter().map(|r| r.to_string()).collect());
         let statuses: Vec<t::IdFormat> = resources.iter().map(|r| id_format(r)).collect();
@@ -471,7 +471,7 @@ impl Ec2 {
         ctx: &RequestContext,
         input: t::DescribeAggregateIdFormatRequest,
     ) -> Result<t::DescribeAggregateIdFormatResult, ServiceError> {
-        authorize(ctx, "DescribeAggregateIdFormat", &account_resource(ctx), input.dry_run)?;
+        self.authorize_known(ctx, "DescribeAggregateIdFormat", &account_resource(ctx), input.dry_run)?;
         Ok(t::DescribeAggregateIdFormatResult {
             use_long_ids_aggregated: Some(true),
             statuses: Some(ID_FORMAT_RESOURCES.iter().map(|r| id_format(r)).collect()),
@@ -483,7 +483,7 @@ impl Ec2 {
         ctx: &RequestContext,
         input: t::ModifyIdFormatRequest,
     ) -> Result<(), ServiceError> {
-        authorize(ctx, "ModifyIdFormat", &account_resource(ctx), None)?;
+        self.authorize_known(ctx, "ModifyIdFormat", &account_resource(ctx), None)?;
         if !ID_FORMAT_RESOURCES.contains(&input.resource.as_str()) && input.resource != "all-current" {
             return Err(invalid_parameter(format!("Invalid resource type: {}", input.resource)));
         }
@@ -808,7 +808,7 @@ impl Ec2 {
         ctx: &RequestContext,
         input: t::DescribeInstanceTopologyRequest,
     ) -> Result<t::DescribeInstanceTopologyResult, ServiceError> {
-        authorize(ctx, "DescribeInstanceTopology", &account_resource(ctx), input.dry_run)?;
+        self.authorize_known(ctx, "DescribeInstanceTopology", &account_resource(ctx), input.dry_run)?;
         let ids = input.instance_ids.clone().unwrap_or_default();
         let groups = input.group_names.clone().unwrap_or_default();
         let filters = Filters::new(&input.filters);
@@ -886,7 +886,7 @@ impl Ec2 {
                 Err(e) => e,
             });
         };
-        authorize(
+        self.authorize_known(
             ctx,
             action,
             &[(super::image::image_arn(ctx, &ctx.region, id), resource_tag_context(tags.as_ref()))],
@@ -1022,7 +1022,7 @@ impl Ec2 {
         input: t::CancelImageLaunchPermissionRequest,
     ) -> Result<t::CancelImageLaunchPermissionResult, ServiceError> {
         Kind::Image.check(&input.image_id)?;
-        authorize(
+        self.authorize_known(
             ctx,
             "CancelImageLaunchPermission",
             &[(super::image::image_arn(ctx, &ctx.region, &input.image_id), ConditionContext::new())],
@@ -1060,7 +1060,7 @@ impl Ec2 {
         let account = account_of(ctx);
         let tags = tags_for(&input.tag_specifications, "placement-group", &["placement-group"])?;
         let name = input.group_name.clone().unwrap_or_else(|| new_id("pg"));
-        authorize(
+        self.authorize_known(
             ctx,
             "CreatePlacementGroup",
             &[(placement_group_arn(ctx, &account, &name), request_tag_context(&tags))],
@@ -1121,7 +1121,7 @@ impl Ec2 {
         ctx: &RequestContext,
         input: t::DescribePlacementGroupsRequest,
     ) -> Result<t::DescribePlacementGroupsResult, ServiceError> {
-        authorize(ctx, "DescribePlacementGroups", &account_resource(ctx), input.dry_run)?;
+        self.authorize_known(ctx, "DescribePlacementGroups", &account_resource(ctx), input.dry_run)?;
         let filters = Filters::new(&input.filters);
         let names = input.group_names.clone().unwrap_or_default();
         let ids = input.group_ids.clone().unwrap_or_default();
@@ -1179,7 +1179,7 @@ impl Ec2 {
         let Some(tags) = tags else {
             return Err(err("InvalidPlacementGroup.Unknown", format!("The Placement Group '{name}' is unknown.")));
         };
-        authorize(
+        self.authorize_known(
             ctx,
             "DeletePlacementGroup",
             &[(placement_group_arn(ctx, &account, &name), resource_tag_context(tags.as_ref()))],
@@ -1209,7 +1209,7 @@ impl Ec2 {
         let tags = tags_for(&input.tag_specifications, "capacity-reservation", &["capacity-reservation"])?;
         let mut cond = request_tag_context(&tags);
         cond.insert("ec2:InstanceType".into(), vec![input.instance_type.clone()]);
-        authorize(
+        self.authorize_known(
             ctx,
             "CreateCapacityReservation",
             &[(arn(ctx, &account, "capacity-reservation/*"), cond)],
@@ -1279,7 +1279,9 @@ impl Ec2 {
             )));
         }
         let now = ctx.received_at;
+        let fp = crate::idempotency::fingerprint(&input);
         let cr = self.with_region(ctx, |r| -> Result<_, ServiceError> {
+            crate::idempotency::replay(r, "CreateCapacityReservation", input.client_token.as_deref(), &fp, |_| true)?;
             if let Some(token) = &input.client_token {
                 if let Some(existing) =
                     r.capacity_reservation_tokens.get(token).and_then(|id| r.capacity_reservations.get(id))
@@ -1332,6 +1334,7 @@ impl Ec2 {
                 ..Default::default()
             };
             r.capacity_reservations.insert(id.clone(), cr.clone());
+            crate::idempotency::remember(r, "CreateCapacityReservation", input.client_token.as_deref(), &fp, &id);
             if let Some(token) = &input.client_token {
                 r.capacity_reservation_tokens.insert(token.clone(), id);
             }
@@ -1354,7 +1357,7 @@ impl Ec2 {
         ctx: &RequestContext,
         input: t::DescribeCapacityReservationsRequest,
     ) -> Result<t::DescribeCapacityReservationsResult, ServiceError> {
-        authorize(ctx, "DescribeCapacityReservations", &account_resource(ctx), input.dry_run)?;
+        self.authorize_known(ctx, "DescribeCapacityReservations", &account_resource(ctx), input.dry_run)?;
         let filters = Filters::new(&input.filters);
         let ids = input.capacity_reservation_ids.clone().unwrap_or_default();
         let now = ctx.received_at;
@@ -1404,7 +1407,7 @@ impl Ec2 {
         input: t::ModifyCapacityReservationRequest,
     ) -> Result<t::ModifyCapacityReservationResult, ServiceError> {
         let resource = self.reservation_resource(ctx, &input.capacity_reservation_id)?;
-        authorize(ctx, "ModifyCapacityReservation", &[resource], input.dry_run)?;
+        self.authorize_known(ctx, "ModifyCapacityReservation", &[resource], input.dry_run)?;
         let now = ctx.received_at;
         self.with_region(ctx, |r| {
             let view = reservation_view(r, &r.capacity_reservations[&input.capacity_reservation_id], now);
@@ -1458,7 +1461,7 @@ impl Ec2 {
         input: t::CancelCapacityReservationRequest,
     ) -> Result<t::CancelCapacityReservationResult, ServiceError> {
         let resource = self.reservation_resource(ctx, &input.capacity_reservation_id)?;
-        authorize(ctx, "CancelCapacityReservation", &[resource], input.dry_run)?;
+        self.authorize_known(ctx, "CancelCapacityReservation", &[resource], input.dry_run)?;
         let now = ctx.received_at;
         self.with_region(ctx, |r| {
             let id = input.capacity_reservation_id.clone();
@@ -1488,7 +1491,7 @@ impl Ec2 {
         input: t::GetCapacityReservationUsageRequest,
     ) -> Result<t::GetCapacityReservationUsageResult, ServiceError> {
         let resource = self.reservation_resource(ctx, &input.capacity_reservation_id)?;
-        authorize(ctx, "GetCapacityReservationUsage", &[resource], input.dry_run)?;
+        self.authorize_known(ctx, "GetCapacityReservationUsage", &[resource], input.dry_run)?;
         let now = ctx.received_at;
         let account = account_of(ctx);
         self.with_region(ctx, |r| {
@@ -1526,7 +1529,7 @@ impl Ec2 {
             Kind::NetworkInterface.check_all(std::slice::from_ref(&id), |i| r.network_interfaces.contains_key(i))?;
             Ok::<_, ServiceError>(r.network_interfaces[&id].tag_set.clone())
         })?;
-        authorize(
+        self.authorize_known(
             ctx,
             "ResetNetworkInterfaceAttribute",
             &[(arn(ctx, &account, &format!("network-interface/{id}")), resource_tag_context(tags.as_ref()))],
@@ -1556,7 +1559,7 @@ impl Ec2 {
             Kind::NetworkInterface.check_all(std::slice::from_ref(&id), |i| r.network_interfaces.contains_key(i))?;
             Ok::<_, ServiceError>(r.network_interfaces[&id].tag_set.clone())
         })?;
-        authorize(
+        self.authorize_known(
             ctx,
             "CreateNetworkInterfacePermission",
             &[(arn(ctx, &account, &format!("network-interface/{id}")), resource_tag_context(tags.as_ref()))],
@@ -1613,7 +1616,7 @@ impl Ec2 {
         ctx: &RequestContext,
         input: t::DescribeNetworkInterfacePermissionsRequest,
     ) -> Result<t::DescribeNetworkInterfacePermissionsResult, ServiceError> {
-        authorize(ctx, "DescribeNetworkInterfacePermissions", &account_resource(ctx), None)?;
+        self.authorize_known(ctx, "DescribeNetworkInterfacePermissions", &account_resource(ctx), None)?;
         let filters = Filters::new(&input.filters);
         let ids = input.network_interface_permission_ids.clone().unwrap_or_default();
         let out = self.with_region(ctx, |r| -> Result<_, ServiceError> {
@@ -1663,7 +1666,7 @@ impl Ec2 {
         let eni = eni.ok_or_else(|| {
             err("InvalidPermissionID.NotFound", format!("The network interface permission ID '{id}' does not exist"))
         })?;
-        authorize(
+        self.authorize_known(
             ctx,
             "DeleteNetworkInterfacePermission",
             &[(arn(ctx, &account, &format!("network-interface/{eni}")), ConditionContext::new())],

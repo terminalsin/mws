@@ -9,8 +9,8 @@ use super::ebs::{default_kms_key, snapshot_arn};
 use crate::generated::types as t;
 use crate::state::{RegionState, State};
 use crate::util::{
-    arn, authorize, b, err, invalid_parameter, new_id, paginate, request_tag_context, resource_tag_context, s,
-    some_tags, tags_for, Filters, Kind,
+    arn, b, err, invalid_parameter, new_id, paginate, request_tag_context, resource_tag_context, s, some_tags,
+    tags_for, Filters, Kind,
 };
 use crate::volumes::VolumeJob;
 use crate::{account_of, catalog, Ec2};
@@ -109,7 +109,12 @@ impl Ec2 {
         Kind::Snapshot.check(id)?;
         let snap =
             self.with_region(ctx, |r| r.snapshots.get(id).cloned()).ok_or_else(|| Kind::Snapshot.not_found(id))?;
-        authorize(ctx, action, &[(snapshot_arn(ctx, id), resource_tag_context(snap.tags.as_ref()))], dry_run)?;
+        self.authorize_known(
+            ctx,
+            action,
+            &[(snapshot_arn(ctx, id), resource_tag_context(snap.tags.as_ref()))],
+            dry_run,
+        )?;
         Ok(snap)
     }
 
@@ -124,7 +129,7 @@ impl Ec2 {
         let v = self
             .with_region(ctx, |r| r.volumes.get(&input.volume_id).cloned())
             .ok_or_else(|| Kind::Volume.not_found(&input.volume_id))?;
-        authorize(
+        self.authorize_known(
             ctx,
             "CreateSnapshot",
             &[
@@ -208,7 +213,7 @@ impl Ec2 {
                 resource_tag_context(v.tags.as_ref()),
             ));
         }
-        authorize(ctx, "CreateSnapshots", &resources, input.dry_run)?;
+        self.authorize_known(ctx, "CreateSnapshots", &resources, input.dry_run)?;
         let now = ctx.received_at;
         let mut out = Vec::new();
         let mut jobs = Vec::new();
@@ -267,7 +272,7 @@ impl Ec2 {
                 format!("Snapshot {} is not in a completed state.", input.source_snapshot_id),
             ));
         }
-        authorize(
+        self.authorize_known(
             ctx,
             "CopySnapshot",
             &[
@@ -376,7 +381,7 @@ impl Ec2 {
         ctx: &RequestContext,
         input: t::DescribeSnapshotsRequest,
     ) -> Result<t::DescribeSnapshotsResult, ServiceError> {
-        authorize(ctx, "DescribeSnapshots", &[("*".into(), ConditionContext::new())], input.dry_run)?;
+        self.authorize_known(ctx, "DescribeSnapshots", &[("*".into(), ConditionContext::new())], input.dry_run)?;
         let account = account_of(ctx);
         let filters = Filters::new(&input.filters);
         let ids = input.snapshot_ids.clone().unwrap_or_default();
@@ -663,7 +668,12 @@ impl Ec2 {
         ctx: &RequestContext,
         input: t::DescribeSnapshotTierStatusRequest,
     ) -> Result<t::DescribeSnapshotTierStatusResult, ServiceError> {
-        authorize(ctx, "DescribeSnapshotTierStatus", &[("*".into(), ConditionContext::new())], input.dry_run)?;
+        self.authorize_known(
+            ctx,
+            "DescribeSnapshotTierStatus",
+            &[("*".into(), ConditionContext::new())],
+            input.dry_run,
+        )?;
         let filters = Filters::new(&input.filters);
         self.with_region(ctx, |r| {
             let mut out = Vec::new();
@@ -791,7 +801,7 @@ impl Ec2 {
         ctx: &RequestContext,
         input: t::DescribeLockedSnapshotsRequest,
     ) -> Result<t::DescribeLockedSnapshotsResult, ServiceError> {
-        authorize(ctx, "DescribeLockedSnapshots", &[("*".into(), ConditionContext::new())], input.dry_run)?;
+        self.authorize_known(ctx, "DescribeLockedSnapshots", &[("*".into(), ConditionContext::new())], input.dry_run)?;
         let filters = Filters::new(&input.filters);
         let ids = input.snapshot_ids.clone().unwrap_or_default();
         let now = ctx.received_at;
@@ -860,7 +870,7 @@ impl Ec2 {
             Kind::Snapshot.check(id)?;
             resources.push((snapshot_arn(ctx, id), ConditionContext::new()));
         }
-        authorize(ctx, "EnableFastSnapshotRestores", &resources, input.dry_run)?;
+        self.authorize_known(ctx, "EnableFastSnapshotRestores", &resources, input.dry_run)?;
         let now = ctx.received_at;
         self.with_region(ctx, |r| {
             let mut ok = Vec::new();
@@ -926,7 +936,7 @@ impl Ec2 {
             Kind::Snapshot.check(id)?;
             resources.push((snapshot_arn(ctx, id), ConditionContext::new()));
         }
-        authorize(ctx, "DisableFastSnapshotRestores", &resources, input.dry_run)?;
+        self.authorize_known(ctx, "DisableFastSnapshotRestores", &resources, input.dry_run)?;
         let now = ctx.received_at;
         self.with_region(ctx, |r| {
             let mut ok = Vec::new();
@@ -974,7 +984,12 @@ impl Ec2 {
         ctx: &RequestContext,
         input: t::DescribeFastSnapshotRestoresRequest,
     ) -> Result<t::DescribeFastSnapshotRestoresResult, ServiceError> {
-        authorize(ctx, "DescribeFastSnapshotRestores", &[("*".into(), ConditionContext::new())], input.dry_run)?;
+        self.authorize_known(
+            ctx,
+            "DescribeFastSnapshotRestores",
+            &[("*".into(), ConditionContext::new())],
+            input.dry_run,
+        )?;
         let filters = Filters::new(&input.filters);
         self.with_region(ctx, |r| {
             let mut out = Vec::new();
@@ -1001,7 +1016,7 @@ impl Ec2 {
     // ---- account settings ----------------------------------------------------------------------
 
     fn account_setting(&self, ctx: &RequestContext, action: &str, dry_run: Option<bool>) -> Result<(), ServiceError> {
-        authorize(ctx, action, &[("*".into(), ConditionContext::new())], dry_run)
+        self.authorize_known(ctx, action, &[("*".into(), ConditionContext::new())], dry_run)
     }
 
     pub(crate) fn enable_ebs_encryption_by_default_op(
@@ -1118,7 +1133,12 @@ impl Ec2 {
         ctx: &RequestContext,
         input: t::ListSnapshotsInRecycleBinRequest,
     ) -> Result<t::ListSnapshotsInRecycleBinResult, ServiceError> {
-        authorize(ctx, "ListSnapshotsInRecycleBin", &[("*".into(), ConditionContext::new())], input.dry_run)?;
+        self.authorize_known(
+            ctx,
+            "ListSnapshotsInRecycleBin",
+            &[("*".into(), ConditionContext::new())],
+            input.dry_run,
+        )?;
         for id in input.snapshot_ids.iter().flatten() {
             Kind::Snapshot.check(id)?;
         }
@@ -1132,7 +1152,7 @@ impl Ec2 {
         input: t::RestoreSnapshotFromRecycleBinRequest,
     ) -> Result<t::RestoreSnapshotFromRecycleBinResult, ServiceError> {
         Kind::Snapshot.check(&input.snapshot_id)?;
-        authorize(
+        self.authorize_known(
             ctx,
             "RestoreSnapshotFromRecycleBin",
             &[(snapshot_arn(ctx, &input.snapshot_id), ConditionContext::new())],
@@ -1171,7 +1191,7 @@ impl Ec2 {
         let inst_tags = self
             .with_region(ctx, |r| r.instances.get(&input.instance_id).map(|i| i.instance.tags.clone()))
             .ok_or_else(|| Kind::Instance.not_found(&input.instance_id))?;
-        authorize(
+        self.authorize_known(
             ctx,
             "CreateReplaceRootVolumeTask",
             &[
@@ -1330,7 +1350,12 @@ impl Ec2 {
         ctx: &RequestContext,
         input: t::DescribeReplaceRootVolumeTasksRequest,
     ) -> Result<t::DescribeReplaceRootVolumeTasksResult, ServiceError> {
-        authorize(ctx, "DescribeReplaceRootVolumeTasks", &[("*".into(), ConditionContext::new())], input.dry_run)?;
+        self.authorize_known(
+            ctx,
+            "DescribeReplaceRootVolumeTasks",
+            &[("*".into(), ConditionContext::new())],
+            input.dry_run,
+        )?;
         let filters = Filters::new(&input.filters);
         let ids = input.replace_root_volume_task_ids.clone().unwrap_or_default();
         self.with_region(ctx, |r| {

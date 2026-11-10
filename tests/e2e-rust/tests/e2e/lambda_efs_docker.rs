@@ -88,6 +88,7 @@ async fn file_system(mws: &Mws, token: &str) -> (Vec<String>, String, String) {
 
     let fs = efs.create_file_system().creation_token(token).send().await.unwrap();
     let fs_id = fs.file_system_id().to_string();
+    crate::efs::wait_file_system(&efs, &fs_id).await;
     let mt = efs
         .create_mount_target()
         .file_system_id(&fs_id)

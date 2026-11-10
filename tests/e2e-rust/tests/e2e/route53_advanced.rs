@@ -439,11 +439,12 @@ async fn query_logging_vpc_authorizations_and_features() {
     assert_eq!(code(gone.into_service_error()), "NoSuchQueryLoggingConfig");
 
     let vpc = |id: &str| Vpc::builder().vpc_id(id).vpc_region(VpcRegion::UsEast1).build();
+    let home = crate::route53::real_vpc(&mws.root_sdk_config().await, "us-east-1").await;
     let private = r53
         .create_hosted_zone()
         .name("internal.example.com")
         .caller_reference("pv")
-        .vpc(vpc("vpc-11111111"))
+        .vpc(vpc(&home))
         .hosted_zone_config(HostedZoneConfig::builder().private_zone(true).build())
         .send()
         .await

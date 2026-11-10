@@ -126,6 +126,15 @@ impl AutoScaling {
         lc.ramdisk_id.get_or_insert_with(String::new);
         lc.key_name.get_or_insert_with(String::new);
         lc.user_data.get_or_insert_with(String::new);
+        if let Some(profile) = input.iam_instance_profile.as_ref().filter(|p| !p.is_empty()) {
+            if self.ec2().knows_instance_profiles() && self.ec2().instance_profile(&account_of(ctx), profile).is_none()
+            {
+                return Err(validation(format!("Invalid IamInstanceProfile: {profile}")));
+            }
+            // Instances launched from it get the profile's role: the caller
+            // passes it to EC2.
+            self.check_pass_profile(ctx, profile)?;
+        }
         self.with_region(ctx, |r| {
             if r.launch_configurations.contains_key(&name) {
                 return Err(already_exists(format!(

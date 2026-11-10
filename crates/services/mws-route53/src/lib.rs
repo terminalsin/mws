@@ -59,6 +59,9 @@ pub struct Route53 {
     prober_started: Arc<std::sync::atomic::AtomicBool>,
     /// What resolves alias targets outside Route 53.
     alias_resolvers: Arc<std::sync::RwLock<Vec<Arc<dyn AliasTargetResolver>>>>,
+    /// Where private hosted zone VPCs are looked up; without one, any
+    /// well-formed VPC id is accepted.
+    vpcs: Arc<std::sync::OnceLock<Arc<dyn VpcDirectory>>>,
 }
 
 /// Resolves alias targets that live in another service (an AWS resource's
@@ -67,6 +70,38 @@ pub trait AliasTargetResolver: Send + Sync {
     /// The values of `record_type` records for `dns_name` in hosted zone
     /// `hosted_zone_id`; `None` if this resolver doesn't know the target.
     fn resolve(&self, hosted_zone_id: &str, dns_name: &str, record_type: &str) -> Option<Vec<String>>;
+
+    /// Whether an alias record may target `dns_name` in hosted zone
+    /// `hosted_zone_id` (checked by `ChangeResourceRecordSets`); `None` if
+    /// the zone isn't this resolver's, and the target goes unchecked.
+    fn check(&self, _hosted_zone_id: &str, _dns_name: &str, _record_type: &str) -> Option<AliasTargetCheck> {
+        None
+    }
+
+    /// Whether the target is healthy, for alias records that evaluate
+    /// target health; `None` if this resolver doesn't know the target, and
+    /// a target that resolves to addresses counts as healthy.
+    fn healthy(&self, _hosted_zone_id: &str, _dns_name: &str) -> Option<bool> {
+        None
+    }
+}
+
+/// What [`AliasTargetResolver::check`] found.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum AliasTargetCheck {
+    /// The target exists.
+    Found,
+    /// The name is not one the hosted zone holds.
+    OutsideZone,
+    /// The name could be in the zone, but nothing has it.
+    NotFound,
+}
+
+/// Which VPCs exist, for private hosted zone associations.
+pub trait VpcDirectory: Send + Sync {
+    /// Whether VPC `vpc_id` exists in `account` and `region` (`ctx` is
+    /// the Route 53 request).
+    fn vpc_exists(&self, ctx: &RequestContext, account: &str, region: &str, vpc_id: &str) -> bool;
 }
 
 impl Route53 {
@@ -96,6 +131,34 @@ impl Route53 {
     fn resolve_external_alias(&self, zone_id: &str, dns_name: &str, record_type: &str) -> Option<Vec<String>> {
         let resolvers = self.alias_resolvers.read().expect("alias resolver lock poisoned").clone();
         resolvers.iter().find_map(|r| r.resolve(zone_id, dns_name, record_type))
+    }
+
+    fn check_external_alias(&self, zone_id: &str, dns_name: &str, record_type: &str) -> Option<AliasTargetCheck> {
+        let resolvers = self.alias_resolvers.read().expect("alias resolver lock poisoned").clone();
+        resolvers.iter().find_map(|r| r.check(zone_id, dns_name, record_type))
+    }
+
+    fn external_alias_healthy(&self, zone_id: &str, dns_name: &str) -> Option<bool> {
+        let resolvers = self.alias_resolvers.read().expect("alias resolver lock poisoned").clone();
+        resolvers.iter().find_map(|r| r.healthy(zone_id, dns_name))
+    }
+
+    /// Check private hosted zone VPCs against `vpcs` (EC2), as Route 53
+    /// does.
+    pub fn set_vpc_directory(&self, vpcs: Arc<dyn VpcDirectory>) {
+        let _ = self.vpcs.set(vpcs);
+    }
+
+    /// Whether `vpc` exists in the caller's account (true without a VPC
+    /// directory).
+    fn vpc_exists(&self, ctx: &RequestContext, vpc: &types::VPC) -> bool {
+        let Some(dir) = self.vpcs.get() else { return true };
+        dir.vpc_exists(
+            ctx,
+            &ctx.caller.account_id,
+            vpc.vpc_region.as_deref().unwrap_or_default(),
+            vpc.vpc_id.as_deref().unwrap_or_default(),
+        )
     }
 
     /// The state of the caller's account.
@@ -167,11 +230,15 @@ impl Route53 {
         let checks = resolve::health_configs(state.health_checks.iter());
         let healthy = |id: &str| self.is_healthy(&checks, id);
         let external = |zone: &str, name: &str, ty: &str| self.resolve_external_alias(zone, name, ty);
+        let external_healthy = |zone: &str, name: &str| self.external_alias_healthy(zone, name);
+        let zones = |id: &str| state.zones.get(id);
         let cx = resolve::Context {
             cidr_collections: &state.cidr_collections,
             healthy: &healthy,
             client,
             external: &external,
+            external_healthy: &external_healthy,
+            zones: &zones,
         };
         Some((zone.id.clone(), resolve::resolve(zone, qname, qtype, &cx)))
     }

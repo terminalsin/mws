@@ -6,9 +6,10 @@ use mws_core::{ConditionContext, RequestContext, ServiceError};
 
 use crate::catalog;
 use crate::generated::types as t;
+use crate::idempotency;
 use crate::state::{RegionState, VpcRecord};
 use crate::util::{
-    arn, authorize, b, err, invalid_parameter, ip_str, missing_parameter, new_id, paginate, request_tag_context,
+    arn, b, err, invalid_parameter, ip_str, missing_parameter, new_id, paginate, request_tag_context,
     resource_tag_context, s, some_tags, tags_for, Cidr, Filters, Kind,
 };
 use crate::{account_of, Ec2};
@@ -334,7 +335,9 @@ impl Ec2 {
     ) -> Result<t::CreateVpcResult, ServiceError> {
         let account = account_of(ctx);
         let tags = tags_for(&input.tag_specifications, "vpc", &["vpc"])?;
-        authorize(ctx, "CreateVpc", &[(arn(ctx, &account, "vpc/*"), request_tag_context(&tags))], input.dry_run)?;
+        let mut cond = request_tag_context(&tags);
+        cond.insert("ec2:Tenancy".into(), vec![input.instance_tenancy.clone().unwrap_or_else(|| "default".into())]);
+        self.authorize_known(ctx, "CreateVpc", &[(arn(ctx, &account, "vpc/*"), cond)], input.dry_run)?;
         let cidr = input.cidr_block.clone().ok_or_else(|| missing_parameter("CidrBlock"))?;
         parse_vpc_cidr(&cidr)?;
         let tenancy = input.instance_tenancy.clone().unwrap_or_else(|| "default".into());
@@ -364,7 +367,12 @@ impl Ec2 {
         input: t::CreateDefaultVpcRequest,
     ) -> Result<t::CreateDefaultVpcResult, ServiceError> {
         let account = account_of(ctx);
-        authorize(ctx, "CreateDefaultVpc", &[(arn(ctx, &account, "vpc/*"), ConditionContext::new())], input.dry_run)?;
+        self.authorize_known(
+            ctx,
+            "CreateDefaultVpc",
+            &[(arn(ctx, &account, "vpc/*"), ConditionContext::new())],
+            input.dry_run,
+        )?;
         let region = ctx.region.clone();
         let partition = ctx.partition.clone();
         let now = ctx.received_at;
@@ -390,7 +398,7 @@ impl Ec2 {
         Kind::Vpc.check(&input.vpc_id)?;
         let tags = self.with_region(ctx, |r| r.vpcs.get(&input.vpc_id).map(|v| v.vpc.tags.clone()));
         let tags = tags.ok_or_else(|| Kind::Vpc.not_found(&input.vpc_id))?;
-        authorize(
+        self.authorize_known(
             ctx,
             "DeleteVpc",
             &[(arn(ctx, &account, &format!("vpc/{}", input.vpc_id)), resource_tag_context(tags.as_ref()))],
@@ -437,7 +445,7 @@ impl Ec2 {
         ctx: &RequestContext,
         input: t::DescribeVpcsRequest,
     ) -> Result<t::DescribeVpcsResult, ServiceError> {
-        authorize(ctx, "DescribeVpcs", &[("*".into(), ConditionContext::new())], input.dry_run)?;
+        self.authorize_known(ctx, "DescribeVpcs", &[("*".into(), ConditionContext::new())], input.dry_run)?;
         let filters = Filters::new(&input.filters);
         let ids = input.vpc_ids.clone().unwrap_or_default();
         self.with_region(ctx, |r| {
@@ -488,7 +496,7 @@ impl Ec2 {
         Kind::Vpc.check(&input.vpc_id)?;
         let tags = self.with_region(ctx, |r| r.vpcs.get(&input.vpc_id).map(|v| v.vpc.tags.clone()));
         let tags = tags.ok_or_else(|| Kind::Vpc.not_found(&input.vpc_id))?;
-        authorize(
+        self.authorize_known(
             ctx,
             "ModifyVpcAttribute",
             &[(arn(ctx, &account, &format!("vpc/{}", input.vpc_id)), resource_tag_context(tags.as_ref()))],
@@ -528,7 +536,7 @@ impl Ec2 {
         ctx: &RequestContext,
         input: t::DescribeVpcAttributeRequest,
     ) -> Result<t::DescribeVpcAttributeResult, ServiceError> {
-        authorize(ctx, "DescribeVpcAttribute", &[("*".into(), ConditionContext::new())], input.dry_run)?;
+        self.authorize_known(ctx, "DescribeVpcAttribute", &[("*".into(), ConditionContext::new())], input.dry_run)?;
         Kind::Vpc.check(&input.vpc_id)?;
         self.with_region(ctx, |r| {
             let rec = r.vpcs.get(&input.vpc_id).ok_or_else(|| Kind::Vpc.not_found(&input.vpc_id))?;
@@ -557,7 +565,7 @@ impl Ec2 {
     ) -> Result<t::AssociateVpcCidrBlockResult, ServiceError> {
         let account = account_of(ctx);
         Kind::Vpc.check(&input.vpc_id)?;
-        authorize(
+        self.authorize_known(
             ctx,
             "AssociateVpcCidrBlock",
             &[(arn(ctx, &account, &format!("vpc/{}", input.vpc_id)), ConditionContext::new())],
@@ -629,7 +637,7 @@ impl Ec2 {
         ctx: &RequestContext,
         input: t::DisassociateVpcCidrBlockRequest,
     ) -> Result<t::DisassociateVpcCidrBlockResult, ServiceError> {
-        authorize(ctx, "DisassociateVpcCidrBlock", &[("*".into(), ConditionContext::new())], None)?;
+        self.authorize_known(ctx, "DisassociateVpcCidrBlock", &[("*".into(), ConditionContext::new())], None)?;
         self.with_region(ctx, |r| {
             if let Some(v6) = crate::ops::addressing::remove_vpc_ipv6(r, &input.association_id) {
                 let (vpc_id, assoc) = v6?;
@@ -689,7 +697,7 @@ impl Ec2 {
         let tags = tags_for(&input.tag_specifications, "subnet", &["subnet"])?;
         let mut cond = request_tag_context(&tags);
         cond.insert("ec2:Vpc".into(), vec![arn(ctx, &account, &format!("vpc/{}", input.vpc_id))]);
-        authorize(
+        self.authorize_known(
             ctx,
             "CreateSubnet",
             &[
@@ -719,8 +727,13 @@ impl Ec2 {
             }
         };
         let partition = ctx.partition.clone();
+        let limit = self.quota(&account, &region, crate::quotas::SUBNETS_PER_VPC, ctx.received_at);
         self.with_region(ctx, |r| {
             let vpc = r.vpcs.get(&input.vpc_id).ok_or_else(|| Kind::Vpc.not_found(&input.vpc_id))?;
+            if r.subnets.values().filter(|s| s.vpc_id.as_deref() == Some(input.vpc_id.as_str())).count() as f64 >= limit
+            {
+                return Err(err("SubnetLimitExceeded", "The maximum number of subnets has been reached."));
+            }
             if !vpc_cidrs(&vpc.vpc).iter().any(|c| c.contains_cidr(&parsed)) {
                 return Err(err("InvalidSubnet.Range", format!("The CIDR '{cidr}' is invalid.")));
             }
@@ -744,7 +757,7 @@ impl Ec2 {
         input: t::CreateDefaultSubnetRequest,
     ) -> Result<t::CreateDefaultSubnetResult, ServiceError> {
         let account = account_of(ctx);
-        authorize(
+        self.authorize_known(
             ctx,
             "CreateDefaultSubnet",
             &[(arn(ctx, &account, "subnet/*"), ConditionContext::new())],
@@ -817,7 +830,7 @@ impl Ec2 {
         Kind::Subnet.check(&input.subnet_id)?;
         let tags = self.with_region(ctx, |r| r.subnets.get(&input.subnet_id).map(|s| s.tags.clone()));
         let tags = tags.ok_or_else(|| Kind::Subnet.not_found(&input.subnet_id))?;
-        authorize(
+        self.authorize_known(
             ctx,
             "DeleteSubnet",
             &[(arn(ctx, &account, &format!("subnet/{}", input.subnet_id)), resource_tag_context(tags.as_ref()))],
@@ -855,7 +868,7 @@ impl Ec2 {
         ctx: &RequestContext,
         input: t::DescribeSubnetsRequest,
     ) -> Result<t::DescribeSubnetsResult, ServiceError> {
-        authorize(ctx, "DescribeSubnets", &[("*".into(), ConditionContext::new())], input.dry_run)?;
+        self.authorize_known(ctx, "DescribeSubnets", &[("*".into(), ConditionContext::new())], input.dry_run)?;
         let filters = Filters::new(&input.filters);
         let ids = input.subnet_ids.clone().unwrap_or_default();
         self.with_region(ctx, |r| {
@@ -900,7 +913,7 @@ impl Ec2 {
     ) -> Result<(), ServiceError> {
         let account = account_of(ctx);
         Kind::Subnet.check(&input.subnet_id)?;
-        authorize(
+        self.authorize_known(
             ctx,
             "ModifySubnetAttribute",
             &[(arn(ctx, &account, &format!("subnet/{}", input.subnet_id)), ConditionContext::new())],
@@ -943,13 +956,20 @@ impl Ec2 {
     ) -> Result<t::CreateInternetGatewayResult, ServiceError> {
         let account = account_of(ctx);
         let tags = tags_for(&input.tag_specifications, "internet-gateway", &["internet-gateway"])?;
-        authorize(
+        self.authorize_known(
             ctx,
             "CreateInternetGateway",
             &[(arn(ctx, &account, "internet-gateway/*"), request_tag_context(&tags))],
             input.dry_run,
         )?;
+        let limit = self.quota(&account, &ctx.region, crate::quotas::INTERNET_GATEWAYS, ctx.received_at);
         self.with_region(ctx, |r| {
+            if r.internet_gateways.len() as f64 >= limit {
+                return Err(err(
+                    "InternetGatewayLimitExceeded",
+                    "The maximum number of internet gateways has been reached.",
+                ));
+            }
             let id = new_id("igw");
             let igw = t::InternetGateway {
                 internet_gateway_id: Some(id.clone()),
@@ -982,7 +1002,7 @@ impl Ec2 {
         if let Some(v) = vpc_id {
             resources.push((arn(ctx, &account, &format!("vpc/{v}")), ConditionContext::new()));
         }
-        authorize(ctx, action, &resources, dry_run)
+        self.authorize_known(ctx, action, &resources, dry_run)
     }
 
     pub(crate) fn delete_internet_gateway_op(
@@ -1128,7 +1148,7 @@ impl Ec2 {
         ctx: &RequestContext,
         input: t::DescribeInternetGatewaysRequest,
     ) -> Result<t::DescribeInternetGatewaysResult, ServiceError> {
-        authorize(ctx, "DescribeInternetGateways", &[("*".into(), ConditionContext::new())], input.dry_run)?;
+        self.authorize_known(ctx, "DescribeInternetGateways", &[("*".into(), ConditionContext::new())], input.dry_run)?;
         let filters = Filters::new(&input.filters);
         let ids = input.internet_gateway_ids.clone().unwrap_or_default();
         self.with_region(ctx, |r| {
@@ -1168,7 +1188,7 @@ impl Ec2 {
         let tags = tags_for(&input.tag_specifications, "natgateway", &["natgateway"])?;
         let subnet_id = input.subnet_id.clone().ok_or_else(|| missing_parameter("SubnetId"))?;
         Kind::Subnet.check(&subnet_id)?;
-        authorize(
+        self.authorize_known(
             ctx,
             "CreateNatGateway",
             &[
@@ -1180,8 +1200,31 @@ impl Ec2 {
         let connectivity = input.connectivity_type.clone().unwrap_or_else(|| "public".into());
         let now = ctx.received_at;
         let region = ctx.region.clone();
+        let limit = self.quota(&account, &region, crate::quotas::NAT_GATEWAYS_PER_AZ, now);
+        let fp = idempotency::fingerprint(&input);
+        let token = input.client_token.as_deref();
         self.with_region(ctx, |r| {
+            if let Some(id) =
+                idempotency::replay(r, "CreateNatGateway", token, &fp, |id| r.nat_gateways.contains_key(id))?
+            {
+                return Ok(t::CreateNatGatewayResult {
+                    nat_gateway: r.nat_gateways.get(&id).cloned(),
+                    client_token: input.client_token.clone(),
+                });
+            }
             let subnet = r.subnets.get(&subnet_id).ok_or_else(|| Kind::Subnet.not_found(&subnet_id))?.clone();
+            let in_zone = r
+                .nat_gateways
+                .values()
+                .filter(|n| !matches!(n.state.as_deref(), Some("deleted" | "deleting" | "failed")))
+                .filter(|n| {
+                    n.subnet_id.as_ref().and_then(|s| r.subnets.get(s)).and_then(|s| s.availability_zone.as_ref())
+                        == subnet.availability_zone.as_ref()
+                })
+                .count();
+            if in_zone as f64 >= limit {
+                return Err(err("NatGatewayLimitExceeded", "The maximum number of NAT Gateways has been reached."));
+            }
             let public_ip = if connectivity == "public" {
                 let alloc = input.allocation_id.clone().ok_or_else(|| missing_parameter("AllocationId"))?;
                 let addr = r.addresses.get(&alloc).ok_or_else(|| Kind::Allocation.not_found(&alloc))?;
@@ -1250,7 +1293,8 @@ impl Ec2 {
                 tags: some_tags(tags),
                 ..Default::default()
             };
-            r.nat_gateways.insert(nat_id, nat.clone());
+            r.nat_gateways.insert(nat_id.clone(), nat.clone());
+            idempotency::remember(r, "CreateNatGateway", token, &fp, &nat_id);
             let mut shown = nat;
             shown.state = Some("pending".into());
             Ok(t::CreateNatGatewayResult { nat_gateway: Some(shown), client_token: input.client_token.clone() })
@@ -1264,7 +1308,7 @@ impl Ec2 {
     ) -> Result<t::DeleteNatGatewayResult, ServiceError> {
         let account = account_of(ctx);
         Kind::NatGateway.check(&input.nat_gateway_id)?;
-        authorize(
+        self.authorize_known(
             ctx,
             "DeleteNatGateway",
             &[(arn(ctx, &account, &format!("natgateway/{}", input.nat_gateway_id)), ConditionContext::new())],
@@ -1308,7 +1352,7 @@ impl Ec2 {
         ctx: &RequestContext,
         input: t::DescribeNatGatewaysRequest,
     ) -> Result<t::DescribeNatGatewaysResult, ServiceError> {
-        authorize(ctx, "DescribeNatGateways", &[("*".into(), ConditionContext::new())], input.dry_run)?;
+        self.authorize_known(ctx, "DescribeNatGateways", &[("*".into(), ConditionContext::new())], input.dry_run)?;
         let filters = Filters::new(&input.filter);
         let ids = input.nat_gateway_ids.clone().unwrap_or_default();
         self.with_region(ctx, |r| {
@@ -1346,16 +1390,30 @@ impl Ec2 {
         let account = account_of(ctx);
         Kind::Vpc.check(&input.vpc_id)?;
         let tags = tags_for(&input.tag_specifications, "route-table", &["route-table"])?;
-        authorize(
+        self.authorize_known(
             ctx,
             "CreateRouteTable",
             &[
-                (arn(ctx, &account, "route-table/*"), request_tag_context(&tags)),
+                (arn(ctx, &account, "route-table/*"), {
+                    let mut c = request_tag_context(&tags);
+                    c.extend(crate::conditions::in_vpc(ctx, &account, &input.vpc_id));
+                    c
+                }),
                 (arn(ctx, &account, &format!("vpc/{}", input.vpc_id)), ConditionContext::new()),
             ],
             input.dry_run,
         )?;
+        let fp = idempotency::fingerprint(&input);
+        let token = input.client_token.as_deref();
         self.with_region(ctx, |r| {
+            if let Some(id) =
+                idempotency::replay(r, "CreateRouteTable", token, &fp, |id| r.route_tables.contains_key(id))?
+            {
+                return Ok(t::CreateRouteTableResult {
+                    route_table: r.route_tables.get(&id).cloned(),
+                    client_token: input.client_token.clone(),
+                });
+            }
             let vpc = r.vpcs.get(&input.vpc_id).ok_or_else(|| Kind::Vpc.not_found(&input.vpc_id))?;
             let routes: Vec<t::Route> =
                 vpc_cidrs(&vpc.vpc).iter().map(|c| local_route(&format!("{}/{}", ip_str(c.base), c.prefix))).collect();
@@ -1369,7 +1427,8 @@ impl Ec2 {
                 propagating_vgws: Some(Vec::new()),
                 tags: some_tags(tags),
             };
-            r.route_tables.insert(id, rt.clone());
+            r.route_tables.insert(id.clone(), rt.clone());
+            idempotency::remember(r, "CreateRouteTable", token, &fp, &id);
             Ok(t::CreateRouteTableResult { route_table: Some(rt), client_token: input.client_token.clone() })
         })
     }
@@ -1385,12 +1444,11 @@ impl Ec2 {
         Kind::RouteTable.check(rtb_id)?;
         let tags = self.with_region(ctx, |r| r.route_tables.get(rtb_id).map(|g| g.tags.clone()));
         let tags = tags.ok_or_else(|| Kind::RouteTable.not_found(rtb_id))?;
-        authorize(
+        let resources = self.with_resource_context(
             ctx,
-            action,
-            &[(arn(ctx, &account, &format!("route-table/{rtb_id}")), resource_tag_context(tags.as_ref()))],
-            dry_run,
-        )
+            vec![(arn(ctx, &account, &format!("route-table/{rtb_id}")), resource_tag_context(tags.as_ref()))],
+        );
+        self.authorize_known(ctx, action, &resources, dry_run)
     }
 
     pub(crate) fn delete_route_table_op(
@@ -1420,7 +1478,7 @@ impl Ec2 {
         ctx: &RequestContext,
         input: t::DescribeRouteTablesRequest,
     ) -> Result<t::DescribeRouteTablesResult, ServiceError> {
-        authorize(ctx, "DescribeRouteTables", &[("*".into(), ConditionContext::new())], input.dry_run)?;
+        self.authorize_known(ctx, "DescribeRouteTables", &[("*".into(), ConditionContext::new())], input.dry_run)?;
         let filters = Filters::new(&input.filters);
         let ids = input.route_table_ids.clone().unwrap_or_default();
         self.with_region(ctx, |r| {
@@ -1582,12 +1640,18 @@ impl Ec2 {
                 "Value ({dest}) for parameter destinationCidrBlock is invalid. This is not a valid CIDR block."
             )));
         }
+        let limit = self.quota(&account_of(ctx), &ctx.region, crate::quotas::ROUTES_PER_TABLE, ctx.received_at);
         self.with_region(ctx, |r| {
             let rt = r
                 .route_tables
                 .get(&input.route_table_id)
                 .ok_or_else(|| Kind::RouteTable.not_found(&input.route_table_id))?;
             let vpc_id = rt.vpc_id.clone().unwrap_or_default();
+            // Local and propagated routes do not count.
+            let routes = rt.routes.iter().flatten().filter(|x| x.origin.as_deref() == Some("CreateRoute")).count();
+            if routes as f64 >= limit {
+                return Err(err("RouteLimitExceeded", "The maximum number of routes has been reached."));
+            }
             if rt.routes.iter().flatten().any(|x| {
                 x.destination_cidr_block.as_deref() == Some(dest.as_str())
                     || x.destination_ipv6_cidr_block.as_deref() == Some(dest.as_str())
@@ -1806,7 +1870,7 @@ impl Ec2 {
         ctx: &RequestContext,
         input: t::DisassociateRouteTableRequest,
     ) -> Result<(), ServiceError> {
-        authorize(ctx, "DisassociateRouteTable", &[("*".into(), ConditionContext::new())], input.dry_run)?;
+        self.authorize_known(ctx, "DisassociateRouteTable", &[("*".into(), ConditionContext::new())], input.dry_run)?;
         self.with_region(ctx, |r| {
             for rt in r.route_tables.values_mut() {
                 if let Some(assocs) = &mut rt.associations {
@@ -1888,13 +1952,30 @@ impl Ec2 {
         let account = account_of(ctx);
         Kind::Vpc.check(&input.vpc_id)?;
         let tags = tags_for(&input.tag_specifications, "network-acl", &["network-acl"])?;
-        authorize(
+        self.authorize_known(
             ctx,
             "CreateNetworkAcl",
-            &[(arn(ctx, &account, "network-acl/*"), request_tag_context(&tags))],
+            &[
+                (arn(ctx, &account, "network-acl/*"), {
+                    let mut c = request_tag_context(&tags);
+                    c.extend(crate::conditions::in_vpc(ctx, &account, &input.vpc_id));
+                    c
+                }),
+                (arn(ctx, &account, &format!("vpc/{}", input.vpc_id)), ConditionContext::new()),
+            ],
             input.dry_run,
         )?;
+        let fp = idempotency::fingerprint(&input);
+        let token = input.client_token.as_deref();
         self.with_region(ctx, |r| {
+            if let Some(id) =
+                idempotency::replay(r, "CreateNetworkAcl", token, &fp, |id| r.network_acls.contains_key(id))?
+            {
+                return Ok(t::CreateNetworkAclResult {
+                    network_acl: r.network_acls.get(&id).cloned(),
+                    client_token: input.client_token.clone(),
+                });
+            }
             if !r.vpcs.contains_key(&input.vpc_id) {
                 return Err(Kind::Vpc.not_found(&input.vpc_id));
             }
@@ -1911,7 +1992,8 @@ impl Ec2 {
                 ]),
                 tags: some_tags(tags),
             };
-            r.network_acls.insert(id, acl.clone());
+            r.network_acls.insert(id.clone(), acl.clone());
+            idempotency::remember(r, "CreateNetworkAcl", token, &fp, &id);
             Ok(t::CreateNetworkAclResult { network_acl: Some(acl), client_token: input.client_token.clone() })
         })
     }
@@ -1921,7 +2003,7 @@ impl Ec2 {
         ctx: &RequestContext,
         input: t::DeleteNetworkAclRequest,
     ) -> Result<(), ServiceError> {
-        authorize(
+        self.authorize_known(
             ctx,
             "DeleteNetworkAcl",
             &[(arn(ctx, &account_of(ctx), &format!("network-acl/{}", input.network_acl_id)), ConditionContext::new())],
@@ -1960,7 +2042,7 @@ impl Ec2 {
         entry: t::NetworkAclEntry,
         dry_run: Option<bool>,
     ) -> Result<(), ServiceError> {
-        authorize(
+        self.authorize_known(
             ctx,
             action,
             &[(arn(ctx, &account_of(ctx), &format!("network-acl/{acl_id}")), ConditionContext::new())],
@@ -1973,10 +2055,22 @@ impl Ec2 {
                 "Value ({n}) for parameter ruleNumber is invalid. Rule number must be between 1 and 32766."
             )));
         }
+        let limit = self.quota(&account_of(ctx), &ctx.region, crate::quotas::RULES_PER_ACL, ctx.received_at);
         self.with_region(ctx, |r| {
             let acl = r.network_acls.get_mut(acl_id).ok_or_else(|| Kind::NetworkAcl.not_found(acl_id))?;
             let entries = acl.entries.get_or_insert_with(Vec::new);
             let pos = entries.iter().position(|e| e.rule_number == Some(n) && e.egress == entry.egress);
+            // Per direction; the default `*` rules do not count.
+            let rules = entries
+                .iter()
+                .filter(|e| e.egress == entry.egress && e.rule_number.is_some_and(|n| n <= 32766))
+                .count();
+            if pos.is_none() && !replace && rules as f64 >= limit {
+                return Err(err(
+                    "NetworkAclEntryLimitExceeded",
+                    "The maximum number of network ACL entries has been reached.",
+                ));
+            }
             match (pos, replace) {
                 (Some(_), false) => Err(err(
                     "NetworkAclEntryAlreadyExists",
@@ -2040,7 +2134,7 @@ impl Ec2 {
         ctx: &RequestContext,
         input: t::DeleteNetworkAclEntryRequest,
     ) -> Result<(), ServiceError> {
-        authorize(
+        self.authorize_known(
             ctx,
             "DeleteNetworkAclEntry",
             &[(arn(ctx, &account_of(ctx), &format!("network-acl/{}", input.network_acl_id)), ConditionContext::new())],
@@ -2076,7 +2170,7 @@ impl Ec2 {
         ctx: &RequestContext,
         input: t::ReplaceNetworkAclAssociationRequest,
     ) -> Result<t::ReplaceNetworkAclAssociationResult, ServiceError> {
-        authorize(
+        self.authorize_known(
             ctx,
             "ReplaceNetworkAclAssociation",
             &[(arn(ctx, &account_of(ctx), &format!("network-acl/{}", input.network_acl_id)), ConditionContext::new())],
@@ -2121,7 +2215,7 @@ impl Ec2 {
         ctx: &RequestContext,
         input: t::DescribeNetworkAclsRequest,
     ) -> Result<t::DescribeNetworkAclsResult, ServiceError> {
-        authorize(ctx, "DescribeNetworkAcls", &[("*".into(), ConditionContext::new())], input.dry_run)?;
+        self.authorize_known(ctx, "DescribeNetworkAcls", &[("*".into(), ConditionContext::new())], input.dry_run)?;
         let filters = Filters::new(&input.filters);
         let ids = input.network_acl_ids.clone().unwrap_or_default();
         self.with_region(ctx, |r| {
@@ -2164,7 +2258,7 @@ impl Ec2 {
     ) -> Result<t::CreateDhcpOptionsResult, ServiceError> {
         let account = account_of(ctx);
         let tags = tags_for(&input.tag_specifications, "dhcp-options", &["dhcp-options"])?;
-        authorize(
+        self.authorize_known(
             ctx,
             "CreateDhcpOptions",
             &[(arn(ctx, &account, "dhcp-options/*"), request_tag_context(&tags))],
@@ -2209,7 +2303,7 @@ impl Ec2 {
         ctx: &RequestContext,
         input: t::DeleteDhcpOptionsRequest,
     ) -> Result<(), ServiceError> {
-        authorize(
+        self.authorize_known(
             ctx,
             "DeleteDhcpOptions",
             &[(
@@ -2241,7 +2335,7 @@ impl Ec2 {
     ) -> Result<(), ServiceError> {
         let account = account_of(ctx);
         Kind::Vpc.check(&input.vpc_id)?;
-        authorize(
+        self.authorize_known(
             ctx,
             "AssociateDhcpOptions",
             &[(arn(ctx, &account, &format!("vpc/{}", input.vpc_id)), ConditionContext::new())],
@@ -2263,7 +2357,7 @@ impl Ec2 {
         ctx: &RequestContext,
         input: t::DescribeDhcpOptionsRequest,
     ) -> Result<t::DescribeDhcpOptionsResult, ServiceError> {
-        authorize(ctx, "DescribeDhcpOptions", &[("*".into(), ConditionContext::new())], input.dry_run)?;
+        self.authorize_known(ctx, "DescribeDhcpOptions", &[("*".into(), ConditionContext::new())], input.dry_run)?;
         let filters = Filters::new(&input.filters);
         let ids = input.dhcp_options_ids.clone().unwrap_or_default();
         self.with_region(ctx, |r| {

@@ -421,4 +421,31 @@ impl Elb {
         }
         Ok(())
     }
+
+    /// Authorize creating a child resource: `action` on its parent (the
+    /// load balancer for CreateListener, the listener for CreateRule, as
+    /// the Service Authorization Reference lists them) with the parent's
+    /// tags and the request's tags, then the `AddTags` it implies on the
+    /// new resource.
+    pub(crate) fn authorize_create_in(
+        &self,
+        ctx: &RequestContext,
+        action: &str,
+        parent: &str,
+        arn: &str,
+        tags: &[types::Tag],
+    ) -> Result<(), ServiceError> {
+        let parent_tags = self.tags_of(ctx, parent);
+        let c = crate::names::merge(
+            crate::names::resource_tag_context(&parent_tags),
+            crate::names::request_tag_context(tags),
+        );
+        crate::names::authorize(ctx, action, parent, c)?;
+        if !tags.is_empty() {
+            let mut c = crate::names::request_tag_context(tags);
+            c.insert("elasticloadbalancing:CreateAction".into(), vec![action.to_string()]);
+            crate::names::authorize(ctx, "AddTags", arn, c)?;
+        }
+        Ok(())
+    }
 }
