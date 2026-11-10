@@ -8,15 +8,26 @@
 //! restJson1 generated from the official model, with every call authorized
 //! through IAM.
 //!
-//! MWS does not watch CloudTrail, VPC flow logs or DNS queries, so the
-//! findings that exist are the ones `CreateSampleFindings` makes (one per
-//! finding type, shaped like AWS's samples: `[SAMPLE]` titles,
-//! `service.additionalInfo` saying `sample: true`) and those of malware
-//! scans. New and updated findings go to EventBridge as `GuardDuty Finding`
-//! events (source `aws.guardduty`) in the account and in its administrator
-//! account, unless a suppression rule archives them, and to S3 publishing
+//! Threat detection analyses the CloudTrail management events fed to
+//! [`GuardDuty::observe_management_event`] in every account and Region
+//! with an enabled detector ([`detection`]): root credential use, trails
+//! stopped or deleted, password policies weakened, S3 Block Public Access
+//! turned off, anonymous bucket access granted, server access logging
+//! turned off, and calls from IP addresses on the account's active threat
+//! lists (which GuardDuty reads from S3 through [`ThreatListSource`]).
+//! Repeats aggregate into one finding (`service.count`). VPC flow logs,
+//! DNS logs, EKS audit logs and runtime events are not analysed. Other
+//! findings come from `CreateSampleFindings` (one per finding type, shaped
+//! like AWS's samples: `[SAMPLE]` titles, `service.additionalInfo` saying
+//! `sample: true`) and malware scans.
+//!
+//! Findings go to EventBridge as `GuardDuty Finding` events (source
+//! `aws.guardduty`) in the account and in its administrator account,
+//! unless a suppression rule archives them, and to S3 publishing
 //! destinations and Security Hub; see [`EventSink`], [`FindingExporter`]
-//! and [`SecurityHubSink`].
+//! and [`SecurityHubSink`]. Detected findings are published five minutes
+//! after they are first seen and their updates on the detector's
+//! `FindingPublishingFrequency`, on the emulated clock.
 //!
 //! Organizations integration goes through [`OrganizationLink`]:
 //! `EnableOrganizationAdminAccount` enables trusted access for
@@ -34,6 +45,7 @@ pub mod generated {
 mod asff;
 mod common;
 pub use common::SERVICE_PRINCIPAL;
+mod detection;
 mod detectors;
 mod findings;
 mod handler;
@@ -45,6 +57,7 @@ mod rules;
 mod samples;
 mod state;
 mod tags;
+mod threatlists;
 
 use std::sync::{Arc, Mutex, MutexGuard, RwLock};
 
@@ -168,11 +181,47 @@ pub trait OrganizationLink: Send + Sync {
     fn deregister_admin(&self, ctx: &RequestContext, admin: &str) -> Result<(), ServiceError>;
 }
 
+/// GuardDuty's service-linked role, `AWSServiceRoleForAmazonGuardDuty`,
+/// in IAM.
+pub trait ServiceLinkedRoles: Send + Sync {
+    /// Whether the role exists in `account`.
+    fn exists(&self, account: &str) -> bool;
+    /// Create the role in `account` if it is not there yet.
+    fn ensure(&self, account: &str);
+}
+
+/// Where GuardDuty reads threat list and trusted list files: S3, as the
+/// account's GuardDuty service-linked role.
+pub trait ThreatListSource: Send + Sync {
+    /// The object `key` in `bucket`, for the detector `detector_arn` of
+    /// `account`. `Err` carries S3's error code (`NoSuchBucket`,
+    /// `NoSuchKey`, `AccessDenied`, ...).
+    fn read(
+        &self,
+        partition: &str,
+        account: &str,
+        detector_arn: &str,
+        bucket: &str,
+        key: &str,
+        expected_bucket_owner: Option<&str>,
+    ) -> Result<Vec<u8>, String>;
+}
+
 /// The GuardDuty service. Cheap to clone; clones share state.
 #[derive(Clone, Default)]
 pub struct GuardDuty {
     state: Arc<Mutex<State>>,
     links: Arc<RwLock<Links>>,
+    background: Arc<Background>,
+}
+
+/// What background publishing needs: a request context to act from, how
+/// far the emulated clock ran ahead of the wall clock when it was taken,
+/// and whether the loop runs.
+#[derive(Default)]
+struct Background {
+    template: Mutex<Option<(RequestContext, i64)>>,
+    started: std::sync::OnceLock<()>,
 }
 
 #[derive(Default)]
@@ -182,6 +231,8 @@ struct Links {
     organizations: Option<Arc<dyn OrganizationLink>>,
     security_hub: Option<Arc<dyn SecurityHubSink>>,
     objects: Option<Arc<dyn MalwareObjectStore>>,
+    roles: Option<Arc<dyn ServiceLinkedRoles>>,
+    lists: Option<Arc<dyn ThreatListSource>>,
 }
 
 impl GuardDuty {
@@ -213,6 +264,25 @@ impl GuardDuty {
     /// `store`.
     pub fn set_malware_object_store(&self, store: Arc<dyn MalwareObjectStore>) {
         self.links.write().expect("GuardDuty links lock poisoned").objects = Some(store);
+    }
+
+    /// Create and check GuardDuty's service-linked role in IAM through
+    /// `roles`.
+    pub fn set_service_linked_roles(&self, roles: Arc<dyn ServiceLinkedRoles>) {
+        self.links.write().expect("GuardDuty links lock poisoned").roles = Some(roles);
+    }
+
+    /// Read threat list files through `source`.
+    pub fn set_threat_list_source(&self, source: Arc<dyn ThreatListSource>) {
+        self.links.write().expect("GuardDuty links lock poisoned").lists = Some(source);
+    }
+
+    fn roles(&self) -> Option<Arc<dyn ServiceLinkedRoles>> {
+        self.links.read().expect("GuardDuty links lock poisoned").roles.clone()
+    }
+
+    fn list_source(&self) -> Option<Arc<dyn ThreatListSource>> {
+        self.links.read().expect("GuardDuty links lock poisoned").lists.clone()
     }
 
     fn objects(&self) -> Option<Arc<dyn MalwareObjectStore>> {

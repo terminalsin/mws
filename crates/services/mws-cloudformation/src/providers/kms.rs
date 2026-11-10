@@ -161,6 +161,10 @@ struct Alias;
 
 #[async_trait::async_trait]
 impl Provider for Alias {
+    fn name_property(&self) -> Option<&'static str> {
+        Some("AliasName")
+    }
+
     fn create_only(&self) -> &'static [&'static str] {
         &["AliasName"]
     }

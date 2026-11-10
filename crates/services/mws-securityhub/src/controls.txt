@@ -1,0 +1,364 @@
+# Security Hub security controls: one per line,
+#   ID | SEVERITY | Title | standards
+# where standards is a `;`-separated list of
+#   FSBP | CIS12=<id> | CIS14=<id> | CIS30=<id> | PCI=<id> | NIST | TAG
+# each optionally followed by [requirement, requirement] (CIS requirements
+# are derived from the id when not given). FSBP, NIST and TAG use the
+# security control ID as the standard's control ID.
+#
+# FSBP v1.0.0 is listed in full (as of 2025); CIS 1.2.0, 1.4.0 and 3.0.0
+# are listed in full for the controls Security Hub automates; PCI DSS
+# v3.2.1 and NIST SP 800-53 r5 memberships are partial (see
+# docs/services/securityhub.md).
+Account.1|MEDIUM|Security contact information should be provided for an AWS account|FSBP;CIS14=1.2;CIS30=1.2;NIST[NIST.800-53.r5 CM-2, NIST.800-53.r5 CM-2(2)]
+Account.2|HIGH|AWS accounts should be part of an AWS Organizations organization|NIST[NIST.800-53.r5 CA-9(1), NIST.800-53.r5 CM-2]
+ACM.1|MEDIUM|Imported and ACM-issued certificates should be renewed after a specified time period|FSBP;NIST[NIST.800-53.r5 SC-28(3), NIST.800-53.r5 SC-7(16)];PCI=PCI.ACM.1
+ACM.2|HIGH|RSA certificates managed by ACM should use a key length of at least 2,048 bits|FSBP
+ACM.3|LOW|ACM certificates should be tagged|TAG
+APIGateway.1|MEDIUM|API Gateway REST and WebSocket API execution logging should be enabled|FSBP;NIST[NIST.800-53.r5 AC-4(26), NIST.800-53.r5 AU-10]
+APIGateway.2|MEDIUM|API Gateway REST API stages should be configured to use SSL certificates for backend authentication|FSBP;NIST[NIST.800-53.r5 AC-17(2), NIST.800-53.r5 SC-8]
+APIGateway.3|LOW|API Gateway REST API stages should have AWS X-Ray tracing enabled|FSBP;NIST[NIST.800-53.r5 CA-7]
+APIGateway.4|MEDIUM|API Gateway should be associated with a WAF Web ACL|FSBP;NIST[NIST.800-53.r5 AC-4(21)]
+APIGateway.5|MEDIUM|API Gateway REST API cache data should be encrypted at rest|FSBP;NIST[NIST.800-53.r5 CA-9(1), NIST.800-53.r5 SC-28]
+APIGateway.8|MEDIUM|API Gateway routes should specify an authorization type|FSBP;NIST[NIST.800-53.r5 AC-3, NIST.800-53.r5 CM-2]
+APIGateway.9|MEDIUM|Access logging should be configured for API Gateway V2 Stages|FSBP;NIST[NIST.800-53.r5 AC-4(26), NIST.800-53.r5 AU-10]
+AppSync.2|MEDIUM|AWS AppSync should have field-level logging enabled|FSBP
+AppSync.5|HIGH|AWS AppSync GraphQL APIs should not be authenticated with API keys|FSBP
+Athena.4|MEDIUM|Athena workgroups should have logging enabled|FSBP
+AutoScaling.1|LOW|Auto Scaling groups associated with a load balancer should use ELB health checks|FSBP;PCI=PCI.AutoScaling.1[PCI DSS 2.2];NIST[NIST.800-53.r5 CA-7, NIST.800-53.r5 CP-2(2)]
+AutoScaling.2|MEDIUM|Amazon EC2 Auto Scaling group should cover multiple Availability Zones|FSBP;NIST[NIST.800-53.r5 CP-10, NIST.800-53.r5 SC-36]
+AutoScaling.3|HIGH|Auto Scaling group launch configurations should configure EC2 instances to require Instance Metadata Service Version 2 (IMDSv2)|FSBP;NIST[NIST.800-53.r5 AC-3, NIST.800-53.r5 AC-6]
+AutoScaling.5|HIGH|Amazon EC2 instances launched using Auto Scaling group launch configurations should not have Public IP addresses|FSBP;NIST[NIST.800-53.r5 AC-21, NIST.800-53.r5 AC-3]
+AutoScaling.6|MEDIUM|Auto Scaling groups should use multiple instance types in multiple Availability Zones|FSBP;NIST[NIST.800-53.r5 CP-10, NIST.800-53.r5 SC-36]
+AutoScaling.9|MEDIUM|Amazon EC2 Auto Scaling groups should use Amazon EC2 launch templates|FSBP;NIST[NIST.800-53.r5 CA-9(1), NIST.800-53.r5 CM-2]
+Backup.1|MEDIUM|AWS Backup recovery points should be encrypted at rest|FSBP;NIST[NIST.800-53.r5 CP-9(8), NIST.800-53.r5 SC-28]
+CloudFront.1|HIGH|CloudFront distributions should have a default root object configured|FSBP;NIST[NIST.800-53.r5 SC-7(11)]
+CloudFront.3|MEDIUM|CloudFront distributions should require encryption in transit|FSBP;NIST[NIST.800-53.r5 AC-17(2), NIST.800-53.r5 SC-8]
+CloudFront.4|LOW|CloudFront distributions should have origin failover configured|FSBP;NIST[NIST.800-53.r5 CP-10, NIST.800-53.r5 SC-36]
+CloudFront.5|MEDIUM|CloudFront distributions should have logging enabled|FSBP;NIST[NIST.800-53.r5 AC-2(4), NIST.800-53.r5 AU-12]
+CloudFront.6|MEDIUM|CloudFront distributions should have WAF enabled|FSBP;NIST[NIST.800-53.r5 AC-4(21), NIST.800-53.r5 SC-7]
+CloudFront.7|MEDIUM|CloudFront distributions should use custom SSL/TLS certificates|FSBP;NIST[NIST.800-53.r5 AC-17(2), NIST.800-53.r5 SC-8]
+CloudFront.8|LOW|CloudFront distributions should use SNI to serve HTTPS requests|FSBP;NIST[NIST.800-53.r5 CA-9(1), NIST.800-53.r5 CM-2]
+CloudFront.9|MEDIUM|CloudFront distributions should encrypt traffic to custom origins|FSBP;NIST[NIST.800-53.r5 AC-17(2), NIST.800-53.r5 SC-8]
+CloudFront.10|MEDIUM|CloudFront distributions should not use deprecated SSL protocols between edge locations and custom origins|FSBP;NIST[NIST.800-53.r5 AC-17(2), NIST.800-53.r5 SC-8]
+CloudFront.12|HIGH|CloudFront distributions should not point to non-existent S3 origins|FSBP;NIST[NIST.800-53.r5 CM-2, NIST.800-53.r5 CM-2(2)]
+CloudFront.13|MEDIUM|CloudFront distributions should use origin access control|FSBP
+CloudTrail.1|HIGH|CloudTrail should be enabled and configured with at least one multi-Region trail that includes read and write management events|FSBP;CIS12=2.1;CIS14=3.1;CIS30=3.1;NIST[NIST.800-53.r5 AC-2(4), NIST.800-53.r5 AU-12]
+CloudTrail.2|MEDIUM|CloudTrail should have encryption at-rest enabled|FSBP;CIS12=2.7;CIS14=3.7;CIS30=3.5;PCI=PCI.CloudTrail.1[PCI DSS 3.4];NIST[NIST.800-53.r5 AU-9, NIST.800-53.r5 SC-28]
+CloudTrail.3|HIGH|At least one CloudTrail trail should be enabled|PCI=PCI.CloudTrail.2[PCI DSS 10.1, PCI DSS 10.2.1];NIST[NIST.800-53.r5 AU-12]
+CloudTrail.4|LOW|CloudTrail log file validation should be enabled|FSBP;CIS12=2.2;CIS14=3.2;CIS30=3.2;PCI=PCI.CloudTrail.3[PCI DSS 10.5.2, PCI DSS 10.5.5];NIST[NIST.800-53.r5 AU-9, NIST.800-53.r5 SI-7(1)]
+CloudTrail.5|LOW|CloudTrail trails should be integrated with Amazon CloudWatch Logs|FSBP;CIS12=2.4;CIS14=3.4;PCI=PCI.CloudTrail.4[PCI DSS 10.1, PCI DSS 10.2.1];NIST[NIST.800-53.r5 AC-2(4), NIST.800-53.r5 AU-6(1)]
+CloudTrail.6|CRITICAL|Ensure the S3 bucket used to store CloudTrail logs is not publicly accessible|CIS12=2.3;CIS14=3.3
+CloudTrail.7|LOW|Ensure S3 bucket access logging is enabled on the CloudTrail S3 bucket|CIS12=2.6;CIS14=3.6;CIS30=3.4
+CloudWatch.1|LOW|A log metric filter and alarm should exist for usage of the "root" user|CIS12=3.3[CIS AWS Foundations 1.1, CIS AWS Foundations 3.3];CIS14=4.3[CIS AWS Foundations Benchmark v1.4.0/1.7, CIS AWS Foundations Benchmark v1.4.0/4.3];PCI=PCI.CW.1[PCI DSS 7.2.1]
+CloudWatch.2|LOW|Ensure a log metric filter and alarm exist for unauthorized API calls|CIS12=3.1
+CloudWatch.3|LOW|Ensure a log metric filter and alarm exist for Management Console sign-in without MFA|CIS12=3.2
+CloudWatch.4|LOW|Ensure a log metric filter and alarm exist for IAM policy changes|CIS12=3.4;CIS14=4.4
+CloudWatch.5|LOW|Ensure a log metric filter and alarm exist for CloudTrail configuration changes|CIS12=3.5;CIS14=4.5
+CloudWatch.6|LOW|Ensure a log metric filter and alarm exist for AWS Management Console authentication failures|CIS12=3.6;CIS14=4.6
+CloudWatch.7|LOW|Ensure a log metric filter and alarm exist for disabling or scheduled deletion of customer created CMKs|CIS12=3.7;CIS14=4.7
+CloudWatch.8|LOW|Ensure a log metric filter and alarm exist for S3 bucket policy changes|CIS12=3.8;CIS14=4.8
+CloudWatch.9|LOW|Ensure a log metric filter and alarm exist for AWS Config configuration changes|CIS12=3.9;CIS14=4.9
+CloudWatch.10|LOW|Ensure a log metric filter and alarm exist for security group changes|CIS12=3.10;CIS14=4.10
+CloudWatch.11|LOW|Ensure a log metric filter and alarm exist for changes to Network Access Control Lists (NACL)|CIS12=3.11;CIS14=4.11
+CloudWatch.12|LOW|Ensure a log metric filter and alarm exist for changes to network gateways|CIS12=3.12;CIS14=4.12
+CloudWatch.13|LOW|Ensure a log metric filter and alarm exist for route table changes|CIS12=3.13;CIS14=4.13
+CloudWatch.14|LOW|Ensure a log metric filter and alarm exist for VPC changes|CIS12=3.14;CIS14=4.14
+CodeBuild.1|CRITICAL|CodeBuild Bitbucket source repository URLs should not contain sensitive credentials|FSBP;PCI=PCI.CodeBuild.1[PCI DSS 8.2.1];NIST[NIST.800-53.r5 SA-3]
+CodeBuild.2|CRITICAL|CodeBuild project environment variables should not contain clear text credentials|FSBP;PCI=PCI.CodeBuild.2[PCI DSS 8.2.1];NIST[NIST.800-53.r5 IA-5(7), NIST.800-53.r5 SA-3]
+CodeBuild.3|LOW|CodeBuild S3 logs should be encrypted|FSBP;NIST[NIST.800-53.r5 CA-9(1), NIST.800-53.r5 SC-28]
+CodeBuild.4|MEDIUM|CodeBuild project environments should have a logging AWS Configuration|FSBP;NIST[NIST.800-53.r5 AC-2(12), NIST.800-53.r5 AU-6(3)]
+CodeBuild.7|MEDIUM|CodeBuild report group exports should be encrypted at rest|FSBP
+Cognito.1|HIGH|Cognito user pools should have threat protection activated with full function enforcement mode for standard authentication|FSBP
+Config.1|MEDIUM|AWS Config should be enabled and use the service-linked role for resource recording|FSBP;CIS12=2.5;CIS14=3.5;CIS30=3.3;PCI=PCI.Config.1[PCI DSS 10.5.2, PCI DSS 11.5];NIST[NIST.800-53.r5 CM-3, NIST.800-53.r5 CM-8]
+DataFirehose.1|MEDIUM|Firehose delivery streams should be encrypted at rest|FSBP;NIST[NIST.800-53.r5 AC-3, NIST.800-53.r5 SC-28]
+DMS.1|CRITICAL|Database Migration Service replication instances should not be public|FSBP;PCI=PCI.DMS.1[PCI DSS 1.2.1, PCI DSS 1.3.1];NIST[NIST.800-53.r5 AC-21, NIST.800-53.r5 AC-3]
+DMS.6|MEDIUM|DMS replication instances should have automatic minor version upgrade enabled|FSBP
+DMS.7|MEDIUM|DMS replication tasks for the target database should have logging enabled|FSBP
+DMS.8|MEDIUM|DMS replication tasks for the source database should have logging enabled|FSBP
+DMS.9|MEDIUM|DMS endpoints should use SSL|FSBP
+DMS.10|MEDIUM|DMS endpoints for Neptune databases should have IAM authorization enabled|FSBP
+DMS.11|MEDIUM|DMS endpoints for MongoDB should have an authentication mechanism enabled|FSBP
+DMS.12|MEDIUM|DMS endpoints for Redis OSS should have TLS enabled|FSBP
+DocumentDB.1|MEDIUM|Amazon DocumentDB clusters should be encrypted at rest|FSBP;NIST[NIST.800-53.r5 CA-9(1), NIST.800-53.r5 SC-28]
+DocumentDB.2|MEDIUM|Amazon DocumentDB clusters should have an adequate backup retention period|FSBP;NIST[NIST.800-53.r5 CP-10, NIST.800-53.r5 CP-6(1)]
+DocumentDB.3|CRITICAL|Amazon DocumentDB manual cluster snapshots should not be public|FSBP;NIST[NIST.800-53.r5 AC-21, NIST.800-53.r5 AC-3]
+DocumentDB.4|MEDIUM|Amazon DocumentDB clusters should publish audit logs to CloudWatch Logs|FSBP;NIST[NIST.800-53.r5 AC-2(4), NIST.800-53.r5 AU-12]
+DocumentDB.5|MEDIUM|Amazon DocumentDB clusters should have deletion protection enabled|FSBP;NIST[NIST.800-53.r5 CA-9(1), NIST.800-53.r5 CM-2]
+DynamoDB.1|MEDIUM|DynamoDB tables should automatically scale capacity with demand|FSBP;NIST[NIST.800-53.r5 CP-10, NIST.800-53.r5 CP-2(2)]
+DynamoDB.2|MEDIUM|DynamoDB tables should have point-in-time recovery enabled|FSBP;NIST[NIST.800-53.r5 CP-10, NIST.800-53.r5 CP-6(2)]
+DynamoDB.3|MEDIUM|DynamoDB Accelerator (DAX) clusters should be encrypted at rest|FSBP;NIST[NIST.800-53.r5 CA-9(1), NIST.800-53.r5 SC-28]
+DynamoDB.6|MEDIUM|DynamoDB tables should have deletion protection enabled|FSBP
+DynamoDB.7|MEDIUM|DynamoDB Accelerator clusters should be encrypted in transit|FSBP
+EC2.1|CRITICAL|Amazon EBS snapshots should not be publicly restorable|FSBP;PCI=PCI.EC2.1[PCI DSS 1.2.1, PCI DSS 1.3.1];NIST[NIST.800-53.r5 AC-21, NIST.800-53.r5 AC-3]
+EC2.2|HIGH|VPC default security groups should not allow inbound or outbound traffic|FSBP;CIS12=4.3;CIS14=5.3;CIS30=5.4;PCI=PCI.EC2.2[PCI DSS 1.2.1, PCI DSS 1.3.4, PCI DSS 2.1];NIST[NIST.800-53.r5 AC-4, NIST.800-53.r5 SC-7]
+EC2.3|MEDIUM|Attached Amazon EBS volumes should be encrypted at-rest|FSBP;NIST[NIST.800-53.r5 CA-9(1), NIST.800-53.r5 SC-28]
+EC2.4|MEDIUM|Stopped EC2 instances should be removed after a specified time period|FSBP;NIST[NIST.800-53.r5 CA-9(1), NIST.800-53.r5 CM-2]
+EC2.6|MEDIUM|VPC flow logging should be enabled in all VPCs|FSBP;CIS12=2.9;CIS14=3.9;CIS30=3.7;PCI=PCI.EC2.6[PCI DSS 10.3.3, PCI DSS 10.3.4];NIST[NIST.800-53.r5 AC-4(26), NIST.800-53.r5 AU-12]
+EC2.7|MEDIUM|EBS default encryption should be enabled|FSBP;CIS14=2.2.1;CIS30=2.2.1;NIST[NIST.800-53.r5 CA-9(1), NIST.800-53.r5 SC-28]
+EC2.8|HIGH|EC2 instances should use Instance Metadata Service Version 2 (IMDSv2)|FSBP;CIS30=5.6;NIST[NIST.800-53.r5 AC-3, NIST.800-53.r5 AC-6]
+EC2.9|HIGH|Amazon EC2 instances should not have a public IPv4 address|FSBP;NIST[NIST.800-53.r5 AC-21, NIST.800-53.r5 AC-3]
+EC2.10|MEDIUM|Amazon EC2 should be configured to use VPC endpoints that are created for the Amazon EC2 service|FSBP;NIST[NIST.800-53.r5 AC-21, NIST.800-53.r5 AC-3]
+EC2.12|LOW|Unused Amazon EC2 EIPs should be removed|PCI=PCI.EC2.4[PCI DSS 2.4];NIST[NIST.800-53.r5 CM-8(1)]
+EC2.13|HIGH|Security groups should not allow ingress from 0.0.0.0/0 or ::/0 to port 22|CIS12=4.1;PCI=PCI.EC2.5[PCI DSS 1.2.1, PCI DSS 1.3.1, PCI DSS 2.2.2];NIST[NIST.800-53.r5 AC-4, NIST.800-53.r5 SC-7]
+EC2.14|HIGH|Security groups should not allow ingress from 0.0.0.0/0 or ::/0 to port 3389|CIS12=4.2
+EC2.15|MEDIUM|Amazon EC2 subnets should not automatically assign public IP addresses|FSBP;NIST[NIST.800-53.r5 AC-21, NIST.800-53.r5 AC-3]
+EC2.16|LOW|Unused Network Access Control Lists should be removed|FSBP;NIST[NIST.800-53.r5 CM-8(1)]
+EC2.17|MEDIUM|Amazon EC2 instances should not use multiple ENIs|FSBP;NIST[NIST.800-53.r5 AC-4(21)]
+EC2.18|HIGH|Security groups should only allow unrestricted incoming traffic for authorized ports|FSBP;NIST[NIST.800-53.r5 AC-4, NIST.800-53.r5 SC-7]
+EC2.19|CRITICAL|Security groups should not allow unrestricted access to ports with high risk|FSBP;NIST[NIST.800-53.r5 AC-4, NIST.800-53.r5 SC-7]
+EC2.20|MEDIUM|Both VPN tunnels for an AWS Site-to-Site VPN connection should be up|FSBP;NIST[NIST.800-53.r5 CP-10, NIST.800-53.r5 SC-36]
+EC2.21|MEDIUM|Network ACLs should not allow ingress from 0.0.0.0/0 to port 22 or port 3389|FSBP;CIS14=5.1;CIS30=5.1;NIST[NIST.800-53.r5 AC-4, NIST.800-53.r5 SC-7]
+EC2.23|HIGH|Amazon EC2 Transit Gateways should not automatically accept VPC attachment requests|FSBP;NIST[NIST.800-53.r5 AC-4(21), NIST.800-53.r5 CA-9(1)]
+EC2.24|MEDIUM|Amazon EC2 paravirtual instance types should not be used|FSBP;NIST[NIST.800-53.r5 CM-2]
+EC2.25|HIGH|Amazon EC2 launch templates should not assign public IPs to network interfaces|FSBP;NIST[NIST.800-53.r5 AC-21, NIST.800-53.r5 AC-3]
+EC2.28|LOW|EBS volumes should be covered by a backup plan|NIST[NIST.800-53.r5 CP-10, NIST.800-53.r5 CP-6]
+EC2.51|HIGH|EC2 Client VPN endpoints should have client connection logging enabled|FSBP;NIST[NIST.800-53.r5 AC-2(12), NIST.800-53.r5 AU-12]
+EC2.53|HIGH|EC2 security groups should not allow ingress from 0.0.0.0/0 to remote server administration ports|CIS30=5.2
+EC2.54|HIGH|EC2 security groups should not allow ingress from ::/0 to remote server administration ports|CIS30=5.3
+EC2.55|MEDIUM|VPCs should be configured with an interface endpoint for ECR API|NIST[NIST.800-53.r5 AC-21, NIST.800-53.r5 SC-7]
+EC2.170|LOW|EC2 launch templates should use Instance Metadata Service Version 2 (IMDSv2)|FSBP
+EC2.171|MEDIUM|EC2 VPN connections should have logging enabled|FSBP
+EC2.172|MEDIUM|EC2 VPC Block Public Access settings should block internet gateway traffic|FSBP
+ECR.1|HIGH|ECR private repositories should have image scanning configured|FSBP;NIST[NIST.800-53.r5 RA-5]
+ECR.2|MEDIUM|ECR private repositories should have tag immutability configured|FSBP;NIST[NIST.800-53.r5 CA-9(1), NIST.800-53.r5 CM-2]
+ECR.3|MEDIUM|ECR repositories should have at least one lifecycle policy configured|FSBP;NIST[NIST.800-53.r5 CA-9(1), NIST.800-53.r5 CM-2]
+ECS.1|HIGH|Amazon ECS task definitions should have secure networking modes and user definitions|FSBP;NIST[NIST.800-53.r5 AC-3, NIST.800-53.r5 AC-5]
+ECS.2|HIGH|ECS services should not have public IP addresses assigned to them automatically|FSBP;NIST[NIST.800-53.r5 AC-21, NIST.800-53.r5 AC-3]
+ECS.3|HIGH|ECS task definitions should not share the host's process namespace|FSBP;NIST[NIST.800-53.r5 CA-9(1), NIST.800-53.r5 CM-2]
+ECS.4|HIGH|ECS containers should run as non-privileged|FSBP;NIST[NIST.800-53.r5 AC-2(1), NIST.800-53.r5 AC-3]
+ECS.5|HIGH|ECS containers should be limited to read-only access to root filesystems|FSBP;NIST[NIST.800-53.r5 AC-2(1), NIST.800-53.r5 AC-3]
+ECS.8|HIGH|Secrets should not be passed as container environment variables|FSBP;NIST[NIST.800-53.r5 IA-5(7), NIST.800-53.r5 SI-7(6)]
+ECS.9|HIGH|ECS task definitions should have a logging configuration|FSBP;NIST[NIST.800-53.r5 AC-4(26), NIST.800-53.r5 AU-12]
+ECS.10|MEDIUM|ECS Fargate services should run on the latest Fargate platform version|FSBP;NIST[NIST.800-53.r5 SI-2, NIST.800-53.r5 SI-2(2)]
+ECS.12|MEDIUM|ECS clusters should use Container Insights|FSBP;NIST[NIST.800-53.r5 AU-6(3), NIST.800-53.r5 AU-6(4)]
+ECS.16|HIGH|ECS task sets should not automatically assign public IP addresses|FSBP;NIST[NIST.800-53.r5 AC-21, NIST.800-53.r5 AC-3]
+EFS.1|MEDIUM|Elastic File System should be configured to encrypt file data at-rest using AWS KMS|FSBP;CIS14=2.4.1;CIS30=2.4.1;NIST[NIST.800-53.r5 CA-9(1), NIST.800-53.r5 SC-28]
+EFS.2|MEDIUM|Amazon EFS volumes should be in backup plans|FSBP;NIST[NIST.800-53.r5 CP-10, NIST.800-53.r5 CP-6]
+EFS.3|MEDIUM|EFS access points should enforce a root directory|FSBP;NIST[NIST.800-53.r5 AC-6(10)]
+EFS.4|MEDIUM|EFS access points should enforce a user identity|FSBP;NIST[NIST.800-53.r5 AC-6(2)]
+EFS.6|MEDIUM|EFS mount targets should not be associated with subnets that assign public IP addresses on launch|FSBP
+EFS.7|MEDIUM|EFS file systems should have automatic backups enabled|FSBP
+EFS.8|MEDIUM|EFS file systems should be encrypted at rest|FSBP
+EKS.1|HIGH|EKS cluster endpoints should not be publicly accessible|FSBP;NIST[NIST.800-53.r5 AC-21, NIST.800-53.r5 SC-7]
+EKS.2|HIGH|EKS clusters should run on a supported Kubernetes version|FSBP;NIST[NIST.800-53.r5 CA-9(1), NIST.800-53.r5 CM-2]
+EKS.3|MEDIUM|EKS clusters should use encrypted Kubernetes secrets|FSBP;NIST[NIST.800-53.r5 SC-12, NIST.800-53.r5 SC-13]
+EKS.8|MEDIUM|EKS clusters should have audit logging enabled|FSBP;NIST[NIST.800-53.r5 AC-2(12), NIST.800-53.r5 AU-12]
+ElastiCache.1|HIGH|ElastiCache (Redis OSS) clusters should have automatic backups enabled|FSBP;NIST[NIST.800-53.r5 CP-10, NIST.800-53.r5 CP-6]
+ElastiCache.2|HIGH|ElastiCache clusters should have automatic minor version upgrades enabled|FSBP;NIST[NIST.800-53.r5 SI-2, NIST.800-53.r5 SI-2(2)]
+ElastiCache.3|MEDIUM|ElastiCache replication groups should have automatic failover enabled|FSBP;NIST[NIST.800-53.r5 CP-10, NIST.800-53.r5 SC-36]
+ElastiCache.4|MEDIUM|ElastiCache replication groups should be encrypted at rest|FSBP;NIST[NIST.800-53.r5 CA-9(1), NIST.800-53.r5 SC-28]
+ElastiCache.5|MEDIUM|ElastiCache replication groups should be encrypted in transit|FSBP;NIST[NIST.800-53.r5 AC-17(2), NIST.800-53.r5 SC-8]
+ElastiCache.6|MEDIUM|ElastiCache (Redis OSS) replication groups of earlier versions should have Redis OSS AUTH enabled|FSBP;NIST[NIST.800-53.r5 AC-2(1), NIST.800-53.r5 AC-3]
+ElastiCache.7|HIGH|ElastiCache clusters should not use the default subnet group|FSBP;NIST[NIST.800-53.r5 AC-4(21), NIST.800-53.r5 SC-7]
+ElasticBeanstalk.1|LOW|Elastic Beanstalk environments should have enhanced health reporting enabled|FSBP;NIST[NIST.800-53.r5 CA-7, NIST.800-53.r5 SI-2]
+ElasticBeanstalk.2|HIGH|Elastic Beanstalk managed platform updates should be enabled|FSBP;NIST[NIST.800-53.r5 SI-2, NIST.800-53.r5 SI-2(2)]
+ElasticBeanstalk.3|HIGH|Elastic Beanstalk should stream logs to CloudWatch|FSBP
+ELB.1|MEDIUM|Application Load Balancer should be configured to redirect all HTTP requests to HTTPS|FSBP;PCI=PCI.ELBv2.1[PCI DSS 2.3, PCI DSS 4.1];NIST[NIST.800-53.r5 AC-17(2), NIST.800-53.r5 SC-8]
+ELB.2|MEDIUM|Classic Load Balancers with SSL/HTTPS listeners should use a certificate provided by AWS Certificate Manager|FSBP;NIST[NIST.800-53.r5 AC-17(2), NIST.800-53.r5 SC-8]
+ELB.3|MEDIUM|Classic Load Balancer listeners should be configured with HTTPS or TLS termination|FSBP;NIST[NIST.800-53.r5 AC-17(2), NIST.800-53.r5 SC-8]
+ELB.4|MEDIUM|Application Load Balancer should be configured to drop invalid http headers|FSBP;NIST[NIST.800-53.r5 AC-4(21)]
+ELB.5|MEDIUM|Application and Classic Load Balancers logging should be enabled|FSBP;NIST[NIST.800-53.r5 AC-4(26), NIST.800-53.r5 AU-12]
+ELB.6|MEDIUM|Application, Gateway, and Network Load Balancers should have deletion protection enabled|FSBP;NIST[NIST.800-53.r5 CA-9(1), NIST.800-53.r5 CM-2]
+ELB.7|LOW|Classic Load Balancers should have connection draining enabled|FSBP;NIST[NIST.800-53.r5 CA-9(1), NIST.800-53.r5 CM-2]
+ELB.8|MEDIUM|Classic Load Balancers with SSL listeners should use a predefined security policy that has strong AWS Configuration|FSBP;NIST[NIST.800-53.r5 AC-17(2), NIST.800-53.r5 SC-8]
+ELB.9|MEDIUM|Classic Load Balancers should have cross-zone load balancing enabled|FSBP;NIST[NIST.800-53.r5 CP-10, NIST.800-53.r5 SC-36]
+ELB.10|MEDIUM|Classic Load Balancer should span multiple Availability Zones|FSBP;NIST[NIST.800-53.r5 CP-10, NIST.800-53.r5 SC-36]
+ELB.12|MEDIUM|Application Load Balancer should be configured with defensive or strictest desync mitigation mode|FSBP;NIST[NIST.800-53.r5 AC-4(21)]
+ELB.13|MEDIUM|Application, Network and Gateway Load Balancers should span multiple Availability Zones|FSBP;NIST[NIST.800-53.r5 CP-10, NIST.800-53.r5 SC-36]
+ELB.14|MEDIUM|Classic Load Balancer should be configured with defensive or strictest desync mitigation mode|FSBP;NIST[NIST.800-53.r5 AC-4(21)]
+ELB.16|MEDIUM|Application Load Balancers should be associated with an AWS WAF web ACL|NIST[NIST.800-53.r5 AC-4(21)]
+EMR.1|HIGH|Amazon EMR cluster primary nodes should not have public IP addresses|FSBP;NIST[NIST.800-53.r5 AC-21, NIST.800-53.r5 AC-3]
+EMR.2|CRITICAL|Amazon EMR block public access setting should be enabled|FSBP;NIST[NIST.800-53.r5 AC-21, NIST.800-53.r5 AC-3]
+EMR.3|MEDIUM|Amazon EMR security configurations should be encrypted at rest|NIST[NIST.800-53.r5 CA-9(1), NIST.800-53.r5 SC-28]
+EMR.4|MEDIUM|Amazon EMR security configurations should be encrypted in transit|NIST[NIST.800-53.r5 AC-17(2), NIST.800-53.r5 SC-8]
+ES.1|MEDIUM|Elasticsearch domains should have encryption at-rest enabled|FSBP;PCI=PCI.ES.2[PCI DSS 3.4];NIST[NIST.800-53.r5 CA-9(1), NIST.800-53.r5 SC-28]
+ES.2|CRITICAL|Elasticsearch domains should not be publicly accessible|FSBP;PCI=PCI.ES.1[PCI DSS 1.2.1, PCI DSS 1.3.1];NIST[NIST.800-53.r5 AC-21, NIST.800-53.r5 AC-3]
+ES.3|MEDIUM|Elasticsearch domains should encrypt data sent between nodes|FSBP;NIST[NIST.800-53.r5 AC-17(2), NIST.800-53.r5 SC-8]
+ES.4|MEDIUM|Elasticsearch domain error logging to CloudWatch Logs should be enabled|FSBP;NIST[NIST.800-53.r5 AC-2(4), NIST.800-53.r5 AU-12]
+ES.5|MEDIUM|Elasticsearch domains should have audit logging enabled|FSBP;NIST[NIST.800-53.r5 AC-2(4), NIST.800-53.r5 AU-12]
+ES.6|MEDIUM|Elasticsearch domains should have at least three data nodes|FSBP;NIST[NIST.800-53.r5 CP-10, NIST.800-53.r5 SC-36]
+ES.7|MEDIUM|Elasticsearch domains should be configured with at least three dedicated master nodes|FSBP;NIST[NIST.800-53.r5 CP-10, NIST.800-53.r5 SC-36]
+ES.8|MEDIUM|Connections to Elasticsearch domains should be encrypted using the latest TLS security policy|FSBP;NIST[NIST.800-53.r5 AC-17(2), NIST.800-53.r5 SC-8]
+EventBridge.3|LOW|EventBridge custom event buses should have a resource-based policy attached|FSBP;NIST[NIST.800-53.r5 AC-3, NIST.800-53.r5 AC-6]
+EventBridge.4|MEDIUM|EventBridge global endpoints should have event replication enabled|FSBP;NIST[NIST.800-53.r5 CP-10, NIST.800-53.r5 SC-36]
+FSx.1|MEDIUM|FSx for OpenZFS file systems should be configured to copy tags to backups and volumes|FSBP
+FSx.2|MEDIUM|FSx for Lustre file systems should be configured to copy tags to backups|FSBP
+Glue.3|MEDIUM|AWS Glue machine learning transforms should be encrypted at rest|FSBP
+Glue.4|MEDIUM|AWS Glue Spark jobs should run on supported versions of AWS Glue|FSBP
+GuardDuty.1|HIGH|GuardDuty should be enabled|FSBP;PCI=PCI.GuardDuty.1[PCI DSS 11.4];NIST[NIST.800-53.r5 AC-2(12), NIST.800-53.r5 SI-4]
+GuardDuty.5|HIGH|GuardDuty EKS Audit Log Monitoring should be enabled|FSBP
+GuardDuty.6|HIGH|GuardDuty Lambda Protection should be enabled|FSBP
+GuardDuty.7|HIGH|GuardDuty EKS Runtime Monitoring should be enabled|FSBP
+GuardDuty.8|HIGH|GuardDuty Malware Protection for EC2 should be enabled|FSBP
+GuardDuty.9|HIGH|GuardDuty RDS Protection should be enabled|FSBP
+GuardDuty.10|HIGH|GuardDuty S3 Protection should be enabled|FSBP
+GuardDuty.11|HIGH|GuardDuty Runtime Monitoring should be enabled|FSBP
+GuardDuty.12|MEDIUM|GuardDuty ECS Runtime Monitoring should be enabled|FSBP
+GuardDuty.13|MEDIUM|GuardDuty EC2 Runtime Monitoring should be enabled|FSBP
+IAM.1|HIGH|IAM policies should not allow full "*" administrative privileges|FSBP;CIS12=1.22;CIS14=1.16;CIS30=1.16;PCI=PCI.IAM.3[PCI DSS 7.2.1];NIST[NIST.800-53.r5 AC-2, NIST.800-53.r5 AC-6]
+IAM.2|LOW|IAM users should not have IAM policies attached|FSBP;CIS12=1.16;CIS30=1.15;PCI=PCI.IAM.2[PCI DSS 7.2.1];NIST[NIST.800-53.r5 AC-2, NIST.800-53.r5 AC-6]
+IAM.3|MEDIUM|IAM users' access keys should be rotated every 90 days or less|FSBP;CIS12=1.4;CIS14=1.14;CIS30=1.14;NIST[NIST.800-53.r5 AC-2(1), NIST.800-53.r5 IA-5(1)]
+IAM.4|CRITICAL|IAM root user access key should not exist|FSBP;CIS12=1.12;CIS14=1.4;CIS30=1.4;PCI=PCI.IAM.1[PCI DSS 2.1, PCI DSS 2.2, PCI DSS 7.2.1];NIST[NIST.800-53.r5 AC-2(1), NIST.800-53.r5 AC-3]
+IAM.5|MEDIUM|MFA should be enabled for all IAM users that have a console password|FSBP;CIS12=1.2;CIS14=1.10;CIS30=1.10;NIST[NIST.800-53.r5 AC-2(1), NIST.800-53.r5 IA-2(1)]
+IAM.6|CRITICAL|Hardware MFA should be enabled for the root user|FSBP;CIS12=1.14;CIS14=1.6;CIS30=1.6;PCI=PCI.IAM.4[PCI DSS 8.3.1];NIST[NIST.800-53.r5 AC-2(1), NIST.800-53.r5 IA-2(1)]
+IAM.7|MEDIUM|Password policies for IAM users should have strong configurations|FSBP;NIST[NIST.800-53.r5 AC-2(1), NIST.800-53.r5 IA-5(1)]
+IAM.8|MEDIUM|Unused IAM user credentials should be removed|FSBP;CIS12=1.3;PCI=PCI.IAM.7[PCI DSS 8.1.4];NIST[NIST.800-53.r5 AC-2, NIST.800-53.r5 AC-2(3)]
+IAM.9|CRITICAL|MFA should be enabled for the root user|CIS12=1.13;CIS14=1.5;CIS30=1.5;PCI=PCI.IAM.5[PCI DSS 8.3.1];NIST[NIST.800-53.r5 AC-2(1), NIST.800-53.r5 IA-2(1)]
+IAM.10|MEDIUM|Password policies for IAM users should have strong configurations|PCI=PCI.IAM.8[PCI DSS 8.1.4, PCI DSS 8.2.3, PCI DSS 8.2.4, PCI DSS 8.2.5]
+IAM.11|MEDIUM|Ensure IAM password policy requires at least one uppercase letter|CIS12=1.5
+IAM.12|MEDIUM|Ensure IAM password policy requires at least one lowercase letter|CIS12=1.6
+IAM.13|MEDIUM|Ensure IAM password policy requires at least one symbol|CIS12=1.7
+IAM.14|MEDIUM|Ensure IAM password policy requires at least one number|CIS12=1.8
+IAM.15|MEDIUM|Ensure IAM password policy requires minimum password length of 14 or greater|CIS12=1.9;CIS14=1.8;CIS30=1.8
+IAM.16|LOW|Ensure IAM password policy prevents password reuse|CIS12=1.10;CIS14=1.9;CIS30=1.9
+IAM.17|LOW|Ensure IAM password policy expires passwords within 90 days or less|CIS12=1.11
+IAM.18|LOW|Ensure a support role has been created to manage incidents with AWS Support|CIS12=1.20;CIS14=1.17;CIS30=1.17
+IAM.19|MEDIUM|MFA should be enabled for all IAM users|PCI=PCI.IAM.6[PCI DSS 8.3.1];NIST[NIST.800-53.r5 AC-2(1), NIST.800-53.r5 IA-2(1)]
+IAM.21|LOW|IAM customer managed policies that you create should not allow wildcard actions for services|FSBP;NIST[NIST.800-53.r5 AC-2, NIST.800-53.r5 AC-6]
+IAM.22|MEDIUM|IAM user credentials unused for 45 days should be removed|CIS14=1.12;CIS30=1.12
+IAM.26|MEDIUM|Expired SSL/TLS certificates managed in IAM should be removed|CIS30=1.19
+IAM.27|MEDIUM|IAM identities should not have the AWSCloudShellFullAccess policy attached|CIS30=1.22
+IAM.28|HIGH|IAM Access Analyzer external access analyzer should be enabled|CIS30=1.20
+Inspector.1|HIGH|Amazon Inspector EC2 scanning should be enabled|FSBP
+Inspector.2|HIGH|Amazon Inspector ECR scanning should be enabled|FSBP
+Inspector.3|HIGH|Amazon Inspector Lambda code scanning should be enabled|FSBP
+Inspector.4|HIGH|Amazon Inspector Lambda standard scanning should be enabled|FSBP
+Kinesis.1|MEDIUM|Kinesis streams should be encrypted at rest|FSBP;NIST[NIST.800-53.r5 CA-9(1), NIST.800-53.r5 SC-28]
+Kinesis.3|MEDIUM|Kinesis streams should have an adequate data retention period|FSBP
+KMS.1|MEDIUM|IAM customer managed policies should not allow decryption actions on all KMS keys|FSBP;NIST[NIST.800-53.r5 AC-2, NIST.800-53.r5 AC-6]
+KMS.2|MEDIUM|IAM principals should not have IAM inline policies that allow decryption actions on all KMS keys|FSBP;NIST[NIST.800-53.r5 AC-2, NIST.800-53.r5 AC-6]
+KMS.3|CRITICAL|AWS KMS keys should not be deleted unintentionally|FSBP;NIST[NIST.800-53.r5 SC-12, NIST.800-53.r5 SC-12(2)]
+KMS.4|MEDIUM|AWS KMS key rotation should be enabled|CIS12=2.8;CIS14=3.8;CIS30=3.6;PCI=PCI.KMS.1[PCI DSS 3.6.4];NIST[NIST.800-53.r5 SC-12, NIST.800-53.r5 SC-12(2)]
+KMS.5|CRITICAL|KMS keys should not be publicly accessible|FSBP
+Lambda.1|CRITICAL|Lambda function policies should prohibit public access|FSBP;PCI=PCI.Lambda.1[PCI DSS 1.2.1, PCI DSS 1.3.1];NIST[NIST.800-53.r5 AC-21, NIST.800-53.r5 AC-3]
+Lambda.2|MEDIUM|Lambda functions should use supported runtimes|FSBP;NIST[NIST.800-53.r5 CA-9(1), NIST.800-53.r5 CM-2]
+Lambda.3|MEDIUM|Lambda functions should be in a VPC|PCI=PCI.Lambda.2[PCI DSS 1.2.1, PCI DSS 1.3.1];NIST[NIST.800-53.r5 AC-21, NIST.800-53.r5 SC-7]
+Lambda.5|MEDIUM|VPC Lambda functions should operate in multiple Availability Zones|FSBP;NIST[NIST.800-53.r5 CP-10, NIST.800-53.r5 SC-36]
+Macie.1|MEDIUM|Amazon Macie should be enabled|FSBP;NIST[NIST.800-53.r5 CA-7, NIST.800-53.r5 SI-4]
+Macie.2|HIGH|Macie automated sensitive data discovery should be enabled|FSBP;NIST[NIST.800-53.r5 CA-7, NIST.800-53.r5 SI-4]
+MQ.2|LOW|ActiveMQ brokers should stream audit logs to CloudWatch|FSBP
+MQ.3|LOW|Amazon MQ brokers should have automatic minor version upgrade enabled|FSBP
+MSK.1|MEDIUM|MSK clusters should be encrypted in transit among broker nodes|FSBP;NIST[NIST.800-53.r5 AC-17(2), NIST.800-53.r5 SC-8]
+MSK.3|MEDIUM|MSK Connect connectors should be encrypted in transit|FSBP
+Neptune.1|MEDIUM|Neptune DB clusters should be encrypted at rest|FSBP;NIST[NIST.800-53.r5 CA-9(1), NIST.800-53.r5 SC-28]
+Neptune.2|MEDIUM|Neptune DB clusters should publish audit logs to CloudWatch Logs|FSBP;NIST[NIST.800-53.r5 AC-2(4), NIST.800-53.r5 AU-12]
+Neptune.3|CRITICAL|Neptune DB cluster snapshots should not be public|FSBP;NIST[NIST.800-53.r5 AC-21, NIST.800-53.r5 AC-3]
+Neptune.4|LOW|Neptune DB clusters should have deletion protection enabled|FSBP;NIST[NIST.800-53.r5 CA-9(1), NIST.800-53.r5 CM-2]
+Neptune.5|MEDIUM|Neptune DB clusters should have automated backups enabled|FSBP;NIST[NIST.800-53.r5 CP-10, NIST.800-53.r5 CP-6]
+Neptune.6|MEDIUM|Neptune DB cluster snapshots should be encrypted at rest|FSBP;NIST[NIST.800-53.r5 CA-9(1), NIST.800-53.r5 SC-28]
+Neptune.7|MEDIUM|Neptune DB clusters should have IAM database authentication enabled|FSBP;NIST[NIST.800-53.r5 AC-2(1), NIST.800-53.r5 AC-3]
+Neptune.8|LOW|Neptune DB clusters should be configured to copy tags to snapshots|FSBP;NIST[NIST.800-53.r5 CA-9(1), NIST.800-53.r5 CM-2]
+Neptune.9|MEDIUM|Neptune DB clusters should be deployed across multiple Availability Zones|FSBP
+NetworkFirewall.1|MEDIUM|Network Firewall firewalls should be deployed across multiple Availability Zones|FSBP;NIST[NIST.800-53.r5 CP-10, NIST.800-53.r5 SC-36]
+NetworkFirewall.2|MEDIUM|Network Firewall logging should be enabled|FSBP;NIST[NIST.800-53.r5 AC-2(12), NIST.800-53.r5 AU-12]
+NetworkFirewall.3|MEDIUM|Network Firewall policies should have at least one rule group associated|FSBP;NIST[NIST.800-53.r5 AC-4(21), NIST.800-53.r5 SC-7]
+NetworkFirewall.4|MEDIUM|The default stateless action for Network Firewall policies should be drop or forward for full packets|FSBP;NIST[NIST.800-53.r5 AC-4(21), NIST.800-53.r5 SC-7]
+NetworkFirewall.5|MEDIUM|The default stateless action for Network Firewall policies should be drop or forward for fragmented packets|FSBP;NIST[NIST.800-53.r5 AC-4(21), NIST.800-53.r5 SC-7]
+NetworkFirewall.6|MEDIUM|Stateless Network Firewall rule group should not be empty|FSBP;NIST[NIST.800-53.r5 AC-4(21), NIST.800-53.r5 SC-7]
+NetworkFirewall.9|MEDIUM|Network Firewall firewalls should have deletion protection enabled|FSBP;NIST[NIST.800-53.r5 CA-9(1), NIST.800-53.r5 CM-2]
+NetworkFirewall.10|MEDIUM|Network Firewall firewalls should have subnet change protection enabled|FSBP
+Opensearch.1|MEDIUM|OpenSearch domains should have encryption at rest enabled|FSBP;NIST[NIST.800-53.r5 CA-9(1), NIST.800-53.r5 SC-28]
+Opensearch.2|CRITICAL|OpenSearch domains should not be publicly accessible|FSBP;NIST[NIST.800-53.r5 AC-21, NIST.800-53.r5 AC-3]
+Opensearch.3|HIGH|OpenSearch domains should encrypt data sent between nodes|FSBP;NIST[NIST.800-53.r5 AC-17(2), NIST.800-53.r5 SC-8]
+Opensearch.4|MEDIUM|OpenSearch domain error logging to CloudWatch Logs should be enabled|FSBP;NIST[NIST.800-53.r5 AC-2(4), NIST.800-53.r5 AU-12]
+Opensearch.5|MEDIUM|OpenSearch domains should have audit logging enabled|FSBP;NIST[NIST.800-53.r5 AC-2(4), NIST.800-53.r5 AU-12]
+Opensearch.6|MEDIUM|OpenSearch domains should have at least three data nodes|FSBP;NIST[NIST.800-53.r5 CP-10, NIST.800-53.r5 SC-36]
+Opensearch.7|HIGH|OpenSearch domains should have fine-grained access control enabled|FSBP;NIST[NIST.800-53.r5 AC-2(1), NIST.800-53.r5 AC-3]
+Opensearch.8|MEDIUM|Connections to OpenSearch domains should be encrypted using the latest TLS security policy|FSBP;NIST[NIST.800-53.r5 AC-17(2), NIST.800-53.r5 SC-8]
+Opensearch.10|MEDIUM|OpenSearch domains should have the latest software update installed|FSBP;NIST[NIST.800-53.r5 SI-2, NIST.800-53.r5 SI-2(2)]
+Opensearch.11|MEDIUM|OpenSearch domains should have at least three dedicated primary nodes|FSBP
+PCA.1|HIGH|AWS Private CA root certificate authority should be disabled|FSBP;NIST[NIST.800-53.r5 CA-9(1), NIST.800-53.r5 CM-2]
+RDS.1|CRITICAL|RDS snapshot should be private|FSBP;PCI=PCI.RDS.1[PCI DSS 1.2.1, PCI DSS 1.3.1];NIST[NIST.800-53.r5 AC-21, NIST.800-53.r5 AC-3]
+RDS.2|CRITICAL|RDS DB Instances should prohibit public access, as determined by the PubliclyAccessible AWS Configuration|FSBP;CIS30=2.3.3;PCI=PCI.RDS.2[PCI DSS 1.2.1, PCI DSS 1.3.1];NIST[NIST.800-53.r5 AC-21, NIST.800-53.r5 AC-3]
+RDS.3|MEDIUM|RDS DB instances should have encryption at-rest enabled|FSBP;CIS14=2.3.1;CIS30=2.3.1;NIST[NIST.800-53.r5 CA-9(1), NIST.800-53.r5 SC-28]
+RDS.4|MEDIUM|RDS cluster snapshots and database snapshots should be encrypted at rest|FSBP;NIST[NIST.800-53.r5 CA-9(1), NIST.800-53.r5 SC-28]
+RDS.5|MEDIUM|RDS DB instances should be configured with multiple Availability Zones|FSBP;NIST[NIST.800-53.r5 CP-10, NIST.800-53.r5 SC-36]
+RDS.6|LOW|Enhanced monitoring should be configured for RDS DB instances|FSBP;NIST[NIST.800-53.r5 CA-7, NIST.800-53.r5 SI-2]
+RDS.7|LOW|RDS clusters should have deletion protection enabled|FSBP;NIST[NIST.800-53.r5 CA-9(1), NIST.800-53.r5 CM-2]
+RDS.8|LOW|RDS DB instances should have deletion protection enabled|FSBP;NIST[NIST.800-53.r5 CA-9(1), NIST.800-53.r5 CM-2]
+RDS.9|MEDIUM|RDS DB instances should publish logs to CloudWatch Logs|FSBP;NIST[NIST.800-53.r5 AC-2(4), NIST.800-53.r5 AU-12]
+RDS.10|MEDIUM|IAM authentication should be configured for RDS instances|FSBP;NIST[NIST.800-53.r5 AC-2(1), NIST.800-53.r5 AC-3]
+RDS.11|MEDIUM|RDS instances should have automatic backups enabled|FSBP;NIST[NIST.800-53.r5 CP-10, NIST.800-53.r5 CP-6]
+RDS.12|MEDIUM|IAM authentication should be configured for RDS clusters|FSBP;NIST[NIST.800-53.r5 AC-2(1), NIST.800-53.r5 AC-3]
+RDS.13|HIGH|RDS automatic minor version upgrades should be enabled|FSBP;CIS30=2.3.2;NIST[NIST.800-53.r5 SI-2, NIST.800-53.r5 SI-2(2)]
+RDS.14|MEDIUM|Amazon Aurora clusters should have backtracking enabled|FSBP;NIST[NIST.800-53.r5 CP-10, NIST.800-53.r5 CP-6]
+RDS.15|MEDIUM|RDS DB clusters should be configured for multiple Availability Zones|FSBP;NIST[NIST.800-53.r5 CP-10, NIST.800-53.r5 SC-36]
+RDS.16|LOW|Aurora DB clusters should be configured to copy tags to DB snapshots|FSBP;NIST[NIST.800-53.r5 CA-9(1), NIST.800-53.r5 CM-2]
+RDS.17|LOW|RDS DB instances should be configured to copy tags to snapshots|FSBP;NIST[NIST.800-53.r5 CA-9(1), NIST.800-53.r5 CM-2]
+RDS.18|HIGH|RDS instances should be deployed in a VPC|NIST[NIST.800-53.r5 AC-4, NIST.800-53.r5 SC-7]
+RDS.19|LOW|Existing RDS event notification subscriptions should be configured for critical cluster events|FSBP;NIST[NIST.800-53.r5 CA-7, NIST.800-53.r5 SI-2]
+RDS.20|LOW|Existing RDS event notification subscriptions should be configured for critical database instance events|FSBP;NIST[NIST.800-53.r5 CA-7, NIST.800-53.r5 SI-2]
+RDS.21|LOW|An RDS event notifications subscription should be configured for critical database parameter group events|FSBP;NIST[NIST.800-53.r5 CA-7, NIST.800-53.r5 SI-2]
+RDS.22|LOW|An RDS event notifications subscription should be configured for critical database security group events|FSBP;NIST[NIST.800-53.r5 CA-7, NIST.800-53.r5 SI-2]
+RDS.23|LOW|RDS instances should not use a database engine default port|FSBP;NIST[NIST.800-53.r5 AC-4, NIST.800-53.r5 SC-7]
+RDS.24|MEDIUM|RDS Database clusters should use a custom administrator username|FSBP;NIST[NIST.800-53.r5 CA-9(1), NIST.800-53.r5 CM-2]
+RDS.25|MEDIUM|RDS database instances should use a custom administrator username|FSBP;NIST[NIST.800-53.r5 CA-9(1), NIST.800-53.r5 CM-2]
+RDS.27|MEDIUM|RDS DB clusters should be encrypted at rest|FSBP;NIST[NIST.800-53.r5 CA-9(1), NIST.800-53.r5 SC-28]
+RDS.34|MEDIUM|Aurora MySQL DB clusters should publish audit logs to CloudWatch Logs|FSBP;NIST[NIST.800-53.r5 AC-2(4), NIST.800-53.r5 AU-12]
+RDS.35|MEDIUM|RDS DB clusters should have automatic minor version upgrade enabled|FSBP;NIST[NIST.800-53.r5 SI-2, NIST.800-53.r5 SI-2(2)]
+RDS.36|MEDIUM|RDS for PostgreSQL DB instances should publish logs to CloudWatch Logs|FSBP
+RDS.37|MEDIUM|Aurora PostgreSQL DB clusters should publish logs to CloudWatch Logs|FSBP
+Redshift.1|CRITICAL|Amazon Redshift clusters should prohibit public access|FSBP;PCI=PCI.Redshift.1[PCI DSS 1.2.1, PCI DSS 1.3.1];NIST[NIST.800-53.r5 AC-21, NIST.800-53.r5 AC-3]
+Redshift.2|MEDIUM|Connections to Amazon Redshift clusters should be encrypted in transit|FSBP;NIST[NIST.800-53.r5 AC-17(2), NIST.800-53.r5 SC-8]
+Redshift.3|MEDIUM|Amazon Redshift clusters should have automatic snapshots enabled|FSBP;NIST[NIST.800-53.r5 CP-10, NIST.800-53.r5 CP-6]
+Redshift.4|MEDIUM|Amazon Redshift clusters should have audit logging enabled|FSBP;NIST[NIST.800-53.r5 AC-2(4), NIST.800-53.r5 AU-12]
+Redshift.6|MEDIUM|Amazon Redshift should have automatic upgrades to major versions enabled|FSBP;NIST[NIST.800-53.r5 SI-2, NIST.800-53.r5 SI-2(2)]
+Redshift.7|MEDIUM|Redshift clusters should use enhanced VPC routing|FSBP;NIST[NIST.800-53.r5 AC-4, NIST.800-53.r5 SC-7]
+Redshift.8|MEDIUM|Amazon Redshift clusters should not use the default Admin username|FSBP;NIST[NIST.800-53.r5 CA-9(1), NIST.800-53.r5 CM-2]
+Redshift.10|MEDIUM|Redshift clusters should be encrypted at rest|FSBP;NIST[NIST.800-53.r5 CA-9(1), NIST.800-53.r5 SC-28]
+Route53.2|MEDIUM|Route 53 public hosted zones should log DNS queries|FSBP;NIST[NIST.800-53.r5 AU-2, NIST.800-53.r5 AU-12]
+S3.1|MEDIUM|S3 general purpose buckets should have block public access settings enabled|FSBP;CIS14=2.1.5;CIS30=2.1.4;PCI=PCI.S3.6[PCI DSS 1.2.1, PCI DSS 1.3.1];NIST[NIST.800-53.r5 AC-21, NIST.800-53.r5 AC-3]
+S3.2|CRITICAL|S3 general purpose buckets should block public read access|FSBP;PCI=PCI.S3.2[PCI DSS 1.2.1, PCI DSS 1.3.1, PCI DSS 1.3.2];NIST[NIST.800-53.r5 AC-21, NIST.800-53.r5 AC-3]
+S3.3|CRITICAL|S3 general purpose buckets should block public write access|FSBP;PCI=PCI.S3.1[PCI DSS 1.2.1, PCI DSS 1.3.1, PCI DSS 1.3.2];NIST[NIST.800-53.r5 AC-21, NIST.800-53.r5 AC-3]
+S3.5|MEDIUM|S3 general purpose buckets should require requests to use SSL|FSBP;CIS14=2.1.2;CIS30=2.1.1;PCI=PCI.S3.5[PCI DSS 4.1];NIST[NIST.800-53.r5 AC-17(2), NIST.800-53.r5 SC-8]
+S3.6|HIGH|S3 general purpose bucket policies should restrict access to other AWS accounts|FSBP;NIST[NIST.800-53.r5 CA-9(1), NIST.800-53.r5 CM-2]
+S3.7|LOW|S3 general purpose buckets should use cross-Region replication|PCI=PCI.S3.3[PCI DSS 2.2, PCI DSS 10.5.3];NIST[NIST.800-53.r5 AU-9(2), NIST.800-53.r5 CP-10]
+S3.8|HIGH|S3 general purpose buckets should block public access|FSBP;CIS14=2.1.5;CIS30=2.1.4;NIST[NIST.800-53.r5 AC-21, NIST.800-53.r5 AC-3]
+S3.9|MEDIUM|S3 general purpose buckets should have server access logging enabled|FSBP;NIST[NIST.800-53.r5 AC-2(4), NIST.800-53.r5 AU-12]
+S3.10|MEDIUM|S3 general purpose buckets with versioning enabled should have Lifecycle configurations|NIST[NIST.800-53.r5 SI-12]
+S3.11|MEDIUM|S3 general purpose buckets should have event notifications enabled|NIST[NIST.800-53.r5 CA-7, NIST.800-53.r5 SI-3(8)]
+S3.12|MEDIUM|ACLs should not be used to manage user access to S3 general purpose buckets|FSBP;NIST[NIST.800-53.r5 AC-2(1), NIST.800-53.r5 AC-3]
+S3.13|LOW|S3 general purpose buckets should have Lifecycle configurations|FSBP;NIST[NIST.800-53.r5 CP-10, NIST.800-53.r5 SI-12]
+S3.14|LOW|S3 general purpose buckets should have versioning enabled|NIST[NIST.800-53.r5 AU-9(2), NIST.800-53.r5 CP-10]
+S3.15|MEDIUM|S3 general purpose buckets should have Object Lock enabled|NIST[NIST.800-53.r5 CP-6(2), NIST.800-53.r5 SI-12]
+S3.17|MEDIUM|S3 general purpose buckets should be encrypted at rest with AWS KMS keys|NIST[NIST.800-53.r5 SC-12(2), NIST.800-53.r5 SC-28]
+S3.19|CRITICAL|S3 access points should have block public access settings enabled|FSBP;NIST[NIST.800-53.r5 AC-21, NIST.800-53.r5 AC-3]
+S3.20|LOW|S3 general purpose buckets should have MFA delete enabled|CIS14=2.1.3;CIS30=2.1.2;NIST[NIST.800-53.r5 CA-9(1), NIST.800-53.r5 CM-2]
+S3.22|MEDIUM|S3 general purpose buckets should log object-level write events|CIS30=3.8
+S3.23|MEDIUM|S3 general purpose buckets should log object-level read events|CIS30=3.9
+S3.24|HIGH|S3 Multi-Region Access Points should have block public access settings enabled|FSBP
+SageMaker.1|HIGH|Amazon SageMaker notebook instances should not have direct internet access|FSBP;PCI=PCI.SageMaker.1[PCI DSS 1.2.1, PCI DSS 1.3.1];NIST[NIST.800-53.r5 AC-21, NIST.800-53.r5 AC-3]
+SageMaker.2|HIGH|SageMaker notebook instances should be launched in a custom VPC|FSBP;NIST[NIST.800-53.r5 AC-21, NIST.800-53.r5 SC-7]
+SageMaker.3|HIGH|Users should not have root access to SageMaker notebook instances|FSBP;NIST[NIST.800-53.r5 AC-2(1), NIST.800-53.r5 AC-3]
+SageMaker.4|MEDIUM|SageMaker endpoint production variants should have an initial instance count greater than 1|FSBP;NIST[NIST.800-53.r5 CP-10, NIST.800-53.r5 SC-36]
+SecretsManager.1|MEDIUM|Secrets Manager secrets should have automatic rotation enabled|FSBP;NIST[NIST.800-53.r5 AC-2(1), NIST.800-53.r5 IA-5(1)]
+SecretsManager.2|MEDIUM|Secrets Manager secrets configured with automatic rotation should rotate successfully|FSBP;NIST[NIST.800-53.r5 AC-2(1), NIST.800-53.r5 IA-5(1)]
+SecretsManager.3|MEDIUM|Remove unused Secrets Manager secrets|FSBP;NIST[NIST.800-53.r5 AC-2(1), NIST.800-53.r5 IA-5(1)]
+SecretsManager.4|MEDIUM|Secrets Manager secrets should be rotated within a specified number of days|FSBP;NIST[NIST.800-53.r5 AC-2(1), NIST.800-53.r5 IA-5(1)]
+SecurityHub.1|HIGH|Security Hub should be enabled|NIST[NIST.800-53.r5 CA-7, NIST.800-53.r5 SI-4]
+ServiceCatalog.1|HIGH|Service Catalog portfolios should be shared within an AWS organization only|FSBP;NIST[NIST.800-53.r5 AC-3(7), NIST.800-53.r5 AC-6]
+SNS.1|MEDIUM|SNS topics should be encrypted at-rest using AWS KMS|FSBP;NIST[NIST.800-53.r5 SC-28, NIST.800-53.r5 SC-28(1)]
+SNS.4|CRITICAL|SNS topic access policies should not allow public access|FSBP
+SQS.1|MEDIUM|Amazon SQS queues should be encrypted at rest|FSBP;NIST[NIST.800-53.r5 SC-28, NIST.800-53.r5 SC-28(1)]
+SQS.3|CRITICAL|SQS queue access policies should not allow public access|FSBP
+SSM.1|MEDIUM|Amazon EC2 instances should be managed by AWS Systems Manager|FSBP;PCI=PCI.SSM.3[PCI DSS 2.4];NIST[NIST.800-53.r5 CA-9(1), NIST.800-53.r5 CM-2]
+SSM.2|HIGH|Amazon EC2 instances managed by Systems Manager should have a patch compliance status of COMPLIANT after a patch installation|FSBP;PCI=PCI.SSM.1[PCI DSS 6.2];NIST[NIST.800-53.r5 CM-8(3), NIST.800-53.r5 SI-2]
+SSM.3|LOW|Amazon EC2 instances managed by Systems Manager should have an association compliance status of COMPLIANT|FSBP;PCI=PCI.SSM.2[PCI DSS 2.4];NIST[NIST.800-53.r5 CA-9(1), NIST.800-53.r5 CM-2]
+SSM.4|CRITICAL|SSM documents should not be public|FSBP;NIST[NIST.800-53.r5 AC-21, NIST.800-53.r5 AC-3]
+SSM.7|CRITICAL|SSM documents should have the block public sharing setting enabled|FSBP
+StepFunctions.1|MEDIUM|Step Functions state machines should have logging turned on|FSBP;NIST[NIST.800-53.r5 AC-2(12), NIST.800-53.r5 AU-12]
+Transfer.2|MEDIUM|Transfer Family servers should not use FTP protocol for endpoint connection|FSBP;NIST[NIST.800-53.r5 AC-17(2), NIST.800-53.r5 SC-8]
+Transfer.3|MEDIUM|Transfer Family connectors should have logging enabled|FSBP
+WAF.1|MEDIUM|AWS WAF Classic Global Web ACL logging should be enabled|FSBP;NIST[NIST.800-53.r5 AC-4(26), NIST.800-53.r5 AU-10]
+WAF.2|MEDIUM|AWS WAF Classic Regional rules should have at least one condition|FSBP;NIST[NIST.800-53.r5 AC-4(21), NIST.800-53.r5 SC-7]
+WAF.3|MEDIUM|AWS WAF Classic Regional rule groups should have at least one rule|FSBP;NIST[NIST.800-53.r5 AC-4(21), NIST.800-53.r5 SC-7]
+WAF.4|MEDIUM|AWS WAF Classic Regional web ACLs should have at least one rule or rule group|FSBP;NIST[NIST.800-53.r5 AC-4(21), NIST.800-53.r5 SC-7]
+WAF.6|MEDIUM|AWS WAF Classic global rules should have at least one condition|FSBP;NIST[NIST.800-53.r5 AC-4(21), NIST.800-53.r5 SC-7]
+WAF.7|MEDIUM|AWS WAF Classic global rule groups should have at least one rule|FSBP;NIST[NIST.800-53.r5 AC-4(21), NIST.800-53.r5 SC-7]
+WAF.8|MEDIUM|AWS WAF Classic global web ACLs should have at least one rule or rule group|FSBP;NIST[NIST.800-53.r5 AC-4(21), NIST.800-53.r5 SC-7]
+WAF.10|MEDIUM|AWS WAF web ACLs should have at least one rule or rule group|FSBP;NIST[NIST.800-53.r5 CA-9(1), NIST.800-53.r5 CM-2]
+WAF.11|LOW|AWS WAF web ACL logging should be enabled|NIST[NIST.800-53.r5 AC-4(26), NIST.800-53.r5 AU-10]
+WAF.12|MEDIUM|AWS WAF rules should have CloudWatch metrics enabled|FSBP;NIST[NIST.800-53.r5 AC-4(21), NIST.800-53.r5 AU-6(1)]
+WorkSpaces.1|MEDIUM|WorkSpaces user volumes should be encrypted at rest|FSBP
+WorkSpaces.2|MEDIUM|WorkSpaces root volumes should be encrypted at rest|FSBP

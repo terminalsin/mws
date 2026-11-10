@@ -12,6 +12,10 @@
 //!   mark an identity verified without DNS records or a click.
 //! * `GET|POST /_aws/ses/unsubscribe/<token>`: the one-click unsubscribe
 //!   link of list management.
+//! * `POST /_aws/ses/production-access?status=GRANTED|DENIED&account=...&region=...`:
+//!   decide the account's production access review now instead of 24
+//!   hours after `PutAccountDetails` (`GRANTED` is the default; with no
+//!   pending request, a case is opened and decided at once).
 
 use std::collections::BTreeMap;
 
@@ -232,6 +236,33 @@ impl Ses {
                 } else {
                     json(404, serde_json::json!({ "message": format!("Identity {identity} does not exist.") }))
                 }
+            }
+            ("POST", ("production-access", _)) => {
+                let status = q.get("status").map(|s| s.to_ascii_uppercase()).unwrap_or_else(|| "GRANTED".into());
+                if !matches!(status.as_str(), "GRANTED" | "DENIED") {
+                    return Some(json(400, serde_json::json!({ "message": "status must be GRANTED or DENIED" })));
+                }
+                let account = q.get("account").cloned().unwrap_or_else(|| self.default_account());
+                let region = q.get("region").cloned().unwrap_or_else(|| ctx.region.clone());
+                let mut st = self.lock();
+                let r = st.regions.entry(crate::state::region_key(&account, &region)).or_default();
+                crate::account::decide_review(r, &status);
+                let case_id = r
+                    .account
+                    .details
+                    .as_ref()
+                    .and_then(|d| d.review_details.as_ref())
+                    .and_then(|v| v.case_id.clone());
+                json(
+                    200,
+                    serde_json::json!({
+                        "account": account,
+                        "region": region,
+                        "status": status,
+                        "caseId": case_id,
+                        "productionAccessEnabled": r.account.production_access,
+                    }),
+                )
             }
             ("GET", ("inbound", _)) => {
                 let st = self.lock();

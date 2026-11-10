@@ -21,6 +21,23 @@ fn ident(k: &str, v: &str) -> HashMap<String, String> {
     [(k.to_string(), v.to_string())].into_iter().collect()
 }
 
+/// Describe a change set once AWS has finished creating it (creation is
+/// asynchronous: `CREATE_PENDING`, `CREATE_IN_PROGRESS`).
+async fn created_change_set(
+    cfn: &Client,
+    id: &str,
+) -> aws_sdk_cloudformation::operation::describe_change_set::DescribeChangeSetOutput {
+    for _ in 0..200 {
+        let d = cfn.describe_change_set().change_set_name(id).send().await.unwrap();
+        let pending = d.status().is_some_and(|s| matches!(s.as_str(), "CREATE_PENDING" | "CREATE_IN_PROGRESS"));
+        if !pending {
+            return d;
+        }
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    }
+    panic!("change set {id} was not created");
+}
+
 async fn scan(cfn: &Client, filter: Option<ScanFilter>) -> String {
     let id = cfn.start_resource_scan().set_scan_filters(filter.map(|f| vec![f])).send().await.unwrap();
     let id = id.resource_scan_id().unwrap().to_string();
@@ -220,7 +237,7 @@ async fn scans_generate_templates_that_import_existing_resources() {
         .send()
         .await
         .unwrap();
-    let cs = cfn.describe_change_set().change_set_name(bad.id().unwrap()).send().await.unwrap();
+    let cs = created_change_set(&cfn, bad.id().unwrap()).await;
     assert_eq!(cs.status(), Some(&ChangeSetStatus::Failed));
     assert!(cs.status_reason().unwrap().contains("[Q]"), "{:?}", cs.status_reason());
     let no_policy = cfn
@@ -247,7 +264,7 @@ async fn scans_generate_templates_that_import_existing_resources() {
         .send()
         .await
         .unwrap();
-    let d = cfn.describe_change_set().change_set_name(cs.id().unwrap()).send().await.unwrap();
+    let d = created_change_set(&cfn, cs.id().unwrap()).await;
     assert_eq!(d.status(), Some(&ChangeSetStatus::CreateComplete), "{:?}", d.status_reason());
     assert_eq!(d.changes().len(), 3);
     assert!(d.changes().iter().all(|c| c.resource_change().unwrap().action().unwrap().as_str() == "Import"));
@@ -282,7 +299,7 @@ async fn scans_generate_templates_that_import_existing_resources() {
         .send()
         .await
         .unwrap();
-    let d = cfn.describe_change_set().change_set_name(twice.id().unwrap()).send().await.unwrap();
+    let d = created_change_set(&cfn, twice.id().unwrap()).await;
     assert_eq!(d.status(), Some(&ChangeSetStatus::Failed));
     assert!(d.status_reason().unwrap().contains("already exists in stack legacy"));
 

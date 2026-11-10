@@ -26,9 +26,11 @@ mod policy;
 mod providers;
 mod refactor;
 mod registry;
+mod sam;
 mod stacksets;
 mod state;
 mod template;
+mod transform;
 
 use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::sync::{Arc, Mutex, MutexGuard, RwLock};
@@ -106,6 +108,9 @@ pub(crate) struct Inner {
     running: Mutex<BTreeSet<String>>,
     cancel: Mutex<BTreeSet<String>>,
     idle: tokio::sync::Notify,
+    /// The emulated clock's offset from the wall clock, in milliseconds,
+    /// as the latest request carried it.
+    clock_ms: std::sync::atomic::AtomicI64,
 }
 
 /// The CloudFormation service. Cheap to clone; clones share state.
@@ -133,6 +138,7 @@ impl CloudFormation {
                 running: Mutex::new(BTreeSet::new()),
                 cancel: Mutex::new(BTreeSet::new()),
                 idle: tokio::sync::Notify::new(),
+                clock_ms: std::sync::atomic::AtomicI64::new(0),
             }),
         }
     }
@@ -163,6 +169,18 @@ impl CloudFormation {
             }
             notified.await;
         }
+    }
+
+    /// Learn the emulated clock from a request.
+    pub(crate) fn observe_clock(&self, ctx: &RequestContext) {
+        let offset = (ctx.received_at - chrono::Utc::now()).num_milliseconds().max(0);
+        self.inner.clock_ms.fetch_max(offset, std::sync::atomic::Ordering::Relaxed);
+    }
+
+    /// The emulated clock's current time, as far as requests have told.
+    pub(crate) fn now(&self) -> chrono::DateTime<chrono::Utc> {
+        chrono::Utc::now()
+            + chrono::Duration::milliseconds(self.inner.clock_ms.load(std::sync::atomic::Ordering::Relaxed))
     }
 
     pub(crate) fn state(&self) -> MutexGuard<'_, State> {
@@ -260,6 +278,18 @@ impl CloudFormation {
     }
 
     pub(crate) fn finished(&self, stack_id: &str) {
+        {
+            // A change set being executed ends with the stack operation.
+            let mut st = self.state();
+            if let Some(s) = st.stacks.get_mut(stack_id) {
+                let ok = matches!(s.status.as_str(), "CREATE_COMPLETE" | "UPDATE_COMPLETE" | "IMPORT_COMPLETE");
+                if let Some(cs) = s.change_set_id.clone().and_then(|id| s.change_sets.get_mut(&id)) {
+                    if cs.execution_status == "EXECUTE_IN_PROGRESS" {
+                        cs.execution_status = if ok { "EXECUTE_COMPLETE" } else { "EXECUTE_FAILED" }.into();
+                    }
+                }
+            }
+        }
         self.inner.running.lock().expect("lock").remove(stack_id);
         self.inner.cancel.lock().expect("lock").remove(stack_id);
         self.inner.idle.notify_waiters();
@@ -351,6 +381,7 @@ impl Service for CloudFormation {
     }
 
     async fn handle(&self, ctx: RequestContext, request: HttpRequest) -> HttpResponse {
+        self.observe_clock(&ctx);
         if request.uri().path().starts_with(callback::PREFIX) {
             return callback::handle(self, &request);
         }
@@ -372,6 +403,7 @@ impl Service for CloudFormation {
         operation: &str,
         input: serde_json::Value,
     ) -> Result<serde_json::Value, ServiceError> {
+        self.observe_clock(&ctx);
         generated::invoke(self, &ctx, operation, input).await
     }
 

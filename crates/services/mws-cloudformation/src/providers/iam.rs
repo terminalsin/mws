@@ -148,6 +148,10 @@ struct Role;
 
 #[async_trait::async_trait]
 impl Provider for Role {
+    fn name_property(&self) -> Option<&'static str> {
+        Some("RoleName")
+    }
+
     fn create_only(&self) -> &'static [&'static str] {
         &["RoleName", "Path"]
     }
@@ -298,6 +302,10 @@ struct User;
 
 #[async_trait::async_trait]
 impl Provider for User {
+    fn name_property(&self) -> Option<&'static str> {
+        Some("UserName")
+    }
+
     fn create_only(&self) -> &'static [&'static str] {
         &["UserName"]
     }
@@ -371,6 +379,10 @@ struct Group;
 
 #[async_trait::async_trait]
 impl Provider for Group {
+    fn name_property(&self) -> Option<&'static str> {
+        Some("GroupName")
+    }
+
     fn create_only(&self) -> &'static [&'static str] {
         &["GroupName"]
     }
@@ -519,6 +531,10 @@ struct ManagedPolicy;
 
 #[async_trait::async_trait]
 impl Provider for ManagedPolicy {
+    fn name_property(&self) -> Option<&'static str> {
+        Some("ManagedPolicyName")
+    }
+
     fn create_only(&self) -> &'static [&'static str] {
         &["ManagedPolicyName", "Path", "Description"]
     }
@@ -612,6 +628,10 @@ struct InstanceProfile;
 
 #[async_trait::async_trait]
 impl Provider for InstanceProfile {
+    fn name_property(&self) -> Option<&'static str> {
+        Some("InstanceProfileName")
+    }
+
     fn create_only(&self) -> &'static [&'static str] {
         &["InstanceProfileName", "Path"]
     }

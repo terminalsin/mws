@@ -298,6 +298,10 @@ pub struct Account {
     pub dedicated_ip_auto_warmup: bool,
     pub vdm: Option<t2::VdmAttributes>,
     pub pricing_plan: Option<String>,
+    /// When the pending production access review (the support case opened
+    /// by `PutAccountDetails`) was opened; it is decided 24 hours later on
+    /// the emulated clock.
+    pub review_opened: Option<DateTime<Utc>>,
 }
 
 impl Default for Account {
@@ -311,6 +315,7 @@ impl Default for Account {
             dedicated_ip_auto_warmup: true,
             vdm: None,
             pricing_plan: None,
+            review_opened: None,
         }
     }
 }

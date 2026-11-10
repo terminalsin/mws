@@ -45,6 +45,7 @@ pub fn new_hub(partition: &str, account: &str, region: &str, now: DateTime<Utc>,
         policy_associations: Default::default(),
         connectors: Default::default(),
         resource_tags: Default::default(),
+        evaluation: Default::default(),
     };
     if default_standards {
         for s in catalog::STANDARDS.iter().filter(|s| s.enabled_by_default) {
@@ -96,6 +97,12 @@ impl SecurityHub {
         let tags = input.tags.clone().unwrap_or_default();
         authorize_with(ctx, "EnableSecurityHub", &common::hub_arn(ctx, account(ctx)), common::tag_conditions(&tags))?;
         common::check_tags(&Default::default(), &tags)?;
+        if self.read().hub(account(ctx), &ctx.region).is_some() {
+            return Err(errors::resource_conflict("Account is already subscribed to Security Hub"));
+        }
+        // As in AWS: enabling creates AWSServiceRoleForSecurityHub, which
+        // the caller must be allowed to do when the role does not exist yet.
+        self.ensure_service_linked_role(ctx)?;
         let mut state = self.write();
         if state.hub(account(ctx), &ctx.region).is_some() {
             return Err(errors::resource_conflict("Account is already subscribed to Security Hub"));
@@ -113,6 +120,27 @@ impl SecurityHub {
         h.tags = tags;
         state.hubs.insert(crate::state::key(account(ctx), &ctx.region), h);
         Ok(types::EnableSecurityHubResponse {})
+    }
+
+    /// Create Security Hub's service-linked role in the caller's account
+    /// if it is missing, checking `iam:CreateServiceLinkedRole` as AWS does.
+    pub(crate) fn ensure_service_linked_role(&self, ctx: &RequestContext) -> Result<(), ServiceError> {
+        let Some(roles) = self.inner.roles.get() else { return Ok(()) };
+        let acct = account(ctx);
+        if roles.exists(&ctx.partition, acct) {
+            return Ok(());
+        }
+        let role_arn = format!(
+            "arn:{}:iam::{acct}:role/aws-service-role/{}/{}",
+            ctx.partition,
+            crate::evaluation::SERVICE_PRINCIPAL,
+            crate::evaluation::SERVICE_LINKED_ROLE
+        );
+        let mut cond = mws_core::ConditionContext::new();
+        cond.insert("iam:AWSServiceName".into(), vec![crate::evaluation::SERVICE_PRINCIPAL.into()]);
+        ctx.authorize("iam:CreateServiceLinkedRole", &role_arn, cond)?;
+        roles.create(acct);
+        Ok(())
     }
 
     pub(crate) fn disable_security_hub_op(
@@ -178,6 +206,7 @@ impl SecurityHub {
         if let Some(v) = input.control_finding_generator {
             h.control_finding_generator = v;
         }
+        h.evaluation.dirty = true;
         Ok(types::UpdateSecurityHubConfigurationResponse {})
     }
 

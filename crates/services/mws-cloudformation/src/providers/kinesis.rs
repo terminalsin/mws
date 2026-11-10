@@ -28,6 +28,10 @@ struct Stream;
 
 #[async_trait::async_trait]
 impl Provider for Stream {
+    fn name_property(&self) -> Option<&'static str> {
+        Some("Name")
+    }
+
     fn create_only(&self) -> &'static [&'static str] {
         &["Name"]
     }
@@ -150,8 +154,18 @@ struct DeliveryStream;
 
 #[async_trait::async_trait]
 impl Provider for DeliveryStream {
-    fn updatable(&self) -> bool {
-        false
+    fn name_property(&self) -> Option<&'static str> {
+        Some("DeliveryStreamName")
+    }
+
+    fn create_only(&self) -> &'static [&'static str] {
+        &[
+            "DeliveryStreamName",
+            "DeliveryStreamType",
+            "DirectPutSourceConfiguration",
+            "KinesisStreamSourceConfiguration",
+            "MSKSourceConfiguration",
+        ]
     }
     fn attributes(&self) -> &'static [&'static str] {
         &["Arn"]
@@ -194,6 +208,72 @@ impl Provider for DeliveryStream {
             }
         }
         Ok(Created::new(&name).attr("Arn", out["DeliveryStreamARN"].clone()))
+    }
+
+    /// Destination, encryption and tag changes apply in place, as
+    /// CloudFormation's handler does (`UpdateDestination`,
+    /// `Start`/`StopDeliveryStreamEncryption`, `Tag`/`UntagDeliveryStream`).
+    async fn update(&self, cx: &Cx<'_>, name: &str, old: &Props, new: &Props, attrs: &Props) -> HResult<Props> {
+        const DESTINATIONS: &[(&str, &str)] = &[
+            ("ExtendedS3DestinationConfiguration", "ExtendedS3DestinationUpdate"),
+            ("S3DestinationConfiguration", "S3DestinationUpdate"),
+            ("HttpEndpointDestinationConfiguration", "HttpEndpointDestinationUpdate"),
+        ];
+        if let Some((key, update)) = DESTINATIONS.iter().find(|(k, _)| changed(old, new, k) && new.contains_key(*k)) {
+            let d = cx.call("firehose", "DescribeDeliveryStream", json!({"DeliveryStreamName": name})).await?;
+            let desc = &d["DeliveryStreamDescription"];
+            let mut config = new.get(*key).cloned().unwrap_or_default();
+            if let Value::Object(c) = &mut config {
+                for (from, to) in [("S3BackupConfiguration", "S3BackupUpdate"), ("S3Configuration", "S3Update")] {
+                    if let Some(v) = c.remove(from) {
+                        c.insert(to.into(), v);
+                    }
+                }
+            }
+            let mut input = json!({
+                "DeliveryStreamName": name,
+                "CurrentDeliveryStreamVersionId": text(&desc["VersionId"]),
+                "DestinationId": text(&desc["Destinations"][0]["DestinationId"]),
+            });
+            input[*update] = config;
+            cx.call("firehose", "UpdateDestination", input).await?;
+        }
+        if changed(old, new, "DeliveryStreamEncryptionConfigurationInput") {
+            match new.get("DeliveryStreamEncryptionConfigurationInput").filter(|v| !v.is_null()) {
+                Some(e) => {
+                    cx.call(
+                        "firehose",
+                        "StartDeliveryStreamEncryption",
+                        json!({"DeliveryStreamName": name, "DeliveryStreamEncryptionConfigurationInput": e}),
+                    )
+                    .await?
+                }
+                None => {
+                    cx.call("firehose", "StopDeliveryStreamEncryption", json!({"DeliveryStreamName": name})).await?
+                }
+            };
+        }
+        if changed(old, new, "Tags") {
+            let new_tags = cx.tags(new);
+            let keys: Vec<Value> = new_tags.iter().map(|t| t["Key"].clone()).collect();
+            let removed: Vec<Value> =
+                cx.tags(old).into_iter().map(|t| t["Key"].clone()).filter(|k| !keys.contains(k)).collect();
+            if !removed.is_empty() {
+                cx.call("firehose", "UntagDeliveryStream", json!({"DeliveryStreamName": name, "TagKeys": removed}))
+                    .await?;
+            }
+            if !new_tags.is_empty() {
+                cx.call("firehose", "TagDeliveryStream", json!({"DeliveryStreamName": name, "Tags": new_tags})).await?;
+            }
+        }
+        for _ in 0..600 {
+            let d = cx.call("firehose", "DescribeDeliveryStream", json!({"DeliveryStreamName": name})).await?;
+            match d["DeliveryStreamDescription"]["DeliveryStreamStatus"].as_str() {
+                Some("ACTIVE") | None => break,
+                _ => tokio::time::sleep(std::time::Duration::from_millis(100)).await,
+            }
+        }
+        Ok(attrs.clone())
     }
 
     async fn delete(&self, cx: &Cx<'_>, name: &str, _props: &Props, _attrs: &Props) -> HResult<()> {

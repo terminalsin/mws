@@ -66,6 +66,10 @@ impl Alarm {
 
 #[async_trait::async_trait]
 impl Provider for Alarm {
+    fn name_property(&self) -> Option<&'static str> {
+        Some("AlarmName")
+    }
+
     fn create_only(&self) -> &'static [&'static str] {
         &["AlarmName"]
     }
@@ -96,6 +100,10 @@ struct CompositeAlarm;
 
 #[async_trait::async_trait]
 impl Provider for CompositeAlarm {
+    fn name_property(&self) -> Option<&'static str> {
+        Some("AlarmName")
+    }
+
     fn create_only(&self) -> &'static [&'static str] {
         &["AlarmName"]
     }
@@ -145,6 +153,10 @@ struct Dashboard;
 
 #[async_trait::async_trait]
 impl Provider for Dashboard {
+    fn name_property(&self) -> Option<&'static str> {
+        Some("DashboardName")
+    }
+
     fn create_only(&self) -> &'static [&'static str] {
         &["DashboardName"]
     }

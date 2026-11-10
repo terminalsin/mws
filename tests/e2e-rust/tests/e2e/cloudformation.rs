@@ -785,7 +785,14 @@ async fn nested_stacks_read_child_outputs() {
     let parent = r#"{"Resources": {"Child": {"Type": "AWS::CloudFormation::Stack", "Properties": {
         "TemplateURL": "https://templates.s3.amazonaws.com/child.json", "Parameters": {"Prefix": "nested"}}}},
       "Outputs": {"ChildUrl": {"Value": {"Fn::GetAtt": ["Child", "Outputs.Url"]}}}}"#;
-    cfn.create_stack().stack_name("parent").template_body(parent).send().await.unwrap();
+    // Nested stacks need CAPABILITY_AUTO_EXPAND, as on AWS.
+    cfn.create_stack()
+        .stack_name("parent")
+        .template_body(parent)
+        .capabilities(Capability::CapabilityAutoExpand)
+        .send()
+        .await
+        .unwrap();
     let s = settle(&cfn, "parent").await;
     assert_eq!(s.stack_status(), Some(&StackStatus::CreateComplete), "{:?}", s.stack_status_reason());
     assert!(output(&s, "ChildUrl").ends_with("/nested-child"));

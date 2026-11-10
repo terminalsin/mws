@@ -22,6 +22,9 @@ const SECTIONS: &[&str] = &[
     "Hooks",
 ];
 
+/// The section the SAM transform adds.
+const SAM_SECTIONS: &[&str] = &["Globals"];
+
 /// The attributes a resource declaration may have.
 const RESOURCE_ATTRIBUTES: &[&str] = &[
     "Type",
@@ -36,9 +39,17 @@ const RESOURCE_ATTRIBUTES: &[&str] = &[
     "Version",
 ];
 
-/// Transforms MWS applies. `AWS::LanguageExtensions` only unlocks the
-/// intrinsic functions it adds.
+/// The transform that adds `Fn::ForEach`, `Fn::Length`,
+/// `Fn::ToJsonString` and friends. A processed template keeps it so the
+/// intrinsic functions it adds keep working.
 pub const LANGUAGE_EXTENSIONS: &str = "AWS::LanguageExtensions";
+pub const SERVERLESS: &str = "AWS::Serverless-2016-10-31";
+pub const INCLUDE: &str = "AWS::Include";
+
+/// Whether a key is a `Fn::ForEach` loop (`Fn::ForEach::Name`).
+pub fn is_for_each(key: &str) -> bool {
+    key.starts_with("Fn::ForEach::")
+}
 
 pub fn format_error(message: impl std::fmt::Display) -> String {
     format!("Template format error: {message}")
@@ -48,6 +59,8 @@ pub fn format_error(message: impl std::fmt::Display) -> String {
 #[derive(Debug, Clone)]
 pub struct Template {
     pub root: Map<String, Value>,
+    /// The template as submitted, when transforms produced this one.
+    pub original: Option<String>,
 }
 
 impl Template {
@@ -57,7 +70,7 @@ impl Template {
         let Value::Object(root) = root else {
             return Err(format_error("JSON not well-formed. (line 1, column 1)"));
         };
-        let t = Self { root };
+        let t = Self { root, original: None };
         t.check_structure()?;
         Ok(t)
     }
@@ -101,9 +114,38 @@ impl Template {
         self.transforms().iter().any(|t| t == LANGUAGE_EXTENSIONS)
     }
 
+    /// Whether deploying the template runs transforms that change it:
+    /// template-level transforms other than the language extensions'
+    /// intrinsic functions, `Fn::Transform` or `Fn::ForEach`.
+    pub fn needs_processing(&self) -> bool {
+        fn has(v: &Value) -> bool {
+            match v {
+                Value::Object(o) => o.iter().any(|(k, v)| k == "Fn::Transform" || is_for_each(k) || has(v)),
+                Value::Array(a) => a.iter().any(has),
+                _ => false,
+            }
+        }
+        self.transforms().iter().any(|t| t != LANGUAGE_EXTENSIONS) || has(&Value::Object(self.root.clone()))
+    }
+
+    /// The template text to store: the original text unless transforms
+    /// changed it.
+    pub fn body(&self, submitted: &str) -> String {
+        match &self.original {
+            Some(_) => serde_json::to_string(&self.root).unwrap_or_default(),
+            None => submitted.to_string(),
+        }
+    }
+
     fn check_structure(&self) -> Result<(), String> {
-        let unknown: Vec<&str> =
-            self.root.keys().map(String::as_str).filter(|k| !SECTIONS.contains(k)).collect::<Vec<_>>();
+        let transforms = self.transforms();
+        let sam = transforms.iter().any(|t| t == SERVERLESS);
+        let unknown: Vec<&str> = self
+            .root
+            .keys()
+            .map(String::as_str)
+            .filter(|k| !SECTIONS.contains(k) && !(sam && SAM_SECTIONS.contains(k)))
+            .collect::<Vec<_>>();
         if !unknown.is_empty() {
             return Err(format_error(format!("Invalid template property or properties [{}]", unknown.join(", "))));
         }
@@ -125,18 +167,27 @@ impl Template {
                 return Err(format_error("Every Description member must be a string."));
             }
         }
-        for t in self.transforms() {
-            if t != LANGUAGE_EXTENSIONS {
-                return Err(format!(
-                    "Transform {t} is not supported by MWS. Expand the template before deploying it (for SAM: `sam build` and `sam package`, then deploy the processed template)."
-                ));
+        if let Some(t) = self.root.get("Transform") {
+            let ok = match t {
+                Value::String(_) => true,
+                Value::Array(a) => a.iter().all(Value::is_string),
+                _ => false,
+            };
+            if !ok {
+                return Err(format_error("Every Transform member must be a string or a list of strings."));
             }
         }
+        // Loops and snippet transforms are checked once they are expanded.
+        let le = transforms.iter().any(|t| t == LANGUAGE_EXTENSIONS);
+        let deferred = |k: &str| k == "Fn::Transform" || (le && is_for_each(k));
         let resources = match self.root.get("Resources") {
             Some(Value::Object(r)) if !r.is_empty() => r,
             _ => return Err(format_error("At least one Resources member must be defined.")),
         };
         for (name, r) in resources {
+            if deferred(name) {
+                continue;
+            }
             check_logical_id(name)?;
             let Some(r) = r.as_object() else {
                 return Err(format_error(format!(
@@ -152,7 +203,7 @@ impl Template {
                 }
             }
             for k in r.keys() {
-                if !RESOURCE_ATTRIBUTES.contains(&k.as_str()) {
+                if !RESOURCE_ATTRIBUTES.contains(&k.as_str()) && k != "Fn::Transform" {
                     return Err(format_error(format!("[/Resources/{name}] Invalid template resource property '{k}'")));
                 }
             }
@@ -181,6 +232,9 @@ impl Template {
                 return Err(format_error("Every Parameters member must be an object."));
             };
             for (name, p) in params {
+                if deferred(name) {
+                    continue;
+                }
                 check_logical_id(name)?;
                 let ty = p.get("Type").and_then(Value::as_str);
                 match ty {
@@ -197,6 +251,9 @@ impl Template {
                 return Err(format_error("Every Outputs member must be an object."));
             };
             for (name, o) in outputs {
+                if deferred(name) {
+                    continue;
+                }
                 check_logical_id(name)?;
                 if o.get("Value").is_none() {
                     return Err(format_error("Every Outputs member must contain a Value object"));
@@ -232,7 +289,7 @@ impl Template {
             self.section("Conditions").map(|c| c.keys().cloned().collect()).unwrap_or_default();
         let mut unresolved = BTreeSet::new();
         for (name, r) in self.resources() {
-            let r = r.as_object().expect("checked");
+            let Some(r) = r.as_object() else { continue };
             if let Some(c) = r.get("Condition") {
                 let c = c.as_str().unwrap_or_default();
                 if !conditions.contains(c) {

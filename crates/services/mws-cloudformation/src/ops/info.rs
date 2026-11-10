@@ -40,7 +40,10 @@ impl CloudFormation {
         ctx.authorize("cloudformation:ValidateTemplate", "*", Default::default())?;
         let body = self.template_text(ctx, input.template_body.as_deref(), input.template_url.as_deref()).await?;
         let t = Template::parse(&body).map_err(validation)?;
-        self.check_template(ctx, &t)?;
+        // Transformed templates are checked once processed, at deployment.
+        if !t.needs_processing() {
+            self.check_template(ctx, &t)?;
+        }
         let (caps, iam) = required_capabilities(&t);
         let params = t
             .parameters()
@@ -84,7 +87,10 @@ impl CloudFormation {
             }
         };
         let t = Template::parse(&body).map_err(validation)?;
-        self.check_template(ctx, &t)?;
+        // Transformed templates are checked once processed, at deployment.
+        if !t.needs_processing() {
+            self.check_template(ctx, &t)?;
+        }
         let (caps, iam) = required_capabilities(&t);
         let params = t
             .parameters()
@@ -144,7 +150,10 @@ impl CloudFormation {
         ctx.authorize("cloudformation:EstimateTemplateCost", "*", Default::default())?;
         let body = self.template_text(ctx, input.template_body.as_deref(), input.template_url.as_deref()).await?;
         let t = Template::parse(&body).map_err(validation)?;
-        self.check_template(ctx, &t)?;
+        // Transformed templates are checked once processed, at deployment.
+        if !t.needs_processing() {
+            self.check_template(ctx, &t)?;
+        }
         Ok(types::EstimateTemplateCostOutput {
             url: Some(format!("https://calculator.aws/#/estimate?id={}", uuid::Uuid::new_v4().simple())),
         })
