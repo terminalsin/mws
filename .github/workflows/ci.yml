@@ -250,7 +250,7 @@ jobs:
         working-directory: dashboard
       - run: npm run typecheck
         working-directory: dashboard
-      - run: npm test -w @mws-dashboard/ai
+      - run: npm test -w @mws-dashboard/ai -w @mws-dashboard/ui
         working-directory: dashboard
       # The icons in the console's public folder are generated: fail when they are stale.
       - run: |

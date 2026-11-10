@@ -18,8 +18,11 @@ import { Suspense, type ReactNode } from "react";
 import { navigation, iconUrl } from "./catalog";
 import { CommandPalette, CopyButton, NavLink, RegionPicker, RouteProgress, ServicesMenu, SideNav, Toasts, type NavGroup } from "./client";
 import { CountUp } from "./motion";
+import { FieldShell, type FieldRules } from "./fields";
 
 export { AUTO } from "./constants";
+export type { FieldRules } from "./fields";
+export type { FieldIssue, Format, Generate, Issue, Repair, Rule, Rules } from "./validation";
 export { Asciify, CheckMark, CountUp, Segments } from "./motion";
 export { DotMatrix, type DotPattern } from "./loaders";
 export {
@@ -453,13 +456,15 @@ export function Metrics({ children }: { children: ReactNode }) {
   return <div className="metrics">{children}</div>;
 }
 
-export function Field({ label, hint, children }: { label: string; hint?: ReactNode; children: ReactNode }) {
+/** A labelled form control. It validates in place: the control's
+ * attributes plus `rule` (from `@mws-dashboard/ui/model/<model>`) and the
+ * shortcut props decide what is valid, problems replace the hint, and
+ * repairs are offered as one-click chips. */
+export function Field({ label, hint, children, ...rules }: { label: string; hint?: ReactNode; children: ReactNode } & FieldRules) {
   return (
-    <label className="field">
-      <span className="field-label">{label}</span>
+    <FieldShell label={label} hint={hint} {...rules}>
       {children}
-      {hint && <span className="field-hint">{hint}</span>}
-    </label>
+    </FieldShell>
   );
 }
 

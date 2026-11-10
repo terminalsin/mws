@@ -103,6 +103,40 @@ Image Builder infrastructure configuration with
 `EC2InstanceProfileForImageBuilder`. The field starts on "create" when
 nothing suitable exists. Helpers live in `packages/aws/src/auto.ts`.
 
+### Form validation and repairs
+
+Fields validate in place, and say how to fix what they reject. `Field`
+(`packages/ui`) checks its control against one merged rule:
+
+1. the operation's Smithy constraints, generated from the models MWS serves
+   (`scripts/constraints.mjs` writes `packages/ui/src/model/<model>.ts`,
+   git-ignored, on every build, type check and dev start):
+   `import { CreateFunction } from "@mws-dashboard/ui/model/lambda"`, then
+   `<Field rule={CreateFunction.FunctionName}>`;
+2. the control's own attributes (`required`, `maxLength`, `min`, `type`...);
+3. what the page adds: `format` (`json`, `arn`, `cidr`, `ipv4`, `email`,
+   `url`, `bucket`, `name`, `port`), `taken` (names that exist),
+   `known` (values the field usually points at), `generate` (`name`,
+   `token`, `password`, `uuid`, or a prefix/suffix), `arn` (the ARN template
+   a bare name expands to) and `hint` (a readable pattern message).
+
+A problem replaces the field's hint once the person leaves the field or
+submits, and comes with repairs as chips: a fix (reshaped to the pattern,
+shortened, clamped, network address, repaired JSON, `https://` added), a
+suggestion ("did you mean" among enum values, `known` values or common email
+domains) or a generated value. Every repair is checked against the whole rule
+before it is offered. A blocked submit focuses and shakes the first field.
+
+Errors MWS returns land on their field too: `act` turns AWS validation
+messages (`Value 'x' at 'roleName' failed to satisfy constraint: ...`) back
+into rules, so a backend rejection gets the same repairs; "already exists"
+errors land on the field marked `unique` with the next free name; anything
+else is mapped with `act(run, { revalidate, fields: { QueueName: "name",
+NoSuchEntity: "role" } })`, and `throw new FieldError(field, message)` targets
+a field directly. Only issues no field claims show under the form. All of
+this lives in the console (`validation.ts`, `fields.tsx`); MWS itself only
+returns what AWS returns. SQS's create-queue sheet is the reference use.
+
 ## Design
 
 The layout is the AWS console's: a top bar (Services menu, search,

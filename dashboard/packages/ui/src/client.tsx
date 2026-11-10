@@ -41,6 +41,8 @@ import { DotMatrix } from "./loaders";
 import { machine, useMachine } from "./machine";
 import { CheckMark } from "./motion";
 import { AUTO, REGION_COOKIE } from "./constants";
+import { FormIssuesContext, useFormIssues } from "./fields";
+import type { FieldIssue } from "./validation";
 
 /** A service as the navigation needs it (serializable, built on the server). */
 export interface NavService {
@@ -263,6 +265,9 @@ export interface ActionResult {
   message: string;
   /** Extra output to show under the form, such as a Lambda response. */
   detail?: string;
+  /** Problems the server found with specific fields; each shows on its
+   * field with repairs (see `Field`), the rest under the form. */
+  issues?: FieldIssue[];
 }
 
 export type FormAction = (previous: ActionResult | null, form: FormData) => Promise<ActionResult>;
@@ -351,10 +356,15 @@ export function ActionForm({
   testId?: string;
 }) {
   const [state, run, isPending] = useActionState(action, null);
+  const [, startSubmit] = useTransition();
   const [phase, send] = useMachine(submission);
   const form = useRef<HTMLFormElement>(null);
   const close = useContext(SheetContext);
   const toast = useToast();
+  const issues = useFormIssues();
+  const { publish, unclaimed } = issues;
+  // Every server issue landed on a field: the fields say it, not the form.
+  const [inlineOnly, setInlineOnly] = useState(false);
   const quiet = !!icon && !children;
   useEffect(() => {
     if (isPending) send({ type: "SUBMIT" });
@@ -362,6 +372,9 @@ export function ActionForm({
   useEffect(() => {
     if (!state) return;
     send({ type: "RESOLVE", ok: state.ok });
+    const found = state.ok ? [] : (state.issues ?? []);
+    publish(found);
+    setInlineOnly(found.length > 0 && unclaimed(found).length === 0);
     if (state.ok) {
       form.current?.reset();
       if (close && !state.detail) {
@@ -372,18 +385,52 @@ export function ActionForm({
       }
     }
     if (quiet) toast(state);
-  }, [state, close, quiet, toast, send]);
+  }, [state, close, quiet, toast, send, publish, unclaimed]);
+  // A submission the fields stopped: focus the first problem and shake its
+  // field (each field shows its own message instead of a browser bubble).
+  useEffect(() => {
+    const el = form.current;
+    if (!el) return;
+    let first: HTMLElement | null = null;
+    const onInvalid = (e: Event) => {
+      if (first) return;
+      first = e.target as HTMLElement;
+      // After the browser has fired every invalid event (and the fields
+      // have cancelled theirs).
+      setTimeout(() => {
+        const target = first;
+        first = null;
+        if (!target || !e.defaultPrevented) return;
+        target.focus();
+        const field = target.closest<HTMLElement>(".field");
+        if (field) {
+          field.removeAttribute("data-shake");
+          void field.offsetWidth;
+          field.setAttribute("data-shake", "");
+        }
+      }, 0);
+    };
+    el.addEventListener("invalid", onInvalid, true);
+    return () => el.removeEventListener("invalid", onInvalid, true);
+  }, []);
   return (
     <form
       ref={form}
-      action={run}
+      // Submitted by hand rather than through `action`, which would reset
+      // the fields even when the action fails, losing what the person typed
+      // and the value the repairs work from.
+      onSubmit={(e) => {
+        e.preventDefault();
+        const data = new FormData(e.currentTarget, (e.nativeEvent as globalThis.SubmitEvent).submitter);
+        startSubmit(() => run(data));
+      }}
       className={quiet ? "action-icon" : inline ? "action-form inline" : "action-form"}
       data-testid={testId}
       data-state={phase}
       data-tone={tone}
       aria-busy={phase === "pending"}
     >
-      {children}
+      <FormIssuesContext.Provider value={issues.value}>{children}</FormIssuesContext.Provider>
       <div className="form-actions">
         <Submit label={submit} icon={icon} tone={tone} confirm={confirm} phase={phase} />
       </div>
@@ -392,7 +439,7 @@ export function ActionForm({
           <DotMatrix pattern="pulse" />
         </div>
       )}
-      {state && !quiet && phase !== "pending" && (
+      {state && !quiet && phase !== "pending" && !(inlineOnly && !state.ok) && (
         <div key={state.message + String(state.ok)} className={state.ok ? "result ok" : "result error"} role="status">
           <span>
             {state.ok ? <Check size={15} aria-hidden /> : <X size={15} aria-hidden />}

@@ -11,10 +11,14 @@
     "./machine": "./src/machine.ts",
     "./constants": "./src/constants.ts",
     "./styles.css": "./src/styles.css",
-    "./catalog": "./src/catalog.ts"
+    "./catalog": "./src/catalog.ts",
+    "./validation": "./src/validation.ts",
+    "./fields": "./src/fields.tsx",
+    "./model/*": "./src/model/*.ts"
   },
   "scripts": {
-    "typecheck": "tsc --noEmit"
+    "typecheck": "tsc --noEmit",
+    "test": "node --test --experimental-strip-types src/*.test.ts"
   },
   "peerDependencies": {
     "next": "^16.0.0",

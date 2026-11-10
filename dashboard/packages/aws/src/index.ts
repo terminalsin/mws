@@ -8,6 +8,7 @@ import "server-only";
 import { GetCallerIdentityCommand, STSClient } from "@aws-sdk/client-sts";
 import type { ActionResult, FrameInfo } from "@mws-dashboard/ui";
 import { REGION_COOKIE } from "@mws-dashboard/ui/constants";
+import { CONFLICT, memberPath, parseServerIssues, type FieldIssue, type IssueCode } from "@mws-dashboard/ui/validation";
 import { revalidatePath } from "next/cache";
 import { cookies } from "next/headers";
 import { unstable_rethrow } from "next/navigation";
@@ -71,20 +72,68 @@ export async function load<T>(read: () => Promise<T>): Promise<Loaded<T>> {
   }
 }
 
+/** A problem with one form field, thrown from an action: it shows on that
+ * field (with repairs) instead of under the form. */
+export class FieldError extends Error {
+  constructor(
+    readonly field: string,
+    message: string,
+    readonly code: IssueCode = "server",
+  ) {
+    super(message);
+    this.name = "FieldError";
+  }
+}
+
+export interface ActOptions {
+  /** Paths to revalidate after success. */
+  revalidate?: string[];
+  /** Form field names by API member (`QueueName: "name"`) or by error code
+   * (`QueueNameExists: "name"`, `NoSuchEntity: "role"`), for errors that
+   * name a member the form calls differently, or name none. */
+  fields?: Record<string, string>;
+}
+
 /** Wrap a server action body: a returned string is the success message, an
- * exception becomes an error result, and `revalidate` paths are refreshed. */
+ * exception becomes an error result (with the fields it concerns, see
+ * `fieldIssues`), and `revalidate` paths are refreshed:
+ * `act(run, "/sqs")` or `act(run, { revalidate: ["/sqs"], fields: {...} })`. */
 export async function act(
   run: () => Promise<string | ActionResult>,
-  ...revalidate: string[]
+  ...revalidate: (string | ActOptions)[]
 ): Promise<ActionResult> {
+  const options = revalidate.filter((r): r is ActOptions => typeof r === "object");
+  const paths = [...revalidate.filter((r): r is string => typeof r === "string"), ...options.flatMap((o) => o.revalidate ?? [])];
+  const fields = Object.assign({}, ...options.map((o) => o.fields ?? {})) as Record<string, string>;
   try {
     const out = await run();
-    for (const path of revalidate) revalidatePath(path, "page");
+    for (const path of paths) revalidatePath(path, "page");
     return typeof out === "string" ? { ok: true, message: out } : out;
   } catch (e) {
     unstable_rethrow(e);
-    return { ok: false, message: describeError(e) };
+    const issues = fieldIssues(e, fields);
+    return { ok: false, message: describeError(e), ...(issues.length ? { issues } : {}) };
   }
+}
+
+/** The fields an error concerns: a `FieldError`, the members an AWS
+ * validation message names (with the constraint each broke, so the field
+ * can repair the value), an "already exists" error (lands on the form's
+ * `unique` field), or anything `fields` maps by member or error code. */
+export function fieldIssues(e: unknown, fields: Record<string, string> = {}): FieldIssue[] {
+  if (e instanceof FieldError) return [{ field: e.field, code: e.code, message: e.message }];
+  if (!(e instanceof Error)) return [];
+  const byMember = (member: string) => {
+    const path = memberPath(member).join(".");
+    const key = Object.keys(fields).find((k) => memberPath(k).join(".") === path);
+    return key ? fields[key] : undefined;
+  };
+  const parsed = parseServerIssues(e.message).map((i) => ({ ...i, field: i.member ? byMember(i.member) : undefined }));
+  if (parsed.length) return parsed;
+  const field = fields[e.name];
+  if (CONFLICT.test(e.name)) return [{ field, code: "taken", message: "Already exists" }];
+  if (field) return [{ field, code: /NotFound|NoSuch/i.test(e.name) ? "missing" : "server", message: e.message || e.name }];
+  return [];
 }
 
 export function text(form: FormData, name: string): string {
@@ -94,11 +143,10 @@ export function text(form: FormData, name: string): string {
 
 export function required(form: FormData, name: string, label = name): string {
   const value = text(form, name);
-  if (!value) throw new Error(`${label} is required`);
+  if (!value) throw new FieldError(name, `${label} is required`, "required");
   return value;
 }
 
-/** Information for the shared frame: endpoint, region and who we are. */
 export async function frameInfo(): Promise<FrameInfo> {
   const r = await region();
   try {

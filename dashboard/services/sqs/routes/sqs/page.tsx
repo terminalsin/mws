@@ -1,6 +1,7 @@
 import { ago, load } from "@mws-dashboard/aws";
-import { ActionForm, AwsIcon, Curated, Empty, ErrorNotice, Field, Page, Pill, Sheet } from "@mws-dashboard/ui";
+import { ActionForm, AwsIcon, Curated, Empty, ErrorNotice, Field, Page, Pill, Sheet, type Rule } from "@mws-dashboard/ui";
 import { ArrowRight } from "lucide-react";
+import { CreateQueue as CreateQueueRules } from "@mws-dashboard/ui/model/sqs";
 import type { Metadata } from "next";
 
 import { ICONS, isDlq, queues, type QueueInfo } from "../../lib/clients";
@@ -8,12 +9,18 @@ import { createQueue } from "./actions";
 
 export const metadata: Metadata = { title: "SQS" };
 
-function CreateQueue({ dlqs }: { dlqs: QueueInfo[] }) {
+// SQS's model leaves the queue name unconstrained; the rules are in its docs.
+const QUEUE_NAME: Rule = {
+  ...CreateQueueRules.QueueName,
+  pattern: "^[A-Za-z0-9_-]{1,80}$|^[A-Za-z0-9_-]{1,75}\\.fifo$", hint: "Letters, digits, - and _", generate: "name",
+};
+
+function CreateQueue({ dlqs, names }: { dlqs: QueueInfo[]; names: string[] }) {
   return (
     <Sheet title="New queue" label="Create queue" testId="create-queue">
       <ActionForm action={createQueue} submit="Create" testId="create-queue">
-        <Field label="Name">
-          <input name="name" required maxLength={80} pattern="[A-Za-z0-9_\-]+(\.fifo)?" autoFocus />
+        <Field label="Name" rule={QUEUE_NAME} taken={names} unique>
+          <input name="name" required maxLength={80} autoFocus />
         </Field>
         <div className="form-row">
           <label className="check">
@@ -61,11 +68,11 @@ export default async function Queues() {
     { id: "dlq", title: "Dead-letter queues", items: dlqs },
   ].filter((s) => s.items.length);
   return (
-    <Page title="Queues" actions={<CreateQueue dlqs={all} />}>
+    <Page title="Queues" actions={<CreateQueue dlqs={all} names={all.map((q) => q.name)} />}>
       <Curated
         label="Queues"
         sections={sections}
-        empty={<Empty icon={ICONS.queue} action={<CreateQueue dlqs={[]} />} />}
+        empty={<Empty icon={ICONS.queue} action={<CreateQueue dlqs={[]} names={[]} />} />}
         row={(q) => {
           const visible = Number(q.attrs.ApproximateNumberOfMessages ?? 0);
           const inflight = Number(q.attrs.ApproximateNumberOfMessagesNotVisible ?? 0);

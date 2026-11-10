@@ -9,6 +9,7 @@ import { createRequire } from "node:module";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 
+import { writeConstraints } from "./constraints.mjs";
 import { generate, watchServices } from "./services.mjs";
 
 const mode = process.argv[2] ?? "dev";
@@ -32,6 +33,7 @@ function run(args) {
 if (mode === "dev") {
   try {
     generate();
+    writeConstraints();
   } catch (e) {
     console.error(e.message);
     process.exit(1);

@@ -7,3 +7,5 @@ playwright-report/
 # Written by scripts/services.mjs
 apps/console/app/(services)/
 apps/console/lib/services.generated.ts
+# Written by scripts/constraints.mjs (from the Smithy models)
+packages/ui/src/model/

@@ -17,6 +17,8 @@ import { existsSync, mkdirSync, readFileSync, readdirSync, rmSync, statSync, wat
 import { dirname, join, relative, resolve, sep } from "node:path";
 import { fileURLToPath } from "node:url";
 
+import { writeConstraints } from "./constraints.mjs";
+
 const root = join(dirname(fileURLToPath(import.meta.url)), "..");
 const servicesDir = join(root, "services");
 const app = join(root, "apps/console/app");
@@ -189,7 +191,7 @@ const main = resolve(process.argv[1] ?? "") === fileURLToPath(import.meta.url);
 if (main) {
   try {
     const { services: n, routes } = generate();
-    console.log(`mounted ${n} services (${routes} route files)`);
+    console.log(`mounted ${n} services (${routes} route files), ${writeConstraints()} model constraint files`);
   } catch (e) {
     console.error(e.message);
     process.exit(1);
