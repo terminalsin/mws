@@ -343,6 +343,18 @@ function reshape(value: string, rule: Rule): Repair[] {
     if (literal.prefix && !v.startsWith(literal.prefix)) push(`Add ${literal.prefix}`, literal.prefix + v);
   }
   if (max !== undefined && length(value) > max) push(`Shorten to ${max} characters`, cut(value, max, sep));
+  // A required first character (most AWS identifiers start with a letter):
+  // drop whatever comes before it.
+  const lead = rule.pattern?.match(/^\^\(?\[((?:\\.|[^\]\\])+)\]/)?.[1];
+  const first = lead && !lead.startsWith("^") ? regex(`^[${lead}]$`) : null;
+  if (first) {
+    const label = /^(?:a-z|A-Z)+$/.test(lead!) ? "Start with a letter" : "Remove leading characters";
+    for (const v of [...seen]) {
+      const chars = [...v];
+      const i = chars.findIndex((c) => first.test(c));
+      if (i > 0) push(label, chars.slice(i).join(""));
+    }
+  }
   return out;
 }
 
