@@ -127,6 +127,13 @@ impl Status {
 }
 
 /// The address an instance target receives traffic on, and its state.
+/// Whether nothing runs the instance (the EC2 metadata backend launched
+/// it). Health checks against it could only fail, so a running instance
+/// counts as healthy, as ECS does for its tasks.
+pub(crate) fn runs_nothing(elb: &Elb, account: &str, region: &str, id: &str) -> bool {
+    elb.ec2().and_then(|e| e.instance_info(account, region, id)).is_some_and(|i| i.runs_nothing)
+}
+
 pub(crate) fn instance_state(
     elb: &Elb,
     account: &str,
@@ -190,6 +197,11 @@ pub(crate) fn classify(
     }
     if tg.tg.health_check_enabled == Some(false) {
         return Status::new("unavailable", "Target.HealthCheckDisabled", "Health checks are disabled");
+    }
+    // A running instance on the metadata backend: nothing serves the
+    // health check, so it counts as passing.
+    if tg.target_type() == "instance" && runs_nothing(elb, account, region, &target.id) {
+        return Status::healthy();
     }
     match elb.inner.health.get(&HealthKey::v2(tg.arn(), &target.id, target.port)) {
         None => Status::new("initial", "Elb.RegistrationInProgress", "Target registration is in progress"),
@@ -297,6 +309,7 @@ fn v2_probes(elb: &Elb) -> Vec<Probe> {
                 };
                 let address = match tg.target_type() {
                     "lambda" => None,
+                    "instance" if runs_nothing(elb, account, region, &target.id) => continue,
                     "instance" => match instance_state(elb, account, region, &target.id) {
                         Some((s, Some(ip), _)) if s == "running" => {
                             ip.parse().ok().map(|ip| SocketAddr::new(ip, port as u16))

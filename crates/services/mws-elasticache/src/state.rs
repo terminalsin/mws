@@ -110,6 +110,9 @@ pub struct Cluster {
     pub seed_snapshot: Option<String>,
     /// RDB files from S3 to seed from at creation.
     pub seed_rdb: Option<Vec<String>>,
+    /// When `ModifyCacheCluster` without `ApplyImmediately` first left
+    /// changes pending; they apply in the next maintenance window after it.
+    pub pending_since: Option<DateTime<Utc>>,
 }
 
 impl Cluster {

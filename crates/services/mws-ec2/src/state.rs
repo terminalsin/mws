@@ -28,6 +28,9 @@ pub struct RegionState {
     pub route_tables: BTreeMap<String, t::RouteTable>,
     pub internet_gateways: BTreeMap<String, t::InternetGateway>,
     pub nat_gateways: BTreeMap<String, t::NatGateway>,
+    /// When a `pending` NAT gateway becomes `available`, or a `deleting`
+    /// one `deleted` (emulated clock), by NAT gateway id.
+    pub nat_transitions: BTreeMap<String, DateTime<Utc>>,
     pub addresses: BTreeMap<String, t::Address>,
     pub network_interfaces: BTreeMap<String, t::NetworkInterface>,
     pub network_acls: BTreeMap<String, t::NetworkAcl>,
@@ -298,6 +301,35 @@ pub struct InstanceRecord {
     /// Bumped on every state change, so a background task finishing late
     /// does not overwrite a newer one.
     pub generation: u64,
+    /// A metadata-backend transition still under way: it finishes at its
+    /// time on the emulated clock.
+    pub settle: Option<PendingSettle>,
+}
+
+/// A transition that finishes at `at` (emulated clock), unless the
+/// instance changed since (`generation`).
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct PendingSettle {
+    pub at: DateTime<Utc>,
+    pub generation: u64,
+    pub outcome: SettleOutcome,
+}
+
+/// Where a transition ends.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub enum SettleOutcome {
+    /// Launched or started: `running`, with the backend's handle.
+    Running {
+        handle: Option<String>,
+    },
+    Stopped,
+    Terminated,
+    /// The launch failed: `terminated` with this `StateReason`.
+    LaunchFailed {
+        code: String,
+        message: String,
+        transition_reason: String,
+    },
 }
 
 impl State {

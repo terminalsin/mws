@@ -13,7 +13,7 @@ temp directory), and EC2 instances that run in Docker can mount it.
 | Feature | Status | Details |
 | --- | :---: | --- |
 | Create, describe, update, delete | ✅ | Creation tokens (`FileSystemAlreadyExists` names the existing id), `creating` for 2 seconds then `available` (`IncorrectFileSystemLifeCycleState` for mount targets and access points until then), `deleting` for 2 seconds then gone, `FileSystemInUse` while mount targets or a replication exist, marker pagination. Transitions follow the emulated clock, so `/_mws/clock` finishes them at once. The SDKs have no EFS waiters: poll `DescribeFileSystems` |
-| Performance and throughput modes | ✅ | `generalPurpose`/`maxIO`, `bursting`/`provisioned`/`elastic`, with AWS's combination checks. For 24 hours after switching to provisioned throughput or increasing it, changing the mode or decreasing it fails with `TooManyRequests` (HTTP 429) |
+| Performance and throughput modes | ✅ | `generalPurpose`/`maxIO`, `bursting`/`provisioned`/`elastic`, with AWS's combination checks. For 24 hours after a mode change or a decrease, changing the mode or decreasing provisioned throughput again fails (increases never wait) with `TooManyRequests` (HTTP 429) |
 | One Zone file systems | ✅ | Availability Zone names or ids, backups on by default |
 | Encryption | ✅ | `alias/aws/elasticfilesystem` or your KMS key (id, ARN, alias), checked to be an enabled symmetric key |
 | `SizeInBytes` | ✅ | Measured from the directory (4 KiB blocks plus the 6 KiB of an empty file system); all Standard storage |
@@ -26,7 +26,7 @@ temp directory), and EC2 instances that run in Docker can mount it.
 
 | Feature | Status | Details |
 | --- | :---: | --- |
-| Mount targets | ✅ | `creating` for 4 seconds (about 90 on AWS; the emulated clock finishes it), then `available`; mounts and security group calls wait for `available`. A requester-managed `efs` network interface in the EC2 subnet, IP from the subnet (or yours), default VPC group or up to five of yours; one per Availability Zone, all in one VPC (`MountTargetConflict`); IPv6 and dual stack when the subnet has an IPv6 block |
+| Mount targets | ✅ | `creating` for 4 seconds (about 90 on AWS; the emulated clock finishes it), then `available`; mounts and security group calls wait for `available`. `DeleteMountTarget` (only when `available`, else `IncorrectMountTargetState`) leaves it `deleting` for 4 seconds; its network interface, and `FileSystemInUse` on the file system, last until it is gone. A requester-managed `efs` network interface in the EC2 subnet, IP from the subnet (or yours), default VPC group or up to five of yours; one per Availability Zone, all in one VPC (`MountTargetConflict`); IPv6 and dual stack when the subnet has an IPv6 block |
 | Security groups | ✅ | `DescribeMountTargetSecurityGroups`, `ModifyMountTargetSecurityGroups`; EC2 refuses to delete groups or interfaces in use |
 | Access points | ✅ | Root directory with `CreationInfo`, POSIX user, client token idempotency, tags |
 

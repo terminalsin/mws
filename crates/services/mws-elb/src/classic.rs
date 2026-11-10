@@ -4,7 +4,7 @@
 //! plane: HTTP/HTTPS listeners run the layer 7 proxy, TCP/SSL listeners
 //! the layer 4 one.
 
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 use std::net::SocketAddr;
 use std::time::Duration;
 
@@ -374,11 +374,17 @@ impl Handler for ClassicElb {
                     policies: Vec::new(),
                     tags: tags.clone(),
                     instances: Vec::new(),
+                    network_interfaces: Default::default(),
                 },
             );
             Ok((Some(dns), true))
         })?;
         if created.1 {
+            if let Err(e) = self.sync_interfaces(ctx, &name) {
+                let removed = self.with_region(ctx, |r| r.classic.remove(&name));
+                self.delete_interfaces(ctx, removed.map(|c| c.network_interfaces).unwrap_or_default());
+                return Err(e);
+            }
             for l in &listeners {
                 if let Some(c) = &l.ssl_certificate_id {
                     self.set_certificate_use(ctx, &name, c, true);
@@ -414,6 +420,7 @@ impl Handler for ClassicElb {
         self.authorize(ctx, "DeleteLoadBalancer", &input.load_balancer_name)?;
         let removed = self.with_region(ctx, |r| r.classic.remove(&input.load_balancer_name));
         if let Some(lb) = removed {
+            self.delete_interfaces(ctx, lb.network_interfaces.clone());
             for l in lb.description.listener_descriptions.iter().flatten().filter_map(|d| d.listener.as_ref()) {
                 if let Some(c) = &l.ssl_certificate_id {
                     self.set_certificate_use(ctx, &input.load_balancer_name, c, false);
@@ -1012,8 +1019,10 @@ impl Handler for ClassicElb {
         self.with_region(ctx, |r| {
             let lb = find(r, &input.load_balancer_name)?;
             lb.description.security_groups = Some(input.security_groups.clone());
-            Ok(ct::ApplySecurityGroupsToLoadBalancerOutput { security_groups: Some(input.security_groups.clone()) })
-        })
+            Ok::<_, ServiceError>(())
+        })?;
+        self.sync_interfaces(ctx, &input.load_balancer_name)?;
+        Ok(ct::ApplySecurityGroupsToLoadBalancerOutput { security_groups: Some(input.security_groups.clone()) })
     }
 
     async fn attach_load_balancer_to_subnets(
@@ -1244,8 +1253,67 @@ impl ClassicElb {
                 lb.description.availability_zones =
                     Some(resolved.iter().map(|s| s.availability_zone.clone()).collect());
             }
-            Ok(ids.to_vec())
-        })
+            Ok::<_, ServiceError>(())
+        })?;
+        self.sync_interfaces(ctx, name)?;
+        Ok(ids.to_vec())
+    }
+
+    /// Give the load balancer a requester-managed (`amazon-elb`) network
+    /// interface described `ELB <name>` in each of its subnets, with its
+    /// security groups and a public address when internet-facing, as AWS
+    /// does for a load balancer in a VPC; drop those of subnets it left.
+    fn sync_interfaces(&self, ctx: &RequestContext, name: &str) -> Result<(), ServiceError> {
+        let Some(ec2) = self.elb.ec2() else { return Ok(()) };
+        let account = account_of(ctx);
+        let (subnets, groups, internet_facing, current) = self.with_region(ctx, |r| {
+            let lb = find(r, name)?;
+            Ok::<_, ServiceError>((
+                lb.description.subnets.clone().unwrap_or_default(),
+                lb.description.security_groups.clone().unwrap_or_default(),
+                lb.description.scheme.as_deref() == Some("internet-facing"),
+                lb.network_interfaces.clone(),
+            ))
+        })?;
+        let description = format!("ELB {name}");
+        let mut kept = BTreeMap::new();
+        let mut made = Vec::new();
+        for subnet in &subnets {
+            if let Some(eni) = current.get(subnet) {
+                ec2.set_task_interface_groups(ctx, &account, eni, &groups)?;
+                kept.insert(subnet.clone(), eni.clone());
+                continue;
+            }
+            match ec2.create_task_interface(ctx, &account, subnet, &groups, internet_facing, &description, "amazon-elb")
+            {
+                Ok(eni) => {
+                    made.push(eni.eni_id.clone());
+                    kept.insert(subnet.clone(), eni.eni_id);
+                }
+                Err(e) => {
+                    for id in made {
+                        ec2.delete_task_interface(ctx, &account, &id);
+                    }
+                    return Err(e);
+                }
+            }
+        }
+        let dropped: BTreeMap<String, String> = current.into_iter().filter(|(s, _)| !kept.contains_key(s)).collect();
+        self.delete_interfaces(ctx, dropped);
+        self.with_region(ctx, |r| {
+            if let Some(lb) = r.classic.get_mut(name) {
+                lb.network_interfaces = kept;
+            }
+        });
+        Ok(())
+    }
+
+    fn delete_interfaces(&self, ctx: &RequestContext, enis: BTreeMap<String, String>) {
+        let Some(ec2) = self.elb.ec2() else { return };
+        let account = account_of(ctx);
+        for id in enis.values() {
+            ec2.delete_task_interface(ctx, &account, id);
+        }
     }
 }
 
@@ -1298,6 +1366,10 @@ pub(crate) fn instance_health(
         if state != "running" {
             return ("OutOfService", "Instance", format!("Instance is in {state} state."));
         }
+        // Nothing runs the instance, so probes could only fail.
+        if crate::health::runs_nothing(elb, account, region, id) {
+            return ("InService", "N/A", "N/A".into());
+        }
     }
     match elb.inner.health.get(&HealthKey::classic(region_key, lb, id)) {
         Some(run) if run.healthy == Some(true) => ("InService", "N/A", "N/A".into()),
@@ -1324,6 +1396,9 @@ pub(crate) fn probes(elb: &Elb, st: &State) -> Vec<Probe> {
                 _ => ProbeKind::Tcp,
             };
             for id in &c.instances {
+                if crate::health::runs_nothing(elb, account, region, id) {
+                    continue;
+                }
                 let address = match crate::health::instance_state(elb, account, region, id) {
                     Some((s, Some(ip), _)) if s == "running" => ip.parse().ok().map(|ip| SocketAddr::new(ip, port)),
                     _ => continue,

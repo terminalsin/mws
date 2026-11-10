@@ -4,7 +4,7 @@
 use mws_core::{ConditionContext, RequestContext, ServiceError};
 
 use super::instance::{engine_of, resolve_version};
-use super::{authorize, cluster_not_found};
+use super::{authorize, authorize_create, cluster_not_found};
 use crate::generated::{errors, types as t};
 use crate::state::{ClusterRecord, GlobalRecord, State};
 use crate::util::{
@@ -99,7 +99,7 @@ impl Rds {
         let id = identifier("GlobalClusterIdentifier", &input.global_cluster_identifier, 255)?;
         let arn = global_arn(ctx, &id);
         let tags = tags_from(&input.tags)?;
-        authorize(ctx, "CreateGlobalCluster", &arn, request_tag_context(&tags))?;
+        authorize_create(ctx, "CreateGlobalCluster", &arn, &tags, request_tag_context(&tags))?;
         if self.global(ctx, &id).is_ok() {
             return Err(errors::global_cluster_already_exists_fault(format!("Global cluster {id} already exists.")));
         }

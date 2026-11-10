@@ -6,7 +6,7 @@
 use chrono::Duration;
 use mws_core::{ConditionContext, RequestContext, ServiceError};
 
-use super::authorize;
+use super::{authorize, authorize_create};
 use crate::catalog;
 use crate::generated::{errors, types as t};
 use crate::util::{arn, invalid_parameter, paginate, request_tag_context, stable_token, tags_from, Filters};
@@ -164,7 +164,7 @@ impl Rds {
         };
         let tags = tags_from(&input.tags)?;
         let riarn = arn(ctx, "ri", &id);
-        authorize(ctx, "PurchaseReservedDBInstancesOffering", &riarn, request_tag_context(&tags))?;
+        authorize_create(ctx, "PurchaseReservedDBInstancesOffering", &riarn, &tags, request_tag_context(&tags))?;
         let count = input.db_instance_count.unwrap_or(1);
         if count < 1 {
             return Err(invalid_parameter("DBInstanceCount must be at least 1."));

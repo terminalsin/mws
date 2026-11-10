@@ -61,6 +61,12 @@ async fn load_balancer_settings_and_errors() {
     let default_sg = lb.security_groups()[0].to_string();
     assert!(default_sg.starts_with("sg-"));
 
+    // A new load balancer is provisioning for a while (on the emulated
+    // clock), then active.
+    let d = elb.describe_load_balancers().names("settings").send().await.unwrap();
+    assert_eq!(d.load_balancers()[0].state().unwrap().code().unwrap().as_str(), "provisioning");
+    let (status, _) = mws.control("POST", "/_mws/clock", Some(r#"{"advanceSeconds": 10}"#)).await;
+    assert_eq!(status, 200);
     let d = elb.describe_load_balancers().names("settings").send().await.unwrap();
     assert_eq!(d.load_balancers()[0].state().unwrap().code().unwrap().as_str(), "active");
     let err = elb.describe_load_balancers().names("missing").send().await.unwrap_err().into_service_error();

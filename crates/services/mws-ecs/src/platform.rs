@@ -255,4 +255,17 @@ pub trait TaskPlatform: Send + Sync {
 
     /// Delete what [`TaskPlatform::create_express_ingress`] made.
     async fn delete_express_ingress(&self, _ctx: &RequestContext, _ingress: &ExpressIngress) {}
+
+    /// A task's `lastStatus` or `desiredStatus` changed: `detail` is the
+    /// task as `DescribeTasks` renders it, for an `ECS Task State Change`
+    /// event (EventBridge). Called with no ECS lock held.
+    fn task_state_change(
+        &self,
+        _ctx: &RequestContext,
+        _account: &str,
+        _task_arn: &str,
+        _detail: serde_json::Value,
+        _time: chrono::DateTime<chrono::Utc>,
+    ) {
+    }
 }

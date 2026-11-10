@@ -9,7 +9,9 @@ use chrono::Duration;
 use mws_core::{ConditionContext, RequestContext, ServiceError};
 
 use super::instance::engine_of;
-use super::{authorize, cluster_arn, cluster_not_found, db_arn, instance_not_found, invalid_cluster_state};
+use super::{
+    authorize, authorize_create, cluster_arn, cluster_not_found, db_arn, instance_not_found, invalid_cluster_state,
+};
 use crate::catalog;
 use crate::generated::{errors, types as t};
 use crate::util::{
@@ -101,7 +103,7 @@ impl Rds {
         }
         let tags = tags_from(&input.tags)?;
         let iarn = arn(ctx, "integration", &uuid::Uuid::new_v4().to_string());
-        authorize(ctx, "CreateIntegration", &iarn, request_tag_context(&tags))?;
+        authorize_create(ctx, "CreateIntegration", &iarn, &tags, request_tag_context(&tags))?;
         check_target(&input.target_arn)?;
         let (_, account, kind, source) = parse_arn(&input.source_arn)
             .ok_or_else(|| invalid_parameter(format!("The source ARN {} isn't valid.", input.source_arn)))?;
@@ -349,7 +351,7 @@ impl Rds {
         let id = format!("cr-{}", stable_token(&uuid::Uuid::new_v4().to_string(), 17));
         let tags = tags_from(&input.tags)?;
         let carn = arn(ctx, "capacity-reservation", &id);
-        authorize(ctx, "CreateDBCapacityReservation", &carn, request_tag_context(&tags))?;
+        authorize_create(ctx, "CreateDBCapacityReservation", &carn, &tags, request_tag_context(&tags))?;
         let engine = engine_of(&input.engine)?;
         if !catalog::CLASSES.iter().any(|c| c.0 == input.db_instance_class)
             || input.db_instance_class == "db.serverless"
@@ -890,7 +892,7 @@ impl Rds {
         }
         let tags = tags_from(&input.tags)?;
         let cev_arn = arn(ctx, "cev", &format!("{engine}/{version}/{}", uuid::Uuid::new_v4()));
-        authorize(ctx, "CreateCustomDBEngineVersion", &cev_arn, request_tag_context(&tags))?;
+        authorize_create(ctx, "CreateCustomDBEngineVersion", &cev_arn, &tags, request_tag_context(&tags))?;
         let kms = if oracle {
             if input.database_installation_files_s3_bucket_name.is_none()
                 && input.source_custom_db_engine_version_identifier.is_none()

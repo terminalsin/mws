@@ -3,7 +3,7 @@
 
 use mws_core::{ConditionContext, RequestContext, ServiceError};
 
-use super::authorize;
+use super::{authorize, authorize_create};
 use crate::catalog::{self, Param};
 use crate::generated::{errors, types as t};
 use crate::state::{ParamGroup, RegionState};
@@ -138,7 +138,7 @@ impl Rds {
         }
         let tags = tags_from(tags)?;
         let action = if cluster { "CreateDBClusterParameterGroup" } else { "CreateDBParameterGroup" };
-        authorize(ctx, action, &arn(ctx, kind(cluster), &name), request_tag_context(&tags))?;
+        authorize_create(ctx, action, &arn(ctx, kind(cluster), &name), &tags, request_tag_context(&tags))?;
         let family = family.to_ascii_lowercase();
         if catalog::family(&family).is_none() {
             return Err(invalid_parameter(format!(

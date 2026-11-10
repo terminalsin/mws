@@ -16,8 +16,23 @@ use crate::{account_of, Ec2};
 
 pub const DEFAULT_VPC_CIDR: &str = "172.31.0.0/16";
 
-/// Deleted NAT gateways stay visible for an hour, as in EC2.
+/// Deleted NAT gateways stay visible for an hour, as in EC2. `pending`
+/// and `deleting` ones finish their transition first.
 pub fn expire_deleted(r: &mut RegionState, now: DateTime<Utc>) {
+    let due: Vec<(String, DateTime<Utc>)> =
+        r.nat_transitions.iter().filter(|(_, at)| **at <= now).map(|(id, at)| (id.clone(), *at)).collect();
+    for (id, at) in due {
+        r.nat_transitions.remove(&id);
+        let Some(n) = r.nat_gateways.get_mut(&id) else { continue };
+        match n.state.as_deref() {
+            Some("pending") => n.state = Some("available".into()),
+            Some("deleting") => {
+                n.state = Some("deleted".into());
+                n.delete_time = Some(at);
+            }
+            _ => {}
+        }
+    }
     r.nat_gateways.retain(|_, n| {
         n.state.as_deref() != Some("deleted") || n.delete_time.is_none_or(|t| now - t < chrono::Duration::hours(1))
     });
@@ -1198,6 +1213,8 @@ impl Ec2 {
             input.dry_run,
         )?;
         let connectivity = input.connectivity_type.clone().unwrap_or_else(|| "public".into());
+        // `pending` for the transition delay, then `available`.
+        let pending_for = chrono::Duration::milliseconds(self.transition_delay().as_millis() as i64);
         let now = ctx.received_at;
         let region = ctx.region.clone();
         let limit = self.quota(&account, &region, crate::quotas::NAT_GATEWAYS_PER_AZ, now);
@@ -1277,7 +1294,7 @@ impl Ec2 {
                 subnet_id: Some(subnet_id.clone()),
                 vpc_id: subnet.vpc_id.clone(),
                 create_time: Some(now),
-                state: Some("available".into()),
+                state: Some(if pending_for.is_zero() { "available" } else { "pending" }.into()),
                 connectivity_type: Some(connectivity.clone()),
                 availability_mode: Some("zonal".into()),
                 nat_gateway_addresses: Some(vec![t::NatGatewayAddress {
@@ -1294,6 +1311,9 @@ impl Ec2 {
                 ..Default::default()
             };
             r.nat_gateways.insert(nat_id.clone(), nat.clone());
+            if !pending_for.is_zero() {
+                r.nat_transitions.insert(nat_id.clone(), now + pending_for);
+            }
             idempotency::remember(r, "CreateNatGateway", token, &fp, &nat_id);
             let mut shown = nat;
             shown.state = Some("pending".into());
@@ -1315,13 +1335,22 @@ impl Ec2 {
             input.dry_run,
         )?;
         let now = ctx.received_at;
+        let transition_ms = self.transition_delay().as_millis() as i64;
         self.with_region(ctx, |r| {
             let nat = r
                 .nat_gateways
                 .get_mut(&input.nat_gateway_id)
                 .ok_or_else(|| Kind::NatGateway.not_found(&input.nat_gateway_id))?;
-            nat.state = Some("deleted".into());
-            nat.delete_time = Some(now);
+            // `deleting` for a moment, then `deleted` (see `expire_deleted`).
+            let deleting_for = chrono::Duration::milliseconds(transition_ms);
+            if deleting_for.is_zero() {
+                nat.state = Some("deleted".into());
+                nat.delete_time = Some(now);
+            } else if nat.state.as_deref() != Some("deleted") {
+                nat.state = Some("deleting".into());
+                r.nat_transitions.insert(input.nat_gateway_id.clone(), now + deleting_for);
+            }
+            let nat = r.nat_gateways.get(&input.nat_gateway_id).expect("found above");
             let addrs = nat.nat_gateway_addresses.clone().unwrap_or_default();
             for a in &addrs {
                 if let Some(eni) = &a.network_interface_id {

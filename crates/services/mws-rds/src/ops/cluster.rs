@@ -6,8 +6,8 @@ use mws_core::{ConditionContext, RequestContext, ServiceError};
 
 use super::instance::{certificate, check_class, check_log_types, engine_of, resolve_version, NewInstance};
 use super::{
-    authorize, check_db_name, check_password, check_username, cluster_arn, cluster_host, cluster_not_found, cond,
-    db_arn, invalid_cluster_state,
+    authorize, authorize_create, check_db_name, check_password, check_username, cluster_arn, cluster_host,
+    cluster_not_found, cond, db_arn, invalid_cluster_state,
 };
 use crate::catalog;
 use crate::generated::{errors, types as t};
@@ -313,10 +313,7 @@ impl Rds {
             ("rds:StorageEncrypted", Some(input.storage_encrypted.unwrap_or(false).to_string())),
             ("rds:ManageMasterUserPassword", input.manage_master_user_password.map(|b| b.to_string())),
         ]));
-        authorize(ctx, "CreateDBCluster", &arn, c.clone())?;
-        if !tags.is_empty() {
-            authorize(ctx, "AddTagsToResource", &arn, c)?;
-        }
+        authorize_create(ctx, "CreateDBCluster", &arn, &tags, c)?;
         if self.with_region(ctx, |r| r.clusters.contains_key(&id)) {
             return Err(errors::db_cluster_already_exists_fault("DB Cluster already exists"));
         }

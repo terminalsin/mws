@@ -119,6 +119,8 @@ async fn load_balancers_own_network_interfaces() {
     assert_eq!(nlb_enis.len(), 1);
     assert!(description(&nlb_arn).starts_with("ELB net/inner/"));
     assert!(nlb_enis[0].association().is_none());
+    // Created without security groups, its interfaces have none.
+    assert!(nlb_enis[0].groups().is_empty(), "{:?}", nlb_enis[0].groups());
 
     // Deleting the load balancers deletes their interfaces.
     elb.delete_load_balancer().load_balancer_arn(&lb_arn).send().await.unwrap();
@@ -126,6 +128,70 @@ async fn load_balancers_own_network_interfaces() {
     assert!(interfaces(&ec2, &desc).await.is_empty());
     assert!(interfaces(&ec2, &description(&nlb_arn)).await.is_empty());
     ec2.delete_security_group().group_id(&sg2).send().await.unwrap();
+}
+
+#[tokio::test]
+async fn network_load_balancer_subnet_mappings_pick_the_address_and_elastic_ip() {
+    use aws_sdk_elasticloadbalancingv2::types::SubnetMapping;
+    let mws = Mws::start().await;
+    let config = mws.root_sdk_config().await;
+    let ec2 = aws_sdk_ec2::Client::new(&config);
+    let elb = aws_sdk_elasticloadbalancingv2::Client::new(&config);
+    let (_, subnets) = default_network(&mws).await;
+    let subnet = ec2.describe_subnets().subnet_ids(&subnets[0]).send().await.unwrap();
+    let cidr = subnet.subnets()[0].cidr_block().unwrap().to_string();
+    let base: std::net::Ipv4Addr = cidr.split('/').next().unwrap().parse().unwrap();
+    let ip = std::net::Ipv4Addr::from(u32::from(base) + 10).to_string();
+    let eip = ec2.allocate_address().send().await.unwrap();
+    let alloc = eip.allocation_id().unwrap().to_string();
+
+    // An unknown Elastic IP is refused.
+    let err = elb
+        .create_load_balancer()
+        .name("pinned")
+        .r#type(LoadBalancerTypeEnum::Network)
+        .subnet_mappings(
+            SubnetMapping::builder().subnet_id(&subnets[0]).allocation_id("eipalloc-0123456789abcdef0").build(),
+        )
+        .send()
+        .await
+        .unwrap_err();
+    assert_eq!(code(&err), "AllocationIdNotFound");
+
+    let lb = elb
+        .create_load_balancer()
+        .name("pinned")
+        .r#type(LoadBalancerTypeEnum::Network)
+        .subnet_mappings(
+            SubnetMapping::builder().subnet_id(&subnets[0]).private_ipv4_address(&ip).allocation_id(&alloc).build(),
+        )
+        .send()
+        .await
+        .unwrap();
+    let lb_arn = lb.load_balancers()[0].load_balancer_arn().unwrap().to_string();
+    let enis = interfaces(&ec2, &description(&lb_arn)).await;
+    assert_eq!(enis.len(), 1);
+    assert_eq!(enis[0].private_ip_address(), Some(ip.as_str()));
+    assert_eq!(enis[0].association().and_then(|a| a.allocation_id()), Some(alloc.as_str()));
+    assert_eq!(enis[0].association().and_then(|a| a.public_ip()), eip.public_ip());
+    let a = ec2.describe_addresses().allocation_ids(&alloc).send().await.unwrap();
+    let a = &a.addresses()[0];
+    assert_eq!(a.network_interface_id(), enis[0].network_interface_id());
+    assert_eq!(a.private_ip_address(), Some(ip.as_str()));
+    assert!(a.association_id().is_some());
+
+    // The address is taken: an instance cannot have it.
+    let d = elb.describe_load_balancers().load_balancer_arns(&lb_arn).send().await.unwrap();
+    let addr = &d.load_balancers()[0].availability_zones()[0].load_balancer_addresses()[0];
+    assert_eq!(addr.ip_address(), eip.public_ip());
+    let err = ec2.create_network_interface().subnet_id(&subnets[0]).private_ip_address(&ip).send().await.unwrap_err();
+    assert_eq!(aws_sdk_ec2::error::ProvideErrorMetadata::code(&err), Some("InvalidIPAddress.InUse"));
+
+    // Deleting the load balancer frees the Elastic IP.
+    elb.delete_load_balancer().load_balancer_arn(&lb_arn).send().await.unwrap();
+    let a = ec2.describe_addresses().allocation_ids(&alloc).send().await.unwrap();
+    assert!(a.addresses()[0].association_id().is_none());
+    ec2.release_address().allocation_id(&alloc).send().await.unwrap();
 }
 
 #[tokio::test]

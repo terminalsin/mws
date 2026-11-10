@@ -112,14 +112,22 @@ pub struct State {
 }
 
 impl State {
-    /// Record a change and return its `ChangeInfo` (PENDING, as Route 53
-    /// reports right after a change; `GetChange` then reports INSYNC).
-    pub fn new_change(&mut self, comment: Option<String>) -> types::ChangeInfo {
+    /// Record a change submitted at `now` and return its `ChangeInfo`
+    /// (PENDING, as Route 53 reports right after a change; `GetChange`
+    /// reports INSYNC once it has propagated, see [`change_propagation`]).
+    pub fn new_change(&mut self, comment: Option<String>, now: chrono::DateTime<Utc>) -> types::ChangeInfo {
         let id = crate::new_id('C');
-        let submitted_at = Utc::now();
+        let submitted_at = now;
         self.changes.insert(id.clone(), Change { submitted_at, comment: comment.clone() });
         types::ChangeInfo { id: format!("/change/{id}"), status: "PENDING".into(), submitted_at, comment }
     }
+}
+
+/// How long a change is PENDING before it is INSYNC (AWS: usually
+/// within 60 seconds). Advancing the emulated clock finishes it, as does
+/// `MWS_ASYNC_DELAY_MS=0`.
+pub fn change_propagation() -> chrono::Duration {
+    chrono::Duration::milliseconds(mws_core::settle::window_ms(1_000))
 }
 
 mod records_as_list {

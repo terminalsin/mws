@@ -284,13 +284,24 @@ impl Efs {
         let mt = self.mount_target(ctx, &input.mount_target_id)?;
         let fs = self.file_system(ctx, &mt.description.file_system_id)?;
         self.authorize_fs(ctx, "DeleteMountTarget", &fs, ConditionContext::new())?;
-        {
-            let mut st = self.lock();
-            st.region(&account, &ctx.region).mount_targets.remove(&input.mount_target_id);
+        // The mount target is `deleting` for a while; its interface goes
+        // with it when it is gone.
+        let mut st = self.lock();
+        let Some(m) = st.region(&account, &ctx.region).mount_targets.get_mut(&input.mount_target_id) else {
+            return Ok(());
+        };
+        if m.description.life_cycle_state != "available" {
+            return Err(err(
+                "IncorrectMountTargetState",
+                409,
+                format!(
+                    "Mount target '{}' is in the '{}' state.",
+                    m.description.mount_target_id, m.description.life_cycle_state
+                ),
+            ));
         }
-        if let Some(eni) = &mt.description.network_interface_id {
-            self.ec2().delete_service_interface(ctx, &account, eni);
-        }
+        m.description.life_cycle_state = "deleting".into();
+        m.transition_ends = Some(ctx.received_at + crate::state::mount_target_delete());
         Ok(())
     }
 }

@@ -53,6 +53,9 @@ pub struct InstanceInfo {
     pub availability_zone: Option<String>,
     pub private_ip: Option<String>,
     pub ipv6_addresses: Vec<String>,
+    /// Whether nothing runs the instance (the metadata backend launched
+    /// it), so nothing can answer health checks or traffic.
+    pub runs_nothing: bool,
 }
 
 impl Ec2 {
@@ -174,6 +177,11 @@ impl Ec2 {
                 .flat_map(|n| n.ipv6_addresses.iter().flatten())
                 .filter_map(|a| a.ipv6_address.clone())
                 .collect(),
+            runs_nothing: match rec.handle.as_deref() {
+                // The metadata backend hands out instance ids as handles.
+                Some(h) => h.starts_with("i-"),
+                None => self.backend_name() == "metadata",
+            },
         })
     }
 }

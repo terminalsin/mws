@@ -271,8 +271,8 @@ impl Efs {
         let old_mibps = fs.description.provisioned_throughput_in_mibps;
         let changed = mode != current || mibps != old_mibps;
         // Changing the mode, or decreasing provisioned throughput, must
-        // wait 24 hours after switching to provisioned throughput or
-        // increasing it.
+        // wait 24 hours after the last mode change or decrease; increases
+        // are allowed at any time.
         let decrease = mode == "provisioned" && current == "provisioned" && mibps < old_mibps;
         if mode != current || decrease {
             if let Some(at) = fs.throughput_restricted_at {
@@ -289,7 +289,7 @@ impl Efs {
                 }
             }
         }
-        let restricts = mode == "provisioned" && (current != "provisioned" || mibps > old_mibps);
+        let restricts = mode != current || decrease;
         let mut st = self.lock();
         let f = st.region(&account, &ctx.region).file_systems.get_mut(fs.id()).ok_or_else(|| fs_not_found(fs.id()))?;
         if changed {

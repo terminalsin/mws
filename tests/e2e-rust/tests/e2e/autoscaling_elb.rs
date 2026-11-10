@@ -88,17 +88,25 @@ async fn ec2_state(ec2: &aws_sdk_ec2::Client, id: &str) -> Option<InstanceStateN
     d.reservations().first().and_then(|r| r.instances().first()).and_then(|i| i.state()).and_then(|s| s.name().cloned())
 }
 
-#[tokio::test]
-async fn elb_health_checks_replace_instances_after_draining() {
-    let mws = Mws::start().await;
+struct Checked {
+    asg: Client,
+    ec2: aws_sdk_ec2::Client,
+    elb: aws_sdk_elasticloadbalancingv2::Client,
+    tg_arn: String,
+    first: String,
+}
+
+/// An ALB target group checked over HTTP on port 80 and an Auto Scaling
+/// group with `HealthCheckType=ELB` and no grace period, with one
+/// instance in service.
+async fn checked_group(mws: &Mws) -> Checked {
     let config = mws.root_sdk_config().await;
     let asg = Client::new(&config);
     let ec2 = aws_sdk_ec2::Client::new(&config);
     let elb = aws_sdk_elasticloadbalancingv2::Client::new(&config);
-    let (vpc, subnets) = crate::elbv2::default_network(&mws).await;
+    let (vpc, subnets) = crate::elbv2::default_network(mws).await;
     let lb = elb.create_load_balancer().name("front").set_subnets(Some(subnets.clone())).send().await.unwrap();
     let lb_arn = lb.load_balancers()[0].load_balancer_arn().unwrap().to_string();
-    // Nothing listens on the instances, so their health checks fail.
     let tg = elb
         .create_target_group()
         .name("app")
@@ -144,6 +152,48 @@ async fn elb_health_checks_replace_instances_after_draining() {
         tokio::time::sleep(Duration::from_millis(250)).await;
     }
     let first = first.expect("an InService instance");
+    Checked { asg, ec2, elb, tg_arn, first }
+}
+
+/// Nothing runs the instances on the metadata backend, so their health
+/// checks could only fail: running instances count as healthy and the
+/// group does not churn.
+#[tokio::test]
+async fn elb_health_checks_pass_on_the_metadata_backend() {
+    let mws =
+        Mws::start_with(mws::Config { ec2_backend: mws_ec2::BackendChoice::Metadata, ..Default::default() }).await;
+    let Checked { asg, elb, tg_arn, first, .. } = checked_group(&mws).await;
+    wait_for("the target to turn healthy", 30, || {
+        let elb = elb.clone();
+        let (tg_arn, first) = (tg_arn.clone(), first.clone());
+        async move {
+            let h = elb.describe_target_health().target_group_arn(&tg_arn).send().await.unwrap();
+            h.target_health_descriptions().iter().any(|d| {
+                d.target().and_then(|t| t.id()) == Some(first.as_str())
+                    && d.target_health().and_then(|t| t.state()) == Some(&TargetHealthStateEnum::Healthy)
+            })
+        }
+    })
+    .await;
+    let (status, _) = mws.control("POST", "/_mws/clock", Some(r#"{"advanceSeconds": 600}"#)).await;
+    assert_eq!(status, 200);
+    tokio::time::sleep(Duration::from_secs(12)).await;
+    let m = members(&asg, "checked").await;
+    assert_eq!(m, vec![(first.clone(), "InService".to_string(), "Healthy".to_string())]);
+    let acts = asg.describe_scaling_activities().auto_scaling_group_name("checked").send().await.unwrap();
+    assert!(
+        !acts.activities().iter().any(|a| a.description().is_some_and(|d| d.starts_with("Terminating"))),
+        "{:#?}",
+        acts.activities().iter().map(|a| a.description()).collect::<Vec<_>>()
+    );
+}
+
+/// A container that serves nothing on port 80 fails its checks, and Auto
+/// Scaling replaces it once deregistration is over.
+#[tokio::test]
+async fn elb_health_checks_replace_instances_after_draining_docker() {
+    let mws = Mws::start_with(mws::Config { ec2_backend: mws_ec2::BackendChoice::Docker, ..Default::default() }).await;
+    let Checked { asg, ec2, elb, tg_arn, first } = checked_group(&mws).await;
 
     // The target fails its checks; Auto Scaling marks the instance
     // unhealthy and starts replacing it.
