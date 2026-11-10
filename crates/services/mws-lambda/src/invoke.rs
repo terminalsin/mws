@@ -113,7 +113,7 @@ impl Lambda {
             }
         }
         let architecture = architecture(config.architectures.as_deref());
-        let managed = match &container {
+        let mut managed = match &container {
             Some(_) => None,
             None => {
                 let runtime = config.runtime.as_deref().unwrap_or_default();
@@ -126,6 +126,12 @@ impl Lambda {
                 }
             }
         };
+        if let Some(m) = managed.as_mut() {
+            if let Err(e) = self.inner.runtimes.package(m, &code_dir, &layer_dirs).await {
+                self.publish_invocation_metrics(ctx, f, crate::metrics::Result::Failed);
+                return Err(launch_error(e));
+            }
+        }
         let kind = match (&container, &managed) {
             (Some(_), _) => EnvKind::Image,
             (None, Some(_)) => EnvKind::BaseImage,

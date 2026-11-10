@@ -29,6 +29,26 @@ The binary is a single self-contained executable. `cargo build --release -p mws`
 leaves it at `target/release/mws` if you want to copy it elsewhere, for
 example into a CI image.
 
+### Running MWS in a container
+
+MWS can itself run in a container that drives the host's Docker daemon, for
+Lambda functions, EC2 instances and the other Docker-backed services. Give it
+the Docker socket and CLI, and publish the same port inside and out, because
+functions use the address your SDK called MWS at as their `AWS_ENDPOINT_URL`:
+
+```sh
+docker run -d --name mws \
+  -v /var/run/docker.sock:/var/run/docker.sock \
+  -p 4566:4566 \
+  my-mws-image   # target/release/mws plus the docker CLI on PATH
+```
+
+MWS notices it runs in a container: Lambda containers join its network
+namespace (`--network container:<MWS's container>`), so they reach its Runtime
+API and endpoint on loopback, and each function's code and layers are copied
+into an image of their own (`mws-lambda-package:<hash>`) instead of being
+bind-mounted from a path the host cannot see.
+
 ## Credentials
 
 MWS starts with one AWS account (`123456789012` unless `MWS_ACCOUNT_ID` says
