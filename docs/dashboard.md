@@ -124,7 +124,9 @@ Fields validate in place, and say how to fix what they reject. `Field`
    (prefixes AWS keeps, offered without them),
    `known` (values the field usually points at), `generate` (`name`,
    `token`, `password`, `uuid`, or a prefix/suffix), `arn` (the ARN template
-   a bare name expands to) and `hint` (a readable pattern message). A
+   a bare name expands to), `cidr` (allowed netmasks, the blocks a CIDR must
+   fit inside and the ones it must not overlap; repairs offer free blocks, as
+   VPC's subnet form does) and `hint` (a readable pattern message). A
    rule's `unit` (`seconds` or `bytes`) converts "5m" or "256 KiB" and
    shows ranges as durations or sizes.
 

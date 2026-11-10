@@ -370,3 +370,19 @@ test("hierarchical names are tidied, also after dropping a reserved prefix", () 
   assert.equal(check("/aws/app/db host", rule)?.code, "reserved");
   assert.deepEqual(values(rule, "/aws/app/db host"), ["/app/db-host"]);
 });
+
+test("CIDR rules: netmask range, inside the VPC, clear of siblings", () => {
+  const vpc: Rule = { format: "cidr", cidr: { prefix: [16, 28] } };
+  assert.equal(check("10.0.0.0/8", vpc)?.message, "Netmask /16 to /28");
+  assert.deepEqual(values(vpc, "10.0.0.0/8"), ["10.0.0.0/16"]);
+  assert.deepEqual(values(vpc, "10.9.9.9"), ["10.9.0.0/16", "10.9.9.0/24"]);
+
+  const subnet: Rule = { format: "cidr", cidr: { prefix: [16, 28], within: ["10.0.0.0/16"], avoid: ["10.0.0.0/20", "10.0.32.0/24"] } };
+  assert.equal(check("10.0.16.0/20", subnet), null);
+  assert.equal(check("10.1.0.0/20", subnet)?.message, "Outside 10.0.0.0/16");
+  assert.deepEqual(values(subnet, "10.1.0.0/20"), ["10.0.16.0/20", "10.0.48.0/20"]);
+  assert.equal(check("10.0.0.0/24", subnet)?.message, "Overlaps 10.0.0.0/20");
+  assert.deepEqual(values(subnet, "10.0.0.0/24"), ["10.0.16.0/24", "10.0.17.0/24"]);
+  // A full VPC: the next smaller size that still fits.
+  assert.deepEqual(values({ format: "cidr", cidr: { prefix: [16, 28], within: ["10.0.0.0/16"], avoid: ["10.0.0.0/17", "10.0.128.0/18"] } }, "10.0.0.0/17"), ["10.0.192.0/18"]);
+});
