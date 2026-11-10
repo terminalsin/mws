@@ -2,14 +2,27 @@ import { DescribeAcceleratorCommand, ListEndpointGroupsCommand, ListListenersCom
 import { load } from "@mws-dashboard/aws";
 import { ActionForm, AwsIcon, CodeBlock, ErrorNotice, Field, List, Page, Pill, Section, Sheet, Specs, Status } from "@mws-dashboard/ui";
 import { Globe, MapPin, Pause, Play, Plus, Trash2 } from "lucide-react";
+import { CreateEndpointGroup } from "@mws-dashboard/ui/model/global-accelerator";
 import type { Metadata } from "next";
 
-import { ICONS, ga } from "../../../lib/clients";
+import { ListenerFields } from "../../../components/listener-fields.tsx";
+import { ICONS, endpointCandidates, ga } from "../../../lib/clients";
 import { addEndpointGroup, addListener, deleteAccelerator, deleteEndpointGroup, deleteListener, setEnabled } from "../actions";
 
 export const metadata: Metadata = { title: "Accelerator" };
 
 type Props = { searchParams: Promise<{ arn?: string }> };
+
+// Ports are 1-65535; several ranges are comma-separated.
+const PORTS = { required: true, format: "portList" as const };
+
+const ENDPOINT = {
+  ...CreateEndpointGroup.EndpointConfigurations.item!.fields!.EndpointId,
+  pattern: "^(arn:aws:elasticloadbalancing:[a-z0-9-]+:\\d{12}:loadbalancer/(app|net)/.+|i-[0-9a-f]{8,17}|eipalloc-[0-9a-f]{8,17})$",
+  hint: "A load balancer ARN, i-… or eipalloc-…",
+};
+
+const range = (p: { FromPort?: number; ToPort?: number }) => (p.FromPort === p.ToPort ? `${p.FromPort}` : `${p.FromPort}-${p.ToPort}`);
 
 const REGIONS = ["us-east-1", "us-east-2", "us-west-1", "us-west-2", "eu-west-1", "eu-central-1", "ap-southeast-1", "ap-northeast-1"];
 
@@ -23,7 +36,7 @@ export default async function Accelerator({ searchParams }: Props) {
       client.send(new ListListenersCommand({ AcceleratorArn: arn })).then((r) => r.Listeners ?? []),
     ]);
     const groups = await Promise.all(listeners.map((l) => client.send(new ListEndpointGroupsCommand({ ListenerArn: l.ListenerArn })).then((r) => r.EndpointGroups ?? [])));
-    return { a, listeners, groups };
+    return { a, listeners, groups, endpoints: await endpointCandidates() };
   });
   if (!data.ok) {
     return (
@@ -32,7 +45,8 @@ export default async function Accelerator({ searchParams }: Props) {
       </Page>
     );
   }
-  const { a, listeners, groups } = data.value;
+  const { a, listeners, groups, endpoints } = data.value;
+  const used = (protocol: string) => listeners.filter((l) => l.Protocol === protocol).flatMap((l) => (l.PortRanges ?? []).map(range));
   return (
     <Page
       title={a.Name}
@@ -43,17 +57,7 @@ export default async function Accelerator({ searchParams }: Props) {
         <>
           <Sheet title="Add listener" label="Add listener" icon={<Plus size={16} />} testId="add-ga-listener">
             <ActionForm action={addListener.bind(null, arn)} submit="Add listener" testId="add-ga-listener">
-              <div className="form-row">
-                <Field label="Ports">
-                  <input name="ports" required defaultValue="80" placeholder="80 or 8000-8100" />
-                </Field>
-                <Field label="Protocol">
-                  <select name="protocol" defaultValue="TCP">
-                    <option>TCP</option>
-                    <option>UDP</option>
-                  </select>
-                </Field>
-              </div>
+              <ListenerFields rule={PORTS} used={{ TCP: used("TCP"), UDP: used("UDP") }} />
             </ActionForm>
           </Sheet>
           {a.Enabled ? (
@@ -77,22 +81,28 @@ export default async function Accelerator({ searchParams }: Props) {
       {listeners.map((l, i) => (
         <Section
           key={l.ListenerArn}
-          title={`${l.Protocol} ${l.PortRanges?.map((p) => (p.FromPort === p.ToPort ? p.FromPort : `${p.FromPort}-${p.ToPort}`)).join(", ")}`}
+          title={`${l.Protocol} ${l.PortRanges?.map(range).join(", ")}`}
           plain
           actions={
             <>
               <Sheet title="Add endpoint group" label={`Add endpoint group to ${l.Protocol} listener`} icon={<Plus size={16} />} testId={`add-endpoint-group-${i}`}>
                 <ActionForm action={addEndpointGroup.bind(null, l.ListenerArn!)} submit="Add endpoint group" testId={`add-endpoint-group-${i}`}>
-                  <Field label="Region">
-                    <select name="region" defaultValue="us-east-1">
-                      {REGIONS.map((r) => (
+                  <Field label="Region" rule={CreateEndpointGroup.EndpointGroupRegion}>
+                    <select name="region">
+                      {/* A listener has one endpoint group per Region. */}
+                      {REGIONS.filter((r) => !groups[i].some((g) => g.EndpointGroupRegion === r)).map((r) => (
                         <option key={r}>{r}</option>
                       ))}
                     </select>
                   </Field>
-                  <Field label="Endpoint (load balancer ARN, instance id or EIP allocation)">
-                    <input name="endpoint" />
+                  <Field label="Endpoint" rule={ENDPOINT} known={endpoints} member="EndpointId">
+                    <input name="endpoint" list={`ga-endpoints-${i}`} placeholder="Load balancer, instance or Elastic IP" />
                   </Field>
+                  <datalist id={`ga-endpoints-${i}`}>
+                    {endpoints.map((e) => (
+                      <option key={e} value={e} />
+                    ))}
+                  </datalist>
                 </ActionForm>
               </Sheet>
               <ActionForm action={deleteListener.bind(null, l.ListenerArn!)} submit="Delete listener" icon={<Trash2 size={16} />} tone="danger" confirm="Delete this listener?" />

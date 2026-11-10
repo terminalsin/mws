@@ -151,6 +151,9 @@ suggestion ("did you mean" among enum values, `known` values, all of them
 when there are only a few, or common email domains) or a generated value. Every repair is checked against the whole rule
 before it is offered. A blocked submit focuses and shakes the first field.
 
+The `portList` format takes lists like `80, 8000-8100` and reads `taken` as
+ranges in use, offering the next free block.
+
 Errors MWS returns land on their field too: `act` turns AWS validation
 messages (`Value 'x' at 'roleName' failed to satisfy constraint: ...`) back
 into rules, so a backend rejection gets the same repairs; "already exists"
