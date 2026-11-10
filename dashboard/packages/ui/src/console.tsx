@@ -116,7 +116,7 @@ export function Terminal({ target, actions, user = "root", host }: { target: She
   };
 
   return (
-    <div className="terminal" ref={screen} onClick={() => field.current?.focus()} data-testid="terminal">
+    <div className="terminal" ref={screen} onClick={() => field.current?.focus()} data-testid="terminal" data-state={busy ? "running" : "ready"}>
       {lines.map((l, i) => (
         <pre key={i} className={`terminal-line ${l.kind}`}>
           {l.text}
@@ -300,12 +300,28 @@ export function FileExplorer({ target, actions, start = "/" }: { target: ShellTa
           {error}
         </div>
       )}
+      {!entries && !error && (
+        <ul className="list skeleton-list" aria-hidden>
+          {[46, 30, 58, 38, 50].map((w, i) => (
+            <li key={i} className="row" style={{ ["--i" as string]: i }}>
+              <span className="row-main">
+                <span className="row-icon">
+                  <span className="skeleton-block" style={{ width: 18, height: 18 }} />
+                </span>
+                <span className="row-text">
+                  <span className="skeleton-line" style={{ width: `${w}%` }} />
+                </span>
+              </span>
+            </li>
+          ))}
+        </ul>
+      )}
       {entries && (
-        <ul className="list explorer-list" aria-label="Files">
-          {entries.map((e) => {
+        <ul className="list explorer-list" aria-label="Files" aria-busy={busy} data-busy={busy || undefined} key={path}>
+          {entries.map((e, i) => {
             const Icon = e.type === "dir" ? Folder : e.type === "link" ? FileSymlink : File;
             return (
-              <li key={e.name} className="row">
+              <li key={e.name} className="row" style={{ ["--i" as string]: Math.min(i, 16) }}>
                 <button type="button" className="row-main explorer-item" onClick={() => view(e)}>
                   <span className="row-icon">
                     <Icon size={18} className={e.type === "dir" ? "folder" : undefined} aria-hidden />

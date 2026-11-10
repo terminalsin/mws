@@ -60,6 +60,21 @@
   --shell-text: #f4f4f4;
   --shell-muted: #c6c6c6;
   --shell-border: #393939;
+  --skeleton: #e8e8e8;
+  --skeleton-shine: #f4f4f4;
+  /* Carbon motion: productive curves and durations for UI, expressive for
+     moments that deserve attention. */
+  --ease-standard: cubic-bezier(0.2, 0, 0.38, 0.9);
+  --ease-entrance: cubic-bezier(0, 0, 0.38, 0.9);
+  --ease-exit: cubic-bezier(0.2, 0, 1, 0.9);
+  --ease-expressive: cubic-bezier(0.4, 0.14, 0.3, 1);
+  --ease-spring: cubic-bezier(0.34, 1.56, 0.64, 1);
+  --fast-01: 70ms;
+  --fast-02: 110ms;
+  --moderate-01: 150ms;
+  --moderate-02: 240ms;
+  --slow-01: 400ms;
+  --slow-02: 700ms;
   color-scheme: light;
 }
 
@@ -103,6 +118,8 @@
     --tag-info-text: #d0e2ff;
     --shell: #161616;
     --shell-hover: #353535;
+    --skeleton: #333333;
+    --skeleton-shine: #404040;
     color-scheme: dark;
   }
 }
@@ -332,7 +349,26 @@
     @apply [overflow-wrap:anywhere];
   }
   .subtitle {
-    @apply mt-1 font-mono text-xs [overflow-wrap:anywhere] text-secondary;
+    @apply mt-1 flex items-center gap-1 font-mono text-xs [overflow-wrap:anywhere] text-secondary;
+  }
+  .copy-button {
+    @apply inline-grid h-6 w-6 flex-none cursor-pointer place-items-center border-0 bg-transparent text-helper opacity-0 transition-[opacity,color,background-color] duration-[var(--fast-02)] hover:bg-hover hover:text-primary focus-visible:opacity-100;
+  }
+  .subtitle:hover .copy-button,
+  .copy-button[data-state="copied"] {
+    @apply opacity-100;
+  }
+  .copy-button[data-state="copied"] {
+    @apply text-good;
+  }
+  .error-view {
+    @apply flex flex-col items-start gap-3 bg-layer p-8;
+  }
+  .error-view > svg {
+    @apply text-helper;
+  }
+  .error-view p {
+    @apply m-0 max-w-[72ch];
   }
   .page-actions,
   .section-actions,
@@ -741,19 +777,22 @@
   .result {
     @apply grid gap-2 text-sm;
   }
+  .result > span {
+    @apply inline-flex items-center gap-1.5;
+  }
   .result.ok > span {
     @apply text-good;
   }
   .result.error > span {
     @apply text-bad;
   }
+  .result.pending {
+    @apply h-5 text-helper;
+  }
 
   /* Modals and the command palette. */
   dialog {
     @apply rounded-none border-0 bg-layer p-0 text-inherit shadow-[0_2px_6px_rgba(0,0,0,0.3)];
-  }
-  dialog::backdrop {
-    background: rgba(22, 22, 22, 0.5);
   }
   .sheet {
     @apply m-auto w-[min(640px,calc(100vw-32px))] px-4 pt-0 pb-6;
@@ -797,13 +836,63 @@
     @apply flex-1 truncate text-xs text-secondary;
   }
   .palette-empty {
-    @apply p-5 text-center text-secondary;
+    @apply flex flex-col items-center gap-2 p-6 text-center text-secondary;
+  }
+  .palette-empty svg {
+    @apply text-helper;
+  }
+  .palette-clear {
+    @apply inline-grid h-6 w-6 cursor-pointer place-items-center rounded-full border-0 bg-[var(--tag)] text-secondary hover:text-primary;
+  }
+  .palette-caption {
+    @apply px-4 pt-1 pb-1 text-xs font-semibold text-secondary;
+  }
+  .palette-results[data-stale] {
+    @apply opacity-60 transition-opacity duration-[var(--moderate-01)];
+  }
+  .palette-foot {
+    @apply flex items-center gap-4 border-t border-subtle px-4 py-2 text-xs text-helper;
+  }
+  .palette-foot span {
+    @apply inline-flex items-center gap-1;
+  }
+  .palette-foot kbd {
+    @apply h-5 min-w-5 justify-center;
+  }
+  .palette-count {
+    @apply ml-auto tabular-nums;
+  }
+  .palette-skeleton .palette-hit {
+    @apply py-2.5;
   }
   .toasts {
     @apply fixed right-4 bottom-4 z-20 grid gap-2;
   }
   .toast {
-    @apply flex max-w-[420px] items-center gap-2 border-l-[3px] border-good bg-[var(--shell)] px-4 py-3 text-[var(--shell-text)] shadow-[0_2px_6px_rgba(0,0,0,0.3)];
+    @apply relative flex max-w-[420px] items-center gap-2 overflow-hidden border-l-[3px] border-good bg-[var(--shell)] py-3 pr-2 pl-4 text-[var(--shell-text)] shadow-[0_2px_6px_rgba(0,0,0,0.3)];
+  }
+  .toast > svg {
+    @apply flex-none text-[#42be65];
+  }
+  .toast.error > svg {
+    @apply text-[#ff8389];
+  }
+  .toast > span {
+    @apply flex-1;
+  }
+  .toast-close {
+    @apply ml-2 inline-grid h-6 w-6 flex-none cursor-pointer place-items-center border-0 bg-transparent text-[var(--shell-muted)] opacity-0 transition-opacity duration-[var(--fast-02)] hover:bg-[var(--shell-hover)] hover:text-[var(--shell-text)];
+  }
+  .toast:hover .toast-close,
+  .toast-close:focus-visible {
+    @apply opacity-100;
+  }
+  .toast-life {
+    @apply absolute bottom-0 left-0 h-0.5 w-full origin-left bg-[var(--shell-muted)] opacity-40;
+    animation: life var(--life) linear forwards;
+  }
+  .toast[data-paused] .toast-life {
+    animation-play-state: paused;
   }
   .toast.error {
     @apply border-bad;
@@ -1062,5 +1151,555 @@
   }
   .tree-email {
     @apply ml-auto text-xs;
+  }
+}
+
+/* Loading: skeletons shimmer where content will be. */
+@layer components {
+  .skeleton-line,
+  .skeleton-block {
+    @apply inline-block max-w-full align-middle;
+    height: 0.875rem;
+    background: linear-gradient(90deg, var(--skeleton) 0%, var(--skeleton-shine) 40%, var(--skeleton) 80%) 0 0 / 300% 100%;
+    animation: shimmer 1.4s var(--ease-standard) infinite;
+  }
+  .skeleton-line {
+    @apply block;
+  }
+  .page-skeleton .row-text {
+    @apply gap-1.5;
+  }
+  .page-skeleton .page-title-text {
+    @apply grid gap-2;
+  }
+  .skeleton-spec {
+    @apply inline-flex items-center gap-2 bg-layer px-4 py-3;
+  }
+  .skeleton-facts {
+    @apply grid grid-cols-[repeat(auto-fill,minmax(220px,1fr))] gap-x-8 gap-y-5;
+  }
+  .skeleton-facts > span {
+    @apply grid gap-2;
+  }
+  .skeleton-tile {
+    @apply pointer-events-none;
+  }
+  .page-skeleton {
+    /* Appear only when loading takes long enough to notice. */
+    animation: fade-in var(--moderate-02) var(--ease-entrance) 120ms both;
+  }
+
+  /* The navigation progress bar, across the top of the frame. */
+  .route-progress {
+    @apply pointer-events-none absolute top-0 left-0 z-30 h-0.5 w-full origin-left bg-interactive opacity-0;
+    transform: scaleX(0);
+    box-shadow: 0 0 8px var(--accent);
+  }
+  .route-progress[data-state="loading"] {
+    animation:
+      progress-trickle 12s cubic-bezier(0.1, 0.6, 0.2, 1) forwards,
+      fade-in var(--moderate-01) linear 150ms forwards;
+  }
+  .route-progress[data-state="finishing"] {
+    transform: scaleX(1);
+    transition:
+      transform var(--moderate-02) var(--ease-standard),
+      opacity var(--moderate-02) var(--ease-exit) 200ms;
+    opacity: 0;
+  }
+
+  .dots {
+    @apply inline-flex items-center gap-1;
+  }
+  .dots i {
+    @apply block h-1.5 w-1.5 rounded-full bg-current;
+    animation: dot 1s var(--ease-standard) infinite;
+  }
+  .dots i:nth-child(2) {
+    animation-delay: 0.15s;
+  }
+  .dots i:nth-child(3) {
+    animation-delay: 0.3s;
+  }
+  .button-glyph {
+    @apply inline-flex;
+  }
+}
+
+@keyframes shimmer {
+  from {
+    background-position: 100% 0;
+  }
+  to {
+    background-position: -50% 0;
+  }
+}
+@keyframes fade-in {
+  from {
+    opacity: 0;
+  }
+  to {
+    opacity: 1;
+  }
+}
+@keyframes rise {
+  from {
+    opacity: 0;
+    transform: translateY(6px);
+  }
+  to {
+    opacity: 1;
+    transform: none;
+  }
+}
+@keyframes drop {
+  from {
+    opacity: 0;
+    transform: translateY(-6px);
+  }
+  to {
+    opacity: 1;
+    transform: none;
+  }
+}
+@keyframes pop {
+  0% {
+    transform: scale(0.4);
+    opacity: 0;
+  }
+  60% {
+    transform: scale(1.18);
+    opacity: 1;
+  }
+  100% {
+    transform: scale(1);
+  }
+}
+@keyframes shake {
+  0%,
+  100% {
+    transform: translateX(0);
+  }
+  20%,
+  60% {
+    transform: translateX(-4px);
+  }
+  40%,
+  80% {
+    transform: translateX(4px);
+  }
+}
+@keyframes dot {
+  0%,
+  80%,
+  100% {
+    opacity: 0.25;
+    transform: translateY(0);
+  }
+  40% {
+    opacity: 1;
+    transform: translateY(-3px);
+  }
+}
+@keyframes pulse-ring {
+  0% {
+    box-shadow: 0 0 0 0 currentColor;
+    opacity: 1;
+  }
+  70% {
+    box-shadow: 0 0 0 5px transparent;
+  }
+  100% {
+    box-shadow: 0 0 0 0 transparent;
+  }
+}
+@keyframes breathe {
+  0%,
+  100% {
+    opacity: 1;
+  }
+  50% {
+    opacity: 0.35;
+  }
+}
+@keyframes progress-trickle {
+  from {
+    transform: scaleX(0);
+  }
+  10% {
+    transform: scaleX(0.3);
+  }
+  to {
+    transform: scaleX(0.92);
+  }
+}
+@keyframes life {
+  from {
+    transform: scaleX(1);
+  }
+  to {
+    transform: scaleX(0);
+  }
+}
+@keyframes draw {
+  from {
+    stroke-dashoffset: 1;
+  }
+  to {
+    stroke-dashoffset: 0;
+  }
+}
+@keyframes grow-y {
+  from {
+    transform: scaleY(0);
+  }
+  to {
+    transform: scaleY(1);
+  }
+}
+@keyframes grow-x {
+  from {
+    transform: scaleX(0);
+  }
+  to {
+    transform: scaleX(1);
+  }
+}
+@keyframes float-in {
+  from {
+    opacity: 0;
+    transform: translateY(8px) scale(0.92);
+  }
+  to {
+    opacity: 1;
+    transform: none;
+  }
+}
+@keyframes bar-in {
+  from {
+    transform: scaleY(0);
+  }
+  to {
+    transform: scaleY(1);
+  }
+}
+
+/* Motion. Everything here is off for people who ask for reduced motion
+   (the block below this one), and nothing waits on an animation to be
+   usable: entrances are short and never hide content from the start. */
+@layer components {
+  /* Interactive surfaces ease between states instead of snapping. */
+  .nav-link,
+  .row-main,
+  .tile,
+  .metric,
+  .segment,
+  .button,
+  .icon-button,
+  .topbar-button,
+  .brand,
+  .search-trigger,
+  .palette-hit,
+  .map-node,
+  .auto-toggle button,
+  .crumbs button,
+  details > summary {
+    transition:
+      background-color var(--fast-02) var(--ease-standard),
+      color var(--fast-02) var(--ease-standard),
+      border-color var(--fast-02) var(--ease-standard),
+      box-shadow var(--fast-02) var(--ease-standard),
+      transform var(--fast-02) var(--ease-standard),
+      opacity var(--fast-02) var(--ease-standard);
+  }
+  .button:active:not(:disabled),
+  .icon-button:active:not(:disabled),
+  .topbar-button:active,
+  .auto-toggle button:active:not(:disabled) {
+    transform: scale(0.96);
+  }
+  a.tile:hover .aws-icon,
+  a.metric:hover .metric-label svg,
+  .icon-stack:hover .aws-icon {
+    transform: translateY(-1px) scale(1.06);
+  }
+  .tile .aws-icon,
+  .metric-label svg,
+  .row-icon .aws-icon {
+    transition: transform var(--moderate-01) var(--ease-expressive);
+  }
+  a.row-main:hover .row-chevron {
+    transform: translateX(2px);
+    @apply text-primary;
+  }
+  .row-chevron {
+    transition:
+      transform var(--moderate-01) var(--ease-expressive),
+      color var(--fast-02) var(--ease-standard);
+  }
+  .nav-link.active::before {
+    animation: grow-y var(--moderate-02) var(--ease-expressive) both;
+  }
+  .segment.active {
+    animation: fade-in var(--moderate-01) var(--ease-entrance) both;
+  }
+
+  /* Pages arrive: the title, then each block, a beat apart. */
+  .content > *:not(.page-skeleton) {
+    animation: rise var(--moderate-02) var(--ease-entrance) both;
+  }
+  .content > :nth-child(2) {
+    animation-delay: 30ms;
+  }
+  .content > :nth-child(3) {
+    animation-delay: 60ms;
+  }
+  .content > :nth-child(4) {
+    animation-delay: 90ms;
+  }
+  .content > :nth-child(n + 5) {
+    animation-delay: 120ms;
+  }
+  /* Rows cascade in (the first sixteen; the rest are below the fold), and
+     a row added by an action rises into place on its own. */
+  .row[style*="--i"],
+  .palette-hit[style*="--i"],
+  .skeleton-tile {
+    animation: rise var(--moderate-02) var(--ease-entrance) both;
+    animation-delay: calc(var(--i, 0) * 18ms);
+  }
+  .tiles > .tile,
+  .metrics > .metric,
+  .specs > li {
+    animation: rise var(--moderate-02) var(--ease-entrance) both;
+  }
+  .tiles > .tile:nth-child(2),
+  .metrics > .metric:nth-child(2),
+  .specs > li:nth-child(2) {
+    animation-delay: 25ms;
+  }
+  .tiles > .tile:nth-child(3),
+  .metrics > .metric:nth-child(3),
+  .specs > li:nth-child(3) {
+    animation-delay: 50ms;
+  }
+  .tiles > .tile:nth-child(4),
+  .metrics > .metric:nth-child(4),
+  .specs > li:nth-child(4) {
+    animation-delay: 75ms;
+  }
+  .tiles > .tile:nth-child(n + 5),
+  .metrics > .metric:nth-child(n + 5),
+  .specs > li:nth-child(n + 5) {
+    animation-delay: 100ms;
+  }
+  /* A row being deleted fades back while its action runs. */
+  .row:has(form[data-tone="danger"][data-state="pending"]) {
+    opacity: 0.45;
+    transition: opacity var(--moderate-02) var(--ease-standard);
+  }
+  .row:has(form[data-tone="danger"][data-state="pending"]) .row-title {
+    text-decoration: line-through;
+  }
+  .explorer-list[data-busy] {
+    opacity: 0.6;
+    transition: opacity var(--moderate-01) var(--ease-standard);
+  }
+  .empty > .aws-icon,
+  .error-view > svg {
+    animation: float-in var(--slow-01) var(--ease-spring) both;
+  }
+
+  /* Submissions: a check pops in on success, the button shakes on failure,
+     the outcome slides in under the form. */
+  .pop {
+    animation: pop var(--slow-01) var(--ease-spring) both;
+  }
+  form[data-state="failed"] > .form-actions {
+    animation: shake 360ms var(--ease-standard);
+  }
+  .button[data-state="succeeded"],
+  .icon-button[data-state="succeeded"] {
+    @apply bg-[var(--good)] text-white;
+  }
+  .result:not(.pending) {
+    animation: drop var(--moderate-02) var(--ease-entrance) both;
+  }
+  .result.pending {
+    animation: fade-in var(--moderate-01) linear 150ms both;
+  }
+
+  /* Status: transitional states breathe, and the health light pulses. */
+  .status[data-live] .dot {
+    animation: breathe 1.6s var(--ease-standard) infinite;
+  }
+  .health.up {
+    color: #42be65;
+    animation: pulse-ring 2.4s var(--ease-standard) 1s 3;
+  }
+  .region[data-state="switching"] select {
+    opacity: 0.6;
+  }
+
+  /* Modals rise in and sink out; the backdrop fades. */
+  dialog {
+    transition:
+      opacity var(--moderate-02) var(--ease-entrance),
+      transform var(--moderate-02) var(--ease-expressive),
+      overlay var(--moderate-02) allow-discrete,
+      display var(--moderate-02) allow-discrete;
+    opacity: 0;
+    transform: translateY(12px) scale(0.98);
+  }
+  dialog[open] {
+    opacity: 1;
+    transform: none;
+  }
+  @starting-style {
+    dialog[open] {
+      opacity: 0;
+      transform: translateY(12px) scale(0.98);
+    }
+  }
+  .palette {
+    transform: translateY(-8px) scale(0.98);
+  }
+  @starting-style {
+    .palette[open] {
+      transform: translateY(-8px) scale(0.98);
+    }
+  }
+  dialog::backdrop {
+    transition:
+      background-color var(--moderate-02) var(--ease-standard),
+      backdrop-filter var(--moderate-02) var(--ease-standard),
+      overlay var(--moderate-02) allow-discrete,
+      display var(--moderate-02) allow-discrete;
+    background-color: rgba(22, 22, 22, 0);
+  }
+  dialog[open]::backdrop {
+    background-color: rgba(22, 22, 22, 0.5);
+    backdrop-filter: blur(2px);
+  }
+  @starting-style {
+    dialog[open]::backdrop {
+      background-color: rgba(22, 22, 22, 0);
+      backdrop-filter: blur(0);
+    }
+  }
+  .services-panel {
+    animation: drop var(--moderate-01) var(--ease-entrance) both;
+  }
+  .file-preview {
+    animation: rise var(--moderate-02) var(--ease-entrance) both;
+  }
+  .toast[data-state="shown"] {
+    animation: toast-in var(--moderate-02) var(--ease-expressive) both;
+  }
+  .toast[data-state="leaving"] {
+    animation: toast-out 200ms var(--ease-exit) both;
+  }
+  details[open] > :not(summary) {
+    animation: drop var(--moderate-01) var(--ease-entrance) both;
+  }
+  .terminal-line {
+    animation: fade-in var(--fast-02) linear both;
+  }
+
+  /* Charts draw themselves. */
+  .chart-line {
+    stroke-dasharray: 1;
+    animation: draw var(--slow-02) var(--ease-expressive) both;
+  }
+  .chart-area,
+  .chart-dot {
+    animation: fade-in var(--slow-01) var(--ease-entrance) 300ms both;
+  }
+  .bar {
+    transform-origin: bottom;
+    animation: bar-in var(--slow-01) var(--ease-expressive) both;
+  }
+  .bar-col:nth-child(2) .bar {
+    animation-delay: 40ms;
+  }
+  .bar-col:nth-child(3) .bar {
+    animation-delay: 80ms;
+  }
+  .bar-col:nth-child(4) .bar {
+    animation-delay: 120ms;
+  }
+  .bar-col:nth-child(5) .bar {
+    animation-delay: 160ms;
+  }
+  .bar-col:nth-child(n + 6) .bar {
+    animation-delay: 200ms;
+  }
+  .hbar,
+  .capacity i.on {
+    transform-origin: left;
+    animation: grow-x var(--slow-01) var(--ease-expressive) 80ms both;
+  }
+  .capacity i.on {
+    transform-origin: bottom;
+    animation-name: grow-y;
+  }
+}
+
+@keyframes toast-in {
+  from {
+    opacity: 0;
+    transform: translateY(12px) scale(0.96);
+  }
+  to {
+    opacity: 1;
+    transform: none;
+  }
+}
+@keyframes toast-out {
+  to {
+    opacity: 0;
+    transform: translateX(24px);
+  }
+}
+
+/* Moving between zones is a full page load: cross-fade it, keeping the top
+   bar and sidebar in place, so the console still feels like one app. */
+@media (prefers-reduced-motion: no-preference) {
+  @view-transition {
+    navigation: auto;
+  }
+}
+.topbar {
+  view-transition-name: topbar;
+}
+.sidebar {
+  view-transition-name: sidebar;
+}
+::view-transition-old(root) {
+  animation: 90ms var(--ease-exit) both fade-out;
+}
+::view-transition-new(root) {
+  animation: 180ms var(--ease-entrance) 40ms both fade-in;
+}
+@keyframes fade-out {
+  to {
+    opacity: 0;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after,
+  ::backdrop {
+    animation-duration: 1ms !important;
+    animation-delay: 0ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 1ms !important;
+    transition-delay: 0ms !important;
+  }
+  .skeleton-line,
+  .skeleton-block {
+    animation: none !important;
   }
 }

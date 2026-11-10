@@ -118,6 +118,19 @@ components are classes composed with `@apply`. Each zone has a
 - **Signals first.** What needs attention (an alarm, a port open to the
   internet, a deletion pending) is shown in color with an icon, and gathered
   on the home page.
+- **Every wait is visible, every change is felt.** Asynchronous UI runs on
+  small state machines (`packages/ui/src/machine.ts`, `useMachine`), whose
+  state is exposed as `data-state` for styles to animate: forms go
+  idle → pending → succeeded/failed (spinner, a check that pops, a shake), the
+  search palette debounces → loads → shows results, nothing or a failure,
+  navigation runs a progress bar across the top, and toasts enter, wait
+  (paused on hover) and leave. Every page has a `loading.tsx` that renders a
+  `PageSkeleton` shaped like it (list, resource or home), so a click shows the
+  next page's outline at once. Motion uses Carbon's curves and durations:
+  pages and rows rise in, sheets and the palette rise and sink, charts draw,
+  transitional statuses ("creating", "pending") breathe, and moving between
+  zones cross-fades with the top bar and sidebar held still (cross-document
+  view transitions). `prefers-reduced-motion` turns all of it off.
 
 ## Curation
 

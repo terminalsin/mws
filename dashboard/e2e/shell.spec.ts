@@ -115,3 +115,32 @@ test("state export downloads a JSON document", async ({ request }) => {
   expect(response.headers()["content-disposition"]).toContain("mws-state-");
   expect(typeof (await response.json())).toBe("object");
 });
+
+test("feedback: a sheet's success becomes a toast, rows rise in, and / opens search", async ({ page }) => {
+  const queue = unique("dash-toast");
+  await page.goto("/messaging/sqs");
+  await submit(page, "create-queue", { name: queue });
+  const toast = page.locator(".toasts").getByRole("status").filter({ hasText: queue });
+  await expect(toast).toBeVisible();
+  await expect(toast).toHaveCount(0, { timeout: 10_000 });
+  await expect(row(page, queue)).toBeVisible();
+
+  // The navigation bar runs while the next page loads, then goes idle.
+  await page.getByRole("link", { name: queue }).click();
+  await expect(page.getByRole("heading", { level: 1, name: queue })).toBeVisible();
+  await expect(page.locator(".route-progress")).toHaveAttribute("data-state", "idle");
+
+  await page.locator("body").press("/");
+  const palette = page.getByRole("dialog", { name: "Search resources" });
+  await expect(palette).toBeVisible();
+  await expect(palette).not.toHaveAttribute("data-state", /loading|debouncing/);
+  await palette.locator("input").press("Escape");
+  await expect(palette).toBeHidden();
+});
+
+test("motion respects reduced motion", async ({ page }) => {
+  await page.emulateMedia({ reducedMotion: "reduce" });
+  await page.goto("/messaging/sqs");
+  const duration = await page.locator(".content > *").first().evaluate((e) => getComputedStyle(e).animationDuration);
+  expect(duration).toBe("0.001s");
+});
