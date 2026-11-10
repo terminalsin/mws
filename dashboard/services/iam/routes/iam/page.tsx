@@ -5,6 +5,7 @@ import { ActionForm, AwsIcon, Curated, Empty, ErrorNotice, Field, List, Page, Pi
 import type { Metadata } from "next";
 
 import { ICONS, iam, policyDocument, principalIcon, trust } from "../../lib/clients";
+import { RULES, SERVICE_PRINCIPALS } from "../../lib/rules";
 import { createGroup, createPolicy, createRole, createUser } from "./actions";
 
 export const metadata: Metadata = { title: "IAM" };
@@ -44,10 +45,10 @@ export default async function Iam({ searchParams }: Props) {
     users: (
       <Sheet title="New user" label="Create user" testId="create-user">
         <ActionForm action={createUser} submit="Create" testId="create-user">
-          <Field label="Name">
-            <input name="name" required pattern="[\w+=,.@\-]+" autoFocus />
+          <Field label="Name" rule={RULES.userName} taken={users.map((u) => u.UserName!)} unique>
+            <input name="name" required autoFocus />
           </Field>
-          <Field label="Path">
+          <Field label="Path" rule={RULES.path}>
             <input name="path" placeholder="/" />
           </Field>
         </ActionForm>
@@ -56,28 +57,28 @@ export default async function Iam({ searchParams }: Props) {
     roles: (
       <Sheet title="New role" label="Create role" testId="create-role">
         <ActionForm action={createRole} submit="Create" testId="create-role">
-          <Field label="Name">
-            <input name="name" required pattern="[\w+=,.@\-]+" autoFocus />
+          <Field label="Name" rule={RULES.roleName} taken={roles.map((r) => r.RoleName!)} unique>
+            <input name="name" required autoFocus />
           </Field>
-          <Field label="Trusted service">
+          <Field label="Trusted service" rule={RULES.service}>
             <input name="service" defaultValue="lambda.amazonaws.com" list="principals" />
           </Field>
           <datalist id="principals">
-            {["lambda.amazonaws.com", "ec2.amazonaws.com", "ecs-tasks.amazonaws.com", "states.amazonaws.com", "events.amazonaws.com", "firehose.amazonaws.com"].map((p) => (
+            {SERVICE_PRINCIPALS.map((p) => (
               <option key={p} value={p} />
             ))}
           </datalist>
-          <Field label="Or a trust policy">
+          <Field label="Or a trust policy" rule={RULES.trust}>
             <textarea name="trust" placeholder='{"Version": "2012-10-17", "Statement": [...]}' />
           </Field>
         </ActionForm>
       </Sheet>
     ),
     groups: (
-      <Sheet title="New group" label="Create group">
-        <ActionForm action={createGroup} submit="Create">
-          <Field label="Name">
-            <input name="name" required pattern="[\w+=,.@\-]+" />
+      <Sheet title="New group" label="Create group" testId="create-group">
+        <ActionForm action={createGroup} submit="Create" testId="create-group">
+          <Field label="Name" rule={RULES.groupName} taken={groups.map((g) => g.GroupName!)} unique>
+            <input name="name" required autoFocus />
           </Field>
         </ActionForm>
       </Sheet>
@@ -85,15 +86,18 @@ export default async function Iam({ searchParams }: Props) {
     policies: (
       <Sheet title="New policy" label="Create policy" testId="create-policy">
         <ActionForm action={createPolicy} submit="Create" testId="create-policy">
-          <Field label="Name">
-            <input name="name" required pattern="[\w+=,.@\-]+" />
+          <Field label="Name" rule={RULES.policyName} taken={policies.map((p) => p.PolicyName!)} unique>
+            <input name="name" required autoFocus />
           </Field>
-          <textarea
-            name="document"
-            rows={12}
-            aria-label="Policy document"
-            defaultValue={JSON.stringify({ Version: "2012-10-17", Statement: [{ Effect: "Allow", Action: "s3:GetObject", Resource: "*" }] }, null, 2)}
-          />
+          <Field label="Document" rule={RULES.document}>
+            <textarea
+              name="document"
+              rows={12}
+              required
+              aria-label="Policy document"
+              defaultValue={JSON.stringify({ Version: "2012-10-17", Statement: [{ Effect: "Allow", Action: "s3:GetObject", Resource: "*" }] }, null, 2)}
+            />
+          </Field>
         </ActionForm>
       </Sheet>
     ),

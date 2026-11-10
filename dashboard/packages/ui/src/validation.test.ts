@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 
-import { check, closest, describePattern, fresh, parseServerIssues, repairJson, ruleAt, sameMember, valid, type Rule } from "./validation.ts";
+import { check, closest, describePattern, fresh, parseServerIssues, repairJson, repairPolicy, ruleAt, sameMember, valid, type Rule } from "./validation.ts";
 
 const values = (r: Rule, v: string) => check(v, r)?.repairs.map((x) => x.value) ?? [];
 
@@ -166,4 +166,26 @@ test("CSRs: headers added, surrounding text dropped, keys refused", () => {
   assert.deepEqual(values(rule, `-----BEGIN CERTIFICATE REQUEST----- ${body} -----END CERTIFICATE REQUEST-----`), [tidy]);
   assert.match(check(`-----BEGIN PRIVATE KEY-----\n${body}\n-----END PRIVATE KEY-----`, rule)!.message, /private key/);
   assert.match(check(`-----BEGIN CERTIFICATE-----\n${body}\n-----END CERTIFICATE-----`, rule)!.message, /certificate, not/);
+});
+
+test("policy documents: checked and repaired as policies", () => {
+  const rule: Rule = { format: "policy", required: true };
+  assert.equal(check('{"Version":"2012-10-17","Statement":[{"Effect":"Allow","Action":"s3:GetObject","Resource":"*"}]}', rule), null);
+  // A bare statement, lowercase keys and Effect, an action with a dot.
+  const issue = check("{effect: 'allow', actions: ['s3.GetObject'], resource: '*'}", rule);
+  assert.equal(issue?.code, "format");
+  assert.deepEqual(JSON.parse(issue!.repairs[0].value), {
+    Version: "2012-10-17",
+    Statement: [{ Effect: "Allow", Action: ["s3:GetObject"], Resource: "*" }],
+  });
+  assert.equal(check('{"Version":"2012-10-17","Statement":{"Effect":"Permit","Action":"*"}}', rule)?.message, "The statement: Effect is Allow or Deny");
+  assert.equal(check('{"Statement":[{"Effect":"Allow","Resource":"*"}]}', rule)?.message, "The statement has no Action");
+  assert.equal(JSON.parse(repairPolicy('{"Version":"2012-10-18","Statement":[]}')!).Version, "2012-10-17");
+});
+
+test("paths start and end with a slash", () => {
+  const rule: Rule = { format: "path" };
+  assert.equal(check("/team/eng/", rule), null);
+  assert.equal(check("team", rule)?.repairs[0].value, "/team/");
+  assert.equal(check("/a//b", rule)?.repairs[0].value, "/a/b/");
 });

@@ -18,6 +18,7 @@ import { ActionForm, AwsIcon, CodeBlock, Empty, ErrorNotice, Facts, Field, List,
 import { KeyRound, Pencil, Play, Pause, Trash2, Unlink, UserMinus, UserPlus, Link2 } from "lucide-react";
 
 import { ICONS, iam, policyDocument, principalIcon, trust } from "../../lib/clients";
+import { RULES } from "../../lib/rules";
 import {
   addToGroup,
   attachPolicy,
@@ -216,7 +217,7 @@ export async function Principal({ kind, name }: { kind: Kind; name: string }) {
           <>
             <Sheet title="Attach policy" label="Attach policy" icon={<Link2 size={16} />} testId="attach-policy">
               <ActionForm action={attachPolicy.bind(null, kind, name)} submit="Attach" testId="attach-policy">
-                <Field label="Policy">
+                <Field label="Policy" rule={RULES.policyArn} known={attachable.map((p) => p.Arn!)}>
                   <input name="policyArn" list="policies" required placeholder="arn:aws:iam::aws:policy/ReadOnlyAccess" />
                 </Field>
                 <datalist id="policies">
@@ -231,10 +232,12 @@ export async function Principal({ kind, name }: { kind: Kind; name: string }) {
             {kind !== "group" && (
               <Sheet title="Inline policy" label="Add inline policy" icon={<Pencil size={16} />} testId="inline-policy">
                 <ActionForm action={putInlinePolicy.bind(null, kind, name)} submit="Save" testId="inline-policy">
-                  <Field label="Name">
+                  <Field label="Name" rule={RULES.inlinePolicyName} known={d.inline}>
                     <input name="policyName" required />
                   </Field>
-                  <textarea name="document" rows={12} aria-label="Policy document" defaultValue={EXAMPLE} />
+                  <Field label="Document" rule={RULES.document}>
+                    <textarea name="document" rows={12} required aria-label="Policy document" defaultValue={EXAMPLE} />
+                  </Field>
                 </ActionForm>
               </Sheet>
             )}
@@ -273,9 +276,9 @@ export async function Principal({ kind, name }: { kind: Kind; name: string }) {
           count={d.groups.length}
           plain
           actions={
-            <Sheet title="Add to group" label="Add to group" icon={<UserPlus size={16} />}>
-              <ActionForm action={addToGroup.bind(null, name)} submit="Add">
-                <Field label="Group">
+            <Sheet title="Add to group" label="Add to group" icon={<UserPlus size={16} />} testId="add-to-group">
+              <ActionForm action={addToGroup.bind(null, name)} submit="Add" testId="add-to-group">
+                <Field label="Group" rule={RULES.group}>
                   <select name="group" required>
                     {d.allGroups
                       .filter((g) => !d.groups!.some((m) => m.GroupName === g.GroupName))
@@ -325,7 +328,9 @@ export async function Principal({ kind, name }: { kind: Kind; name: string }) {
           actions={
             <Sheet title="Trust policy" label="Edit trust policy" icon={<Pencil size={16} />} testId="edit-trust">
               <ActionForm action={updateTrust.bind(null, name)} submit="Save" testId="edit-trust">
-                <textarea name="document" rows={14} aria-label="Trust policy" defaultValue={pretty(d.trust)} />
+                <Field label="Document" rule={RULES.trustEdit}>
+                  <textarea name="document" rows={14} required aria-label="Trust policy" defaultValue={pretty(d.trust)} />
+                </Field>
               </ActionForm>
             </Sheet>
           }

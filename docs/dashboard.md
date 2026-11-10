@@ -114,15 +114,16 @@ Fields validate in place, and say how to fix what they reject. `Field`
    `import { CreateFunction } from "@mws-dashboard/ui/model/lambda"`, then
    `<Field rule={CreateFunction.FunctionName}>`;
 2. the control's own attributes (`required`, `maxLength`, `min`, `type`...);
-3. what the page adds: `format` (`json`, `arn`, `cidr`, `ipv4`, `email`,
-   `url`, `bucket`, `name`, `port`), `taken` (names that exist),
+3. what the page adds: `format` (`json`, `policy`, `path`, `arn`, `cidr`,
+   `ipv4`, `email`, `url`, `bucket`, `name`, `port`), `taken` (names that exist),
    `known` (values the field usually points at), `generate` (`name`,
    `token`, `password`, `uuid`, or a prefix/suffix), `arn` (the ARN template
    a bare name expands to) and `hint` (a readable pattern message).
 
 A problem replaces the field's hint once the person leaves the field or
 submits, and comes with repairs as chips: a fix (reshaped to the pattern,
-shortened, clamped, network address, repaired JSON, `https://` added), a
+shortened, clamped, network address, repaired JSON, a policy document
+rebuilt from a bare statement with its casing fixed, `https://` added), a
 suggestion ("did you mean" among enum values, `known` values or common email
 domains) or a generated value. Every repair is checked against the whole rule
 before it is offered. A blocked submit focuses and shakes the first field.
