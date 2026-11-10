@@ -128,8 +128,14 @@ impl Lambda {
         if self.inner.queues.get().is_none() && self.inner.streams.get().is_none() {
             return;
         }
+        // The emulated clock only moves forward: a context captured earlier
+        // (a CloudFormation deployment, a retry) must not pull it back, or
+        // function states would wait on a deadline that keeps receding.
+        let mut template = self.inner.pollers.template.lock().expect("poller lock poisoned");
         let offset = ctx.received_at - chrono::Utc::now();
-        *self.inner.pollers.template.lock().expect("poller lock poisoned") = Some((ctx.clone(), offset));
+        let offset = template.as_ref().map_or(offset, |(_, old)| offset.max(*old));
+        *template = Some((ctx.clone(), offset));
+        drop(template);
         self.start_pollers();
     }
 

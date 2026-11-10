@@ -173,7 +173,7 @@ async fn vpc_only_access_points_refuse_requests_from_outside_the_vpc() {
 async fn mfa_delete_and_lifecycle_minimums_are_enforced() {
     use aws_sdk_s3::types::{
         BucketLifecycleConfiguration, BucketVersioningStatus, ExpirationStatus, LifecycleRule, LifecycleRuleFilter,
-        MfaDeleteStatus, Transition, TransitionStorageClass, VersioningConfiguration,
+        MfaDelete, Transition, TransitionStorageClass, VersioningConfiguration,
     };
     let mws = Mws::start().await;
     let s3 = Mws::s3(&mws.root_sdk_config().await);
@@ -184,7 +184,7 @@ async fn mfa_delete_and_lifecycle_minimums_are_enforced() {
         .versioning_configuration(
             VersioningConfiguration::builder()
                 .status(BucketVersioningStatus::Enabled)
-                .mfa_delete(MfaDeleteStatus::Enabled)
+                .mfa_delete(MfaDelete::Enabled)
                 .build(),
         )
         .send()
