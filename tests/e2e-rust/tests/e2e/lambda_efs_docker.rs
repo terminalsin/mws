@@ -153,7 +153,10 @@ async fn function(
             .send()
             .await
         {
-            Ok(f) => return f.function_arn().unwrap().to_string(),
+            Ok(f) => {
+                mws_e2e::function_active(lambda, name).await;
+                return f.function_arn().unwrap().to_string();
+            }
             Err(e) => last = Some(format!("{:?}", e.into_service_error())),
         }
         tokio::time::sleep(Duration::from_millis(200)).await;

@@ -135,6 +135,21 @@ impl Lambda {
             ));
         }
         let ctx = RequestContext { region: f.region.clone(), ..ctx.clone() };
+        // SNS and S3 carry the X-Ray header of the request that caused the
+        // event, which is how Lambda sees a recursive loop through them.
+        if matches!(inv.service_principal, "sns.amazonaws.com" | S3_PRINCIPAL) {
+            let incoming = mws_core::trace_header::current();
+            match self.recursion_check(&ctx, &f, incoming.as_deref()) {
+                Some(header) => {
+                    mws_core::trace_header::scope_sync(Some(header), || self.enqueue(&ctx, &f, inv.payload));
+                }
+                None => {
+                    let lambda = self.clone();
+                    tokio::spawn(async move { lambda.drop_recursive_event(&ctx, &f, &inv.payload).await });
+                }
+            }
+            return Ok(());
+        }
         self.enqueue(&ctx, &f, inv.payload);
         Ok(())
     }

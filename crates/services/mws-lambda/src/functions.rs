@@ -38,6 +38,11 @@ pub fn paginate<T: Clone>(
     (items[start..end].to_vec(), next)
 }
 
+/// `aws:ResourceTag/<key>` condition keys for a resource tagged `tags`.
+pub fn resource_tag_context(tags: &BTreeMap<String, String>) -> ConditionContext {
+    tags.iter().map(|(k, v)| (format!("aws:ResourceTag/{k}"), vec![v.clone()])).collect()
+}
+
 /// Tag condition keys for a request that sets `tags`.
 pub fn tag_context(tags: &BTreeMap<String, String>) -> ConditionContext {
     let mut c = ConditionContext::new();
@@ -71,11 +76,18 @@ impl Lambda {
         f: &FunctionRef,
         extra: ConditionContext,
     ) -> Result<(), ServiceError> {
-        let policy = {
+        // Functions support ABAC: `aws:ResourceTag/<key>` is the function's
+        // tag, as for every action on a function resource.
+        let (policy, mut context) = {
             let st = self.read();
-            st.functions.get(&f.arn()).and_then(|func| Self::policy_document(func, f.qualifier.as_deref()))
+            match st.functions.get(&f.arn()) {
+                Some(func) => (Self::policy_document(func, f.qualifier.as_deref()), resource_tag_context(&func.tags)),
+                None => (None, ConditionContext::new()),
+            }
         };
-        ctx.authorize_with_resource_policy(action, &f.qualified_arn(), policy.as_deref(), extra)
+        // The caller's own keys (request tags, URL auth type, ...) win.
+        context.extend(extra);
+        ctx.authorize_with_resource_policy(action, &f.qualified_arn(), policy.as_deref(), context)
     }
 
     pub(crate) fn function<'a>(st: &'a State, f: &FunctionRef) -> Result<&'a Function, ServiceError> {
@@ -363,23 +375,23 @@ impl Lambda {
             code_signing_config_arn: input.code_signing_config_arn.clone(),
             ..Default::default()
         };
-        let mut response = function.latest.config.clone();
+        let mut response;
         {
             let mut st = self.write();
             if st.functions.contains_key(&f.arn()) {
                 return Err(errors::resource_conflict(format!("Function already exist: {}", f.name)));
             }
             st.functions.insert(f.arn(), function);
+            let func = st.functions.get_mut(&f.arn()).expect("just inserted");
+            // The function is `Pending` while Lambda sets it up.
+            crate::lifecycle::mark_pending(&mut func.latest.config);
+            response = func.latest.config.clone();
             if input.publish {
-                let func = st.functions.get_mut(&f.arn()).expect("just inserted");
                 response = publish(func, None, None);
             }
+            self.begin_transition(func);
         }
         self.prefetch_runtime(&response);
-        // The create call reports the function while it is set up.
-        response.state = Some("Pending".into());
-        response.state_reason = Some("The function is being created.".into());
-        response.state_reason_code = Some("Creating".into());
         Ok(response)
     }
 
@@ -537,6 +549,9 @@ impl Lambda {
             let st = self.read();
             let func = Self::function(&st, &f)?;
             check_revision(func.latest.config.revision_id.as_deref(), input.revision_id.as_deref())?;
+            if !input.dry_run {
+                crate::lifecycle::check_updatable(func)?;
+            }
             (
                 func.latest.config.package_type.clone().unwrap_or_else(|| "Zip".into()),
                 func.code_signing_config_arn.clone(),
@@ -577,6 +592,9 @@ impl Lambda {
             c.code_size = size;
             return Ok(c);
         }
+        crate::lifecycle::settle_if_due(func, chrono::Utc::now());
+        crate::lifecycle::check_updatable(func)?;
+        func.previous = Some(Box::new(func.latest.clone()));
         let latest = &mut func.latest;
         latest.code_hex = new.code_hex;
         latest.image_uri = new.image_uri;
@@ -590,17 +608,16 @@ impl Lambda {
         }
         latest.config.last_modified = Some(timestamp(ctx.received_at));
         latest.config.revision_id = Some(revision_id());
-        latest.config.last_update_status = Some("Successful".into());
+        // The update is `InProgress` until Lambda has applied it.
+        crate::lifecycle::mark_in_progress(&mut latest.config);
         let mut response = latest.config.clone();
         if input.publish {
             response = publish(func, None, None);
         }
+        self.begin_transition(func);
         drop(st);
         self.inner.runtimes.retire(&f.arn());
         self.prefetch_runtime(&response);
-        response.last_update_status = Some("InProgress".into());
-        response.last_update_status_reason = Some("The function is being created.".into());
-        response.last_update_status_reason_code = Some("Creating".into());
         Ok(response)
     }
 
@@ -619,6 +636,7 @@ impl Lambda {
             let st = self.read();
             let func = Self::function(&st, &f)?;
             check_revision(func.latest.config.revision_id.as_deref(), input.revision_id.as_deref())?;
+            crate::lifecycle::check_updatable(func)?;
         }
         if let Some(role) = &input.role {
             self.check_role(ctx, role)?;
@@ -633,6 +651,9 @@ impl Lambda {
         };
         let mut st = self.write();
         let func = Self::function_mut(&mut st, &f)?;
+        crate::lifecycle::settle_if_due(func, chrono::Utc::now());
+        crate::lifecycle::check_updatable(func)?;
+        func.previous = Some(Box::new(func.latest.clone()));
         let c = &mut func.latest.config;
         macro_rules! set {
             ($field:ident) => {
@@ -690,14 +711,13 @@ impl Lambda {
         }
         c.last_modified = Some(timestamp(ctx.received_at));
         c.revision_id = Some(revision_id());
-        c.last_update_status = Some("Successful".into());
-        let mut response = c.clone();
+        // The update is `InProgress` until Lambda has applied it.
+        crate::lifecycle::mark_in_progress(c);
+        let response = c.clone();
+        self.begin_transition(func);
         drop(st);
         self.inner.runtimes.retire(&f.arn());
         self.prefetch_runtime(&response);
-        response.last_update_status = Some("InProgress".into());
-        response.last_update_status_reason = Some("The function is being created.".into());
-        response.last_update_status_reason_code = Some("Creating".into());
         Ok(response)
     }
 
@@ -711,6 +731,8 @@ impl Lambda {
         let mut st = self.write();
         let func = Self::function_mut(&mut st, &f)?;
         check_revision(func.latest.config.revision_id.as_deref(), input.revision_id.as_deref())?;
+        crate::lifecycle::settle_if_due(func, chrono::Utc::now());
+        crate::lifecycle::check_updatable(func)?;
         if let Some(sha) = &input.code_sha256 {
             let current = func.latest.config.code_sha256.clone().unwrap_or_default();
             if *sha != current {

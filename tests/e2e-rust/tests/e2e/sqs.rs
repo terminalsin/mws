@@ -365,7 +365,9 @@ async fn batches() {
         .into_service_error();
     assert!(huge.is_batch_request_too_long());
 
-    let got = sqs.receive_message().queue_url(&url).max_number_of_messages(10).send().await.unwrap();
+    // A short poll samples SQS's servers; a long poll returns every visible message.
+    let got =
+        sqs.receive_message().queue_url(&url).max_number_of_messages(10).wait_time_seconds(1).send().await.unwrap();
     assert_eq!(got.messages().len(), 2);
     let handles: Vec<String> = got.messages().iter().map(|m| m.receipt_handle().unwrap().to_string()).collect();
     let changed = sqs
@@ -918,7 +920,14 @@ async fn queue_metrics_reach_cloudwatch() {
         .send()
         .await
         .unwrap();
-    let rest = sqs.receive_message().queue_url(&url).max_number_of_messages(10).visibility_timeout(90).send().await;
+    let rest = sqs
+        .receive_message()
+        .queue_url(&url)
+        .max_number_of_messages(10)
+        .visibility_timeout(90)
+        .wait_time_seconds(1)
+        .send()
+        .await;
     assert_eq!(rest.unwrap().messages().len(), 2);
     sqs.receive_message().queue_url(&url).send().await.unwrap();
     // Close the minute on the emulated clock; SQS learns it from a request.

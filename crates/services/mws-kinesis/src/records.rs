@@ -8,6 +8,7 @@ use crate::metrics::{latency_ms, Batch};
 use crate::names::{authorize_stream, invalid_argument, now_ms, stream_not_found, StreamRef};
 use crate::shards::{hash_partition_key, parse_sequence_number, sequence_number, Iterator, ITERATOR_TTL_MS};
 use crate::state::{shard_id, Shard, StoredRecord, Stream};
+use crate::throughput::{key, rate_exceeded, Limits};
 use crate::Kinesis;
 
 /// `GetRecords` returns at most this many bytes per call.
@@ -60,11 +61,15 @@ fn check_entry(s: &Stream, e: &Entry<'_>) -> Result<(), ServiceError> {
     Ok(())
 }
 
-/// Append a record to the shard it maps to; `(shard id, sequence number)`.
-fn append(s: &mut Stream, e: &Entry<'_>, now: i64) -> (String, String) {
-    let created = s.created_at;
+/// The bytes a record counts against its shard's write limit.
+fn entry_size(e: &Entry<'_>) -> usize {
+    e.data.len() + e.partition_key.map_or(0, str::len)
+}
+
+/// The position (in `s.shards`) of the open shard a record maps to.
+fn target(s: &mut Stream, e: &Entry<'_>) -> usize {
     let open: Vec<usize> = s.shards.iter().enumerate().filter(|(_, sh)| sh.open()).map(|(i, _)| i).collect();
-    let pos = if s.distribution == "AUTO" {
+    if s.distribution == "AUTO" {
         let i = open[(s.round_robin % open.len() as u64) as usize];
         s.round_robin += 1;
         i
@@ -74,7 +79,12 @@ fn append(s: &mut Stream, e: &Entry<'_>, now: i64) -> (String, String) {
             None => hash_partition_key(e.partition_key.unwrap_or_default()),
         };
         open.iter().copied().find(|i| s.shards[*i].contains(hash)).unwrap_or(open[0])
-    };
+    }
+}
+
+/// Append a record to the shard at `pos`; `(shard id, sequence number)`.
+fn append(s: &mut Stream, pos: usize, e: &Entry<'_>, now: i64) -> (String, String) {
+    let created = s.created_at;
     let shard: &mut Shard = &mut s.shards[pos];
     let counter = shard.next_counter;
     shard.next_counter += 1;
@@ -142,7 +152,19 @@ impl Kinesis {
         let (shard, seq, mut batch) = {
             let mut st = self.lock();
             let s = usable(&mut st, &r)?;
-            let (shard, seq) = append(s, &entry, now);
+            let pos = target(s, &entry);
+            let limits = Limits::of(s);
+            if !self.throughput.admit_write(&key(s, s.shards[pos].index), &limits, entry_size(&entry)) {
+                let id = s.shards[pos].id();
+                let mut batch = Batch::new(s, now);
+                let message = rate_exceeded(s, &id);
+                drop(st);
+                batch.stream("WriteProvisionedThroughputExceeded", "Count", 1.0);
+                batch.shard(&id, "WriteProvisionedThroughputExceeded", "Count", 1.0);
+                self.publish(batch);
+                return Err(errors::provisioned_throughput_exceeded(message));
+            }
+            let (shard, seq) = append(s, pos, &entry, now);
             (shard, seq, Batch::new(s, now))
         };
         self.arrivals.notify_waiters();
@@ -196,14 +218,27 @@ impl Kinesis {
         let started = std::time::Instant::now();
         let encryption = self.encryption_for_put(ctx, &r)?;
         let now = now_ms(ctx);
-        let mut per_shard: std::collections::BTreeMap<String, (f64, f64)> = Default::default();
+        // Per shard: bytes and records written, records throttled.
+        let mut per_shard: std::collections::BTreeMap<String, (f64, f64, f64)> = Default::default();
         let (results, mut batch) = {
             let mut st = self.lock();
             let s = usable(&mut st, &r)?;
+            let limits = Limits::of(s);
             let results: Vec<types::PutRecordsResultEntry> = entries
                 .iter()
                 .map(|e| {
-                    let (shard, seq) = append(s, e, now);
+                    let pos = target(s, e);
+                    if !self.throughput.admit_write(&key(s, s.shards[pos].index), &limits, entry_size(e)) {
+                        let id = s.shards[pos].id();
+                        per_shard.entry(id.clone()).or_default().2 += 1.0;
+                        return types::PutRecordsResultEntry {
+                            sequence_number: None,
+                            shard_id: None,
+                            error_code: Some("ProvisionedThroughputExceededException".into()),
+                            error_message: Some(rate_exceeded(s, &id)),
+                        };
+                    }
+                    let (shard, seq) = append(s, pos, e, now);
                     let t = per_shard.entry(shard.clone()).or_default();
                     t.0 += e.data.len() as f64;
                     t.1 += 1.0;
@@ -217,28 +252,32 @@ impl Kinesis {
                 .collect();
             (results, Batch::new(s, now))
         };
-        self.arrivals.notify_waiters();
-        let bytes: f64 = entries.iter().map(|e| e.data.len() as f64).sum();
         let count = entries.len() as f64;
+        let bytes: f64 = per_shard.values().map(|t| t.0).sum();
+        let written: f64 = per_shard.values().map(|t| t.1).sum();
+        let throttled: f64 = per_shard.values().map(|t| t.2).sum();
+        if written > 0.0 {
+            self.arrivals.notify_waiters();
+        }
         batch.stream("PutRecords.Bytes", "Bytes", bytes);
         batch.stream("PutRecords.Latency", "Milliseconds", latency_ms(started));
-        batch.stream("PutRecords.Success", "Count", 1.0);
-        batch.stream("PutRecords.Records", "Count", count);
+        batch.stream("PutRecords.Success", "Count", if written > 0.0 { 1.0 } else { 0.0 });
+        batch.stream("PutRecords.Records", "Count", written);
         batch.stream("PutRecords.TotalRecords", "Count", count);
-        batch.stream("PutRecords.SuccessfulRecords", "Count", count);
+        batch.stream("PutRecords.SuccessfulRecords", "Count", written);
         batch.stream("PutRecords.FailedRecords", "Count", 0.0);
-        batch.stream("PutRecords.ThrottledRecords", "Count", 0.0);
+        batch.stream("PutRecords.ThrottledRecords", "Count", throttled);
         batch.stream("IncomingBytes", "Bytes", bytes);
-        batch.stream("IncomingRecords", "Count", count);
-        batch.stream("WriteProvisionedThroughputExceeded", "Count", 0.0);
-        for (shard, (b, n)) in &per_shard {
+        batch.stream("IncomingRecords", "Count", written);
+        batch.stream("WriteProvisionedThroughputExceeded", "Count", throttled);
+        for (shard, (b, n, t)) in &per_shard {
             batch.shard(shard, "IncomingBytes", "Bytes", *b);
             batch.shard(shard, "IncomingRecords", "Count", *n);
-            batch.shard(shard, "WriteProvisionedThroughputExceeded", "Count", 0.0);
+            batch.shard(shard, "WriteProvisionedThroughputExceeded", "Count", *t);
         }
         self.publish(batch);
         Ok(types::PutRecordsOutput {
-            failed_record_count: Some(0),
+            failed_record_count: Some(throttled as i32),
             records: results,
             encryption_type: Some(encryption),
         })
@@ -330,6 +369,17 @@ impl Kinesis {
                 s.account
             )));
         };
+        let (limits, shard_key) = (Limits::of(s), key(s, shard.index));
+        if !self.throughput.admit_read(&shard_key, &limits) {
+            let id = shard.id();
+            let mut batch = Batch::new(s, now);
+            let message = rate_exceeded(s, &id);
+            drop(st);
+            batch.stream("ReadProvisionedThroughputExceeded", "Count", 1.0);
+            batch.shard(&id, "ReadProvisionedThroughputExceeded", "Count", 1.0);
+            self.publish(batch);
+            return Err(errors::provisioned_throughput_exceeded(message));
+        }
         let limit = input.limit.unwrap_or(10_000).clamp(1, 10_000) as usize;
         let read = read_from(s, shard, it.counter, limit, now);
         let next = match (read.end_of_closed_shard, shard.open()) {
@@ -341,6 +391,7 @@ impl Kinesis {
         let id = shard.id();
         drop(st);
         let bytes: f64 = read.records.iter().map(|r| r.data.len() as f64).sum();
+        self.throughput.charge_read(&shard_key, &limits, bytes as usize);
         let count = read.records.len() as f64;
         let age = iterator_age(&read.records, now);
         batch.stream("GetRecords.Bytes", "Bytes", bytes);

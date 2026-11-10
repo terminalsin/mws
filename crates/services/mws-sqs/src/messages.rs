@@ -4,6 +4,7 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::time::{Duration, Instant};
 
 use mws_core::{RequestContext, ServiceError};
+use rand::Rng;
 use sha2::{Digest, Sha256};
 
 use crate::generated::{errors, types};
@@ -360,7 +361,10 @@ impl Sqs {
         let arn = arn_for_url(ctx, &input.queue_url)?;
         let out = Outgoing {
             attributes: message_attributes(input.message_attributes.as_ref())?,
-            trace_header: system_attributes(input.message_system_attributes.as_ref())?,
+            // SQS keeps the request's X-Ray header (which SDKs in Lambda
+            // functions send) as `AWSTraceHeader` unless one is given.
+            trace_header: system_attributes(input.message_system_attributes.as_ref())?
+                .or_else(mws_core::trace_header::current),
             body: input.message_body,
             delay: input.delay_seconds,
             group_id: input.message_group_id,
@@ -419,7 +423,8 @@ impl Sqs {
             let out = (|| {
                 let out = Outgoing {
                     attributes: message_attributes(e.message_attributes.as_ref())?,
-                    trace_header: system_attributes(e.message_system_attributes.as_ref())?,
+                    trace_header: system_attributes(e.message_system_attributes.as_ref())?
+                        .or_else(mws_core::trace_header::current),
                     body: e.message_body,
                     delay: e.delay_seconds,
                     group_id: e.message_group_id,
@@ -483,7 +488,7 @@ impl Sqs {
             tokio::pin!(notified);
             notified.as_mut().enable();
             let now = now_ms(ctx) + start.elapsed().as_millis() as i64;
-            let messages = self.try_receive(ctx, &arn, &input, now)?;
+            let messages = self.try_receive(ctx, &arn, &input, now, wait <= 0)?;
             let left = deadline.saturating_duration_since(Instant::now());
             if !messages.is_empty() || left.is_zero() {
                 self.meter.count(&arn, now, |c| match messages.len() {
@@ -503,6 +508,7 @@ impl Sqs {
         arn: &str,
         input: &types::ReceiveMessageRequest,
         now: i64,
+        short_poll: bool,
     ) -> Result<Vec<types::Message>, ServiceError> {
         let mut st = self.lock();
         self.progress(&mut st, now);
@@ -534,7 +540,7 @@ impl Sqs {
             }
         }
 
-        let picked = select(q, now, max);
+        let picked = select(q, now, max, short_poll);
         if picked.is_empty() {
             return Ok(Vec::new());
         }
@@ -750,7 +756,44 @@ fn redrive_exhausted(st: &mut State, arn: &str, now: i64) -> Result<(), ServiceE
 /// Indices of up to `max` messages to hand out. FIFO queues keep each
 /// message group in order: a group with a message in flight (or not yet
 /// visible) yields nothing further.
-fn select(q: &Queue, now: i64, max: usize) -> Vec<usize> {
+///
+/// Standard queues behave like SQS's distributed store: order is best
+/// effort, and a short poll asks only a random subset of the servers, so
+/// it can return fewer messages than are visible.
+fn select(q: &Queue, now: i64, max: usize, short_poll: bool) -> Vec<usize> {
+    if q.fifo {
+        return select_fifo(q, now, max);
+    }
+    let mut rng = rand::thread_rng();
+    let visible: Vec<usize> = (0..q.messages.len()).filter(|&i| q.messages[i].visible(now)).collect();
+    if visible.is_empty() {
+        return visible;
+    }
+    let mut picked: Vec<usize> = if short_poll {
+        let sampled: Vec<usize> = visible.iter().copied().filter(|_| rng.gen_bool(SHORT_POLL_SAMPLE)).collect();
+        // A simplification: a short poll with a message visible returns at
+        // least one, where SQS can return none.
+        if sampled.is_empty() {
+            vec![visible[rng.gen_range(0..visible.len())]]
+        } else {
+            sampled
+        }
+    } else {
+        visible
+    };
+    // Best-effort order: each message may move a few places.
+    let mut keyed: Vec<(f64, usize)> =
+        picked.drain(..).enumerate().map(|(n, i)| (n as f64 + rng.gen_range(0.0..REORDER_SPREAD), i)).collect();
+    keyed.sort_by(|a, b| a.0.total_cmp(&b.0));
+    keyed.into_iter().map(|(_, i)| i).take(max).collect()
+}
+
+/// The share of a standard queue's messages one short poll sees.
+const SHORT_POLL_SAMPLE: f64 = 0.5;
+/// How far (in places) a standard queue's messages may be reordered.
+const REORDER_SPREAD: f64 = 2.5;
+
+fn select_fifo(q: &Queue, now: i64, max: usize) -> Vec<usize> {
     let mut blocked: BTreeSet<&str> = BTreeSet::new();
     let mut out = Vec::new();
     for (i, m) in q.messages.iter().enumerate() {

@@ -511,6 +511,7 @@ async fn rotation_runs_the_lambda_function() {
         .send()
         .await
         .unwrap();
+    mws_e2e::function_active(&lambda, "rotator").await;
     let function_arn = function.function_arn().unwrap().to_string();
     let created =
         sm.create_secret().name("db").secret_string(r#"{"username":"app","password":"initial"}"#).send().await.unwrap();

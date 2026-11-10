@@ -15,7 +15,7 @@
 //! The queue side is the [`QueueSource`] trait, which the `mws` crate
 //! implements over SQS, so this crate does not depend on SQS.
 
-use std::collections::{BTreeMap, HashSet};
+use std::collections::{BTreeMap, HashMap, HashSet};
 use std::sync::Mutex;
 use std::time::Duration;
 
@@ -72,14 +72,37 @@ pub trait QueueSource: Send + Sync {
 }
 
 /// The poller's view of the service: the last request's context (for the
-/// authorizer, the endpoint functions see and the emulated clock) and which
-/// mappings are mid-batch.
+/// authorizer, the endpoint functions see and the emulated clock), which
+/// stream mappings are mid-batch, and how far each queue mapping has
+/// scaled.
 #[derive(Default)]
 pub(crate) struct Pollers {
     template: Mutex<Option<(RequestContext, chrono::Duration)>>,
     busy: Mutex<HashSet<String>>,
+    queues: Mutex<HashMap<String, Scaling>>,
     started: std::sync::OnceLock<()>,
 }
+
+/// How many batches a queue mapping has in flight, and how many it may.
+/// As in AWS, a mapping starts with five concurrent batches, adds more
+/// while the queue has a backlog (whole batches keep coming back), and
+/// gives them up again when receives come back empty, within
+/// `ScalingConfig.MaximumConcurrency` and the function's reserved
+/// concurrency. On a FIFO queue a message group with a batch in flight
+/// returns nothing more until the batch is done, so each group stays in
+/// order.
+#[derive(Debug, Clone, Copy)]
+struct Scaling {
+    inflight: usize,
+    target: usize,
+    backlog: bool,
+    idle: bool,
+}
+
+/// The concurrent batches a queue mapping starts with.
+const INITIAL_QUEUE_CONCURRENCY: usize = 5;
+/// The most concurrent invocations a queue mapping scales to.
+const MAX_QUEUE_CONCURRENCY: usize = 1_250;
 
 const POLL_INTERVAL: Duration = Duration::from_millis(250);
 
@@ -101,6 +124,19 @@ impl Lambda {
         }
         let offset = ctx.received_at - chrono::Utc::now();
         *self.inner.pollers.template.lock().expect("poller lock poisoned") = Some((ctx.clone(), offset));
+        self.start_pollers();
+    }
+
+    /// Start the pollers if they are not running. Mappings poll whenever
+    /// they are `Enabled`, however they were made (API, CloudFormation,
+    /// scenario files or restored state).
+    pub(crate) fn start_pollers(&self) {
+        if self.inner.queues.get().is_none() && self.inner.streams.get().is_none() {
+            return;
+        }
+        if tokio::runtime::Handle::try_current().is_err() {
+            return;
+        }
         self.inner.pollers.started.get_or_init(|| {
             let weak = std::sync::Arc::downgrade(&self.inner);
             tokio::spawn(async move {
@@ -125,22 +161,103 @@ impl Lambda {
                 .map(|(uuid, m)| (uuid.clone(), m.config.clone(), m.account_id.clone(), m.region.clone()))
                 .collect()
         };
+        self.inner
+            .pollers
+            .queues
+            .lock()
+            .expect("poller lock poisoned")
+            .retain(|uuid, s| s.inflight > 0 || mappings.iter().any(|(u, ..)| u == uuid));
         for (uuid, config, account, region) in mappings {
+            let stream = config.event_source_arn.as_deref().is_some_and(crate::esm_stream::is_kinesis);
+            if !stream {
+                self.poll_queue(uuid, config, account, region);
+                continue;
+            }
             if !self.inner.pollers.busy.lock().expect("poller lock poisoned").insert(uuid.clone()) {
                 continue;
             }
             let lambda = self.clone();
             tokio::spawn(async move {
-                let stream = config.event_source_arn.as_deref().is_some_and(crate::esm_stream::is_kinesis);
-                let polled = if stream {
-                    lambda.poll_stream(&uuid, &config, &account, &region).await
-                } else {
-                    lambda.poll_once(&config, &account, &region).await
-                };
-                if let Err(e) = polled {
+                if let Err(e) = lambda.poll_stream(&uuid, &config, &account, &region).await {
                     tracing::debug!(mapping = %uuid, "event source mapping poll failed: {}", e.message);
                 }
                 lambda.inner.pollers.busy.lock().expect("poller lock poisoned").remove(&uuid);
+            });
+        }
+    }
+
+    /// The most batches a queue mapping may have in flight:
+    /// `MaximumConcurrency`, and no more than the function's reserved
+    /// concurrency.
+    fn queue_concurrency_cap(
+        &self,
+        config: &types::EventSourceMappingConfiguration,
+        account: &str,
+        region: &str,
+    ) -> usize {
+        let mut cap = config
+            .scaling_config
+            .as_ref()
+            .and_then(|s| s.maximum_concurrency)
+            .map_or(MAX_QUEUE_CONCURRENCY, |m| m.max(0) as usize);
+        let reserved = config.function_arn.as_deref().and_then(|arn| {
+            let ctx = self.poller_context(account, region)?;
+            let f = names::parse_function(&ctx, arn, None).ok()?;
+            let st = self.read();
+            st.functions.get(&f.arn())?.reserved_concurrency
+        });
+        if let Some(r) = reserved {
+            cap = cap.min(r.max(0) as usize);
+        }
+        cap
+    }
+
+    /// Start as many batches for a queue mapping as its scaling allows.
+    fn poll_queue(
+        &self,
+        uuid: String,
+        config: types::EventSourceMappingConfiguration,
+        account: String,
+        region: String,
+    ) {
+        let cap = self.queue_concurrency_cap(&config, &account, &region);
+        let start = {
+            let mut queues = self.inner.pollers.queues.lock().expect("poller lock poisoned");
+            let s = queues.entry(uuid.clone()).or_insert(Scaling {
+                inflight: 0,
+                target: INITIAL_QUEUE_CONCURRENCY,
+                backlog: false,
+                idle: false,
+            });
+            if s.backlog {
+                s.target += 1;
+            } else if s.idle {
+                s.target = s.target.saturating_sub(1);
+            }
+            s.target = s.target.clamp(INITIAL_QUEUE_CONCURRENCY, MAX_QUEUE_CONCURRENCY).min(cap);
+            s.backlog = false;
+            s.idle = false;
+            let start = s.target.saturating_sub(s.inflight);
+            s.inflight += start;
+            start
+        };
+        for _ in 0..start {
+            let lambda = self.clone();
+            let (uuid, config, account, region) = (uuid.clone(), config.clone(), account.clone(), region.clone());
+            tokio::spawn(async move {
+                let polled = lambda.poll_once(&config, &account, &region).await;
+                if let Err(e) = &polled {
+                    tracing::debug!(mapping = %uuid, "event source mapping poll failed: {}", e.message);
+                }
+                let mut queues = lambda.inner.pollers.queues.lock().expect("poller lock poisoned");
+                if let Some(s) = queues.get_mut(&uuid) {
+                    s.inflight = s.inflight.saturating_sub(1);
+                    match polled {
+                        Ok(Polled::Full) => s.backlog = true,
+                        Ok(Polled::Empty) | Err(_) => s.idle = true,
+                        Ok(Polled::Partial) => {}
+                    }
+                }
             });
         }
     }
@@ -153,8 +270,15 @@ impl Lambda {
     /// A context for work done on behalf of `account` in `region`, at the
     /// emulated time now.
     pub(crate) fn poller_context(&self, account: &str, region: &str) -> Option<RequestContext> {
-        let (template, offset) = self.inner.pollers.template.lock().expect("poller lock poisoned").clone()?;
-        let mut ctx = template;
+        let template = self.inner.pollers.template.lock().expect("poller lock poisoned").clone();
+        let (mut ctx, offset) = match template {
+            Some(t) => t,
+            // No request seen yet (state restored at startup).
+            None => (self.background_template(region)?, chrono::Duration::zero()),
+        };
+        if ctx.endpoint.is_none() {
+            ctx.endpoint = self.background_endpoint();
+        }
         ctx.request_id = uuid::Uuid::new_v4().to_string();
         ctx.region = region.to_string();
         ctx.received_at = chrono::Utc::now() + offset;
@@ -256,13 +380,13 @@ impl Lambda {
         config: &types::EventSourceMappingConfiguration,
         account: &str,
         region: &str,
-    ) -> Result<(), ServiceError> {
+    ) -> Result<Polled, ServiceError> {
         let (Some(source), Some(queue_arn), Some(function_arn)) =
             (self.inner.queues.get().cloned(), config.event_source_arn.as_deref(), config.function_arn.as_deref())
         else {
-            return Ok(());
+            return Ok(Polled::Empty);
         };
-        let Some(ctx) = self.poller_context(account, region) else { return Ok(()) };
+        let Some(ctx) = self.poller_context(account, region) else { return Ok(Polled::Empty) };
         let role_ctx = self.role_context(&ctx, function_arn)?;
         let batch_size = config.batch_size.unwrap_or(10).max(1) as usize;
         let window = Duration::from_secs(config.maximum_batching_window_in_seconds.unwrap_or(0).max(0) as u64);
@@ -281,8 +405,9 @@ impl Lambda {
             }
         }
         if batch.is_empty() {
-            return Ok(());
+            return Ok(Polled::Empty);
         }
+        let polled = if batch.len() >= batch_size { Polled::Full } else { Polled::Partial };
 
         // Records no filter matches are dropped: deleted without invoking.
         let filters = compile_filters(config.filter_criteria.as_ref()).unwrap_or_default();
@@ -293,15 +418,27 @@ impl Lambda {
             source.delete(&role_ctx, queue_arn, &handles)?;
         }
         if batch.is_empty() {
-            return Ok(());
+            return Ok(polled);
         }
         let records: Vec<Value> = batch.iter().map(|m| record(m, queue_arn, region)).collect();
         let payload = serde_json::to_vec(&json!({ "Records": records })).expect("records serialize");
         let f = names::parse_function(&ctx, function_arn, None)?;
-        let ran = self.run(&ctx, &f, payload, None).await?;
+        // The messages' X-Ray headers say how deep in a chain of requests
+        // the batch is; a batch that would continue a recursive loop is not
+        // delivered, and comes back (to the queue's dead-letter queue, in
+        // time) like a failed one.
+        let hash = crate::recursion::function_hash(&f.arn());
+        let deepest = batch
+            .iter()
+            .filter_map(|m| m.attributes.get("AWSTraceHeader"))
+            .max_by_key(|h| crate::recursion::count(Some(h), &hash));
+        let Some(trace) = self.recursion_check(&ctx, &f, deepest.map(String::as_str)) else {
+            return Ok(polled);
+        };
+        let ran = mws_core::trace_header::scope(Some(trace), self.run(&ctx, &f, payload, None)).await?;
         if ran.outcome.function_error.is_some() {
             // The batch comes back when its visibility timeout ends.
-            return Ok(());
+            return Ok(polled);
         }
         let reports = config.function_response_types.iter().flatten().any(|t| t == "ReportBatchItemFailures");
         let keep: Option<HashSet<String>> = if reports { failed_items(&ran.outcome.payload, &batch) } else { None };
@@ -315,8 +452,19 @@ impl Lambda {
         if !done.is_empty() {
             source.delete(&role_ctx, queue_arn, &done)?;
         }
-        Ok(())
+        Ok(polled)
     }
+}
+
+/// What one batch of a queue mapping found.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Polled {
+    /// Nothing to receive.
+    Empty,
+    /// Less than a whole batch.
+    Partial,
+    /// A whole batch: the queue has a backlog.
+    Full,
 }
 
 /// The ids a function reported in `batchItemFailures`, or `None` when it

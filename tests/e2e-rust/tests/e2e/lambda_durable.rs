@@ -106,6 +106,7 @@ async fn durable_function(cfg: &aws_config::SdkConfig, name: &str) -> String {
         .send()
         .await
         .unwrap();
+    mws_e2e::function_active(&lambda, &name).await;
     f.function_arn().unwrap().to_string()
 }
 
@@ -328,6 +329,7 @@ async fn capacity_providers_scaling_configs_and_resource_policies() {
         .send()
         .await
         .unwrap();
+    mws_e2e::function_active(&lambda, "managed").await;
     let function_arn = f.function_arn().unwrap().to_string();
     let versions =
         lambda.list_function_versions_by_capacity_provider().capacity_provider_name("fleet").send().await.unwrap();

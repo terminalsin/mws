@@ -87,6 +87,9 @@ pub struct Job {
     pub payload: Vec<u8>,
     pub invoked_arn: String,
     pub client_context: Option<String>,
+    /// The X-Ray trace header the invocation runs with
+    /// (`Lambda-Runtime-Trace-Id`), when it has one.
+    pub trace_id: Option<String>,
 }
 
 /// How an invocation ended.
@@ -273,6 +276,14 @@ impl Runtimes {
                 keep
             });
         }
+        // Reserved concurrency caps invocations in flight, whether they would
+        // reuse a warm environment or start one: at 0 every invocation is
+        // throttled at once.
+        if let Some(r) = reserved {
+            if Self::busy_count(&pools, &spec.function_arn) >= r.max(0) as usize {
+                return Err(LaunchError::Throttled);
+            }
+        }
         if let Some(envs) = pools.get(&spec.pool_key) {
             for e in envs {
                 let mut busy = e.busy.lock().expect("lock");
@@ -280,11 +291,6 @@ impl Runtimes {
                     *busy = true;
                     return Ok(e.clone());
                 }
-            }
-        }
-        if let Some(r) = reserved {
-            if Self::busy_count(&pools, &spec.function_arn) >= r.max(0) as usize {
-                return Err(LaunchError::Throttled);
             }
         }
         let env = Arc::new(self.launch(spec)?);
@@ -688,7 +694,7 @@ async fn handle_api(api: &Api, req: http::Request<hyper::body::Incoming>) -> htt
                 .header("Lambda-Runtime-Aws-Request-Id", &id)
                 .header("Lambda-Runtime-Deadline-Ms", p.deadline_ms.to_string())
                 .header("Lambda-Runtime-Invoked-Function-Arn", &p.job.invoked_arn)
-                .header("Lambda-Runtime-Trace-Id", trace_id(&id))
+                .header("Lambda-Runtime-Trace-Id", p.job.trace_id.clone().unwrap_or_else(|| trace_id(&id)))
                 .header("content-type", "application/json");
             if let Some(c) = &p.job.client_context {
                 b = b.header("Lambda-Runtime-Client-Context", c);

@@ -69,6 +69,12 @@ pub struct Function {
     pub code_signing_config_arn: Option<String>,
     /// Lambda Managed Instances scaling configurations by qualifier.
     pub scaling_configs: BTreeMap<String, types::FunctionScalingConfig>,
+    /// When the create or update in flight completes (wall clock); `None`
+    /// when the function is settled.
+    pub settles_at: Option<chrono::DateTime<chrono::Utc>>,
+    /// `$LATEST` as it was before the update in flight: invocations run it
+    /// until the update completes.
+    pub previous: Option<Box<Version>>,
 }
 
 /// One version of a function (`$LATEST` or a published number).

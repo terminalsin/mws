@@ -65,6 +65,7 @@ async fn lambda_invocations_publish_aws_lambda_metrics() {
         .send()
         .await
         .unwrap();
+    mws_e2e::function_active(&lambda, "metered").await;
     lambda.invoke().function_name("metered").payload(Blob::new(b"{}".to_vec())).send().await.unwrap();
     let failed =
         lambda.invoke().function_name("metered").payload(Blob::new(br#"{"fail":true}"#.to_vec())).send().await.unwrap();

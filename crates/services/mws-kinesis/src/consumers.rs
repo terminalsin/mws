@@ -14,6 +14,7 @@ use crate::metrics::Batch;
 use crate::names::{authorize, authorize_stream, invalid_argument, now_ms, request_tag_context, valid_name, StreamRef};
 use crate::records::{children, iterator_age, position, read_from};
 use crate::state::{Consumer, State, TRANSITION_MS};
+use crate::throughput::{Bucket, FAN_OUT_BYTES};
 use crate::Kinesis;
 
 /// Consumers per stream.
@@ -22,6 +23,11 @@ const CONSUMER_LIMIT: usize = 20;
 const SUBSCRIPTION_LIMIT: Duration = Duration::from_secs(300);
 /// With no new records, an event still goes out this often.
 const HEARTBEAT: Duration = Duration::from_secs(5);
+
+/// The record bytes an event carries, against the fan-out rate.
+fn event_bytes(records: &[types::Record]) -> f64 {
+    records.iter().map(|r| r.data.len() as f64).sum()
+}
 
 fn time(ms: i64) -> chrono::DateTime<chrono::Utc> {
     chrono::DateTime::from_timestamp_millis(ms).unwrap_or_default()
@@ -348,6 +354,7 @@ impl Kinesis {
         opened.consumer(&consumer, "SubscribeToShard.Success", "Count", 1.0);
         self.publish(opened);
         self.event_metrics(batch, &consumer, &input.shard_id, &first, started_at);
+        let first_bytes = event_bytes(&first.records);
         let head = generated::encode_event_subscribe_to_shard_event_stream(
             &types::SubscribeToShardEventStream::SubscribeToShardEvent(first),
         );
@@ -355,12 +362,21 @@ impl Kinesis {
         let me = self.clone();
         let consumer_arn = input.consumer_arn.clone();
         let shard_id = input.shard_id.clone();
+        // Enhanced fan-out delivers up to 2 MiB/s per consumer and shard.
+        let mut budget = Bucket::full(FAN_OUT_BYTES);
+        budget.take(first_bytes);
         tokio::spawn(async move {
             let started = tokio::time::Instant::now();
             let mut last_sent = tokio::time::Instant::now();
             while !ended && started.elapsed() < SUBSCRIPTION_LIMIT {
                 let notified = me.arrivals.notified();
                 let _ = tokio::time::timeout(Duration::from_millis(200), notified).await;
+                budget.refill(FAN_OUT_BYTES);
+                let wait = budget.wait(FAN_OUT_BYTES);
+                if !wait.is_zero() {
+                    tokio::time::sleep(wait).await;
+                    budget.refill(FAN_OUT_BYTES);
+                }
                 if !me.subscriptions.current(&key, generation) {
                     let taken =
                         types::SubscribeToShardEventStream::ResourceInUseException(types::ResourceInUseException {
@@ -393,6 +409,7 @@ impl Kinesis {
                 }
                 counter = next;
                 ended = end;
+                budget.take(event_bytes(&event.records));
                 me.event_metrics(batch, &consumer, &shard_id, &event, at);
                 let frame = generated::encode_event_subscribe_to_shard_event_stream(
                     &types::SubscribeToShardEventStream::SubscribeToShardEvent(event),

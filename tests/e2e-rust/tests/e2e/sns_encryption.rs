@@ -187,7 +187,14 @@ async fn s3_events_reach_encrypted_topics_only_when_the_key_policy_allows_s3() {
     let drain = || async {
         let mut bodies = Vec::new();
         loop {
-            let got = sqs.receive_message().queue_url(&url).max_number_of_messages(10).send().await.unwrap();
+            let got = sqs
+                .receive_message()
+                .queue_url(&url)
+                .max_number_of_messages(10)
+                .wait_time_seconds(1)
+                .send()
+                .await
+                .unwrap();
             if got.messages().is_empty() {
                 return bodies;
             }

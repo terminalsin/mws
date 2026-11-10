@@ -15,7 +15,7 @@ All 57 operations are generated from the AWS model (awsJson1.1) and implemented.
 | Event patterns | ✅ | The full pattern language (exact values, `prefix`, `suffix`, `equals-ignore-case`, `wildcard`, `anything-but`, `numeric`, `exists`, `cidr`, `$or`, arrays) with EventBridge's validation messages; `TestEventPattern`. |
 | Scheduled rules | ✅ | `rate()` and six-field `cron()` on the emulated clock. |
 | Input shaping | ✅ | `Input`, `InputPath` and `InputTransformer`. |
-| Retries and dead-letter queues | ✅ | Retry policies; dead-letter queues get EventBridge's error attributes. |
+| Retries and dead-letter queues | ✅ | Retry policies (`MaximumRetryAttempts`, `MaximumEventAgeInSeconds`); dead-letter messages carry EventBridge's attributes `RULE_ARN`, `TARGET_ARN`, `ERROR_CODE`, `ERROR_MESSAGE`, `EXHAUSTED_RETRY_CONDITION` (`MaximumRetryAttemptsExceeded` or `MaximumEventAgeExceeded`) and `RETRY_ATTEMPTS`. |
 | Archives and replays | ✅ | Archives keep matching events through EventBridge's managed rule; replays send them back with `replay-name`. |
 | Global endpoints, partner sources, tags | ✅ | `PutEvents` with `EndpointId` goes to the primary bus; `PutPartnerEvents`. |
 | `iam:PassRole` | ✅ | Checked for rule and target roles. |
@@ -34,11 +34,11 @@ All 57 operations are generated from the AWS model (awsJson1.1) and implemented.
 | API destinations | ✅ | Real HTTP requests with basic, API key or OAuth client credentials auth from the connection, and path, header and query parameters. |
 | ECS tasks | ✅ | Each event runs `EcsParameters`' task definition on the target cluster with `RunTask` as the target's role (launch type, capacity providers, network configuration, placement, tags), started by `events-rule/<rule>`; a JSON input with `containerOverrides` becomes the task's overrides. |
 | Run Command | ✅ | Systems Manager document targets send the document to `RunCommandParameters`' targets with `SendCommand` as the target's role; the input supplies the document parameters. |
-| Other targets | ❌ | Step Functions, Batch, CodeBuild and the rest are accepted but not delivered. |
+| Other targets | ❌ | Step Functions, Batch, CodeBuild, CodePipeline, API Gateway, Redshift Data, SageMaker, Inspector and EC2 actions are accepted but cannot be reached. Each event is a failed invocation (`ResourceNotFoundException`). As with a missing target resource on AWS it is not retried: it is counted in `FailedInvocations` and sent straight to the target's dead-letter queue. It is never reported as a success. |
 
 ## Metrics
 
-`AWS/Events` metrics go to [CloudWatch](cloudwatch.md): `MatchedEvents`, `TriggeredRules`, `Invocations`, `FailedInvocations`, `InvocationAttempts`, `SuccessfulInvocationAttempts`, `RetryInvocationAttempts` and `IngestionToInvocationSuccessLatency`, by `RuleName` and by `EventBusName` and `RuleName`.
+`AWS/Events` metrics go to [CloudWatch](cloudwatch.md): `MatchedEvents`, `TriggeredRules`, `Invocations`, `FailedInvocations`, `InvocationAttempts`, `SuccessfulInvocationAttempts`, `RetryInvocationAttempts`, `InvocationsSentToDlq`, `InvocationsFailedToBeSentToDlq` and `IngestionToInvocationSuccessLatency`, by `RuleName` and by `EventBusName` and `RuleName`.
 
 ## Events from other services
 

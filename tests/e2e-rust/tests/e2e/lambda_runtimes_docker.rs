@@ -99,6 +99,7 @@ async fn managed_runtimes_run_in_aws_base_images_docker() {
         .send()
         .await
         .unwrap();
+    mws_e2e::function_active(&lambda, "node22").await;
     let (error, body) = invoke(&lambda, "node22", r#"{"n":1}"#).await;
     assert_eq!(error, None, "{body}");
     assert!(body["node"].as_str().unwrap().starts_with("v22."), "{body}");
@@ -129,6 +130,7 @@ async fn managed_runtimes_run_in_aws_base_images_docker() {
         .send()
         .await
         .unwrap();
+    mws_e2e::function_active(&lambda, "py313").await;
     let (error, body) = invoke(&lambda, "py313", r#"{"n":2}"#).await;
     assert_eq!(error, None, "{body}");
     assert_eq!(body["python"], "3.13");

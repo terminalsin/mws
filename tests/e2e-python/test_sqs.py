@@ -131,7 +131,8 @@ def test_batches(sqs, queue):
     with pytest.raises(sqs.exceptions.TooManyEntriesInBatchRequest):
         sqs.send_message_batch(QueueUrl=queue, Entries=[{"Id": f"i{i}", "MessageBody": "x"} for i in range(11)])
 
-    msgs = sqs.receive_message(QueueUrl=queue, MaxNumberOfMessages=10)["Messages"]
+    # A short poll samples SQS's servers; a long poll returns every visible message.
+    msgs = sqs.receive_message(QueueUrl=queue, MaxNumberOfMessages=10, WaitTimeSeconds=1)["Messages"]
     assert len(msgs) == 2
     changed = sqs.change_message_visibility_batch(
         QueueUrl=queue, Entries=[{"Id": "v", "ReceiptHandle": msgs[0]["ReceiptHandle"], "VisibilityTimeout": 60}]
