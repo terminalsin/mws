@@ -87,7 +87,8 @@ export type Format =
   | "name"
   | "port"
   | "country"
-  | "csr";
+  | "csr"
+  | "phone";
 
 /** "name": a readable resource name; "token": random letters and digits;
  * "password": meets the usual complexity rules; or a fixed prefix/suffix
@@ -314,9 +315,12 @@ export function repairs(value: string, rule: Rule, code: IssueCode): Repair[] {
       }
     // falls through
     default:
-      // The least invasive cleanup that works; a second one would only be a
-      // worse version of it.
-      for (const r of reshape(value, rule).slice(0, 1)) offer(r);
+      // A value in the right format can still miss the page's pattern (an
+      // http:// URL where only https:// is allowed): the format knows the
+      // better fix. Otherwise the least invasive cleanup that works; a
+      // second one would only be a worse version of it.
+      if (rule.format) for (const r of FORMATS[rule.format].repair?.(value, rule) ?? []) offer(r);
+      if (out.length === 0) for (const r of reshape(value, rule).slice(0, 1)) offer(r);
       if (out.length === 0 && (code === "tooShort" || code === "pattern")) offer(fresh(rule));
   }
   if (out.length === 0 && code !== "taken") for (const r of didYouMean(value, rule)) offer(r);
@@ -713,8 +717,13 @@ export const FORMATS: Record<Format, FormatSpec> = {
     repair(value, rule) {
       const out: Repair[] = [];
       const name = value.trim();
-      if (rule.arn && name && !name.startsWith("arn:")) {
-        out.push({ value: rule.arn.replace("{}", name.replace(/^\/+/, "")), label: "Expand to an ARN", kind: "fix" });
+      if (name && !name.startsWith("arn:")) {
+        // A bare name: the known resource it names, its ARN, close names.
+        const byName = new Map((rule.known ?? []).filter((k) => k.startsWith("arn:")).map((k) => [k.split(/[:/]/).pop()!, k]));
+        const exact = byName.get(name);
+        if (exact) out.push({ value: exact, label: `Use ${name}`, kind: "fix" });
+        if (rule.arn) out.push({ value: rule.arn.replace("{}", name.replace(/^\/+/, "")), label: "Expand to an ARN", kind: "fix" });
+        for (const n of closest(name, [...byName.keys()], 2)) out.push({ value: byName.get(n)!, label: `Did you mean ${n}?`, kind: "suggest" });
       }
       if (name.startsWith("arn:")) {
         // arn:aws:iam:123456789012:role/x — a missing region colon.
@@ -812,11 +821,18 @@ export const FORMATS: Record<Format, FormatSpec> = {
         return "An http(s) URL";
       }
     },
-    repair(value) {
+    repair(value, rule) {
       const v = value.trim();
-      return /^[\w.-]+\.[a-z]{2,}([:/].*)?$/i.test(v) || /^localhost([:/].*)?$/.test(v)
-        ? [{ value: `https://${v}`, label: "Add https://", kind: "fix" }]
-        : [];
+      // https:// first; http:// only where the rule refuses https://.
+      const pick = (bare: string, add: boolean): Repair[] => {
+        const https = `https://${bare}`;
+        const http = `http://${bare}`;
+        const v2 = valid(https, rule) || !valid(http, rule) ? https : http;
+        return [{ value: v2, label: add ? `Add ${v2.slice(0, v2.indexOf("//") + 2)}` : `Use ${v2.slice(0, v2.indexOf(":"))}`, kind: "fix" }];
+      };
+      const scheme = v.match(/^https?:\/\/(.+)$/i);
+      if (scheme) return pick(scheme[1], false);
+      return /^[\w.-]+\.[a-z]{2,}([:/].*)?$/i.test(v) || /^localhost([:/].*)?$/.test(v) ? pick(v, true) : [];
     },
   },
   bucket: {
@@ -864,6 +880,22 @@ export const FORMATS: Record<Format, FormatSpec> = {
       if (!block) return /^\s*MII[A-Za-z0-9+/=\s]+$/.test(value) ? [{ value: pem("CERTIFICATE REQUEST", value), label: "Add the BEGIN/END lines", kind: "fix" }] : [];
       if (!CSR_LABEL.test(block[1])) return [];
       return [{ value: pem(block[1], block[2]), label: "Tidy the request", kind: "fix" }];
+    },
+  },
+  phone: {
+    // E.164, as SMS APIs take it: +, country code, number, no formatting.
+    check(value) {
+      return /^\+[1-9]\d{1,14}$/.test(value) ? null : "E.164, like +14155550100";
+    },
+    repair(value) {
+      let digits = value.replace(/[\s().\-\u2010-\u2015/]/g, "");
+      if (/^00[1-9]/.test(digits)) digits = `+${digits.slice(2)}`;
+      if (!/^\+?\d+$/.test(digits)) return [];
+      if (digits.startsWith("+")) return [{ value: digits, label: "Remove formatting", kind: "fix" }];
+      const out: Repair[] = [{ value: `+${digits}`, label: "Add +", kind: "fix" }];
+      // Ten digits without a country code read as a North American number.
+      if (digits.length === 10) out.unshift({ value: `+1${digits}`, label: "Add +1", kind: "suggest" });
+      return out;
     },
   },
 };

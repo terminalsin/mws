@@ -95,6 +95,29 @@ test("over-long JSON is minified", () => {
   assert.deepEqual(values({ format: "json", maxLength: 20 }, doc), []);
 });
 
+test("phone numbers are repaired to E.164", () => {
+  assert.equal(check("+14155550100", { format: "phone" }), null);
+  assert.deepEqual(values({ format: "phone" }, "+1 (415) 555-0100"), ["+14155550100"]);
+  assert.deepEqual(values({ format: "phone" }, "0044 20 7946 0958"), ["+442079460958"]);
+  assert.deepEqual(values({ format: "phone" }, "415-555-0100"), ["+14155550100", "+4155550100"]);
+  assert.deepEqual(values({ format: "phone" }, "call me"), []);
+});
+
+test("bare names become known ARNs", () => {
+  const known = ["arn:aws:sqs:us-east-1:123456789012:orders", "arn:aws:sqs:us-east-1:123456789012:billing"];
+  const rule: Rule = { format: "arn", arn: "arn:aws:sqs:us-east-1:123456789012:{}", known };
+  assert.deepEqual(values(rule, "orders"), [known[0]]);
+  assert.deepEqual(values(rule, "ordrs"), ["arn:aws:sqs:us-east-1:123456789012:ordrs", known[0]]);
+});
+
+test("URL schemes follow the page's pattern", () => {
+  const http: Rule = { format: "url", pattern: "^http://" };
+  const https: Rule = { format: "url", pattern: "^https://" };
+  assert.deepEqual(values(http, "example.com/hook"), ["http://example.com/hook"]);
+  assert.deepEqual(values(http, "https://example.com/hook"), ["http://example.com/hook"]);
+  assert.deepEqual(values(https, "http://example.com/hook"), ["https://example.com/hook"]);
+});
+
 test("JSON repair handles hand-written JSON", () => {
   assert.equal(repairJson("{'Version': '2012-10-17', Statement: [],}"), '{\n  "Version": "2012-10-17",\n  "Statement": []\n}');
   assert.equal(repairJson('"a": 1'), '{\n  "a": 1\n}');

@@ -73,6 +73,7 @@ function attributeRule(el: Control): Rule {
     }
     if (el.type === "email") rule.format = "email";
     if (el.type === "url") rule.format = "url";
+    if (el.type === "tel") rule.format = "phone";
   }
   return rule;
 }

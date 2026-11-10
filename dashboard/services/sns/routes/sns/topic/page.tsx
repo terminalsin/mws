@@ -5,7 +5,9 @@ import { Globe, Mail, MessageSquare, Send, Smartphone, Trash2, Unlink } from "lu
 import type { Metadata } from "next";
 import type { ReactNode } from "react";
 
-import { ICONS, sns } from "../../../lib/clients";
+import { ICONS, sns, targets } from "../../../lib/clients";
+import { DEDUP_ID, GROUP_ID, MESSAGE, scopeOf, SUBJECT } from "../../../lib/rules";
+import { SubscribeFields } from "../../../lib/subscribe";
 import { deleteTopic, publish, subscribe, unsubscribe } from "../actions";
 
 type Props = { searchParams: Promise<{ arn?: string }> };
@@ -13,8 +15,6 @@ type Props = { searchParams: Promise<{ arn?: string }> };
 export async function generateMetadata({ searchParams }: Props): Promise<Metadata> {
   return { title: shortName((await searchParams).arn) || "Topic" };
 }
-
-const PROTOCOLS = ["sqs", "lambda", "email", "email-json", "sms", "http", "https", "firehose", "application"];
 
 function protocolIcon(protocol?: string): ReactNode {
   switch (protocol) {
@@ -40,15 +40,16 @@ export default async function Topic({ searchParams }: Props) {
   const arn = (await searchParams).arn ?? "";
   const data = await load(async () => {
     const client = await sns();
-    const [attrs, subs] = await Promise.all([
+    const [attrs, subs, endpoints] = await Promise.all([
       client.send(new GetTopicAttributesCommand({ TopicArn: arn })),
       collect(
         (NextToken) => client.send(new ListSubscriptionsByTopicCommand({ TopicArn: arn, NextToken })),
         (r) => r.Subscriptions,
         (r) => r.NextToken,
       ),
+      targets(scopeOf(arn)),
     ]);
-    return { attrs: attrs.Attributes ?? {}, subs };
+    return { attrs: attrs.Attributes ?? {}, subs, endpoints };
   });
   const back = { href: "/sns", label: "Topics" };
   if (!data.ok) {
@@ -58,8 +59,9 @@ export default async function Topic({ searchParams }: Props) {
       </Page>
     );
   }
-  const { attrs, subs } = data.value;
+  const { attrs, subs, endpoints } = data.value;
   const fifo = attrs.FifoTopic === "true";
+  const dedup = fifo && attrs.ContentBasedDeduplication !== "true";
   return (
     <Page
       title={shortName(arn)}
@@ -71,16 +73,23 @@ export default async function Topic({ searchParams }: Props) {
           <Sheet title="Publish" label="Publish" icon={<Send size={15} aria-hidden />} testId="publish">
             <ActionForm action={publish.bind(null, arn)} submit="Publish" testId="publish">
               <div className="form-row">
-                <Field label="Subject">
+                <Field label="Subject" rule={SUBJECT}>
                   <input name="subject" />
                 </Field>
                 {fifo && (
-                  <Field label="Group ID">
+                  <Field label="Group ID" rule={GROUP_ID} member="MessageGroupId">
                     <input name="group" defaultValue="default" required />
                   </Field>
                 )}
+                {dedup && (
+                  <Field label="Deduplication ID" rule={DEDUP_ID} member="MessageDeduplicationId">
+                    <input name="dedup" required />
+                  </Field>
+                )}
               </div>
-              <textarea name="message" required aria-label="Message" />
+              <Field label="Message" rule={MESSAGE}>
+                <textarea name="message" required />
+              </Field>
             </ActionForm>
           </Sheet>
           <ActionForm
@@ -100,21 +109,7 @@ export default async function Topic({ searchParams }: Props) {
         actions={
           <Sheet title="Subscribe" label="Subscribe" testId="subscribe">
             <ActionForm action={subscribe.bind(null, arn)} submit="Subscribe" testId="subscribe">
-              <div className="form-row">
-                <Field label="Protocol">
-                  <select name="protocol" defaultValue="sqs">
-                    {PROTOCOLS.map((p) => (
-                      <option key={p}>{p}</option>
-                    ))}
-                  </select>
-                </Field>
-                <Field label="Endpoint">
-                  <input name="endpoint" required />
-                </Field>
-              </div>
-              <label className="check">
-                <input type="checkbox" name="grant" defaultChecked /> Allow the topic in the queue policy (SQS)
-              </label>
+              <SubscribeFields topicArn={arn} fifo={fifo} targets={endpoints} />
             </ActionForm>
           </Sheet>
         }
