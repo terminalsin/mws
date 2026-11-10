@@ -245,3 +245,21 @@ test("S3 object locations are rewritten to s3:// URLs", () => {
   // A bucket without a key: the known objects in it are offered.
   assert.deepEqual(values({ ...rule, known: ["s3://lists/trusted.txt", "s3://other/x.csv"] }, "s3://lists"), ["s3://lists/trusted.txt"]);
 });
+
+test("reserved prefixes are dropped", () => {
+  const rule: Rule = { pattern: "^[a-zA-Z0-9:/_-]+$", reserved: ["alias/aws/", "aws/"], generate: "name" };
+  const issue = check("alias/aws/orders", rule)!;
+  assert.equal(issue.code, "reserved");
+  assert.equal(issue.repairs[0].value, "orders");
+  assert.equal(check("aws-orders", rule), null);
+});
+
+test("tags take key=value lines", () => {
+  const rule: Rule = { format: "tags" };
+  assert.equal(check("team=payments\n\nenv=", rule), null);
+  assert.equal(check("team: payments", rule)?.message, "Line 1: key=value");
+  assert.deepEqual(values(rule, "team: payments\nenv prod\nowner\nenv=dev"), ["team=payments\nowner=\nenv=dev"]);
+  assert.equal(check("a=1\na=2", rule)?.message, "Line 2: a repeats");
+  assert.deepEqual(values(rule, "a=1\na=2"), ["a=2"]);
+  assert.deepEqual(values(rule, "aws:team=x"), ["team=x"]);
+});
