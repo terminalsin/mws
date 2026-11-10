@@ -7,6 +7,7 @@ import {
   DeleteObjectCommand,
   DeleteObjectsCommand,
   GetObjectCommand,
+  HeadBucketCommand,
   ListObjectVersionsCommand,
   PutBucketPolicyCommand,
   PutBucketTaggingCommand,
@@ -15,7 +16,7 @@ import {
   type BucketLocationConstraint,
 } from "@aws-sdk/client-s3";
 import { getSignedUrl } from "@aws-sdk/s3-request-presigner";
-import { act, region, required, text, type ActionResult } from "@mws-dashboard/aws";
+import { act, FieldError, region, required, text, type ActionResult } from "@mws-dashboard/aws";
 import { redirect } from "next/navigation";
 
 import { s3 } from "../../lib/s3";
@@ -27,6 +28,13 @@ export async function createBucket(_: ActionResult | null, form: FormData) {
     const name = required(form, "name", "Bucket name");
     const r = await region();
     const client = await s3();
+    // us-east-1 answers 200 when you re-create a bucket you own, so check
+    // first: the console says it exists rather than "creating" it again.
+    const owned = await client.send(new HeadBucketCommand({ Bucket: name })).then(
+      () => true,
+      () => false,
+    );
+    if (owned) throw new FieldError("name", "Already exists", "taken");
     await client.send(
       new CreateBucketCommand({
         Bucket: name,
@@ -37,7 +45,7 @@ export async function createBucket(_: ActionResult | null, form: FormData) {
       await client.send(new PutBucketVersioningCommand({ Bucket: name, VersioningConfiguration: { Status: "Enabled" } }));
     }
     return `Created ${name}`;
-  }, "/s3");
+  }, { revalidate: ["/s3"], fields: { Bucket: "name", InvalidBucketName: "name" } });
 }
 
 /** Delete a bucket, first deleting every object version in it when asked. */
@@ -63,7 +71,7 @@ export async function deleteBucket(bucket: string, _: ActionResult | null, form:
 export async function uploadObject(bucket: string, _: ActionResult | null, form: FormData) {
   return act(async () => {
     const files = form.getAll("file").filter((f): f is File => f instanceof File && f.size >= 0 && f.name !== "");
-    if (files.length === 0) throw new Error("Choose a file");
+    if (files.length === 0) throw new FieldError("file", "Choose a file", "required");
     const prefix = text(form, "prefix");
     const client = await s3();
     for (const file of files) {
@@ -73,7 +81,7 @@ export async function uploadObject(bucket: string, _: ActionResult | null, form:
       );
     }
     return files.length === 1 ? `Uploaded ${files[0].name}` : `Uploaded ${files.length} files`;
-  }, bucketPage(bucket));
+  }, { revalidate: [bucketPage(bucket)], fields: { Key: "key", KeyTooLongError: "key" } });
 }
 
 export async function putTextObject(bucket: string, _: ActionResult | null, form: FormData) {
@@ -83,7 +91,7 @@ export async function putTextObject(bucket: string, _: ActionResult | null, form
       new PutObjectCommand({ Bucket: bucket, Key: key, Body: text(form, "body"), ContentType: text(form, "contentType") || "text/plain" }),
     );
     return `Wrote ${key}`;
-  }, bucketPage(bucket));
+  }, { revalidate: [bucketPage(bucket)], fields: { Key: "key", KeyTooLongError: "key", ContentType: "contentType" } });
 }
 
 export async function createFolder(bucket: string, prefix: string, _: ActionResult | null, form: FormData) {
@@ -91,7 +99,7 @@ export async function createFolder(bucket: string, prefix: string, _: ActionResu
     const name = required(form, "name", "Folder name").replace(/\/+$/, "");
     await (await s3()).send(new PutObjectCommand({ Bucket: bucket, Key: `${prefix}${name}/`, Body: "" }));
     return `Created ${name}/`;
-  }, bucketPage(bucket));
+  }, { revalidate: [bucketPage(bucket)], fields: { KeyTooLongError: "name" } });
 }
 
 export async function deleteObject(bucket: string, key: string, back: string | null) {
@@ -117,10 +125,14 @@ export async function savePolicy(bucket: string, _: ActionResult | null, form: F
       await client.send(new DeleteBucketPolicyCommand({ Bucket: bucket }));
       return "Policy removed";
     }
-    JSON.parse(policy);
+    try {
+      JSON.parse(policy);
+    } catch {
+      throw new FieldError("policy", "Invalid JSON", "format");
+    }
     await client.send(new PutBucketPolicyCommand({ Bucket: bucket, Policy: policy }));
     return "Policy saved";
-  }, bucketPage(bucket));
+  }, { revalidate: [bucketPage(bucket)], fields: { Policy: "policy", MalformedPolicy: "policy" } });
 }
 
 export async function saveTags(bucket: string, _: ActionResult | null, form: FormData) {
@@ -135,7 +147,7 @@ export async function saveTags(bucket: string, _: ActionResult | null, form: For
       });
     await (await s3()).send(new PutBucketTaggingCommand({ Bucket: bucket, Tagging: { TagSet } }));
     return "Tags saved";
-  }, bucketPage(bucket));
+  }, { revalidate: [bucketPage(bucket)], fields: { Tagging: "tags", InvalidTag: "tags", MalformedXML: "tags" } });
 }
 
 /** A presigned GET URL, as the console's "Share" does. */

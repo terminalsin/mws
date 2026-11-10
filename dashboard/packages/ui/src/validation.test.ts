@@ -386,3 +386,12 @@ test("CIDR rules: netmask range, inside the VPC, clear of siblings", () => {
   // A full VPC: the next smaller size that still fits.
   assert.deepEqual(values({ format: "cidr", cidr: { prefix: [16, 28], within: ["10.0.0.0/16"], avoid: ["10.0.0.0/17", "10.0.128.0/18"] } }, "10.0.0.0/17"), ["10.0.192.0/18"]);
 });
+
+test("separators spelled as literals in the pattern are kept and tidied", () => {
+  // ECR repository names: separators only between lowercase words.
+  const rule: Rule = { pattern: "^[a-z0-9]+((\\.|_|__|-+)[a-z0-9]+)*(\\/[a-z0-9]+((\\.|_|__|-+)[a-z0-9]+)*)*$", maxLength: 256 };
+  assert.deepEqual(values(rule, "Team App"), ["team-app"]);
+  assert.deepEqual(values(rule, "My.Service/API v2"), ["my.service/api-v2"]);
+  assert.deepEqual(values(rule, "team//app/"), ["team/app"]);
+  assert.deepEqual(values({ ...rule, taken: ["team/app"] }, "team/app"), ["team/app-2"]);
+});
