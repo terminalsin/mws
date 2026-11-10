@@ -119,13 +119,17 @@ export type Format =
   | "name"
   | "port"
   | "ports"
+  | "semver"
+  | "cron"
   | "country"
   | "csr"
   | "phone"
   | "pairs"
   | "tags"
   | "branch"
-  | "dir";
+  | "dir"
+  | "schedule"
+  | "eventPattern";
 
 /** "name": a readable resource name; "token": random letters and digits;
  * "password": meets the usual complexity rules; or a fixed prefix/suffix
@@ -388,7 +392,7 @@ export function repairs(value: string, rule: Rule, code: IssueCode): Repair[] {
       if (rule.enum?.length) for (const e of rule.enum.slice(0, MAX_REPAIRS)) offer({ value: e, label: `Use ${e}`, kind: "suggest" });
       break;
     case "taken":
-      offer(nextFree(value, rule));
+      offer(rule.format === "semver" ? bump(value, rule) : nextFree(value, rule));
       offer(fresh(rule));
       break;
     case "reserved": {
@@ -670,6 +674,17 @@ function isTaken(value: string, rule: Rule): boolean {
   return rule.taken.some((t) => t.toLowerCase() === v);
 }
 
+/** The next free patch version of a taken one: 1.0.0 → 1.0.1. */
+function bump(value: string, rule: Rule): Repair | null {
+  const [major, minor, patch, ...rest] = value.split(".");
+  if (rest.length || !/^\d+$/.test(patch ?? "")) return null;
+  for (let n = Number(patch) + 1; n < Number(patch) + 50; n++) {
+    const v = `${major}.${minor}.${n}`;
+    if (!isTaken(v, rule)) return { value: v, label: `Use ${v}`, kind: "fix" };
+  }
+  return null;
+}
+
 /** The next free variant of a taken name: queue → queue-2 → queue-3. */
 function nextFree(value: string, rule: Rule): Repair | null {
   // A taken email address: plus-address it (owner+2@example.com).
@@ -878,6 +893,15 @@ export function countryCodes(value: string): string[] {
 const PEM_BLOCK = /-----BEGIN ([A-Z0-9 ]+)-----([\s\S]*?)-----END \1-----/;
 const CSR_LABEL = /^(NEW )?CERTIFICATE REQUEST$/;
 const pem = (label: string, body: string) => `-----BEGIN ${label}-----\n${body.replace(/\s+/g, "").match(/.{1,64}/g)?.join("\n") ?? ""}\n-----END ${label}-----`;
+
+const DAYS = ["SUN", "MON", "TUE", "WED", "THU", "FRI", "SAT"];
+
+/** Well-known services by name, for a port typed as one ("ssh"). */
+const SERVICE_PORTS: Record<string, number> = {
+  ftp: 21, ssh: 22, telnet: 23, smtp: 25, dns: 53, http: 80, pop3: 110, ntp: 123, imap: 143, ldap: 389, https: 443, smtps: 465,
+  imaps: 993, mssql: 1433, oracle: 1521, nfs: 2049, mysql: 3306, aurora: 3306, rdp: 3389, postgres: 5432, postgresql: 5432,
+  redis: 6379, memcached: 11211, mongodb: 27017, elasticsearch: 9200, kafka: 9092,
+};
 
 export const FORMATS: Record<Format, FormatSpec> = {
   ...CERT_FORMATS,
@@ -1175,6 +1199,69 @@ export const FORMATS: Record<Format, FormatSpec> = {
       return null;
     },
   },
+  ports: {
+    check(value) {
+      const m = value.match(/^(\d{1,5})(?:-(\d{1,5}))?$/);
+      if (!m) return "Like 443 or 8000-8080";
+      const [from, to] = [Number(m[1]), Number(m[2] ?? m[1])];
+      if (from > 65535 || to > 65535) return "Ports go up to 65535";
+      return from > to ? "Start with the lower port" : null;
+    },
+    repair(value) {
+      const v = value.trim().toLowerCase();
+      const out: Repair[] = [];
+      const service = SERVICE_PORTS[v.replace(/[^a-z0-9]/g, "")];
+      if (service !== undefined) out.push({ value: String(service), label: `${value.trim()} uses ${service}`, kind: "suggest" });
+      if (/^(\*|all|any)$/.test(v)) out.push({ value: "0-65535", label: "All ports", kind: "fix" });
+      const m = v.match(/^(\d+)\s*(?:-|–|—|:|\.\.|to)\s*(\d+)$/) ?? v.match(/^(\d+)(?:\/(?:tcp|udp))?$/);
+      if (m) {
+        const [a, b] = [m[1], m[2] ?? m[1]].map((n) => Math.min(65535, Number(n)));
+        const [from, to] = a <= b ? [a, b] : [b, a];
+        out.push({ value: from === to ? String(from) : `${from}-${to}`, label: a > b ? "Swap the ports" : "Use a port range", kind: "fix" });
+      }
+      return out;
+    },
+  },
+  semver: {
+    check(value) {
+      return /^(\d+|x)\.(\d+|x)\.(\d+|x)$/.test(value) ? null : "Like 1.0.0";
+    },
+    repair(value) {
+      // "v1.2", "1,2,3", "1.2.3-beta": the numbers it has, padded to three.
+      const parts = (value.trim().replace(/^v(?=\d)/i, "").match(/\d+|\bx\b/gi) ?? []).slice(0, 3).map((p) => p.toLowerCase());
+      if (!parts.length) return [];
+      while (parts.length < 3) parts.push("0");
+      return [{ value: parts.join("."), label: "Use a semantic version", kind: "fix" }];
+    },
+  },
+  cron: {
+    // AWS cron fields, without the cron( ) around them.
+    check(value) {
+      if (/^\s*(cron|rate)\(/.test(value)) return "Just the fields, without cron( )";
+      const f = value.trim().split(/\s+/);
+      if (f.length !== 6) return "Six fields: minute hour day month weekday year";
+      if (f.some((x) => !/^[\w*?,/#-]+$/.test(x))) return "Unsupported characters";
+      if ((f[2] === "?") === (f[4] === "?")) return "Day or weekday must be ?";
+      return null;
+    },
+    repair(value) {
+      const inner = value.trim().replace(/^cron\((.*)\)$/s, "$1").trim();
+      let f = inner.split(/\s+/);
+      let label = inner !== value.trim() ? "Remove cron( )" : "";
+      if (f.length === 5) {
+        // Unix cron: no year, and weekdays count from Sunday = 0.
+        const day = (d: string) => DAYS[Number(d) % 7];
+        f = [...f.slice(0, 4), f[4].replace(/(^|[,-])([0-7])(?=$|[,-])/g, (_, sep, d) => sep + day(d)), "*"];
+        label = "Convert from Unix cron";
+      }
+      if (f.length !== 6) return [];
+      if (f[2] !== "?" && f[4] !== "?") {
+        if (f[4] === "*") [f[4], label] = ["?", label || "Use ? for the weekday"];
+        else if (f[2] === "*") [f[2], label] = ["?", label || "Use ? for the day"];
+      } else if (f[2] === "?" && f[4] === "?") [f[2], label] = ["*", label || "Run every day"];
+      return label ? [{ value: f.join(" "), label, kind: "fix" }] : [];
+    },
+  },
   country: {
     check(value) {
       if (countries().has(value)) return null;
@@ -1332,38 +1419,114 @@ export const FORMATS: Record<Format, FormatSpec> = {
       return out;
     },
   },
-  ports: {
+  schedule: {
+    check: scheduleProblem,
+    repair(value) {
+      const fixed = repairSchedule(value);
+      return fixed ? [{ value: fixed, label: "Use this schedule", kind: "fix" }] : [];
+    },
+  },
+  eventPattern: {
     check(value) {
-      const m = value.match(/^(\d{1,5})(?:-(\d{1,5}))?$/);
-      if (!m) return "Like 443 or 8000-8080";
-      const [from, to] = [Number(m[1]), Number(m[2] ?? m[1])];
-      if (from > 65535 || to > 65535) return "Ports go up to 65535";
-      return from > to ? "Start with the lower port" : null;
+      let parsed: unknown;
+      try {
+        parsed = JSON.parse(value);
+      } catch (e) {
+        return jsonMessage(value, e);
+      }
+      return patternProblem(parsed);
     },
     repair(value) {
-      const v = value.trim().toLowerCase();
-      const out: Repair[] = [];
-      const service = SERVICE_PORTS[v.replace(/[^a-z0-9]/g, "")];
-      if (service !== undefined) out.push({ value: String(service), label: `${value.trim()} uses ${service}`, kind: "suggest" });
-      if (/^(\*|all|any)$/.test(v)) out.push({ value: "0-65535", label: "All ports", kind: "fix" });
-      const m = v.match(/^(\d+)\s*(?:-|–|—|:|\.\.|to)\s*(\d+)$/) ?? v.match(/^(\d+)(?:\/(?:tcp|udp))?$/);
-      if (m) {
-        const [a, b] = [m[1], m[2] ?? m[1]].map((n) => Math.min(65535, Number(n)));
-        const [from, to] = a <= b ? [a, b] : [b, a];
-        out.push({ value: from === to ? String(from) : `${from}-${to}`, label: a > b ? "Swap the ports" : "Use a port range", kind: "fix" });
+      const json = repairJson(value) ?? value;
+      try {
+        const fixed = JSON.stringify(wrapLeaves(JSON.parse(json)), null, 2);
+        return [{ value: fixed, label: patternProblem(JSON.parse(json)) ? "Fix the pattern" : "Fix the JSON", kind: "fix" }];
+      } catch {
+        return [];
       }
-      return out;
     },
   },
 };
 
-/** Well-known services by name, for a port typed as one ("ssh"). */
-const SERVICE_PORTS: Record<string, number> = {
-  ftp: 21, ssh: 22, telnet: 23, smtp: 25, dns: 53, http: 80, pop3: 110, ntp: 123, imap: 143, ldap: 389, https: 443, smtps: 465,
-  imaps: 993, mssql: 1433, oracle: 1521, nfs: 2049, mysql: 3306, aurora: 3306, rdp: 3389, postgres: 5432, postgresql: 5432,
-  redis: 6379, memcached: 11211, mongodb: 27017, elasticsearch: 9200, kafka: 9092,
-};
+// Schedules: `rate(5 minutes)` or a six-field `cron(...)` (EventBridge,
+// Scheduler, SSM). Repairs read the usual near misses: a bare "5 minutes",
+// "every hour", wrong plurals, Unix five-field cron, both day fields set.
 
+const RATE_UNITS: [RegExp, string][] = [
+  [/^m(in(ute)?s?)?$/i, "minute"],
+  [/^h((ou)?rs?|ours?)?$/i, "hour"],
+  [/^d(ays?)?$/i, "day"],
+];
+const PRESETS: Record<string, string> = { hourly: "rate(1 hour)", daily: "rate(1 day)", weekly: "rate(7 days)" };
+
+function scheduleProblem(value: string): string | null {
+  const v = value.trim();
+  const rate = v.match(/^rate\((.*)\)$/);
+  if (rate) {
+    const m = rate[1].trim().match(/^(\d+) (minutes?|hours?|days?)$/);
+    if (!m || Number(m[1]) < 1) return "Like rate(5 minutes)";
+    return (Number(m[1]) === 1) === !m[2].endsWith("s") ? null : Number(m[1]) === 1 ? `Use ${m[2].slice(0, -1)} for 1` : `Use ${m[2]}s`;
+  }
+  const cron = v.match(/^cron\((.*)\)$/);
+  if (cron) {
+    const f = cron[1].trim().split(/\s+/);
+    if (f.length !== 6) return `cron() takes 6 fields, not ${f.length}`;
+    if ((f[2] === "?") === (f[4] === "?")) return "Day-of-month or day-of-week must be ?";
+    return null;
+  }
+  return "Like rate(5 minutes) or cron(0 12 * * ? *)";
+}
+
+function repairSchedule(value: string): string | null {
+  let v = value.trim().replace(/^["'@]|["']$/g, "").trim();
+  if (PRESETS[v.toLowerCase()]) return PRESETS[v.toLowerCase()];
+  const rate = v.replace(/^rate\s*\(?|\)$/gi, "").replace(/^every\s+/i, "").trim();
+  const m = rate.match(/^(\d+)?\s*([a-z]+)$/i);
+  const unit = m && RATE_UNITS.find(([re]) => re.test(m[2]))?.[1];
+  if (m && unit) {
+    const n = Number(m[1] ?? "1");
+    if (n >= 1) return `rate(${n} ${unit}${n === 1 ? "" : "s"})`;
+  }
+  v = v.replace(/^cron\s*\(?|\)$/gi, "").trim();
+  let f = v.split(/\s+/);
+  if (!f.every((x) => /^[\w*?,/#-]+$/.test(x))) return null;
+  if (f.length === 7 && f[0] === "0") f = f.slice(1); // Quartz seconds
+  if (f.length === 5) {
+    // Unix cron: Sunday is 0 there and 1 here; no year field.
+    f[4] = f[4].replace(/\d/g, (d) => String((Number(d) % 7) + 1));
+    f.push("*");
+  }
+  if (f.length !== 6) return null;
+  f = f.map((x, i) => (i < 2 ? x.replace(/^\*\//, "0/") : x));
+  if (f[2] !== "?" && f[4] !== "?") {
+    if (f[4] === "*") f[4] = "?";
+    else if (f[2] === "*") f[2] = "?";
+  } else if (f[2] === "?" && f[4] === "?") f[4] = "*";
+  return `cron(${f.join(" ")})`;
+}
+
+// Event patterns (EventBridge rules, Pipes and Lambda event filters): a JSON
+// object whose leaves are arrays of values or matchers. A bare value is
+// almost always meant as a one-element list.
+
+function patternProblem(p: unknown, path = ""): string | null {
+  if (p === null || typeof p !== "object" || Array.isArray(p)) return path ? `"${path}" must be an object or an array` : "Must be a JSON object";
+  for (const [k, v] of Object.entries(p)) {
+    if (Array.isArray(v)) {
+      if (v.length === 0) return `"${k}" is an empty list`;
+    } else {
+      const inner = patternProblem(v, k);
+      if (inner) return inner;
+    }
+  }
+  return null;
+}
+
+function wrapLeaves(p: unknown): unknown {
+  if (p === null || typeof p !== "object") return p;
+  if (Array.isArray(p)) return p;
+  return Object.fromEntries(Object.entries(p).map(([k, v]) => [k, v !== null && typeof v === "object" ? wrapLeaves(v) : [v]]));
+}
 
 const DOMAIN = /^(?=.{1,253}$)(?:[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\.)+[a-z]{2,63}$/i;
 /** Top-level domains people mistype, and what they meant. */

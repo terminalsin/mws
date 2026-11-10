@@ -8,6 +8,7 @@
     "./routes/*": "./routes/*"
   },
   "dependencies": {
+    "@aws-sdk/client-ec2": "^3.1164.0",
     "@aws-sdk/client-iam": "^3.1164.0",
     "@aws-sdk/client-imagebuilder": "^3.1164.0",
     "@mws-dashboard/aws": "*",

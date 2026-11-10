@@ -117,7 +117,7 @@ Fields validate in place, and say how to fix what they reject. `Field`
 3. what the page adds: `format` (`json`, `yaml` (YAML or JSON documents),
    `keyvalue` (one `Key=value` per line), `policy`, `path` (IAM), `dir`, `arn`, `cidr`,
    `ipv4`, `email`, `emails` (a comma-separated list), `domain`,
-   `email-or-domain`, `dnsName` (wildcards allowed), `url`, `s3url`, `bucket`, `name`, `port`, `ports` (a port or range), `phone`,
+   `email-or-domain`, `dnsName` (wildcards allowed), `url`, `s3url`, `bucket`, `name`, `port`, `ports` (a port or range), `semver`, `cron` (AWS's six fields), `phone`,
    `tags` for `key=value` tag lines, `pairs` for any `key=value` list,
    `branch` for Git branch names, PEM `certificate`, `certificates` and
    `privateKey`), `taken` (names that exist), `reserved`

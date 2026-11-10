@@ -144,6 +144,24 @@ test("local URLs get http://, key=value lists are rewritten", () => {
   assert.deepEqual(values({ format: "pairs" }, '{"x-team": "ml", "n": 2,}'), ["x-team=ml\nn=2"]);
 });
 
+test("semantic versions are completed and bumped", () => {
+  const rule: Rule = { pattern: "^[0-9]+\\.[0-9]+\\.[0-9]+$", format: "semver" };
+  assert.deepEqual(values(rule, "1.0"), ["1.0.0"]);
+  assert.deepEqual(values(rule, "v2"), ["2.0.0"]);
+  assert.deepEqual(values(rule, "1.2.3-beta"), ["1.2.3"]);
+  assert.deepEqual(values({ ...rule, taken: ["1.0.0", "1.0.1"] }, "1.0.1"), ["1.0.2"]);
+});
+
+test("cron expressions are converted to AWS's six fields", () => {
+  const rule: Rule = { format: "cron" };
+  assert.equal(check("0 9 ? * MON-FRI *", rule), null);
+  assert.deepEqual(values(rule, "0 9 * * 1-5"), ["0 9 ? * MON-FRI *"]);
+  assert.deepEqual(values(rule, "0 0 * * *"), ["0 0 * * ? *"]);
+  assert.deepEqual(values(rule, "cron(0 0 * * ? *)"), ["0 0 * * ? *"]);
+  assert.deepEqual(values(rule, "0 0 1 * * *"), ["0 0 1 * ? *"]);
+  assert.deepEqual(values(rule, "rate(1 day)"), []);
+});
+
 test("JSON repair handles hand-written JSON", () => {
   assert.equal(repairJson("{'Version': '2012-10-17', Statement: [],}"), '{\n  "Version": "2012-10-17",\n  "Statement": []\n}');
   assert.equal(repairJson('"a": 1'), '{\n  "a": 1\n}');
@@ -365,6 +383,31 @@ test("directories are made absolute, cleaned and cut to the allowed depth", () =
   assert.deepEqual(values(efs, "/.cache"), ["/cache"]);
   assert.deepEqual(values(efs, "/a/b/c/d/e"), ["/a/b/c/d"]);
 });
+test("schedules repair near misses", () => {
+  const rule: Rule = { format: "schedule" };
+  assert.equal(check("rate(5 minutes)", rule), null);
+  assert.equal(check("cron(0 12 * * ? *)", rule), null);
+  assert.deepEqual(values(rule, "5 minutes"), ["rate(5 minutes)"]);
+  assert.deepEqual(values(rule, "every hour"), ["rate(1 hour)"]);
+  assert.deepEqual(values(rule, "rate(1 minutes)"), ["rate(1 minute)"]);
+  assert.deepEqual(values(rule, "rate(10 min)"), ["rate(10 minutes)"]);
+  assert.deepEqual(values(rule, "@daily"), ["rate(1 day)"]);
+  assert.deepEqual(values(rule, "*/5 * * * *"), ["cron(0/5 * * * ? *)"]);
+  assert.deepEqual(values(rule, "0 9 * * 1-5"), ["cron(0 9 ? * 2-6 *)"]);
+  assert.deepEqual(values(rule, "cron(0 12 * * * *)"), ["cron(0 12 * * ? *)"]);
+  assert.equal(check("rate(1 minutes)", rule)?.message, "Use minute for 1");
+});
+
+test("event patterns wrap bare values in lists", () => {
+  const rule: Rule = { format: "eventPattern" };
+  assert.equal(check('{"source": ["my.app"], "detail": {"state": ["ok"]}}', rule), null);
+  assert.equal(check('{"source": "my.app"}', rule)?.message, '"source" must be an object or an array');
+  assert.deepEqual(values(rule, '{"source": "my.app", "detail": {"n": 1}}'), ['{\n  "source": [\n    "my.app"\n  ],\n  "detail": {\n    "n": [\n      1\n    ]\n  }\n}']);
+  assert.deepEqual(values(rule, "{source: 'my.app',}"), ['{\n  "source": [\n    "my.app"\n  ]\n}']);
+  assert.equal(check("[]", rule)?.message, "Must be a JSON object");
+});
+
+
 
 test("hierarchical names are tidied, also after dropping a reserved prefix", () => {
   // Parameter Store's names: a/b needs a leading slash; /aws and /ssm are reserved.
