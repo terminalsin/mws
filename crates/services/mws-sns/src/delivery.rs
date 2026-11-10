@@ -200,7 +200,12 @@ impl Sns {
         tokio::spawn(async move {
             while let Some(job) = rx.recv().await {
                 let Some(inner) = inner.upgrade() else { return };
-                Sns { inner }.fan_out_now(job);
+                // Run the deliveries this message defers (SQS sends,
+                // Lambda invokes, DLQ redrives) here, in order, before the
+                // next message: spawned, they would race and a FIFO
+                // queue would see the group out of order.
+                let sns = Sns { inner };
+                mws_core::deferred::run(async move { sns.fan_out_now(job) }).await;
             }
         });
     }
