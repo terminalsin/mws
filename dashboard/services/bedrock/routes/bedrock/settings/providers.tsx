@@ -2,7 +2,7 @@ import { load, mws } from "@mws-dashboard/aws";
 import { ActionForm, AwsIcon, ErrorNotice, List, Pill, Section, Sheet } from "@mws-dashboard/ui";
 import { KeyRound, Pencil, Repeat2, RotateCcw, Server, Star, TriangleAlert } from "lucide-react";
 
-import { NO_LOCAL, providerLogo, type Local } from "../../../lib/presets";
+import { LOGIN, NO_LOCAL, providerLogo, type Local } from "../../../lib/presets";
 import { forgetProvider, saveProvider, setDefaultProvider } from "../actions";
 import { ProviderFields, type ProviderView } from "./fields";
 
@@ -47,6 +47,7 @@ export async function Providers() {
   }
   const { default: fallback, providers } = res.value;
   const names = providers.map((p) => p.name);
+  const tools = local.ok && local.value.tools ? local.value.tools : {};
   return (
     <Section
       title="Model providers"
@@ -84,6 +85,11 @@ export async function Providers() {
             meta: (
               <span className="chips">
                 {p.name === fallback && <Pill icon={<Star size={11} />}>default</Pill>}
+                {(p.kind === "claude-code" || p.kind === "codex") && p.installed !== false && tools[p.kind]?.loggedIn === false && (
+                  <Pill tone="warn" icon={<TriangleAlert size={11} />} title={`Run ${LOGIN[p.kind]}${tools[p.kind]?.via === "bridge" ? " on the host" : ""}`}>
+                    not logged in
+                  </Pill>
+                )}
                 {p.installed === false && (
                   <Pill tone="warn" icon={<TriangleAlert size={11} />}>
                     not installed

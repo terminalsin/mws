@@ -389,3 +389,86 @@ echo '{{"type":"turn.completed","usage":{{"input_tokens":20,"output_tokens":3}}}
     mws.stop().await;
     let _ = std::fs::remove_dir_all(&dir);
 }
+
+/// CLI providers put their own models in the catalog (`<provider>.<model>`,
+/// answered by that provider), and a CLI that is not logged in says so.
+#[cfg(unix)]
+#[tokio::test]
+async fn cli_providers_list_their_models_and_report_logins() {
+    let dir = std::env::temp_dir().join(format!("mws-e2e-{}-bedrock-cli-models", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).unwrap();
+    let d = dir.display();
+    script(
+        &dir.join("claude"),
+        &format!(
+            r#"if [ "$1" = auth ]; then echo '{{"loggedIn": false}}'; exit 0; fi
+printf '%s\n' "$@" > {d}/claude.args
+cat > {d}/claude.stdin
+if grep -q expired {d}/claude.stdin; then
+  printf '%s' '{{"type":"result","is_error":true,"result":"Failed to authenticate: OAuth session expired and could not be refreshed"}}'
+  exit 1
+fi
+printf '%s' '{{"type":"result","is_error":false,"result":"sonnet here","usage":{{"input_tokens":3,"output_tokens":2}}}}'
+"#
+        ),
+    );
+    script(
+        &dir.join("codex"),
+        r#"if [ "$1" = login ]; then echo 'Not logged in'; exit 1; fi
+if [ "$1" = debug ]; then
+  echo '{"models":[{"slug":"gpt-test","display_name":"GPT Test","visibility":"list","context_window":272000},{"slug":"hidden-one","display_name":"Hidden","visibility":"hide"}]}'
+  exit 0
+fi
+exit 1
+"#,
+    );
+
+    let mws = Mws::start().await;
+    let r = Client::new(&mws.root_sdk_config().await);
+    let b = aws_sdk_bedrock::Client::new(&mws.root_sdk_config().await);
+    for (name, cmd) in [("claude-code", "claude"), ("codex", "codex")] {
+        let body = json!({"command": dir.join(cmd)});
+        let (status, v) = mws.control("PUT", &format!("/_aws/bedrock/providers/{name}"), Some(&body.to_string())).await;
+        assert_eq!(status, 200, "{v}");
+    }
+    // Discovery runs in the background; the local-tools endpoint waits for it.
+    mws.control("GET", "/_aws/bedrock/local", None).await;
+    let list = b.list_foundation_models().send().await.unwrap();
+    let ids: Vec<&str> = list.model_summaries().iter().map(|m| m.model_id()).collect();
+    for id in ["claude-code.opus", "claude-code.sonnet", "claude-code.haiku", "codex.gpt-test"] {
+        assert!(ids.contains(&id), "{id} missing from {ids:?}");
+    }
+    assert!(!ids.contains(&"codex.hidden-one"));
+    let m = b.get_foundation_model().model_identifier("codex.gpt-test").send().await.unwrap();
+    let details = m.model_details().unwrap();
+    assert_eq!(details.model_name(), Some("GPT Test"));
+    assert_eq!(details.provider_name(), Some("Codex"));
+
+    // The listed model goes to its provider, under the CLI's own name.
+    let out = r.converse().model_id("claude-code.sonnet").messages(user("hello")).send().await.unwrap();
+    let ConverseOutput::Message(m) = out.output().unwrap() else { panic!("no message") };
+    assert_eq!(m.content()[0].as_text().unwrap(), "sonnet here");
+    let args = std::fs::read_to_string(dir.join("claude.args")).unwrap();
+    let args: Vec<&str> = args.lines().collect();
+    assert_eq!(args[args.iter().position(|a| *a == "--model").unwrap() + 1], "sonnet");
+
+    // Not logged in: a ModelErrorException that names the fix.
+    let err = r.converse().model_id("claude-code.sonnet").messages(user("expired")).send().await.unwrap_err();
+    let err = err.into_service_error();
+    assert!(err.is_model_error_exception(), "{err:?}");
+    let msg = format!("{err:?}");
+    assert!(msg.contains("not logged in") && msg.contains("claude login"), "{msg}");
+
+    // Login state, as the console reads it.
+    let (_, local) = mws.control("GET", "/_aws/bedrock/local", None).await;
+    assert!(local["tools"]["claude-code"].get("loggedIn").is_some(), "{local}");
+
+    // Removing the provider removes its models.
+    mws.control("DELETE", "/_aws/bedrock/providers/codex", None).await;
+    mws.control("GET", "/_aws/bedrock/local", None).await;
+    let list = b.list_foundation_models().send().await.unwrap();
+    assert!(!list.model_summaries().iter().any(|m| m.model_id() == "codex.gpt-test"));
+    mws.stop().await;
+    let _ = std::fs::remove_dir_all(&dir);
+}

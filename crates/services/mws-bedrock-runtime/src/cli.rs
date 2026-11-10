@@ -268,6 +268,43 @@ impl Cli {
 #[async_trait::async_trait]
 impl Backend for Cli {
     async fn complete(&self, prompt: &Prompt) -> Result<Completion, BackendError> {
+        let bridged = bridge_url(&self.provider).is_some();
+        self.answer(prompt).await.map_err(|e| login_hint(e, self.provider.kind, bridged))
+    }
+}
+
+/// A login failure, said as one: which CLI is not logged in, where, and the
+/// command that fixes it.
+fn login_hint(e: BackendError, kind: Kind, bridged: bool) -> BackendError {
+    let m = e.message.to_ascii_lowercase();
+    let auth = [
+        "failed to authenticate",
+        "oauth",
+        "not logged in",
+        "login",
+        "invalid api key",
+        "401",
+        "unauthorized",
+        "credit balance",
+    ]
+    .iter()
+    .any(|k| m.contains(k));
+    if !auth || m.contains("bridge token") {
+        return e;
+    }
+    let (label, fix) = match kind {
+        Kind::Codex => ("Codex", "codex login"),
+        _ => ("Claude Code", "claude login"),
+    };
+    let place = if bridged { "on the bridge's host" } else { "where MWS runs" };
+    BackendError {
+        status: 401,
+        message: format!("{label} is not logged in {place}: run `{fix}` there, then retry. ({})", e.message.trim()),
+    }
+}
+
+impl Cli {
+    async fn answer(&self, prompt: &Prompt) -> Result<Completion, BackendError> {
         let label = label(self.provider.kind);
         let (system, mut body) = transcript(prompt);
         if self.provider.kind == Kind::Codex && !system.is_empty() {
@@ -584,7 +621,7 @@ async fn bridge_answer(
         return (401, json!({ "message": "Missing or wrong bridge token." }));
     }
     match (method, path) {
-        ("GET", "/health") => (200, json!({ "tools": detect() })),
+        ("GET", "/health") => (200, json!({ "tools": detect().await })),
         ("POST", "/run") => {
             let run: Run = match serde_json::from_slice(body) {
                 Ok(r) => r,
@@ -658,7 +695,7 @@ async fn read_request(stream: &mut tokio::net::TcpStream) -> Result<(String, Str
 /// What `GET /_aws/bedrock/local` shows: the local tools here, whether MWS
 /// runs in a container, and the bridge's tools when one is configured.
 pub async fn describe_local() -> Value {
-    let mut tools = detect();
+    let mut tools = detect().await;
     let bridge = std::env::var("MWS_BEDROCK_CLI_BRIDGE").ok().filter(|u| !u.is_empty());
     let mut bridge_info = Value::Null;
     if let Some(url) = &bridge {
@@ -687,18 +724,85 @@ pub async fn describe_local() -> Value {
     json!({ "tools": tools, "container": in_container(), "bridge": bridge_info })
 }
 
-/// Which local model tools this machine has: the CLIs on `PATH`.
-pub fn detect() -> Value {
+/// Which local model tools this machine has (on `PATH` or where their
+/// installers put them), and whether the CLIs are logged in.
+pub async fn detect() -> Value {
     let tools = [("claude-code", "claude"), ("codex", "codex"), ("ollama", "ollama"), ("lmstudio", "lms")];
     let mut out = serde_json::Map::new();
     for (name, command) in tools {
         let found = find(command);
-        out.insert(
-            name.to_string(),
-            json!({ "command": command, "found": found.is_some(), "path": found.map(|p| p.display().to_string()) }),
-        );
+        let logged_in = match (&found, name) {
+            (Some(exe), "claude-code") => status_of(exe, &["auth", "status"]).await.map(|(_, o)| {
+                serde_json::from_str::<Value>(o.trim()).ok().and_then(|v| v["loggedIn"].as_bool()).unwrap_or(false)
+            }),
+            (Some(exe), "codex") => status_of(exe, &["login", "status"]).await.map(|(ok, _)| ok),
+            _ => None,
+        };
+        let mut t =
+            json!({ "command": command, "found": found.is_some(), "path": found.map(|p| p.display().to_string()) });
+        if let Some(l) = logged_in {
+            t["loggedIn"] = json!(l);
+        }
+        out.insert(name.to_string(), t);
     }
     Value::Object(out)
+}
+
+/// Run a quick status command: whether it succeeded, and its stdout.
+async fn status_of(exe: &Path, args: &[&str]) -> Option<(bool, String)> {
+    let child = tokio::process::Command::new(exe)
+        .args(args)
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .kill_on_drop(true)
+        .output();
+    let out = tokio::time::timeout(Duration::from_secs(10), child).await.ok()?.ok()?;
+    Some((out.status.success(), String::from_utf8_lossy(&out.stdout).into_owned()))
+}
+
+/// The models a CLI provider offers, as catalog entries `<provider>.<model>`:
+/// Claude Code's model aliases, and the models `codex debug models` lists.
+pub async fn discover_models(p: &Resolved) -> Vec<mws_bedrock::catalog::ModelSpec> {
+    use mws_bedrock::catalog::{discovered_text_model, Family};
+    let label = label(p.kind);
+    let provider = if p.name == p.kind.as_str() { label.to_string() } else { format!("{label} ({})", p.name) };
+    match p.kind {
+        Kind::ClaudeCode => [("opus", "Claude Opus"), ("sonnet", "Claude Sonnet"), ("haiku", "Claude Haiku")]
+            .iter()
+            .map(|(alias, name)| {
+                discovered_text_model(&format!("{}.{alias}", p.name), name, &provider, Family::Anthropic, 200_000)
+            })
+            .collect(),
+        Kind::Codex => {
+            let command = p.command.clone().unwrap_or_else(|| default_command(p.kind).to_string());
+            let run = Run {
+                kind: Kind::Codex,
+                args: vec!["debug".into(), "models".into()],
+                stdin: String::new(),
+                timeout_seconds: 30,
+            };
+            let out = match bridge_url(p) {
+                Some(url) => run_on_bridge(&url, bridge_token(p).as_deref(), &run).await,
+                None => run_here(&command, &run).await,
+            };
+            let Ok(out) = out else { return Vec::new() };
+            let Ok(v) = serde_json::from_str::<Value>(out.stdout.trim()) else { return Vec::new() };
+            v["models"]
+                .as_array()
+                .into_iter()
+                .flatten()
+                .filter(|m| m["visibility"] == "list")
+                .filter_map(|m| {
+                    let slug = m["slug"].as_str()?;
+                    let name = m["display_name"].as_str().unwrap_or(slug);
+                    let window = m["context_window"].as_u64().unwrap_or(128_000) as u32;
+                    Some(discovered_text_model(&format!("{}.{slug}", p.name), name, &provider, Family::OpenAi, window))
+                })
+                .collect()
+        }
+        _ => Vec::new(),
+    }
 }
 
 #[cfg(test)]

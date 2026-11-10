@@ -19,6 +19,8 @@ export type Tone = "good" | "warn" | "bad" | "neutral" | "info";
 export function providerIcon(provider: string | undefined): string | undefined {
   const p = (provider ?? "").toLowerCase();
   const logos: [string, string][] = [
+    ["claude code", "ai/claudecode"],
+    ["codex", "ai/codex"],
     ["anthropic", "ai/claude"],
     ["amazon", "ai/nova"],
     ["meta", "ai/meta"],

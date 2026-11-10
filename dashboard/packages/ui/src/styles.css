@@ -1803,6 +1803,9 @@
     border-radius: 50%;
     background: var(--good);
   }
+  .preset-found[data-tone="warn"] {
+    background: var(--warn);
+  }
   .preset-added {
     position: absolute;
     top: 4px;
