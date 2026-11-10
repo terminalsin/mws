@@ -16,12 +16,16 @@ import { wantsAuto } from "@mws-dashboard/aws/auto";
 import { redirect } from "next/navigation";
 
 import { autoscaling, ec2 } from "../../lib/clients";
+import { sizeIssue } from "../../lib/issues";
 import { defaultSubnets, images } from "../../lib/network";
 
 const int = (form: FormData, name: string) => {
   const v = text(form, name);
   return v === "" ? undefined : Number(v);
 };
+
+/** Form fields by the API member they fill. */
+const SIZE_FIELDS = { AutoScalingGroupName: "name", MinSize: "min", MaxSize: "max", DesiredCapacity: "desired" };
 
 export async function createLaunchTemplate(_: ActionResult | null, form: FormData) {
   return act(async () => {
@@ -32,7 +36,17 @@ export async function createLaunchTemplate(_: ActionResult | null, form: FormDat
       }),
     );
     return "Created";
-  }, "/autoscaling");
+  }, {
+    revalidate: ["/autoscaling"],
+    fields: {
+      LaunchTemplateName: "name",
+      "LaunchTemplateData.ImageId": "image",
+      "LaunchTemplateData.InstanceType": "type",
+      "InvalidLaunchTemplateName.MalformedException": "name",
+      "InvalidAMIID.Malformed": "image",
+      "InvalidAMIID.NotFound": "image",
+    },
+  });
 }
 
 export async function createGroup(_: ActionResult | null, form: FormData) {
@@ -46,27 +60,39 @@ export async function createGroup(_: ActionResult | null, form: FormData) {
       template = `${name}-template`;
       await (await ec2()).send(new CreateLaunchTemplateCommand({ LaunchTemplateName: template, LaunchTemplateData: { ImageId: image.ImageId, InstanceType: "t3.micro" } }));
     }
-    await (await autoscaling()).send(
-      new CreateAutoScalingGroupCommand({
-        AutoScalingGroupName: name,
-        LaunchTemplate: { LaunchTemplateName: template, Version: "$Latest" },
-        MinSize: int(form, "min") ?? 0,
-        MaxSize: int(form, "max") ?? 1,
-        DesiredCapacity: int(form, "desired"),
-        VPCZoneIdentifier: subnets.join(","),
-      }),
-    );
+    try {
+      await (await autoscaling()).send(
+        new CreateAutoScalingGroupCommand({
+          AutoScalingGroupName: name,
+          LaunchTemplate: { LaunchTemplateName: template, Version: "$Latest" },
+          MinSize: int(form, "min") ?? 0,
+          MaxSize: int(form, "max") ?? 1,
+          DesiredCapacity: int(form, "desired"),
+          VPCZoneIdentifier: subnets.join(","),
+        }),
+      );
+    } catch (e) {
+      const issue = sizeIssue(e);
+      if (issue) return issue;
+      throw e;
+    }
     redirect(`/autoscaling/group?name=${encodeURIComponent(name)}`);
-  });
+  }, { fields: SIZE_FIELDS });
 }
 
 export async function editCapacity(name: string, _: ActionResult | null, form: FormData) {
   return act(async () => {
-    await (await autoscaling()).send(
-      new UpdateAutoScalingGroupCommand({ AutoScalingGroupName: name, MinSize: int(form, "min"), MaxSize: int(form, "max"), DesiredCapacity: int(form, "desired") }),
-    );
+    try {
+      await (await autoscaling()).send(
+        new UpdateAutoScalingGroupCommand({ AutoScalingGroupName: name, MinSize: int(form, "min"), MaxSize: int(form, "max"), DesiredCapacity: int(form, "desired") }),
+      );
+    } catch (e) {
+      const issue = sizeIssue(e);
+      if (issue) return issue;
+      throw e;
+    }
     return "Updated";
-  }, "/autoscaling/group", "/autoscaling");
+  }, { revalidate: ["/autoscaling/group", "/autoscaling"], fields: SIZE_FIELDS });
 }
 
 export async function scale(name: string, desired: number) {
@@ -104,7 +130,7 @@ export async function addPolicy(name: string, _: ActionResult | null, form: Form
       }),
     );
     return "Added";
-  }, "/autoscaling/group");
+  }, { revalidate: ["/autoscaling/group"], fields: { PolicyName: "policy", "TargetTrackingConfiguration.TargetValue": "target" } });
 }
 
 export async function deletePolicy(name: string, policy: string) {
