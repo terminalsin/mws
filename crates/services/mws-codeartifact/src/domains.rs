@@ -81,12 +81,13 @@ impl CodeArtifact {
     /// enabled symmetric encryption key.
     fn check_encryption_key(&self, ctx: &RequestContext, key: &str) -> Result<(), ServiceError> {
         let Some(kms) = &self.inner.kms else { return Ok(()) };
-        let k = kms.key_via(ctx, "codeartifact", key, &["kms:DescribeKey", "kms:CreateGrant"]).map_err(|e| {
-            match &*e.code {
-                "AccessDeniedException" => ServiceError::client("AccessDeniedException", 403, e.message),
-                _ => validation(format!("The KMS key {key} is not valid: {}", e.message)),
-            }
-        })?;
+        let k =
+            kms.key_via(ctx, "codeartifact", key, &["kms:DescribeKey", "kms:CreateGrant"]).map_err(|e| {
+                match &*e.code {
+                    "AccessDeniedException" => ServiceError::client("AccessDeniedException", 403, e.message),
+                    _ => validation(format!("The KMS key {key} is not valid: {}", e.message)),
+                }
+            })?;
         if k.key_spec != "SYMMETRIC_DEFAULT" || k.key_usage != "ENCRYPT_DECRYPT" {
             return Err(validation(format!("The KMS key {key} is not a symmetric encryption key.")));
         }
