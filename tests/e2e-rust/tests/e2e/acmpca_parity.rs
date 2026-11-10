@@ -59,7 +59,7 @@ async fn root_with(
         .certificate_authority_arn()
         .unwrap()
         .to_string();
-    let csr = pca.get_certificate_authority_csr().certificate_authority_arn(&ca).send().await.unwrap();
+    let csr = crate::acmpca::wait_csr(&pca, &ca).await;
     let cert_arn = pca
         .issue_certificate()
         .certificate_authority_arn(&ca)
@@ -73,7 +73,7 @@ async fn root_with(
         .certificate_arn()
         .unwrap()
         .to_string();
-    let cert = pca.get_certificate().certificate_authority_arn(&ca).certificate_arn(cert_arn).send().await.unwrap();
+    let cert = crate::acmpca::wait_cert(&pca, &ca, &cert_arn).await;
     let pem = cert.certificate().unwrap().to_string();
     pca.import_certificate_authority_certificate()
         .certificate_authority_arn(&ca)
@@ -116,7 +116,7 @@ async fn issue_pem(
         .certificate_arn()
         .unwrap()
         .to_string();
-    let cert = pca.get_certificate().certificate_authority_arn(ca).certificate_arn(arn).send().await.unwrap();
+    let cert = crate::acmpca::wait_cert(&pca, &ca, &arn).await;
     Ok(cert.certificate().unwrap().to_string())
 }
 
@@ -145,7 +145,7 @@ async fn passthrough_templates_and_csr_extensions() {
             .build(),
     );
     let (ca, root_pem) = root(&pca, cfg, 3650).await;
-    let csr = pca.get_certificate_authority_csr().certificate_authority_arn(&ca).send().await.unwrap();
+    let csr = crate::acmpca::wait_csr(&pca, &ca).await;
     let csr_der = der(csr.csr().unwrap());
     let (_, req) = X509CertificationRequest::from_der(&csr_der).unwrap();
     let requested: Vec<String> = req
@@ -417,6 +417,7 @@ async fn ca_lifecycle_follows_the_clock() {
         .certificate_authority_arn()
         .unwrap()
         .to_string();
+    crate::acmpca::wait_csr(&pca, &pending).await;
     pca.delete_certificate_authority().certificate_authority_arn(&pending).send().await.unwrap();
     assert_eq!(status(&pca, &pending).await, CertificateAuthorityStatus::Deleted);
     pca.restore_certificate_authority().certificate_authority_arn(&pending).send().await.unwrap();

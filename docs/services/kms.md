@@ -1,6 +1,6 @@
 # AWS Key Management Service
 
-> Crate: [`mws-kms`](../../crates/services/mws-kms) · Tests: [`tests/e2e-rust/tests/e2e/kms.rs`](../../tests/e2e-rust/tests/e2e/kms.rs), [`kms_xks.rs`](../../tests/e2e-rust/tests/e2e/kms_xks.rs)
+> Crate: [`mws-kms`](../../crates/services/mws-kms) · Tests: [`tests/e2e-rust/tests/e2e/kms.rs`](../../tests/e2e-rust/tests/e2e/kms.rs), [`kms_lifecycle.rs`](../../tests/e2e-rust/tests/e2e/kms_lifecycle.rs), [`kms_xks.rs`](../../tests/e2e-rust/tests/e2e/kms_xks.rs)
 
 All 56 operations are generated from the AWS model (awsJson1.1) and implemented. Keys do real cryptography: results check out in standard tooling.
 
@@ -15,7 +15,7 @@ All 56 operations are generated from the AWS model (awsJson1.1) and implemented.
 | HMAC, ECDH and ML-KEM | ✅ | `GenerateMac`/`VerifyMac`, `DeriveSharedSecret`, and key encapsulation. |
 | Data keys | ✅ | Data keys and data key pairs, with and without plaintext; `ReEncrypt`, `GenerateRandom`. |
 | Imported key material | ✅ | All wrapping algorithms, expiry, re-import of the same material only. |
-| Multi-Region keys | ✅ | Primary keys, replicas and primary region updates. |
+| Multi-Region keys | ✅ | Primary keys, replicas and primary region updates. As on AWS these finish asynchronously: a new replica is `Creating`, and during `UpdatePrimaryRegion` both keys are `Updating` (still usable for cryptography, but not enabled, disabled, deleted or replicated), until the settle window passes (`MWS_ASYNC_DELAY_MS`, default 500 ms, on the emulated clock); operations they block fail with `KMSInvalidStateException` ("... is creating." / "... is updating."). `ReplicateKey` also needs `kms:CreateKey` in the replica Region, from IAM policies. |
 | Lifecycle | ✅ | Enable/disable, scheduled deletion, automatic and on-demand rotation (old ciphertexts keep decrypting), all on the emulated clock; aliases, tags and `DryRun`. |
 | SM2, `ED25519_PH_SHA_512`, ML-DSA `EXTERNAL_MU` | ❌ | Not supported (SM2 exists only in China Regions). |
 | Nitro Enclaves `Recipient` | ❌ | Attestation documents are not supported. |
@@ -26,6 +26,7 @@ All 56 operations are generated from the AWS model (awsJson1.1) and implemented.
 
 | Feature | Status | Details |
 | --- | :---: | --- |
+| Tags on new keys | ✅ | `CreateKey` and `ReplicateKey` with `Tags` also need `kms:TagResource` on the new key from IAM policies (there is no key policy yet), with `aws:RequestTag` conditions. |
 | Key policies | ✅ | Evaluated as KMS does: the key policy must allow the caller, directly or by delegating to IAM; the policy lockout safety check applies. |
 | Key policy principals | ✅ | IAM users and roles a key policy names must exist ("Policy contains a statement with one or more invalid principals."). |
 | Grants | ✅ | Grantees, operations and encryption context constraints; grants created through grants. |

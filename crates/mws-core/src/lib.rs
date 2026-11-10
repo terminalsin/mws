@@ -14,6 +14,7 @@ pub mod ids;
 pub mod metrics;
 mod observe;
 mod service;
+pub mod settle;
 pub mod shell;
 pub mod trail;
 mod validate;

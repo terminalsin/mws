@@ -115,7 +115,7 @@ fn general_name_wire(n: &GeneralNameInfo) -> types::GeneralName {
 }
 
 fn result(c: &Certificate, info: Option<&CertInfo>) -> types::CertificateSearchResult {
-    let renewal_eligibility = crate::certs::detail(c).renewal_eligibility;
+    let renewal_eligibility = Some(crate::certs::renewal_eligibility(c).to_string());
     types::CertificateSearchResult {
         certificate_arn: Some(c.arn.clone()),
         x509_attributes: info.map(|i| types::X509Attributes {
@@ -167,7 +167,7 @@ fn sort_key(c: &Certificate, info: Option<&CertInfo>, sort_by: &str) -> String {
         "CERTIFICATE_ARN" => c.arn.clone(),
         "COMMON_NAME" => info.and_then(|i| i.subject_cn.clone()).unwrap_or_default(),
         "REVOKED_AT" => t(c.revoked_at),
-        "RENEWAL_ELIGIBILITY" => crate::certs::detail(c).renewal_eligibility.unwrap_or_default(),
+        "RENEWAL_ELIGIBILITY" => crate::certs::renewal_eligibility(c).to_string(),
         "ISSUED_AT" => t(c.issued_at),
         "MANAGED_BY" => c.managed_by.clone().unwrap_or_default(),
         "EXPORT_OPTION" => c.export_option.clone(),

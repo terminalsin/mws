@@ -2,6 +2,7 @@
 
 import hashlib
 import json
+import time
 import urllib.error
 import urllib.request
 import uuid
@@ -333,5 +334,19 @@ def test_restore_statuses(s3, bucket):
     s3.put_object(Bucket=bucket, Key="cold", Body=b"c", StorageClass="GLACIER")
     first = s3.restore_object(Bucket=bucket, Key="cold", RestoreRequest={"Days": 1})
     assert first["ResponseMetadata"]["HTTPStatusCode"] == 202
+    # The restore takes a while; asking again meanwhile is a conflict.
+    with pytest.raises(ClientError) as e:
+        s3.restore_object(Bucket=bucket, Key="cold", RestoreRequest={"Days": 2})
+    assert code(e) == "RestoreAlreadyInProgress"
+    wait_restored(s3, bucket, "cold")
     again = s3.restore_object(Bucket=bucket, Key="cold", RestoreRequest={"Days": 2})
     assert again["ResponseMetadata"]["HTTPStatusCode"] == 200
+
+
+def wait_restored(s3, bucket, key):
+    """Poll HeadObject until the restore is no longer in progress."""
+    for _ in range(100):
+        if 'ongoing-request="false"' in s3.head_object(Bucket=bucket, Key=key).get("Restore", ""):
+            return
+        time.sleep(0.1)
+    raise AssertionError(f"{key} is still being restored")

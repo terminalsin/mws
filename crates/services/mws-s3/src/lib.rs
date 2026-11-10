@@ -183,10 +183,18 @@ impl S3 {
         self.read().buckets.values().filter(|b| b.owner == account).count()
     }
 
-    /// Act on lifecycle rules that have come due by `now`.
-    fn run_lifecycle(&self, now: chrono::DateTime<chrono::Utc>) {
+    /// The work S3 does in the background, caught up to the request's
+    /// time: lifecycle rules that have come due, and replications and
+    /// restores whose settle window has passed. Sends the events they
+    /// cause.
+    fn sweep(&self, ctx: &RequestContext) {
+        let mut events = Vec::new();
         if self.read().has_lifecycle() {
-            self.write().run_lifecycle(now);
+            events = self.write().run_lifecycle(ctx.received_at);
+        }
+        events.extend(self.settle_pending(ctx));
+        for e in events {
+            self.emit(ctx, e);
         }
     }
 
@@ -423,7 +431,7 @@ impl Service for S3 {
         operation: &str,
         input: serde_json::Value,
     ) -> Result<serde_json::Value, ServiceError> {
-        self.run_lifecycle(ctx.received_at);
+        self.sweep(&ctx);
         self.run_inventory(&ctx);
         let call = self.call(&ctx, None);
         let out = generated::invoke(&call, &ctx, operation, input).await;
@@ -463,7 +471,7 @@ impl S3 {
         if request.method() == Method::OPTIONS {
             return self.preflight(&ctx, &request);
         }
-        self.run_lifecycle(ctx.received_at);
+        self.sweep(&ctx);
         self.run_inventory(&ctx);
         if (signature_v2(&request) || form_signed_v2(&request)) && !self.takes_sigv2(&request) {
             let e = ServiceError::client(

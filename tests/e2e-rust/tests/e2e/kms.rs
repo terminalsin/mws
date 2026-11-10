@@ -24,6 +24,19 @@ fn code<E: ProvideErrorMetadata>(e: &E) -> String {
     e.code().unwrap_or_default().to_string()
 }
 
+/// Poll DescribeKey until the key reaches `state`, as code waiting for a
+/// replica or a primary Region update does against AWS.
+pub(super) async fn wait_key_state(c: &Client, key_id: &str, state: KeyState) {
+    for _ in 0..100 {
+        let md = c.describe_key().key_id(key_id).send().await.unwrap();
+        if md.key_metadata().unwrap().key_state() == Some(&state) {
+            return;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+    }
+    panic!("{key_id} never reached {state:?}");
+}
+
 async fn new_key(c: &Client) -> String {
     c.create_key().send().await.unwrap().key_metadata().unwrap().key_id().to_string()
 }
@@ -683,6 +696,7 @@ async fn multi_region_replicas_share_material() {
         .behavior_version(aws_config::BehaviorVersion::latest())
         .build();
     let west = Client::new(&west_cfg);
+    wait_key_state(&west, &key_id, KeyState::Enabled).await;
     let dec = west.decrypt().ciphertext_blob(enc.ciphertext_blob().unwrap().clone()).send().await.unwrap();
     assert_eq!(dec.plaintext().unwrap().as_ref(), b"everywhere");
     let described = west.describe_key().key_id(&key_id).send().await.unwrap();
@@ -834,11 +848,21 @@ async fn update_primary_region_swaps_primary_and_replica() {
     let c = kms(&mws).await;
     let key_id = c.create_key().multi_region(true).send().await.unwrap().key_metadata().unwrap().key_id().to_string();
     c.replicate_key().key_id(&key_id).replica_region("eu-west-1").send().await.unwrap();
+    let eu_cfg = aws_config::SdkConfig::builder()
+        .region(aws_config::Region::new("eu-west-1"))
+        .endpoint_url(&mws.endpoint)
+        .credentials_provider(mws.root_sdk_config().await.credentials_provider().unwrap())
+        .behavior_version(aws_config::BehaviorVersion::latest())
+        .build();
+    let eu = Client::new(&eu_cfg);
+    wait_key_state(&eu, &key_id, KeyState::Enabled).await;
 
     let missing = c.update_primary_region().key_id(&key_id).primary_region("ap-south-1").send().await.unwrap_err();
     assert_eq!(code(&missing), "NotFoundException");
 
     c.update_primary_region().key_id(&key_id).primary_region("eu-west-1").send().await.unwrap();
+    wait_key_state(&c, &key_id, KeyState::Enabled).await;
+    wait_key_state(&eu, &key_id, KeyState::Enabled).await;
     let md = c.describe_key().key_id(&key_id).send().await.unwrap();
     let mrc = md.key_metadata().unwrap().multi_region_configuration().unwrap();
     assert_eq!(mrc.multi_region_key_type().map(|t| t.as_str()), Some("REPLICA"));

@@ -10,7 +10,7 @@ All 12 operations are generated from the AWS model (restJson1) and implemented. 
 
 | Feature | Status | Details |
 | --- | :---: | --- |
-| General-purpose connectors | ✅ | The CA must be owned by the caller, use `GENERAL_PURPOSE` mode, be `ACTIVE` and valid for at least a year; without a RAM share the connector is `FAILED` with `PRIVATECA_ACCESS_DENIED`. |
+| General-purpose connectors | ✅ | The CA must be owned by the caller, use `GENERAL_PURPOSE` mode, be `ACTIVE` and valid for at least a year; without a RAM share the connector is `FAILED` with `PRIVATECA_ACCESS_DENIED`. A new connector is `CREATING` and a deleted one `DELETING` for the settle window (`MWS_ASYNC_DELAY_MS`, 500 ms by default); `DeleteConnector` on either answers `ConflictException`. |
 | Intune connectors | 🟡 | Created with an OpenID configuration, but enrollment is refused: MWS cannot reach Microsoft Intune to validate requests. |
 | Challenge passwords | ✅ | Static passwords (up to 5 per connector) with metadata and tags; deleting one stops it working. |
 | VPC endpoints | 🟡 | Accepted and reported, with no effect. |

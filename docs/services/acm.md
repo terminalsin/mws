@@ -11,15 +11,15 @@ All 40 operations are generated from the AWS model (awsJson1.1) and implemented.
 | Feature | Status | Details |
 | --- | :---: | --- |
 | Public certificates | ✅ | Signed by issuing CAs MWS makes for itself (`Amazon RSA 2048 M01`, `Amazon ECDSA 256/384 M01` under `MWS Root CA 1`, so `Issuer` reads `Amazon`), valid for 198 days. |
-| DNS validation | ✅ | Real: ACM hands out the per-account CNAME record (wildcards share their base domain's) and issues once the record exists in a public hosted zone in MWS's Route 53. |
+| DNS validation | ✅ | Real: ACM hands out the per-account CNAME record (wildcards share their base domain's) and issues once the record exists in a public hosted zone in MWS's Route 53. As on AWS, `ResourceRecord` appears in `DescribeCertificate` and `ListCertificateDomainValidations` a moment after the request (the settle window, `MWS_ASYNC_DELAY_MS`, 500 ms by default), so poll for it. |
 | Email validation | ✅ | Sent to the usual five addresses; MWS logs each "validation email" with an approval link (`/_acm/approvals?certificate=<arn>&domain=<domain>`). |
 | HTTP validation | ❌ | Not supported (CloudFront only on AWS). |
-| Private certificates | ✅ | Issued by MWS's Private CA with the requester's `acm-pca:IssueCertificate` permission (failures show as `PCA_*` reasons) and renewed by `acm.amazonaws.com` when the CA grants it. |
+| Private certificates | ✅ | Issued by MWS's Private CA with the requester's `acm-pca:IssueCertificate` permission and renewed by `acm.amazonaws.com` when the CA grants it. Issuance is asynchronous: the certificate is `PENDING_VALIDATION` for the settle window (`GetCertificate` and `ExportCertificate` answer `RequestInProgressException`), then `ISSUED` or `FAILED` with a `PCA_*` reason. |
 | Imports and exports | ✅ | Imports check that the key (PKCS#8, PKCS#1 or SEC1) matches and support reimport; exports return PBES2-encrypted PKCS#8 for private and exportable public certificates. |
 | Lifecycle | ✅ | On the emulated clock: validation times out after 72 hours, certificates expire, managed renewal starts 60 days before expiry. |
 | Listing and search | ✅ | `ListCertificates` filters, `SearchCertificates` with nested `And`/`Or`/`Not` statements and every sort key, tags and account configuration. |
 | Validation migration | ✅ | `UpdateCertificateOptions` and `ListCertificateDomainValidations` for email-to-DNS migration. |
-| IAM condition keys | ✅ | `acm:ValidationMethod`, `acm:DomainNames`, `acm:KeyAlgorithm`, `acm:CertificateAuthority`, `acm:Export` and `aws:ResourceTag`. |
+| IAM condition keys | ✅ | `acm:ValidationMethod`, `acm:DomainNames`, `acm:KeyAlgorithm`, `acm:CertificateAuthority`, `acm:Export` and `aws:ResourceTag`. `RequestCertificate` and `ImportCertificate` with `Tags` also need `acm:AddTagsToCertificate`. |
 | Integrated services | 🟡 | Elastic Load Balancing listeners appear in `InUseBy`, and `DeleteCertificate` refuses certificates in use with `ResourceInUseException`; other services do not register their use. |
 
 ## ACME

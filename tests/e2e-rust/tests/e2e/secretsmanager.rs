@@ -30,6 +30,31 @@ async fn client_in(mws: &Mws, region: &str) -> Client {
     Client::from_conf(conf)
 }
 
+/// Poll DescribeSecret in the primary's Region until every replica is
+/// `InSync`, as code waiting on replication does against AWS.
+pub(super) async fn wait_in_sync(sm: &Client, id: &str) {
+    for _ in 0..100 {
+        let d = sm.describe_secret().secret_id(id).send().await.unwrap();
+        if d.replication_status().iter().all(|r| r.status().map(|s| s.as_str()) == Some("InSync")) {
+            return;
+        }
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    }
+    panic!("replicas of {id} never reached InSync");
+}
+
+/// Poll until a forcibly deleted secret is gone, as code that reuses the
+/// name has to against AWS.
+pub(super) async fn wait_deleted(sm: &Client, id: &str) {
+    for _ in 0..100 {
+        match sm.describe_secret().secret_id(id).send().await {
+            Err(e) if code(&e) == "ResourceNotFoundException" => return,
+            _ => tokio::time::sleep(Duration::from_millis(50)).await,
+        }
+    }
+    panic!("{id} was never deleted");
+}
+
 fn stages(map: Option<&HashMap<String, Vec<String>>>, id: &str) -> Vec<String> {
     map.and_then(|m| m.get(id)).cloned().unwrap_or_default()
 }
@@ -280,8 +305,7 @@ async fn versions_and_staging_labels() {
     sm.restore_secret().secret_id("blob").send().await.unwrap();
     assert!(sm.get_secret_value().secret_id("blob").send().await.is_ok());
     sm.delete_secret().secret_id("blob").force_delete_without_recovery(true).send().await.unwrap();
-    let gone = sm.describe_secret().secret_id("blob").send().await.unwrap_err();
-    assert_eq!(code(&gone), "ResourceNotFoundException");
+    wait_deleted(&sm, "blob").await;
     sm.create_secret().name("blob").secret_string("reborn").send().await.unwrap();
     mws.stop().await;
 }
@@ -603,8 +627,10 @@ async fn rotation_runs_the_lambda_function() {
             .unwrap();
     assert_eq!(value["generation"], 2);
 
-    // A failing function leaves AWSPENDING behind, and the next rotation
-    // is refused until it is cleaned up.
+    // A failing function leaves AWSPENDING behind. A new rotation is
+    // refused while Secrets Manager reattempts that one; a retry with the
+    // same ClientRequestToken resumes it with the same version.
+    let good = r#"{"username":"app","password":"fixed"}"#;
     sm.put_secret_value().secret_id("db").secret_string("not json").send().await.unwrap();
     let failing = sm.rotate_secret().secret_id("db").send().await.unwrap();
     let failing_token = failing.version_id().unwrap().to_string();
@@ -613,6 +639,30 @@ async fn rotation_runs_the_lambda_function() {
     assert_eq!(stages(d.version_ids_to_stages(), &failing_token), ["AWSPENDING"]);
     let busy = sm.rotate_secret().secret_id("db").send().await.unwrap_err();
     assert_eq!(code(&busy), "InvalidRequestException");
+    assert_eq!(busy.message(), Some("A previous rotation isn't complete. That rotation will be reattempted."));
+    tokio::time::sleep(Duration::from_secs(3)).await;
+    sm.put_secret_value().secret_id("db").secret_string(good).send().await.unwrap();
+    let retried = sm.rotate_secret().secret_id("db").client_request_token(&failing_token).send().await.unwrap();
+    assert_eq!(retried.version_id(), Some(failing_token.as_str()));
+    rotated(&sm, "db", &failing_token).await;
+
+    // A scheduled window reattempts an incomplete rotation too.
+    sm.put_secret_value().secret_id("db").secret_string("not json").send().await.unwrap();
+    let failing = sm.rotate_secret().secret_id("db").send().await.unwrap();
+    let stuck = failing.version_id().unwrap().to_string();
+    tokio::time::sleep(Duration::from_secs(3)).await;
+    let d = sm.describe_secret().secret_id("db").send().await.unwrap();
+    assert_eq!(stages(d.version_ids_to_stages(), &stuck), ["AWSPENDING"]);
+    sm.put_secret_value().secret_id("db").secret_string(good).send().await.unwrap();
+    let (status, _) = mws.control("POST", "/_mws/clock", Some(r#"{"advanceSeconds":259200}"#)).await;
+    assert_eq!(status, 200);
+    sm.list_secrets().send().await.unwrap();
+    rotated(&sm, "db", &stuck).await;
+
+    sm.put_secret_value().secret_id("db").secret_string("not json").send().await.unwrap();
+    let failing = sm.rotate_secret().secret_id("db").send().await.unwrap();
+    let failing_token = failing.version_id().unwrap().to_string();
+    tokio::time::sleep(Duration::from_secs(3)).await;
 
     // CancelRotateSecret turns rotation off and names the stuck version.
     let cancelled = sm.cancel_rotate_secret().secret_id("db").send().await.unwrap();
@@ -641,7 +691,8 @@ async fn replicas_follow_their_primary() {
     let arn = created.arn().unwrap().to_string();
     let status = created.replication_status();
     assert_eq!(status.len(), 1);
-    assert_eq!(status[0].status().map(|s| s.as_str()), Some("InSync"));
+    assert_eq!(status[0].status().map(|s| s.as_str()), Some("InProgress"));
+    wait_in_sync(&sm, "shared").await;
 
     let replica = west.describe_secret().secret_id("shared").send().await.unwrap();
     assert_eq!(replica.arn(), Some(arn.replace("us-east-1", "us-west-2").as_str()));
@@ -666,6 +717,7 @@ async fn replicas_follow_their_primary() {
         .await
         .unwrap();
     assert_eq!(added.replication_status().len(), 2);
+    wait_in_sync(&sm, "shared").await;
     assert_eq!(eu.get_secret_value().secret_id("shared").send().await.unwrap().secret_string(), Some("v2"));
 
     let blocked = sm.delete_secret().secret_id("shared").send().await.unwrap_err();

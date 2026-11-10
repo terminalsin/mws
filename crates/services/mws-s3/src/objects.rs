@@ -504,6 +504,7 @@ fn write_context(
     lock_mode: Option<&str>,
     lock_until: Option<DateTime<Utc>>,
     legal_hold: Option<&str>,
+    now: DateTime<Utc>,
 ) -> ConditionContext {
     let mut c = ConditionContext::new();
     let mut put = |k: &str, v: Option<&str>| {
@@ -519,7 +520,7 @@ fn write_context(
     put("s3:object-lock-legal-hold", legal_hold);
     if let Some(u) = lock_until {
         c.insert("s3:object-lock-retain-until-date".into(), vec![u.format("%Y-%m-%dT%H:%M:%SZ").to_string()]);
-        c.insert("s3:object-lock-remaining-retention-days".into(), vec![(u - Utc::now()).num_days().to_string()]);
+        c.insert("s3:object-lock-remaining-retention-days".into(), vec![(u - now).num_days().to_string()]);
     }
     if !tags.is_empty() {
         c.insert("s3:RequestObjectTagKeys".into(), tags.iter().map(|t| t.key.clone()).collect());
@@ -567,8 +568,54 @@ fn version_header(b: &Bucket, v: &ObjectVersion) -> Option<String> {
 }
 
 fn restore_header(v: &ObjectVersion) -> Option<String> {
+    if v.restore_started.is_some() {
+        return Some("ongoing-request=\"true\"".into());
+    }
     v.restored_until
         .map(|t| format!("ongoing-request=\"false\", expiry-date=\"{}\"", t.format("%a, %d %b %Y %H:%M:%S GMT")))
+}
+
+/// Finish the restores whose settle window has passed by `now`: the
+/// restored copy becomes readable and `s3:ObjectRestore:Completed` fires.
+pub(crate) fn settle_restores(st: &mut crate::state::State, now: DateTime<Utc>) -> Vec<crate::notifications::Emit> {
+    let (due, rest): (Vec<_>, Vec<_>) =
+        std::mem::take(&mut st.pending_restores).into_iter().partition(|w| mws_core::settle::settled(w.since, now));
+    st.pending_restores = rest;
+    let mut events = Vec::new();
+    for w in due {
+        let Some(v) = st.buckets.get_mut(&w.bucket).and_then(|b| b.version_mut(&w.key, Some(&w.version_id))) else {
+            continue;
+        };
+        if v.restore_started.take().is_none() {
+            continue;
+        }
+        let expiry = v.restored_until.map(|t| t.format("%Y-%m-%dT%H:%M:%S%.3fZ").to_string());
+        events.push(crate::notifications::Emit {
+            bucket: w.bucket.clone(),
+            key: w.key.clone(),
+            version_id: Some(w.version_id.clone()),
+            event_name: "ObjectRestore:Completed".into(),
+            reason: "Restore Completed".into(),
+            size: Some(v.size()),
+            etag: Some(v.etag.trim_matches('"').to_string()),
+            by_s3: true,
+            record_data: Some((
+                "glacierEventData",
+                serde_json::json!({
+                    "restoreEventData": {
+                        "lifecycleRestorationExpiryTime": expiry,
+                        "lifecycleRestoreStorageClass": v.storage_class,
+                    }
+                }),
+            )),
+            eventbridge_detail: Some(serde_json::json!({
+                "restore-expiry-time": expiry,
+                "source-storage-class": v.storage_class,
+            })),
+            ..Default::default()
+        });
+    }
+    events
 }
 
 /// Fill the response headers GetObject and HeadObject share.
@@ -739,6 +786,7 @@ impl Call {
             input.object_lock_mode.as_deref(),
             input.object_lock_retain_until_date,
             input.object_lock_legal_hold_status.as_deref(),
+            ctx.received_at,
         );
         self.authorize(ctx, "s3:PutObject", b, Resource::Object { key: &input.key, grants: None }, extra)?;
         if input.object_lock_legal_hold_status.is_some() {
@@ -861,7 +909,7 @@ impl Call {
         let extra = existing_object_context(found.as_ref().ok().copied(), input.version_id.as_deref());
         self.authorize(ctx, action, b, Resource::Object { key: &input.key, grants }, extra)?;
         let v = found.map_err(|e| self.missing(ctx, b, e))?;
-        if v.is_archived() && v.restored_until.is_none_or(|t| t < ctx.received_at) {
+        if v.is_archived() && (v.restore_started.is_some() || v.restored_until.is_none_or(|t| t < ctx.received_at)) {
             return Err(errors::invalid_object_state(&v.storage_class));
         }
         check_response_overrides(
@@ -1187,6 +1235,7 @@ impl Call {
             input.object_lock_mode.as_deref(),
             input.object_lock_retain_until_date,
             input.object_lock_legal_hold_status.as_deref(),
+            ctx.received_at,
         );
         extra.insert("s3:x-amz-copy-source".into(), vec![input.copy_source.trim_start_matches('/').to_string()]);
         extra.insert("s3:x-amz-metadata-directive".into(), vec![metadata_directive.clone()]);
@@ -1353,7 +1402,7 @@ impl Call {
                 e
             }
         })?;
-        if v.is_archived() && v.restored_until.is_none_or(|t| t < ctx.received_at) {
+        if v.is_archived() && (v.restore_started.is_some() || v.restored_until.is_none_or(|t| t < ctx.received_at)) {
             return Err(errors::invalid_object_state(&v.storage_class));
         }
         check_customer_key(v, customer_algorithm, customer_key, customer_key_md5)?;
@@ -1828,7 +1877,7 @@ impl Call {
         if days <= 0 {
             return Err(errors::invalid_argument("Days must be a positive integer.", "Days", &days.to_string()));
         }
-        self.object_write(
+        let started = self.object_write(
             ctx,
             &input.bucket,
             &input.key,
@@ -1844,18 +1893,37 @@ impl Call {
                         "Restore is not allowed for the object's current storage class",
                     ));
                 }
-                // Restores complete immediately in MWS. S3 answers `202
-                // Accepted` when it starts a restore and `200 OK` when the
-                // object is already restored (which extends the copy).
-                if !v.restored_until.is_some_and(|u| u > ctx.received_at) {
+                // A restore takes the settle window (`mws_core::settle`):
+                // S3 answers `202 Accepted` when it starts one, `409` while
+                // it is in progress, and `200 OK` when the object is
+                // already restored (which extends the copy).
+                if v.restore_started.is_some() {
+                    return Err(ServiceError::client(
+                        "RestoreAlreadyInProgress",
+                        409,
+                        "Object restore is already in progress",
+                    ));
+                }
+                let started = !v.restored_until.is_some_and(|u| u > ctx.received_at);
+                if started {
                     if let Ok(mut s) = self.status.lock() {
                         *s = Some(http::StatusCode::ACCEPTED);
                     }
+                    v.restore_started = Some(ctx.received_at);
                 }
                 v.restored_until = Some(ctx.received_at + Duration::days(i64::from(days)));
-                Ok(types::RestoreObjectOutput::default())
+                Ok(started.then(|| v.version_id.clone()))
             },
-        )
+        )?;
+        if let Some(version_id) = started {
+            self.write().pending_restores.push(crate::state::PendingWork {
+                bucket: input.bucket.clone(),
+                key: input.key.clone(),
+                version_id,
+                since: ctx.received_at,
+            });
+        }
+        Ok(types::RestoreObjectOutput::default())
     }
 
     pub fn update_object_encryption(

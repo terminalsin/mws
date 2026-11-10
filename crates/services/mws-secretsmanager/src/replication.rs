@@ -8,11 +8,8 @@ use crate::generated::{errors, types};
 use crate::names;
 use crate::ops::{check_live, check_primary};
 use crate::seal::Plain;
-use crate::state::{Replica, Secret, Version};
+use crate::state::{Replica, Secret, Version, FAILED, IN_PROGRESS, IN_SYNC};
 use crate::SecretsManager;
-
-const IN_SYNC: &str = "InSync";
-const FAILED: &str = "Failed";
 
 impl SecretsManager {
     /// `PrimaryRegion` as reported: set for replicas and replicated
@@ -129,11 +126,13 @@ impl SecretsManager {
                     .map(|s| s.arn.clone())
             };
             let kms_key_id = r.kms_key_id.clone().filter(|k| !k.is_empty());
+            // In progress until replication settles.
             let mut status = Replica {
                 region: region.clone(),
                 kms_key_id: kms_key_id.clone(),
-                status: IN_SYNC.into(),
-                status_message: "Replication succeeded".into(),
+                status: IN_PROGRESS.into(),
+                status_message: "Replication in progress".into(),
+                since: Some(ctx.received_at),
             };
             let built = match (&clash, force) {
                 (Some(_), false) => Err(format!("Replication failed: Secret name already exists in Region: {region}.")),
@@ -152,13 +151,19 @@ impl SecretsManager {
                 Err(message) => {
                     status.status = FAILED.into();
                     status.status_message = message;
+                    status.since = None;
                 }
             }
             if let Some(p) = st.secrets.get_mut(arn) {
                 p.replicas.push(status);
             }
         }
-        let primary = self.lock().secrets.get(arn).cloned().ok_or_else(names::not_found)?;
+        let primary = {
+            let mut st = self.lock();
+            // With no settle window, replication finishes in this call.
+            st.sweep(ctx.received_at);
+            st.secrets.get(arn).cloned().ok_or_else(names::not_found)?
+        };
         Ok(self.replication_status(&primary).unwrap_or_default())
     }
 
@@ -166,7 +171,7 @@ impl SecretsManager {
     /// replicas.
     pub(crate) fn sync_replicas(&self, ctx: &RequestContext, arn: &str, new_values: &[(String, Plain)]) {
         let Some(primary) = self.lock().secrets.get(arn).cloned() else { return };
-        for r in primary.replicas.iter().filter(|r| r.status == IN_SYNC) {
+        for r in primary.replicas.iter().filter(|r| r.status == IN_SYNC || r.status == IN_PROGRESS) {
             let replica_arn = names::arn_in_region(arn, &r.region);
             let Some(replica) = self.lock().secrets.get(&replica_arn).cloned() else { continue };
             let mut sealed = Vec::new();
@@ -186,6 +191,7 @@ impl SecretsManager {
                     if let Some(x) = p.replicas.iter_mut().find(|x| x.region == r.region) {
                         x.status = FAILED.into();
                         x.status_message = message;
+                        x.since = None;
                     }
                 }
                 continue;

@@ -8,10 +8,10 @@ All 23 operations are generated from the AWS model (awsJson1.1) and implemented.
 
 | Feature | Status | Details |
 | --- | :---: | --- |
-| Root and subordinate CAs | ✅ | Real keys (RSA 2048/3072/4096, EC P-256/P-384/P-521), CSRs, self-issued root certificates, and imports with chain checks. |
+| Root and subordinate CAs | ✅ | Real keys (RSA 2048/3072/4096, EC P-256/P-384/P-521), CSRs, self-issued root certificates, and imports with chain checks. A new CA is `CREATING` for the settle window (`MWS_ASYNC_DELAY_MS`, 500 ms by default) and `GetCertificateAuthorityCsr` answers `RequestInProgressException` until it is `PENDING_CERTIFICATE` (SDK waiter `CertificateAuthorityCSRCreated`). Creating a CA with `Tags` also needs `acm-pca:TagCertificateAuthority`. |
 | `IssueCertificate` | ✅ | ACM Private CA templates (end-entity, server and client auth, code signing, OCSP, root, subordinate path lengths) and validity rules. |
 | Passthrough templates | ✅ | API and CSR passthrough take their extensions from the request and the CSR, with AWS's precedence (template, then API, then CSR). |
-| `GetCertificate` | ✅ | Certificates with their chains. |
+| `GetCertificate` | ✅ | Certificates with their chains. Issuance is asynchronous: `RequestInProgressException` for the settle window after `IssueCertificate` (SDK waiter `CertificateIssued`). Scenario steps wait it out by themselves. |
 | Revocation and CRLs | ✅ | CRLs are written into S3 buckets as `acm-pca.amazonaws.com`, so the bucket policy must allow it, as on AWS; refreshed at half their validity. |
 | OCSP | 🟡 | Answered, but unsigned. |
 | Audit reports | 🟡 | JSON or CSV reports written to S3 as `acm-pca.amazonaws.com`; they complete synchronously. |

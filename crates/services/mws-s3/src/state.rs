@@ -12,6 +12,32 @@ use crate::generated::types;
 #[serde(default)]
 pub struct State {
     pub buckets: BTreeMap<String, Bucket>,
+    /// Versions waiting for replication, oldest first.
+    pub pending_replication: Vec<PendingWork>,
+    /// Restores of archived objects that are still in progress.
+    pub pending_restores: Vec<PendingWork>,
+}
+
+/// Work S3 does in the background on one object version: done once the
+/// settle window (`mws_core::settle`) has passed since `since`.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(default)]
+pub struct PendingWork {
+    pub bucket: String,
+    pub key: String,
+    pub version_id: String,
+    pub since: DateTime<Utc>,
+}
+
+impl Default for PendingWork {
+    fn default() -> Self {
+        Self {
+            bucket: String::new(),
+            key: String::new(),
+            version_id: String::new(),
+            since: DateTime::<Utc>::UNIX_EPOCH,
+        }
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -208,7 +234,9 @@ pub struct ObjectVersion {
     pub legal_hold: Option<String>,
     /// When a restored copy of an archived object expires.
     pub restored_until: Option<DateTime<Utc>>,
-    /// `COMPLETED`, `FAILED` or `REPLICA`, once replication has acted.
+    /// When a restore still in progress was requested.
+    pub restore_started: Option<DateTime<Utc>>,
+    /// `PENDING`, `COMPLETED`, `FAILED` or `REPLICA`, once replication has acted.
     pub replication_status: Option<String>,
     /// Named annotations on this version.
     pub annotations: BTreeMap<String, Annotation>,
@@ -258,6 +286,7 @@ impl Default for ObjectVersion {
             lock_until: None,
             legal_hold: None,
             restored_until: None,
+            restore_started: None,
             replication_status: None,
             annotations: BTreeMap::new(),
         }

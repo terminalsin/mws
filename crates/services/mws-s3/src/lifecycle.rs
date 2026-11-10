@@ -12,7 +12,10 @@
 
 use chrono::{DateTime, Duration, NaiveTime, Utc};
 
+use serde_json::json;
+
 use crate::generated::types;
+use crate::notifications::Emit;
 use crate::state::{new_version_id, Bucket, ObjectVersion, State};
 
 /// `t + days`, rounded up to the next midnight UTC.
@@ -90,16 +93,19 @@ pub fn expiration_header(b: &Bucket, key: &str, v: &ObjectVersion) -> Option<Str
 }
 
 impl State {
-    /// Apply every bucket's lifecycle rules as of `now`.
-    pub fn run_lifecycle(&mut self, now: DateTime<Utc>) {
+    /// Apply every bucket's lifecycle rules as of `now`. Returns the
+    /// events the actions taken cause.
+    pub fn run_lifecycle(&mut self, now: DateTime<Utc>) -> Vec<Emit> {
+        let mut events = Vec::new();
         for b in self.buckets.values_mut() {
             if let Some(config) = b.lifecycle.clone() {
                 let rules: Vec<_> = config.rules.into_iter().filter(enabled).collect();
                 if !rules.is_empty() {
-                    run_bucket(b, &rules, now);
+                    run_bucket(b, &rules, now, &mut events);
                 }
             }
         }
+        events
     }
 
     /// Whether any bucket has lifecycle rules to run.
@@ -108,7 +114,42 @@ impl State {
     }
 }
 
-fn run_bucket(b: &mut Bucket, rules: &[types::LifecycleRule], now: DateTime<Utc>) {
+/// A lifecycle event about `key`.
+fn event(bucket: &str, key: &str, version_id: Option<&str>, name: &str) -> Emit {
+    Emit {
+        bucket: bucket.to_string(),
+        key: key.to_string(),
+        version_id: version_id.map(str::to_string),
+        event_name: name.to_string(),
+        reason: "Lifecycle Expiration".into(),
+        by_s3: true,
+        ..Emit::default()
+    }
+}
+
+/// `LifecycleExpiration:Delete`: a version (or delete marker) removed for
+/// good.
+fn expired(bucket: &str, key: &str, v: &ObjectVersion) -> Emit {
+    let mut e = event(bucket, key, Some(&v.version_id), "LifecycleExpiration:Delete");
+    e.deletion_type = Some("Permanently Deleted".into());
+    e
+}
+
+/// `LifecycleTransition`: a version moved to `class`.
+fn transitioned(bucket: &str, key: &str, v: &ObjectVersion, class: &str) -> Emit {
+    let mut e = event(bucket, key, Some(&v.version_id), "LifecycleTransition");
+    e.reason = "Lifecycle Transition".into();
+    if !v.delete_marker {
+        e.size = Some(v.size());
+        e.etag = Some(v.etag.trim_matches('"').to_string());
+    }
+    e.record_data =
+        Some(("lifecycleEventData", json!({ "transitionEventData": { "destinationStorageClass": class } })));
+    e.eventbridge_detail = Some(json!({ "destination-storage-class": class }));
+    e
+}
+
+fn run_bucket(b: &mut Bucket, rules: &[types::LifecycleRule], now: DateTime<Utc>, events: &mut Vec<Emit>) {
     // Incomplete multipart uploads.
     b.uploads.retain(|_, up| {
         !rules.iter().any(|r| {
@@ -120,24 +161,34 @@ fn run_bucket(b: &mut Bucket, rules: &[types::LifecycleRule], now: DateTime<Utc>
     });
 
     let versioning = b.versioning.clone();
+    let name = b.name.clone();
     let keys: Vec<String> = b.objects.keys().cloned().collect();
     for key in keys {
         let Some(mut versions) = b.objects.remove(&key) else { continue };
-        apply_noncurrent(&key, &mut versions, rules, now);
-        apply_current(&key, &mut versions, rules, versioning.as_deref(), now);
+        let mut out = Out { bucket: &name, key: &key, events };
+        apply_noncurrent(&mut out, &mut versions, rules, now);
+        apply_current(&mut out, &mut versions, rules, versioning.as_deref(), now);
         if !versions.is_empty() {
             b.objects.insert(key, versions);
         }
     }
 }
 
+/// Where the actions on one key report their events.
+struct Out<'a> {
+    bucket: &'a str,
+    key: &'a str,
+    events: &'a mut Vec<Emit>,
+}
+
 fn apply_current(
-    key: &str,
+    out: &mut Out<'_>,
     versions: &mut Vec<ObjectVersion>,
     rules: &[types::LifecycleRule],
     versioning: Option<&str>,
     now: DateTime<Utc>,
 ) {
+    let key = out.key;
     let Some(current) = versions.last().cloned() else { return };
     if current.delete_marker {
         // An expired object delete marker: a marker with no versions left.
@@ -149,6 +200,7 @@ fn apply_current(
                         .is_some_and(|e| e.expired_object_delete_marker == Some(true) || e.days.is_some())
             });
         if removable {
+            out.events.push(expired(out.bucket, key, &current));
             versions.clear();
         }
         return;
@@ -159,6 +211,9 @@ fn apply_current(
             None => {
                 if current.locked(now).is_none() {
                     versions.pop();
+                    let mut e = expired(out.bucket, key, &current);
+                    e.version_id = None;
+                    out.events.push(e);
                 }
             }
             Some(state) => {
@@ -172,6 +227,9 @@ fn apply_current(
                 if state != "Enabled" {
                     versions.retain(|v| v.version_id != "null" || v.locked(now).is_some());
                 }
+                let mut e = event(out.bucket, key, Some(&marker.version_id), "LifecycleExpiration:DeleteMarkerCreated");
+                e.deletion_type = Some("Delete Marker Created".into());
+                out.events.push(e);
                 versions.push(marker);
             }
         }
@@ -192,22 +250,33 @@ fn apply_current(
         .max_by_key(|(at, _)| *at)
         .map(|(_, class)| class);
     if let (Some(class), Some(v)) = (target, versions.last_mut()) {
-        transition(v, &class);
+        if transition(v, &class) {
+            out.events.push(transitioned(out.bucket, key, v, &class));
+        }
     }
 }
 
 /// Move a version to a colder storage class (never back to a warmer one).
-fn transition(v: &mut ObjectVersion, class: &str) {
+/// Returns whether it moved.
+fn transition(v: &mut ObjectVersion, class: &str) -> bool {
     const ORDER: [&str; 8] =
         ["STANDARD", "INTELLIGENT_TIERING", "STANDARD_IA", "ONEZONE_IA", "GLACIER_IR", "GLACIER", "DEEP_ARCHIVE", ""];
     let rank = |c: &str| ORDER.iter().position(|o| *o == c).unwrap_or(0);
     if rank(class) > rank(&v.storage_class) {
         v.storage_class = class.to_string();
         v.restored_until = None;
+        return true;
     }
+    false
 }
 
-fn apply_noncurrent(key: &str, versions: &mut Vec<ObjectVersion>, rules: &[types::LifecycleRule], now: DateTime<Utc>) {
+fn apply_noncurrent(
+    out: &mut Out<'_>,
+    versions: &mut Vec<ObjectVersion>,
+    rules: &[types::LifecycleRule],
+    now: DateTime<Utc>,
+) {
+    let key = out.key;
     if versions.len() < 2 {
         return;
     }
@@ -244,10 +313,13 @@ fn apply_noncurrent(key: &str, versions: &mut Vec<ObjectVersion>, rules: &[types
         let idx = i;
         i += 1;
         if remove[idx] {
+            out.events.push(expired(out.bucket, key, v));
             return false;
         }
         if let Some(class) = &new_class[idx] {
-            transition(v, class);
+            if transition(v, class) {
+                out.events.push(transitioned(out.bucket, key, v, class));
+            }
         }
         true
     });

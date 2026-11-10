@@ -1,6 +1,6 @@
 # AWS Secrets Manager
 
-> Crate: [`mws-secretsmanager`](../../crates/services/mws-secretsmanager) · Tests: [`tests/e2e-rust/tests/e2e/secretsmanager.rs`](../../tests/e2e-rust/tests/e2e/secretsmanager.rs)
+> Crate: [`mws-secretsmanager`](../../crates/services/mws-secretsmanager) · Tests: [`tests/e2e-rust/tests/e2e/secretsmanager.rs`](../../tests/e2e-rust/tests/e2e/secretsmanager.rs), [`secretsmanager_lifecycle.rs`](../../tests/e2e-rust/tests/e2e/secretsmanager_lifecycle.rs)
 
 All 23 operations are generated from the AWS model (awsJson1.1) and implemented.
 
@@ -15,7 +15,8 @@ All 23 operations are generated from the AWS model (awsJson1.1) and implemented.
 | Quotas and validation | ✅ | 100 versions and 20 staging labels per secret (`LimitExceededException`), model constraints as `ValidationException`. |
 | `BatchGetSecretValue` | ✅ | With per-secret errors. |
 | `ListSecrets` | ✅ | Name, tag and description filters, negation, free-text search split like the console, sorting and pages. |
-| Deletion | ✅ | Recovery windows on the emulated clock, `RestoreSecret`, and forced deletion. |
+| Deletion | ✅ | Recovery windows on the emulated clock, `RestoreSecret`, and forced deletion. Forced deletion is asynchronous as on AWS: for the settle window (`MWS_ASYNC_DELAY_MS`, default 500 ms) the secret is marked for deletion and `CreateSecret` with its name fails ("...already scheduled for deletion."). |
+| Secrets managed by other services | ✅ | Secrets with an `OwningService` (RDS `rds!db-...` master secrets) refuse `PutSecretValue`, `UpdateSecret`, `UpdateSecretVersionStage` and `DeleteSecret` (`InvalidRequestException`); the owner changes them, and `RotateSecret` rotates through it. |
 | `GetRandomPassword` and tags | ✅ | As in Secrets Manager. |
 
 ## Security
@@ -29,9 +30,9 @@ All 23 operations are generated from the AWS model (awsJson1.1) and implemented.
 
 | Feature | Status | Details |
 | --- | :---: | --- |
-| Rotation | ✅ | Really runs: the function policy must allow `secretsmanager.amazonaws.com`, and the Lambda function is invoked through `createSecret`, `setSecret`, `testSecret` and `finishSecret`. |
+| Rotation | ✅ | Really runs: the function policy must allow `secretsmanager.amazonaws.com`, and the Lambda function is invoked through `createSecret`, `setSecret`, `testSecret` and `finishSecret`. A failed rotation keeps its `AWSPENDING` version and is reattempted with it: by `RotateSecret` with the same `ClientRequestToken`, after any other `RotateSecret` (which is refused with "A previous rotation isn't complete. That rotation will be reattempted."), and in the next scheduled window. |
 | Schedules | ✅ | `AutomaticallyAfterDays`, `rate()` and `cron()` with `Duration` windows set `NextRotationDate` and start rotations on the emulated clock. |
-| Replicas | ✅ | Live in their Region with their own KMS key, follow every change to the primary, are read-only, and can be removed or promoted. |
+| Replicas | ✅ | Live in their Region with their own KMS key, follow every change to the primary, are read-only, and can be removed or promoted. New replicas are `InProgress` for the settle window, then `InSync`. |
 | Managed external secrets | 🟡 | Stored, but not rotated (there are no partners to call). |
 
 See also: [all services](README.md) · [authentication and authorization](../security.md).

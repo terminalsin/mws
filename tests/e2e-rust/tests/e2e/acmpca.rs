@@ -1,6 +1,7 @@
 //! AWS Private CA through the official Rust SDK, with the issued
 //! certificates checked cryptographically.
 
+use aws_sdk_acmpca::client::Waiters as _;
 use aws_sdk_acmpca::primitives::Blob;
 use aws_sdk_acmpca::types::{
     Asn1Subject, CertificateAuthorityConfiguration, CertificateAuthorityStatus, CertificateAuthorityType, KeyAlgorithm,
@@ -24,6 +25,38 @@ pub(crate) fn assert_signed_by(child_pem: &str, issuer_pem: &str) {
     let (_, issuer) = X509Certificate::from_der(&issuer_der).unwrap();
     child.verify_signature(Some(issuer.public_key())).expect("signature verifies");
     assert_eq!(child.issuer().as_raw(), issuer.subject().as_raw(), "issuer name matches byte for byte");
+}
+
+/// A new CA's CSR, once Private CA has made it: the CA is `CREATING` and
+/// `GetCertificateAuthorityCsr` answers `RequestInProgressException` until
+/// then, so real code waits with the SDK waiter.
+pub(crate) async fn wait_csr(
+    pca: &Client,
+    ca: &str,
+) -> aws_sdk_acmpca::operation::get_certificate_authority_csr::GetCertificateAuthorityCsrOutput {
+    pca.wait_until_certificate_authority_csr_created()
+        .certificate_authority_arn(ca)
+        .wait(std::time::Duration::from_secs(60))
+        .await
+        .expect("CSR created")
+        .into_result()
+        .unwrap()
+}
+
+/// An issued certificate, once issuance (which is asynchronous) is done.
+pub(crate) async fn wait_cert(
+    pca: &Client,
+    ca: &str,
+    cert_arn: &str,
+) -> aws_sdk_acmpca::operation::get_certificate::GetCertificateOutput {
+    pca.wait_until_certificate_issued()
+        .certificate_authority_arn(ca)
+        .certificate_arn(cert_arn)
+        .wait(std::time::Duration::from_secs(60))
+        .await
+        .expect("certificate issued")
+        .into_result()
+        .unwrap()
 }
 
 async fn create_ca(
@@ -75,10 +108,10 @@ pub(crate) async fn active_root(pca: &Client) -> (String, String) {
         SigningAlgorithm::Sha256Withrsa,
     )
     .await;
-    let csr = pca.get_certificate_authority_csr().certificate_authority_arn(&ca).send().await.unwrap();
+    let csr = wait_csr(&pca, &ca).await;
     let cert_arn =
         issue(pca, &ca, csr.csr().unwrap(), Some(ROOT_TEMPLATE), SigningAlgorithm::Sha256Withrsa, 3650).await;
-    let cert = pca.get_certificate().certificate_authority_arn(&ca).certificate_arn(&cert_arn).send().await.unwrap();
+    let cert = wait_cert(&pca, &ca, &cert_arn).await;
     let pem = cert.certificate().unwrap().to_string();
     pca.import_certificate_authority_certificate()
         .certificate_authority_arn(&ca)
@@ -110,6 +143,12 @@ async fn root_ca_lifecycle_and_end_entity_issuance() {
     )
     .await;
     assert!(ca.starts_with("arn:aws:acm-pca:us-east-1:123456789012:certificate-authority/"));
+    // The CA is CREATING until Private CA has made its key and CSR.
+    let desc = pca.describe_certificate_authority().certificate_authority_arn(&ca).send().await.unwrap();
+    assert_eq!(desc.certificate_authority().unwrap().status(), Some(&CertificateAuthorityStatus::Creating));
+    let err = pca.get_certificate_authority_csr().certificate_authority_arn(&ca).send().await.unwrap_err();
+    assert!(err.into_service_error().is_request_in_progress_exception());
+    let pca_csr = wait_csr(&pca, &ca).await;
     let desc = pca.describe_certificate_authority().certificate_authority_arn(&ca).send().await.unwrap();
     assert_eq!(desc.certificate_authority().unwrap().status(), Some(&CertificateAuthorityStatus::PendingCertificate));
 
@@ -127,10 +166,9 @@ async fn root_ca_lifecycle_and_end_entity_issuance() {
         .into_service_error();
     assert!(err.is_invalid_state_exception(), "{err:?}");
 
-    let pca_csr = pca.get_certificate_authority_csr().certificate_authority_arn(&ca).send().await.unwrap();
     let root_arn =
         issue(&pca, &ca, pca_csr.csr().unwrap(), Some(ROOT_TEMPLATE), SigningAlgorithm::Sha256Withrsa, 3650).await;
-    let root = pca.get_certificate().certificate_authority_arn(&ca).certificate_arn(&root_arn).send().await.unwrap();
+    let root = wait_cert(&pca, &ca, &root_arn).await;
     let root_pem = root.certificate().unwrap().to_string();
     assert_signed_by(&root_pem, &root_pem);
     pca.import_certificate_authority_certificate()
@@ -147,7 +185,18 @@ async fn root_ca_lifecycle_and_end_entity_issuance() {
     // Issue an end-entity certificate and check it properly.
     let leaf_arn = issue(&pca, &ca, &csr, None, SigningAlgorithm::Sha256Withrsa, 30).await;
     assert!(leaf_arn.starts_with(&format!("{ca}/certificate/")));
-    let leaf = pca.get_certificate().certificate_authority_arn(&ca).certificate_arn(&leaf_arn).send().await.unwrap();
+    // Issuance is asynchronous: GetCertificate answers
+    // RequestInProgressException until it is done (the waiter retries).
+    let err = pca
+        .get_certificate()
+        .certificate_authority_arn(&ca)
+        .certificate_arn(&leaf_arn)
+        .send()
+        .await
+        .unwrap_err()
+        .into_service_error();
+    assert!(err.is_request_in_progress_exception(), "{err:?}");
+    let leaf = wait_cert(&pca, &ca, &leaf_arn).await;
     let leaf_pem = leaf.certificate().unwrap();
     assert_eq!(leaf.certificate_chain().unwrap().trim(), root_pem.trim());
     assert_signed_by(leaf_pem, &root_pem);
@@ -222,11 +271,10 @@ async fn subordinate_ca_chain() {
         SigningAlgorithm::Sha256Withecdsa,
     )
     .await;
-    let sub_csr = pca.get_certificate_authority_csr().certificate_authority_arn(&sub).send().await.unwrap();
+    let sub_csr = wait_csr(&pca, &sub).await;
     let sub_cert_arn =
         issue(&pca, &root, sub_csr.csr().unwrap(), Some(SUB_TEMPLATE), SigningAlgorithm::Sha256Withrsa, 365).await;
-    let sub_cert =
-        pca.get_certificate().certificate_authority_arn(&root).certificate_arn(&sub_cert_arn).send().await.unwrap();
+    let sub_cert = wait_cert(&pca, &root, &sub_cert_arn).await;
     let sub_pem = sub_cert.certificate().unwrap().to_string();
     assert_signed_by(&sub_pem, &root_pem);
 
@@ -258,7 +306,7 @@ async fn subordinate_ca_chain() {
         .unwrap();
 
     let leaf_arn = issue(&pca, &sub, &leaf_csr("svc.example.test"), None, SigningAlgorithm::Sha256Withecdsa, 7).await;
-    let leaf = pca.get_certificate().certificate_authority_arn(&sub).certificate_arn(&leaf_arn).send().await.unwrap();
+    let leaf = wait_cert(&pca, &sub, &leaf_arn).await;
     assert_signed_by(leaf.certificate().unwrap(), &sub_pem);
     let chain = leaf.certificate_chain().unwrap();
     assert!(chain.contains(sub_pem.trim()) && chain.contains(root_pem.trim()));
@@ -584,7 +632,7 @@ async fn crl_ocsp_and_audit_reports() {
 
     // Issued certificates point at the CRL and the OCSP responder.
     let leaf_arn = issue(&pca, &ca, &leaf_csr("leaf.example.test"), None, SigningAlgorithm::Sha256Withrsa, 30).await;
-    let leaf = pca.get_certificate().certificate_authority_arn(&ca).certificate_arn(&leaf_arn).send().await.unwrap();
+    let leaf = wait_cert(&pca, &ca, &leaf_arn).await;
     let leaf_pem = leaf.certificate().unwrap().to_string();
     let leaf_der = der(&leaf_pem);
     let (_, leaf_cert) = X509Certificate::from_der(&leaf_der).unwrap();
@@ -775,4 +823,40 @@ async fn acm_permissions_on_a_ca() {
     let (_, cfg) = user_with_policy(&mws, "outsider", None).await;
     let denied = Client::new(&cfg).list_permissions().certificate_authority_arn(&ca).send().await.unwrap_err();
     assert_eq!(denied.code(), Some("AccessDeniedException"));
+}
+
+#[tokio::test]
+async fn tags_on_create_need_tag_permission() {
+    let mws = Mws::start().await;
+    let create = |pca: Client, tagged: bool| async move {
+        let mut req = pca
+            .create_certificate_authority()
+            .certificate_authority_type(CertificateAuthorityType::Root)
+            .certificate_authority_configuration(
+                CertificateAuthorityConfiguration::builder()
+                    .key_algorithm(KeyAlgorithm::EcPrime256v1)
+                    .signing_algorithm(SigningAlgorithm::Sha256Withecdsa)
+                    .subject(Asn1Subject::builder().common_name("Tagged").build())
+                    .build()
+                    .unwrap(),
+            );
+        if tagged {
+            req = req.tags(Tag::builder().key("env").value("test").build().unwrap());
+        }
+        req.send().await
+    };
+    let narrow = r#"{"Version":"2012-10-17","Statement":[{"Effect":"Allow",
+        "Action":"acm-pca:CreateCertificateAuthority","Resource":"*"}]}"#;
+    let (_, cfg) = user_with_policy(&mws, "no-tagging", Some(narrow)).await;
+    let err = create(Client::new(&cfg), true).await.unwrap_err().into_service_error();
+    assert_eq!(err.meta().code(), Some("AccessDeniedException"));
+    assert!(err.meta().message().unwrap().contains("acm-pca:TagCertificateAuthority"), "{:?}", err.meta().message());
+    create(Client::new(&cfg), false).await.unwrap();
+
+    let with_tagging = r#"{"Version":"2012-10-17","Statement":[{"Effect":"Allow",
+        "Action":["acm-pca:CreateCertificateAuthority","acm-pca:TagCertificateAuthority"],"Resource":"*"}]}"#;
+    let (_, cfg) = user_with_policy(&mws, "tagging", Some(with_tagging)).await;
+    let ca = create(Client::new(&cfg), true).await.unwrap().certificate_authority_arn().unwrap().to_string();
+    let root = Client::new(&mws.root_sdk_config().await);
+    assert_eq!(root.list_tags().certificate_authority_arn(&ca).send().await.unwrap().tags().len(), 1);
 }

@@ -82,6 +82,7 @@ impl AccessPoint {
             bucket: self.bucket.clone(),
             alias: self.alias.clone(),
             network_origin: self.network_origin().to_string(),
+            vpc_id: self.vpc_id.clone(),
             policy: self.policy.clone(),
             restrict_public_buckets: self.pab().restrict_public_buckets,
         }

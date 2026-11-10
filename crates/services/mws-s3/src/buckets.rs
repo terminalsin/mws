@@ -378,6 +378,11 @@ impl Call {
                         "An Object Lock configuration is present on this bucket, so the versioning state cannot be changed.",
                     ));
                 }
+                if status == "Suspended" && b.replication.is_some() {
+                    return Err(errors::invalid_bucket_state(
+                        "A replication configuration is present on this bucket, so the versioning state cannot be changed.",
+                    ));
+                }
             }
             if let Some(m) = &config.mfa_delete {
                 if m == "Enabled" && input.mfa.is_none() {

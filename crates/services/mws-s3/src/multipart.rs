@@ -221,6 +221,8 @@ impl Call {
             input.sse_customer_key.as_deref(),
             input.sse_customer_key_md5.as_deref(),
         )?;
+        // Each part is encrypted with the upload's data key: kms:Decrypt.
+        self.open_kms(ctx, &up.template, &input.bucket, &input.key)?;
         let part_checksum = part_checksum(up, supplied, &data)?;
         let sse = up.template.sse.clone();
         let algorithm = up.checksum_algorithm.clone();
@@ -321,6 +323,7 @@ impl Call {
             input.sse_customer_key.as_deref(),
             input.sse_customer_key_md5.as_deref(),
         )?;
+        self.open_kms(ctx, &up.template, &input.bucket, &input.key)?;
         let part_checksum = part_checksum(up, None, &data)?;
         let algorithm = up.checksum_algorithm.clone();
         let sse = up.template.sse.clone();
@@ -371,6 +374,7 @@ impl Call {
             input.sse_customer_key.as_deref(),
             input.sse_customer_key_md5.as_deref(),
         )?;
+        self.open_kms(ctx, &up.template, &input.bucket, &input.key)?;
         check_write_conditions(b, &input.key, input.if_match.as_deref(), input.if_none_match.as_deref())?;
         let up = upload(b, &input.key, &input.upload_id)?;
 

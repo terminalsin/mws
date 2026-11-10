@@ -197,6 +197,33 @@ fn read_cert_rep(body: &[u8], d: &Device, ra: &Certificate) -> CertRep {
     }
 }
 
+/// A connector once it has left `CREATING` (Connector for SCEP has no SDK
+/// waiter, so poll as AWS's own examples do).
+pub(crate) async fn wait_connector(scep: &Scep, arn: &str) -> aws_sdk_pcaconnectorscep::types::Connector {
+    for _ in 0..300 {
+        let got = scep.get_connector().connector_arn(arn).send().await.unwrap();
+        let c = got.connector().unwrap().clone();
+        if c.status().map(|s| s.as_str()) != Some("CREATING") {
+            return c;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+    }
+    panic!("connector {arn} is still CREATING");
+}
+
+/// Wait until a deleted connector is gone (it is `DELETING` first).
+async fn wait_connector_gone(scep: &Scep, arn: &str) {
+    for _ in 0..300 {
+        match scep.get_connector().connector_arn(arn).send().await {
+            Err(e) if e.code() == Some("ResourceNotFoundException") => return,
+            Ok(got) => assert_eq!(got.connector().unwrap().status().unwrap().as_str(), "DELETING"),
+            Err(e) => panic!("{e:?}"),
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+    }
+    panic!("connector {arn} was not deleted");
+}
+
 fn pem_of(der: &[u8]) -> String {
     use base64::Engine;
     format!(
@@ -217,13 +244,18 @@ async fn devices_enroll_over_scep_with_a_ca_shared_through_ram() {
     // Not shared with the connector yet: it fails, as in AWS.
     let failed = scep.create_connector().certificate_authority_arn(&ca).send().await.unwrap();
     let failed = failed.connector_arn().unwrap().to_string();
+    // Connectors are CREATING first, like in AWS.
     let got = scep.get_connector().connector_arn(&failed).send().await.unwrap();
-    let got = got.connector().unwrap();
+    assert_eq!(got.connector().unwrap().status().unwrap().as_str(), "CREATING");
+    let err = scep.delete_connector().connector_arn(&failed).send().await.unwrap_err();
+    assert_eq!(err.code(), Some("ConflictException"));
+    let got = wait_connector(&scep, &failed).await;
     assert_eq!(got.status().unwrap().as_str(), "FAILED");
     assert_eq!(got.status_reason().unwrap().as_str(), "PRIVATECA_ACCESS_DENIED");
     let err = scep.create_challenge().connector_arn(&failed).send().await.unwrap_err();
     assert_eq!(err.code(), Some("ValidationException"));
     scep.delete_connector().connector_arn(&failed).send().await.unwrap();
+    wait_connector_gone(&scep, &failed).await;
 
     // Share the CA with the connector's service principal, as the AWS
     // setup guide does.
@@ -239,8 +271,7 @@ async fn devices_enroll_over_scep_with_a_ca_shared_through_ram() {
     let created = scep.create_connector().certificate_authority_arn(&ca).tags("env", "test").send().await.unwrap();
     let arn = created.connector_arn().unwrap().to_string();
     assert!(arn.starts_with("arn:aws:pca-connector-scep:us-east-1:123456789012:connector/"));
-    let connector = scep.get_connector().connector_arn(&arn).send().await.unwrap();
-    let connector = connector.connector().unwrap().clone();
+    let connector = wait_connector(&scep, &arn).await;
     assert_eq!(connector.status().unwrap().as_str(), "ACTIVE");
     assert_eq!(connector.r#type().unwrap().as_str(), "GENERAL_PURPOSE");
     let endpoint = connector.endpoint().unwrap().to_string();
@@ -325,13 +356,8 @@ async fn devices_enroll_over_scep_with_a_ca_shared_through_ram() {
     assert!((364..=366).contains(&days), "one year by default, got {days} days");
     // Private CA knows the certificate.
     let serial: String = issued.raw_serial().iter().map(|b| format!("{b:02x}")).collect();
-    let got = pca
-        .get_certificate()
-        .certificate_authority_arn(&ca)
-        .certificate_arn(format!("{ca}/certificate/{serial}"))
-        .send()
-        .await;
-    assert!(got.is_ok(), "{got:?}");
+    let got = crate::acmpca::wait_cert(&pca, &ca, &format!("{ca}/certificate/{serial}")).await;
+    assert!(got.certificate().is_some());
 
     // GetCertInitial for the same transaction returns it again (over GET).
     use base64::Engine;
@@ -381,8 +407,11 @@ async fn devices_enroll_over_scep_with_a_ca_shared_through_ram() {
     assert_eq!(status, 401, "{}", String::from_utf8_lossy(&body));
 
     scep.delete_connector().connector_arn(&arn).send().await.unwrap();
-    let err = scep.get_connector().connector_arn(&arn).send().await.unwrap_err();
-    assert_eq!(err.code(), Some("ResourceNotFoundException"));
+    let got = scep.get_connector().connector_arn(&arn).send().await.unwrap();
+    assert_eq!(got.connector().unwrap().status().unwrap().as_str(), "DELETING");
+    let err = scep.delete_connector().connector_arn(&arn).send().await.unwrap_err();
+    assert_eq!(err.code(), Some("ConflictException"));
+    wait_connector_gone(&scep, &arn).await;
 }
 
 #[tokio::test]
@@ -424,8 +453,7 @@ async fn connectors_check_their_ca_and_type() {
         .await
         .unwrap();
     let arn = intune.connector_arn().unwrap();
-    let got = scep.get_connector().connector_arn(arn).send().await.unwrap();
-    let got = got.connector().unwrap();
+    let got = wait_connector(&scep, arn).await;
     assert_eq!(got.r#type().unwrap().as_str(), "INTUNE");
     assert!(got.open_id_configuration().unwrap().issuer().is_some());
     let err = scep.create_challenge().connector_arn(arn).send().await.unwrap_err();

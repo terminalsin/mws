@@ -123,11 +123,27 @@ impl SecretsManager {
         if lambda_arn.is_none() && !external {
             return Err(errors::invalid_request("No Lambda rotation function ARN is associated with this secret."));
         }
-        if s.pending_rotation().is_some() {
-            return Err(errors::invalid_request(
-                "A previous rotation isn't complete. That rotation will be reattempted.",
-            ));
-        }
+        // A rotation that failed leaves its AWSPENDING version behind. A
+        // retry reattempts that rotation with the same version (and
+        // token); any other request is refused while Secrets Manager
+        // reattempts it.
+        let resume = match s.pending_rotation() {
+            Some(p) => {
+                let id = p.id.clone();
+                let running = s.rotation.token.is_some();
+                let same = input.client_request_token.as_deref().is_none_or(|t| t == id);
+                if running || !same || !immediately || lambda_arn.is_none() {
+                    if !running && lambda_arn.is_some() && s.rotation.lambda_arn.is_some() {
+                        self.begin(ctx, &s.arn, &id, false)?;
+                    }
+                    return Err(errors::invalid_request(
+                        "A previous rotation isn't complete. That rotation will be reattempted.",
+                    ));
+                }
+                Some(id)
+            }
+            None => None,
+        };
         if let Some(l) = &lambda_arn {
             ctx.authorize("lambda:InvokeFunction", l, ConditionContext::new())?;
             let lambda = self.lambda().ok_or_else(cannot_invoke)?;
@@ -135,13 +151,19 @@ impl SecretsManager {
                 .check_service_invoke(&in_region(ctx, &s.region), &invocation(l, &s, Vec::new()))
                 .map_err(|_| cannot_invoke())?;
         }
-        let token = input.client_request_token.clone().unwrap_or_else(names::new_token);
-        if s.version(&token).is_some() {
-            return Err(errors::resource_exists(
-                "You can't modify an existing version, you can only create a new version.",
-            ));
-        }
-        crate::ops::check_quotas(&s, Some(&token), &[PENDING.into()], now)?;
+        let token = match resume {
+            Some(id) => id,
+            None => {
+                let token = input.client_request_token.clone().unwrap_or_else(names::new_token);
+                if s.version(&token).is_some() {
+                    return Err(errors::resource_exists(
+                        "You can't modify an existing version, you can only create a new version.",
+                    ));
+                }
+                crate::ops::check_quotas(&s, Some(&token), &[PENDING.into()], now)?;
+                token
+            }
+        };
         let from = s.rotation.last_rotated.unwrap_or(now);
         let window = next_window(rules.as_ref(), if immediately { now } else { from });
         self.update(&s.arn, |st| {
@@ -176,18 +198,21 @@ impl SecretsManager {
         Ok(types::RotateSecretResponse { arn: Some(s.arn), name: Some(s.name), version_id })
     }
 
-    /// Add the pending version and start the rotation function.
+    /// Add the pending version (or reuse it, when reattempting a rotation
+    /// that did not complete) and start the rotation function.
     fn begin(&self, ctx: &RequestContext, arn: &str, token: &str, test_only: bool) -> Result<(), ServiceError> {
         let now = ctx.received_at;
         let rotation_token = names::new_token();
         self.update(arn, |st| {
-            st.versions.push(Version {
-                id: token.to_string(),
-                stages: Vec::new(),
-                created: now,
-                last_accessed: None,
-                value: None,
-            });
+            if st.version(token).is_none() {
+                st.versions.push(Version {
+                    id: token.to_string(),
+                    stages: Vec::new(),
+                    created: now,
+                    last_accessed: None,
+                    value: None,
+                });
+            }
             st.attach(PENDING, token);
             st.rotation.token = Some(rotation_token.clone());
             Ok(())
@@ -201,9 +226,15 @@ impl SecretsManager {
 
     async fn run(&self, ctx: RequestContext, arn: String, token: String, rotation_token: String, test_only: bool) {
         let started = std::time::Instant::now();
-        let Some(lambda) = self.lambda().cloned() else { return };
         let Some(secret) = self.lock().secrets.get(&arn).cloned() else { return };
-        let Some(function) = secret.rotation.lambda_arn.clone() else { return };
+        let (Some(lambda), Some(function)) = (self.lambda().cloned(), secret.rotation.lambda_arn.clone()) else {
+            // Nothing to run: don't leave the rotation marked as running.
+            let _ = self.update(&arn, |st| {
+                st.rotation.token = None;
+                Ok(())
+            });
+            return;
+        };
         let rctx = in_region(&ctx, &secret.region);
         let steps: &[&str] = if test_only { &STEPS[2..3] } else { &STEPS };
         let mut ok = true;
@@ -252,8 +283,18 @@ impl SecretsManager {
                 st.rotation.window_start = window.map(|w| w.start);
                 st.rotation.next = window.map(|w| w.next_rotation_date());
                 st.last_changed = now;
-            } else if ok {
-                tracing::warn!(secret = %arn, "rotation finished without moving AWSCURRENT to {token}");
+            } else {
+                if ok {
+                    tracing::warn!(secret = %arn, "rotation finished without moving AWSCURRENT to {token}");
+                }
+                // The AWSPENDING version stays for the reattempt, which the
+                // scheduler starts in the next window (or a RotateSecret
+                // retry starts sooner).
+                if st.rotation.window_start.is_some_and(|w| w <= now) {
+                    let window = next_window(st.rotation.rules.as_ref(), now);
+                    st.rotation.window_start = window.map(|w| w.start);
+                    st.rotation.next = window.map(|w| w.next_rotation_date());
+                }
             }
             Ok(())
         });
@@ -290,7 +331,7 @@ impl SecretsManager {
     /// start rotations whose window has opened.
     pub(crate) fn tick(&self, ctx: &RequestContext) {
         let now = ctx.received_at;
-        let due: Vec<String> = {
+        let due: Vec<(String, Option<String>)> = {
             let mut st = self.lock();
             st.sweep(now);
             st.secrets
@@ -301,18 +342,20 @@ impl SecretsManager {
                         && s.rotation.enabled
                         && s.rotation.lambda_arn.is_some()
                         && s.rotation.token.is_none()
-                        && s.pending_rotation().is_none()
                         && s.rotation.window_start.is_some_and(|w| w <= now)
                 })
-                .map(|s| s.arn.clone())
+                // An incomplete rotation is reattempted with its pending
+                // version; otherwise a new rotation starts.
+                .map(|s| (s.arn.clone(), s.pending_rotation().map(|v| v.id.clone())))
                 .collect()
         };
         self.tick_managed(ctx);
         if due.is_empty() || self.lambda().is_none() {
             return;
         }
-        for arn in due {
-            if let Err(e) = self.begin(ctx, &arn, &names::new_token(), false) {
+        for (arn, pending) in due {
+            let token = pending.unwrap_or_else(names::new_token);
+            if let Err(e) = self.begin(ctx, &arn, &token, false) {
                 tracing::warn!(secret = %arn, "scheduled rotation did not start: {}", e.message);
             }
         }

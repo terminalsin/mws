@@ -8,11 +8,11 @@ use serde_json::Value;
 
 use super::{
     invalid_state, key_arn, metadata, page, request_tag_conditions, require_enabled, require_not_pending_deletion,
-    validate_tags, validation, Access,
+    require_settled, validate_tags, validation, Access,
 };
 use crate::crypto::{self, Spec};
 use crate::generated::{errors, types};
-use crate::state::{Key, Material, State};
+use crate::state::{Key, Material, State, Transition};
 use crate::Kms;
 
 const MAX_ON_DEMAND_ROTATIONS: usize = 25;
@@ -127,6 +127,23 @@ fn lockout_check(ctx: &RequestContext, arn: &str, policy: &str) -> Result<(), Se
     }
 }
 
+/// `kms:TagResource` on a key that CreateKey or ReplicateKey is about to
+/// create: IAM policies only, since there is no key policy yet. `region`
+/// is the Region the key is created in, when it is not the request's.
+fn authorize_tagging(
+    ctx: &RequestContext,
+    arn: &str,
+    tags: &[types::Tag],
+    region: Option<&str>,
+) -> Result<(), ServiceError> {
+    let mut cond = request_tag_conditions(tags);
+    cond.insert("kms:CallerAccount".into(), vec![ctx.caller.account_id.clone()]);
+    if let Some(region) = region {
+        cond.insert("aws:RequestedRegion".into(), vec![region.to_string()]);
+    }
+    ctx.authorize("kms:TagResource", arn, cond)
+}
+
 fn new_key_id(multi_region: bool) -> String {
     if multi_region {
         format!("mrk-{}", crypto::random_hex(16))
@@ -159,6 +176,11 @@ impl State {
             k.current_material = primary.current_material.clone();
             if k.state == "PendingImport" && primary.current_material.is_some() {
                 k.state = "Enabled".into();
+            }
+            if let Some(t) = k.transition.as_mut().filter(|t| t.to == "PendingImport") {
+                if primary.current_material.is_some() {
+                    t.to = "Enabled".into();
+                }
             }
         }
     }
@@ -299,6 +321,11 @@ impl Kms {
         let key_id = new_key_id(multi_region);
         let account = ctx.caller.account_id.clone();
         let arn = key_arn(&ctx.partition, &ctx.region, &account, &key_id);
+        if !tags.is_empty() {
+            // The key does not exist yet, so only IAM policies can allow
+            // tagging it.
+            authorize_tagging(ctx, &arn, &tags, None)?;
+        }
         let policy = match input.policy {
             Some(p) => {
                 self.parse_policy(&p)?;
@@ -340,6 +367,7 @@ impl Kms {
             custom_key_store_id: input.custom_key_store_id,
             xks_key_id: input.xks_key_id,
             last_usage: None,
+            transition: None,
         };
         let mut st = self.lock();
         let md = metadata(&st, &key);
@@ -428,6 +456,7 @@ impl Kms {
         let has_replicas = !st.replicas_of(&t.arn).is_empty();
         let key = st.key_mut(&t.arn)?;
         require_not_pending_deletion(key)?;
+        require_settled(key)?;
         if key.key_manager == "AWS" {
             return Err(errors::unsupported_operation(format!("{} is an AWS managed key.", key.arn)));
         }
@@ -821,8 +850,27 @@ impl Kms {
             Access::new("ReplicateKey").condition("kms:ReplicaRegion", vec![input.replica_region.clone()]),
         )?;
         let tags = input.tags.unwrap_or_default();
-        validate_tags(&tags)?;
         let primary = self.lock().key(&t.arn)?.clone();
+        let arn = key_arn(&ctx.partition, &input.replica_region, &primary.account, &primary.key_id);
+        // The replica is created in its own Region: that takes kms:CreateKey
+        // there (and kms:TagResource for tags), from IAM policies.
+        let mut cond = request_tag_conditions(&tags);
+        cond.insert("aws:RequestedRegion".into(), vec![input.replica_region.clone()]);
+        cond.insert("kms:KeySpec".into(), vec![primary.key_spec.clone()]);
+        cond.insert("kms:CustomerMasterKeySpec".into(), vec![primary.key_spec.clone()]);
+        cond.insert("kms:KeyUsage".into(), vec![primary.key_usage.clone()]);
+        cond.insert("kms:CustomerMasterKeyUsage".into(), vec![primary.key_usage.clone()]);
+        cond.insert("kms:KeyOrigin".into(), vec![primary.origin.clone()]);
+        cond.insert("kms:MultiRegion".into(), vec!["true".into()]);
+        cond.insert(
+            "kms:BypassPolicyLockoutSafetyCheck".into(),
+            vec![input.bypass_policy_lockout_safety_check.to_string()],
+        );
+        self.authorize_account(ctx, "CreateKey", cond)?;
+        if !tags.is_empty() {
+            authorize_tagging(ctx, &arn, &tags, Some(&input.replica_region))?;
+        }
+        validate_tags(&tags)?;
         if !primary.multi_region {
             return Err(errors::unsupported_operation(format!("{} is not a multi-Region key.", primary.arn)));
         }
@@ -830,13 +878,13 @@ impl Kms {
             return Err(errors::unsupported_operation(format!("{} is not a multi-Region primary key.", primary.arn)));
         }
         require_not_pending_deletion(&primary)?;
+        require_settled(&primary)?;
         if input.replica_region == primary.region {
             return Err(validation(format!(
                 "The replica region {} must be different from the primary key's region.",
                 input.replica_region
             )));
         }
-        let arn = key_arn(&ctx.partition, &input.replica_region, &primary.account, &primary.key_id);
         let policy = match input.policy {
             Some(p) => {
                 self.parse_policy(&p)?;
@@ -856,7 +904,13 @@ impl Kms {
             region: input.replica_region,
             created_at: ctx.received_at,
             description: input.description.unwrap_or_else(|| primary.description.clone()),
-            state: if primary.current_material.is_some() { "Enabled" } else { "PendingImport" }.into(),
+            // Creating until KMS has set the replica up.
+            state: "Creating".into(),
+            transition: Some(Transition {
+                since: ctx.received_at,
+                to: if primary.current_material.is_some() { "Enabled" } else { "PendingImport" }.into(),
+                primary_region: None,
+            }),
             enabled_flag: true,
             deletion_date: None,
             pending_window_days: None,
@@ -867,8 +921,9 @@ impl Kms {
             last_usage: None,
             ..primary
         };
-        let md = metadata(&st, &replica);
-        st.keys.insert(arn, replica);
+        st.keys.insert(arn.clone(), replica);
+        st.settle_transitions(ctx.received_at);
+        let md = metadata(&st, st.key(&arn)?);
         Ok(types::ReplicateKeyResponse {
             replica_key_metadata: Some(md),
             replica_policy: Some(policy),
@@ -894,22 +949,25 @@ impl Kms {
         if !is_primary(&key) {
             return Err(errors::unsupported_operation(format!("{} is not a multi-Region primary key.", key.arn)));
         }
+        require_settled(&key)?;
         require_enabled(&key).or_else(|e| if key.state == "Disabled" { Ok(()) } else { Err(e) })?;
         let new_arn = key_arn(&ctx.partition, &input.primary_region, &key.account, &key.key_id);
-        if !st.keys.contains_key(&new_arn) {
-            return Err(errors::not_found(format!("Key '{new_arn}' does not exist")));
+        let replica =
+            st.keys.get(&new_arn).ok_or_else(|| errors::not_found(format!("Key '{new_arn}' does not exist")))?;
+        require_settled(replica)?;
+        require_enabled(replica).or_else(|e| if replica.state == "Disabled" { Ok(()) } else { Err(e) })?;
+        // Both keys are Updating until the switch is done; the primary
+        // Region changes when it settles.
+        for arn in [&t.arn, &new_arn] {
+            let k = st.keys.get_mut(arn).expect("checked");
+            let to = std::mem::replace(&mut k.state, "Updating".into());
+            k.transition = Some(Transition {
+                since: ctx.received_at,
+                to,
+                primary_region: (*arn == t.arn).then(|| input.primary_region.clone()),
+            });
         }
-        let (rotation, next) = (key.rotation_period_days, key.next_rotation);
-        for k in st.keys.values_mut().filter(|k| k.key_id == key.key_id && k.account == key.account) {
-            k.primary_region = Some(input.primary_region.clone());
-            if k.arn == new_arn {
-                k.rotation_period_days = rotation;
-                k.next_rotation = next;
-            } else {
-                k.rotation_period_days = None;
-                k.next_rotation = None;
-            }
-        }
+        st.settle_transitions(ctx.received_at);
         Ok(())
     }
 }

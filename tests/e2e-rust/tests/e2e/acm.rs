@@ -5,6 +5,7 @@
 
 use aws_lc_rs::rand::SystemRandom;
 use aws_lc_rs::signature::{EcdsaKeyPair, KeyPair as _, ECDSA_P256_SHA256_FIXED_SIGNING};
+use aws_sdk_acm::client::Waiters as _;
 use aws_sdk_acm::error::ProvideErrorMetadata;
 use aws_sdk_acm::primitives::Blob;
 use aws_sdk_acm::types::{
@@ -53,10 +54,43 @@ async fn upsert_cname(r53: &aws_sdk_route53::Client, zone: &str, name: &str, val
         .unwrap();
 }
 
+/// The certificate once ACM has worked out every DNS validation record:
+/// `ResourceRecord` appears a moment after `RequestCertificate`, so IaC
+/// tools poll `DescribeCertificate` for it, as this does.
+pub(crate) async fn with_validation_records(acm: &Client, arn: &str) -> aws_sdk_acm::types::CertificateDetail {
+    for _ in 0..300 {
+        let d = acm.describe_certificate().certificate_arn(arn).send().await.unwrap();
+        let c = d.certificate().unwrap().clone();
+        let dns =
+            c.domain_validation_options().iter().filter(|v| v.validation_method() == Some(&ValidationMethod::Dns));
+        if dns.clone().all(|v| v.resource_record().is_some()) {
+            return c;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+    }
+    panic!("no DNS validation records for {arn}");
+}
+
+/// A private certificate once Private CA has issued it (or failed to):
+/// it is `PENDING_VALIDATION` first. The `CertificateValidated` waiter
+/// does not fit private certificates (they have no validation status), so
+/// poll the status.
+pub(crate) async fn settled_private(acm: &Client, arn: &str) -> aws_sdk_acm::types::CertificateDetail {
+    for _ in 0..300 {
+        let d = acm.describe_certificate().certificate_arn(arn).send().await.unwrap();
+        let c = d.certificate().unwrap().clone();
+        if c.status() != Some(&CertificateStatus::PendingValidation) {
+            return c;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+    }
+    panic!("private certificate {arn} is still pending");
+}
+
 /// Create every DNS validation record a certificate asks for.
 async fn publish_validation_records(acm: &Client, r53: &aws_sdk_route53::Client, zone_id: &str, arn: &str) {
-    let d = acm.describe_certificate().certificate_arn(arn).send().await.unwrap();
-    for dv in d.certificate().unwrap().domain_validation_options() {
+    let c = with_validation_records(acm, arn).await;
+    for dv in c.domain_validation_options() {
         let rr = dv.resource_record().expect("DNS validation record");
         upsert_cname(r53, zone_id, rr.name(), rr.value()).await;
     }
@@ -101,8 +135,18 @@ async fn dns_validated_public_certificate() {
     assert!(arn.starts_with("arn:aws:acm:us-east-1:123456789012:certificate/"), "{arn}");
     assert_eq!(request().send().await.unwrap().certificate_arn(), Some(arn.as_str()), "idempotent");
 
+    // The validation records appear a moment after the request.
     let d = acm.describe_certificate().certificate_arn(&arn).send().await.unwrap();
-    let c = d.certificate().unwrap();
+    let dvs = d.certificate().unwrap().domain_validation_options();
+    assert!(dvs.iter().all(|v| v.resource_record().is_none()), "{dvs:?}");
+    assert!(dvs.iter().all(|v| v.validation_status().map(|s| s.as_str()) == Some("PENDING_VALIDATION")));
+    let listed = acm.list_certificate_domain_validations().certificate_arn(&arn).send().await.unwrap();
+    let active = listed.domain_validation_summary_list()[0].active_validation_configuration().unwrap();
+    let Some(ValidationChallenge::DnsValidationChallenge(dns)) = active.validation_challenge() else {
+        panic!("DNS challenge expected")
+    };
+    assert!(dns.resource_record().is_none());
+    let c = with_validation_records(&acm, &arn).await;
     assert_eq!(c.status(), Some(&CertificateStatus::PendingValidation));
     assert_eq!(c.r#type().unwrap().as_str(), "AMAZON_ISSUED");
     assert_eq!(c.key_algorithm().unwrap().as_str(), "RSA-2048");
@@ -129,6 +173,16 @@ async fn dns_validated_public_certificate() {
     let c = acm.describe_certificate().certificate_arn(&arn).send().await.unwrap();
     assert_eq!(c.certificate().unwrap().status(), Some(&CertificateStatus::PendingValidation));
     publish_validation_records(&acm, &r53, &zone_id, &arn).await;
+    // The SDK's CertificateValidated waiter sees every domain validated.
+    let waited = acm
+        .wait_until_certificate_validated()
+        .certificate_arn(&arn)
+        .wait(std::time::Duration::from_secs(300))
+        .await
+        .expect("validated")
+        .into_result()
+        .unwrap();
+    assert_eq!(waited.certificate().unwrap().status(), Some(&CertificateStatus::Issued));
 
     let d = acm.describe_certificate().certificate_arn(&arn).send().await.unwrap();
     let c = d.certificate().unwrap();
@@ -405,12 +459,21 @@ async fn email_validation_and_migration_to_dns() {
     let d = acm.describe_certificate().certificate_arn(&arn).send().await.unwrap();
     let update = d.certificate().unwrap().update_summary().unwrap();
     assert_eq!(update.status().unwrap().as_str(), "PENDING_DOMAIN_VALIDATION");
-    let listed = acm.list_certificate_domain_validations().certificate_arn(&arn).send().await.unwrap();
-    let requested = listed.domain_validation_summary_list()[0].requested_validation_configuration().unwrap();
-    let Some(ValidationChallenge::DnsValidationChallenge(dns)) = requested.validation_challenge() else {
-        panic!("DNS challenge expected")
-    };
-    let rr = dns.resource_record().unwrap();
+    // The new method's record appears a moment after the update.
+    let mut record = None;
+    for _ in 0..300 {
+        let listed = acm.list_certificate_domain_validations().certificate_arn(&arn).send().await.unwrap();
+        let requested = listed.domain_validation_summary_list()[0].requested_validation_configuration().unwrap();
+        let Some(ValidationChallenge::DnsValidationChallenge(dns)) = requested.validation_challenge() else {
+            panic!("DNS challenge expected")
+        };
+        record = dns.resource_record().cloned();
+        if record.is_some() {
+            break;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+    }
+    let rr = record.expect("DNS validation record");
     upsert_cname(&r53, &zone_id, rr.name(), rr.value()).await;
     let d = acm.describe_certificate().certificate_arn(&arn).send().await.unwrap();
     let c = d.certificate().unwrap();
@@ -509,7 +572,7 @@ async fn private_certificates_come_from_private_ca() {
         .certificate_authority_arn()
         .unwrap()
         .to_string();
-    let csr = pca.get_certificate_authority_csr().certificate_authority_arn(&ca).send().await.unwrap();
+    let csr = crate::acmpca::wait_csr(&pca, &ca).await;
     let root = pca
         .issue_certificate()
         .certificate_authority_arn(&ca)
@@ -520,16 +583,8 @@ async fn private_certificates_come_from_private_ca() {
         .send()
         .await
         .unwrap();
-    let root_pem = pca
-        .get_certificate()
-        .certificate_authority_arn(&ca)
-        .certificate_arn(root.certificate_arn().unwrap())
-        .send()
-        .await
-        .unwrap()
-        .certificate()
-        .unwrap()
-        .to_string();
+    let root_pem =
+        crate::acmpca::wait_cert(&pca, &ca, &root.certificate_arn().unwrap()).await.certificate().unwrap().to_string();
     pca.import_certificate_authority_certificate()
         .certificate_authority_arn(&ca)
         .certificate(aws_sdk_acmpca::primitives::Blob::new(root_pem.as_bytes()))
@@ -548,8 +603,24 @@ async fn private_certificates_come_from_private_ca() {
         .certificate_arn()
         .unwrap()
         .to_string();
+    // Private CA issues asynchronously: PENDING_VALIDATION first, and the
+    // certificate cannot be fetched or exported yet.
     let d = acm.describe_certificate().certificate_arn(&arn).send().await.unwrap();
     let c = d.certificate().unwrap();
+    assert_eq!(c.status(), Some(&CertificateStatus::PendingValidation));
+    assert!(c.serial().is_none() && c.issued_at().is_none());
+    let err = acm.get_certificate().certificate_arn(&arn).send().await.unwrap_err().into_service_error();
+    assert_eq!(code(&err), "RequestInProgressException");
+    let err = acm
+        .export_certificate()
+        .certificate_arn(&arn)
+        .passphrase(Blob::new("passphrase"))
+        .send()
+        .await
+        .unwrap_err()
+        .into_service_error();
+    assert_eq!(code(&err), "RequestInProgressException");
+    let c = settled_private(&acm, &arn).await;
     assert_eq!(c.status(), Some(&CertificateStatus::Issued));
     assert_eq!(c.r#type().unwrap().as_str(), "PRIVATE");
     assert_eq!(c.certificate_authority_arn(), Some(ca.as_str()));
@@ -598,9 +669,10 @@ async fn private_certificates_come_from_private_ca() {
         .certificate_arn()
         .unwrap()
         .to_string();
-    let d = user.describe_certificate().certificate_arn(&arn).send().await.unwrap();
-    assert_eq!(d.certificate().unwrap().status(), Some(&CertificateStatus::Failed));
-    assert_eq!(d.certificate().unwrap().failure_reason().unwrap().as_str(), "PCA_ACCESS_DENIED");
+    // It fails asynchronously, as in AWS.
+    let c = settled_private(&user, &arn).await;
+    assert_eq!(c.status(), Some(&CertificateStatus::Failed));
+    assert_eq!(c.failure_reason().unwrap().as_str(), "PCA_ACCESS_DENIED");
 }
 
 fn self_signed(names: &[&str], days: i64) -> (String, rcgen::KeyPair) {
@@ -697,6 +769,7 @@ async fn iam_policies_and_condition_keys_apply() {
     let policy = r#"{"Version":"2012-10-17","Statement":[
         {"Effect":"Allow","Action":"acm:RequestCertificate","Resource":"*",
          "Condition":{"StringEquals":{"acm:ValidationMethod":"DNS"}}},
+        {"Effect":"Allow","Action":"acm:AddTagsToCertificate","Resource":"*"},
         {"Effect":"Allow","Action":"acm:DescribeCertificate","Resource":"*",
          "Condition":{"StringEquals":{"aws:ResourceTag/team":"blue"}}}]}"#;
     let (_, cfg) = user_with_policy(&mws, "dns-only", Some(policy)).await;
@@ -1337,4 +1410,55 @@ async fn renewal_that_needs_the_owner_sends_an_event() {
 
 fn chrono_now() -> i64 {
     std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_secs() as i64
+}
+
+#[tokio::test]
+async fn tags_on_request_and_import_need_add_tags_permission() {
+    let mws = Mws::start().await;
+    let tag = || Tag::builder().key("team").value("web").build().unwrap();
+    let (cert, key) = self_signed(&["tagged.example.com"], 30);
+    let import = |c: &Client, tagged: bool| {
+        let mut req = c
+            .import_certificate()
+            .certificate(Blob::new(cert.as_bytes()))
+            .private_key(Blob::new(key.serialize_pem().as_bytes()));
+        if tagged {
+            req = req.tags(tag());
+        }
+        req.send()
+    };
+    let request = |c: &Client, tagged: bool| {
+        let mut req =
+            c.request_certificate().domain_name("tagged.example.com").validation_method(ValidationMethod::Dns);
+        if tagged {
+            req = req.tags(tag());
+        }
+        req.send()
+    };
+
+    let narrow = r#"{"Version":"2012-10-17","Statement":[{"Effect":"Allow",
+        "Action":["acm:RequestCertificate","acm:ImportCertificate","acm:DescribeCertificate"],"Resource":"*"}]}"#;
+    let (_, cfg) = user_with_policy(&mws, "no-tagging", Some(narrow)).await;
+    let user = Client::new(&cfg);
+    let err = request(&user, true).await.unwrap_err().into_service_error();
+    assert_eq!(code(&err), "AccessDeniedException");
+    assert!(err.meta().message().unwrap().contains("acm:AddTagsToCertificate"), "{:?}", err.meta().message());
+    let err = import(&user, true).await.unwrap_err().into_service_error();
+    assert_eq!(code(&err), "AccessDeniedException");
+    assert!(err.meta().message().unwrap().contains("acm:AddTagsToCertificate"), "{:?}", err.meta().message());
+    // Without tags the narrow policy is enough.
+    request(&user, false).await.unwrap();
+    import(&user, false).await.unwrap();
+
+    let with_tagging = r#"{"Version":"2012-10-17","Statement":[{"Effect":"Allow",
+        "Action":["acm:RequestCertificate","acm:ImportCertificate","acm:AddTagsToCertificate"],"Resource":"*"}]}"#;
+    let (_, cfg) = user_with_policy(&mws, "tagging", Some(with_tagging)).await;
+    let user = Client::new(&cfg);
+    let requested = request(&user, true).await.unwrap().certificate_arn().unwrap().to_string();
+    let imported = import(&user, true).await.unwrap().certificate_arn().unwrap().to_string();
+    let (acm, _) = clients(&mws).await;
+    for arn in [requested, imported] {
+        let tags = acm.list_tags_for_certificate().certificate_arn(&arn).send().await.unwrap();
+        assert_eq!(tags.tags()[0].key(), "team");
+    }
 }

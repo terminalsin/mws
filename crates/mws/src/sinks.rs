@@ -167,6 +167,11 @@ impl EventBridgeSink for S3ToEvents {
         if let Some(d) = &e.deletion_type {
             detail["deletion-type"] = serde_json::json!(d);
         }
+        if let Some(serde_json::Value::Object(extra)) = &e.eventbridge_detail {
+            for (k, v) in extra {
+                detail[k] = v.clone();
+            }
+        }
         self.0.put_service_event(
             ctx,
             ServiceEvent {

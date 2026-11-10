@@ -3,7 +3,7 @@
 use std::collections::BTreeMap;
 
 use chrono::{DateTime, Duration, Months, NaiveDateTime, Utc};
-use mws_core::{ConditionContext, RequestContext, ServiceError};
+use mws_core::{settle, ConditionContext, RequestContext, ServiceError};
 use mws_iam_policy::{Policy, PolicyKind};
 use rand::Rng;
 
@@ -177,7 +177,16 @@ impl PrivateCa {
         if let Some(tags) = &input.tags {
             cond.insert("aws:TagKeys".into(), tags.iter().map(|t| t.key.clone()).collect());
         }
-        ctx.authorize("acm-pca:CreateCertificateAuthority", "*", cond)?;
+        ctx.authorize("acm-pca:CreateCertificateAuthority", "*", cond.clone())?;
+        let id = uuid::Uuid::new_v4().to_string();
+        let arn = format!(
+            "arn:{}:acm-pca:{}:{}:certificate-authority/{id}",
+            ctx.partition, ctx.region, ctx.caller.account_id
+        );
+        if input.tags.as_ref().is_some_and(|t| !t.is_empty()) {
+            // Creating a CA with tags also needs the tagging permission.
+            ctx.authorize("acm-pca:TagCertificateAuthority", &arn, cond)?;
+        }
         let token_key = input.idempotency_token.as_ref().map(|t| format!("{}/{t}", ctx.caller.account_id));
         if let Some(token) = &token_key {
             if let Some(arn) = self.lock().create_tokens.get(token) {
@@ -205,11 +214,6 @@ impl PrivateCa {
         };
         let csr_pem = x509::csr_pem(&key, &x509::subject_dn(&config.subject)?, &csr_extensions)?;
 
-        let id = uuid::Uuid::new_v4().to_string();
-        let arn = format!(
-            "arn:{}:acm-pca:{}:{}:certificate-authority/{id}",
-            ctx.partition, ctx.region, ctx.caller.account_id
-        );
         self.check_crl_bucket(&arn, input.revocation_configuration.as_ref())?;
         let now = ctx.received_at;
         let ca = Ca {
@@ -218,7 +222,9 @@ impl PrivateCa {
             created_at: now,
             last_state_change_at: now,
             ty: input.certificate_authority_type,
-            status: "PENDING_CERTIFICATE".into(),
+            // Private CA makes the key and CSR in the background; the CA is
+            // CREATING until they are ready (see `lifecycle`).
+            status: if settle::settled(now, now) { "PENDING_CERTIFICATE" } else { "CREATING" }.into(),
             config,
             revocation: input.revocation_configuration,
             key_storage: Some(
@@ -305,6 +311,11 @@ impl PrivateCa {
         let ca = st.ca(arn)?;
         if ca.status == "DELETED" {
             return Err(invalid_state(format!("The certificate authority {arn} is not in a valid state (DELETED).")));
+        }
+        if ca.status == "CREATING" {
+            return Err(errors::request_in_progress(format!(
+                "The certificate authority {arn} is still being created. Try again later."
+            )));
         }
         Ok(types::GetCertificateAuthorityCsrResponse { csr: Some(ca.csr_pem.clone()) })
     }
@@ -501,6 +512,14 @@ impl PrivateCa {
         let missing = || errors::resource_not_found(format!("Could not find certificate {}.", input.certificate_arn));
         let id = input.certificate_arn.strip_prefix(&format!("{arn}/certificate/")).ok_or_else(missing)?;
         let cert = ca.certs.get(id).ok_or_else(missing)?;
+        // Issuance is asynchronous: the certificate is there a moment after
+        // IssueCertificate returns (SDK waiter `CertificateIssued`).
+        if !settle::settled(cert.issued_at, ctx.received_at) {
+            return Err(errors::request_in_progress(format!(
+                "The request to issue certificate {} is still in progress.",
+                input.certificate_arn
+            )));
+        }
         // A root CA's self-signed certificate has no chain until it is imported.
         let chain =
             if ca.cert_pem.as_deref() == Some(cert.pem.as_str()) { ca.chain_pem.clone() } else { ca.full_chain() };

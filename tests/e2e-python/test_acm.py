@@ -4,6 +4,7 @@ RFC 8555 client."""
 
 import base64
 import json
+import time
 import urllib.parse
 import urllib.request
 import uuid
@@ -56,8 +57,29 @@ def upsert_cname(r53, zone_id, name, value, action="UPSERT"):
     )
 
 
+def with_records(acm, arn):
+    """The certificate once ACM has filled in its DNS validation records,
+    which appear a moment after RequestCertificate (IaC tools poll too)."""
+    for _ in range(100):
+        cert = acm.describe_certificate(CertificateArn=arn)["Certificate"]
+        if all("ResourceRecord" in dv for dv in cert["DomainValidationOptions"]):
+            return cert
+        time.sleep(0.1)
+    raise AssertionError(f"no validation records for {arn}")
+
+
+def settled(acm, arn):
+    """A private certificate once Private CA has issued it (or failed)."""
+    for _ in range(100):
+        cert = acm.describe_certificate(CertificateArn=arn)["Certificate"]
+        if cert["Status"] != "PENDING_VALIDATION":
+            return cert
+        time.sleep(0.1)
+    raise AssertionError(f"{arn} is still pending")
+
+
 def publish(acm, r53, zone_id, arn):
-    cert = acm.describe_certificate(CertificateArn=arn)["Certificate"]
+    cert = with_records(acm, arn)
     for dv in cert["DomainValidationOptions"]:
         rr = dv["ResourceRecord"]
         upsert_cname(r53, zone_id, rr["Name"], rr["Value"])
@@ -171,6 +193,9 @@ def make_ca(pca):
         },
         CertificateAuthorityType="ROOT",
     )["CertificateAuthorityArn"]
+    pca.get_waiter("certificate_authority_csr_created").wait(
+        CertificateAuthorityArn=arn, WaiterConfig={"Delay": 1, "MaxAttempts": 10}
+    )
     csr = pca.get_certificate_authority_csr(CertificateAuthorityArn=arn)["Csr"]
     cert_arn = pca.issue_certificate(
         CertificateAuthorityArn=arn,
@@ -179,6 +204,9 @@ def make_ca(pca):
         TemplateArn="arn:aws:acm-pca:::template/RootCACertificate/V1",
         Validity={"Value": 5, "Type": "YEARS"},
     )["CertificateArn"]
+    pca.get_waiter("certificate_issued").wait(
+        CertificateAuthorityArn=arn, CertificateArn=cert_arn, WaiterConfig={"Delay": 1, "MaxAttempts": 10}
+    )
     pem = pca.get_certificate(CertificateAuthorityArn=arn, CertificateArn=cert_arn)["Certificate"]
     pca.import_certificate_authority_certificate(CertificateAuthorityArn=arn, Certificate=pem.encode())
     return arn, x509.load_pem_x509_certificate(pem.encode())
@@ -187,7 +215,11 @@ def make_ca(pca):
 def test_private_certificate_renewal(acm, pca):
     ca_arn, root = make_ca(pca)
     arn = acm.request_certificate(DomainName="db.corp.internal", CertificateAuthorityArn=ca_arn)["CertificateArn"]
-    cert = acm.describe_certificate(CertificateArn=arn)["Certificate"]
+    # Issued asynchronously: PENDING_VALIDATION first.
+    with pytest.raises(ClientError) as e:
+        acm.get_certificate(CertificateArn=arn)
+    assert code(e) == "RequestInProgressException"
+    cert = settled(acm, arn)
     assert cert["Type"] == "PRIVATE" and cert["Status"] == "ISSUED" and cert["Issuer"] == "Boto Corp"
     leaf = x509.load_pem_x509_certificate(acm.get_certificate(CertificateArn=arn)["Certificate"].encode())
     leaf.verify_directly_issued_by(root)

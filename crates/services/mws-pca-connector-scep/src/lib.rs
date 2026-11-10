@@ -64,6 +64,7 @@ impl Service for ScepConnector {
     }
 
     async fn handle(&self, ctx: RequestContext, request: HttpRequest) -> HttpResponse {
+        self.advance(ctx.received_at);
         if scep::is_scep_path(request.uri().path()) {
             return self.serve_scep(&ctx, &request);
         }
@@ -84,6 +85,7 @@ impl Service for ScepConnector {
         operation: &str,
         input: serde_json::Value,
     ) -> Result<serde_json::Value, ServiceError> {
+        self.advance(ctx.received_at);
         generated::invoke(self, &ctx, operation, input).await
     }
 
