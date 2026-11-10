@@ -22,6 +22,8 @@ pub enum Kind {
 }
 
 impl Kind {
+    pub const ALL: [Kind; 4] = [Kind::IpSet, Kind::ThreatIntelSet, Kind::ThreatEntitySet, Kind::TrustedEntitySet];
+
     fn segment(self) -> &'static str {
         match self {
             Kind::IpSet => "ipset",
@@ -48,7 +50,7 @@ impl Kind {
         }
     }
 
-    fn map(self, d: &Detector) -> &BTreeMap<String, ThreatList> {
+    pub(crate) fn map(self, d: &Detector) -> &BTreeMap<String, ThreatList> {
         match self {
             Kind::IpSet => &d.ip_sets,
             Kind::ThreatIntelSet => &d.threat_intel_sets,
@@ -57,7 +59,7 @@ impl Kind {
         }
     }
 
-    fn map_mut(self, d: &mut Detector) -> &mut BTreeMap<String, ThreatList> {
+    pub(crate) fn map_mut(self, d: &mut Detector) -> &mut BTreeMap<String, ThreatList> {
         match self {
             Kind::IpSet => &mut d.ip_sets,
             Kind::ThreatIntelSet => &mut d.threat_intel_sets,
@@ -78,8 +80,11 @@ fn check_location(location: &str) -> Result<(), ServiceError> {
     }
 }
 
-fn active(activate: bool) -> String {
-    if activate { "ACTIVE" } else { "INACTIVE" }.to_string()
+/// GuardDuty attaches (and removes) a policy on its service-linked role
+/// that lets it read the list file, so changing lists needs
+/// `iam:PutRolePolicy` (or `iam:DeleteRolePolicy`) on that role.
+fn authorize_role_policy(ctx: &RequestContext, action: &str) -> Result<(), ServiceError> {
+    ctx.authorize(action, &service_role_arn(ctx, &ctx.caller.account_id), Default::default())
 }
 
 pub struct NewList {
@@ -333,6 +338,7 @@ impl GuardDuty {
             request_tag_context(new.tags.as_ref()),
         )?;
         check_location(&new.location)?;
+        authorize_role_policy(ctx, "iam:PutRolePolicy")?;
         let now = ctx.received_at;
         let mut state = self.lock();
         let account = ctx.caller.account_id.clone();
@@ -359,19 +365,23 @@ impl GuardDuty {
             )));
         }
         let id = hex_id(32);
-        lists.insert(
-            id.clone(),
-            ThreatList {
-                name: new.name,
-                format: new.format,
-                location: new.location,
-                status: active(new.activate),
-                expected_bucket_owner: new.expected_bucket_owner,
-                tags: new.tags.unwrap_or_default(),
-                created_at: now,
-                updated_at: now,
-            },
-        );
+        let mut list = ThreatList {
+            name: new.name,
+            format: new.format,
+            location: new.location,
+            status: "INACTIVE".into(),
+            expected_bucket_owner: new.expected_bucket_owner,
+            tags: new.tags.unwrap_or_default(),
+            created_at: now,
+            updated_at: now,
+            ready_at: None,
+            entries: Vec::new(),
+            error: None,
+        };
+        if new.activate {
+            crate::threatlists::start_activation(&mut list, now);
+        }
+        lists.insert(id.clone(), list);
         if let Some(k) = token_key {
             state.account_mut(&account, &ctx.region).client_tokens.insert(k, id.clone());
         }
@@ -401,6 +411,7 @@ impl GuardDuty {
             Some(&tags),
             Default::default(),
         )?;
+        self.settle_lists(ctx);
         let state = self.lock();
         let det = Self::owned(&state, ctx, detector_id)?;
         kind.map(det).get(id).cloned().ok_or_else(no_such_resource)
@@ -427,6 +438,7 @@ impl GuardDuty {
         if let Some(l) = &update.location {
             check_location(l)?;
         }
+        authorize_role_policy(ctx, "iam:PutRolePolicy")?;
         let mut state = self.lock();
         let det = Self::owned_mut(&mut state, ctx, detector_id)?;
         let lists = kind.map_mut(det);
@@ -442,14 +454,24 @@ impl GuardDuty {
         if let Some(n) = update.name {
             l.name = n;
         }
+        let mut reread = false;
         if let Some(loc) = update.location {
+            reread |= loc != l.location;
             l.location = loc;
         }
-        if let Some(a) = update.activate {
-            l.status = active(a);
-        }
         if update.expected_bucket_owner.is_some() {
+            reread |= update.expected_bucket_owner != l.expected_bucket_owner;
             l.expected_bucket_owner = update.expected_bucket_owner;
+        }
+        let activate = update.activate.unwrap_or(l.status != "INACTIVE");
+        if !activate {
+            l.status = "INACTIVE".into();
+            l.ready_at = None;
+            l.entries.clear();
+            l.error = None;
+        } else if reread || l.status == "INACTIVE" || l.status == "ERROR" {
+            // GuardDuty reads the file again.
+            crate::threatlists::start_activation(l, ctx.received_at);
         }
         l.updated_at = ctx.received_at;
         Ok(())
@@ -472,6 +494,7 @@ impl GuardDuty {
             Some(&tags),
             Default::default(),
         )?;
+        authorize_role_policy(ctx, "iam:DeleteRolePolicy")?;
         let mut state = self.lock();
         let det = Self::owned_mut(&mut state, ctx, detector_id)?;
         kind.map_mut(det).remove(id).ok_or_else(no_such_resource)?;

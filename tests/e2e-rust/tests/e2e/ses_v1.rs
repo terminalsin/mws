@@ -22,6 +22,12 @@ fn simple(subject: &str) -> t1::Message {
         .build()
 }
 
+/// Decide the account's production access review now (MWS control API).
+async fn grant_production_access(mws: &Mws) {
+    let (status, body) = mws.control("POST", "/_aws/ses/production-access?status=GRANTED", None).await;
+    assert_eq!(status, 200, "{body}");
+}
+
 async fn outbox(mws: &Mws, query: &str) -> Vec<serde_json::Value> {
     let (_, body) = mws.control("GET", &format!("/_aws/ses{query}"), None).await;
     body["messages"].as_array().cloned().unwrap_or_default()
@@ -187,6 +193,8 @@ async fn templates_and_custom_verification_emails() {
     assert_eq!(mail[0]["Subject"], "Your digest, Grace");
     assert_eq!(mail[0]["Template"], "digest");
 
+    // Two destinations at once exceed the sandbox's one message a second.
+    grant_production_access(&mws).await;
     let bulk = ses
         .send_bulk_templated_email()
         .source("news@corp.test")

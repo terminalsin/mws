@@ -64,6 +64,10 @@ struct Secret;
 
 #[async_trait::async_trait]
 impl Provider for Secret {
+    fn name_property(&self) -> Option<&'static str> {
+        Some("Name")
+    }
+
     fn create_only(&self) -> &'static [&'static str] {
         &["Name"]
     }

@@ -90,6 +90,12 @@ pub fn token(len: usize) -> String {
     (0..len).map(|_| ALPHABET[rng.gen_range(0..ALPHABET.len())] as char).collect()
 }
 
+/// An AWS Support case number, as production access reviews get.
+pub fn case_id() -> String {
+    let mut rng = rand::thread_rng();
+    format!("1{:010}", rng.gen_range(0..10_000_000_000u64))
+}
+
 /// A base64-looking v1 domain verification token.
 pub fn verification_token() -> String {
     use base64::Engine;

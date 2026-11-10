@@ -446,7 +446,8 @@ async fn threat_lists_and_s3_publishing_destination() {
         .unwrap_err();
     assert_eq!(code(&second), "BadRequestException");
     let got = gd.get_ip_set().detector_id(&id).ip_set_id(&ip).send().await.unwrap();
-    assert_eq!((got.name(), got.status().unwrap().as_str()), (Some("office"), "ACTIVE"));
+    // GuardDuty reads the file before the list is active (see guardduty_detection).
+    assert_eq!((got.name(), got.status().unwrap().as_str()), (Some("office"), "ACTIVATING"));
     gd.update_ip_set().detector_id(&id).ip_set_id(&ip).activate(false).name("hq").send().await.unwrap();
     let got = gd.get_ip_set().detector_id(&id).ip_set_id(&ip).send().await.unwrap();
     assert_eq!((got.name(), got.status().unwrap().as_str()), (Some("hq"), "INACTIVE"));
@@ -496,7 +497,7 @@ async fn threat_lists_and_s3_publishing_destination() {
         .to_string();
     gd.update_threat_entity_set().detector_id(&id).threat_entity_set_id(&te).activate(true).send().await.unwrap();
     let got = gd.get_threat_entity_set().detector_id(&id).threat_entity_set_id(&te).send().await.unwrap();
-    assert_eq!(got.status().unwrap().as_str(), "ACTIVE");
+    assert_eq!(got.status().unwrap().as_str(), "ACTIVATING");
     assert!(got.created_at().is_some());
     assert_eq!(
         gd.list_threat_entity_sets().detector_id(&id).send().await.unwrap().threat_entity_set_ids(),

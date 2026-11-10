@@ -2,20 +2,31 @@
 //! read handlers, written against the other MWS services' APIs.
 
 mod acm;
+mod autoscaling;
 mod cfn;
 mod cloudwatch;
 mod ec2;
+mod ecr;
+mod ecs;
+mod efs;
+mod eks;
+mod elasticache;
+mod elb;
 mod events;
+mod guardduty;
 mod iam;
 mod kinesis;
 mod kms;
 mod lambda;
 mod logs;
 mod pca;
+mod rds;
 mod route53;
 mod s3;
 pub mod scan;
 mod secrets;
+mod securityhub;
+mod ses;
 mod sns;
 mod sqs;
 mod ssm;
@@ -367,6 +378,22 @@ pub trait Provider: Send + Sync {
         true
     }
 
+    /// The property that holds a custom (user-chosen) physical name, such
+    /// as `BucketName` or `QueueName`. CloudFormation refuses to replace a
+    /// resource whose template sets it, because the new resource could not
+    /// take the same name.
+    fn name_property(&self) -> Option<&'static str> {
+        None
+    }
+
+    /// Take a final snapshot before deletion (`DeletionPolicy: Snapshot`).
+    /// `None` when the type does not support snapshots, which template
+    /// validation reports like AWS does.
+    async fn snapshot(&self, cx: &Cx<'_>, physical_id: &str, props: &Props, attrs: &Props) -> Option<HResult<()>> {
+        let _ = (cx, physical_id, props, attrs);
+        None
+    }
+
     async fn create(&self, cx: &Cx<'_>, props: &Props) -> HResult<Created>;
 
     /// Apply a change in place; returns the new attributes.
@@ -403,7 +430,18 @@ pub fn registry() -> BTreeMap<&'static str, Arc<dyn Provider>> {
     route53::register(&mut m);
     acm::register(&mut m);
     pca::register(&mut m);
+    rds::register(&mut m);
+    elasticache::register(&mut m);
+    autoscaling::register(&mut m);
+    eks::register(&mut m);
+    guardduty::register(&mut m);
+    securityhub::register(&mut m);
     ec2::register(&mut m);
+    ecs::register(&mut m);
+    ecr::register(&mut m);
+    efs::register(&mut m);
+    elb::register(&mut m);
+    ses::register(&mut m);
     cfn::register(&mut m);
     m
 }

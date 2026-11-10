@@ -47,6 +47,10 @@ struct Queue;
 
 #[async_trait::async_trait]
 impl Provider for Queue {
+    fn name_property(&self) -> Option<&'static str> {
+        Some("QueueName")
+    }
+
     fn create_only(&self) -> &'static [&'static str] {
         &["QueueName", "FifoQueue"]
     }

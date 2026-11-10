@@ -217,6 +217,21 @@ pub fn new_detector(now: DateTime<Utc>) -> Detector {
 }
 
 impl GuardDuty {
+    /// Enabling GuardDuty creates `AWSServiceRoleForAmazonGuardDuty` in
+    /// the caller's account, which needs `iam:CreateServiceLinkedRole`
+    /// unless the role is already there.
+    pub(crate) fn ensure_service_linked_role(&self, ctx: &RequestContext, account: &str) -> Result<(), ServiceError> {
+        let Some(roles) = self.roles() else { return Ok(()) };
+        if roles.exists(account) {
+            return Ok(());
+        }
+        let mut cond = ConditionContext::new();
+        cond.insert("iam:AWSServiceName".to_string(), vec![SERVICE_PRINCIPAL.to_string()]);
+        ctx.authorize("iam:CreateServiceLinkedRole", &service_role_arn(ctx, account), cond)?;
+        roles.ensure(account);
+        Ok(())
+    }
+
     /// The caller's detector, which must be `detector_id`.
     pub(crate) fn owned<'s>(
         state: &'s State,
@@ -274,6 +289,10 @@ impl GuardDuty {
             ));
         }
         let account = ctx.caller.account_id.clone();
+        let exists = self.lock().detector(&account, &ctx.region).is_some();
+        if !exists {
+            self.ensure_service_linked_role(ctx, &account)?;
+        }
         let mut state = self.lock();
         let acct = state.account_mut(&account, &ctx.region);
         if let Some(d) = &acct.detector {

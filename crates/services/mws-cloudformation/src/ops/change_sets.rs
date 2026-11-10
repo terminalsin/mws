@@ -9,7 +9,7 @@ use crate::changes::{self, ResourceChange};
 use crate::engine::STACK_TYPE;
 use crate::generated::{errors, types};
 use crate::parameters::Provided;
-use crate::state::{ChangeSet, Snapshot, Stack, State};
+use crate::state::{ChangeSet, Stack, State};
 use crate::template::Template;
 use crate::CloudFormation;
 
@@ -115,6 +115,9 @@ impl CloudFormation {
             ("UPDATE", Some(s)) if s.status == "REVIEW_IN_PROGRESS" => {
                 return Err(validation(format!("Stack [{}] does not exist", input.stack_name)))
             }
+            ("UPDATE", Some(s)) if !super::stacks::UPDATABLE.contains(&s.status.as_str()) => {
+                return Err(validation(format!("Stack:{} is in {} state and can not be updated.", s.id, s.status)))
+            }
             ("UPDATE", Some(s)) => s,
             ("UPDATE", None) => return Err(validation(format!("Stack [{}] does not exist", input.stack_name))),
             (other, _) => return Err(validation(format!("ChangeSetType {other} is not valid"))),
@@ -126,69 +129,147 @@ impl CloudFormation {
         let deploy = self.deploy_context(ctx, role.as_deref())?;
         let caps = input.capabilities.clone().unwrap_or_default();
         let notifications = input.notification_ar_ns.clone().unwrap_or_else(|| stack.notification_arns.clone());
-        let (template, params, data) = self
-            .prepare(
-                ctx,
-                &deploy,
-                &stack.name,
-                &stack.id,
-                &body,
-                &provided(input.parameters.clone()),
-                &stack.parameters,
-                &caps,
-                &notifications,
+        let provided_params = provided(input.parameters.clone());
+        // Templates without transforms are checked before the call
+        // returns; transforms run while the change set is created, and
+        // their failures fail the change set.
+        let raw = Template::parse(&body).map_err(validation)?;
+        let prepared = if raw.needs_processing() {
+            None
+        } else {
+            Some(
+                self.prepare(
+                    ctx,
+                    &deploy,
+                    &stack.name,
+                    &stack.id,
+                    &body,
+                    &provided_params,
+                    &stack.parameters,
+                    &caps,
+                    &notifications,
+                    false,
+                )
+                .await?,
             )
-            .await?;
+        };
         let id = change_set_arn(ctx, &input.change_set_name);
-        let mut cs = ChangeSet {
+        let cs = ChangeSet {
             id: id.clone(),
             name: input.change_set_name.clone(),
             stack_id: stack.id.clone(),
             change_set_type: kind.clone(),
             description: input.description.clone(),
-            status: "CREATE_COMPLETE".into(),
-            execution_status: "AVAILABLE".into(),
+            status: "CREATE_PENDING".into(),
+            execution_status: "UNAVAILABLE".into(),
             created: ctx.received_at,
-            template_body: body,
-            parameters: params.clone(),
+            template_body: body.clone(),
+            parameters: prepared.as_ref().map(|p| p.1.clone()).unwrap_or_default(),
             tags,
-            capabilities: caps,
+            capabilities: caps.clone(),
             notification_arns: input.notification_ar_ns.clone(),
             role_arn: input.role_arn.clone(),
             on_stack_failure: input.on_stack_failure.clone(),
+            rollback_configuration: convert::rollback_config_of(input.rollback_configuration.clone()),
             ..Default::default()
         };
-        match changes::compute(self, &stack, &template, &data) {
-            Ok(list) => {
-                let same_template =
-                    Template::parse(&stack.template_body).map(|t| t.root == template.root).unwrap_or(false);
-                let same_params = params.iter().map(|p| (&p.key, &p.value)).collect::<Vec<_>>()
-                    == stack.parameters.iter().map(|p| (&p.key, &p.value)).collect::<Vec<_>>();
-                let same_tags = cs.tags.as_ref().is_none_or(|t| {
-                    t.iter().map(|x| (&x.key, &x.value)).collect::<Vec<_>>()
-                        == stack.tags.iter().map(|x| (&x.key, &x.value)).collect::<Vec<_>>()
-                });
-                if kind == "UPDATE" && list.is_empty() && same_template && same_params && same_tags {
-                    cs.status = "FAILED".into();
-                    cs.execution_status = "UNAVAILABLE".into();
-                    cs.status_reason = Some(
-                        "The submitted information didn't contain changes. Submit different information to create a change set."
-                            .into(),
-                    );
-                }
-                cs.changes = list.iter().map(|c| serde_json::to_value(c).unwrap_or_default()).collect();
-            }
-            Err(reason) => {
-                cs.status = "FAILED".into();
-                cs.execution_status = "UNAVAILABLE".into();
-                cs.status_reason = Some(reason);
-            }
-        }
         let stack_id = stack.id.clone();
         if let Some(s) = self.state().stacks.get_mut(&stack_id) {
-            s.change_sets.insert(id.clone(), cs);
+            s.change_sets.insert(id.clone(), cs.clone());
         }
+        let me = self.clone();
+        let ctx2 = ctx.clone();
+        self.settle_change_set(stack_id.clone(), id.clone(), async move {
+            let mut cs = cs;
+            let prepared = match prepared {
+                Some(p) => Ok(p),
+                None => {
+                    me.prepare(
+                        &ctx2,
+                        &deploy,
+                        &stack.name,
+                        &stack.id,
+                        &body,
+                        &provided_params,
+                        &stack.parameters,
+                        &caps,
+                        &notifications,
+                        false,
+                    )
+                    .await
+                }
+            };
+            let (template, params, data) = match prepared {
+                Ok(p) => p,
+                Err(e) => {
+                    cs.status = "FAILED".into();
+                    cs.status_reason = Some(e.message.to_string());
+                    return cs;
+                }
+            };
+            cs.template_body = template.body(&body);
+            cs.original_template = template.original.clone();
+            cs.parameters = params.clone();
+            // The stack as it is now (another change set may have run).
+            let stack = me.state().stacks.get(&stack.id).cloned().unwrap_or(stack);
+            match changes::compute(&me, &stack, &template, &data) {
+                Ok(list) => {
+                    let same_template =
+                        Template::parse(&stack.template_body).map(|t| t.root == template.root).unwrap_or(false);
+                    let same_params = params.iter().map(|p| (&p.key, &p.value)).collect::<Vec<_>>()
+                        == stack.parameters.iter().map(|p| (&p.key, &p.value)).collect::<Vec<_>>();
+                    let same_tags = cs.tags.as_ref().is_none_or(|t| {
+                        t.iter().map(|x| (&x.key, &x.value)).collect::<Vec<_>>()
+                            == stack.tags.iter().map(|x| (&x.key, &x.value)).collect::<Vec<_>>()
+                    });
+                    if kind == "UPDATE" && list.is_empty() && same_template && same_params && same_tags {
+                        cs.status = "FAILED".into();
+                        cs.status_reason = Some(
+                            "The submitted information didn't contain changes. Submit different information to create a change set."
+                                .into(),
+                        );
+                    } else {
+                        cs.status = "CREATE_COMPLETE".into();
+                        cs.execution_status = "AVAILABLE".into();
+                    }
+                    cs.changes = list.iter().map(|c| serde_json::to_value(c).unwrap_or_default()).collect();
+                }
+                Err(reason) => {
+                    cs.status = "FAILED".into();
+                    cs.status_reason = Some(reason);
+                }
+            }
+            cs
+        });
         Ok(types::CreateChangeSetOutput { id: Some(id), stack_id: Some(stack_id) })
+    }
+
+    /// Finish creating a change set in the background, as AWS does: it
+    /// is `CREATE_PENDING`, then `CREATE_IN_PROGRESS` while `work` runs,
+    /// then what `work` returns (`CREATE_COMPLETE` or `FAILED`).
+    pub(crate) fn settle_change_set(
+        &self,
+        stack_id: String,
+        cs_id: String,
+        work: impl std::future::Future<Output = ChangeSet> + Send + 'static,
+    ) {
+        let me = self.clone();
+        tokio::spawn(async move {
+            tokio::task::yield_now().await;
+            let set = |f: &dyn Fn(&mut ChangeSet)| {
+                let mut st = me.state();
+                if let Some(cs) = st.stacks.get_mut(&stack_id).and_then(|s| s.change_sets.get_mut(&cs_id)) {
+                    f(cs);
+                }
+            };
+            set(&|cs| cs.status = "CREATE_IN_PROGRESS".into());
+            let done = work.await;
+            set(&|cs| {
+                if cs.status == "CREATE_IN_PROGRESS" {
+                    *cs = done.clone();
+                }
+            });
+        });
     }
 
     pub(crate) fn describe_change_set_op(
@@ -223,7 +304,7 @@ impl CloudFormation {
             status: Some(cs.status.clone()),
             status_reason: cs.status_reason.clone(),
             notification_ar_ns: Some(cs.notification_arns.clone().unwrap_or_else(|| s.notification_arns.clone())),
-            rollback_configuration: Some(types::RollbackConfiguration::default()),
+            rollback_configuration: Some(convert::rollback_configuration(cs.rollback_configuration.as_ref())),
             capabilities: (!cs.capabilities.is_empty()).then(|| cs.capabilities.clone()),
             tags: convert::tags(cs.tags.as_deref().unwrap_or(&s.tags)),
             changes: Some(changes),
@@ -313,6 +394,9 @@ impl CloudFormation {
                 cs.id, stack.status
             )));
         }
+        if cs.change_set_type == "UPDATE" && !super::stacks::UPDATABLE.contains(&stack.status.as_str()) {
+            return Err(validation(format!("Stack:{} is in {} state and can not be updated.", stack.id, stack.status)));
+        }
         if cs.change_set_type == "IMPORT" {
             return self.execute_import(ctx, &stack, &cs, input.client_request_token.clone()).await;
         }
@@ -335,6 +419,7 @@ impl CloudFormation {
                 &[],
                 &cs.capabilities,
                 &notifications,
+                false,
             )
             .await?;
         let operation_id = uuid::Uuid::new_v4().to_string();
@@ -343,16 +428,14 @@ impl CloudFormation {
             let mut st = self.state();
             let s = st.stacks.get_mut(&stack.id).expect("found above");
             if !creating {
-                s.previous = Some(Box::new(Snapshot {
-                    template_body: s.template_body.clone(),
-                    parameters: s.parameters.clone(),
-                    resources: s.resources.clone(),
-                    outputs: s.outputs.clone(),
-                    tags: s.tags.clone(),
-                }));
+                s.keep_previous();
                 s.updated = Some(ctx.received_at);
             }
             s.template_body = cs.template_body.clone();
+            s.original_template = cs.original_template.clone();
+            if cs.rollback_configuration.is_some() {
+                s.rollback_configuration = cs.rollback_configuration.clone();
+            }
             s.description = template.description();
             s.parameters = params;
             if let Some(t) = &cs.tags {
@@ -380,7 +463,7 @@ impl CloudFormation {
             // Executing a change set removes the stack's other change sets.
             s.change_sets.retain(|id, _| id == &cs.id);
             if let Some(c) = s.change_sets.get_mut(&cs.id) {
-                c.execution_status = "EXECUTE_COMPLETE".into();
+                c.execution_status = "EXECUTE_IN_PROGRESS".into();
                 c.execution_operation_id = Some(operation_id);
             }
         }
@@ -484,6 +567,7 @@ impl CloudFormation {
                 &stack.parameters,
                 &caps,
                 &notifications,
+                false,
             )
             .await?;
         // Template checks AWS makes before looking the resources up.
@@ -596,9 +680,20 @@ impl CloudFormation {
         }
         let id = cs.id.clone();
         let stack_id = stack.id.clone();
-        if let Some(s) = self.state().stacks.get_mut(&stack_id) {
-            s.change_sets.insert(id.clone(), cs);
+        if cs.status != "FAILED" {
+            cs.status = "CREATE_COMPLETE".into();
         }
+        // Published like any change set: pending first.
+        let pending = ChangeSet {
+            status: "CREATE_PENDING".into(),
+            execution_status: "UNAVAILABLE".into(),
+            changes: Vec::new(),
+            ..cs.clone()
+        };
+        if let Some(s) = self.state().stacks.get_mut(&stack_id) {
+            s.change_sets.insert(id.clone(), pending);
+        }
+        self.settle_change_set(stack_id.clone(), id.clone(), async move { cs });
         Ok(types::CreateChangeSetOutput { id: Some(id), stack_id: Some(stack_id) })
     }
 
@@ -628,6 +723,7 @@ impl CloudFormation {
                 &[],
                 &cs.capabilities,
                 &notifications,
+                false,
             )
             .await?;
         let mut imports = Vec::new();
@@ -646,13 +742,7 @@ impl CloudFormation {
         {
             let mut st = self.state();
             let s = st.stacks.get_mut(&stack.id).expect("found above");
-            s.previous = Some(Box::new(Snapshot {
-                template_body: s.template_body.clone(),
-                parameters: s.parameters.clone(),
-                resources: s.resources.clone(),
-                outputs: s.outputs.clone(),
-                tags: s.tags.clone(),
-            }));
+            s.keep_previous();
             s.updated = Some(ctx.received_at);
             s.template_body = cs.template_body.clone();
             s.description = template.description();
@@ -670,7 +760,7 @@ impl CloudFormation {
             s.last_operation = Some(("IMPORT".into(), operation_id.clone()));
             s.change_sets.retain(|id, _| id == &cs.id);
             if let Some(c) = s.change_sets.get_mut(&cs.id) {
-                c.execution_status = "EXECUTE_COMPLETE".into();
+                c.execution_status = "EXECUTE_IN_PROGRESS".into();
                 c.execution_operation_id = Some(operation_id);
             }
         }

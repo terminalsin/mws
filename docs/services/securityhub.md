@@ -1,6 +1,6 @@
 # AWS Security Hub
 
-> Crate: [`mws-securityhub`](../../crates/services/mws-securityhub) · Tests: [`tests/e2e-rust/tests/e2e/securityhub.rs`](../../tests/e2e-rust/tests/e2e/securityhub.rs)
+> Crate: [`mws-securityhub`](../../crates/services/mws-securityhub) · Tests: [`tests/e2e-rust/tests/e2e/securityhub.rs`](../../tests/e2e-rust/tests/e2e/securityhub.rs), [`securityhub_controls.rs`](../../tests/e2e-rust/tests/e2e/securityhub_controls.rs)
 
 All 126 operations are generated from the AWS model (restJson1) and implemented, including the V2 (OCSF) API. Findings are stored as ASFF and served as OCSF through the V2 calls, so both views of a finding stay in step.
 
@@ -10,10 +10,11 @@ All 126 operations are generated from the AWS model (restJson1) and implemented,
 
 | Feature | Status | Details |
 | --- | :---: | --- |
-| Hub lifecycle | ✅ | `EnableSecurityHub` with default standards, tags and control finding generator; `DescribeHub`, `UpdateSecurityHubConfiguration`, `DisableSecurityHub` (refused for members and delegated administrators). Calls before enabling answer `InvalidAccessException` with AWS's wording. |
+| Hub lifecycle | ✅ | `EnableSecurityHub` with default standards, tags and control finding generator; it creates the `AWSServiceRoleForSecurityHub` service-linked role in IAM (path `/aws-service-role/securityhub.amazonaws.com/`), which needs `iam:CreateServiceLinkedRole` (condition key `iam:AWSServiceName`) while the role does not exist; `DescribeHub`, `UpdateSecurityHubConfiguration`, `DisableSecurityHub` (refused for members and delegated administrators). Calls before enabling answer `InvalidAccessException` with AWS's wording. |
 | Product integrations | ✅ | Catalogue of AWS integrations (enabled with the hub) and partner products; `EnableImportFindingsForProduct` subscriptions gate imports from partner products. |
 | Standards | ✅ | FSBP, CIS 1.2.0 (ruleset ARN), CIS 1.4.0 and 3.0.0, PCI DSS 3.2.1, NIST 800-53 r5 and the resource tagging standard, with subscription ARNs and statuses as AWS reports them. |
-| Controls | 🟡 | About 46 common controls with their severities, titles, standards mappings and parameters (types, ranges, defaults). Per-standard control status, consolidated security controls, parameter updates with validation, and standards control associations. Controls do not evaluate resources, so no control findings are produced. |
+| Control catalogue | ✅ | About 350 security controls from a data table (`src/controls.txt`): every AWS Foundational Security Best Practices v1.0.0 control (about 290) and the CIS v1.2.0, v1.4.0 and v3.0.0 controls with AWS's IDs, titles, severities, standard control IDs and CIS requirements, and remediation URLs (`https://docs.aws.amazon.com/securityhub/latest/userguide/<svc>-controls.html#<svc>-<n>`). PCI DSS v3.2.1 and NIST SP 800-53 r5 memberships and NIST requirements are partial (the controls listed above plus the common ones); the tagging standard lists only `ACM.3`. Descriptions are AWS's for the evaluated controls and derived from the title for the rest. Per-standard control status, consolidated security controls, parameter updates with validation, and standards control associations. |
+| Control evaluation | 🟡 | No AWS Config: the checks read the emulated services directly, as the service-linked role. Evaluated: `CloudTrail.1`, `CloudTrail.2`, `EC2.2`, `EC2.19`, `GuardDuty.1`, `IAM.1`, `IAM.2`, `IAM.4`, `IAM.6`, `IAM.9`, `KMS.4`, `Lambda.1`, `RDS.3`, `S3.1`, `S3.5`, `S3.8`, `SecretsManager.1` (with `maximumAllowedRotationFrequency`), `SecurityHub.1`, `SNS.1`, `SQS.1`. Each enabled control gets one finding per resource with `Compliance.Status` `PASSED`/`FAILED`/`NOT_AVAILABLE`, `Compliance.SecurityControlId`, `AssociatedStandards`, `RelatedRequirements`, `GeneratorId` `security-control/<ID>` (consolidated) or the per-standard generator with `STANDARD_CONTROL`, AWS's `ProductFields` (`RelatedAWSResources:0/*` naming the Config rule), `INFORMATIONAL` severity when passed, and the workflow transitions (passed → `RESOLVED`, failing again → `NEW`). Findings of disabled controls and deleted resources are archived. Checks run before the next Security Hub request after enabling Security Hub, standards or controls, after any successful write to another service in the account (AWS: change-triggered), and every 12 hours of emulated time (`/_mws/clock`). Other controls produce no findings. |
 | Custom actions, tags | ✅ | Action targets CRUD; tags on the hub, automation rules, configuration policies, connectors and aggregators. |
 | Cross-Region aggregation | ✅ | Finding aggregators (`ALL_REGIONS`, `ALL_REGIONS_EXCEPT_SPECIFIED`, `SPECIFIED_REGIONS`, `NO_REGIONS`); the home Region sees findings from linked Regions. |
 
@@ -56,7 +57,8 @@ All 126 operations are generated from the AWS model (restJson1) and implemented,
 
 ## Known gaps
 
-- Security controls do not evaluate resources (no AWS Config), so there are no control findings or compliance scores.
+- Only the controls listed under Control evaluation produce findings; the rest of the catalogue never evaluates. There is no AWS Config, so `GetEnabledStandards` never reports `INCOMPLETE` / `NO_AVAILABLE_CONFIGURATION_RECORDER`. The security score and per-control pass/fail summary are console views AWS derives from these findings; the API has no such fields.
+- PCI DSS and NIST 800-53 standard memberships are partial (see Control catalogue).
 - GuardDuty, Inspector and the other AWS integrations send findings only where those services are emulated and wired to `import_findings_as_service`.
 - Remediation analysis and recommended policies are not modelled.
 

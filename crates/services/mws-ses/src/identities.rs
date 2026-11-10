@@ -96,6 +96,7 @@ impl Ses {
     pub(crate) fn refresh_identities(&self, r: &mut Region, ctx: &RequestContext) {
         let links = self.links();
         let now = ctx.received_at;
+        crate::account::settle_review(r, now);
         let region_name = ctx.region.clone();
         for i in r.identities.values_mut() {
             if self.inner.auto_verify {

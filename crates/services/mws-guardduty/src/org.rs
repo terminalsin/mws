@@ -91,8 +91,15 @@ impl GuardDuty {
             org_key(&org.id, &ctx.region),
             OrgAdmin { account: admin.clone(), status: "ENABLED".into(), since: ctx.received_at },
         );
-        if state.detector(&admin, &ctx.region).is_none() {
+        let created = state.detector(&admin, &ctx.region).is_none();
+        if created {
             state.account_mut(&admin, &ctx.region).detector = Some(crate::detectors::new_detector(ctx.received_at));
+        }
+        drop(state);
+        // GuardDuty enables itself in the delegated administrator, with its
+        // service-linked role.
+        if let (true, Some(roles)) = (created, self.roles()) {
+            roles.ensure(&admin);
         }
         Ok(Default::default())
     }

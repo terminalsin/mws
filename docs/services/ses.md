@@ -1,6 +1,6 @@
 # Amazon SES (v1 and v2)
 
-> Crate: [`mws-ses`](../../crates/services/mws-ses) · Tests: [`tests/e2e-rust/tests/e2e/ses.rs`](../../tests/e2e-rust/tests/e2e/ses.rs)
+> Crate: [`mws-ses`](../../crates/services/mws-ses) · Tests: [`tests/e2e-rust/tests/e2e/ses.rs`](../../tests/e2e-rust/tests/e2e/ses.rs), [`ses_sending_limits.rs`](../../tests/e2e-rust/tests/e2e/ses_sending_limits.rs)
 
 All 71 SES v1 operations (awsQuery) and all 116 SES v2 operations (restJson1
 under `/v2/email/`) are generated from the AWS models and implemented. Both
@@ -17,7 +17,8 @@ receiving.
 | --- | :---: | --- |
 | `SendEmail`, `SendRawEmail`, templated and bulk sends | ✅ | v1 and v2, composed as SES composes them (MIME, `Message-ID`, attachments, custom headers). |
 | Verified senders | ✅ | The sender or its domain must be a verified identity in the Region (`MessageRejected` with AWS's wording otherwise). |
-| Sandbox and quotas | ✅ | 200 messages a day, 1 a second, verified recipients only, until `PutAccountDetails` asks for production access (granted at once: 50,000 a day, 14 a second). |
+| Sandbox and quotas | ✅ | 200 messages a day, verified recipients only, until production access is granted (50,000 a day). The 24-hour quota and the maximum send rate are both enforced: recipients of messages accepted in the last second (emulated clock) may not exceed 1 (sandbox) or 14 (production); a single message always fits. Over the rate, v1 answers `Throttling` (400) and v2 `TooManyRequestsException` (429), both "Maximum sending rate exceeded."; bulk entries get `AccountThrottled` / `ACCOUNT_THROTTLED`. |
+| Production access | ✅ | `PutAccountDetails(ProductionAccessEnabled=true)` opens a review (`ReviewDetails.Status=PENDING` with a support case ID; asking again meanwhile is a `ConflictException`). The account stays in the sandbox until the review is `GRANTED` 24 hours later on the emulated clock (`/_mws/clock`). `POST /_aws/ses/production-access?status=GRANTED\|DENIED[&account=&region=]` decides it at once (opening a case if none is pending); a denied account may ask again. |
 | Sending authorization | ✅ | Identity policies decide delegated sending (`SourceArn`, `FromArn`, `ReturnPathArn`, v2 identity ARNs). |
 | IAM condition keys | ✅ | `ses:FromAddress`, `ses:FromDisplayName`, `ses:Recipients`, `ses:FeedbackAddress`, `ses:ApiVersion`, tags. |
 | Templates | ✅ | SES's Handlebars subset (`{{var}}`, `{{{raw}}}`, `#if`, `#unless`, `#each`, `#with`); missing attributes are rendering failures. |
@@ -37,7 +38,7 @@ receiving.
 | Domain identities | ✅ | Verified through Route 53 public hosted zones: the `_amazonses` `TXT` record, Easy DKIM `CNAME`s (`<token>._domainkey` → `<token>.dkim.amazonses.com`) or a BYODKIM `TXT` record. |
 | Custom MAIL FROM | ✅ | Needs its `MX` record (`feedback-smtp.<region>.amazonses.com`); `BehaviorOnMXFailure` applies. |
 | Verification windows | ✅ | Pending identities fail after 24 hours (links) or 72 hours (DNS) on the emulated clock. |
-| Shortcuts for tests | ✅ | `MWS_SES_AUTO_VERIFY=1`, or `POST /_aws/ses/verify-identity?identity=`. |
+| Shortcuts for tests | ✅ | `MWS_SES_AUTO_VERIFY=1`, or `POST /_aws/ses/verify-identity?identity=`; `POST /_aws/ses/production-access` grants (or with `status=DENIED` denies) production access now. |
 | Notifications and feedback forwarding | ✅ | Bounce, complaint and delivery topics (with or without headers); forwarded feedback lands in the outbox. |
 
 ## Events and metrics

@@ -16,6 +16,10 @@ pub struct State {
     /// The GuardDuty delegated administrator of each organization in each
     /// Region, keyed by `org-id/region`.
     pub org_admins: BTreeMap<String, OrgAdmin>,
+    /// Each account's password policy as GuardDuty last saw it set
+    /// (`UpdateAccountPasswordPolicy` parameters), to tell when a change
+    /// weakens it.
+    pub password_policies: BTreeMap<String, serde_json::Value>,
 }
 
 impl State {
@@ -103,6 +107,10 @@ pub struct Detector {
     pub scan_settings: types::UpdateMalwareScanSettingsRequest,
     pub org_config: OrgConfig,
     pub investigations: BTreeMap<String, Investigation>,
+    /// Detected findings waiting to be published, with when they are due.
+    pub publish_due: BTreeMap<String, DateTime<Utc>>,
+    /// When each detected finding was last published.
+    pub published_at: BTreeMap<String, DateTime<Utc>>,
 }
 
 impl Default for Detector {
@@ -126,6 +134,8 @@ impl Default for Detector {
             scan_settings: Default::default(),
             org_config: OrgConfig::default(),
             investigations: BTreeMap::new(),
+            publish_due: BTreeMap::new(),
+            published_at: BTreeMap::new(),
         }
     }
 }
@@ -154,6 +164,17 @@ pub struct ThreatList {
     pub tags: Tags,
     pub created_at: DateTime<Utc>,
     pub updated_at: DateTime<Utc>,
+    /// While `ACTIVATING`: when GuardDuty reads the file and the list
+    /// becomes `ACTIVE` (or `ERROR`).
+    #[serde(default)]
+    pub ready_at: Option<DateTime<Utc>>,
+    /// The IP addresses and CIDR ranges (and, for entity sets, domains)
+    /// read from the file.
+    #[serde(default)]
+    pub entries: Vec<String>,
+    /// Why the file could not be used, when `ERROR`.
+    #[serde(default)]
+    pub error: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

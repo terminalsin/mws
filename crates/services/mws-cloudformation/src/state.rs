@@ -20,6 +20,28 @@ pub struct State {
     pub scans: BTreeMap<String, crate::iac::ResourceScan>,
     pub generated: BTreeMap<String, crate::iac::GeneratedTemplate>,
     pub refactors: BTreeMap<String, crate::refactor::StackRefactor>,
+    /// Template macros (`AWS::CloudFormation::Macro`), by
+    /// `account|region|name`.
+    pub macros: BTreeMap<String, MacroDef>,
+}
+
+/// A template macro: the Lambda function CloudFormation invokes to
+/// process templates that name it.
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+#[serde(default)]
+pub struct MacroDef {
+    pub name: String,
+    pub function_name: String,
+    pub stack_id: String,
+}
+
+/// A stack's rollback triggers.
+#[derive(Debug, Clone, Serialize, Deserialize, Default, PartialEq)]
+#[serde(default)]
+pub struct RollbackConfig {
+    /// `(arn, type)` of each CloudWatch alarm.
+    pub triggers: Vec<(String, String)>,
+    pub monitoring_minutes: Option<i32>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
@@ -75,6 +97,10 @@ pub struct Stack {
     pub replaced: Vec<Resource>,
     /// Export names the stack imports.
     pub imports: Vec<String>,
+    /// The template as submitted, when transforms changed it
+    /// (`template_body` holds the processed template).
+    pub original_template: Option<String>,
+    pub rollback_configuration: Option<RollbackConfig>,
 }
 
 impl Default for Stack {
@@ -116,6 +142,8 @@ impl Default for Stack {
             previous: None,
             replaced: Vec::new(),
             imports: Vec::new(),
+            original_template: None,
+            rollback_configuration: None,
         }
     }
 }
@@ -129,9 +157,22 @@ pub struct Snapshot {
     pub resources: Vec<Resource>,
     pub outputs: Vec<StackOutput>,
     pub tags: Vec<Tag>,
+    pub original_template: Option<String>,
 }
 
 impl Stack {
+    /// Keep the current deployment so that an update can roll back to it.
+    pub fn keep_previous(&mut self) {
+        self.previous = Some(Box::new(Snapshot {
+            template_body: self.template_body.clone(),
+            parameters: self.parameters.clone(),
+            resources: self.resources.clone(),
+            outputs: self.outputs.clone(),
+            tags: self.tags.clone(),
+            original_template: self.original_template.clone(),
+        }));
+    }
+
     pub fn is_deleted(&self) -> bool {
         self.status == "DELETE_COMPLETE"
     }
@@ -251,6 +292,8 @@ pub struct ChangeSet {
     /// executed it.
     pub operation_id: String,
     pub execution_operation_id: Option<String>,
+    pub original_template: Option<String>,
+    pub rollback_configuration: Option<RollbackConfig>,
 }
 
 impl Default for ChangeSet {
@@ -277,6 +320,8 @@ impl Default for ChangeSet {
             import_existing_resources: false,
             operation_id: uuid::Uuid::new_v4().to_string(),
             execution_operation_id: None,
+            original_template: None,
+            rollback_configuration: None,
         }
     }
 }

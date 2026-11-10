@@ -95,6 +95,15 @@ fn big_stack<F: std::future::Future<Output = ()> + Send + 'static>(test: F) {
     }
 }
 
+/// A hub without standards: no controls run, so only imported findings
+/// show up (Security Hub's own control findings are tested in
+/// `securityhub_controls`).
+async fn findings_hub(mws: &Mws) -> Client {
+    let sh = Client::new(&mws.root_sdk_config().await);
+    sh.enable_security_hub().enable_default_standards(false).tags("env", "test").send().await.unwrap();
+    sh
+}
+
 async fn hub(mws: &Mws) -> Client {
     let sh = Client::new(&mws.root_sdk_config().await);
     sh.enable_security_hub().enable_default_standards(true).tags("env", "test").send().await.unwrap();
@@ -412,7 +421,7 @@ async fn receive_events(sqs: &aws_sdk_sqs::Client, url: &str, n: usize) -> Vec<s
 
 async fn findings_import_filters_workflow_history_and_events_body() {
     let mws = Mws::start().await;
-    let sh = hub(&mws).await;
+    let sh = findings_hub(&mws).await;
     let (sqs, url) = events_queue(&mws, r#"{"source":["aws.securityhub"]}"#).await;
 
     // A finding for another account is refused on its own.
@@ -583,7 +592,7 @@ async fn findings_import_filters_workflow_history_and_events_body() {
 
 async fn insights_and_automation_rules_body() {
     let mws = Mws::start().await;
-    let sh = hub(&mws).await;
+    let sh = findings_hub(&mws).await;
 
     // A rule suppresses low findings on public buckets and tags them.
     let rule = sh
@@ -1023,7 +1032,7 @@ async fn organization_admin_and_central_configuration_body() {
 async fn v2_findings_resources_software_and_exports_body() {
     let mws = Mws::start().await;
     let cfg = mws.root_sdk_config().await;
-    let sh = hub(&mws).await;
+    let sh = findings_hub(&mws).await;
 
     let not_v2 = sh.describe_security_hub_v2().send().await.unwrap_err();
     assert_eq!(not_v2.code(), Some("ResourceNotFoundException"));
@@ -1217,7 +1226,7 @@ async fn v2_findings_resources_software_and_exports_body() {
 
 async fn v2_aggregators_automation_rules_and_connectors_body() {
     let mws = Mws::start().await;
-    let sh = hub(&mws).await;
+    let sh = findings_hub(&mws).await;
     sh.enable_security_hub_v2().send().await.unwrap();
 
     let agg = sh

@@ -36,6 +36,10 @@ struct Topic;
 
 #[async_trait::async_trait]
 impl Provider for Topic {
+    fn name_property(&self) -> Option<&'static str> {
+        Some("TopicName")
+    }
+
     fn create_only(&self) -> &'static [&'static str] {
         &["TopicName", "FifoTopic"]
     }

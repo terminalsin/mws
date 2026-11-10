@@ -4,12 +4,14 @@ mod autoscaling;
 mod cloudwatch_ssm;
 mod ec2_signals;
 mod eks;
+mod guardduty_detection;
 mod links;
 mod logs_lake;
 mod platform_amplify;
 mod platform_bedrock;
 mod platform_costs;
 mod route53_links;
+mod securityhub_controls;
 mod ses;
 mod sinks;
 mod ssm;
@@ -606,6 +608,7 @@ fn build_with_store(config: Config, store: Option<Arc<Store>>) -> Mws {
         .with_events(events.clone());
     cloudtrail.set_organizations(organizations.view());
     logs.set_lake_source(Arc::new(logs_lake::CloudTrailLake(cloudtrail.clone())));
+    guardduty_detection::wire(&guardduty, &cloudtrail, &iam, &s3, &config.iam.partition);
     let ecr = Ecr::new().with_kms(kms.clone());
     ecr.exclude_registry_prefix(mws_ecr_public::REGISTRY_PATH_PREFIX);
     let ecr_public = EcrPublic::new();
@@ -671,6 +674,23 @@ fn build_with_store(config: Config, store: Option<Arc<Store>>) -> Mws {
     );
     let cloudformation = CloudFormation::new();
     cloudformation.set_role_assumer(Arc::new(links::CloudFormationRoles(sts.clone(), iam.clone())));
+    securityhub_controls::wire(
+        &securityhub,
+        securityhub_controls::Evidence {
+            iam: iam.clone(),
+            s3: s3.clone(),
+            s3control: s3control.clone(),
+            kms: kms.clone(),
+            cloudtrail: cloudtrail.clone(),
+            sqs: sqs.clone(),
+            sns: sns.clone(),
+            lambda: lambda.clone(),
+            ec2: ec2.clone(),
+            rds: rds.clone(),
+            secretsmanager: secretsmanager.clone(),
+            guardduty: guardduty.clone(),
+        },
+    );
     let authorizer = iam.authorizer();
     client.set_authorizer(authorizer.clone());
     let credential_stores =
@@ -758,6 +778,8 @@ fn build_with_store(config: Config, store: Option<Arc<Store>>) -> Mws {
         .request_observer(ec2_clock)
         // CloudTrail records every API call the gateway dispatches.
         .observer(Arc::new(cloudtrail.clone()))
+        // Writes anywhere re-run Security Hub's checks for the account.
+        .observer(Arc::new(securityhub_controls::ChangeTrigger(securityhub.clone())))
         .authorizer(authorizer);
     for c in credential_stores {
         gateway = gateway.credentials(c);
