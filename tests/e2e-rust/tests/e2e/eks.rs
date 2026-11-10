@@ -1548,10 +1548,9 @@ async fn envelope_encryption_checks_the_kms_key() {
 
     // A caller who may describe the key but not create grants on it can't
     // use it.
-    let policy = format!(
-        r#"{{"Version":"2012-10-17","Statement":[
-            {{"Effect":"Allow","Action":["eks:*","iam:PassRole","kms:DescribeKey"],"Resource":"*"}}]}}"#
-    );
+    let policy = r#"{"Version":"2012-10-17","Statement":[
+            {"Effect":"Allow","Action":["eks:*","iam:PassRole","kms:DescribeKey"],"Resource":"*"}]}"#
+        .to_string();
     let (_, cfg) = user_with_policy(&mws, "no-grants", Some(&policy)).await;
     let err = create(&Client::new(&cfg), "nogrant", &key).send().await.unwrap_err();
     let se = err.into_service_error();
