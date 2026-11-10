@@ -54,6 +54,10 @@ export interface Rule {
   /** For `format: "arn"`: the ARN a bare name expands to, with `{}` where
    * the name goes, e.g. `arn:aws:iam::123456789012:role/{}`. */
   arn?: string;
+  /** For `format: "cidr"`: the prefix lengths allowed (`[16, 28]` for a
+   * VPC), the blocks a value must fit inside (its VPC) and the blocks it
+   * must not overlap (sibling subnets). Repairs then offer free blocks. */
+  cidr?: CidrRule;
   /** Values that already exist (a create form's name field). */
   taken?: string[];
   /** `taken` ignores case (the service treats `Alice` and `alice` as the
@@ -65,6 +69,9 @@ export interface Rule {
   /** Values the field usually refers to (existing roles, keys, queues):
    * close ones are offered when a value is rejected as unknown. */
   known?: string[];
+  /** Readable names for values (an image's name for its ID): a value close
+   * to a name is offered the value it stands for. */
+  aliases?: Record<string, string>;
   /** How to make a fresh valid value when the field is empty or taken. */
   generate?: Generate;
   /** Overrides the message for a pattern mismatch (the model's patterns
@@ -81,8 +88,17 @@ export type Rules = Record<string, Rule>;
 
 export type Unit = "seconds" | "bytes";
 
+export interface CidrRule {
+  prefix?: [number, number];
+  within?: string[];
+  avoid?: string[];
+}
+
+/** `jsonish`: free text, held to JSON once it starts like JSON (`{` or `[`),
+ * as for secret values that may be a password or a key/value document. */
 export type Format =
   | "json"
+  | "jsonish"
   | "dnsName"
   | "certificate"
   | "certificates"
@@ -104,13 +120,18 @@ export type Format =
   | "bucket"
   | "name"
   | "port"
+  | "ports"
+  | "semver"
+  | "cron"
   | "country"
   | "csr"
   | "phone"
   | "pairs"
   | "tags"
   | "branch"
-  | "dir";
+  | "dir"
+  | "schedule"
+  | "eventPattern";
 
 /** "name": a readable resource name; "token": random letters and digits;
  * "password": meets the usual complexity rules; or a fixed prefix/suffix
@@ -360,6 +381,12 @@ export function repairs(value: string, rule: Rule, code: IssueCode): Repair[] {
     if (!valid(r.value, rule)) return;
     out.push(r);
   };
+  // A name that stands for a value (an image's name for its ID) says what
+  // was meant better than any reshaping of it.
+  if (rule.aliases && code !== "required" && code !== "taken") {
+    for (const r of didYouMean(value, { aliases: rule.aliases })) offer(r);
+    if (out.length) return out.slice(0, MAX_REPAIRS);
+  }
   switch (code) {
     case "required":
       offer(fresh(rule));
@@ -367,7 +394,7 @@ export function repairs(value: string, rule: Rule, code: IssueCode): Repair[] {
       if (rule.enum?.length) for (const e of rule.enum.slice(0, MAX_REPAIRS)) offer({ value: e, label: `Use ${e}`, kind: "suggest" });
       break;
     case "taken":
-      offer(nextNumber(value, rule) ?? nextFree(value, rule));
+      offer(rule.format === "semver" ? bump(value, rule) : (nextNumber(value, rule) ?? nextFree(value, rule)));
       offer(fresh(rule));
       break;
     case "reserved": {
@@ -381,6 +408,9 @@ export function repairs(value: string, rule: Rule, code: IssueCode): Repair[] {
       const near = nearestNumbers(value, rule.enum ?? []);
       if (near) for (const s of near) offer({ value: s, label: `Use ${s}`, kind: "fix" });
       else for (const s of closest(value, rule.enum ?? [])) offer({ value: s, label: `Did you mean ${s}?`, kind: "suggest" });
+      // Nothing close: the allowed values that start the same way
+      // ("db.t4g.micro" where only larger sizes exist).
+      if (out.length === 0) for (const s of sharedPrefix(value, rule.enum ?? [])) offer({ value: s, label: `Use ${s}`, kind: "suggest" });
       break;
     }
     case "type":
@@ -433,6 +463,11 @@ export function nearestNumbers(value: string, allowed: string[]): string[] | nul
 
 /** Close matches among the values a field usually refers to. */
 export function didYouMean(value: string, rule: Rule): Repair[] {
+  const named = Object.entries(rule.aliases ?? {});
+  // `closest` leaves out the value itself, which here is the best match.
+  const exact = named.filter(([n]) => n === value).map(([n]) => n);
+  const byName = [...exact, ...closest(value, named.map(([n]) => n))].map((n) => ({ value: rule.aliases![n], label: `Use ${n}`, kind: "suggest" as const }));
+  if (byName.length) return byName;
   const known = rule.known ?? [];
   const near = closest(value, known).map((s) => ({ value: s, label: `Did you mean ${s}?`, kind: "suggest" as const }));
   if (near.length || known.length > MAX_REPAIRS) return near;
@@ -535,7 +570,11 @@ export function allowedChars(rule: Rule): RegExp | null {
   if (rule.format === "bucket") return /[a-z0-9.-]/;
   if (rule.format === "name") return /[A-Za-z0-9_-]/;
   if (!rule.pattern) return null;
-  const classes = [...rule.pattern.matchAll(/\[((?:\\.|[^\]\\])+)\]/g)].map((m) => m[1]).filter((c) => !c.startsWith("^"));
+  const all = [...rule.pattern.matchAll(/\[((?:\\.|[^\]\\])+)\]/g)].map((m) => m[1]);
+  const classes = all.filter((c) => !c.startsWith("^"));
+  // A whole-value negated class (`^[^:*]*$`): anything but those.
+  const negated = classes.length === 0 && all.length === 1 ? all[0] : null;
+  if (negated && [`^[${negated}]*$`, `^[${negated}]+$`].includes(rule.pattern)) return regex(`[${negated}]`);
   // Separators spelled as literals between classes, as in ECR's
   // `[a-z0-9]+((\.|_|-+)[a-z0-9]+)*(\/...)*`.
   const literals = separatorLiterals(rule.pattern);
@@ -648,6 +687,17 @@ function nextNumber(value: string, rule: Rule): Repair | null {
   return null;
 }
 
+/** The next free patch version of a taken one: 1.0.0 → 1.0.1. */
+function bump(value: string, rule: Rule): Repair | null {
+  const [major, minor, patch, ...rest] = value.split(".");
+  if (rest.length || !/^\d+$/.test(patch ?? "")) return null;
+  for (let n = Number(patch) + 1; n < Number(patch) + 50; n++) {
+    const v = `${major}.${minor}.${n}`;
+    if (!isTaken(v, rule)) return { value: v, label: `Use ${v}`, kind: "fix" };
+  }
+  return null;
+}
+
 /** The next free variant of a taken name: queue → queue-2 → queue-3. */
 function nextFree(value: string, rule: Rule): Repair | null {
   // A taken email address: plus-address it (owner+2@example.com).
@@ -700,6 +750,20 @@ const squash = (s: string) => s.toLowerCase().replace(/[^\p{L}\p{N}]+/gu, "");
 
 /** The candidates closest to `value`, best first: same letters ignoring case
  * and separators, then prefixes and substrings, then small edit distances. */
+/** The candidates sharing the longest start with `value` (at least half of
+ * it, and three characters). */
+export function sharedPrefix(value: string, candidates: string[], limit = MAX_REPAIRS): string[] {
+  const common = (c: string) => {
+    let i = 0;
+    while (i < c.length && i < value.length && c[i].toLowerCase() === value[i].toLowerCase()) i++;
+    return i;
+  };
+  const scored = [...new Set(candidates)].filter((c) => c !== value).map((c) => [common(c), c] as const);
+  const best = Math.max(0, ...scored.map(([n]) => n));
+  if (best < 3 || best < value.length / 2) return [];
+  return scored.filter(([n]) => n === best).map(([, c]) => c).slice(0, limit);
+}
+
 export function closest(value: string, candidates: string[], limit = MAX_REPAIRS): string[] {
   const v = squash(value);
   if (!v) return [];
@@ -843,6 +907,15 @@ const PEM_BLOCK = /-----BEGIN ([A-Z0-9 ]+)-----([\s\S]*?)-----END \1-----/;
 const CSR_LABEL = /^(NEW )?CERTIFICATE REQUEST$/;
 const pem = (label: string, body: string) => `-----BEGIN ${label}-----\n${body.replace(/\s+/g, "").match(/.{1,64}/g)?.join("\n") ?? ""}\n-----END ${label}-----`;
 
+const DAYS = ["SUN", "MON", "TUE", "WED", "THU", "FRI", "SAT"];
+
+/** Well-known services by name, for a port typed as one ("ssh"). */
+const SERVICE_PORTS: Record<string, number> = {
+  ftp: 21, ssh: 22, telnet: 23, smtp: 25, dns: 53, http: 80, pop3: 110, ntp: 123, imap: 143, ldap: 389, https: 443, smtps: 465,
+  imaps: 993, mssql: 1433, oracle: 1521, nfs: 2049, mysql: 3306, aurora: 3306, rdp: 3389, postgres: 5432, postgresql: 5432,
+  redis: 6379, memcached: 11211, mongodb: 27017, elasticsearch: 9200, kafka: 9092,
+};
+
 export const FORMATS: Record<Format, FormatSpec> = {
   ...CERT_FORMATS,
   json: {
@@ -929,6 +1002,14 @@ export const FORMATS: Record<Format, FormatSpec> = {
       return merged.size ? [{ value: [...merged].map(([k, v]) => `${k}=${v}`).join("\n"), label: "One Key=value per line", kind: "fix" }] : [];
     },
   },
+  jsonish: {
+    check(value, rule) {
+      return /^\s*[[{]/.test(value) ? FORMATS.json.check(value, rule) : null;
+    },
+    repair(value, rule) {
+      return FORMATS.json.repair!(value, rule);
+    },
+  },
   arn: {
     check(value) {
       return /^arn:[\w-]+:[\w-]*:[\w-]*:(\d{12}|aws|)?:.+$/.test(value) ? null : "Not an ARN";
@@ -953,25 +1034,47 @@ export const FORMATS: Record<Format, FormatSpec> = {
     },
   },
   cidr: {
-    check(value) {
+    check(value, rule) {
       const [ip, bits, ...rest] = value.trim().split("/");
       if (rest.length || bits === undefined) return "Like 10.0.0.0/16";
       const o = octets(ip);
       const n = Number(bits);
       if (!ipOk(o) || !/^\d{1,2}$/.test(bits) || n > 32) return "Like 10.0.0.0/16";
       const base = network(o!, n);
-      return base !== ip ? `Host bits set; the network is ${base}/${n}` : null;
+      if (base !== ip) return `Host bits set; the network is ${base}/${n}`;
+      const c = rule.cidr;
+      if (!c) return null;
+      const [lo, hi] = c.prefix ?? [0, 32];
+      if (n < lo || n > hi) return lo === hi ? `Netmask /${lo}` : `Netmask /${lo} to /${hi}`;
+      const block = toBlock(value.trim())!;
+      const within = blocks(c.within);
+      if (within.length && !within.some((w) => inside(block, w))) return `Outside ${c.within!.join(", ")}`;
+      const clash = blocks(c.avoid).find((a) => overlap(block, a));
+      return clash ? `Overlaps ${blockText(clash)}` : null;
     },
-    repair(value) {
+    repair(value, rule) {
       const v = value.trim().replace(/\s+/g, "");
       const [ip, bits] = v.split("/");
       const o = octets(ip);
       if (!ipOk(o)) return [];
+      const [lo, hi] = rule.cidr?.prefix ?? [0, 32];
+      const clamp = (n: number) => Math.min(hi, Math.max(lo, n));
+      const out: Repair[] = [];
       if (bits === undefined || bits === "") {
-        return [16, 24].map((n) => ({ value: `${network(o!, n)}/${n}`, label: `Use /${n}`, kind: "fix" as const }));
+        for (const n of new Set([16, 24].map(clamp))) out.push({ value: `${network(o!, n)}/${n}`, label: `Use /${n}`, kind: "fix" });
+      } else {
+        const asked = Math.min(32, Number(bits) || 0);
+        const n = clamp(asked);
+        out.push({ value: `${network(o!, n)}/${n}`, label: n === asked ? "Use the network address" : `Use /${n}`, kind: "fix" });
+        // Somewhere it fits: the first free blocks of that size, or of the
+        // next size down when none is left.
+        for (let size = n; size <= hi; size++) {
+          const free = freeBlocks(size, rule.cidr);
+          for (const f of free) out.push({ value: f, label: `Free /${size}`, kind: "suggest" });
+          if (free.length || !rule.cidr?.within?.length) break;
+        }
       }
-      const n = Math.min(32, Number(bits) || 0);
-      return [{ value: `${network(o!, n)}/${n}`, label: "Use the network address", kind: "fix" }];
+      return out;
     },
   },
   ipv4: {
@@ -1115,6 +1218,69 @@ export const FORMATS: Record<Format, FormatSpec> = {
   port: {
     check() {
       return null;
+    },
+  },
+  ports: {
+    check(value) {
+      const m = value.match(/^(\d{1,5})(?:-(\d{1,5}))?$/);
+      if (!m) return "Like 443 or 8000-8080";
+      const [from, to] = [Number(m[1]), Number(m[2] ?? m[1])];
+      if (from > 65535 || to > 65535) return "Ports go up to 65535";
+      return from > to ? "Start with the lower port" : null;
+    },
+    repair(value) {
+      const v = value.trim().toLowerCase();
+      const out: Repair[] = [];
+      const service = SERVICE_PORTS[v.replace(/[^a-z0-9]/g, "")];
+      if (service !== undefined) out.push({ value: String(service), label: `${value.trim()} uses ${service}`, kind: "suggest" });
+      if (/^(\*|all|any)$/.test(v)) out.push({ value: "0-65535", label: "All ports", kind: "fix" });
+      const m = v.match(/^(\d+)\s*(?:-|–|—|:|\.\.|to)\s*(\d+)$/) ?? v.match(/^(\d+)(?:\/(?:tcp|udp))?$/);
+      if (m) {
+        const [a, b] = [m[1], m[2] ?? m[1]].map((n) => Math.min(65535, Number(n)));
+        const [from, to] = a <= b ? [a, b] : [b, a];
+        out.push({ value: from === to ? String(from) : `${from}-${to}`, label: a > b ? "Swap the ports" : "Use a port range", kind: "fix" });
+      }
+      return out;
+    },
+  },
+  semver: {
+    check(value) {
+      return /^(\d+|x)\.(\d+|x)\.(\d+|x)$/.test(value) ? null : "Like 1.0.0";
+    },
+    repair(value) {
+      // "v1.2", "1,2,3", "1.2.3-beta": the numbers it has, padded to three.
+      const parts = (value.trim().replace(/^v(?=\d)/i, "").match(/\d+|\bx\b/gi) ?? []).slice(0, 3).map((p) => p.toLowerCase());
+      if (!parts.length) return [];
+      while (parts.length < 3) parts.push("0");
+      return [{ value: parts.join("."), label: "Use a semantic version", kind: "fix" }];
+    },
+  },
+  cron: {
+    // AWS cron fields, without the cron( ) around them.
+    check(value) {
+      if (/^\s*(cron|rate)\(/.test(value)) return "Just the fields, without cron( )";
+      const f = value.trim().split(/\s+/);
+      if (f.length !== 6) return "Six fields: minute hour day month weekday year";
+      if (f.some((x) => !/^[\w*?,/#-]+$/.test(x))) return "Unsupported characters";
+      if ((f[2] === "?") === (f[4] === "?")) return "Day or weekday must be ?";
+      return null;
+    },
+    repair(value) {
+      const inner = value.trim().replace(/^cron\((.*)\)$/s, "$1").trim();
+      let f = inner.split(/\s+/);
+      let label = inner !== value.trim() ? "Remove cron( )" : "";
+      if (f.length === 5) {
+        // Unix cron: no year, and weekdays count from Sunday = 0.
+        const day = (d: string) => DAYS[Number(d) % 7];
+        f = [...f.slice(0, 4), f[4].replace(/(^|[,-])([0-7])(?=$|[,-])/g, (_, sep, d) => sep + day(d)), "*"];
+        label = "Convert from Unix cron";
+      }
+      if (f.length !== 6) return [];
+      if (f[2] !== "?" && f[4] !== "?") {
+        if (f[4] === "*") [f[4], label] = ["?", label || "Use ? for the weekday"];
+        else if (f[2] === "*") [f[2], label] = ["?", label || "Use ? for the day"];
+      } else if (f[2] === "?" && f[4] === "?") [f[2], label] = ["*", label || "Run every day"];
+      return label ? [{ value: f.join(" "), label, kind: "fix" }] : [];
     },
   },
   country: {
@@ -1274,7 +1440,114 @@ export const FORMATS: Record<Format, FormatSpec> = {
       return out;
     },
   },
+  schedule: {
+    check: scheduleProblem,
+    repair(value) {
+      const fixed = repairSchedule(value);
+      return fixed ? [{ value: fixed, label: "Use this schedule", kind: "fix" }] : [];
+    },
+  },
+  eventPattern: {
+    check(value) {
+      let parsed: unknown;
+      try {
+        parsed = JSON.parse(value);
+      } catch (e) {
+        return jsonMessage(value, e);
+      }
+      return patternProblem(parsed);
+    },
+    repair(value) {
+      const json = repairJson(value) ?? value;
+      try {
+        const fixed = JSON.stringify(wrapLeaves(JSON.parse(json)), null, 2);
+        return [{ value: fixed, label: patternProblem(JSON.parse(json)) ? "Fix the pattern" : "Fix the JSON", kind: "fix" }];
+      } catch {
+        return [];
+      }
+    },
+  },
 };
+
+// Schedules: `rate(5 minutes)` or a six-field `cron(...)` (EventBridge,
+// Scheduler, SSM). Repairs read the usual near misses: a bare "5 minutes",
+// "every hour", wrong plurals, Unix five-field cron, both day fields set.
+
+const RATE_UNITS: [RegExp, string][] = [
+  [/^m(in(ute)?s?)?$/i, "minute"],
+  [/^h((ou)?rs?|ours?)?$/i, "hour"],
+  [/^d(ays?)?$/i, "day"],
+];
+const PRESETS: Record<string, string> = { hourly: "rate(1 hour)", daily: "rate(1 day)", weekly: "rate(7 days)" };
+
+function scheduleProblem(value: string): string | null {
+  const v = value.trim();
+  const rate = v.match(/^rate\((.*)\)$/);
+  if (rate) {
+    const m = rate[1].trim().match(/^(\d+) (minutes?|hours?|days?)$/);
+    if (!m || Number(m[1]) < 1) return "Like rate(5 minutes)";
+    return (Number(m[1]) === 1) === !m[2].endsWith("s") ? null : Number(m[1]) === 1 ? `Use ${m[2].slice(0, -1)} for 1` : `Use ${m[2]}s`;
+  }
+  const cron = v.match(/^cron\((.*)\)$/);
+  if (cron) {
+    const f = cron[1].trim().split(/\s+/);
+    if (f.length !== 6) return `cron() takes 6 fields, not ${f.length}`;
+    if ((f[2] === "?") === (f[4] === "?")) return "Day-of-month or day-of-week must be ?";
+    return null;
+  }
+  return "Like rate(5 minutes) or cron(0 12 * * ? *)";
+}
+
+function repairSchedule(value: string): string | null {
+  let v = value.trim().replace(/^["'@]|["']$/g, "").trim();
+  if (PRESETS[v.toLowerCase()]) return PRESETS[v.toLowerCase()];
+  const rate = v.replace(/^rate\s*\(?|\)$/gi, "").replace(/^every\s+/i, "").trim();
+  const m = rate.match(/^(\d+)?\s*([a-z]+)$/i);
+  const unit = m && RATE_UNITS.find(([re]) => re.test(m[2]))?.[1];
+  if (m && unit) {
+    const n = Number(m[1] ?? "1");
+    if (n >= 1) return `rate(${n} ${unit}${n === 1 ? "" : "s"})`;
+  }
+  v = v.replace(/^cron\s*\(?|\)$/gi, "").trim();
+  let f = v.split(/\s+/);
+  if (!f.every((x) => /^[\w*?,/#-]+$/.test(x))) return null;
+  if (f.length === 7 && f[0] === "0") f = f.slice(1); // Quartz seconds
+  if (f.length === 5) {
+    // Unix cron: Sunday is 0 there and 1 here; no year field.
+    f[4] = f[4].replace(/\d/g, (d) => String((Number(d) % 7) + 1));
+    f.push("*");
+  }
+  if (f.length !== 6) return null;
+  f = f.map((x, i) => (i < 2 ? x.replace(/^\*\//, "0/") : x));
+  if (f[2] !== "?" && f[4] !== "?") {
+    if (f[4] === "*") f[4] = "?";
+    else if (f[2] === "*") f[2] = "?";
+  } else if (f[2] === "?" && f[4] === "?") f[4] = "*";
+  return `cron(${f.join(" ")})`;
+}
+
+// Event patterns (EventBridge rules, Pipes and Lambda event filters): a JSON
+// object whose leaves are arrays of values or matchers. A bare value is
+// almost always meant as a one-element list.
+
+function patternProblem(p: unknown, path = ""): string | null {
+  if (p === null || typeof p !== "object" || Array.isArray(p)) return path ? `"${path}" must be an object or an array` : "Must be a JSON object";
+  for (const [k, v] of Object.entries(p)) {
+    if (Array.isArray(v)) {
+      if (v.length === 0) return `"${k}" is an empty list`;
+    } else {
+      const inner = patternProblem(v, k);
+      if (inner) return inner;
+    }
+  }
+  return null;
+}
+
+function wrapLeaves(p: unknown): unknown {
+  if (p === null || typeof p !== "object") return p;
+  if (Array.isArray(p)) return p;
+  return Object.fromEntries(Object.entries(p).map(([k, v]) => [k, v !== null && typeof v === "object" ? wrapLeaves(v) : [v]]));
+}
 
 const DOMAIN = /^(?=.{1,253}$)(?:[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\.)+[a-z]{2,63}$/i;
 /** Top-level domains people mistype, and what they meant. */
@@ -1371,6 +1644,39 @@ function s3Object(value: string): { bucket: string; key: string; canonical: bool
 /** The items of a comma- or space-separated list. */
 export function listItems(value: string): string[] {
   return value.split(/[\s,]+/).filter(Boolean);
+}
+
+// CIDR blocks as [first address, prefix length].
+type Block = [number, number];
+const ipNumber = (o: number[]) => ((o[0] << 24) | (o[1] << 16) | (o[2] << 8) | o[3]) >>> 0;
+const sizeOf = (bits: number) => 2 ** (32 - bits);
+function toBlock(cidr: string): Block | null {
+  const [ip, bits] = cidr.split("/");
+  const o = octets(ip);
+  const n = Number(bits);
+  if (!ipOk(o) || !/^\d{1,2}$/.test(bits ?? "") || n > 32) return null;
+  return [ipNumber(o!) - (ipNumber(o!) % sizeOf(n)), n];
+}
+const blocks = (list: string[] | undefined) => (list ?? []).map(toBlock).filter((b): b is Block => b !== null);
+const blockText = ([start, bits]: Block) => `${[start >>> 24, (start >>> 16) & 255, (start >>> 8) & 255, start & 255].join(".")}/${bits}`;
+const inside = ([s, b]: Block, [ws, wb]: Block) => b >= wb && s >= ws && s + sizeOf(b) <= ws + sizeOf(wb);
+const overlap = ([s, b]: Block, [os, ob]: Block) => s < os + sizeOf(ob) && os < s + sizeOf(b);
+
+/** The first free blocks of a prefix length inside `within`, clear of
+ * `avoid`, in address order. */
+export function freeBlocks(bits: number, rule: CidrRule | undefined, limit = 2): string[] {
+  const avoid = blocks(rule?.avoid);
+  const out: string[] = [];
+  for (const [ws, wb] of blocks(rule?.within)) {
+    if (bits < wb) continue;
+    for (let s = ws; s < ws + sizeOf(wb) && out.length < limit; s += sizeOf(bits)) {
+      const hit = avoid.find((a) => overlap([s, bits], a));
+      if (!hit) out.push(blockText([s, bits]));
+      // Skip past what is in use rather than stepping through it.
+      else if (hit[1] < bits) s = hit[0] + sizeOf(hit[1]) - sizeOf(bits);
+    }
+  }
+  return out;
 }
 
 function network(o: number[], bits: number): string {
@@ -1552,6 +1858,17 @@ export function parseServerIssues(message: string): FieldIssue[] {
   // "Value (x) for parameter QueueName is invalid. Reason: ..."
   const param = message.match(/Value \(?'?([^)']*)'?\)? for parameter (\w+) is invalid\.?\s*(?:Reason: )?(.*)$/);
   if (param) out.push({ member: param[2], value: param[1], code: "server", message: sentence(param[3] || "Invalid value") });
+  // EC2: "Invalid value 'x' for keyName." (the value may be the reason itself)
+  if (!param && out.length === 0) {
+    for (const m of message.matchAll(/Invalid value '((?:[^']|'(?! for ))*)' for (\w+)\.?\s*([^]*?)\s*$/g)) {
+      const reason = m[3] || (/\s/.test(m[1]) ? m[1] : "");
+      out.push({ member: m[2], value: reason === m[1] ? undefined : m[1], code: "server", message: reason ? sentence(reason) : "Not accepted" });
+    }
+    if (out.length) return out;
+  }
+  // "The parameter MasterUserPassword is not a valid password because it is shorter than 8 characters."
+  const notValid = message.match(/The parameter (\w+) is (not a valid \w+)(?: because (?:it is )?([^.]*))?/);
+  if (!param && notValid) return [{ member: notValid[1], code: "server", message: sentence(notValid[3] ? `${notValid[2]}: ${notValid[3]}` : notValid[2]) }];
   // "1 validation error detected: The parameter X ..." / "X is required" / "Missing required parameter X"
   const missing = message.match(/(?:Missing required (?:parameter|key|field)|The parameter|Parameter) '?([A-Za-z][\w.]*)'? (?:is (?:required|missing)|must be specified)/i) ??
     message.match(/^(?:\w+: )?'?([A-Za-z][\w.]*)'? (?:is required|must be specified|cannot be empty)/);
@@ -1598,4 +1915,4 @@ function constraintRule(constraint: string): Pick<FieldIssue, "rule" | "code" | 
 }
 
 /** Error codes that mean "this name is taken". */
-export const CONFLICT = /AlreadyExists|AlreadyOwned|NameExists|Duplicate|Conflict|EntityExists|InUse/i;
+export const CONFLICT = /AlreadyExists|ResourceExists|AlreadyOwned|NameExists|Duplicate|Conflict|EntityExists|InUse/i;

@@ -22,7 +22,7 @@ export async function createGroup(_: ActionResult | null, form: FormData) {
     const days = Number(text(form, "retention"));
     if (days) await client.send(new PutRetentionPolicyCommand({ logGroupName: name, retentionInDays: days }));
     return `Created ${name}`;
-  }, "/logs");
+  }, { revalidate: ["/logs"], fields: { logGroupName: "name", retentionInDays: "retention" } });
 }
 
 export async function deleteGroup(name: string) {
@@ -41,8 +41,7 @@ export async function setRetention(name: string, _: ActionResult | null, form: F
       else await client.send(new DeleteRetentionPolicyCommand({ logGroupName: name }));
       return days ? `Kept for ${days} days` : "Kept forever";
     },
-    "/logs",
-    "/logs/group",
+    { revalidate: ["/logs", "/logs/group"], fields: { retentionInDays: "retention", InvalidParameterException: "retention" } },
   );
 }
 
@@ -64,5 +63,5 @@ export async function writeEvent(group: string, _: ActionResult | null, form: Fo
       }),
     );
     return `Wrote to ${stream}`;
-  }, "/logs/group");
+  }, { revalidate: ["/logs/group"], fields: { logStreamName: "stream", "logEvents.message": "message" } });
 }

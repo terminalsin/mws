@@ -1,5 +1,6 @@
 import "server-only";
 
+import { EC2Client } from "@aws-sdk/client-ec2";
 import { IAMClient } from "@aws-sdk/client-iam";
 import { ImagebuilderClient } from "@aws-sdk/client-imagebuilder";
 import { client } from "@mws-dashboard/aws";
@@ -23,3 +24,4 @@ export function tone(status: string | undefined): Tone {
   return "neutral";
 }
 export const iam = () => client(IAMClient);
+export const ec2 = () => client(EC2Client);

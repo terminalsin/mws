@@ -7,12 +7,13 @@ import {
   DescribeVpcPeeringConnectionsCommand,
 } from "@aws-sdk/client-ec2";
 import { load } from "@mws-dashboard/aws";
-import { ActionForm, AwsIcon, Curated, Empty, ErrorNotice, Field, List, Page, Pill, Sheet, Status } from "@mws-dashboard/ui";
+import { ActionForm, AwsIcon, Curated, Empty, ErrorNotice, List, Page, Pill, Sheet, Status } from "@mws-dashboard/ui";
 import { Trash2 } from "lucide-react";
 import type { Metadata } from "next";
 
 import { ICONS, ec2, nameTag } from "../../lib/clients";
-import { isPublic, network, routeTarget } from "../../lib/vpc";
+import { SubnetFields, VpcFields } from "../../lib/forms";
+import { choices, cidrsOf, isPublic, network, routeTarget } from "../../lib/vpc";
 import { createSubnet, createVpc, deleteEndpoint, deleteInternetGateway, deleteNatGateway, deleteSubnet } from "./actions";
 
 export const metadata: Metadata = { title: "VPC" };
@@ -32,22 +33,11 @@ const TITLES: Record<string, string> = {
 
 const STATE_TONE = (s: string | undefined) => (s === "available" || s === "active" || s === "attached" ? "good" : s === "failed" || s === "rejected" || s === "deleted" ? "bad" : "warn");
 
-function CreateVpc() {
+function CreateVpc({ used }: { used: string[] }) {
   return (
     <Sheet title="Create VPC" label="Create VPC" testId="create-vpc">
       <ActionForm action={createVpc} submit="Create VPC" testId="create-vpc">
-        <Field label="Name">
-          <input name="name" autoFocus />
-        </Field>
-        <Field label="IPv4 CIDR">
-          <input name="cidr" required defaultValue="10.0.0.0/16" pattern="[0-9.]+/[0-9]+" />
-        </Field>
-        <Field label="Resources">
-          <select name="layout" defaultValue="public-private">
-            <option value="public-private">VPC and more: public and private subnets in 2 zones</option>
-            <option value="vpc">VPC only</option>
-          </select>
-        </Field>
+        <VpcFields used={used} />
       </ActionForm>
     </Sheet>
   );
@@ -70,37 +60,16 @@ export default async function Vpcs({ searchParams }: Props) {
     return v ? (nameTag(v) ?? v.VpcId) : id;
   };
   const client = await ec2();
+  const used = vpcs.flatMap(cidrsOf);
   let body;
-  let actions = <CreateVpc />;
+  let actions = <CreateVpc used={used} />;
 
   if (tab === "subnets") {
     const zones = await load(async () => (await client.send(new DescribeAvailabilityZonesCommand({}))).AvailabilityZones ?? []);
     actions = (
       <Sheet title="Create subnet" label="Create subnet" testId="create-subnet">
         <ActionForm action={createSubnet} submit="Create subnet" testId="create-subnet">
-          <Field label="VPC">
-            <select name="vpc" required>
-              {vpcs.map((v) => (
-                <option key={v.VpcId} value={v.VpcId}>
-                  {nameTag(v) ?? v.VpcId} · {v.CidrBlock}
-                </option>
-              ))}
-            </select>
-          </Field>
-          <Field label="Name">
-            <input name="name" />
-          </Field>
-          <div className="form-row">
-            <Field label="IPv4 CIDR">
-              <input name="cidr" required placeholder="10.0.128.0/20" />
-            </Field>
-            <Field label="Availability Zone">
-              <select name="az" defaultValue="">
-                <option value="">No preference</option>
-                {zones.ok && zones.value.map((z) => <option key={z.ZoneName}>{z.ZoneName}</option>)}
-              </select>
-            </Field>
-          </div>
+          <SubnetFields vpcs={choices(vpcs, subnets)} zones={zones.ok ? zones.value.map((z) => z.ZoneName!) : []} />
         </ActionForm>
       </Sheet>
     );
@@ -275,7 +244,7 @@ export default async function Vpcs({ searchParams }: Props) {
     body = (
       <List
         label="VPCs"
-        empty={<Empty icon={ICONS.vpc} action={<CreateVpc />} />}
+        empty={<Empty icon={ICONS.vpc} action={<CreateVpc used={used} />} />}
         rows={vpcs.map((v) => {
           const own = subnets.filter((s) => s.VpcId === v.VpcId);
           const pub = own.filter((s) => isPublic(s, tables)).length;

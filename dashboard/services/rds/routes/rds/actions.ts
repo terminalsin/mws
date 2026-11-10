@@ -20,6 +20,19 @@ import { redirect } from "next/navigation";
 
 import { rds } from "../../lib/clients";
 
+/** Where RDS's complaints about a create land: by member, and by the
+ * errors that name none. */
+const CREATE_FIELDS = {
+  DBInstanceIdentifier: "id",
+  DBClusterIdentifier: "id",
+  MasterUsername: "username",
+  MasterUserPassword: "password",
+  DBInstanceClass: "class",
+  AllocatedStorage: "storage",
+  StorageQuotaExceeded: "storage",
+  InsufficientDBInstanceCapacity: "class",
+};
+
 export async function createDatabase(_: ActionResult | null, form: FormData) {
   return act(async () => {
     const engine = required(form, "engine", "Engine");
@@ -46,7 +59,7 @@ export async function createDatabase(_: ActionResult | null, form: FormData) {
       }),
     );
     redirect(`/rds/db?id=${encodeURIComponent(id)}`);
-  });
+  }, { fields: CREATE_FIELDS });
 }
 
 export async function changeInstance(id: string, op: "start" | "stop" | "reboot") {
@@ -75,7 +88,7 @@ export async function snapshot(kind: "instance" | "cluster", id: string, _: Acti
     if (kind === "cluster") await client.send(new CreateDBClusterSnapshotCommand({ DBClusterIdentifier: id, DBClusterSnapshotIdentifier: name }));
     else await client.send(new CreateDBSnapshotCommand({ DBInstanceIdentifier: id, DBSnapshotIdentifier: name }));
     return `Snapshot ${name} started`;
-  }, "/rds", "/rds/db");
+  }, { revalidate: ["/rds", "/rds/db"], fields: { DBSnapshotIdentifier: "name", DBClusterSnapshotIdentifier: "name" } });
 }
 
 export async function deleteDatabase(kind: "instance" | "cluster", id: string) {

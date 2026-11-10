@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 
-import { amount, check, closest, describePattern, fresh, listItems, parseServerIssues, repairJson, repairPolicy, ruleAt, sameMember, valid, type Rule } from "./validation.ts";
+import { CONFLICT, amount, check, closest, describePattern, fresh, listItems, parseServerIssues, repairJson, repairPolicy, ruleAt, sameMember, sharedPrefix, valid, type Rule } from "./validation.ts";
 
 const values = (r: Rule, v: string) => check(v, r)?.repairs.map((x) => x.value) ?? [];
 
@@ -142,6 +142,24 @@ test("local URLs get http://, key=value lists are rewritten", () => {
   assert.equal(check("x-team: ml", { format: "pairs" })?.message, '"x-team: ml" is not key=value');
   assert.deepEqual(values({ format: "pairs" }, "x-team: ml\nx-env dev"), ["x-team=ml\nx-env=dev"]);
   assert.deepEqual(values({ format: "pairs" }, '{"x-team": "ml", "n": 2,}'), ["x-team=ml\nn=2"]);
+});
+
+test("semantic versions are completed and bumped", () => {
+  const rule: Rule = { pattern: "^[0-9]+\\.[0-9]+\\.[0-9]+$", format: "semver" };
+  assert.deepEqual(values(rule, "1.0"), ["1.0.0"]);
+  assert.deepEqual(values(rule, "v2"), ["2.0.0"]);
+  assert.deepEqual(values(rule, "1.2.3-beta"), ["1.2.3"]);
+  assert.deepEqual(values({ ...rule, taken: ["1.0.0", "1.0.1"] }, "1.0.1"), ["1.0.2"]);
+});
+
+test("cron expressions are converted to AWS's six fields", () => {
+  const rule: Rule = { format: "cron" };
+  assert.equal(check("0 9 ? * MON-FRI *", rule), null);
+  assert.deepEqual(values(rule, "0 9 * * 1-5"), ["0 9 ? * MON-FRI *"]);
+  assert.deepEqual(values(rule, "0 0 * * *"), ["0 0 * * ? *"]);
+  assert.deepEqual(values(rule, "cron(0 0 * * ? *)"), ["0 0 * * ? *"]);
+  assert.deepEqual(values(rule, "0 0 1 * * *"), ["0 0 1 * ? *"]);
+  assert.deepEqual(values(rule, "rate(1 day)"), []);
 });
 
 test("JSON repair handles hand-written JSON", () => {
@@ -330,6 +348,10 @@ test("URLs: SSH remotes become HTTPS, scheme patterns get their scheme", () => {
   assert.deepEqual(values(source, "ftp://x"), []);
 });
 
+test("negated-class patterns drop just the excluded characters", () => {
+  assert.deepEqual(values({ pattern: "^[^:*]*$" }, "app:web*1"), ["app-web-1"]);
+});
+
 test("yaml documents: JSON is repaired, tab indentation is replaced", () => {
   const rule: Rule = { format: "yaml" };
   assert.equal(check("Resources:\n  Q:\n    Type: AWS::SQS::Queue\n", rule), null);
@@ -361,6 +383,31 @@ test("directories are made absolute, cleaned and cut to the allowed depth", () =
   assert.deepEqual(values(efs, "/.cache"), ["/cache"]);
   assert.deepEqual(values(efs, "/a/b/c/d/e"), ["/a/b/c/d"]);
 });
+test("schedules repair near misses", () => {
+  const rule: Rule = { format: "schedule" };
+  assert.equal(check("rate(5 minutes)", rule), null);
+  assert.equal(check("cron(0 12 * * ? *)", rule), null);
+  assert.deepEqual(values(rule, "5 minutes"), ["rate(5 minutes)"]);
+  assert.deepEqual(values(rule, "every hour"), ["rate(1 hour)"]);
+  assert.deepEqual(values(rule, "rate(1 minutes)"), ["rate(1 minute)"]);
+  assert.deepEqual(values(rule, "rate(10 min)"), ["rate(10 minutes)"]);
+  assert.deepEqual(values(rule, "@daily"), ["rate(1 day)"]);
+  assert.deepEqual(values(rule, "*/5 * * * *"), ["cron(0/5 * * * ? *)"]);
+  assert.deepEqual(values(rule, "0 9 * * 1-5"), ["cron(0 9 ? * 2-6 *)"]);
+  assert.deepEqual(values(rule, "cron(0 12 * * * *)"), ["cron(0 12 * * ? *)"]);
+  assert.equal(check("rate(1 minutes)", rule)?.message, "Use minute for 1");
+});
+
+test("event patterns wrap bare values in lists", () => {
+  const rule: Rule = { format: "eventPattern" };
+  assert.equal(check('{"source": ["my.app"], "detail": {"state": ["ok"]}}', rule), null);
+  assert.equal(check('{"source": "my.app"}', rule)?.message, '"source" must be an object or an array');
+  assert.deepEqual(values(rule, '{"source": "my.app", "detail": {"n": 1}}'), ['{\n  "source": [\n    "my.app"\n  ],\n  "detail": {\n    "n": [\n      1\n    ]\n  }\n}']);
+  assert.deepEqual(values(rule, "{source: 'my.app',}"), ['{\n  "source": [\n    "my.app"\n  ]\n}']);
+  assert.equal(check("[]", rule)?.message, "Must be a JSON object");
+});
+
+
 
 test("taken numbers get the next free one, required prefixes are added", () => {
   assert.deepEqual(values({ type: "integer", min: 1, max: 65535, taken: ["80", "81"] }, "80"), ["82"]);
@@ -376,6 +423,22 @@ test("hierarchical names are tidied, also after dropping a reserved prefix", () 
   assert.deepEqual(values(rule, "/aws/app/db host"), ["/app/db-host"]);
 });
 
+test("CIDR rules: netmask range, inside the VPC, clear of siblings", () => {
+  const vpc: Rule = { format: "cidr", cidr: { prefix: [16, 28] } };
+  assert.equal(check("10.0.0.0/8", vpc)?.message, "Netmask /16 to /28");
+  assert.deepEqual(values(vpc, "10.0.0.0/8"), ["10.0.0.0/16"]);
+  assert.deepEqual(values(vpc, "10.9.9.9"), ["10.9.0.0/16", "10.9.9.0/24"]);
+
+  const subnet: Rule = { format: "cidr", cidr: { prefix: [16, 28], within: ["10.0.0.0/16"], avoid: ["10.0.0.0/20", "10.0.32.0/24"] } };
+  assert.equal(check("10.0.16.0/20", subnet), null);
+  assert.equal(check("10.1.0.0/20", subnet)?.message, "Outside 10.0.0.0/16");
+  assert.deepEqual(values(subnet, "10.1.0.0/20"), ["10.0.16.0/20", "10.0.48.0/20"]);
+  assert.equal(check("10.0.0.0/24", subnet)?.message, "Overlaps 10.0.0.0/20");
+  assert.deepEqual(values(subnet, "10.0.0.0/24"), ["10.0.16.0/24", "10.0.17.0/24"]);
+  // A full VPC: the next smaller size that still fits.
+  assert.deepEqual(values({ format: "cidr", cidr: { prefix: [16, 28], within: ["10.0.0.0/16"], avoid: ["10.0.0.0/17", "10.0.128.0/18"] } }, "10.0.0.0/17"), ["10.0.192.0/18"]);
+});
+
 test("separators spelled as literals in the pattern are kept and tidied", () => {
   // ECR repository names: separators only between lowercase words.
   const rule: Rule = { pattern: "^[a-z0-9]+((\\.|_|__|-+)[a-z0-9]+)*(\\/[a-z0-9]+((\\.|_|__|-+)[a-z0-9]+)*)*$", maxLength: 256 };
@@ -383,4 +446,31 @@ test("separators spelled as literals in the pattern are kept and tidied", () => 
   assert.deepEqual(values(rule, "My.Service/API v2"), ["my.service/api-v2"]);
   assert.deepEqual(values(rule, "team//app/"), ["team/app"]);
   assert.deepEqual(values({ ...rule, taken: ["team/app"] }, "team/app"), ["team/app-2"]);
+});
+
+test("enums without a close match offer values that start the same way", () => {
+  const classes = ["db.t4g.medium", "db.t4g.large", "db.r7g.large"];
+  assert.deepEqual(sharedPrefix("db.t4g.micro", classes), ["db.t4g.medium"]);
+  assert.deepEqual(sharedPrefix("cache.m5", classes), []);
+  assert.deepEqual(check("db.t4g.micro", { enum: classes })?.repairs.map((r) => r.value), ["db.t4g.medium"]);
+});
+
+test("'The parameter X is not a valid ...' messages name their member", () => {
+  const [pw] = parseServerIssues("The parameter MasterUserPassword is not a valid password because it is shorter than 8 characters.");
+  assert.equal(pw.member, "MasterUserPassword");
+  assert.equal(pw.message, "Not a valid password: shorter than 8 characters");
+  const [id] = parseServerIssues("The parameter DBInstanceIdentifier is not a valid identifier. Identifiers must begin with a letter; must contain only ASCII letters, digits, and hyphens.");
+  assert.deepEqual([id.member, id.message], ["DBInstanceIdentifier", "Not a valid identifier"]);
+});
+
+test("jsonish values are text until they start like JSON", () => {
+  assert.equal(check("hunter2", { format: "jsonish" }), null);
+  assert.equal(check('{"user": "app"}', { format: "jsonish" }), null);
+  const issue = check("{'user': 'app',}", { format: "jsonish" })!;
+  assert.equal(issue.code, "format");
+  assert.deepEqual(JSON.parse(issue.repairs[0].value), { user: "app" });
+});
+
+test("ResourceExists errors are conflicts", () => {
+  assert.ok(CONFLICT.test("ResourceExistsException"));
 });
