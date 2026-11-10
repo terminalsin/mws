@@ -1,6 +1,7 @@
 //! Glue between services whose crates cannot depend on each other (the
 //! dependency would run in a cycle), wired where AWS couples them.
 
+use mws_core::outbox::RetryPolicy;
 use mws_core::{RequestContext, ServiceClient};
 use mws_s3::{NotificationDestination, NotificationSource};
 use mws_sns::{QueueDelivery, QueueMessage};
@@ -24,7 +25,7 @@ impl QueueDelivery for SnsToSqs {
             group_id: m.message_group_id,
             dedup_id: m.message_deduplication_id,
         };
-        send_message(&self.0, ctx, &m.queue_arn, message).await.map_err(|e| e.message.to_string())
+        send_message(&self.0, ctx, &m.queue_arn, message, None).await.map_err(|e| e.message.to_string())
     }
 }
 
@@ -46,6 +47,7 @@ pub(crate) async fn send_message(
     mut ctx: RequestContext,
     queue_arn: &str,
     m: OutgoingMessage,
+    retry: Option<RetryPolicy>,
 ) -> Result<String, mws_core::ServiceError> {
     use base64::Engine;
     if let Some(region) = queue_arn.split(':').nth(3) {
@@ -78,7 +80,10 @@ pub(crate) async fn send_message(
     if let Some(d) = m.dedup_id {
         input["MessageDeduplicationId"] = d.into();
     }
-    let out = client.call(&ctx, "sqs", "SendMessage", input).await?;
+    let out = match retry {
+        Some(policy) => client.deliver(&ctx, "sqs", "SendMessage", input, policy).await?,
+        None => client.call(&ctx, "sqs", "SendMessage", input).await?,
+    };
     Ok(out.get("MessageId").and_then(serde_json::Value::as_str).unwrap_or_default().to_string())
 }
 
@@ -91,6 +96,11 @@ pub(crate) struct S3ToSqs {
 }
 
 const S3_PRINCIPAL: &str = "s3.amazonaws.com";
+
+/// S3 keeps retrying an event notification the destination could not take
+/// (throttled or erring), for up to a day.
+const S3_RETRY: RetryPolicy =
+    RetryPolicy { max_attempts: 100, base_delay_secs: 1, max_delay_secs: 300, max_age_secs: 86_400 };
 
 impl NotificationDestination for S3ToSqs {
     fn service(&self) -> &'static str {
@@ -114,7 +124,7 @@ impl NotificationDestination for S3ToSqs {
         mws_core::deferred::defer(async move {
             let message =
                 OutgoingMessage { body: message, attributes: Default::default(), group_id: None, dedup_id: None };
-            if let Err(e) = send_message(&client, ctx, &queue, message).await {
+            if let Err(e) = send_message(&client, ctx, &queue, message, Some(S3_RETRY)).await {
                 tracing::warn!(queue, "S3 could not send a notification: {}", e.message);
             }
         });
@@ -142,7 +152,7 @@ impl NotificationDestination for S3ToLambda {
         let ctx = ctx.as_service(S3_PRINCIPAL, source.bucket_owner, Some(source.bucket_arn));
         let (client, function) = (self.client.clone(), arn.to_string());
         mws_core::deferred::defer(async move {
-            if let Err(e) = invoke_event(&client, ctx, &function, message.into_bytes()).await {
+            if let Err(e) = invoke_event(&client, ctx, &function, message.into_bytes(), Some(S3_RETRY)).await {
                 tracing::warn!(function, "S3 could not invoke a notification function: {}", e.message);
             }
         });
@@ -177,7 +187,7 @@ impl NotificationDestination for S3ToSns {
                 "Message": message,
                 "Subject": "Amazon S3 Notification",
             });
-            if let Err(e) = client.call(&ctx, "sns", "Publish", input).await {
+            if let Err(e) = client.deliver(&ctx, "sns", "Publish", input, S3_RETRY).await {
                 tracing::warn!(topic, "S3 could not publish a notification: {}", e.message);
             }
         });
@@ -191,6 +201,7 @@ pub(crate) async fn invoke_event(
     mut ctx: RequestContext,
     function: &str,
     payload: Vec<u8>,
+    retry: Option<RetryPolicy>,
 ) -> Result<(), mws_core::ServiceError> {
     use base64::Engine;
     if let Some(region) = function.strip_prefix("arn:").and_then(|a| a.split(':').nth(2)) {
@@ -201,7 +212,10 @@ pub(crate) async fn invoke_event(
         "InvocationType": "Event",
         "Payload": base64::engine::general_purpose::STANDARD.encode(payload),
     });
-    client.call(&ctx, "lambda", "Invoke", input).await.map(|_| ())
+    match retry {
+        Some(policy) => client.deliver(&ctx, "lambda", "Invoke", input, policy).await.map(|_| ()),
+        None => client.call(&ctx, "lambda", "Invoke", input).await.map(|_| ()),
+    }
 }
 
 /// Lambda's event source pollers reading SQS queues as the function's

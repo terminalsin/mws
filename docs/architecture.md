@@ -162,9 +162,15 @@ you configured. MWS is moving all of them to work the same way:
   returned (and dropped its locks), before the response goes out. The front
   door and `ServiceClient` run deferred work; outside a request it is
   spawned.
+- `ServiceClient::deliver` retries a service principal's call that failed
+  with a retryable error (5xx, throttling) on the emulated clock, with the
+  caller's retry policy. Queued calls are part of the state document
+  (`deliveries`); `GET /_mws/deliveries` lists them and
+  `POST /_mws/deliveries/drain` retries every pending one now. S3 event
+  notifications use it.
 
-S3, SNS and EventBridge deliveries to SQS, and EventBridge deliveries to
-SNS, go through `ServiceClient`. Older integrations still call another
+S3, SNS and EventBridge deliveries to SQS and Lambda, and S3 and
+EventBridge deliveries to SNS, go through `ServiceClient`. Older integrations still call another
 crate's typed public API (for example `Kms::encrypt_via` from S3, or
 `Sts::assume_role_as_service` for service roles), or a small trait the
 producing service defines (such as `mws_s3::NotificationDestination` or

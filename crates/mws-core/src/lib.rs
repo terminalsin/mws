@@ -13,6 +13,7 @@ pub mod eventstream;
 pub mod ids;
 pub mod metrics;
 mod observe;
+pub mod outbox;
 mod service;
 pub mod shell;
 pub mod trail;

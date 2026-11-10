@@ -2,7 +2,6 @@
 //! EventBridge targets that run work in other services (ECS tasks, Run
 //! Command).
 
-
 use mws_core::metrics::{MetricDatum, MetricPublisher};
 use mws_core::{Caller, CallerKind, RequestContext, Service};
 use mws_events::{TargetError, TargetInvocation, TargetSink};

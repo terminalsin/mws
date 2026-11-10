@@ -16,6 +16,8 @@
 //! | `DELETE /_mws/snapshots/{name}`        | delete a snapshot                              |
 //! | `GET /_mws/clock`                      | the emulated time and its offset               |
 //! | `POST /_mws/clock`                     | `{"advanceSeconds": n}` or `{"offsetSeconds": n}` moves the emulated clock forward |
+//! | `GET /_mws/deliveries`                 | service-to-service calls queued for retry      |
+//! | `POST /_mws/deliveries/drain`          | retry every pending queued call now            |
 
 use bytes::Bytes;
 use http::Method;
@@ -77,6 +79,21 @@ impl Gateway {
         let method = request.method().clone();
         match (&method, segments.as_slice()) {
             (&Method::GET, ["health"]) => self.health(),
+            (&Method::GET, ["deliveries"]) | (&Method::POST, ["deliveries", "drain"]) => {
+                match self.named.get("deliveries").cloned() {
+                    Some(svc) => {
+                        let ctx = self.context(
+                            uuid::Uuid::new_v4().to_string(),
+                            self.env.default_region.clone(),
+                            mws_core::Caller::anonymous(),
+                            None,
+                            chrono::Utc::now(),
+                        );
+                        svc.handle(ctx, request).await
+                    }
+                    None => error(404, "no delivery queue is configured"),
+                }
+            }
             (&Method::GET, ["clock"]) => self.clock_doc(),
             (&Method::POST, ["clock"]) => {
                 let doc = match body_json(&request) {
