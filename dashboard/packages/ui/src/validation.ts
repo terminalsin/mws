@@ -548,7 +548,11 @@ export function allowedChars(rule: Rule): RegExp | null {
   if (rule.format === "bucket") return /[a-z0-9.-]/;
   if (rule.format === "name") return /[A-Za-z0-9_-]/;
   if (!rule.pattern) return null;
-  const classes = [...rule.pattern.matchAll(/\[((?:\\.|[^\]\\])+)\]/g)].map((m) => m[1]).filter((c) => !c.startsWith("^"));
+  const all = [...rule.pattern.matchAll(/\[((?:\\.|[^\]\\])+)\]/g)].map((m) => m[1]);
+  const classes = all.filter((c) => !c.startsWith("^"));
+  // A whole-value negated class (`^[^:*]*$`): anything but those.
+  const negated = classes.length === 0 && all.length === 1 ? all[0] : null;
+  if (negated && [`^[${negated}]*$`, `^[${negated}]+$`].includes(rule.pattern)) return regex(`[${negated}]`);
   // Separators spelled as literals between classes, as in ECR's
   // `[a-z0-9]+((\.|_|-+)[a-z0-9]+)*(\/...)*`.
   const literals = separatorLiterals(rule.pattern);
@@ -1314,6 +1318,7 @@ export const FORMATS: Record<Format, FormatSpec> = {
     },
   },
 };
+
 
 const DOMAIN = /^(?=.{1,253}$)(?:[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\.)+[a-z]{2,63}$/i;
 /** Top-level domains people mistype, and what they meant. */

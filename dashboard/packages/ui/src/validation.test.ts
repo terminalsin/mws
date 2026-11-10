@@ -330,6 +330,10 @@ test("URLs: SSH remotes become HTTPS, scheme patterns get their scheme", () => {
   assert.deepEqual(values(source, "ftp://x"), []);
 });
 
+test("negated-class patterns drop just the excluded characters", () => {
+  assert.deepEqual(values({ pattern: "^[^:*]*$" }, "app:web*1"), ["app-web-1"]);
+});
+
 test("yaml documents: JSON is repaired, tab indentation is replaced", () => {
   const rule: Rule = { format: "yaml" };
   assert.equal(check("Resources:\n  Q:\n    Type: AWS::SQS::Queue\n", rule), null);
