@@ -229,7 +229,7 @@ impl Ssm {
     }
 
     /// Create an OpsItem in `account` and `region` (already authorized).
-    fn insert_ops_item(
+    pub(crate) fn insert_ops_item(
         &self,
         partition: &str,
         account: &str,

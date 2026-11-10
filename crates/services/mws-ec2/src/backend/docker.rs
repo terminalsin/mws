@@ -592,6 +592,22 @@ impl ComputeBackend for DockerBackend {
         }))
     }
 
+    async fn exec_stream(&self, handle: &str, script: &str) -> Result<Option<super::ExecStream>, BackendError> {
+        let mut child = Command::new(&self.cli)
+            .args(["exec", "-i", "-u", "0", handle, "/bin/sh", "-c", "exec 2>&1; eval \"$0\"", script])
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::null())
+            .kill_on_drop(true)
+            .spawn()
+            .map_err(|e| BackendError(format!("running {}: {e}", self.cli)))?;
+        let input = child.stdin.take().ok_or_else(|| BackendError("no stdin".into()))?;
+        let output = child.stdout.take().ok_or_else(|| BackendError("no stdout".into()))?;
+        // The child is reaped (and killed) once its output is dropped.
+        let output = ChildOutput { output, _child: child };
+        Ok(Some(super::ExecStream { output: Box::pin(output), input: Box::pin(input) }))
+    }
+
     async fn delete_image(&self, image_ref: &str) -> Result<(), BackendError> {
         self.run(&["rmi".into(), image_ref.into()]).await.map(drop)
     }
@@ -809,6 +825,22 @@ fn uuid_like() -> String {
     static N: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
     let nanos = SystemTime::now().duration_since(UNIX_EPOCH).map(|d| d.as_nanos()).unwrap_or_default();
     format!("{nanos:x}{:x}", N.fetch_add(1, std::sync::atomic::Ordering::Relaxed))
+}
+
+/// A child's stdout that keeps the child alive while it is read.
+struct ChildOutput {
+    output: tokio::process::ChildStdout,
+    _child: tokio::process::Child,
+}
+
+impl tokio::io::AsyncRead for ChildOutput {
+    fn poll_read(
+        mut self: std::pin::Pin<&mut Self>,
+        cx: &mut std::task::Context<'_>,
+        buf: &mut tokio::io::ReadBuf<'_>,
+    ) -> std::task::Poll<std::io::Result<()>> {
+        std::pin::Pin::new(&mut self.output).poll_read(cx, buf)
+    }
 }
 
 #[cfg(test)]

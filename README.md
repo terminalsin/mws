@@ -136,7 +136,7 @@ clock, snapshots and reset.
 | [Resource Access Manager](docs/services/ram.md) | 35 / 35 | restJson1 |
 | [Security Hub](docs/services/securityhub.md) | 126 / 126 | restJson1 |
 | [Secrets Manager](docs/services/secretsmanager.md) | 23 / 23 | awsJson 1.1 |
-| [SSM Parameter Store](docs/services/ssm.md) | 19 / 152 | awsJson 1.1 |
+| [Systems Manager](docs/services/ssm.md) | 152 / 152 | awsJson 1.1 |
 | [SQS](docs/services/sqs.md) | 23 / 23 | awsJson 1.0, awsQuery |
 | [SNS](docs/services/sns.md) | 42 / 42 | awsQuery |
 | [SES v1 and v2](docs/services/ses.md) | 187 / 187 | awsQuery, restJson1 |

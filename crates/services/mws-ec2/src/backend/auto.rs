@@ -187,6 +187,10 @@ impl ComputeBackend for AutoBackend {
         self.owner(handle).exec_input(handle, script, stdin).await
     }
 
+    async fn exec_stream(&self, handle: &str, script: &str) -> Result<Option<super::ExecStream>, BackendError> {
+        self.owner(handle).exec_stream(handle, script).await
+    }
+
     async fn create_volume(&self, volume_id: &str, snapshot_id: Option<&str>) -> Result<(), BackendError> {
         self.current().create_volume(volume_id, snapshot_id).await
     }

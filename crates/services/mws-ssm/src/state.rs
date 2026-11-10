@@ -136,6 +136,8 @@ pub struct Region {
     pub previews: BTreeMap<String, crate::automation::PreviewRecord>,
     /// OpsCenter and Application Manager.
     pub ops: crate::ops::OpsState,
+    pub sessions: BTreeMap<String, crate::sessions::SessionRecord>,
+    pub connectors: BTreeMap<String, crate::sessions::ConnectorRecord>,
     /// Run Command commands, newest first.
     pub commands: Vec<crate::commands::CommandRecord>,
     /// `Expiration` events of parameters deleted since they were last

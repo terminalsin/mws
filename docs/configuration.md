@@ -44,6 +44,7 @@ See [State, scenarios and snapshots](state.md) for how the two interact.
 | `MWS_ELB_BIND` | `127.0.0.1` | Address load balancer listeners bind. `GET /_aws/elb/listeners` lists where each listener is. |
 | `MWS_ELB_LISTENER_PORTS` | `ephemeral` | `listener` binds each listener on its own port (80, 443, ...) when free, falling back to an ephemeral port; `ephemeral` always picks a free port. |
 | `MWS_SES_SMTP_LISTEN` | unset | An address such as `127.0.0.1:2525` starts the SES SMTP listener: unauthenticated mail goes to receipt rules, and clients authenticating with SES SMTP credentials send through SES. |
+| `MWS_SSM_SESSION_LISTEN` | unset | The address of the Session Manager data channel listener (for example `0.0.0.0:4580`). By default it binds a free port on the endpoint's host when the first session starts. |
 | `MWS_SES_AUTO_VERIFY` | unset | `1` verifies SES identities as soon as they are created, without DNS records or verification links. |
 | `MWS_RDS_BACKEND` | `auto` | How RDS databases run. `docker` runs each DB instance (or Aurora cluster) as a PostgreSQL, MySQL or MariaDB container, `metadata` runs nothing (resources only change state), and `auto` uses Docker when a daemon answers and `metadata` otherwise. |
 | `MWS_RDS_DOCKER` | `MWS_EC2_DOCKER`, then `docker` | The Docker-compatible CLI the RDS backend drives. |
