@@ -1,20 +1,20 @@
-import { DescribeAvailabilityZonesCommand, DescribeInternetGatewaysCommand, DescribeNatGatewaysCommand, DescribeSecurityGroupsCommand, DescribeVpcEndpointsCommand } from "@aws-sdk/client-ec2";
+import { DescribeAvailabilityZonesCommand, DescribeVpcAttributeCommand } from "@aws-sdk/client-ec2";
 import { load } from "@mws-dashboard/aws";
-import { ActionForm, AwsIcon, ErrorNotice, Field, List, Page, Pill, Section, Sheet, Specs, Status, Tags, type Rule } from "@mws-dashboard/ui";
-import { CreateRoute } from "@mws-dashboard/ui/model/ec2";
-import { Globe, Network, Plus, Server, Trash2 } from "lucide-react";
+import { ActionForm, AwsIcon, ErrorNotice, Field, List, Page, Pill, Section, Sheet, Specs, Status, Tags } from "@mws-dashboard/ui";
+import { AssociateVpcCidrBlock } from "@mws-dashboard/ui/model/ec2";
+import { Globe, Network, Plus, Server, Settings2, Trash2, X } from "lucide-react";
 import type { Metadata } from "next";
+import Link from "next/link";
 
-import { ICONS, ec2, nameTag } from "../../../lib/clients";
+import { ICONS, STATE_TONE, ec2, nameTag } from "../../../lib/clients";
 import { SubnetFields } from "../../../lib/forms";
-import { choices, isPublic, network, routeTarget, tableFor } from "../../../lib/vpc";
-import { addRoute, createInternetGateway, createNatGateway, createSubnet, deleteRoute, deleteVpc } from "../actions";
+import { AddRoute, Routes } from "../../../lib/route-table";
+import { routeTargets } from "../../../lib/targets";
+import { choices, isPublic, label, listEndpoints, listGroups, listIgws, listNats, listPeerings, network, tableFor } from "../../../lib/vpc";
+import { addVpcCidr, attachNewInternetGateway, createSubnet, deleteVpc, editVpcDns, removeVpcCidr } from "../actions";
+import { CreateRouteTableSheet, deleteVpcConfirm, natSheet } from "../tabs";
 
 type Props = { params: Promise<{ id: string }> };
-
-const DESTINATION: Rule = { ...CreateRoute.DestinationCidrBlock, format: "cidr" };
-// The targets `addRoute` knows how to send to.
-const TARGET: Rule = { pattern: "^(igw|nat|pcx|tgw|eni|vgw)-[0-9a-f]{8,17}$", hint: "A gateway, NAT, peering or interface ID" };
 
 export async function generateMetadata({ params }: Props): Promise<Metadata> {
   return { title: (await params).id };
@@ -25,16 +25,20 @@ export default async function Vpc({ params }: Props) {
   const back = { href: "/vpc", label: "Your VPCs" };
   const data = await load(async () => {
     const client = await ec2();
-    const Filters = [{ Name: "vpc-id", Values: [id] }];
-    const [net, igws, nats, endpoints, groups, zones] = await Promise.all([
+    const attr = (Attribute: "enableDnsSupport" | "enableDnsHostnames") => client.send(new DescribeVpcAttributeCommand({ VpcId: id, Attribute })).catch(() => undefined);
+    const [net, igws, nats, endpoints, groups, zones, peerings, targets, dns, hostnames] = await Promise.all([
       network(id),
-      client.send(new DescribeInternetGatewaysCommand({ Filters: [{ Name: "attachment.vpc-id", Values: [id] }] })).then((r) => r.InternetGateways ?? []),
-      client.send(new DescribeNatGatewaysCommand({ Filter: Filters })).then((r) => (r.NatGateways ?? []).filter((n) => n.State !== "deleted")),
-      client.send(new DescribeVpcEndpointsCommand({ Filters })).then((r) => r.VpcEndpoints ?? []),
-      client.send(new DescribeSecurityGroupsCommand({ Filters })).then((r) => r.SecurityGroups ?? []),
+      listIgws(id),
+      listNats(id).then((n) => n.filter((x) => x.State !== "deleted")),
+      listEndpoints(id),
+      listGroups(id),
       client.send(new DescribeAvailabilityZonesCommand({})).then((r) => (r.AvailabilityZones ?? []).map((z) => z.ZoneName!)),
+      listPeerings().then((all) => all.filter((p) => p.Status?.Code !== "deleted" && p.Status?.Code !== "rejected" && (p.RequesterVpcInfo?.VpcId === id || p.AccepterVpcInfo?.VpcId === id))),
+      routeTargets(id),
+      attr("enableDnsSupport"),
+      attr("enableDnsHostnames"),
     ]);
-    return { ...net, igws, nats, endpoints, groups, zones };
+    return { ...net, igws, nats, endpoints, groups, zones, peerings, targets: targets.targets, dns: dns?.EnableDnsSupport?.Value, hostnames: hostnames?.EnableDnsHostnames?.Value };
   });
   if (!data.ok) {
     return (
@@ -43,12 +47,25 @@ export default async function Vpc({ params }: Props) {
       </Page>
     );
   }
-  const { vpcs, subnets, tables, igws, nats, endpoints, groups, zones: allZones } = data.value;
+  const { vpcs, subnets, tables, igws, nats, endpoints, groups, zones: allZones, peerings, targets, dns, hostnames } = data.value;
   const vpc = vpcs[0];
+  if (!vpc) {
+    return (
+      <Page title={id} icon={ICONS.vpc} back={back}>
+        <ErrorNotice error={`The vpc ID '${id}' does not exist`} />
+      </Page>
+    );
+  }
   const name = nameTag(vpc) ?? id;
-  const publicSubnet = subnets.find((s) => isPublic(s, tables));
   const zones = [...new Set(subnets.map((s) => s.AvailabilityZone!))].sort();
-  const subnetName = (sid: string | undefined) => nameTag(subnets.find((s) => s.SubnetId === sid) ?? {}) ?? sid;
+  const subnetName = (sid: string | undefined) => label(subnets.find((s) => s.SubnetId === sid), sid);
+  const v4 = vpc.CidrBlockAssociationSet ?? [];
+  const v6 = vpc.Ipv6CidrBlockAssociationSet ?? [];
+  const blocks = [
+    ...v4.filter((c) => c.CidrBlockState?.State !== "disassociated").map((c) => ({ id: c.AssociationId!, cidr: c.CidrBlock!, state: c.CidrBlockState?.State, primary: c.CidrBlock === vpc.CidrBlock })),
+    ...v6.filter((c) => c.Ipv6CidrBlockState?.State !== "disassociated").map((c) => ({ id: c.AssociationId!, cidr: c.Ipv6CidrBlock ?? "IPv6", state: c.Ipv6CidrBlockState?.State, primary: false })),
+  ];
+  const nat = await natSheet(subnets, tables);
 
   return (
     <Page
@@ -63,21 +80,66 @@ export default async function Vpc({ params }: Props) {
               <SubnetFields vpcs={choices(vpcs, subnets)} zones={allZones} vpc={id} />
             </ActionForm>
           </Sheet>
-          {igws.length === 0 && <ActionForm action={createInternetGateway.bind(null, id)} submit="Attach internet gateway" icon={<Globe size={16} />} />}
-          {publicSubnet && <ActionForm action={createNatGateway.bind(null, publicSubnet.SubnetId!)} submit="Create NAT gateway" icon={<AwsIcon icon={ICONS.nat} size={18} />} />}
-          {!vpc.IsDefault && <ActionForm action={deleteVpc.bind(null, id)} submit="Delete VPC" icon={<Trash2 size={16} />} tone="danger" confirm={`Delete ${name}?`} testId="delete-vpc" />}
+          <CreateRouteTableSheet vpcs={vpcs} vpc={id} />
+          {igws.length === 0 && (
+            <ActionForm action={attachNewInternetGateway.bind(null, id)} submit="Attach internet gateway" icon={<Globe size={16} />} />
+          )}
+          {subnets.length > 0 && nat}
+          <Sheet title="Edit DNS settings" label="Edit VPC settings" icon={<Settings2 size={15} />} testId="edit-vpc-dns">
+            <ActionForm action={editVpcDns.bind(null, id)} submit="Save" testId="edit-vpc-dns">
+              <label className="check">
+                <input type="checkbox" name="support" defaultChecked={dns !== false} /> Enable DNS resolution
+              </label>
+              <label className="check">
+                <input type="checkbox" name="hostnames" defaultChecked={!!hostnames} /> Enable DNS hostnames
+              </label>
+            </ActionForm>
+          </Sheet>
+          <Sheet title="Add CIDR" label="Edit CIDRs" icon={<Network size={15} />} testId="add-cidr">
+            <ActionForm action={addVpcCidr.bind(null, id)} submit="Add CIDR" testId="add-cidr">
+              <Field label="IPv4 CIDR" rule={{ ...AssociateVpcCidrBlock.CidrBlock, format: "cidr", cidr: { prefix: [16, 28], avoid: blocks.map((b) => b.cidr).filter((c) => !c.includes(":")) } }} member="CidrBlock">
+                <input name="cidr" spellCheck={false} />
+              </Field>
+              <label className="check">
+                <input type="checkbox" name="ipv6" /> Amazon-provided IPv6 CIDR block instead
+              </label>
+            </ActionForm>
+          </Sheet>
+          {!vpc.IsDefault && <ActionForm action={deleteVpc.bind(null, id)} submit="Delete VPC" icon={<Trash2 size={16} />} tone="danger" confirm={deleteVpcConfirm(name)} testId="delete-vpc" />}
         </>
       }
     >
       <Specs
         items={[
-          { label: "IPv4 CIDR", icon: <Network size={15} />, value: [vpc.CidrBlock, ...(vpc.CidrBlockAssociationSet ?? []).map((c) => c.CidrBlock).filter((c) => c !== vpc.CidrBlock)].join(", ") },
-          vpc.Ipv6CidrBlockAssociationSet?.[0] && { label: "IPv6 CIDR", icon: <Network size={15} />, value: vpc.Ipv6CidrBlockAssociationSet[0].Ipv6CidrBlock },
-          { label: "State", icon: <Server size={15} />, value: <Status tone={vpc.State === "available" ? "good" : "warn"}>{vpc.State}</Status> },
+          { label: "IPv4 CIDR", icon: <Network size={15} />, value: blocks.filter((b) => !b.cidr.includes(":")).map((b) => b.cidr).join(", ") },
+          v6[0] && { label: "IPv6 CIDR", icon: <Network size={15} />, value: v6.map((c) => c.Ipv6CidrBlock).filter(Boolean).join(", ") },
+          { label: "State", icon: <Server size={15} />, value: <Status tone={STATE_TONE(vpc.State)}>{vpc.State ?? ""}</Status> },
+          { label: "DNS", icon: <Globe size={15} />, value: `${dns === false ? "No DNS resolution" : "DNS resolution"}${hostnames ? " · hostnames" : ""}` },
+          vpc.DhcpOptionsId && { label: "DHCP option set", icon: <Settings2 size={15} />, value: vpc.DhcpOptionsId },
           vpc.IsDefault && { label: "Default VPC", icon: <AwsIcon icon={ICONS.vpc} size={16} />, value: "Default" },
           vpc.InstanceTenancy === "dedicated" && { label: "Tenancy", icon: <Server size={15} />, value: "Dedicated" },
         ]}
       />
+
+      {blocks.length > 1 && (
+        <Section title="CIDRs" count={blocks.length} plain>
+          <List
+            label="CIDRs"
+            rows={blocks.map((b) => ({
+              key: b.id,
+              icon: <Network size={18} />,
+              title: <code>{b.cidr}</code>,
+              meta: (
+                <>
+                  {b.primary && <Pill tone="info">Primary</Pill>}
+                  <Status tone={STATE_TONE(b.state)}>{b.state ?? ""}</Status>
+                </>
+              ),
+              actions: b.primary ? undefined : <ActionForm action={removeVpcCidr.bind(null, b.id)} submit={`Remove ${b.cidr}`} icon={<X size={15} />} tone="danger" confirm={`Disassociate ${b.cidr}?`} />,
+            }))}
+          />
+        </Section>
+      )}
 
       <Section title="Resource map">
         <div className="resource-map" aria-label="Resource map">
@@ -91,10 +153,10 @@ export default async function Vpc({ params }: Props) {
                 {subnets
                   .filter((s) => s.AvailabilityZone === az)
                   .map((s) => (
-                    <div key={s.SubnetId} className={`map-node ${isPublic(s, tables) ? "public" : "private"}`} title={s.CidrBlock}>
+                    <Link key={s.SubnetId} className={`map-node ${isPublic(s, tables) ? "public" : "private"}`} title={s.CidrBlock} href={`/vpc/subnet?id=${s.SubnetId}`}>
                       <AwsIcon icon={isPublic(s, tables) ? ICONS.publicSubnet : ICONS.privateSubnet} size={18} />
                       <span>{nameTag(s) ?? s.SubnetId}</span>
-                    </div>
+                    </Link>
                   ))}
               </div>
             ))}
@@ -113,26 +175,33 @@ export default async function Vpc({ params }: Props) {
           </div>
           <div className="map-column">
             <h3>
-              Network connections <span className="count">{igws.length + nats.length + endpoints.length}</span>
+              Network connections <span className="count">{igws.length + nats.length + endpoints.length + peerings.length}</span>
             </h3>
             {igws.map((g) => (
-              <div key={g.InternetGatewayId} className="map-node">
+              <Link key={g.InternetGatewayId} className="map-node" href="/vpc?tab=igw">
                 <AwsIcon icon={ICONS.igw} size={18} />
                 <span>{nameTag(g) ?? g.InternetGatewayId}</span>
-              </div>
+              </Link>
             ))}
             {nats.map((n) => (
-              <div key={n.NatGatewayId} className="map-node">
+              <Link key={n.NatGatewayId} className="map-node" href="/vpc?tab=nat">
                 <AwsIcon icon={ICONS.nat} size={18} />
                 <span>{nameTag(n) ?? n.NatGatewayId}</span>
-                {n.State !== "available" && <Status tone="warn">{n.State}</Status>}
-              </div>
+                {n.State !== "available" && <Status tone={STATE_TONE(n.State)}>{n.State ?? ""}</Status>}
+              </Link>
             ))}
             {endpoints.map((e) => (
-              <div key={e.VpcEndpointId} className="map-node">
+              <Link key={e.VpcEndpointId} className="map-node" href={`/vpc/endpoint?id=${e.VpcEndpointId}`}>
                 <AwsIcon icon={ICONS.endpoint} size={18} />
-                <span>{e.ServiceName?.split(".").pop()}</span>
-              </div>
+                <span>{nameTag(e) ?? e.ServiceName?.split(".").pop()}</span>
+              </Link>
+            ))}
+            {peerings.map((p) => (
+              <Link key={p.VpcPeeringConnectionId} className="map-node" href={`/vpc/peering?id=${p.VpcPeeringConnectionId}`}>
+                <AwsIcon icon={ICONS.peering} size={18} />
+                <span>{nameTag(p) ?? p.VpcPeeringConnectionId}</span>
+                {p.Status?.Code !== "active" && <Status tone={STATE_TONE(p.Status?.Code)}>{p.Status?.Code ?? ""}</Status>}
+              </Link>
             ))}
           </div>
         </div>
@@ -140,51 +209,16 @@ export default async function Vpc({ params }: Props) {
 
       {tables.map((t) => {
         const subnetsHere = subnets.filter((s) => tableFor(s, tables)?.RouteTableId === t.RouteTableId);
-        const targets = [...igws.map((g) => g.InternetGatewayId!), ...nats.map((n) => n.NatGatewayId!)];
         return (
           <div key={t.RouteTableId} id={t.RouteTableId}>
             <Section
-              title={nameTag(t) ?? t.RouteTableId}
+              title={<Link href={`/vpc/rtb?id=${t.RouteTableId}`}>{nameTag(t) ?? t.RouteTableId}</Link>}
               icon={<AwsIcon icon={ICONS.routeTable} size={18} />}
               count={t.Routes?.length}
               plain
-              actions={
-                <Sheet title="Add route" label={`Add route to ${t.RouteTableId}`} icon={<Plus size={16} />} testId={`add-route-${t.RouteTableId}`}>
-                  <ActionForm action={addRoute.bind(null, t.RouteTableId!)} submit="Add route" testId={`add-route-${t.RouteTableId}`}>
-                    <Field label="Destination" rule={DESTINATION} member="DestinationCidrBlock" taken={(t.Routes ?? []).flatMap((r) => (r.DestinationCidrBlock ? [r.DestinationCidrBlock] : []))}>
-                      <input name="destination" required defaultValue="0.0.0.0/0" spellCheck={false} />
-                    </Field>
-                    <Field label="Target" rule={TARGET} known={targets}>
-                      <input name="target" required list={`targets-${t.RouteTableId}`} defaultValue={targets[0]} spellCheck={false} />
-                    </Field>
-                    <datalist id={`targets-${t.RouteTableId}`}>
-                      {targets.map((x) => (
-                        <option key={x} value={x} />
-                      ))}
-                    </datalist>
-                  </ActionForm>
-                </Sheet>
-              }
+              actions={<AddRoute table={t} targets={targets} />}
             >
-              <List
-                label={`Routes of ${t.RouteTableId}`}
-                rows={(t.Routes ?? []).map((r) => {
-                  const dest = r.DestinationCidrBlock ?? r.DestinationIpv6CidrBlock ?? r.DestinationPrefixListId ?? "";
-                  const target = routeTarget(r);
-                  const icon = target.startsWith("igw-") ? ICONS.internet : target.startsWith("nat-") ? ICONS.nat : target.startsWith("vpce-") ? ICONS.endpoint : target.startsWith("pcx-") ? ICONS.peering : ICONS.vpc;
-                  return {
-                    key: dest,
-                    icon: <AwsIcon icon={icon} size={20} />,
-                    title: <code>{dest}</code>,
-                    subtitle: target,
-                    meta: r.State === "blackhole" ? <Status tone="bad">Blackhole</Status> : undefined,
-                    actions:
-                      target !== "local" && r.DestinationCidrBlock ? (
-                        <ActionForm action={deleteRoute.bind(null, t.RouteTableId!, r.DestinationCidrBlock)} submit={`Delete route ${dest}`} icon={<Trash2 size={15} />} tone="danger" confirm={`Delete the route to ${dest}?`} />
-                      ) : undefined,
-                  };
-                })}
-              />
+              <Routes table={t} targets={targets} />
               {subnetsHere.length > 0 && <div className="muted route-subnets">{subnetsHere.map((s) => subnetName(s.SubnetId)).join(" · ")}</div>}
             </Section>
           </div>
@@ -200,7 +234,7 @@ export default async function Vpc({ params }: Props) {
               icon: <AwsIcon icon={ICONS.nacl} size={20} />,
               title: g.GroupName,
               subtitle: g.Description,
-              href: `/ec2?tab=groups`,
+              href: `/ec2/group?id=${g.GroupId}`,
               meta: <span>{(g.IpPermissions?.length ?? 0) + (g.IpPermissionsEgress?.length ?? 0)} rules</span>,
             }))}
           />

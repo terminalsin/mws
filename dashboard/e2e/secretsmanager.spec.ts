@@ -1,4 +1,4 @@
-import { CreateSecretCommand, SecretsManagerClient } from "@aws-sdk/client-secrets-manager";
+import { CreateSecretCommand, DescribeSecretCommand, GetResourcePolicyCommand, PutSecretValueCommand, SecretsManagerClient } from "@aws-sdk/client-secrets-manager";
 import { expect, test, type Page } from "@playwright/test";
 
 import { sdk, submit, unique } from "./helpers";
@@ -96,4 +96,33 @@ test("Secrets Manager: rotation fields expand function names and clamp days", as
   await expect(field("days")).toHaveAttribute("data-invalid", "range");
   await field("days").getByRole("button").first().click();
   await expect(control("days")).toHaveValue("1000");
+});
+
+test("Secrets Manager: edit, move AWSCURRENT back, attach a policy and untag", async ({ page }) => {
+  const sm = new SecretsManagerClient(sdk);
+  const name = unique("dash/versions");
+  const { ARN } = await sm.send(new CreateSecretCommand({ Name: name, SecretString: "first", Tags: [{ Key: "team", Value: "a" }, { Key: "env", Value: "b" }] }));
+  const second = await sm.send(new PutSecretValueCommand({ SecretId: ARN, SecretString: "second" }));
+  const self = `/secrets/secret?id=${encodeURIComponent(ARN!)}`;
+
+  await page.goto(self);
+  await submit(page, "edit-secret", { description: "rotated by hand" });
+  expect((await sm.send(new DescribeSecretCommand({ SecretId: ARN }))).Description).toBe("rotated by hand");
+
+  await page.goto(`${self}&tab=versions`);
+  const previous = page.locator("li.row").filter({ hasText: "AWSPREVIOUS" });
+  await expect(previous).toBeVisible();
+  page.once("dialog", (d) => d.accept().catch(() => {}));
+  await previous.getByRole("button", { name: /^Make .* current$/ }).click();
+  await expect(page.locator("li.row").filter({ hasText: second.VersionId! })).toContainText("AWSPREVIOUS");
+  const stages = (await sm.send(new DescribeSecretCommand({ SecretId: ARN }))).VersionIdsToStages!;
+  expect(stages[second.VersionId!]).toEqual(["AWSPREVIOUS"]);
+
+  await page.goto(`${self}&tab=permissions`);
+  await submit(page, "edit-policy");
+  expect((await sm.send(new GetResourcePolicyCommand({ SecretId: ARN }))).ResourcePolicy).toContain("secretsmanager:GetSecretValue");
+
+  await page.goto(`${self}&tab=tags`);
+  await submit(page, "edit-tags", { tags: "team=a" });
+  expect((await sm.send(new DescribeSecretCommand({ SecretId: ARN }))).Tags?.map((t) => t.Key)).toEqual(["team"]);
 });

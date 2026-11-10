@@ -50,3 +50,12 @@ export function password(f: Family): Rule {
 
 /** gp3 storage, in GiB. */
 export const STORAGE: Rule = { type: "integer", min: 20, max: 65536 };
+
+/** Automated backups: 0 turns them (and point-in-time restore) off. */
+export const RETENTION: Rule = { type: "integer", min: 0, max: 35 };
+
+/** The database RDS creates at launch: letters, digits and _. */
+export const DATABASE_NAME: Record<Family, Rule> = {
+  postgres: { maxLength: 63, pattern: "^[A-Za-z][A-Za-z0-9_]*$", hint: "Letters, digits and _, starting with a letter" },
+  mysql: { maxLength: 64, pattern: "^[A-Za-z][A-Za-z0-9_]*$", hint: "Letters, digits and _, starting with a letter" },
+};

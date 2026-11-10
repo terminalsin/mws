@@ -1,8 +1,10 @@
 import { ListGroupsCommand, ListPoliciesCommand, ListRolesCommand, ListUsersCommand } from "@aws-sdk/client-iam";
 import { search } from "@mws-dashboard/ai";
-import { ago, collect, frameInfo, load } from "@mws-dashboard/aws";
+import { ago, all, frameInfo, load } from "@mws-dashboard/aws";
 import { ActionForm, AwsIcon, Curated, Empty, ErrorNotice, Field, List, Page, Pill, Section, Sheet } from "@mws-dashboard/ui";
+import { Fingerprint, FlaskConical, Settings } from "lucide-react";
 import type { Metadata } from "next";
+import Link from "next/link";
 
 import { ICONS, iam, policyDocument, principalIcon, trust } from "../../lib/clients";
 import { RULES, SERVICE_PRINCIPALS } from "../../lib/rules";
@@ -22,10 +24,10 @@ const TRUST_SECTIONS = [
 async function everything() {
   const client = await iam();
   const [users, roles, groups, policies] = await Promise.all([
-    collect((Marker) => client.send(new ListUsersCommand({ Marker })), (r) => r.Users, (r) => (r.IsTruncated ? r.Marker : undefined)),
-    collect((Marker) => client.send(new ListRolesCommand({ Marker })), (r) => r.Roles, (r) => (r.IsTruncated ? r.Marker : undefined)),
-    collect((Marker) => client.send(new ListGroupsCommand({ Marker })), (r) => r.Groups, (r) => (r.IsTruncated ? r.Marker : undefined)),
-    collect((Marker) => client.send(new ListPoliciesCommand({ Marker, Scope: "Local" })), (r) => r.Policies, (r) => (r.IsTruncated ? r.Marker : undefined)),
+    all((Marker) => client.send(new ListUsersCommand({ Marker })), (r) => r.Users, (r) => (r.IsTruncated ? r.Marker : undefined)),
+    all((Marker) => client.send(new ListRolesCommand({ Marker })), (r) => r.Roles, (r) => (r.IsTruncated ? r.Marker : undefined)),
+    all((Marker) => client.send(new ListGroupsCommand({ Marker })), (r) => r.Groups, (r) => (r.IsTruncated ? r.Marker : undefined)),
+    all((Marker) => client.send(new ListPoliciesCommand({ Marker, Scope: "Local" })), (r) => r.Policies, (r) => (r.IsTruncated ? r.Marker : undefined)),
   ]);
   return { users, roles, groups, policies };
 }
@@ -68,6 +70,9 @@ export default async function Iam({ searchParams }: Props) {
               <option key={p} value={p} />
             ))}
           </datalist>
+          <Field label="Description" rule={RULES.roleDescription}>
+            <input name="description" />
+          </Field>
           <Field label="Or a trust policy" rule={RULES.trust}>
             <textarea name="trust" placeholder='{"Version": "2012-10-17", "Statement": [...]}' />
           </Field>
@@ -80,6 +85,9 @@ export default async function Iam({ searchParams }: Props) {
           <Field label="Name" rule={RULES.groupName} taken={groups.map((g) => g.GroupName!)} unique>
             <input name="name" required autoFocus />
           </Field>
+          <Field label="Path" rule={RULES.path}>
+            <input name="path" placeholder="/" />
+          </Field>
         </ActionForm>
       </Sheet>
     ),
@@ -88,6 +96,9 @@ export default async function Iam({ searchParams }: Props) {
         <ActionForm action={createPolicy} submit="Create" testId="create-policy">
           <Field label="Name" rule={RULES.policyName} taken={policies.map((p) => p.PolicyName!)} unique>
             <input name="name" required autoFocus />
+          </Field>
+          <Field label="Description" rule={RULES.policyDescription}>
+            <input name="description" />
           </Field>
           <Field label="Document" rule={RULES.document}>
             <textarea
@@ -139,13 +150,12 @@ export default async function Iam({ searchParams }: Props) {
     const aws = q
       ? await load(async () => {
           const client = await iam();
-          const all = await collect(
+          const managed = await all(
             (Marker) => client.send(new ListPoliciesCommand({ Marker, Scope: "AWS" })),
             (r) => r.Policies,
             (r) => (r.IsTruncated ? r.Marker : undefined),
-            5000,
           );
-          return search(q, all.map((p) => ({ ...p, text: `${p.PolicyName} ${p.Description ?? ""} ${p.Path}` })), 30);
+          return search(q, managed.map((p) => ({ ...p, text: `${p.PolicyName} ${p.Description ?? ""} ${p.Path}` })), 30);
         })
       : null;
     const local = q ? await search(q, policies.map((p) => ({ ...p, text: `${p.PolicyName} ${p.Description ?? ""}` })), 50) : policies;
@@ -191,7 +201,25 @@ export default async function Iam({ searchParams }: Props) {
   }
 
   return (
-    <Page title={{ users: "Users", roles: "Roles", groups: "Groups", policies: "Policies" }[tab] ?? "Users"} actions={create[tab as keyof typeof create] ?? create.users}>
+    <Page
+      title={{ users: "Users", roles: "Roles", groups: "Groups", policies: "Policies" }[tab] ?? "Users"}
+      actions={
+        <>
+          <Link className="icon-button plain" href="/iam/simulator" aria-label="Policy simulator" title="Policy simulator">
+            <FlaskConical size={16} aria-hidden />
+          </Link>
+          {tab === "roles" && (
+            <Link className="icon-button plain" href="/iam/providers" aria-label="Identity providers" title="Identity providers">
+              <Fingerprint size={16} aria-hidden />
+            </Link>
+          )}
+          <Link className="icon-button plain" href="/iam/settings" aria-label="Account settings" title="Account settings">
+            <Settings size={16} aria-hidden />
+          </Link>
+          {create[tab as keyof typeof create] ?? create.users}
+        </>
+      }
+    >
       {body}
     </Page>
   );

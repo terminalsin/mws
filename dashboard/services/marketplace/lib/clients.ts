@@ -1,5 +1,6 @@
 import "server-only";
 
+import { MarketplaceEntitlementServiceClient } from "@aws-sdk/client-marketplace-entitlement-service";
 import { MarketplaceMeteringClient } from "@aws-sdk/client-marketplace-metering";
 import { client } from "@mws-dashboard/aws";
 
@@ -18,3 +19,5 @@ export function tone(status: string | undefined): Tone {
   return "neutral";
 }
 export const metering = () => client(MarketplaceMeteringClient);
+
+export const entitlements = () => client(MarketplaceEntitlementServiceClient);

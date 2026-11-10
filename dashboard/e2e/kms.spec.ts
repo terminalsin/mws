@@ -1,4 +1,4 @@
-import { CreateAliasCommand, CreateKeyCommand, KMSClient } from "@aws-sdk/client-kms";
+import { CreateAliasCommand, CreateKeyCommand, KMSClient, ListResourceTagsCommand } from "@aws-sdk/client-kms";
 import { expect, test, type Page } from "@playwright/test";
 
 import { sdk, submit, unique } from "./helpers";
@@ -109,6 +109,7 @@ test("KMS: key forms repair days, JSON, tags and RSA-sized plaintext", async ({ 
   await expect(page.locator("dialog[open]")).toHaveCount(0);
 
   // Tags written as "key: value" become key=value lines.
+  await page.goto(`/kms/key?id=${KeyMetadata!.KeyId}&tab=tags`);
   form = await sheet(page, "edit-tags");
   const tags = form.locator('textarea[name="tags"]');
   await tags.fill("team: payments\nenv prod");
@@ -132,4 +133,53 @@ test("KMS: key forms repair days, JSON, tags and RSA-sized plaintext", async ({ 
   await expect(days).toHaveValue("7");
   await form.locator('button[type="submit"]').click();
   await expect(page.getByTestId("cancel-deletion")).toBeVisible();
+});
+
+test("KMS: ML-KEM and key agreement keys are listed and their try-its prove the key", async ({ page }) => {
+  const kem = unique("dash-kem");
+  const ecdh = unique("dash-ecdh");
+  const a = await kms.send(new CreateKeyCommand({ KeySpec: "ML_KEM_768", KeyUsage: "ENCAPSULATE_DECAPSULATE" }));
+  await kms.send(new CreateAliasCommand({ AliasName: `alias/${kem}`, TargetKeyId: a.KeyMetadata!.KeyId }));
+  const b = await kms.send(new CreateKeyCommand({ KeySpec: "ECC_NIST_P256", KeyUsage: "KEY_AGREEMENT" }));
+  await kms.send(new CreateAliasCommand({ AliasName: `alias/${ecdh}`, TargetKeyId: b.KeyMetadata!.KeyId }));
+
+  await page.goto("/kms");
+  await expect(page.getByRole("link", { name: kem })).toBeVisible();
+  await page.getByRole("link", { name: kem }).click();
+  await expect(page.getByRole("heading", { name: "Encapsulate and decapsulate" })).toBeVisible();
+  await page.getByTestId("try-key").locator('button[type="submit"]').click();
+  await expect(page.getByTestId("try-key").getByRole("status")).toContainText("same secret");
+
+  await page.goto(`/kms/key?id=${b.KeyMetadata!.KeyId}`);
+  await expect(page.getByRole("heading", { name: "Derive shared secret" })).toBeVisible();
+  await page.getByTestId("try-key").locator('button[type="submit"]').click();
+  await expect(page.getByTestId("try-key").getByRole("status")).toContainText("matches the peer");
+  await page.goto(`/kms/key?id=${b.KeyMetadata!.KeyId}&tab=crypto`);
+  await expect(page.locator("pre[aria-label='Public key']")).toContainText("BEGIN PUBLIC KEY");
+});
+
+test("KMS: removed tags are untagged, and grants are created and revoked", async ({ page }) => {
+  const { KeyMetadata } = await kms.send(new CreateKeyCommand({ Tags: [{ TagKey: "team", TagValue: "payments" }, { TagKey: "env", TagValue: "prod" }] }));
+  const id = KeyMetadata!.KeyId!;
+  await page.goto(`/kms/key?id=${id}&tab=tags`);
+  await submit(page, "edit-tags", { tags: "team=payments" });
+  await expect(page.getByText("payments", { exact: true })).toBeVisible();
+  await expect(page.getByText("prod", { exact: true })).toHaveCount(0);
+  const { Tags } = await kms.send(new ListResourceTagsCommand({ KeyId: id }));
+  expect(Tags?.map((t) => t.TagKey)).toEqual(["team"]);
+
+  const name = unique("dash-grant");
+  await page.goto(`/kms/key?id=${id}&tab=grants`);
+  const form = await sheet(page, "create-grant");
+  await form.locator('input[name="grantee"]').fill(`arn:aws:iam::${KeyMetadata!.AWSAccountId}:root`);
+  await form.locator('input[name="name"]').fill(name);
+  await form.locator('input[value="Decrypt"]').check();
+  await form.locator('button[type="submit"]').click();
+  await expect(form.getByRole("status")).toContainText("Created grant");
+  await page.goto(`/kms/key?id=${id}&tab=grants`);
+  const grant = page.locator("li.row").filter({ hasText: name });
+  await expect(grant).toContainText("Decrypt");
+  page.once("dialog", (d) => d.accept().catch(() => {}));
+  await grant.getByRole("button", { name: /Revoke grant/ }).click();
+  await expect(page.locator("li.row").filter({ hasText: name })).toHaveCount(0);
 });

@@ -1,8 +1,15 @@
 import "server-only";
 
-import type { InventoryItem } from "@mws-dashboard/aws";
+import { ListDashboardsCommand } from "@aws-sdk/client-cloudwatch";
+import { all, type InventoryItem } from "@mws-dashboard/aws";
 
-import { listAlarms, listGroups } from "./clients";
+import {
+  alarmHref,
+  cloudwatch,
+  groupHref,
+  listAlarms,
+  listGroups,
+} from "./clients";
 
 export async function logGroups(): Promise<InventoryItem[]> {
   return (await listGroups()).map((g) => ({
@@ -10,19 +17,42 @@ export async function logGroups(): Promise<InventoryItem[]> {
     type: "Log group",
     id: g.logGroupArn ?? g.logGroupName!,
     name: g.logGroupName!,
-    href: `/logs/group?${new URLSearchParams({ name: g.logGroupName! })}`,
+    href: groupHref(g.logGroupName!),
   }));
 }
 
 export async function alarms(): Promise<InventoryItem[]> {
-  const { metric, composite } = await listAlarms();
-  return [...metric, ...composite].map((a) => ({
+  return (await listAlarms()).map((a) => ({
     service: "cloudwatch",
-    type: "Alarm",
+    type:
+      a.kind === "composite"
+        ? "Composite alarm"
+        : a.kind === "log"
+          ? "Log alarm"
+          : "Alarm",
     id: a.AlarmArn!,
     name: a.AlarmName!,
-    href: "/alarms",
+    href: alarmHref(a.AlarmName!),
     detail: a.StateValue,
-    signal: a.StateValue === "ALARM" ? { tone: "bad" as const, text: "In alarm" } : undefined,
+    signal:
+      a.StateValue === "ALARM"
+        ? { tone: "bad" as const, text: "In alarm" }
+        : undefined,
+  }));
+}
+
+export async function dashboards(): Promise<InventoryItem[]> {
+  const c = await cloudwatch();
+  const list = await all(
+    (NextToken) => c.send(new ListDashboardsCommand({ NextToken })),
+    (r) => r.DashboardEntries,
+    (r) => r.NextToken,
+  );
+  return list.map((d) => ({
+    service: "cloudwatch",
+    type: "Dashboard",
+    id: d.DashboardArn ?? `dashboard:${d.DashboardName}`,
+    name: d.DashboardName!,
+    href: `/dashboards/dashboard?${new URLSearchParams({ name: d.DashboardName! })}`,
   }));
 }

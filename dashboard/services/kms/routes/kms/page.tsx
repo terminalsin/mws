@@ -4,19 +4,13 @@ import { ActionForm, AwsIcon, Curated, Empty, ErrorNotice, Field, Metric, Metric
 import type { Metadata } from "next";
 
 import { ICONS } from "../../lib/clients";
-import { STATE_TONE, listAliases, listKeys } from "../../lib/kms";
-import { ALIAS, DESCRIPTION, takenAliases } from "../../lib/rules";
+import { ALL_SPECS, STATE_TONE, USAGE, listAliases, listKeys } from "../../lib/kms";
+import { ALIAS, DESCRIPTION, KEY_POLICY, ROTATION_DAYS, TAGS, takenAliases } from "../../lib/rules";
 import { createKey } from "./actions";
 
 export const metadata: Metadata = { title: "KMS" };
 
 
-const USAGE = [
-  { id: "ENCRYPT_DECRYPT", title: "Encryption" },
-  { id: "SIGN_VERIFY", title: "Signing" },
-  { id: "GENERATE_VERIFY_MAC", title: "MAC" },
-  { id: "KEY_AGREEMENT", title: "Key agreement" },
-];
 
 type Props = { searchParams: Promise<{ tab?: string }> };
 
@@ -33,25 +27,51 @@ export default async function Keys({ searchParams }: Props) {
         <Field label="Description" rule={DESCRIPTION}>
           <input name="description" />
         </Field>
-        <Field label="Key spec" member="KeySpec">
-          <select name="spec" defaultValue="SYMMETRIC_DEFAULT">
-            {["SYMMETRIC_DEFAULT", "RSA_2048", "RSA_3072", "RSA_4096", "ECC_NIST_P256", "ECC_NIST_P384", "ECC_NIST_P521", "ECC_SECG_P256K1", "HMAC_224", "HMAC_256", "HMAC_384", "HMAC_512"].map((s) => (
-              <option key={s}>{s}</option>
-            ))}
+        <div className="form-row">
+          <Field label="Key usage" member="KeyUsage">
+            <select name="usage" defaultValue="">
+              <option value="">By key spec</option>
+              {USAGE.map((u) => (
+                <option key={u.id} value={u.id}>
+                  {u.title}
+                </option>
+              ))}
+            </select>
+          </Field>
+          <Field label="Key spec" member="KeySpec">
+            <select name="spec" defaultValue="SYMMETRIC_DEFAULT">
+              {ALL_SPECS.map((s) => (
+                <option key={s}>{s}</option>
+              ))}
+            </select>
+          </Field>
+        </div>
+        <Field label="Key material origin" member="Origin">
+          <select name="origin" defaultValue="AWS_KMS">
+            <option value="AWS_KMS">KMS</option>
+            <option value="EXTERNAL">External (import key material)</option>
           </select>
         </Field>
-        <Field label="RSA usage">
-          <select name="usage" defaultValue="encrypt">
-            <option value="encrypt">Encrypt and decrypt</option>
-            <option value="sign">Sign and verify</option>
-          </select>
-        </Field>
-        <label className="check">
-          <input type="checkbox" name="rotation" defaultChecked /> Automatic rotation
-        </label>
+        <div className="form-row">
+          <label className="check">
+            <input type="checkbox" name="rotation" defaultChecked /> Automatic rotation
+          </label>
+          <Field label="Rotation period (days)" rule={ROTATION_DAYS} member="RotationPeriodInDays">
+            <input name="rotationDays" type="number" placeholder="365" />
+          </Field>
+        </div>
         <label className="check">
           <input type="checkbox" name="multiRegion" /> Multi-Region
         </label>
+        <Field label="Tags" rule={TAGS}>
+          <textarea name="tags" rows={2} placeholder="team=payments" />
+        </Field>
+        <details>
+          <summary>Key policy</summary>
+          <Field label="Key policy" rule={KEY_POLICY}>
+            <textarea name="policy" rows={8} placeholder="Default: the account root may use and manage the key" className="code-editor" spellCheck={false} />
+          </Field>
+        </details>
       </ActionForm>
     </Sheet>
   );
@@ -70,7 +90,12 @@ export default async function Keys({ searchParams }: Props) {
     key: meta.KeyId!,
     icon: <AwsIcon icon={ICONS.key} size={24} />,
     title: aliases[0]?.replace(/^alias\//, "") ?? <code>{meta.KeyId}</code>,
-    subtitle: [aliases.length > 1 ? `+${aliases.length - 1}` : null, meta.KeySpec !== "SYMMETRIC_DEFAULT" ? meta.KeySpec : null, meta.MultiRegion ? "multi-Region" : null]
+    subtitle: [
+      aliases.length > 1 ? `+${aliases.length - 1}` : null,
+      meta.KeySpec !== "SYMMETRIC_DEFAULT" ? meta.KeySpec : null,
+      meta.Origin === "EXTERNAL" ? "imported" : meta.Origin === "EXTERNAL_KEY_STORE" ? "external key store" : null,
+      meta.MultiRegion ? `multi-Region ${meta.MultiRegionConfiguration?.MultiRegionKeyType?.toLowerCase() ?? ""}`.trim() : null,
+    ]
       .filter(Boolean)
       .join(" · "),
     href: `/kms/key?id=${meta.KeyId}`,
@@ -94,7 +119,11 @@ export default async function Keys({ searchParams }: Props) {
       )}
       <Curated
         label="Keys"
-        sections={USAGE.map((u) => ({ ...u, items: shown.filter((k) => k.meta.KeyUsage === u.id) }))}
+        sections={[
+          ...USAGE.map((u) => ({ id: u.id, title: u.title, items: shown.filter((k) => k.meta.KeyUsage === u.id) })),
+          // A usage KMS adds later still shows, under its own name.
+          { id: "other", title: "Other", items: shown.filter((k) => !USAGE.some((u) => u.id === k.meta.KeyUsage)) },
+        ]}
         row={row}
         empty={<Empty icon={ICONS.key} />}
       />

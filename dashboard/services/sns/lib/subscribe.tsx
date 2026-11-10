@@ -8,7 +8,7 @@
 import { FieldShell } from "@mws-dashboard/ui/fields";
 import { useMemo, useState } from "react";
 
-import { endpointRule, PROTOCOLS, roleRule, scopeOf } from "./rules";
+import { DLQ_ARN, endpointRule, FILTER_POLICY, PROTOCOLS, roleRule, scopeOf } from "./rules";
 
 export interface Targets {
   sqs: string[];
@@ -17,6 +17,9 @@ export interface Targets {
   application: string[];
   roles: string[];
 }
+
+/** Protocols that can take the message without SNS's JSON envelope. */
+const RAW = ["sqs", "http", "https", "firehose"];
 
 const PLACEHOLDER: Record<string, string> = {
   sqs: "Queue name or ARN",
@@ -62,6 +65,30 @@ export function SubscribeFields({ topicArn, fifo, targets }: { topicArn: string;
           <input type="checkbox" name="grant" defaultChecked /> Allow the topic in the queue policy
         </label>
       )}
+      {protocol === "lambda" && (
+        <label className="check">
+          <input type="checkbox" name="grant" defaultChecked /> Allow the topic to invoke the function
+        </label>
+      )}
+      <div className="form-row">
+        <FieldShell label="Filter policy" rule={FILTER_POLICY} member="FilterPolicy">
+          <textarea name="filter" rows={3} placeholder='{"type": ["order"]}' spellCheck={false} />
+        </FieldShell>
+        <FieldShell label="Filter on">
+          <select name="filterScope" defaultValue="MessageAttributes">
+            <option value="MessageAttributes">Message attributes</option>
+            <option value="MessageBody">Message body</option>
+          </select>
+        </FieldShell>
+      </div>
+      {RAW.includes(protocol) && (
+        <label className="check">
+          <input type="checkbox" name="raw" /> Raw message delivery
+        </label>
+      )}
+      <FieldShell label="Dead-letter queue" rule={DLQ_ARN} known={targets.sqs} member="RedrivePolicy">
+        <input name="dlq" placeholder="Queue ARN" spellCheck={false} />
+      </FieldShell>
     </>
   );
 }

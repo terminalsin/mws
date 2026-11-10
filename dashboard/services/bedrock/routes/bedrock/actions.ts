@@ -7,9 +7,13 @@ import {
   DeleteGuardrailCommand,
   DeleteInferenceProfileCommand,
   DeleteModelInvocationLoggingConfigurationCommand,
+  GetModelInvocationLoggingConfigurationCommand,
   PutModelInvocationLoggingConfigurationCommand,
+  UpdateGuardrailCommand,
   type GuardrailContentFilterType,
+  type GuardrailContextualGroundingFilterType,
   type GuardrailPiiEntityType,
+  type GuardrailSensitiveInformationAction,
 } from "@aws-sdk/client-bedrock";
 import { ApplyGuardrailCommand, ConverseCommand } from "@aws-sdk/client-bedrock-runtime";
 import { act, FieldError, mws, required, text, type ActionResult } from "@mws-dashboard/aws";
@@ -17,6 +21,7 @@ import { ROLES, bucketOptions, ensureLogGroup, roleFrom } from "@mws-dashboard/a
 import { redirect } from "next/navigation";
 
 import { bedrock, bedrockRuntime } from "../../lib/clients";
+import { FILTERS } from "../../lib/guardrail-form";
 
 const list = (s: string) => s.split(/[\n,]+/).map((x) => x.trim()).filter(Boolean);
 
@@ -55,8 +60,6 @@ export async function converse(_: ActionResult | null, form: FormData) {
   });
 }
 
-const FILTERS: GuardrailContentFilterType[] = ["HATE", "INSULTS", "SEXUAL", "VIOLENCE", "MISCONDUCT", "PROMPT_ATTACK"];
-
 /** A denied topic from a `Name: definition` line (a bare line is both). */
 function topic(line: string) {
   const i = line.indexOf(":");
@@ -64,51 +67,97 @@ function topic(line: string) {
   return { name: name.slice(0, 100).replace(/[^\w\s!?.-]/g, "").trim() || "Topic", definition: (i > 0 ? line.slice(i + 1) : line).trim() || name, type: "DENY" as const };
 }
 
+type Strength = "NONE" | "LOW" | "MEDIUM" | "HIGH";
+
+/** The policies of the guardrail sheet (create and edit share it). */
+function guardrailConfig(form: FormData) {
+  const strength = (name: string) => (text(form, name) || "NONE") as Strength;
+  const filters = FILTERS.map((type) => ({
+    type: type as GuardrailContentFilterType,
+    inputStrength: strength(`in_${type}`),
+    outputStrength: type === "PROMPT_ATTACK" ? ("NONE" as const) : strength(`out_${type}`),
+  })).filter((f) => f.inputStrength !== "NONE" || f.outputStrength !== "NONE");
+  const topics = text(form, "topics").split("\n").map((t) => t.trim()).filter(Boolean);
+  const words = list(text(form, "words"));
+  const profanity = text(form, "profanity") === "on";
+  const pii = [...form.keys()]
+    .filter((k) => k.startsWith("pii_") && text(form, k))
+    .map((k) => ({ type: k.slice(4) as GuardrailPiiEntityType, action: text(form, k) as GuardrailSensitiveInformationAction }));
+  const regexAction = (text(form, "regexAction") || "ANONYMIZE") as GuardrailSensitiveInformationAction;
+  const regexes = text(form, "regexes")
+    .split("\n")
+    .map((l) => l.trim())
+    .filter(Boolean)
+    .map((l) => {
+      const i = l.indexOf(":");
+      if (i < 1) throw new FieldError("regexes", `"${l}" is not name: pattern`, "format");
+      return { name: l.slice(0, i).trim(), pattern: l.slice(i + 1).trim(), action: regexAction };
+    });
+  const threshold = (name: string, type: GuardrailContextualGroundingFilterType) => {
+    const v = text(form, name);
+    return v === "" ? [] : [{ type, threshold: Number(v) }];
+  };
+  const grounding = [...threshold("grounding", "GROUNDING"), ...threshold("relevance", "RELEVANCE")];
+  const blocked = text(form, "blocked") || "Sorry, I can't help with that.";
+  return {
+    name: required(form, "name", "Name"),
+    description: text(form, "description") || undefined,
+    blockedInputMessaging: blocked,
+    blockedOutputsMessaging: text(form, "blockedOutput") || blocked,
+    contentPolicyConfig: filters.length ? { filtersConfig: filters } : undefined,
+    topicPolicyConfig: topics.length ? { topicsConfig: topics.map((t) => topic(t)) } : undefined,
+    wordPolicyConfig:
+      words.length || profanity
+        ? { wordsConfig: words.length ? words.map((w) => ({ text: w })) : undefined, managedWordListsConfig: profanity ? [{ type: "PROFANITY" as const }] : undefined }
+        : undefined,
+    sensitiveInformationPolicyConfig: pii.length || regexes.length ? { piiEntitiesConfig: pii.length ? pii : undefined, regexesConfig: regexes.length ? regexes : undefined } : undefined,
+    contextualGroundingPolicyConfig: grounding.length ? { filtersConfig: grounding } : undefined,
+  };
+}
+
+const GUARDRAIL_FIELDS = {
+  name: "name",
+  description: "description",
+  blockedInputMessaging: "blocked",
+  blockedOutputsMessaging: "blockedOutput",
+  "topicPolicyConfig.topicsConfig.name": "topics",
+  "topicPolicyConfig.topicsConfig.definition": "topics",
+  "wordPolicyConfig.wordsConfig.text": "words",
+  "sensitiveInformationPolicyConfig.regexesConfig.name": "regexes",
+  "sensitiveInformationPolicyConfig.regexesConfig.pattern": "regexes",
+  "contextualGroundingPolicyConfig.filtersConfig.threshold": "grounding",
+  kmsKeyId: "kms",
+  tags: "tags",
+};
+
+/** `key=value` lines as Bedrock tags. */
+function tagLines(form: FormData, field: string) {
+  return text(form, field)
+    .split("\n")
+    .map((l) => l.trim())
+    .filter(Boolean)
+    .map((l) => {
+      const i = l.indexOf("=");
+      if (i < 1) throw new FieldError(field, `"${l}" is not key=value`, "format");
+      return { key: l.slice(0, i).trim(), value: l.slice(i + 1).trim() };
+    });
+}
+
 export async function createGuardrail(_: ActionResult | null, form: FormData) {
   return act(async () => {
-    const strength = text(form, "strength") || "MEDIUM";
-    const topics = text(form, "topics").split("\n").map((t) => t.trim()).filter(Boolean);
-    const words = list(text(form, "words"));
-    const pii = form.getAll("pii").map(String) as GuardrailPiiEntityType[];
+    const tags = tagLines(form, "tags");
     const out = await (await bedrock()).send(
-      new CreateGuardrailCommand({
-        name: required(form, "name", "Name"),
-        blockedInputMessaging: text(form, "blocked") || "Sorry, I can't help with that.",
-        blockedOutputsMessaging: text(form, "blocked") || "Sorry, I can't help with that.",
-        contentPolicyConfig:
-          strength === "NONE"
-            ? undefined
-            : {
-                filtersConfig: FILTERS.map((type) => ({
-                  type,
-                  inputStrength: strength as "LOW" | "MEDIUM" | "HIGH",
-                  outputStrength: type === "PROMPT_ATTACK" ? "NONE" : (strength as "LOW" | "MEDIUM" | "HIGH"),
-                })),
-              },
-        topicPolicyConfig: topics.length
-          ? { topicsConfig: topics.map((t) => topic(t)) }
-          : undefined,
-        wordPolicyConfig:
-          words.length || text(form, "profanity") === "on"
-            ? {
-                wordsConfig: words.length ? words.map((w) => ({ text: w })) : undefined,
-                managedWordListsConfig: text(form, "profanity") === "on" ? [{ type: "PROFANITY" }] : undefined,
-              }
-            : undefined,
-        sensitiveInformationPolicyConfig: pii.length ? { piiEntitiesConfig: pii.map((type) => ({ type, action: "ANONYMIZE" as const })) } : undefined,
-      }),
+      new CreateGuardrailCommand({ ...guardrailConfig(form), kmsKeyId: text(form, "kms") || undefined, tags: tags.length ? tags : undefined }),
     );
     redirect(`/bedrock/guardrail?id=${out.guardrailId}`);
-  }, {
-    fields: {
-      name: "name",
-      blockedInputMessaging: "blocked",
-      blockedOutputsMessaging: "blocked",
-      "topicPolicyConfig.topicsConfig.name": "topics",
-      "topicPolicyConfig.topicsConfig.definition": "topics",
-      "wordPolicyConfig.wordsConfig.text": "words",
-    },
-  });
+  }, { fields: GUARDRAIL_FIELDS });
+}
+
+export async function updateGuardrail(id: string, _: ActionResult | null, form: FormData) {
+  return act(async () => {
+    await (await bedrock()).send(new UpdateGuardrailCommand({ guardrailIdentifier: id, ...guardrailConfig(form) }));
+    return "Saved to the working draft";
+  }, { revalidate: ["/bedrock/guardrail", "/bedrock/guardrails"], fields: GUARDRAIL_FIELDS });
 }
 
 export async function testGuardrail(id: string, _: ActionResult | null, form: FormData) {
@@ -153,20 +202,23 @@ export async function deleteGuardrail(id: string) {
 
 export async function createProfile(_: ActionResult | null, form: FormData) {
   return act(async () => {
+    const tags = tagLines(form, "tags");
     await (await bedrock()).send(
       new CreateInferenceProfileCommand({
         inferenceProfileName: required(form, "name", "Name"),
         modelSource: { copyFrom: required(form, "source", "Model") },
-        tags: text(form, "costCenter") ? [{ key: "CostCenter", value: text(form, "costCenter") }] : undefined,
+        description: text(form, "description") || undefined,
+        tags: tags.length ? tags : undefined,
       }),
     );
     return "Created";
-  }, { revalidate: ["/bedrock/profiles"], fields: { inferenceProfileName: "name", "modelSource.copyFrom": "source", "tags.value": "costCenter" } });
+  }, { revalidate: ["/bedrock/profiles"], fields: { inferenceProfileName: "name", "modelSource.copyFrom": "source", description: "description", tags: "tags", "tags.key": "tags", "tags.value": "tags" } });
 }
 
-export async function deleteProfile(arn: string) {
+export async function deleteProfile(arn: string, then: string) {
   return act(async () => {
     await (await bedrock()).send(new DeleteInferenceProfileCommand({ inferenceProfileIdentifier: arn }));
+    if (then) redirect(then);
     return "Deleted";
   }, "/bedrock/profiles");
 }
@@ -180,15 +232,21 @@ export async function saveLogging(_: ActionResult | null, form: FormData) {
     if (bucket && !(await bucketOptions()).some((b) => b.value === bucket)) throw new FieldError("bucket", "No such bucket", "missing");
     const roleArn = group ? await roleFrom(form, "role", ROLES.bedrockLogging) : undefined;
     if (group) await ensureLogGroup(group);
-    await (await bedrock()).send(
+    const client = await bedrock();
+    // Keep what the form does not show (the large-data bucket set through the SDK).
+    const current = (await client.send(new GetModelInvocationLoggingConfigurationCommand({}))).loggingConfig;
+    const on = (name: string) => text(form, name) === "on";
+    await client.send(
       new PutModelInvocationLoggingConfigurationCommand({
         loggingConfig: {
-          cloudWatchConfig: group && roleArn ? { logGroupName: group, roleArn } : undefined,
-          s3Config: bucket ? { bucketName: bucket, keyPrefix: text(form, "prefix") || undefined } : undefined,
-          textDataDeliveryEnabled: true,
-          imageDataDeliveryEnabled: text(form, "images") === "on",
-          embeddingDataDeliveryEnabled: text(form, "embeddings") === "on",
-          videoDataDeliveryEnabled: false,
+          ...current,
+          cloudWatchConfig: group && roleArn ? { ...current?.cloudWatchConfig, logGroupName: group, roleArn } : undefined,
+          s3Config: bucket ? { ...current?.s3Config, bucketName: bucket, keyPrefix: text(form, "prefix") || undefined } : undefined,
+          textDataDeliveryEnabled: on("text"),
+          imageDataDeliveryEnabled: on("images"),
+          embeddingDataDeliveryEnabled: on("embeddings"),
+          videoDataDeliveryEnabled: on("video"),
+          audioDataDeliveryEnabled: on("audio"),
         },
       }),
     );

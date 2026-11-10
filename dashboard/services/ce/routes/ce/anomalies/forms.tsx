@@ -4,7 +4,9 @@ import { ActionForm, Field, Sheet, type Rule } from "@mws-dashboard/ui";
 import { CreateAnomalyMonitor, CreateAnomalySubscription } from "@mws-dashboard/ui/model/ce";
 import { useState } from "react";
 
-import { createMonitor, createSubscription } from "../actions";
+import { Pencil } from "lucide-react";
+
+import { createMonitor, createSubscription, renameMonitor, updateSubscription } from "../actions";
 
 const MONITOR_NAME: Rule = { ...CreateAnomalyMonitor.AnomalyMonitor.fields!.MonitorName, maxLength: 1024, generate: { suffix: "-monitor" } };
 // AWS shows account IDs as 1234-5678-9012; the API takes the digits.
@@ -116,6 +118,68 @@ export function NewSubscription({ names, monitors, topics, topicArn }: Subscript
             <option key={t} value={t} />
           ))}
         </datalist>
+      </ActionForm>
+    </Sheet>
+  );
+}
+
+export function RenameMonitor({ arn, name, taken }: { arn: string; name: string; taken: string[] }) {
+  return (
+    <Sheet title="Rename monitor" label={`Rename ${name}`} icon={<Pencil size={15} />} testId="rename-monitor">
+      <ActionForm action={renameMonitor.bind(null, arn)} submit="Save" testId="rename-monitor">
+        <Field label="Name" rule={MONITOR_NAME} taken={taken.filter((t) => t !== name)}>
+          <input name="name" required defaultValue={name} />
+        </Field>
+      </ActionForm>
+    </Sheet>
+  );
+}
+
+export interface SubscriptionEdit {
+  arn: string;
+  name: string;
+  frequency: string;
+  threshold: number;
+  addresses: string[];
+  monitorArns: string[];
+}
+
+export function EditSubscription({ sub, monitors, topics }: { sub: SubscriptionEdit } & Omit<SubscriptionChoices, "names">) {
+  const [frequency, setFrequency] = useState(sub.frequency);
+  const immediate = frequency === "IMMEDIATE";
+  return (
+    <Sheet title="Edit alert subscription" label={`Edit ${sub.name}`} icon={<Pencil size={15} />} testId="edit-subscription">
+      <ActionForm action={updateSubscription.bind(null, sub.arn)} submit="Save" testId="edit-subscription">
+        <Field label="Name" rule={SUBSCRIPTION_NAME}>
+          <input name="name" required defaultValue={sub.name} />
+        </Field>
+        <fieldset className="checks">
+          <legend>Monitors</legend>
+          {monitors.map((m) => (
+            <label key={m.arn} className="check">
+              <input type="checkbox" name="monitor" value={m.arn} defaultChecked={sub.monitorArns.includes(m.arn)} /> {m.name}
+            </label>
+          ))}
+        </fieldset>
+        <div className="form-row">
+          <Field label="Frequency" rule={SUBSCRIPTION.Frequency}>
+            <select name="frequency" value={frequency} onChange={(e) => setFrequency(e.target.value)}>
+              <option value="IMMEDIATE">Immediately</option>
+              <option value="DAILY">Daily</option>
+              <option value="WEEKLY">Weekly</option>
+            </select>
+          </Field>
+          <Field label="Impact over (USD)" rule={{ ...SUBSCRIPTION.Threshold, required: true }}>
+            <input name="threshold" type="number" min="0" step="any" defaultValue={sub.threshold} required />
+          </Field>
+        </div>
+        <Field
+          key={frequency}
+          label={immediate ? "SNS topics" : "Emails"}
+          rule={immediate ? { known: topics, hint: "SNS topic ARNs, comma separated" } : { format: "emails", hint: "Comma separated" }}
+        >
+          <input name="address" required defaultValue={(immediate ? sub.addresses.filter((a) => a.startsWith("arn:")) : sub.addresses.filter((a) => !a.startsWith("arn:"))).join(", ")} />
+        </Field>
       </ActionForm>
     </Sheet>
   );

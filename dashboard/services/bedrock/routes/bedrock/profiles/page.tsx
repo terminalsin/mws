@@ -2,7 +2,6 @@ import { ListFoundationModelsCommand, ListInferenceProfilesCommand } from "@aws-
 import { load } from "@mws-dashboard/aws";
 import { ActionForm, AwsIcon, Empty, ErrorNotice, Field, List, Page, Pill, Section, Segments, Sheet } from "@mws-dashboard/ui";
 import { CreateInferenceProfile } from "@mws-dashboard/ui/model/bedrock";
-import { ruleAt } from "@mws-dashboard/ui/validation";
 import { Globe, MessageSquareText, Trash2 } from "lucide-react";
 import type { Metadata } from "next";
 import Link from "next/link";
@@ -16,7 +15,6 @@ type Props = { searchParams: Promise<{ tab?: string }> };
 
 /** "us.anthropic.claude-…" → its geography. */
 const NAME = { ...CreateInferenceProfile.inferenceProfileName, hint: "Letters and digits, single spaces, - or _ between them", generate: "name" as const };
-const TAG_VALUE = ruleAt(CreateInferenceProfile, "tags.value");
 
 const GEO: Record<string, string> = { us: "US", eu: "EU", apac: "APAC", global: "Global", jp: "Japan", au: "Australia", ca: "Canada" };
 
@@ -50,8 +48,11 @@ export default async function Profiles({ searchParams }: Props) {
               ))}
           </select>
         </Field>
-        <Field label="Cost center" rule={TAG_VALUE}>
-          <input name="costCenter" />
+        <Field label="Description" rule={{ ...CreateInferenceProfile.description, required: false }}>
+          <input name="description" />
+        </Field>
+        <Field label="Tags" format="tags">
+          <textarea name="tags" rows={2} placeholder="CostCenter=ml-research" />
         </Field>
       </ActionForm>
     </Sheet>
@@ -78,7 +79,8 @@ export default async function Profiles({ searchParams }: Props) {
                 key: p.inferenceProfileArn!,
                 icon: <AwsIcon icon={providerIcon(model ? model.providerName : p.inferenceProfileId) ?? ICONS.model} size={22} />,
                 title: p.inferenceProfileName,
-                subtitle: <code>{p.type === "APPLICATION" ? p.inferenceProfileArn?.split("/").pop() : p.inferenceProfileId}</code>,
+                subtitle: p.description ?? <code>{p.type === "APPLICATION" ? p.inferenceProfileArn?.split("/").pop() : p.inferenceProfileId}</code>,
+                href: `/bedrock/profile?id=${encodeURIComponent(p.type === "APPLICATION" ? p.inferenceProfileArn! : p.inferenceProfileId!)}`,
                 meta: (
                   <>
                     {geo && <Pill icon={<Globe size={11} />}>{geo}</Pill>}
@@ -87,11 +89,11 @@ export default async function Profiles({ searchParams }: Props) {
                 ),
                 actions: (
                   <>
-                    <Link className="icon-button plain" href={`/bedrock/playground?model=${encodeURIComponent(model ? model.modelId! : "")}`} aria-label={`Open ${p.inferenceProfileName} in playground`} title="Playground">
+                    <Link className="icon-button plain" href={`/bedrock/playground?model=${encodeURIComponent(p.type === "APPLICATION" ? p.inferenceProfileArn! : p.inferenceProfileId!)}`} aria-label={`Open ${p.inferenceProfileName} in playground`} title="Playground">
                       <MessageSquareText size={15} />
                     </Link>
                     {p.type === "APPLICATION" && (
-                      <ActionForm action={deleteProfile.bind(null, p.inferenceProfileArn!)} submit={`Delete ${p.inferenceProfileName}`} icon={<Trash2 size={15} />} tone="danger" confirm={`Delete ${p.inferenceProfileName}?`} />
+                      <ActionForm action={deleteProfile.bind(null, p.inferenceProfileArn!, "")} submit={`Delete ${p.inferenceProfileName}`} icon={<Trash2 size={15} />} tone="danger" confirm={`Delete ${p.inferenceProfileName}?`} />
                     )}
                   </>
                 ),

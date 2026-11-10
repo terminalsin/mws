@@ -9,7 +9,9 @@
   },
   "dependencies": {
     "@aws-sdk/client-iam": "^3.1164.0",
+    "@aws-sdk/client-kinesis": "^3.1164.0",
     "@aws-sdk/client-lambda": "^3.1164.0",
+    "@aws-sdk/client-sqs": "^3.1164.0",
     "@mws-dashboard/ai": "*",
     "@mws-dashboard/aws": "*",
     "@mws-dashboard/ui": "*",

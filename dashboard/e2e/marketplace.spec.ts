@@ -1,6 +1,7 @@
+import { GetCallerIdentityCommand, STSClient } from "@aws-sdk/client-sts";
 import { expect, test, type Page } from "@playwright/test";
 
-import { row, submit, unique } from "./helpers";
+import { row, sdk, submit, unique } from "./helpers";
 
 test("Marketplace: subscribe a buyer and meter usage", async ({ page }) => {
   const title = unique("Dash SaaS");
@@ -81,4 +82,62 @@ test("Marketplace: fields repair dimensions, accounts and quantities in place", 
   await expect(meter.field("quantity")).toHaveAttribute("data-invalid", "type");
   await meter.field("quantity").getByRole("button", { name: /Use 3/ }).click();
   await expect(quantity).toHaveValue("3");
+});
+
+async function newProduct(page: Page, type: "SaaS" | "AMI" | "Container") {
+  const title = unique(`Dash ${type}`);
+  await page.goto("/marketplace");
+  await submit(page, "create-product", { title, type, dimensions: "users" });
+  await expect(page.getByRole("heading", { level: 1, name: title })).toBeVisible();
+  return title;
+}
+
+test("Marketplace: an expired entitlement is left out of GetEntitlements until it is renewed", async ({ page }) => {
+  await newProduct(page, "SaaS");
+  await submit(page, "subscribe", { account: "222233334444", "dim:users": "5", expires: "2020-01-01T00:00" });
+  await page.reload();
+  await expect(row(page, "222233334444").locator(".pill", { hasText: "expired" })).toBeVisible();
+  await page.getByRole("link", { name: "GetEntitlements" }).click();
+  await expect(page.getByRole("table", { name: "Entitlements" })).toHaveCount(0);
+  await page.getByRole("link", { name: /^Subscriptions/ }).click();
+  await submit(page, "edit-entitlements", { "dim:users": "20", expires: "" });
+  await expect(row(page, "222233334444")).toContainText("users 20");
+  await expect(row(page, "222233334444").locator(".pill", { hasText: "expired" })).toHaveCount(0);
+  await page.getByRole("link", { name: "GetEntitlements" }).click();
+  const table = page.getByRole("table", { name: "Entitlements" });
+  await expect(table).toContainText("222233334444");
+  await expect(table).toContainText("20");
+  const form = page.getByTestId("get-entitlements");
+  await form.locator('[name="filter"]').selectOption("CUSTOMER_AWS_ACCOUNT_ID");
+  await form.locator('[name="value"]').fill("999999999999");
+  await form.getByRole("button", { name: "GetEntitlements" }).click();
+  await expect(page.getByRole("table", { name: "Entitlements" })).toHaveCount(0);
+});
+
+test("Marketplace: resolve a SaaS registration token", async ({ page }) => {
+  await newProduct(page, "SaaS");
+  const subscribed = await submit(page, "subscribe", { account: "333344445555", "dim:users": "1" });
+  const token = ((await subscribed.locator("pre").textContent()) ?? "").replace("x-amzn-marketplace-token: ", "").trim();
+  await page.reload();
+  const resolved = await submit(page, "resolve-customer", { token });
+  await expect(resolved).toContainText("CustomerAWSAccountId: 333344445555");
+  await expect(resolved).toContainText("LicenseArn:");
+});
+
+test("Marketplace: MeterUsage and RegisterUsage for a container product", async ({ page }) => {
+  await newProduct(page, "Container");
+  // The seller may test its own listing from its own account.
+  const account = (await new STSClient(sdk).send(new GetCallerIdentityCommand({}))).Account!;
+  await submit(page, "subscribe", { account, "dim:users": "3" });
+  await page.reload();
+  const metered = await submit(page, "meter-usage", { dimension: "users", quantity: "2" });
+  await expect(metered).toContainText("Recorded");
+  await page.keyboard.press("Escape");
+  const registered = await submit(page, "register-usage", { nonce: "dash-nonce" });
+  await expect(registered).toContainText("Registered");
+  // The result (with the signed token) keeps the sheet open: close it.
+  await page.keyboard.press("Escape");
+  await page.getByRole("link", { name: /^Registrations/ }).click();
+  await expect(row(page, account)).toContainText("dash-nonce");
+  await expect(page.getByLabel("Public key", { exact: true })).toContainText("BEGIN PUBLIC KEY");
 });

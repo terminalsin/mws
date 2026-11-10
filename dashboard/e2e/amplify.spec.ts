@@ -1,5 +1,9 @@
 import { AmplifyClient, CreateAppCommand, CreateBranchCommand } from "@aws-sdk/client-amplify";
 import { expect, test, type Page } from "@playwright/test";
+import { execFileSync } from "node:child_process";
+import { mkdtempSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 
 import { row, sdk, submit, unique } from "./helpers";
 
@@ -83,4 +87,72 @@ test("Amplify: forms repair branch names, URLs and taken branches in place", asy
   await input("url").fill("");
   await form.locator('button[type="submit"]').click();
   await expect(field("html")).toHaveAttribute("data-invalid", "required");
+});
+
+/** A local Git repository MWS can clone, whose build echoes `marker`. */
+function gitRepo(marker: string) {
+  const dir = mkdtempSync(join(tmpdir(), "dash-amplify-"));
+  writeFileSync(
+    join(dir, "amplify.yml"),
+    `version: 1\nfrontend:\n  phases:\n    build:\n      commands:\n        - echo ${marker}\n        - mkdir -p public && echo "<h1>${marker}</h1>" > public/index.html\n  artifacts:\n    baseDirectory: public\n    files:\n      - '**/*'\n`,
+  );
+  const git = (...args: string[]) => execFileSync("git", args, { cwd: dir, stdio: "pipe" });
+  git("init", "-q", "-b", "main");
+  git("add", ".");
+  git("-c", "user.email=dash@example.com", "-c", "user.name=dash", "commit", "-q", "-m", "first");
+  return dir;
+}
+
+test("Amplify: a new repository branch builds on request, with its steps and log, and from a webhook", async ({ page }) => {
+  const marker = unique("dash-built");
+  const amplify = new AmplifyClient(sdk);
+  const app = (await amplify.send(new CreateAppCommand({ name: unique("dash-repo"), repository: gitRepo(marker), accessToken: "unused" }))).app!;
+  await amplify.send(new CreateBranchCommand({ appId: app.appId!, branchName: "main" }));
+  await page.goto(`/amplify/branch?app=${app.appId}&name=main`);
+  await page.getByTestId("run-first-build").getByRole("button").click();
+  const job = page.getByLabel("Deployments").locator("li.row").first();
+  await expect(job).toBeVisible();
+  await expect(async () => {
+    await page.reload();
+    await expect(job).toContainText("succeed", { timeout: 1000 });
+  }).toPass({ timeout: 90_000 });
+  await job.getByRole("link").first().click();
+  await expect(page.getByRole("heading", { level: 1 })).toContainText("#1");
+  await expect(page.getByLabel("Steps").locator("li.row").filter({ hasText: "BUILD" })).toBeVisible();
+  await page.getByLabel("Steps").locator("li.row").filter({ hasText: "BUILD" }).getByRole("link").click();
+  await expect(page.getByTestId("job-log")).toContainText(marker);
+
+  // A webhook starts the next job.
+  await page.goto(`/amplify/app?id=${app.appId}`);
+  await submit(page, "create-webhook", { branch: "main", description: "ci" });
+  await page.keyboard.press("Escape");
+  await expect(row(page, "ci")).toBeVisible();
+  await row(page, "ci").getByRole("button", { name: "Trigger ci" }).click();
+  await page.goto(`/amplify/branch?app=${app.appId}&name=main`);
+  await expect(page.getByLabel("Deployments").locator("li.row").filter({ hasText: "web hook" })).toBeVisible();
+});
+
+test("Amplify: app settings, branch settings and a custom domain", async ({ page }) => {
+  const amplify = new AmplifyClient(sdk);
+  const app = (await amplify.send(new CreateAppCommand({ name: unique("dash-edit") }))).app!;
+  await amplify.send(new CreateBranchCommand({ appId: app.appId!, branchName: "main" }));
+  await page.goto(`/amplify/app?id=${app.appId}`);
+  await submit(page, "edit-app", { env: "API_URL=https://api.example.com", rules: "/old /new 301" });
+  await expect(page.getByText("API_URL", { exact: true })).toBeVisible();
+  await expect(row(page, "/old")).toContainText("301");
+
+  await page.goto(`/amplify/branch?app=${app.appId}&name=main`);
+  await submit(page, "edit-branch", { stage: "BETA", env: "STAGE=beta" });
+  await expect(page.locator(".specs")).toContainText("beta");
+  await expect(page.getByText("STAGE", { exact: true })).toBeVisible();
+
+  const domain = `${unique("dash").toLowerCase()}.example.com`;
+  await page.goto(`/amplify/app?id=${app.appId}`);
+  await submit(page, "create-domain", { domain, subDomains: "@=main\nwww=main" });
+  await expect(page.getByRole("heading", { level: 1, name: domain })).toBeVisible();
+  await expect(row(page, `www.${domain}`)).toBeVisible();
+  await expect(row(page, `www.${domain}`)).toContainText("CNAME");
+  page.once("dialog", (d) => d.accept().catch(() => {}));
+  await page.getByRole("button", { name: "Remove domain" }).click();
+  await expect(page).toHaveURL(new RegExp(`/amplify/app\\?id=${app.appId}`));
 });

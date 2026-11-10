@@ -4,7 +4,7 @@ import { ActionForm, Field } from "@mws-dashboard/ui";
 import { setControlValue } from "@mws-dashboard/ui/fields";
 import { useMemo, useRef, useState } from "react";
 
-import { ENGINES, family, identifier, password, STORAGE, username } from "../../lib/rules";
+import { DATABASE_NAME, ENGINES, RETENTION, family, identifier, password, STORAGE, username } from "../../lib/rules";
 import { createDatabase } from "./actions";
 
 const DEFAULT_USER = { postgres: "postgres", mysql: "admin" };
@@ -16,7 +16,7 @@ const PASSWORD = { postgres: password("postgres"), mysql: password("mysql") };
 
 /** The create sheet's form: the rules follow the engine (name and password
  * limits, the classes RDS offers it), and untouched defaults move with it. */
-export function CreateDatabaseForm({ classes, taken }: { classes: Record<string, string[]>; taken: string[] }) {
+export function CreateDatabaseForm({ classes, versions, taken }: { classes: Record<string, string[]>; versions: Record<string, string[]>; taken: string[] }) {
   const [engine, setEngine] = useState("postgres");
   const f = family(engine);
   const aurora = engine.startsWith("aurora");
@@ -53,9 +53,21 @@ export function CreateDatabaseForm({ classes, taken }: { classes: Record<string,
           ))}
         </select>
       </Field>
-      <Field label="DB identifier" rule={ID} taken={taken} unique>
-        <input name="id" required autoFocus spellCheck={false} />
-      </Field>
+      <div className="form-row">
+        <Field label="DB identifier" rule={ID} taken={taken} unique>
+          <input name="id" required autoFocus spellCheck={false} />
+        </Field>
+        <Field label="Engine version">
+          <select name="version" key={engine} defaultValue="">
+            <option value="">Default</option>
+            {(versions[engine] ?? []).map((v) => (
+              <option key={v} value={v}>
+                {v}
+              </option>
+            ))}
+          </select>
+        </Field>
+      </div>
       <div className="form-row">
         <Field label="Master username" rule={USER[f]}>
           <input ref={user} name="username" defaultValue={DEFAULT_USER.postgres} spellCheck={false} onInput={() => (typed.current.user ||= !filling.current)} />
@@ -79,11 +91,32 @@ export function CreateDatabaseForm({ classes, taken }: { classes: Record<string,
           <option key={c} value={c} />
         ))}
       </datalist>
-      {!aurora && (
+      <div className="form-row">
+        <Field label="Initial database name" rule={DATABASE_NAME[f]}>
+          <input name="dbName" spellCheck={false} placeholder="optional" />
+        </Field>
+        <Field label="Backup retention (days)" rule={RETENTION}>
+          <input name="retention" type="number" defaultValue={1} />
+        </Field>
+      </div>
+      <div className="form-row">
+        {!aurora && (
+          <label className="check">
+            <input type="checkbox" name="multiAz" /> Multi-AZ
+          </label>
+        )}
+        {!aurora && (
+          <label className="check">
+            <input type="checkbox" name="public" /> Publicly accessible
+          </label>
+        )}
         <label className="check">
-          <input type="checkbox" name="multiAz" /> Multi-AZ
+          <input type="checkbox" name="encrypted" defaultChecked /> Encryption
         </label>
-      )}
+        <label className="check">
+          <input type="checkbox" name="deletionProtection" /> Deletion protection
+        </label>
+      </div>
     </ActionForm>
   );
 }

@@ -1,35 +1,45 @@
-import { DescribeServicesCommand, DescribeTasksCommand, ListServicesCommand, ListTaskDefinitionsCommand, ListTasksCommand } from "@aws-sdk/client-ecs";
-import { ago, load } from "@mws-dashboard/aws";
-import { ActionForm, AwsIcon, Empty, ErrorNotice, Field, List, Page, Pill, Section, Segments, Sheet, Status } from "@mws-dashboard/ui";
-import { Play, Plus, SlidersHorizontal, Square, Trash2 } from "lucide-react";
-import { CreateService, RunTask, UpdateService } from "@mws-dashboard/ui/model/ecs";
+import { DescribeClustersCommand, DescribeContainerInstancesCommand, ListContainerInstancesCommand, type Task } from "@aws-sdk/client-ecs";
+import { ago, all, load } from "@mws-dashboard/aws";
+import { ActionForm, AwsIcon, Empty, ErrorNotice, Facts, Field, List, Page, Pill, Section, Segments, Sheet, Status, Tags } from "@mws-dashboard/ui";
+import { CreateService, RunTask } from "@mws-dashboard/ui/model/ecs";
+import { Activity, Play, Plus, Server, Trash2 } from "lucide-react";
 import type { Metadata } from "next";
 import Link from "next/link";
 
 import { ICONS, STATUS_TONE, ecs } from "../../../lib/clients";
+import { activeDefinitions, revisionOf, serviceHealth, serviceHref, services as listServices, tasks as listTasks } from "../../../lib/ecs";
 import { NAME } from "../../../lib/rules";
-import { createService, deleteCluster, deleteService, runTask, scaleService, stopTask } from "../actions";
+import { createService, deleteCluster, deleteService, runTask, updateClusterInsights } from "../actions";
+import { taskRow } from "../rows.tsx";
 
 export const metadata: Metadata = { title: "Cluster" };
 
-type Props = { searchParams: Promise<{ name?: string; tab?: string }> };
+type Props = { searchParams: Promise<{ name?: string; tab?: string; status?: string }> };
 
 export default async function Cluster({ searchParams }: Props) {
-  const { name = "", tab = "services" } = await searchParams;
+  const { name = "", tab = "services", status = "RUNNING" } = await searchParams;
   const back = { href: "/ecs", label: "Clusters" };
   const base = `/ecs/cluster?name=${encodeURIComponent(name)}`;
+  const desired = status === "STOPPED" ? "STOPPED" : "RUNNING";
   const data = await load(async () => {
     const client = await ecs();
-    const [serviceArns, taskArns, defs] = await Promise.all([
-      client.send(new ListServicesCommand({ cluster: name })).then((r) => r.serviceArns ?? []),
-      client.send(new ListTasksCommand({ cluster: name })).then((r) => r.taskArns ?? []),
-      client.send(new ListTaskDefinitionsCommand({ status: "ACTIVE", sort: "DESC" })).then((r) => r.taskDefinitionArns ?? []),
+    const [cluster, services, tasks, defs] = await Promise.all([
+      client.send(new DescribeClustersCommand({ clusters: [name], include: ["SETTINGS", "STATISTICS", "TAGS", "CONFIGURATIONS"] })).then((r) => {
+        const c = r.clusters?.[0];
+        if (!c) throw new Error(r.failures?.[0]?.reason === "MISSING" ? `Cluster ${name} was not found` : (r.failures?.[0]?.reason ?? `Cluster ${name} was not found`));
+        return c;
+      }),
+      listServices(name),
+      tab === "tasks" ? listTasks(name, desired) : Promise.resolve([] as Task[]),
+      activeDefinitions(),
     ]);
-    const [services, tasks] = await Promise.all([
-      serviceArns.length ? client.send(new DescribeServicesCommand({ cluster: name, services: serviceArns.slice(0, 10) })).then((r) => r.services ?? []) : [],
-      taskArns.length ? client.send(new DescribeTasksCommand({ cluster: name, tasks: taskArns.slice(0, 100) })).then((r) => r.tasks ?? []) : [],
-    ]);
-    return { services, tasks, defs, serviceNames: serviceArns.map((a) => a.split("/").pop()!) };
+    const instances =
+      tab === "infrastructure"
+        ? await all((nextToken) => client.send(new ListContainerInstancesCommand({ cluster: name, nextToken })), (r) => r.containerInstanceArns, (r) => r.nextToken).then(async (arns) =>
+            arns.length ? ((await client.send(new DescribeContainerInstancesCommand({ cluster: name, containerInstances: arns.slice(0, 100) }))).containerInstances ?? []) : [],
+          )
+        : [];
+    return { cluster, services, tasks, defs, instances };
   });
   if (!data.ok) {
     return (
@@ -38,7 +48,8 @@ export default async function Cluster({ searchParams }: Props) {
       </Page>
     );
   }
-  const { services, tasks, defs, serviceNames } = data.value;
+  const { cluster: c, services, tasks, defs, instances } = data.value;
+  const serviceNames = services.map((s) => s.serviceName!);
   // With no task definition there is nothing to pick: point at where one is made.
   const defHint = defs.length ? undefined : (
     <Link href="/ecs?tab=taskdefs" className="inline-flex items-center gap-1 text-link hover:underline">
@@ -46,8 +57,8 @@ export default async function Cluster({ searchParams }: Props) {
     </Link>
   );
   const defOptions = defs.map((d) => (
-    <option key={d} value={d}>
-      {d.split("/").pop()}
+    <option key={d} value={revisionOf(d)}>
+      {revisionOf(d)}
     </option>
   ));
   const launch = (
@@ -58,11 +69,13 @@ export default async function Cluster({ searchParams }: Props) {
       </select>
     </Field>
   );
+  const insights = c.settings?.find((s) => s.name === "containerInsights")?.value;
   return (
     <Page
       title={name}
       icon={ICONS.ecs}
       back={back}
+      subtitle={c.clusterArn}
       actions={
         <>
           <Sheet title="Create service" label="Create service" icon={<Plus size={16} />} testId="create-service">
@@ -98,84 +111,136 @@ export default async function Cluster({ searchParams }: Props) {
               </div>
             </ActionForm>
           </Sheet>
-          <ActionForm action={deleteCluster.bind(null, name)} submit="Delete cluster" icon={<Trash2 size={16} />} tone="danger" confirm={`Delete ${name}?`} testId="delete-ecs-cluster" />
+          <ActionForm
+            action={deleteCluster.bind(null, name)}
+            submit="Delete cluster"
+            icon={<Trash2 size={16} />}
+            tone="danger"
+            confirm={services.length || c.runningTasksCount ? `${name} still has ${services.length} services and ${c.runningTasksCount ?? 0} running tasks; ECS refuses until they are gone. Delete anyway?` : `Delete ${name}?`}
+            testId="delete-ecs-cluster"
+          />
         </>
       }
     >
       <Segments
         items={[
           { label: "Services", href: base, active: tab === "services", count: services.length || undefined },
-          { label: "Tasks", href: `${base}&tab=tasks`, active: tab === "tasks", count: tasks.length || undefined },
+          { label: "Tasks", href: `${base}&tab=tasks`, active: tab === "tasks", count: c.runningTasksCount || undefined },
+          { label: "Infrastructure", href: `${base}&tab=infrastructure`, active: tab === "infrastructure" },
+          { label: "Configuration", href: `${base}&tab=configuration`, active: tab === "configuration" },
+          { label: "Tags", href: `${base}&tab=tags`, active: tab === "tags", count: c.tags?.length || undefined },
         ]}
       />
-      {tab === "tasks" ? (
-        <List
-          label="Tasks"
-          empty={<Empty icon={ICONS.task} />}
-          rows={tasks.map((t) => ({
-            key: t.taskArn!,
-            icon: <AwsIcon icon={ICONS.task} size={22} />,
-            title: t.taskArn!.split("/").pop(),
-            href: `/ecs/task?cluster=${encodeURIComponent(name)}&id=${t.taskArn!.split("/").pop()}`,
-            subtitle: `${t.taskDefinitionArn?.split("/").pop()}${t.group?.startsWith("service:") ? ` · ${t.group.slice(8)}` : ""}`,
-            meta: (
-              <>
-                {t.launchType && <Pill>{t.launchType}</Pill>}
-                <Status tone={STATUS_TONE(t.lastStatus)}>{t.lastStatus?.toLowerCase()}</Status>
-                <span>{ago(t.startedAt ?? t.createdAt)}</span>
-              </>
-            ),
-            actions: t.lastStatus !== "STOPPED" ? <ActionForm action={stopTask.bind(null, name, t.taskArn!)} submit={`Stop ${t.taskArn!.split("/").pop()}`} icon={<Square size={15} />} tone="danger" /> : undefined,
-          }))}
-        />
-      ) : (
+      {tab === "tasks" && (
+        <>
+          <Segments
+            label="Desired status"
+            items={[
+              { label: "Running", href: `${base}&tab=tasks`, active: desired === "RUNNING" },
+              { label: "Stopped", href: `${base}&tab=tasks&status=STOPPED`, active: desired === "STOPPED" },
+            ]}
+          />
+          <List label="Tasks" empty={<Empty icon={ICONS.task} />} rows={tasks.map((t) => taskRow(name, t))} />
+        </>
+      )}
+      {tab === "services" && (
         <List
           label="Services"
           empty={<Empty icon={ICONS.ecsService} />}
           rows={services.map((s) => {
-            const healthy = s.runningCount === s.desiredCount;
+            const health = serviceHealth(s);
             return {
               key: s.serviceArn!,
               icon: <AwsIcon icon={ICONS.ecsService} size={24} />,
               title: s.serviceName,
-              subtitle: s.taskDefinition?.split("/").pop(),
+              subtitle: revisionOf(s.taskDefinition),
+              href: serviceHref(name, s.serviceName!),
               meta: (
                 <>
                   {s.launchType && <Pill>{s.launchType}</Pill>}
-                  <Status tone={healthy ? "good" : "warn"}>
+                  <span title="Running / desired">
                     {s.runningCount}/{s.desiredCount} tasks
-                  </Status>
+                  </span>
                   {!!s.pendingCount && <Pill tone="warn">{s.pendingCount} pending</Pill>}
+                  {health.tone !== "good" && <Status tone={health.tone}>{health.text}</Status>}
                 </>
               ),
               actions: (
-                <>
-                  <Sheet title={`Scale ${s.serviceName}`} label={`Scale ${s.serviceName}`} icon={<SlidersHorizontal size={15} />} testId={`scale-${s.serviceName}`}>
-                    <ActionForm action={scaleService.bind(null, name, s.serviceName!)} submit="Update" testId={`scale-${s.serviceName}`}>
-                      <Field label="Desired tasks" rule={UpdateService.desiredCount}>
-                        <input name="desired" type="number" min={0} defaultValue={s.desiredCount} />
-                      </Field>
-                    </ActionForm>
-                  </Sheet>
-                  <ActionForm action={deleteService.bind(null, name, s.serviceName!)} submit={`Delete ${s.serviceName}`} icon={<Trash2 size={15} />} tone="danger" confirm={`Delete ${s.serviceName}?`} />
-                </>
+                <ActionForm action={deleteService.bind(null, name, s.serviceName!, false)} submit={`Delete ${s.serviceName}`} icon={<Trash2 size={15} />} tone="danger" confirm={`Delete ${s.serviceName}?`} />
               ),
             };
           })}
         />
       )}
-      {services.some((s) => s.events?.length) && tab === "services" && (
-        <Section title="Events" plain>
-          <List
-            label="Events"
-            rows={services
-              .flatMap((s) => s.events ?? [])
-              .sort((a, b) => (b.createdAt?.getTime() ?? 0) - (a.createdAt?.getTime() ?? 0))
-              .slice(0, 8)
-              .map((e) => ({ key: e.id!, title: <span className="row-subtitle">{e.message}</span>, meta: <span>{ago(e.createdAt)}</span> }))}
+      {tab === "infrastructure" && (
+        <>
+          <Section title="Capacity providers" plain>
+            <List
+              label="Capacity providers"
+              empty={<Empty>No capacity providers</Empty>}
+              rows={(c.capacityProviders ?? []).map((p) => {
+                const strategy = c.defaultCapacityProviderStrategy?.find((x) => x.capacityProvider === p);
+                return {
+                  key: p,
+                  icon: <Server size={18} />,
+                  title: p,
+                  meta: strategy ? (
+                    <span title="Default strategy">
+                      weight {strategy.weight ?? 0}
+                      {strategy.base ? ` · base ${strategy.base}` : ""}
+                    </span>
+                  ) : undefined,
+                };
+              })}
+            />
+          </Section>
+          <Section title="Container instances" count={c.registeredContainerInstancesCount ?? instances.length} plain>
+            <List
+              label="Container instances"
+              empty={<Empty>No container instances</Empty>}
+              rows={instances.map((ci) => ({
+                key: ci.containerInstanceArn!,
+                icon: <AwsIcon icon="resource/AmazonEC2Instance" size={22} />,
+                title: ci.ec2InstanceId ?? ci.containerInstanceArn!.split("/").pop(),
+                href: ci.ec2InstanceId ? `/ec2/instance?id=${ci.ec2InstanceId}` : undefined,
+                subtitle: ci.attributes?.find((a) => a.name === "ecs.instance-type")?.value,
+                meta: (
+                  <>
+                    <span>{ci.runningTasksCount} running</span>
+                    {!ci.agentConnected && <Pill tone="bad">agent disconnected</Pill>}
+                    <Status tone={STATUS_TONE(ci.status)}>{ci.status?.toLowerCase() ?? ""}</Status>
+                  </>
+                ),
+              }))}
+            />
+          </Section>
+        </>
+      )}
+      {tab === "configuration" && (
+        <Section
+          actions={
+            <ActionForm
+              action={updateClusterInsights.bind(null, name, insights !== "enabled")}
+              submit={insights === "enabled" ? "Turn off Container Insights" : "Turn on Container Insights"}
+              icon={<Activity size={15} />}
+            />
+          }
+        >
+          <Facts
+            items={[
+              ["Status", <Status key="s" tone={STATUS_TONE(c.status)}>{c.status?.toLowerCase() ?? ""}</Status>],
+              ["Container Insights", insights ?? "disabled"],
+              ["Services", c.activeServicesCount ?? 0],
+              ["Running tasks", c.runningTasksCount ?? 0],
+              ["Pending tasks", c.pendingTasksCount ?? 0],
+              c.configuration?.executeCommandConfiguration?.logging && ["ECS Exec logging", c.configuration.executeCommandConfiguration.logging],
+              c.serviceConnectDefaults?.namespace && ["Service Connect namespace", c.serviceConnectDefaults.namespace],
+            ]}
           />
         </Section>
       )}
+      {tab === "tags" && ((c.tags ?? []).length ? <Tags tags={Object.fromEntries((c.tags ?? []).map((t) => [t.key ?? "", t.value ?? ""]))} /> : <Empty>No tags</Empty>)}
     </Page>
   );
 }
+

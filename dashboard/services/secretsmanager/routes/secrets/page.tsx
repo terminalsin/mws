@@ -16,6 +16,7 @@ export const metadata: Metadata = { title: "Secrets Manager" };
 const NAME: Rule = { ...CreateSecret.Name, pattern: "^[A-Za-z0-9/_+=.@-]+$", hint: "Letters, digits and /_+=.@-", generate: "name" };
 // The console asks for a value; an empty one gets a generated password.
 const VALUE: Rule = { ...CreateSecret.SecretString, required: true, format: "jsonish", generate: "password" };
+const REGIONS: Rule = { ...CreateSecret.AddReplicaRegions, item: CreateSecret.AddReplicaRegions.item!.fields!.Region };
 
 function Create({ names, keys }: { names: string[]; keys: string[] }) {
   return (
@@ -33,6 +34,15 @@ function Create({ names, keys }: { names: string[]; keys: string[] }) {
         <Field label="KMS key" rule={CreateSecret.KmsKeyId} known={keys}>
           <input name="kmsKeyId" placeholder="alias/aws/secretsmanager" />
         </Field>
+        <Field label="Tags" format="tags">
+          <textarea name="tags" rows={2} placeholder="team=payments" />
+        </Field>
+        <Field label="Replicate to Regions" rule={REGIONS} member="AddReplicaRegions">
+          <input name="regions" placeholder="eu-west-1, ap-southeast-2" />
+        </Field>
+        <label className="check">
+          <input type="checkbox" name="overwrite" /> Overwrite a secret with the same name in those Regions
+        </label>
       </ActionForm>
     </Sheet>
   );
@@ -64,10 +74,11 @@ export default async function Secrets() {
           subtitle: s.Description,
           href: `/secrets/secret?id=${encodeURIComponent(s.ARN!)}`,
           meta: s.DeletedDate ? (
-            <Pill tone="bad">deleted {ago(s.DeletedDate)}</Pill>
+            <Pill tone="bad">deletes {ago(s.DeletedDate)}</Pill>
           ) : (
             <>
               {s.RotationEnabled && <RotateCw size={14} aria-label="Rotates" />}
+              {s.PrimaryRegion && s.ARN?.split(":")[3] !== s.PrimaryRegion && <Pill>replica</Pill>}
               <span>{ago(s.LastChangedDate ?? s.CreatedDate)}</span>
             </>
           ),

@@ -80,3 +80,13 @@ export const roleRule = (s: Scope): Rule => ({
   pattern: "^arn:[\\w-]+:iam::\\d{12}:role/.+$",
   hint: "Role SNS assumes to write to the stream",
 });
+
+export const DISPLAY_NAME: Rule = { maxLength: 100, hint: "Shown as the sender of SMS and email" };
+export const FILTER_POLICY: Rule = { format: "json", hint: '{"type": ["order"]}' };
+export const JSON_POLICY: Rule = { format: "json" };
+export const ACCESS_POLICY: Rule = { format: "policy" };
+export const MESSAGE_ATTRIBUTES: Rule = { format: "keyvalue", hint: "Name=value; Name:Number=42 for numbers" };
+export const KMS_KEY: Rule = { pattern: "^[a-zA-Z0-9:/_-]+$", hint: "Key ID, alias or ARN", known: ["alias/aws/sns"] };
+export const SAMPLE_RATE: Rule = { type: "integer", min: 0, max: 100, hint: "Percent of successful deliveries logged" };
+export const RETENTION_DAYS: Rule = { type: "integer", min: 1, max: 365, hint: "Days" };
+export const DLQ_ARN: Rule = { format: "arn", pattern: "^arn:[\\w-]+:sqs:[\\w-]+:\\d{12}:[\\w.-]+$", hint: "An SQS queue ARN" };

@@ -1,8 +1,12 @@
-import { CreateTopicCommand, SNSClient } from "@aws-sdk/client-sns";
+import { CreateRoleCommand, IAMClient } from "@aws-sdk/client-iam";
+import { CreateFunctionCommand, GetPolicyCommand, LambdaClient } from "@aws-sdk/client-lambda";
+import { CreateTopicCommand, GetSubscriptionAttributesCommand, ListSubscriptionsByTopicCommand, SNSClient, SubscribeCommand } from "@aws-sdk/client-sns";
 import { CreateQueueCommand, SQSClient } from "@aws-sdk/client-sqs";
 import { expect, test, type Page } from "@playwright/test";
 
-import { row, sdk, submit, unique } from "./helpers";
+import { strToU8, zipSync } from "fflate";
+
+import { row, rowAction, sdk, submit, unique } from "./helpers";
 
 test("SNS: a topic fans out to a queue", async ({ page }) => {
   const topic = unique("dash-topic");
@@ -136,4 +140,49 @@ test("SNS validation: publish checks the subject and FIFO ids", async ({ page })
   await expect(input("dedup")).not.toHaveValue("");
   await form.locator('button[type="submit"]').click();
   await expect(page.locator("dialog[open]")).toHaveCount(0);
+});
+
+test("SNS: confirm a pending email subscription from the console", async ({ page }) => {
+  const sns = new SNSClient(sdk);
+  const topicArn = (await sns.send(new CreateTopicCommand({ Name: unique("dash-confirm") }))).TopicArn!;
+  const email = `${unique("dash")}@example.com`;
+  await sns.send(new SubscribeCommand({ TopicArn: topicArn, Protocol: "email", Endpoint: email }));
+
+  await page.goto(`/sns/topic?arn=${encodeURIComponent(topicArn)}`);
+  await expect(row(page, email)).toContainText("pending");
+  await rowAction(page, email, `Confirm ${email}`);
+  await expect(row(page, email)).toContainText("confirmed");
+  const subs = (await sns.send(new ListSubscriptionsByTopicCommand({ TopicArn: topicArn }))).Subscriptions ?? [];
+  expect(subs[0].SubscriptionArn).not.toBe("PendingConfirmation");
+});
+
+test("SNS: subscribing a function lets the topic invoke it, and the subscription's filter can be edited", async ({ page }) => {
+  const sns = new SNSClient(sdk);
+  const topic = unique("dash-fn-topic");
+  const topicArn = (await sns.send(new CreateTopicCommand({ Name: topic }))).TopicArn!;
+  const fn = unique("dash-sns-fn");
+  const iam = new IAMClient(sdk);
+  const role = await iam.send(
+    new CreateRoleCommand({
+      RoleName: fn,
+      AssumeRolePolicyDocument: JSON.stringify({ Version: "2012-10-17", Statement: [{ Effect: "Allow", Principal: { Service: "lambda.amazonaws.com" }, Action: "sts:AssumeRole" }] }),
+    }),
+  );
+  const lambda = new LambdaClient(sdk);
+  const { FunctionArn } = await lambda.send(
+    new CreateFunctionCommand({ FunctionName: fn, Runtime: "nodejs22.x", Handler: "index.handler", Role: role.Role!.Arn!, Code: { ZipFile: zipSync({ "index.js": strToU8("exports.handler = async () => 1;") }) } }),
+  );
+
+  await page.goto(`/sns/topic?arn=${encodeURIComponent(topicArn)}`);
+  await submit(page, "subscribe", { protocol: "lambda", endpoint: FunctionArn!, filter: '{"type": ["order"]}' });
+  const policy = JSON.parse((await lambda.send(new GetPolicyCommand({ FunctionName: fn }))).Policy!);
+  expect(policy.Statement[0].Principal).toEqual({ Service: "sns.amazonaws.com" });
+  expect(JSON.stringify(policy.Statement[0].Condition)).toContain(topicArn);
+
+  await row(page, fn).click();
+  await expect(page.locator('pre[aria-label="Filter policy"]')).toContainText('"order"');
+  await submit(page, "edit-subscription", { filter: '{"type": ["refund"]}' });
+  const arn = (await sns.send(new ListSubscriptionsByTopicCommand({ TopicArn: topicArn }))).Subscriptions![0].SubscriptionArn!;
+  const attrs = (await sns.send(new GetSubscriptionAttributesCommand({ SubscriptionArn: arn }))).Attributes!;
+  expect(JSON.parse(attrs.FilterPolicy)).toEqual({ type: ["refund"] });
 });

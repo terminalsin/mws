@@ -1,6 +1,6 @@
 import { ago, load } from "@mws-dashboard/aws";
 import { ActionForm, AwsIcon, Empty, ErrorNotice, Field, List, Page, Pill, Section, Sheet } from "@mws-dashboard/ui";
-import { DIMENSIONS, TITLE } from "../../lib/rules";
+import { ACCOUNT, DIMENSIONS, TITLE } from "../../lib/rules";
 import { Eraser, Gauge, Users } from "lucide-react";
 import type { Metadata } from "next";
 
@@ -72,6 +72,14 @@ export default async function Marketplace({ searchParams }: Props) {
         <Field label="Pricing dimensions" rule={DIMENSIONS}>
           <input name="dimensions" required placeholder="users, requests" />
         </Field>
+        <div className="form-row">
+          <Field label="Product code" hint="Generated when empty" taken={catalog.ok ? catalog.value.map((p) => p.productCode) : []} unique>
+            <input name="code" pattern="[A-Za-z0-9]{1,255}" />
+          </Field>
+          <Field label="Seller account" rule={{ ...ACCOUNT, required: false, generate: undefined }} hint="This account when empty">
+            <input name="seller" inputMode="numeric" />
+          </Field>
+        </div>
       </ActionForm>
     </Sheet>
   );

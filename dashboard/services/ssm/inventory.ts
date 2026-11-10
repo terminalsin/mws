@@ -1,6 +1,6 @@
 import "server-only";
 
-import { parameters } from "./lib/inventory";
+import { documents, nodes, opsItems, parameters, windows } from "./lib/inventory";
 
 /** What the console's home page and search list for this service. */
-export const inventory = [parameters];
+export const inventory = [parameters, documents, nodes, windows, opsItems];

@@ -6,6 +6,7 @@ import { CreateDomain } from "@mws-dashboard/ui/model/codeartifact";
 import type { Metadata } from "next";
 
 import { codeartifact, ICONS } from "../../lib/clients";
+import { domainHref, repoHref } from "../../lib/refs";
 import { RepositoryFields } from "../../lib/repository-fields.tsx";
 import { createDomain, createRepository, deleteDomain } from "./actions";
 
@@ -28,6 +29,9 @@ export default async function CodeArtifact({ searchParams }: Props) {
       <ActionForm action={createDomain} submit="Create domain" testId="create-domain">
         <Field label="Domain name" rule={DOMAIN} taken={domains.ok ? domains.value.map((d) => d.name!) : undefined} unique>
           <input name="name" required autoFocus />
+        </Field>
+        <Field label="KMS key" rule={CreateDomain.encryptionKey} member="encryptionKey" hint="ARN; aws/codeartifact when empty">
+          <input name="key" placeholder="arn:aws:kms:…:key/…" />
         </Field>
       </ActionForm>
     </Sheet>
@@ -60,6 +64,7 @@ export default async function CodeArtifact({ searchParams }: Props) {
                 key: d.name!,
                 icon: <AwsIcon icon={ICONS.codeartifact} size={22} />,
                 title: d.name,
+                href: domainHref(d.name!, d.owner),
                 subtitle: d.encryptionKey?.includes("alias/aws/") ? undefined : d.encryptionKey?.split("/").pop(),
                 meta: (
                   <>
@@ -67,7 +72,7 @@ export default async function CodeArtifact({ searchParams }: Props) {
                     <span>{ago(d.createdTime)}</span>
                   </>
                 ),
-                actions: <ActionForm action={deleteDomain.bind(null, d.name!)} submit={`Delete ${d.name}`} icon={<Trash2 size={15} />} tone="danger" confirm={`Delete domain ${d.name}?`} />,
+                actions: <ActionForm action={deleteDomain.bind(null, d.name!, "")} submit={`Delete ${d.name}`} icon={<Trash2 size={15} />} tone="danger" confirm={`Delete domain ${d.name}?`} />,
               }))}
             />
           </Section>
@@ -84,7 +89,7 @@ export default async function CodeArtifact({ searchParams }: Props) {
             icon: <Package size={18} />,
             title: r.name,
             subtitle: r.description,
-            href: `/codeartifact/repo?domain=${encodeURIComponent(r.domainName!)}&name=${encodeURIComponent(r.name!)}`,
+            href: repoHref(r.domainName!, r.name!, r.domainOwner),
             meta: (
               <>
                 <Pill>{r.domainName}</Pill>

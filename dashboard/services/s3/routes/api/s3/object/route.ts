@@ -6,21 +6,24 @@ import { s3 } from "../../../../lib/s3";
 
 export const dynamic = "force-dynamic";
 
-/** Stream an object to the browser as a download. */
+/** Stream an object (or one version of it) to the browser as a download. */
 export async function GET(request: NextRequest) {
-  const bucket = request.nextUrl.searchParams.get("bucket") ?? "";
-  const key = request.nextUrl.searchParams.get("key") ?? "";
+  const q = request.nextUrl.searchParams;
+  const bucket = q.get("bucket") ?? "";
+  const key = q.get("key") ?? "";
   try {
-    const out = await (await s3()).send(new GetObjectCommand({ Bucket: bucket, Key: key }));
+    const out = await (await s3()).send(new GetObjectCommand({ Bucket: bucket, Key: key, VersionId: q.get("version") || undefined }));
     const name = key.split("/").pop() || "object";
     return new Response(out.Body!.transformToWebStream(), {
       headers: {
         "content-type": out.ContentType ?? "application/octet-stream",
         ...(out.ContentLength != null ? { "content-length": String(out.ContentLength) } : {}),
-        "content-disposition": `${request.nextUrl.searchParams.has("inline") ? "inline" : "attachment"}; filename*=UTF-8''${encodeURIComponent(name)}`,
+        "content-disposition": `${q.has("inline") ? "inline" : "attachment"}; filename*=UTF-8''${encodeURIComponent(name)}`,
       },
     });
   } catch (e) {
-    return new Response(describeError(e), { status: 404 });
+    // Keep S3's status: 403 for AccessDenied or KMS denials, 404 for a missing key, 400 for a bad version id.
+    const status = (e as { $metadata?: { httpStatusCode?: number } }).$metadata?.httpStatusCode;
+    return new Response(describeError(e), { status: status && status >= 400 ? status : 502, headers: { "content-type": "text/plain; charset=utf-8" } });
   }
 }

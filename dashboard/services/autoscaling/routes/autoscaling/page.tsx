@@ -1,6 +1,7 @@
 import { DescribeAutoScalingGroupsCommand } from "@aws-sdk/client-auto-scaling";
-import { ago, collect, load } from "@mws-dashboard/aws";
+import { ago, all, load } from "@mws-dashboard/aws";
 import { ActionForm, AutoPick, AwsIcon, Empty, ErrorNotice, Field, List, Page, Pill, Section, Sheet, Status, type Rule } from "@mws-dashboard/ui";
+import { LiveRefresh } from "@mws-dashboard/ui/client";
 import { CreateAutoScalingGroup } from "@mws-dashboard/ui/model/autoscaling";
 import { CreateLaunchTemplate } from "@mws-dashboard/ui/model/ec2";
 import { FileStack, HeartPulse } from "lucide-react";
@@ -8,7 +9,8 @@ import type { Metadata } from "next";
 
 import { Capacity } from "../../lib/capacity";
 import { autoscaling, ICONS } from "../../lib/clients";
-import { images, launchTemplates } from "../../lib/network";
+import { NetworkFields } from "../../lib/forms";
+import { images, launchTemplates, targetGroups, vpcNetwork } from "../../lib/network";
 import { GroupSize } from "../../lib/sizes";
 import { createGroup, createLaunchTemplate } from "./actions";
 
@@ -29,10 +31,12 @@ const GROUP_NAME: Rule = { ...CreateAutoScalingGroup.AutoScalingGroupName, gener
 
 export default async function Groups() {
   const client = await autoscaling();
-  const [groups, templates, amis] = await Promise.all([
-    load(() => collect((NextToken) => client.send(new DescribeAutoScalingGroupsCommand({ NextToken })), (r) => r.AutoScalingGroups, (r) => r.NextToken)),
+  const [groups, templates, amis, net, tgs] = await Promise.all([
+    load(() => all((NextToken) => client.send(new DescribeAutoScalingGroupsCommand({ NextToken })), (r) => r.AutoScalingGroups, (r) => r.NextToken)),
     load(launchTemplates),
     load(images),
+    load(vpcNetwork),
+    load(targetGroups),
   ]);
   const templateNames = templates.ok ? templates.value.map((t) => t.LaunchTemplateName!) : [];
   const groupNames = groups.ok ? groups.value.map((g) => g.AutoScalingGroupName!) : [];
@@ -71,6 +75,34 @@ export default async function Groups() {
           testId="launch-template"
         />
         <GroupSize min={0} desired={1} max={2} />
+        {net.ok && net.value.vpcs.length > 0 && (
+          <NetworkFields
+            vpcs={net.value.vpcs}
+            subnets={net.value.subnets}
+            targetGroups={tgs.ok ? tgs.value.map((t) => ({ arn: t.TargetGroupArn!, name: t.TargetGroupName!, vpc: t.VpcId })) : []}
+          />
+        )}
+        <div className="form-row">
+          <Field label="Health check type" rule={CreateAutoScalingGroup.HealthCheckType} member="HealthCheckType">
+            <select name="health" defaultValue="EC2">
+              <option>EC2</option>
+              <option>ELB</option>
+              <option>EBS</option>
+            </select>
+          </Field>
+          <Field label="Health check grace period (seconds)" rule={{ ...CreateAutoScalingGroup.HealthCheckGracePeriod, min: 0 }} member="HealthCheckGracePeriod">
+            <input name="grace" type="number" min={0} defaultValue={300} />
+          </Field>
+        </div>
+        <label className="check">
+          <input type="checkbox" name="protect" /> Protect new instances from scale in
+        </label>
+        <label className="check">
+          <input type="checkbox" name="rebalance" /> Capacity rebalancing
+        </label>
+        <Field label="Tags" format="tags" member="Tags" hint="key=value per line, propagated to instances">
+          <textarea name="tags" rows={2} spellCheck={false} />
+        </Field>
       </ActionForm>
     </Sheet>
   );
@@ -86,6 +118,7 @@ export default async function Groups() {
     >
       {groups.ok ? (
         <Section plain>
+          <LiveRefresh when={groups.value.some((g) => !!g.Status || (g.Instances ?? []).some((i) => i.LifecycleState !== "InService" && i.LifecycleState !== "Standby"))} />
           <List
             label="Auto Scaling groups"
             empty={<Empty icon={ICONS.autoscaling} action={groupSheet || templateSheet} />}
@@ -93,6 +126,7 @@ export default async function Groups() {
               const instances = g.Instances ?? [];
               const running = instances.filter((i) => i.LifecycleState === "InService").length;
               const unhealthy = instances.filter((i) => i.HealthStatus === "Unhealthy").length;
+              const waiting = instances.filter((i) => i.LifecycleState?.endsWith(":Wait")).length;
               const lt = g.LaunchTemplate ?? g.MixedInstancesPolicy?.LaunchTemplate?.LaunchTemplateSpecification;
               return {
                 key: g.AutoScalingGroupARN!,
@@ -108,6 +142,7 @@ export default async function Groups() {
                       </Pill>
                     )}
                     {g.Status && <Status tone="warn">{g.Status.toLowerCase()}</Status>}
+                    {waiting > 0 && <Pill tone="warn">{`${waiting} waiting`}</Pill>}
                     <Capacity running={running} desired={g.DesiredCapacity ?? 0} min={g.MinSize ?? 0} max={g.MaxSize ?? 0} />
                     <span>{ago(g.CreatedTime)}</span>
                   </>

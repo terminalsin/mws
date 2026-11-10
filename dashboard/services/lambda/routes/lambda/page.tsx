@@ -1,18 +1,24 @@
 import { applications, stage } from "@mws-dashboard/ai";
-import { ago, load } from "@mws-dashboard/aws";
-import { ActionForm, AutoPick, AwsIcon, Curated, Empty, ErrorNotice, Field, Page, Pill, Sheet, Status, runtimeIcon } from "@mws-dashboard/ui";
+import { ago, bytes, load } from "@mws-dashboard/aws";
+import { GetAccountSettingsCommand } from "@aws-sdk/client-lambda";
+import { ActionForm, AutoPick, AwsIcon, Curated, Empty, ErrorNotice, Field, Metric, Metrics, Page, Pill, Sheet, Status, runtimeIcon } from "@mws-dashboard/ui";
 import { CreateFunction } from "@mws-dashboard/ui/model/lambda";
 import type { Metadata } from "next";
 
-import { ICONS, RUNTIMES } from "../../lib/clients";
+import { ICONS, RUNTIMES, lambda } from "../../lib/clients";
 import { lambdaRoles, listFunctions } from "../../lib/lambda";
-import { FUNCTION_NAME } from "../../lib/rules";
+import { FUNCTION_NAME, HANDLER } from "../../lib/rules";
+import { LambdaTabs } from "../../lib/tabs";
 import { createFunction } from "./actions";
 
 export const metadata: Metadata = { title: "Lambda" };
 
 export default async function Functions() {
-  const [functions, roles] = await Promise.all([load(listFunctions), load(lambdaRoles)]);
+  const [functions, roles, account] = await Promise.all([
+    load(listFunctions),
+    load(lambdaRoles),
+    load(async () => (await lambda()).send(new GetAccountSettingsCommand({}))),
+  ]);
   const names = functions.ok ? functions.value.map((f) => f.FunctionName!) : [];
   const create = (
     <Sheet title="New function" label="Create function" testId="create-function">
@@ -33,6 +39,18 @@ export default async function Functions() {
             <option>x86_64</option>
           </select>
         </Field>
+        <details>
+          <summary>Code</summary>
+          <Field label=".zip file" hint="Replaces the starter code">
+            <input type="file" name="zip" accept=".zip,application/zip" />
+          </Field>
+          <Field label="Handler" rule={HANDLER}>
+            <input name="handler" placeholder="index.handler" spellCheck={false} />
+          </Field>
+          <Field label="Or container image URI">
+            <input name="image" placeholder="123456789012.dkr.ecr.us-east-1.amazonaws.com/app:latest" spellCheck={false} />
+          </Field>
+        </details>
         <AutoPick name="role" label="Execution role" creates="<function>-role, writes logs" options={roles.ok ? roles.value.map((r) => ({ value: r.Arn!, label: r.RoleName! })) : []} testId="execution-role" />
       </ActionForm>
     </Sheet>
@@ -51,8 +69,19 @@ export default async function Functions() {
     ...apps.map((a) => ({ id: a.name, title: a.name, items: a.members })),
     { id: "rest", title: apps.length ? "Other" : "Functions", items: items.filter((f) => !grouped.has(f.FunctionArn)) },
   ];
+  const limit = account.ok ? account.value.AccountLimit : undefined;
+  const usage = account.ok ? account.value.AccountUsage : undefined;
   return (
     <Page title="Functions" actions={create}>
+      <LambdaTabs active="functions" />
+      {limit && (
+        <Metrics>
+          <Metric label="Functions" value={usage?.FunctionCount ?? functions.value.length} />
+          <Metric label="Concurrent executions" value={limit.ConcurrentExecutions ?? 0} />
+          <Metric label="Unreserved concurrency" value={limit.UnreservedConcurrentExecutions ?? 0} tone={limit.UnreservedConcurrentExecutions !== undefined && limit.UnreservedConcurrentExecutions < 100 ? "warn" : undefined} />
+          <Metric label="Code storage" value={`${bytes(usage?.TotalCodeSize)} / ${bytes(limit.TotalCodeSize)}`} />
+        </Metrics>
+      )}
       <Curated
         label="Functions"
         sections={sections}

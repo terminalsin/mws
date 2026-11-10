@@ -8,6 +8,7 @@
     "./routes/*": "./routes/*"
   },
   "dependencies": {
+    "@aws-sdk/client-marketplace-entitlement-service": "^3.1164.0",
     "@aws-sdk/client-marketplace-metering": "^3.1164.0",
     "@mws-dashboard/aws": "*",
     "@mws-dashboard/ui": "*",

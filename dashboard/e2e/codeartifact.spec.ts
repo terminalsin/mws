@@ -1,7 +1,14 @@
-import { CodeartifactClient, CreateDomainCommand, CreateRepositoryCommand } from "@aws-sdk/client-codeartifact";
+import {
+  CodeartifactClient,
+  CreateDomainCommand,
+  CreateRepositoryCommand,
+  PublishPackageVersionCommand,
+  UpdatePackageVersionsStatusCommand,
+} from "@aws-sdk/client-codeartifact";
 import { expect, test, type Page } from "@playwright/test";
+import { createHash } from "node:crypto";
 
-import { row, sdk, submit, unique } from "./helpers";
+import { row, rowAction, sdk, submit, unique } from "./helpers";
 
 test("CodeArtifact: a repository with an npm upstream and its connection instructions", async ({ page }) => {
   const domain = unique("dash").toLowerCase().slice(0, 40);
@@ -85,3 +92,95 @@ async function openSheet(page: Page, testId: string) {
   }).toPass();
   return form;
 }
+
+/** A domain and repository holding generic package `ns/<pkg>` at the given versions. */
+async function seed(versions: string[]) {
+  const client = new CodeartifactClient(sdk);
+  const domain = unique("dash-ca").toLowerCase().slice(0, 40);
+  const repo = unique("dash-gen");
+  const pkg = unique("tool").toLowerCase();
+  await client.send(new CreateDomainCommand({ domain }));
+  await client.send(new CreateRepositoryCommand({ domain, repository: repo }));
+  for (const v of versions) {
+    const body = Buffer.from(`asset of ${v}`);
+    await client.send(
+      new PublishPackageVersionCommand({
+        domain,
+        repository: repo,
+        format: "generic",
+        namespace: "ns",
+        package: pkg,
+        packageVersion: v,
+        assetName: "tool.tgz",
+        assetContent: body,
+        assetSHA256: createHash("sha256").update(body).digest("hex"),
+      }),
+    );
+  }
+  const pkgUrl = `/codeartifact/package?domain=${domain}&repo=${repo}&format=generic&namespace=ns&package=${pkg}`;
+  return { client, domain, repo, pkg, pkgUrl };
+}
+
+test("CodeArtifact: per-version failures are reported, disposed versions cannot be archived, assets download", async ({ page }) => {
+  const { client, domain, repo, pkg, pkgUrl } = await seed(["1.0.0", "2.0.0"]);
+  await page.goto(pkgUrl);
+  await expect(row(page, "2.0.0")).toBeVisible();
+
+  // Changed behind the page's back: AWS answers 200 with a per-version failure.
+  await client.send(new UpdatePackageVersionsStatusCommand({ domain, repository: repo, format: "generic", namespace: "ns", package: pkg, versions: ["1.0.0"], targetStatus: "Unlisted" }));
+  await rowAction(page, "1.0.0", "Unlist 1.0.0");
+  await expect(page.getByText(/1\.0\.0: MISMATCHED_STATUS/).first()).toBeVisible();
+
+  await page.reload();
+  await rowAction(page, "1.0.0", "Dispose 1.0.0");
+  await expect(row(page, "1.0.0")).toContainText("disposed");
+  await expect(row(page, "1.0.0").getByRole("button", { name: "Archive 1.0.0" })).toHaveCount(0);
+
+  // The version's own page: its asset, with hashes and a download.
+  await row(page, "2.0.0").getByRole("link").first().click();
+  await expect(page.getByRole("heading", { level: 1 })).toContainText("2.0.0");
+  const asset = row(page, "tool.tgz");
+  await expect(asset).toContainText("SHA-256");
+  const href = await asset.getByRole("link", { name: "Download tool.tgz" }).getAttribute("href");
+  const res = await page.request.get(href!);
+  expect(res.status()).toBe(200);
+  expect(await res.text()).toBe("asset of 2.0.0");
+});
+
+test("CodeArtifact: origin controls and package groups", async ({ page }) => {
+  const { domain, pkg, pkgUrl } = await seed(["1.0.0"]);
+  await page.goto(pkgUrl);
+  await submit(page, "origin-controls", { publish: "BLOCK", upstream: "ALLOW" });
+  await expect(page.locator(".specs")).toContainText("blocked");
+
+  await page.goto(`/codeartifact/domain?name=${domain}&tab=groups`);
+  await submit(page, "create-package-group", { pattern: "/generic/ns/*", description: "Team tools" });
+  await expect(page.getByRole("heading", { level: 1, name: "/generic/ns/*" })).toBeVisible();
+  await expect(row(page, pkg)).toBeVisible();
+  await submit(page, "group-origin", { mode_PUBLISH: "BLOCK", mode_EXTERNAL_UPSTREAM: "INHERIT", mode_INTERNAL_UPSTREAM: "INHERIT" });
+  await expect(page.locator(".specs")).toContainText("block");
+
+  // The package now names its group.
+  await page.goto(pkgUrl);
+  await expect(page.locator(".specs")).toContainText("/generic/ns/*");
+});
+
+test("CodeArtifact: a repository's upstreams are reordered and its public connection swapped", async ({ page }) => {
+  const client = new CodeartifactClient(sdk);
+  const domain = unique("dash-up").toLowerCase().slice(0, 40);
+  const [a, b, c] = [unique("dash-a"), unique("dash-b"), unique("dash-c")];
+  await client.send(new CreateDomainCommand({ domain }));
+  for (const r of [a, b]) await client.send(new CreateRepositoryCommand({ domain, repository: r }));
+  await client.send(new CreateRepositoryCommand({ domain, repository: c, upstreams: [{ repositoryName: a }] }));
+  await page.goto(`/codeartifact/repo?domain=${domain}&name=${c}`);
+  await submit(page, "edit-repository", { description: "Builds", upstreams: `${b}\n${a}` });
+  const upstreams = page.getByRole("list", { name: "Upstreams" }).locator("li.row");
+  await expect(upstreams).toHaveCount(2);
+  await expect(upstreams.nth(0)).toContainText(b);
+  await expect(upstreams.nth(1)).toContainText(a);
+
+  await submit(page, "add-external", { external: "public:npmjs" });
+  await expect(row(page, "public:npmjs")).toBeVisible();
+  await rowAction(page, "public:npmjs", "Disconnect public:npmjs");
+  await expect(row(page, "public:npmjs")).toHaveCount(0);
+});

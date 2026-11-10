@@ -33,7 +33,7 @@ export default async function Settings() {
   const [roles, buckets] = await Promise.all([roleOptions("bedrock.amazonaws.com"), bucketOptions()]);
   const cw = c?.cloudWatchConfig;
   const s3 = c?.s3Config;
-  const kinds = c && [c.textDataDeliveryEnabled && "text", c.imageDataDeliveryEnabled && "image", c.embeddingDataDeliveryEnabled && "embeddings", c.videoDataDeliveryEnabled && "video"].filter(Boolean);
+  const kinds = c && [c.textDataDeliveryEnabled && "text", c.imageDataDeliveryEnabled && "image", c.embeddingDataDeliveryEnabled && "embeddings", c.videoDataDeliveryEnabled && "video", c.audioDataDeliveryEnabled && "audio"].filter(Boolean);
   return (
     <Page title="Settings">
       <Providers />
@@ -45,7 +45,7 @@ export default async function Settings() {
             <Sheet title="Model invocation logging" label="Edit logging" icon={<Settings2 size={15} />} testId="edit-logging">
               <ActionForm action={saveLogging} submit="Save" testId="edit-logging">
                 <Field label="Log group" rule={LOG_GROUP}>
-                  <input name="logGroup" defaultValue={cw?.logGroupName ?? "/aws/bedrock/invocations"} />
+                  <input name="logGroup" defaultValue={cw?.logGroupName ?? (c ? "" : "/aws/bedrock/invocations")} />
                 </Field>
                 <AutoPick name="role" label="Service role" creates="AmazonBedrockInvocationLoggingRole" options={roles} preferred={cw?.roleArn} testId="logging-role" />
                 <div className="form-row">
@@ -56,12 +56,24 @@ export default async function Settings() {
                     <input name="prefix" defaultValue={s3?.keyPrefix} />
                   </Field>
                 </div>
-                <label className="check">
-                  <input type="checkbox" name="images" defaultChecked={c?.imageDataDeliveryEnabled} /> Images
-                </label>
-                <label className="check">
-                  <input type="checkbox" name="embeddings" defaultChecked={c?.embeddingDataDeliveryEnabled} /> Embeddings
-                </label>
+                <fieldset className="checks">
+                  <legend>Data types</legend>
+                  <label className="check">
+                    <input type="checkbox" name="text" defaultChecked={c ? !!c.textDataDeliveryEnabled : true} /> Text
+                  </label>
+                  <label className="check">
+                    <input type="checkbox" name="images" defaultChecked={c?.imageDataDeliveryEnabled} /> Images
+                  </label>
+                  <label className="check">
+                    <input type="checkbox" name="embeddings" defaultChecked={c?.embeddingDataDeliveryEnabled} /> Embeddings
+                  </label>
+                  <label className="check">
+                    <input type="checkbox" name="video" defaultChecked={c?.videoDataDeliveryEnabled} /> Video
+                  </label>
+                  <label className="check">
+                    <input type="checkbox" name="audio" defaultChecked={c?.audioDataDeliveryEnabled} /> Audio
+                  </label>
+                </fieldset>
               </ActionForm>
             </Sheet>
           </>
@@ -81,6 +93,16 @@ export default async function Settings() {
                 key: "s3",
                 icon: <AwsIcon icon="service/AmazonSimpleStorageService" size={22} />,
                 title: <Link href={`/s3/${s3.bucketName}${s3.keyPrefix ? `?prefix=${encodeURIComponent(s3.keyPrefix)}` : ""}`}>{`s3://${s3.bucketName}/${s3.keyPrefix ?? ""}`}</Link>,
+              },
+              cw?.largeDataDeliveryS3Config?.bucketName && {
+                key: "large",
+                icon: <AwsIcon icon="service/AmazonSimpleStorageService" size={22} />,
+                title: (
+                  <Link href={`/s3/${cw.largeDataDeliveryS3Config.bucketName}${cw.largeDataDeliveryS3Config.keyPrefix ? `?prefix=${encodeURIComponent(cw.largeDataDeliveryS3Config.keyPrefix)}` : ""}`}>
+                    {`s3://${cw.largeDataDeliveryS3Config.bucketName}/${cw.largeDataDeliveryS3Config.keyPrefix ?? ""}`}
+                  </Link>
+                ),
+                subtitle: "Large payloads from CloudWatch Logs",
               },
             ]
               .filter((r) => !!r)

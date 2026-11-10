@@ -1,6 +1,6 @@
 import "server-only";
 
-import { pipelines } from "./lib/inventory";
+import { components, pipelines, recipes } from "./lib/inventory";
 
 /** What the console's home page and search list for this service. */
-export const inventory = [pipelines];
+export const inventory = [pipelines, recipes, components];

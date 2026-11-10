@@ -1,18 +1,14 @@
 import "server-only";
 
-import { DescribeDBClustersCommand, DescribeDBInstancesCommand } from "@aws-sdk/client-rds";
 import type { InventoryItem } from "@mws-dashboard/aws";
 
-import { STATUS_TONE, rds, tagsOf } from "./clients";
+import { STATUS_TONE, tagsOf } from "./clients";
+import { clusters as listClusters, instances as listInstances } from "./data";
 
 const signal = (status: string | undefined) => (STATUS_TONE(status) === "bad" ? { tone: "bad" as const, text: status ?? "" } : undefined);
 
 export async function databases(): Promise<InventoryItem[]> {
-  const client = await rds();
-  const [instances, clusters] = await Promise.all([
-    client.send(new DescribeDBInstancesCommand({})).then((r) => r.DBInstances ?? []),
-    client.send(new DescribeDBClustersCommand({})).then((r) => r.DBClusters ?? []),
-  ]);
+  const [instances, clusters] = await Promise.all([listInstances(), listClusters()]);
   return [
     ...clusters.map((c) => ({
       service: "rds",
@@ -24,17 +20,15 @@ export async function databases(): Promise<InventoryItem[]> {
       tags: tagsOf(c.TagList),
       signal: signal(c.Status),
     })),
-    ...instances
-      .filter((i) => !i.DBClusterIdentifier)
-      .map((i) => ({
-        service: "rds",
-        type: "DB instance",
-        id: i.DBInstanceArn!,
-        name: i.DBInstanceIdentifier!,
-        href: `/rds/db?id=${encodeURIComponent(i.DBInstanceIdentifier!)}`,
-        detail: `${i.Engine} ${i.EngineVersion}`,
-        tags: tagsOf(i.TagList),
-        signal: signal(i.DBInstanceStatus),
-      })),
+    ...instances.map((i) => ({
+      service: "rds",
+      type: "DB instance",
+      id: i.DBInstanceArn!,
+      name: i.DBInstanceIdentifier!,
+      href: `/rds/db?id=${encodeURIComponent(i.DBInstanceIdentifier!)}`,
+      detail: i.DBClusterIdentifier ? `${i.DBInstanceClass} in ${i.DBClusterIdentifier}` : `${i.Engine} ${i.EngineVersion}`,
+      tags: tagsOf(i.TagList),
+      signal: signal(i.DBInstanceStatus),
+    })),
   ];
 }

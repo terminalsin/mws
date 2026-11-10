@@ -1,4 +1,5 @@
-import { CloudFormationClient, CreateStackCommand } from "@aws-sdk/client-cloudformation";
+import { CloudFormationClient, CreateStackCommand, DescribeStacksCommand } from "@aws-sdk/client-cloudformation";
+import { GetParameterCommand, SSMClient } from "@aws-sdk/client-ssm";
 import { expect, test, type Page } from "@playwright/test";
 
 import { row, sdk, submit, unique } from "./helpers";
@@ -103,4 +104,152 @@ test("CloudFormation validation: template and parameter errors from MWS come wit
 
   await send();
   await expect(page.getByRole("heading", { level: 1, name })).toBeVisible();
+});
+
+const cfn = new CloudFormationClient(sdk);
+
+async function stackStatus(name: string) {
+  return (await cfn.send(new DescribeStacksCommand({ StackName: name }))).Stacks![0].StackStatus;
+}
+
+async function settled(name: string, status: string) {
+  await expect.poll(() => stackStatus(name), { timeout: 30_000 }).toBe(status);
+}
+
+const SECRET_TEMPLATE = (extra = "") => `Parameters:
+  Secret:
+    Type: String
+    NoEcho: true
+Resources:
+  Param:
+    Type: AWS::SSM::Parameter
+    Properties:
+      Name: !Sub "/\${AWS::StackName}/secret"
+      Type: String
+      Value: !Ref Secret
+${extra}`;
+
+const QUEUE = `  Queue:
+    Type: AWS::SQS::Queue
+`;
+
+test("CloudFormation: updating keeps a NoEcho parameter's value", async ({ page }) => {
+  const name = unique("dash-cfn-noecho");
+  await cfn.send(new CreateStackCommand({ StackName: name, TemplateBody: SECRET_TEMPLATE(), Parameters: [{ ParameterKey: "Secret", ParameterValue: "hunter2" }] }));
+  await settled(name, "CREATE_COMPLETE");
+  await page.goto(`/cloudformation/stack?name=${name}&tab=parameters`);
+  await expect(page.locator("dl.facts")).toContainText("****");
+
+  // The form shows the mask; submitting it unchanged keeps the secret.
+  await submit(page, "update-stack", { template: SECRET_TEMPLATE(QUEUE) });
+  await settled(name, "UPDATE_COMPLETE");
+  const value = await new SSMClient(sdk).send(new GetParameterCommand({ Name: `/${name}/secret` }));
+  expect(value.Parameter?.Value).toBe("hunter2");
+});
+
+test("CloudFormation: a change set previews an update and executes it", async ({ page }) => {
+  const name = unique("dash-cfn-cs");
+  await cfn.send(new CreateStackCommand({ StackName: name, TemplateBody: TEMPLATE("AWS::SQS::Queue", "Queue") }));
+  await settled(name, "CREATE_COMPLETE");
+  await page.goto(`/cloudformation/stack?name=${name}`);
+  const changeSet = unique("add-topic");
+  await submit(page, "create-change-set", {
+    changeSet,
+    template: `${TEMPLATE("AWS::SQS::Queue", "Queue")}  TopicArn:\n    Value: !Ref Topic\n`.replace("Outputs:", "  Topic:\n    Type: AWS::SNS::Topic\nOutputs:"),
+    parameters: "",
+  });
+  await expect(page.getByRole("heading", { level: 1, name: changeSet })).toBeVisible();
+  await expect(async () => {
+    await page.reload();
+    await expect(row(page, "Topic")).toContainText("Add", { timeout: 1000 });
+  }).toPass();
+  await page.getByTestId("execute-change-set").locator("button").click();
+  await settled(name, "UPDATE_COMPLETE");
+  await page.goto(`/cloudformation/stack?name=${name}`);
+  await expect(row(page, "Topic")).toContainText("AWS::SNS::Topic");
+});
+
+test("CloudFormation: a stack created by a change set waits for review", async ({ page }) => {
+  const name = unique("dash-cfn-review");
+  const changeSet = unique("initial");
+  await page.goto("/cloudformation");
+  await submit(page, "create-change-set", { name, changeSet });
+  await expect(page.getByRole("heading", { level: 1, name: changeSet })).toBeVisible();
+  expect(await stackStatus(name)).toBe("REVIEW_IN_PROGRESS");
+  await page.goto(`/cloudformation/stack?name=${name}`);
+  await expect(page.locator(".banner").filter({ hasText: "waits for a change set" })).toContainText(changeSet);
+  await expect(page.locator(".banner").getByRole("link", { name: changeSet })).toHaveAttribute("href", /changeset/);
+  await page.goto(`/cloudformation/changeset?stack=${name}&name=${changeSet}`);
+  await expect(async () => {
+    await page.reload();
+    await expect(page.getByTestId("execute-change-set")).toBeVisible({ timeout: 1000 });
+  }).toPass();
+  await page.getByTestId("execute-change-set").locator("button").click();
+  await settled(name, "CREATE_COMPLETE");
+});
+
+test("CloudFormation: drift detection, termination protection and stack info", async ({ page }) => {
+  const name = unique("dash-cfn-drift");
+  await cfn.send(new CreateStackCommand({ StackName: name, TemplateBody: TEMPLATE("AWS::SQS::Queue", "Queue") }));
+  await settled(name, "CREATE_COMPLETE");
+  await page.goto(`/cloudformation/stack?name=${name}`);
+  await page.getByTestId("detect-drift").locator("button").click();
+  await expect(page).toHaveURL(/tab=drift/);
+  await expect(row(page, "Queue")).toContainText(/in sync/i);
+
+  await page.goto(`/cloudformation/stack?name=${name}&tab=info`);
+  await expect(page.getByTestId("delete-stack")).toBeVisible();
+  await page.getByTestId("termination-protection").locator("button").click();
+  await expect(page.getByTestId("delete-stack")).toHaveCount(0);
+  await expect(page.locator("dl.facts")).toContainText("Enabled");
+  await page.getByTestId("termination-protection").locator("button").click();
+  await expect(page.getByTestId("delete-stack")).toBeVisible();
+});
+
+test("CloudFormation: exports list the stacks that import them", async ({ page }) => {
+  const name = unique("dash-cfn-exp");
+  const exportName = `${name}-queue`;
+  await cfn.send(new CreateStackCommand({ StackName: name, TemplateBody: `Resources:\n  Queue:\n    Type: AWS::SQS::Queue\nOutputs:\n  Url:\n    Value: !Ref Queue\n    Export:\n      Name: ${exportName}\n` }));
+  await settled(name, "CREATE_COMPLETE");
+  const user = unique("dash-cfn-imp");
+  await cfn.send(new CreateStackCommand({ StackName: user, TemplateBody: `Resources:\n  Param:\n    Type: AWS::SSM::Parameter\n    Properties:\n      Type: String\n      Value: !ImportValue ${exportName}\n` }));
+  await settled(user, "CREATE_COMPLETE");
+  await page.goto("/cloudformation/exports");
+  await expect(row(page, exportName)).toContainText(user);
+  await page.goto(`/cloudformation/stack?name=${name}&tab=outputs`);
+  await expect(row(page, "Url")).toContainText(user);
+});
+
+test("CloudFormation: an IMPORT change set brings an existing queue into a new stack", async ({ page }) => {
+  const { CreateQueueCommand, SQSClient } = await import("@aws-sdk/client-sqs");
+  const queue = unique("dash-cfn-importq");
+  const url = (await new SQSClient(sdk).send(new CreateQueueCommand({ QueueName: queue }))).QueueUrl!;
+  const name = unique("dash-cfn-import");
+  const changeSet = unique("import");
+  await page.goto("/cloudformation");
+  await submit(page, "create-change-set", {
+    name,
+    changeSet,
+    type: "IMPORT",
+    template: `Resources:\n  Queue:\n    Type: AWS::SQS::Queue\n    DeletionPolicy: Retain\n    Properties:\n      QueueName: ${queue}\n`,
+    imports: `Queue=${url}`,
+  });
+  await expect(page.getByRole("heading", { level: 1, name: changeSet })).toBeVisible();
+  await expect(async () => {
+    await page.reload();
+    await expect(row(page, "Queue")).toContainText("Import", { timeout: 1000 });
+  }).toPass();
+  await page.getByTestId("execute-change-set").locator("button").click();
+  await settled(name, "IMPORT_COMPLETE");
+});
+
+test("CloudFormation: a StackSet with automatic roles deploys a stack instance", async ({ page }) => {
+  const name = unique("dash-cfn-set");
+  await page.goto("/cloudformation/stacksets");
+  await submit(page, "create-stack-set", { name, regions: sdk.region });
+  await expect(page.getByRole("heading", { level: 1, name })).toBeVisible();
+  await expect(async () => {
+    await page.goto(`/cloudformation/stackset?name=${name}`);
+    await expect(page.getByLabel("Stack instances").locator("li.row")).toContainText(/current|succeeded/i, { timeout: 2000 });
+  }).toPass({ timeout: 40_000 });
 });

@@ -1,4 +1,5 @@
-import { EventBridgeClient, PutRuleCommand } from "@aws-sdk/client-eventbridge";
+import { DescribeArchiveCommand, EventBridgeClient, ListTargetsByRuleCommand, PutEventsCommand, PutRuleCommand } from "@aws-sdk/client-eventbridge";
+import { CreateQueueCommand, GetQueueAttributesCommand, ReceiveMessageCommand, SQSClient } from "@aws-sdk/client-sqs";
 import { expect, test, type Page } from "@playwright/test";
 
 import { row, sdk, submit, unique } from "./helpers";
@@ -96,4 +97,71 @@ test("EventBridge: event fields drop reserved sources and fix the detail", async
   await form.locator('button[type="submit"]').click();
   await expect(field("detail")).toContainText("Must be a JSON object");
   await expect(page.locator("dialog[open] .result.error")).toHaveCount(0);
+});
+
+test("EventBridge: a rule created with an SQS target gets the queue policy and delivers", async ({ page }) => {
+  const rule = unique("dash-deliver");
+  const queue = unique("dash-ev-q");
+  const sqs = new SQSClient(sdk);
+  const { QueueUrl } = await sqs.send(new CreateQueueCommand({ QueueName: queue }));
+  const queueArn = (await sqs.send(new GetQueueAttributesCommand({ QueueUrl, AttributeNames: ["QueueArn"] }))).Attributes!.QueueArn!;
+  const source = `dash.${rule}`;
+
+  await page.goto("/events");
+  await submit(page, "create-rule", { name: rule, pattern: JSON.stringify({ source: [source] }), target: queueArn, grant: "on" });
+  const policy = JSON.parse((await sqs.send(new GetQueueAttributesCommand({ QueueUrl, AttributeNames: ["Policy"] }))).Attributes!.Policy!);
+  expect(policy.Statement[0].Principal).toEqual({ Service: "events.amazonaws.com" });
+
+  await new EventBridgeClient(sdk).send(new PutEventsCommand({ Entries: [{ Source: source, DetailType: "Test", Detail: '{"n": 1}' }] }));
+  await expect(async () => {
+    const out = await sqs.send(new ReceiveMessageCommand({ QueueUrl, WaitTimeSeconds: 1 }));
+    expect(JSON.parse(out.Messages?.[0]?.Body ?? "{}").source).toBe(source);
+  }).toPass({ timeout: 15_000 });
+
+  // The rule's own page: its targets link to their consoles.
+  await row(page, rule).getByRole("link").first().click();
+  await expect(page.getByRole("heading", { level: 1, name: rule })).toBeVisible();
+  await expect(page.getByRole("list", { name: "Targets" }).getByRole("link", { name: queue })).toBeVisible();
+});
+
+test("EventBridge: add a target with an input transformer and retries on the rule page", async ({ page }) => {
+  const rule = unique("dash-shape");
+  const queue = unique("dash-shape-q");
+  const events = new EventBridgeClient(sdk);
+  await events.send(new PutRuleCommand({ Name: rule, EventPattern: '{"source": ["dash.shape"]}' }));
+  const sqs = new SQSClient(sdk);
+  const { QueueUrl } = await sqs.send(new CreateQueueCommand({ QueueName: queue }));
+  const queueArn = (await sqs.send(new GetQueueAttributesCommand({ QueueUrl, AttributeNames: ["QueueArn"] }))).Attributes!.QueueArn!;
+
+  await page.goto(`/events/rule?bus=default&name=${rule}`);
+  await submit(page, "add-target", {
+    id: "shaped",
+    target: queueArn,
+    input: "transformer",
+    inputPaths: '{"n": "$.detail.n"}',
+    inputTemplate: '{"number": <n>}',
+    retries: "3",
+  });
+  const targets = (await events.send(new ListTargetsByRuleCommand({ Rule: rule }))).Targets ?? [];
+  expect(targets[0].InputTransformer?.InputTemplate).toBe('{"number": <n>}');
+  expect(targets[0].RetryPolicy?.MaximumRetryAttempts).toBe(3);
+
+  await events.send(new PutEventsCommand({ Entries: [{ Source: "dash.shape", DetailType: "Test", Detail: '{"n": 7}' }] }));
+  await expect(async () => {
+    const out = await sqs.send(new ReceiveMessageCommand({ QueueUrl, WaitTimeSeconds: 1 }));
+    expect(JSON.parse(out.Messages?.[0]?.Body ?? "{}")).toEqual({ number: 7 });
+  }).toPass({ timeout: 15_000 });
+
+  // The pattern sandbox says whether an event matches.
+  const result = await submit(page, "test-pattern", {});
+  await expect(result).toContainText("The event matches the pattern");
+});
+
+test("EventBridge: archive the default bus", async ({ page }) => {
+  const name = unique("dash-arch");
+  await page.goto("/events/archives");
+  await submit(page, "create-archive", { name, retention: "3" });
+  await expect(row(page, name)).toBeVisible();
+  const archive = await new EventBridgeClient(sdk).send(new DescribeArchiveCommand({ ArchiveName: name }));
+  expect(archive.RetentionDays).toBe(3);
 });

@@ -6,12 +6,10 @@ import {
   DeletePolicyCommand,
   PutScalingPolicyCommand,
   SetDesiredCapacityCommand,
-  TerminateInstanceInAutoScalingGroupCommand,
   UpdateAutoScalingGroupCommand,
-  StartInstanceRefreshCommand,
 } from "@aws-sdk/client-auto-scaling";
 import { CreateLaunchTemplateCommand, type _InstanceType } from "@aws-sdk/client-ec2";
-import { act, required, text, type ActionResult } from "@mws-dashboard/aws";
+import { act, FieldError, required, text, type ActionResult } from "@mws-dashboard/aws";
 import { wantsAuto } from "@mws-dashboard/aws/auto";
 import { redirect } from "next/navigation";
 
@@ -25,7 +23,28 @@ const int = (form: FormData, name: string) => {
 };
 
 /** Form fields by the API member they fill. */
-const SIZE_FIELDS = { AutoScalingGroupName: "name", MinSize: "min", MaxSize: "max", DesiredCapacity: "desired" };
+const SIZE_FIELDS = {
+  AutoScalingGroupName: "name",
+  MinSize: "min",
+  MaxSize: "max",
+  DesiredCapacity: "desired",
+  VPCZoneIdentifier: "subnet",
+  HealthCheckType: "health",
+  HealthCheckGracePeriod: "grace",
+  Tags: "tags",
+};
+
+/** `key=value` lines as pairs. */
+function tagLines(lines: string): [string, string][] {
+  return lines
+    .split(/\n/)
+    .map((l) => l.trim())
+    .filter(Boolean)
+    .map((l) => {
+      const i = l.indexOf("=");
+      return (i < 0 ? [l, ""] : [l.slice(0, i).trim(), l.slice(i + 1).trim()]) as [string, string];
+    });
+}
 
 export async function createLaunchTemplate(_: ActionResult | null, form: FormData) {
   return act(async () => {
@@ -52,7 +71,10 @@ export async function createLaunchTemplate(_: ActionResult | null, form: FormDat
 export async function createGroup(_: ActionResult | null, form: FormData) {
   return act(async () => {
     const name = required(form, "name", "Name");
-    const subnets = await defaultSubnets();
+    const picked = form.getAll("subnet").map(String).filter(Boolean);
+    if (text(form, "vpc") && picked.length === 0) throw new FieldError("subnet", "Pick at least one subnet", "required");
+    const subnets = picked.length ? picked : await defaultSubnets();
+    const grace = int(form, "grace");
     let template = text(form, "template");
     if (wantsAuto(form, "template")) {
       const image = (await images())[0];
@@ -69,6 +91,12 @@ export async function createGroup(_: ActionResult | null, form: FormData) {
           MaxSize: int(form, "max") ?? 1,
           DesiredCapacity: int(form, "desired"),
           VPCZoneIdentifier: subnets.join(","),
+          TargetGroupARNs: form.getAll("tg").map(String).filter(Boolean),
+          HealthCheckType: text(form, "health") || undefined,
+          HealthCheckGracePeriod: grace,
+          NewInstancesProtectedFromScaleIn: form.get("protect") === "on" || undefined,
+          CapacityRebalance: form.get("rebalance") === "on" || undefined,
+          Tags: tagLines(text(form, "tags")).map(([Key, Value]) => ({ Key, Value, PropagateAtLaunch: true })),
         }),
       );
     } catch (e) {
@@ -102,35 +130,46 @@ export async function scale(name: string, desired: number) {
   }, "/autoscaling/group", "/autoscaling");
 }
 
-export async function refresh(name: string) {
-  return act(async () => {
-    await (await autoscaling()).send(new StartInstanceRefreshCommand({ AutoScalingGroupName: name }));
-    return "Refresh started";
-  }, "/autoscaling/group");
-}
-
-export async function terminate(instanceId: string, decrement: boolean) {
-  return act(async () => {
-    await (await autoscaling()).send(new TerminateInstanceInAutoScalingGroupCommand({ InstanceId: instanceId, ShouldDecrementDesiredCapacity: decrement }));
-    return "Terminating";
-  }, "/autoscaling/group");
+/** Step lines (`lower:upper=adjustment`) as StepAdjustments. */
+function steps(lines: string) {
+  return lines
+    .split(/\n/)
+    .map((l) => l.trim())
+    .filter(Boolean)
+    .map((l) => {
+      const m = /^(-?[\d.]*)\s*:\s*(-?[\d.]*)\s*=\s*(-?\d+)$/.exec(l);
+      if (!m) throw new FieldError("steps", `Not lower:upper=adjustment: ${l}`, "pattern");
+      return {
+        MetricIntervalLowerBound: m[1] === "" ? undefined : Number(m[1]),
+        MetricIntervalUpperBound: m[2] === "" ? undefined : Number(m[2]),
+        ScalingAdjustment: Number(m[3]),
+      };
+    });
 }
 
 export async function addPolicy(name: string, _: ActionResult | null, form: FormData) {
   return act(async () => {
-    await (await autoscaling()).send(
-      new PutScalingPolicyCommand({
-        AutoScalingGroupName: name,
-        PolicyName: required(form, "policy", "Policy name"),
-        PolicyType: "TargetTrackingScaling",
-        TargetTrackingConfiguration: {
-          PredefinedMetricSpecification: { PredefinedMetricType: (text(form, "metric") || "ASGAverageCPUUtilization") as "ASGAverageCPUUtilization" },
-          TargetValue: Number(text(form, "target") || "50"),
-        },
-      }),
-    );
+    const PolicyName = required(form, "policy", "Policy name");
+    const type = text(form, "type") || "TargetTrackingScaling";
+    const AdjustmentType = text(form, "adjustment") || "ChangeInCapacity";
+    const input =
+      type === "TargetTrackingScaling"
+        ? {
+            TargetTrackingConfiguration: {
+              PredefinedMetricSpecification: { PredefinedMetricType: (text(form, "metric") || "ASGAverageCPUUtilization") as "ASGAverageCPUUtilization" },
+              TargetValue: Number(text(form, "target") || "50"),
+              DisableScaleIn: form.get("disableScaleIn") === "on",
+            },
+          }
+        : type === "StepScaling"
+          ? { AdjustmentType, StepAdjustments: steps(text(form, "steps")) }
+          : { AdjustmentType, ScalingAdjustment: Number(required(form, "amount", "Adjustment")), Cooldown: int(form, "cooldown") };
+    await (await autoscaling()).send(new PutScalingPolicyCommand({ AutoScalingGroupName: name, PolicyName, PolicyType: type, ...input }));
     return "Added";
-  }, { revalidate: ["/autoscaling/group"], fields: { PolicyName: "policy", "TargetTrackingConfiguration.TargetValue": "target" } });
+  }, {
+    revalidate: ["/autoscaling/group"],
+    fields: { PolicyName: "policy", "TargetTrackingConfiguration.TargetValue": "target", ScalingAdjustment: "amount", StepAdjustments: "steps", Cooldown: "cooldown", AdjustmentType: "adjustment" },
+  });
 }
 
 export async function deletePolicy(name: string, policy: string) {

@@ -3,9 +3,11 @@ import { mkdtempSync, readFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
+import { DescribeCertificateCommand, ACMClient, RequestCertificateCommand } from "@aws-sdk/client-acm";
+import { CreateHostedZoneCommand, Route53Client } from "@aws-sdk/client-route-53";
 import { expect, test, type Page } from "@playwright/test";
 
-import { submit, unique } from "./helpers";
+import { sdk, submit, unique } from "./helpers";
 
 test("Certificates: a private CA issues a certificate requested through ACM", async ({ page }) => {
   const cn = unique("Dash Root CA");
@@ -88,4 +90,19 @@ test("Certificates: imports catch swapped and escaped PEM, and land MWS errors o
   await key.fill(a.key);
   await form.locator('button[type="submit"]').click();
   await expect(page.locator(".specs")).toContainText("Imported");
+});
+
+test("Certificates: \"Create records in Route 53\" validates a DNS certificate", async ({ page }) => {
+  const zone = `${unique("dash")}.com`;
+  await new Route53Client(sdk).send(new CreateHostedZoneCommand({ Name: zone, CallerReference: unique("ref") }));
+  const acm = new ACMClient(sdk);
+  const { CertificateArn } = await acm.send(new RequestCertificateCommand({ DomainName: `www.${zone}`, SubjectAlternativeNames: [`www.${zone}`, `*.${zone}`], ValidationMethod: "DNS" }));
+  await page.goto(`/acm/cert?arn=${encodeURIComponent(CertificateArn!)}`);
+  await expect(page.locator(".specs")).toContainText(/Pending/);
+  await page.getByTestId("create-records").first().locator('button[type="submit"]').click();
+  await expect(async () => {
+    const d = await acm.send(new DescribeCertificateCommand({ CertificateArn }));
+    expect(d.Certificate?.Status).toBe("ISSUED");
+  }).toPass();
+  await expect(page.locator(".specs")).toContainText("Issued", { timeout: 15000 });
 });

@@ -4,17 +4,7 @@ import { FieldShell as Field } from "@mws-dashboard/ui/fields";
 import { CreateRepository } from "@mws-dashboard/ui/model/codeartifact";
 import { useState } from "react";
 
-/** The public repositories AWS can proxy, by format. */
-const EXTERNAL = [
-  ["public:npmjs", "npm"],
-  ["public:pypi", "PyPI"],
-  ["public:maven-central", "Maven Central"],
-  ["public:crates-io", "crates.io"],
-  ["public:rubygems", "RubyGems"],
-  ["public:nuget-org", "NuGet"],
-  ["public:google-android", "Google Android"],
-  ["public:gradle-plugins", "Gradle plugins"],
-];
+import { EXTERNAL } from "./external";
 
 const NAME = { ...CreateRepository.repository, generate: "name" as const };
 

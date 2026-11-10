@@ -40,6 +40,7 @@ export function providerIcon(provider: string | undefined): string | undefined {
 /** Words AWS uses for states, as tones. */
 export function tone(status: string | undefined): Tone {
   const s = (status ?? "").toUpperCase();
+  if (/PARTIAL|STOPPED|EXPIRED/.test(s)) return "warn";
   if (/FAIL|ERROR|CANCEL|UNHEALTHY|DEPRECATED|DELETED/.test(s)) return "bad";
   if (/PENDING|RUNNING|PROVISION|BUILD|CREAT|UPDAT|DELET|PROGRESS|TEST|DISTRIBUT|INTEGRAT|STARTING|CANCELLING|LEGACY/.test(s)) return "warn";
   if (/SUCCE|AVAILABLE|ACTIVE|HEALTHY|INSERVICE|COMPLETE|ENABLED|READY/.test(s)) return "good";

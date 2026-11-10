@@ -1,8 +1,8 @@
-import { CreateFilterCommand, DeleteFilterCommand, GuardDutyClient, ListDetectorsCommand } from "@aws-sdk/client-guardduty";
+import { CreateFilterCommand, CreateSampleFindingsCommand, DeleteFilterCommand, GetFindingsStatisticsCommand, GuardDutyClient, ListDetectorsCommand } from "@aws-sdk/client-guardduty";
 import { CreateBucketCommand, PutObjectCommand, S3Client } from "@aws-sdk/client-s3";
 import { expect, test, type Page } from "@playwright/test";
 
-import { enableOnce, row, rowAction, sdk, unique } from "./helpers";
+import { enableOnce, row, rowAction, sdk, submit, unique } from "./helpers";
 
 test("GuardDuty: sample findings are sorted by severity", async ({ page }) => {
   await page.goto("/guardduty");
@@ -106,4 +106,81 @@ test("GuardDuty: suppression rule names are fixed in place, conflicts land on th
   await expect(page.locator("dialog[open]")).toHaveCount(0);
 
   for (const name of [fixed, later, `${later}-2`]) await client.send(new DeleteFilterCommand({ DetectorId: detector, FilterName: name }));
+});
+
+test("GuardDuty: severity tiles count every finding and the list pages", async ({ page }) => {
+  await page.goto("/guardduty");
+  await enableOnce(page, "enable-guardduty", "sample-findings");
+  const client = new GuardDutyClient(sdk);
+  const detector = (await client.send(new ListDetectorsCommand({}))).DetectorIds![0];
+  await client.send(new CreateSampleFindingsCommand({ DetectorId: detector }));
+  const stats = await client.send(
+    new GetFindingsStatisticsCommand({ DetectorId: detector, FindingStatisticTypes: ["COUNT_BY_SEVERITY"], FindingCriteria: { Criterion: { "service.archived": { Equals: ["false"] } } } }),
+  );
+  const total = Object.values(stats.FindingStatistics?.CountBySeverity ?? {}).reduce((a, b) => a + b, 0);
+  expect(total).toBeGreaterThan(50);
+  await page.reload();
+  const tiles = page.locator(".metric .metric-value");
+  await expect(tiles).toHaveCount(5);
+  await expect(async () => {
+    const values = (await tiles.allTextContents()).map((t) => Number(t.replace(/\D/g, "")));
+    expect(values.reduce((a, b) => a + b, 0)).toBe(total);
+  }).toPass();
+  // More findings than one page: a next page link, not a silent cut.
+  await expect(page.getByTestId("load-more")).toBeVisible();
+  await page.getByTestId("load-more").click();
+  await expect(page).toHaveURL(/token=/);
+  await expect(page.locator("li.row").first()).toBeVisible();
+
+  // Filter by severity through a tile.
+  await page.goto("/guardduty");
+  await page.locator(".metric").filter({ hasText: "High" }).click();
+  await expect(page).toHaveURL(/severity=high/);
+  await expect(page.locator(".status").filter({ hasText: /^(Critical|Medium|Low)$/ })).toHaveCount(0);
+});
+
+test("GuardDuty: a finding's detail links its resource, and archives and restores", async ({ page }) => {
+  await page.goto("/guardduty?resource=Instance");
+  await enableOnce(page, "enable-guardduty", "sample-findings");
+  const first = page.locator("li.row a.row-main").first();
+  await expect(first).toHaveAttribute("href", /\/guardduty\/finding\?id=/);
+  await page.goto((await first.getAttribute("href"))!);
+  const affected = page.getByLabel("Resources affected");
+  await expect(affected.locator("a").first()).toHaveAttribute("href", /\/ec2\/instance\?id=/);
+  const url = page.url();
+  const title = await page.getByRole("heading", { level: 1 }).textContent();
+
+  await submit(page, "feedback-useful", { comments: "real" });
+  await page.goto(url);
+  await expect(page.locator("ul.specs")).toContainText("Useful");
+
+  await page.getByTestId("archive-finding").locator("button").click();
+  await expect(page.getByTestId("unarchive-finding")).toBeVisible();
+  await page.goto(`/guardduty?view=archived&resource=Instance`);
+  await expect(page.locator(`a[href="${new URL(url).pathname}${new URL(url).search}"]`)).toBeVisible();
+  expect(title).toBeTruthy();
+  await page.goto(url);
+  await page.getByTestId("unarchive-finding").locator("button").click();
+  await expect(page.getByTestId("archive-finding")).toBeVisible();
+});
+
+test("GuardDuty: Malware Protection for S3 scans new objects and reports threats", async ({ page }) => {
+  const bucket = unique("gd-malware").toLowerCase();
+  const s3 = new S3Client({ ...sdk, forcePathStyle: true });
+  await s3.send(new CreateBucketCommand({ Bucket: bucket }));
+  await page.goto("/guardduty/malware");
+  await enableOnce(page, "enable-guardduty", "create-malware-plan-open");
+  await submit(page, "create-malware-plan", { bucket });
+  await expect(page.getByRole("heading", { level: 1, name: bucket })).toBeVisible();
+  await expect(page.locator("ul.specs")).toContainText("active");
+
+  const eicar = "X5O!P%@AP[4\\PZX54(P^)7CC)7}$EICAR-STANDARD-ANTIVIRUS-TEST-FILE!$H+H*";
+  await s3.send(new PutObjectCommand({ Bucket: bucket, Key: "uploads/eicar.txt", Body: eicar }));
+  await s3.send(new PutObjectCommand({ Bucket: bucket, Key: "uploads/clean.txt", Body: "hello" }));
+  await expect(async () => {
+    await page.reload();
+    await expect(page.getByLabel("Objects").locator("li.row").filter({ hasText: "eicar.txt" })).toContainText(/threats found/i, { timeout: 1000 });
+  }).toPass();
+  await expect(page.getByLabel("Objects").locator("li.row").filter({ hasText: "clean.txt" })).toContainText(/no threats found/i);
+  await expect(page.getByLabel("Threats found").locator("li.row")).toHaveCount(1);
 });

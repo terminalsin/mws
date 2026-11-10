@@ -1,6 +1,6 @@
 import { ListCostCategoryDefinitionsCommand } from "@aws-sdk/client-cost-explorer";
-import { load } from "@mws-dashboard/aws";
-import { ActionForm, AwsIcon, Empty, ErrorNotice, Field, List, Page, Pill, Sheet, type Rule } from "@mws-dashboard/ui";
+import { all, load } from "@mws-dashboard/aws";
+import { ActionForm, AwsIcon, Empty, ErrorNotice, Field, List, Page, Pill, Sheet, Status, type Rule } from "@mws-dashboard/ui";
 import { CreateCostCategoryDefinition } from "@mws-dashboard/ui/model/ce";
 import { Trash2 } from "lucide-react";
 import type { Metadata } from "next";
@@ -40,7 +40,10 @@ function NewCostCategory({ names }: { names: string[] }) {
 }
 
 export default async function CostCategories() {
-  const list = await load(async () => (await ce()).send(new ListCostCategoryDefinitionsCommand({})));
+  const list = await load(async () => {
+    const client = await ce();
+    return all((NextToken) => client.send(new ListCostCategoryDefinitionsCommand({ NextToken })), (r) => r.CostCategoryReferences, (r) => r.NextToken);
+  });
   if (!list.ok) {
     return (
       <Page title="Cost categories">
@@ -48,7 +51,7 @@ export default async function CostCategories() {
       </Page>
     );
   }
-  const categories = (list.value.CostCategoryReferences ?? []).sort((a, b) => a.Name!.localeCompare(b.Name!));
+  const categories = list.value.sort((a, b) => a.Name!.localeCompare(b.Name!));
   const names = categories.map((c) => c.Name!);
   return (
     <Page title="Cost categories" actions={<NewCostCategory names={names} />}>
@@ -59,16 +62,17 @@ export default async function CostCategories() {
           key: c.CostCategoryArn!,
           icon: <AwsIcon icon={ICONS.category} size={24} />,
           title: c.Name!,
+          href: `/ce/category?arn=${encodeURIComponent(c.CostCategoryArn!)}`,
           subtitle: c.Values?.length ? c.Values.join(", ") : undefined,
           meta: (
             <>
-              {c.ProcessingStatus?.some((s) => s.Status === "PROCESSING") && <Pill tone="info">Processing</Pill>}
+              {c.ProcessingStatus?.some((s) => s.Status === "PROCESSING") && <Status tone="info">Processing</Status>}
               <Pill title="Rules">{c.NumberOfRules ?? 0}</Pill>
               {c.EffectiveStart && <span>{c.EffectiveStart.slice(0, 10)}</span>}
             </>
           ),
           actions: (
-            <ActionForm action={deleteCostCategory.bind(null, c.CostCategoryArn!)} submit={`Delete ${c.Name}`} icon={<Trash2 size={15} />} tone="danger" confirm={`Delete ${c.Name}?`} />
+            <ActionForm action={deleteCostCategory.bind(null, c.CostCategoryArn!, "")} submit={`Delete ${c.Name}`} icon={<Trash2 size={15} />} tone="danger" confirm={`Delete ${c.Name}?`} />
           ),
         }))}
       />

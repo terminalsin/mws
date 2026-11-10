@@ -1,6 +1,6 @@
 import { expect, test, type Page } from "@playwright/test";
 
-import { submit, unique } from "./helpers";
+import { row, submit, unique } from "./helpers";
 
 async function openSheet(page: Page) {
   await page.goto("/elasticache");
@@ -42,7 +42,10 @@ test("ElastiCache: names and node types are repaired in place", async ({ page })
   await expect(input("name")).toHaveValue(base.replace(/\s+/g, "-"));
   await expect(field("name")).not.toHaveAttribute("data-invalid");
 
-  // A mistyped node type suggests the one the region offers.
+  // A mistyped node type suggests the one the region offers (node-based
+  // caches only: serverless ones have no node type).
+  await expect(input("nodeType")).toHaveCount(0);
+  await input("mode").selectOption("nodes");
   await input("nodeType").fill("cache.t4g.mikro");
   await input("nodeType").blur();
   await expect(field("nodeType")).toHaveAttribute("data-invalid", "enum");
@@ -62,4 +65,55 @@ test("ElastiCache: too many nodes for one shard land on the field with a fix", a
   await field("nodes").getByRole("button", { name: /maximum, 6/ }).click();
   await expect(input("nodes")).toHaveValue("6");
   await expect(field("nodes")).not.toHaveAttribute("data-invalid");
+});
+
+test("ElastiCache: a cluster-mode group shows its shards, version and the -c connection command", async ({ page }) => {
+  test.setTimeout(180_000);
+  const name = unique("dash-shards").slice(0, 40);
+  await page.goto("/elasticache");
+  await submit(page, "create-cache", { engine: "valkey", mode: "nodes", name, nodes: "2", clusterMode: "on", shards: "2" });
+  await expect(page.getByRole("heading", { level: 1, name })).toBeVisible();
+  await expect(page.locator(".specs")).toContainText(/valkey \d/);
+  await expect(page.locator(".specs")).toContainText("2 shards");
+  await expect(page.getByLabel("Connection command")).toContainText(" -c");
+  // Nodes are grouped by shard (AWS reports no roles in cluster mode).
+  await expect(page.getByRole("heading", { level: 2, name: /^Shard / })).toHaveCount(2);
+});
+
+test("ElastiCache: snapshot a cache, restore it, and modify the copy", async ({ page }) => {
+  test.setTimeout(180_000);
+  const name = unique("dash-snap").slice(0, 34);
+  await page.goto("/elasticache");
+  await submit(page, "create-cache", { engine: "redis", mode: "nodes", name, nodes: "2" });
+  await expect(page.getByRole("heading", { level: 1, name })).toBeVisible();
+  await expect(page.locator("li.row").filter({ hasText: "replica" })).toHaveCount(1);
+
+  const snap = `${name}-s1`;
+  await submit(page, "take-cache-snapshot", { snapshot: snap });
+  await page.goto("/elasticache?tab=snapshots");
+  await expect(row(page, snap)).toContainText("available");
+  const copy = `${name}-r`;
+  await submit(page, `restore-${snap}`, { name: copy });
+  await expect(page.getByRole("heading", { level: 1, name: copy })).toBeVisible();
+
+  // Modify: backups kept for 5 days.
+  await submit(page, "modify-cache", { retention: "5" });
+  await page.getByRole("link", { name: "Maintenance and backups" }).click();
+  await expect(page.locator("main")).toContainText("5 days");
+
+  // Resize: one more replica.
+  await submit(page, "resize-cache", { replicas: "2" });
+  await page.getByRole("link", { name: "Nodes", exact: true }).click();
+  await expect(page.locator("li.row").filter({ hasText: "replica" })).toHaveCount(2);
+});
+
+test("ElastiCache: Memcached clusters are listed with their nodes", async ({ page }) => {
+  const name = unique("dash-mc").slice(0, 40);
+  await page.goto("/elasticache");
+  await submit(page, "create-cache", { engine: "memcached", mode: "nodes", name, nodes: "2" });
+  await expect(page.getByRole("heading", { level: 1, name })).toBeVisible();
+  await expect(page.getByLabel("Connection command")).toContainText("telnet");
+  await expect(page.getByLabel("Nodes", { exact: true }).locator("li.row")).toHaveCount(2);
+  await page.goto("/elasticache");
+  await expect(row(page, name)).toContainText("2 × cache.t4g.micro");
 });

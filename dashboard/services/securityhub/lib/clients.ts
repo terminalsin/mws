@@ -18,3 +18,9 @@ export function severity(label: string | number | undefined): { label: string; t
   const rank = ["INFORMATIONAL", "LOW", "MEDIUM", "HIGH", "CRITICAL"].indexOf(v);
   return { label: v[0] + v.slice(1).toLowerCase(), tone: rank >= 3 ? "bad" : rank === 2 ? "warn" : "neutral", rank };
 }
+
+export const SEVERITY_LABELS = ["CRITICAL", "HIGH", "MEDIUM", "LOW", "INFORMATIONAL"] as const;
+export const WORKFLOWS = ["NEW", "NOTIFIED", "RESOLVED", "SUPPRESSED"] as const;
+export const word = (s: string | undefined) => (s ?? "").toLowerCase().replace(/_/g, " ");
+export const workflowTone = (s: string | undefined): Tone => (s === "NEW" ? "info" : s === "NOTIFIED" ? "warn" : s === "RESOLVED" ? "good" : "neutral");
+export const isManagedInsight = (arn: string | undefined) => !!arn && /:insight\/securityhub\/default\//.test(arn);

@@ -1,20 +1,33 @@
-import { ListAcceleratorsCommand } from "@aws-sdk/client-global-accelerator";
-import { ago, load } from "@mws-dashboard/aws";
-import { ActionForm, AwsIcon, Empty, ErrorNotice, Field, List, Page, Pill, Sheet, Status } from "@mws-dashboard/ui";
+import { ListAcceleratorsCommand, ListCustomRoutingAcceleratorsCommand } from "@aws-sdk/client-global-accelerator";
+import { ago, all, load } from "@mws-dashboard/aws";
+import { ActionForm, AwsIcon, Empty, ErrorNotice, Field, List, Page, Pill, Section, Sheet, Status } from "@mws-dashboard/ui";
 import { CreateAccelerator } from "@mws-dashboard/ui/model/global-accelerator";
 import type { Metadata } from "next";
 
-import { ICONS, ga } from "../../lib/clients";
+import { ICONS, acceleratorHref, acceleratorState, ga } from "../../lib/clients";
+import { NAME } from "../../lib/rules";
 import { createAccelerator } from "./actions";
 
 export const metadata: Metadata = { title: "Global Accelerator" };
 
-// The model allows any 255 characters; Global Accelerator itself takes 64
-// letters, digits and inner hyphens.
-const NAME = { ...CreateAccelerator.Name, maxLength: 64, pattern: "^[A-Za-z0-9](?:[A-Za-z0-9-]{0,62}[A-Za-z0-9])?$", hint: "Letters, digits and inner hyphens" };
-
 export default async function Accelerators() {
-  const list = await load(async () => (await (await ga()).send(new ListAcceleratorsCommand({}))).Accelerators ?? []);
+  const client = await ga();
+  const [list, custom] = await Promise.all([
+    load(() =>
+      all(
+        (NextToken) => client.send(new ListAcceleratorsCommand({ NextToken })),
+        (r) => r.Accelerators,
+        (r) => r.NextToken,
+      ),
+    ),
+    load(() =>
+      all(
+        (NextToken) => client.send(new ListCustomRoutingAcceleratorsCommand({ NextToken })),
+        (r) => r.Accelerators,
+        (r) => r.NextToken,
+      ),
+    ),
+  ]);
   const create = (
     <Sheet title="Create accelerator" label="Create accelerator" testId="create-accelerator">
       <ActionForm action={createAccelerator} submit="Create" testId="create-accelerator">
@@ -41,11 +54,11 @@ export default async function Accelerators() {
             icon: <AwsIcon icon={ICONS.ga} size={24} />,
             title: a.Name,
             subtitle: <code className="clip">{a.DnsName}</code>,
-            href: `/ga/accelerator?arn=${encodeURIComponent(a.AcceleratorArn!)}`,
+            href: acceleratorHref(a.AcceleratorArn),
             meta: (
               <>
-                {a.IpSets?.flatMap((s) => s.IpAddresses ?? []).slice(0, 2).map((ip) => <Pill key={ip}>{ip}</Pill>)}
-                <Status tone={!a.Enabled ? "neutral" : a.Status === "DEPLOYED" ? "good" : "warn"}>{!a.Enabled ? "Disabled" : a.Status === "DEPLOYED" ? "Deployed" : "In progress"}</Status>
+                {a.IpSets?.flatMap((s) => s.IpAddresses ?? []).map((ip) => <Pill key={ip}>{ip}</Pill>)}
+                <Status tone={acceleratorState(a).tone}>{acceleratorState(a).word}</Status>
                 <span>{ago(a.CreatedTime)}</span>
               </>
             ),
@@ -53,6 +66,25 @@ export default async function Accelerators() {
         />
       ) : (
         <ErrorNotice error={list.error} />
+      )}
+      {custom.ok && custom.value.length > 0 && (
+        <Section title="Custom routing accelerators" count={custom.value.length} plain>
+          <List
+            label="Custom routing accelerators"
+            rows={custom.value.map((a) => ({
+              key: a.AcceleratorArn!,
+              icon: <AwsIcon icon={ICONS.ga} size={24} />,
+              title: a.Name,
+              subtitle: <code className="clip">{a.DnsName}</code>,
+              meta: (
+                <>
+                  {a.IpSets?.flatMap((s) => s.IpAddresses ?? []).map((ip) => <Pill key={ip}>{ip}</Pill>)}
+                  <Status tone={acceleratorState(a).tone}>{acceleratorState(a).word}</Status>
+                </>
+              ),
+            }))}
+          />
+        </Section>
       )}
     </Page>
   );
