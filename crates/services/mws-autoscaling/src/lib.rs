@@ -317,7 +317,9 @@ impl AutoScaling {
                 },
                 session: None,
             },
-            authorizer: Arc::new(mws_core::AllowAll),
+            // The service decides, but explicit denies and KMS key policies
+            // still apply to its service-linked role.
+            authorizer: mws_core::ServiceLinkedRoleAuthorizer::wrap(template.authorizer.clone()),
             request_id: uuid::Uuid::new_v4().to_string(),
             ..template.clone()
         }

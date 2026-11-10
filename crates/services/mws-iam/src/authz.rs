@@ -96,7 +96,11 @@ impl Authorizer for IamAuthorizer {
         // SCPs never restrict service-linked roles.
         let service_linked = match &req.caller.kind {
             CallerKind::AssumedRole { role_name, .. } => {
-                state.role(role_name).is_some_and(|r| r.path.starts_with("/aws-service-role/"))
+                // A service acting through a service-linked role it has not
+                // had created in this account yet counts too.
+                state
+                    .role(role_name)
+                    .map_or(role_name.starts_with("AWSServiceRoleFor"), |r| r.path.starts_with("/aws-service-role/"))
             }
             _ => false,
         };

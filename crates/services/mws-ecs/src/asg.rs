@@ -4,7 +4,7 @@
 //! managed scaling ECS sets the group's desired capacity from the
 //! `CapacityProviderReservation` it targets.
 
-use mws_core::{AllowAll, RequestContext};
+use mws_core::RequestContext;
 
 use crate::generated::types as t;
 use crate::names::{last_segment, Scope};
@@ -120,7 +120,7 @@ impl Ecs {
     pub(crate) async fn sync_provider(&self, ctx: &RequestContext, view: ProviderView) {
         let Some(platform) = self.platform() else { return };
         let Some(group) = platform.scaling_group(ctx, &view.group).await else { return };
-        let behalf = RequestContext { authorizer: std::sync::Arc::new(AllowAll), ..ctx.clone() };
+        let behalf = ctx.on_behalf();
         for inst in &group.instances {
             if inst.lifecycle_state != "InService" {
                 continue;

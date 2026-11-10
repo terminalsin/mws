@@ -20,7 +20,7 @@ mod validate;
 
 pub use auth::{
     AllowAll, Authorizer, AuthzDecision, AuthzRequest, Caller, CallerKind, ConditionContext, CredentialError,
-    CredentialStore, ResolvedCredential, ResourcePolicyMode, SessionInfo, SessionKind,
+    CredentialStore, ResolvedCredential, ResourcePolicyMode, ServiceLinkedRoleAuthorizer, SessionInfo, SessionKind,
 };
 pub use client::ServiceClient;
 pub use error::{ErrorFault, ErrorField, ErrorValue, ServiceError};

@@ -3,7 +3,6 @@
 //! managed node groups, IAM instance profiles.
 
 use std::collections::BTreeMap;
-use std::sync::Arc;
 
 use mws_core::{Caller, CallerKind, RequestContext, Service, ServiceError};
 use mws_eks::{
@@ -23,7 +22,7 @@ const CLUSTER_ROLE: &str = "AWSServiceRoleForAmazonEKS";
 const NODEGROUP_ROLE: &str = "AWSServiceRoleForAmazonEKSNodegroup";
 
 /// A request context for EKS acting through its service-linked role.
-fn service_ctx(scope: &Scope<'_>, role: &str) -> RequestContext {
+fn service_ctx(iam: &mws_iam::Iam, scope: &Scope<'_>, role: &str) -> RequestContext {
     RequestContext {
         request_id: uuid::Uuid::new_v4().to_string(),
         region: scope.region.to_string(),
@@ -39,7 +38,9 @@ fn service_ctx(scope: &Scope<'_>, role: &str) -> RequestContext {
         },
         source_ip: None,
         secure_transport: true,
-        authorizer: Arc::new(mws_core::AllowAll),
+        // EKS decides, but explicit denies and KMS key policies still apply
+        // to its service-linked roles.
+        authorizer: mws_core::ServiceLinkedRoleAuthorizer::wrap(iam.authorizer()),
         endpoint: None,
     }
 }
@@ -61,12 +62,12 @@ fn str_at<'a>(v: &'a Value, key: &str) -> &'a str {
 
 impl EksInfrastructure {
     async fn ec2(&self, scope: &Scope<'_>, role: &str, op: &str, input: Value) -> Result<Value, InfrastructureError> {
-        self.ec2.invoke(service_ctx(scope, role), op, input).await.map_err(|e| error("AmazonEC2", e))
+        self.ec2.invoke(service_ctx(&self.iam, scope, role), op, input).await.map_err(|e| error("AmazonEC2", e))
     }
 
     async fn autoscaling(&self, scope: &Scope<'_>, op: &str, input: Value) -> Result<Value, InfrastructureError> {
         self.autoscaling
-            .invoke(service_ctx(scope, NODEGROUP_ROLE), op, input)
+            .invoke(service_ctx(&self.iam, scope, NODEGROUP_ROLE), op, input)
             .await
             .map_err(|e| error("AmazonAutoScaling", e))
     }
@@ -123,7 +124,7 @@ impl EksInfrastructure {
 
     async fn iam(&self, scope: &Scope<'_>, op: &str, input: Value) -> Result<Value, InfrastructureError> {
         self.iam
-            .invoke(service_ctx(scope, NODEGROUP_ROLE), op, input)
+            .invoke(service_ctx(&self.iam, scope, NODEGROUP_ROLE), op, input)
             .await
             .map_err(|e| error("AmazonIdentityManagement", e))
     }
@@ -450,9 +451,12 @@ impl Infrastructure for EksInfrastructure {
     async fn control_plane_logs(&self, scope: &Scope<'_>, cluster: &str, stream: &str, events: Vec<(i64, String)>) {
         let events = events.into_iter().map(|(timestamp, message)| mws_logs::ServiceLogEvent { timestamp, message });
         let group = format!("/aws/eks/{cluster}/cluster");
-        if let Err(e) =
-            self.logs.put_log_events_as_caller(&service_ctx(scope, CLUSTER_ROLE), &group, stream, events.collect())
-        {
+        if let Err(e) = self.logs.put_log_events_as_caller(
+            &service_ctx(&self.iam, scope, CLUSTER_ROLE),
+            &group,
+            stream,
+            events.collect(),
+        ) {
             tracing::debug!(cluster, stream, "EKS could not write control plane logs: {}", e.message);
         }
     }
