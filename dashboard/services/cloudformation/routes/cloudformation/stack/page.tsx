@@ -2,10 +2,11 @@ import { DescribeStackEventsCommand, DescribeStackResourcesCommand, DescribeStac
 import { ago, load } from "@mws-dashboard/aws";
 import { ActionForm, AwsIcon, CodeBlock, Empty, ErrorNotice, Facts, Field, List, Page, Segments, Sheet, Specs, Status, Tags } from "@mws-dashboard/ui";
 import { Clock, Layers, Pencil, ShieldCheck, Trash2 } from "lucide-react";
+import { UpdateStack as UpdateStackRules } from "@mws-dashboard/ui/model/cloudformation";
 import type { Metadata } from "next";
 
 import { ICONS, cloudformation, stackTone } from "../../../lib/clients";
-import { resourceType } from "../../../lib/cloudformation";
+import { PARAMETERS, TEMPLATE, resourceType } from "../../../lib/cloudformation";
 import { deleteStack, updateStack } from "../actions";
 
 export const metadata: Metadata = { title: "Stack" };
@@ -90,9 +91,11 @@ export default async function Stack({ searchParams }: Props) {
           {!busy && (
             <Sheet title="Update stack" label="Update stack" icon={<Pencil size={16} />} testId="update-stack">
               <ActionForm action={updateStack.bind(null, name)} submit="Update" testId="update-stack">
-                <textarea name="template" rows={18} required aria-label="Template" className="code-editor" spellCheck={false} defaultValue={template} />
-                <Field label="Parameters">
-                  <textarea name="parameters" rows={2} defaultValue={(s.Parameters ?? []).map((p) => `${p.ParameterKey}=${p.ParameterValue}`).join("\n")} />
+                <Field label="Template" rule={{ ...UpdateStackRules.TemplateBody, ...TEMPLATE }}>
+                  <textarea name="template" rows={18} required className="code-editor" spellCheck={false} defaultValue={template} />
+                </Field>
+                <Field label="Parameters" rule={PARAMETERS}>
+                  <textarea name="parameters" rows={2} spellCheck={false} defaultValue={(s.Parameters ?? []).map((p) => `${p.ParameterKey}=${p.ParameterValue}`).join("\n")} />
                 </Field>
               </ActionForm>
             </Sheet>

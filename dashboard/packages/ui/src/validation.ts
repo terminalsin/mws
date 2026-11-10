@@ -76,6 +76,9 @@ export type Rules = Record<string, Rule>;
 
 export type Format =
   | "json"
+  | "list"
+  | "yaml"
+  | "keyvalue"
   | "policy"
   | "path"
   | "arn"
@@ -93,15 +96,15 @@ export type Format =
   | "country"
   | "csr"
   | "phone"
+  | "pairs"
   | "tags"
   | "branch"
-  /** A comma-separated `Name=value` list (dimensions). */
-  | "pairs";
+  | "dir";
 
 /** "name": a readable resource name; "token": random letters and digits;
  * "password": meets the usual complexity rules; or a fixed prefix/suffix
  * around a readable name. */
-export type Generate = "name" | "token" | "password" | "uuid" | { prefix?: string; suffix?: string; kind?: "name" | "token" };
+export type Generate = "name" | "token" | "password" | "uuid" | "account" | { prefix?: string; suffix?: string; kind?: "name" | "token" };
 
 export type IssueCode =
   | "required"
@@ -143,6 +146,9 @@ export interface FieldIssue {
   rule?: Rule;
   code: IssueCode;
   message: string;
+  /** Repairs the action worked out itself (it knows what the field's value
+   * refers to); offered as they are. */
+  repairs?: Repair[];
 }
 
 // ---------------------------------------------------------------------------
@@ -317,8 +323,9 @@ export function repairs(value: string, rule: Rule, code: IssueCode): Repair[] {
     case "format": {
       const format = rule.format && FORMATS[rule.format];
       for (const r of format?.repair?.(value, rule) ?? []) offer(r);
-      // Multi-line values (JSON, tags) do not reshape into anything useful.
-      if (out.length === 0 && !value.includes("\n")) for (const r of reshape(value, rule).slice(0, 1)) offer(r);
+      // Multi-line values (JSON, tags) do not reshape into anything useful,
+      // and a list's separators are meaningful (cleanups would join its items).
+      if (out.length === 0 && !value.includes("\n") && rule.format !== "list") for (const r of reshape(value, rule).slice(0, 1)) offer(r);
       break;
     }
     case "tooLong":
@@ -608,6 +615,7 @@ export function fresh(rule: Rule): Repair | null {
     let v: string;
     if (recipe === "uuid") v = globalThis.crypto?.randomUUID?.() ?? `${token(8, "0123456789abcdef")}-${token(4, "0123456789abcdef")}-4${token(3, "0123456789abcdef")}-a${token(3, "0123456789abcdef")}-${token(12, "0123456789abcdef")}`;
     else if (recipe === "password") v = password(rule);
+    else if (recipe === "account") v = token(1, "123456789") + token(11, "0123456789");
     else if (recipe === "token") v = token(Math.min(rule.maxLength ?? 16, Math.max(rule.minLength ?? 16, 16)));
     else {
       const spec = typeof recipe === "object" ? recipe : {};
@@ -743,6 +751,50 @@ export const FORMATS: Record<Format, FormatSpec> = {
       return [{ value: v, label: "Fix the path", kind: "fix" }];
     },
   },
+  yaml: {
+    check(value, rule) {
+      if (/^\s*[{[]/.test(value)) return FORMATS.json.check(value, rule);
+      const tab = value.split("\n").findIndex((l) => /^ *\t/.test(l));
+      return tab >= 0 ? `Tab indenting line ${tab + 1}` : null;
+    },
+    repair(value, rule) {
+      if (/^\s*[{[]/.test(value)) return FORMATS.json.repair!(value, rule);
+      const fixed = value.replace(/^[ \t]+/gm, (indent) => indent.replace(/\t/g, "  "));
+      return [{ value: fixed, label: "Indent with spaces", kind: "fix" }];
+    },
+  },
+  keyvalue: {
+    check(value) {
+      const lines = value.split("\n").map((l) => l.trim());
+      const bad = lines.findIndex((l) => l && !/^[^=\s]+\s*=/.test(l));
+      if (bad >= 0) return `Line ${bad + 1}: Key=value`;
+      const keys = lines.filter(Boolean).map((l) => l.slice(0, l.indexOf("=")).trim());
+      const twice = keys.find((k, i) => keys.indexOf(k) !== i);
+      return twice ? `${twice} appears twice` : null;
+    },
+    repair(value) {
+      const pairs: [string, string][] = [];
+      let object: unknown = null;
+      try {
+        object = JSON.parse(repairJson(value) ?? "null");
+      } catch {
+        object = null;
+      }
+      if (object && typeof object === "object" && !Array.isArray(object)) {
+        for (const [k, v] of Object.entries(object)) pairs.push([k, typeof v === "string" ? v : JSON.stringify(v)]);
+      } else {
+        // `Key: value`, `Key = value`, `export KEY="v"`, or pairs on one line.
+        for (const part of value.split(/\n|[,;](?=\s*[\w.-]+\s*[=:])/)) {
+          const m = part.trim().replace(/^export\s+/, "").match(/^["']?([^\s=:"']+)["']?\s*[=:]\s*(.*)$/);
+          if (m) pairs.push([m[1], m[2].trim().replace(/^(["'])(.*)\1$/, "$2")]);
+          else if (part.trim()) return [];
+        }
+      }
+      // A repeated key keeps its last value, as the API would.
+      const merged = new Map(pairs);
+      return merged.size ? [{ value: [...merged].map(([k, v]) => `${k}=${v}`).join("\n"), label: "One Key=value per line", kind: "fix" }] : [];
+    },
+  },
   arn: {
     check(value) {
       return /^arn:[\w-]+:[\w-]*:[\w-]*:(\d{12}|aws|)?:.+$/.test(value) ? null : "Not an ARN";
@@ -868,7 +920,12 @@ export const FORMATS: Record<Format, FormatSpec> = {
       };
       const scheme = v.match(/^https?:\/\/(.+)$/i);
       if (scheme) return pick(scheme[1], false);
-      return /^[\w.-]+\.[a-z]{2,}([:/].*)?$/i.test(v) || /^localhost([:/].*)?$/.test(v) ? pick(v, true) : [];
+      // Local endpoints (localhost, an IP, a bare host:port) are plain HTTP.
+      if (/^(localhost|\d{1,3}(\.\d{1,3}){3}|[\w-]+:\d+)([:/?#].*)?$/i.test(v)) {
+        const http = `http://${v}`;
+        return valid(http, rule) ? [{ value: http, label: "Add http://", kind: "fix" }] : pick(v, true);
+      }
+      return /^[\w.-]+\.[a-z]{2,}([:/].*)?$/i.test(v) ? pick(v, true) : [];
     },
   },
   s3url: {
@@ -892,6 +949,33 @@ export const FORMATS: Record<Format, FormatSpec> = {
   name: {
     check(value) {
       return /^[A-Za-z0-9_-]+$/.test(value) ? null : "Letters, digits, - and _";
+    },
+  },
+  // Names separated by commas or spaces, each checked against `rule.item`,
+  // none twice.
+  list: {
+    check(value, rule) {
+      const seen = new Set<string>();
+      for (const item of listItems(value)) {
+        if (seen.has(item)) return `${item} is listed twice`;
+        seen.add(item);
+        const issue = rule.item && problem(item, rule.item, {});
+        if (issue) return `${item}: ${issue.message}`;
+      }
+      return seen.size ? null : "Required";
+    },
+    repair(value, rule) {
+      const out: string[] = [];
+      let label = "";
+      for (const item of listItems(value)) {
+        const fixed = !rule.item || valid(item, rule.item) ? item : check(item, rule.item)?.repairs.find((r) => r.kind === "fix");
+        const v = typeof fixed === "string" ? fixed : fixed?.value;
+        if (typeof fixed === "object" && fixed) label ||= `${fixed.label} in ${item}`;
+        if (v === undefined) label ||= `Remove ${item}`;
+        else if (out.includes(v)) label ||= `Remove the second ${v}`;
+        else out.push(v);
+      }
+      return out.length && label ? [{ value: out.join(", "), label, kind: "fix" }] : [];
     },
   },
   port: {
@@ -941,6 +1025,29 @@ export const FORMATS: Record<Format, FormatSpec> = {
       // Ten digits without a country code read as a North American number.
       if (digits.length === 10) out.unshift({ value: `+1${digits}`, label: "Add +1", kind: "suggest" });
       return out;
+    },
+  },
+  // `key=value` per line (or comma), as headers, tags or a mapping.
+  pairs: {
+    check(value) {
+      const bad = pairList(value).find((p) => !/^[^=\s][^=]*=/.test(p));
+      return bad === undefined ? null : `"${bad}" is not key=value`;
+    },
+    repair(value) {
+      // A JSON object, or `key: value` / `key value` lines.
+      let entries: [string, string][];
+      if (value.trim().startsWith("{")) {
+        const json = repairJson(value);
+        const o: unknown = json === null ? null : JSON.parse(json);
+        if (!o || typeof o !== "object" || Array.isArray(o)) return [];
+        entries = Object.entries(o).map(([k, v]) => [k, typeof v === "string" ? v : JSON.stringify(v)]);
+      } else {
+        entries = pairList(value).map((p) => {
+          const m = p.match(/^([^=:\s]+)\s*(?:=|:|\s)\s*(.*)$/);
+          return m ? [m[1], m[2]] : [p, ""];
+        });
+      }
+      return entries.length ? [{ value: entries.map(([k, v]) => `${k}=${v}`).join("\n"), label: "Rewrite as key=value", kind: "fix" }] : [];
     },
   },
   // `key=value` per line, AWS's usual tag limits.
@@ -1006,52 +1113,35 @@ export const FORMATS: Record<Format, FormatSpec> = {
       return v && v !== "@" ? [{ value: v, label: "Fix the branch name", kind: "fix" }] : [];
     },
   },
-  pairs: {
+  dir: {
     check(value) {
-      return parsePairs(value) ? null : "Like Name=value, Other=value";
+      return value.startsWith("/") ? null : "An absolute path, like /data";
     },
-    repair(value) {
-      const fixed = repairPairs(value);
-      return fixed === null ? [] : [{ value: fixed, label: "Write as Name=value pairs", kind: "fix" }];
+    repair(value, rule) {
+      // Backslashes, doubled or trailing slashes, spaces and shell
+      // characters cleaned up; then leading dots dropped; then the path cut
+      // to the depth the pattern allows. Both slash endings are tried, as
+      // some APIs want one (IAM paths) and others forbid it (EFS).
+      const segments = value
+        .replace(/\\/g, "/")
+        .split("/")
+        .map((s) => s.trim().replace(/\s+/g, "-").replace(/[$#<>;`|&?{}^*\n]/g, ""))
+        .filter(Boolean);
+      const out: Repair[] = [];
+      const add = (segs: string[], label: string) => {
+        const p = "/" + segs.join("/");
+        const v = [p, p + "/"].find((c) => c !== value && valid(c, rule));
+        if (v) out.push({ value: v, label, kind: "fix" });
+      };
+      add(segments, "Clean up the path");
+      const undotted = segments.map((s) => s.replace(/^\.+/, "")).filter(Boolean);
+      if (out.length === 0) add(undotted, "Drop leading dots");
+      for (let n = undotted.length - 1; out.length === 0 && n >= 1; n--) add(undotted.slice(0, n), `Keep ${n} level${n === 1 ? "" : "s"}`);
+      return out;
     },
   },
 };
 
-/** `Name=value, Other=value` as pairs (a value may contain "="), or null
- * when an item has no name or no value. */
-export function parsePairs(value: string): [string, string][] | null {
-  const out: [string, string][] = [];
-  for (const item of value.split(",")) {
-    const m = item.match(/^\s*([^=]*?)\s*=\s*(.*?)\s*$/);
-    if (!m || !m[1] || !m[2]) return null;
-    out.push([m[1], m[2]]);
-  }
-  return out;
-}
-
-/** Rewrite the usual ways of writing pairs (JSON objects, `[{Name, Value}]`
- * lists, `Name: value`, `;` or line separators) as `Name=value, ...`. */
-export function repairPairs(value: string): string | null {
-  const join = (pairs: [string, string][]) => pairs.map(([k, v]) => `${k}=${v}`).join(", ");
-  const json = /^\s*[[{]/.test(value) ? repairJson(value) : null;
-  if (json !== null) {
-    const data: unknown = JSON.parse(json);
-    const scalar = (v: unknown) => (typeof v === "string" || typeof v === "number" || typeof v === "boolean" ? String(v) : null);
-    const pairs = (Array.isArray(data) ? data : Object.entries(data as object).map(([Name, Value]) => ({ Name, Value }))).map((e) => {
-      const o = (e ?? {}) as Record<string, unknown>;
-      return [scalar(o.Name ?? o.Key ?? o.name ?? o.key), scalar(o.Value ?? o.value)];
-    });
-    if (pairs.length && pairs.every(([k, v]) => k && v)) return join(pairs as [string, string][]);
-    return null;
-  }
-  const items = value
-    .split(/[,;&\n]+/)
-    .map((i) => i.trim())
-    .filter(Boolean)
-    .map((i) => (i.includes("=") ? i : i.replace(/\s*:\s*|\s+/, "=")));
-  const pairs = items.length ? parsePairs(items.join(",")) : null;
-  return pairs ? join(pairs) : null;
-}
 
 const DOMAIN = /^(?=.{1,253}$)(?:[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\.)+[a-z]{2,63}$/i;
 /** Top-level domains people mistype, and what they meant. */
@@ -1117,6 +1207,7 @@ function emailRepairs(value: string): Repair[] {
   }
   return out;
 }
+const pairList = (value: string) => value.split(/[\n,]+/).map((p) => p.trim()).filter(Boolean);
 
 const BUCKET = "[a-z0-9][a-z0-9.-]{1,61}[a-z0-9]";
 
@@ -1142,6 +1233,11 @@ function s3Object(value: string): { bucket: string; key: string; canonical: bool
   const consoleUrl = v.match(new RegExp(`^https://[\\w.-]*console\\.aws\\.amazon\\.com/s3/object/(${BUCKET})\\?(?:.*&)?prefix=([^&#]+)`));
   if (consoleUrl) return { bucket: consoleUrl[1], key: decodeURIComponent(consoleUrl[2]), canonical: false };
   return null;
+}
+
+/** The items of a comma- or space-separated list. */
+export function listItems(value: string): string[] {
+  return value.split(/[\s,]+/).filter(Boolean);
 }
 
 function network(o: number[], bits: number): string {

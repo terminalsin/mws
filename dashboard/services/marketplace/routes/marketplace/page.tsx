@@ -1,5 +1,6 @@
 import { ago, load } from "@mws-dashboard/aws";
 import { ActionForm, AwsIcon, Empty, ErrorNotice, Field, List, Page, Pill, Section, Sheet } from "@mws-dashboard/ui";
+import { DIMENSIONS, TITLE } from "../../lib/rules";
 import { Eraser, Gauge, Users } from "lucide-react";
 import type { Metadata } from "next";
 
@@ -58,7 +59,7 @@ export default async function Marketplace({ searchParams }: Props) {
   const create = (
     <Sheet title="Create product" label="Create product" testId="create-product">
       <ActionForm action={createProduct} submit="Create product" testId="create-product">
-        <Field label="Title">
+        <Field label="Title" rule={TITLE}>
           <input name="title" required autoFocus />
         </Field>
         <Field label="Type">
@@ -68,7 +69,7 @@ export default async function Marketplace({ searchParams }: Props) {
             <option value="Container">Container</option>
           </select>
         </Field>
-        <Field label="Pricing dimensions">
+        <Field label="Pricing dimensions" rule={DIMENSIONS}>
           <input name="dimensions" required placeholder="users, requests" />
         </Field>
       </ActionForm>

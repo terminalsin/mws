@@ -114,10 +114,12 @@ Fields validate in place, and say how to fix what they reject. `Field`
    `import { CreateFunction } from "@mws-dashboard/ui/model/lambda"`, then
    `<Field rule={CreateFunction.FunctionName}>`;
 2. the control's own attributes (`required`, `maxLength`, `min`, `type`...);
-3. what the page adds: `format` (`json`, `policy`, `path`, `arn`, `cidr`,
+3. what the page adds: `format` (`json`, `yaml` (YAML or JSON documents),
+   `keyvalue` (one `Key=value` per line), `policy`, `path` (IAM), `dir`, `arn`, `cidr`,
    `ipv4`, `email`, `emails` (a comma-separated list), `domain`,
    `email-or-domain`, `url`, `s3url`, `bucket`, `name`, `port`, `phone`,
-   `tags` for `key=value` lines, `branch` for Git branch names, `pairs` for `Name=value` lists), `taken` (names that exist), `reserved`
+   `tags` for `key=value` tag lines, `pairs` for any `key=value` list,
+   `branch` for Git branch names), `taken` (names that exist), `reserved`
    (prefixes AWS keeps, offered without them),
    `known` (values the field usually points at), `generate` (`name`,
    `token`, `password`, `uuid`, or a prefix/suffix), `arn` (the ARN template
@@ -126,8 +128,10 @@ Fields validate in place, and say how to fix what they reject. `Field`
 A problem replaces the field's hint once the person leaves the field or
 submits, and comes with repairs as chips: a fix (reshaped to the pattern,
 shortened, clamped, network address, repaired JSON, a policy document
-rebuilt from a bare statement with its casing fixed, `https://` added, a phone number in E.164, an SSH remote as
-its HTTPS URL, the scheme a pattern requires, a Git-safe branch name), a
+rebuilt from a bare statement with its casing fixed, `https://` added or
+`http://` for a local endpoint, a phone number in E.164, an SSH remote as its
+HTTPS URL, the scheme a pattern requires, a Git-safe branch name, `key: value`
+lines or a JSON object rewritten as `key=value`), a
 suggestion ("did you mean" among enum values, `known` values, all of them
 when there are only a few, or common email domains) or a generated value. Every repair is checked against the whole rule
 before it is offered. A blocked submit focuses and shakes the first field.
@@ -138,7 +142,9 @@ into rules, so a backend rejection gets the same repairs; "already exists"
 errors land on the field marked `unique` with the next free name; anything
 else is mapped with `act(run, { revalidate, fields: { QueueName: "name",
 NoSuchEntityException: "role" } })` (error codes as the JS SDK names them, `e.name`), and `throw new FieldError(field, message)` targets
-a field directly. Only issues no field claims show under the form. All of
+a field directly; its optional `repairs` carry fixes only the action can work
+out (CloudFormation's template errors offer the closest logical id, resource
+type or section, see `services/cloudformation/lib/repairs.ts`). Only issues no field claims show under the form. All of
 this lives in the console (`validation.ts`, `fields.tsx`); MWS itself only
 returns what AWS returns. SQS's create-queue sheet is the reference use.
 

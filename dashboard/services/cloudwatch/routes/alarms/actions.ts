@@ -11,7 +11,6 @@ import {
   type Statistic,
 } from "@aws-sdk/client-cloudwatch";
 import { act, FieldError, required, text, type ActionResult } from "@mws-dashboard/aws";
-import { parsePairs } from "@mws-dashboard/ui/validation";
 
 import { cloudwatch } from "../../lib/clients";
 
@@ -45,8 +44,14 @@ export async function createAlarm(_: ActionResult | null, form: FormData) {
       const name = required(form, "name", "Name");
       const action = text(form, "action");
       const dims = text(form, "dims");
-      const pairs = dims ? parsePairs(dims) : [];
-      if (!pairs) throw new FieldError("dims", "Like Name=value, Other=value", "format", { format: "pairs" });
+      // One Name=value per line or comma, as the field's `pairs` format reads them.
+      const pairs = dims
+        .split(/[\n,]+/)
+        .map((p) => p.trim())
+        .filter(Boolean)
+        .map((p) => [p.slice(0, p.indexOf("=")).trim(), p.slice(p.indexOf("=") + 1).trim()] as const);
+      const bad = pairs.find(([k, v]) => !k || !v);
+      if (bad) throw new FieldError("dims", bad[0] ? `${bad[0]} needs a value` : "Like Name=value", "format", { format: "pairs" });
       const period = Number(text(form, "period") || 60);
       try {
         await (await cloudwatch()).send(

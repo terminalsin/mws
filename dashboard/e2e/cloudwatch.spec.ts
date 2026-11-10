@@ -101,7 +101,7 @@ test("CloudWatch: the alarm form repairs names, dimensions, topics and periods",
   await input("dims").fill("QueueName: orders");
   await input("dims").blur();
   await expect(field("dims")).toHaveAttribute("data-invalid", "format");
-  await field("dims").getByRole("button", { name: /Name=value/ }).click();
+  await field("dims").getByRole("button", { name: /key=value/ }).click();
   await expect(input("dims")).toHaveValue("QueueName=orders");
 
   // A mistyped topic name resolves to the topic's ARN.

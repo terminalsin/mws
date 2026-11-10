@@ -24,12 +24,15 @@ const SOURCE = { builtin: "built in", environment: "env", stored: "stored", "env
 
 const lines = (m: Record<string, string>) => Object.entries(m).map(([k, v]) => `${k}=${v}`).join("\n");
 
-function ProviderForm({ p }: { p?: Provider }) {
+// The console stores names lowercased; MWS takes letters, digits, - _ and .
+const NAME = { required: true, pattern: "^[a-z0-9._-]+$", hint: "Lowercase letters, digits, . - and _" };
+
+function ProviderForm({ p, names = [] }: { p?: Provider; names?: string[] }) {
   return (
     <ActionForm action={saveProvider.bind(null, p?.name ?? null)} submit="Save" testId={p ? `edit-provider-${p.name}` : "add-provider"}>
       {!p && (
-        <Field label="Name">
-          <input name="name" placeholder="ollama" pattern="[A-Za-z0-9._\-]+" required />
+        <Field label="Name" rule={NAME} taken={names} unique>
+          <input name="name" placeholder="ollama" required />
         </Field>
       )}
       <div className="form-row">
@@ -44,7 +47,7 @@ function ProviderForm({ p }: { p?: Provider }) {
           <input name="timeout" type="number" min={1} defaultValue={p?.timeoutSeconds} />
         </Field>
       </div>
-      <Field label="URL">
+      <Field label="URL" format="url">
         <input name="url" defaultValue={p?.url} placeholder="http://127.0.0.1:11434/v1" />
       </Field>
       <Field label="API key">
@@ -63,13 +66,13 @@ function ProviderForm({ p }: { p?: Provider }) {
           <input name="model" defaultValue={p?.model} placeholder="llama3.1:8b" />
         </Field>
       </div>
-      <Field label="Model map">
+      <Field label="Model map" format="pairs">
         <textarea name="modelMap" rows={3} className="code-editor" spellCheck={false} defaultValue={p && lines(p.modelMap)} placeholder="meta.llama3-8b-instruct-v1:0=llama3:8b" />
       </Field>
-      <Field label="Default parameters">
+      <Field label="Default parameters" format="json">
         <textarea name="params" rows={3} className="code-editor" spellCheck={false} defaultValue={p && Object.keys(p.params).length ? JSON.stringify(p.params, null, 2) : ""} placeholder='{"temperature": 0.2}' />
       </Field>
-      <Field label="Headers">
+      <Field label="Headers" format="pairs">
         <textarea name="headers" rows={2} className="code-editor" spellCheck={false} defaultValue={p && lines(p.headers)} placeholder="x-team=ml" />
       </Field>
       <label className="check">
@@ -107,7 +110,7 @@ export async function Providers() {
             </ActionForm>
           )}
           <Sheet title="Add model provider" label="Add provider" testId="add-provider">
-            <ProviderForm />
+            <ProviderForm names={providers.map((p) => p.name)} />
           </Sheet>
         </>
       }

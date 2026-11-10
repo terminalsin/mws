@@ -62,7 +62,7 @@ function CreateAlarm({ namespaces, names, dims, taken, topics, topicArn }: { nam
         </Field>
         <datalist id="metric-names">{names.map((n) => <option key={n} value={n} />)}</datalist>
         <Field label="Dimensions" rule={DIMENSIONS} known={dims}>
-          <input name="dims" placeholder="QueueName=orders" />
+          <textarea name="dims" rows={2} placeholder="QueueName=orders" />
         </Field>
         <div className="form-grid">
           <Field label="Statistic" rule={PutMetricAlarmRules.Statistic}>

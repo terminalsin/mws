@@ -1,3 +1,11 @@
+import type { Rule } from "@mws-dashboard/ui";
+
+// CloudFormation's model leaves these unconstrained; the limits are in its
+// docs (stack names, the 51,200-byte TemplateBody).
+export const STACK_NAME: Rule = { pattern: "^[A-Za-z][-A-Za-z0-9]*$", maxLength: 128, hint: "Starts with a letter; letters, digits and -", generate: "name" };
+export const TEMPLATE: Rule = { format: "yaml", maxLength: 51200 };
+export const PARAMETERS: Rule = { format: "keyvalue" };
+
 /** AWS icons and console links for common CloudFormation resource types. */
 const TYPES: Record<string, { icon: string; href?: (id: string) => string }> = {
   "AWS::S3::Bucket": { icon: "resource/AmazonSimpleStorageServiceBucket", href: (id) => `/s3/${encodeURIComponent(id)}` },

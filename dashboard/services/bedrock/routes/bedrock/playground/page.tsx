@@ -1,10 +1,15 @@
 import { ListFoundationModelsCommand, ListGuardrailsCommand, ListInferenceProfilesCommand } from "@aws-sdk/client-bedrock";
 import { load } from "@mws-dashboard/aws";
 import { ActionForm, ErrorNotice, Field, Page, Section } from "@mws-dashboard/ui";
+import { Converse } from "@mws-dashboard/ui/model/bedrock-runtime";
+import { ruleAt } from "@mws-dashboard/ui/validation";
 import type { Metadata } from "next";
 
 import { bedrock } from "../../../lib/clients";
 import { converse } from "../actions";
+
+const TEMPERATURE = ruleAt(Converse, "inferenceConfig.temperature");
+const MAX_TOKENS = ruleAt(Converse, "inferenceConfig.maxTokens");
 
 export const metadata: Metadata = { title: "Playground" };
 
@@ -63,10 +68,10 @@ export default async function Playground({ searchParams }: Props) {
                 )}
               </select>
             </Field>
-            <Field label="Temperature">
+            <Field label="Temperature" rule={TEMPERATURE}>
               <input name="temperature" type="number" min={0} max={1} step={0.1} defaultValue={0.7} />
             </Field>
-            <Field label="Max tokens">
+            <Field label="Max tokens" rule={MAX_TOKENS}>
               <input name="maxTokens" type="number" min={1} max={8192} defaultValue={512} />
             </Field>
             {guardrails.length > 0 && (
@@ -85,7 +90,9 @@ export default async function Playground({ searchParams }: Props) {
           <Field label="System prompt">
             <input name="system" placeholder="You are a helpful assistant." />
           </Field>
-          <textarea name="prompt" rows={6} aria-label="Prompt" placeholder="Ask anything" required />
+          <Field label="Prompt">
+            <textarea name="prompt" rows={6} placeholder="Ask anything" required />
+          </Field>
         </ActionForm>
       </Section>
     </Page>
