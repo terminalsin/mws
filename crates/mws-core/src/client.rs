@@ -109,6 +109,22 @@ impl ServiceClient {
         operation: &str,
         input: Value,
     ) -> Result<Value, ServiceError> {
+        self.call_with_agent(ctx, None, service, operation, input).await
+    }
+
+    /// [`ServiceClient::call`], with the user agent audit logs show for
+    /// the call: a service making calls with its caller's or a service
+    /// role's credentials (CloudFormation deploying a stack) names itself,
+    /// for example `cloudformation.amazonaws.com`. `None` keeps the
+    /// default (the service principal, or `AWS Internal`).
+    pub async fn call_with_agent(
+        &self,
+        ctx: &RequestContext,
+        user_agent: Option<&str>,
+        service: &str,
+        operation: &str,
+        input: Value,
+    ) -> Result<Value, ServiceError> {
         let (target, observers, authorizer) = {
             let r = self.registry.read().map_err(|_| ServiceError::internal("service registry poisoned"))?;
             (r.services.get(service).cloned(), r.observers.clone(), r.authorizer.clone())
@@ -135,7 +151,7 @@ impl ServiceClient {
         let (result, call) = trail::watch(invoke).await;
         if let Some(call) = call {
             let facts = HttpFacts {
-                user_agent: Some(internal_agent(&ctx.caller)),
+                user_agent: Some(user_agent.map_or_else(|| internal_agent(&ctx.caller), str::to_string)),
                 host: None,
                 status: match &result {
                     Ok(_) => 200,

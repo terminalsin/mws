@@ -766,6 +766,8 @@ fn build_with_store(config: Config, store: Option<Arc<Store>>) -> Mws {
     client.observe_with(Arc::new(cloudtrail.clone()));
     // CloudFormation deploys resources through the other services' APIs.
     cloudformation.set_services(services.iter().cloned());
+    // ... through the client, so CloudTrail records the calls it makes.
+    cloudformation.set_client(client.clone());
     // Automation runbooks call the other services' APIs too.
     ssm.set_automation_runtime(Arc::new(ssm::SsmAutomation::new(sts.clone(), &services)));
     let mut gateway = Gateway::builder();

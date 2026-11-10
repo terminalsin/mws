@@ -161,6 +161,45 @@ pub struct Snapshot {
 }
 
 impl Stack {
+    /// End an operation that was running when the state was saved (it is
+    /// not resumed): the stack takes the operation's failed state, its
+    /// in-progress resources and change sets fail too.
+    pub fn interrupted(&mut self) {
+        const REASON: &str = "Stack operation was interrupted (MWS state was restored while it ran).";
+        let ended = match self.status.as_str() {
+            "CREATE_IN_PROGRESS" => "CREATE_FAILED",
+            "UPDATE_IN_PROGRESS" => "UPDATE_FAILED",
+            "DELETE_IN_PROGRESS" => "DELETE_FAILED",
+            "ROLLBACK_IN_PROGRESS" => "ROLLBACK_FAILED",
+            "UPDATE_ROLLBACK_IN_PROGRESS" => "UPDATE_ROLLBACK_FAILED",
+            "IMPORT_IN_PROGRESS" | "IMPORT_ROLLBACK_IN_PROGRESS" => "IMPORT_ROLLBACK_FAILED",
+            "UPDATE_COMPLETE_CLEANUP_IN_PROGRESS" => "UPDATE_COMPLETE",
+            "UPDATE_ROLLBACK_COMPLETE_CLEANUP_IN_PROGRESS" => "UPDATE_ROLLBACK_COMPLETE",
+            _ => "",
+        };
+        if !ended.is_empty() {
+            self.status = ended.into();
+            if ended.ends_with("_FAILED") {
+                self.status_reason = Some(REASON.into());
+            }
+            for r in &mut self.resources {
+                if let Some(op) = r.status.strip_suffix("_IN_PROGRESS") {
+                    r.status = format!("{op}_FAILED");
+                    r.status_reason = Some(REASON.into());
+                }
+            }
+        }
+        for cs in self.change_sets.values_mut() {
+            if cs.execution_status == "EXECUTE_IN_PROGRESS" {
+                cs.execution_status = "EXECUTE_FAILED".into();
+            }
+            if matches!(cs.status.as_str(), "CREATE_PENDING" | "CREATE_IN_PROGRESS") {
+                cs.status = "FAILED".into();
+                cs.status_reason = Some(REASON.into());
+            }
+        }
+    }
+
     /// Keep the current deployment so that an update can roll back to it.
     pub fn keep_previous(&mut self) {
         self.previous = Some(Box::new(Snapshot {

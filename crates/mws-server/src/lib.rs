@@ -172,8 +172,20 @@ impl Gateway {
         }
         let _gate = self.state.gate.read().await;
         let trace = mws_core::trace_header::of(&request);
-        let response =
-            mws_core::trace_header::scope(trace, self.handle_service_request(request_id, request, remote, now)).await;
+        let work =
+            mws_core::trace_header::scope(trace, self.handle_service_request(request_id.clone(), request, remote, now));
+        // A panic in a handler answers 500 InternalFailure, as AWS would,
+        // instead of resetting the connection (which SDKs retry).
+        let response = match (CatchUnwind { inner: Box::pin(work) }).await {
+            Ok(r) => r,
+            Err(()) => {
+                tracing::error!(%request_id, "a handler panicked");
+                self.fallback_error(
+                    &request_id,
+                    &ServiceError::internal("We encountered an internal error. Please try again."),
+                )
+            }
+        };
         self.mark_dirty();
         response
     }
@@ -598,5 +610,23 @@ async fn handle_incoming(
     match streaming {
         Some(rest) => response.map(|head| ResponseBody::Streaming { head: Some(head), rest }),
         None => response.map(|b| ResponseBody::Full(Full::new(b))),
+    }
+}
+
+/// Polls `inner`, turning a panic into `Err(())`.
+struct CatchUnwind<'a, T> {
+    inner: std::pin::Pin<Box<dyn std::future::Future<Output = T> + Send + 'a>>,
+}
+
+impl<T> std::future::Future for CatchUnwind<'_, T> {
+    type Output = Result<T, ()>;
+
+    fn poll(mut self: std::pin::Pin<&mut Self>, cx: &mut std::task::Context<'_>) -> std::task::Poll<Self::Output> {
+        let inner = self.inner.as_mut();
+        match std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| inner.poll(cx))) {
+            Ok(std::task::Poll::Ready(v)) => std::task::Poll::Ready(Ok(v)),
+            Ok(std::task::Poll::Pending) => std::task::Poll::Pending,
+            Err(_) => std::task::Poll::Ready(Err(())),
+        }
     }
 }
