@@ -118,7 +118,7 @@ Fields validate in place, and say how to fix what they reject. `Field`
    starts with `{` or `[`), `yaml` (YAML or JSON documents),
    `keyvalue` (one `Key=value` per line), `policy`, `path` (IAM), `dir`, `arn`, `cidr`,
    `ipv4`, `email`, `emails` (a comma-separated list), `domain`,
-   `email-or-domain`, `dnsName` (wildcards allowed), `url`, `s3url`, `bucket`, `name`, `port`, `ports` (a port or range), `semver`, `cron` (AWS's six fields), `phone`,
+   `email-or-domain`, `dnsName` (wildcards allowed), `url`, `s3url`, `bucket`, `name`, `port`, `ports` (a port or range), `semver`, `cron` (AWS's six fields), `phone`, `env` (`KEY=value` lines),
    `tags` for `key=value` tag lines, `pairs` for any `key=value` list,
    `branch` for Git branch names, PEM `certificate`, `certificates` and
    `privateKey`, `principal` for account IDs, ARNs and service principals), `taken` (names that exist), `reserved`

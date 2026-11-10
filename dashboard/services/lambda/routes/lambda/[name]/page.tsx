@@ -25,6 +25,8 @@ import type { Metadata } from "next";
 import Link from "next/link";
 
 import { ICONS, lambda } from "../../../lib/clients";
+import { lambdaRoles } from "../../../lib/lambda";
+import { ENVIRONMENT, HANDLER, MEMORY, ROLE, TIMEOUT } from "../../../lib/rules";
 import { createUrl, deleteFunction, deleteMapping, invoke, publishVersion, saveCode, saveConfiguration, setMapping } from "../actions";
 
 type Props = { params: Promise<{ name: string }>; searchParams: Promise<{ tab?: string; file?: string }> };
@@ -104,7 +106,13 @@ export default async function LambdaFunction({ params, searchParams }: Props) {
         )}
         {editable ? (
           <ActionForm action={saveCode.bind(null, name, current!)} submit="Deploy" testId="save-code">
-            <textarea name="code" className="code-editor" rows={Math.min(40, strFromU8(content).split("\n").length + 4)} aria-label="Code" spellCheck={false} defaultValue={strFromU8(content).replace(/\n$/, "")} />
+            {current!.endsWith(".json") ? (
+              <Field label={current!} format="json">
+                <textarea name="code" className="code-editor" rows={Math.min(40, strFromU8(content).split("\n").length + 4)} spellCheck={false} defaultValue={strFromU8(content).replace(/\n$/, "")} />
+              </Field>
+            ) : (
+              <textarea name="code" className="code-editor" rows={Math.min(40, strFromU8(content).split("\n").length + 4)} aria-label="Code" spellCheck={false} defaultValue={strFromU8(content).replace(/\n$/, "")} />
+            )}
           </ActionForm>
         ) : (
           <Empty>{current}</Empty>
@@ -112,6 +120,8 @@ export default async function LambdaFunction({ params, searchParams }: Props) {
       </div>
     );
   } else if (tab === "config") {
+    const roles = await lambdaRoles().catch(() => []);
+    const account = c.FunctionArn?.split(":")[4];
     body = (
       <>
         <Section
@@ -120,19 +130,23 @@ export default async function LambdaFunction({ params, searchParams }: Props) {
           actions={
             <Sheet title="Configuration" label="Edit configuration" icon={<Settings2 size={16} />} testId="edit-config">
               <ActionForm action={saveConfiguration.bind(null, name)} submit="Save" testId="edit-config">
-                <Field label="Memory (MB)">
-                  <input name="memory" type="number" min={128} max={10240} defaultValue={c.MemorySize} />
+                <div className="form-row">
+                  <Field label="Memory (MB)" rule={MEMORY}>
+                    <input name="memory" type="number" min={128} step={1} defaultValue={c.MemorySize} />
+                  </Field>
+                  <Field label="Timeout (s)" rule={TIMEOUT}>
+                    <input name="timeout" type="number" min={1} defaultValue={c.Timeout} />
+                  </Field>
+                </div>
+                <Field label="Handler" rule={HANDLER}>
+                  <input name="handler" defaultValue={c.Handler} spellCheck={false} />
                 </Field>
-                <Field label="Timeout (s)">
-                  <input name="timeout" type="number" min={1} max={900} defaultValue={c.Timeout} />
+                <Field label="Execution role" rule={ROLE} arn={`arn:aws:iam::${account}:role/{}`} known={roles.map((r) => r.Arn!)}>
+                  <input name="role" defaultValue={c.Role} spellCheck={false} />
                 </Field>
-                <Field label="Handler">
-                  <input name="handler" defaultValue={c.Handler} />
+                <Field label="Environment variables" rule={ENVIRONMENT}>
+                  <textarea name="env" rows={6} placeholder="KEY=value" spellCheck={false} defaultValue={Object.entries(env).map(([k, v]) => `${k}=${v}`).join("\n")} />
                 </Field>
-                <Field label="Execution role">
-                  <input name="role" defaultValue={c.Role} />
-                </Field>
-                <textarea name="env" rows={6} aria-label="Environment variables" placeholder="KEY=value" defaultValue={Object.entries(env).map(([k, v]) => `${k}=${v}`).join("\n")} />
               </ActionForm>
             </Sheet>
           }
@@ -195,7 +209,9 @@ export default async function LambdaFunction({ params, searchParams }: Props) {
     body = (
       <Section>
         <ActionForm action={invoke.bind(null, name)} submit="Invoke" testId="invoke">
-          <textarea name="payload" rows={8} aria-label="Event" className="code-editor" spellCheck={false} defaultValue={'{\n  "hello": "world"\n}'} />
+          <Field label="Event" format="json">
+            <textarea name="payload" rows={8} className="code-editor" spellCheck={false} defaultValue={'{\n  "hello": "world"\n}'} />
+          </Field>
         </ActionForm>
       </Section>
     );

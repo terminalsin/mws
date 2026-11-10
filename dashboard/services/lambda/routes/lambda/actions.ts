@@ -13,7 +13,7 @@ import {
   UpdateFunctionConfigurationCommand,
   type Runtime,
 } from "@aws-sdk/client-lambda";
-import { act, required, text, type ActionResult } from "@mws-dashboard/aws";
+import { FieldError, act, required, text, type ActionResult } from "@mws-dashboard/aws";
 import { ROLES, roleFrom } from "@mws-dashboard/aws/auto";
 import { strToU8, unzipSync, zipSync } from "fflate";
 import { redirect } from "next/navigation";
@@ -22,6 +22,35 @@ import { STARTERS, family, lambda } from "../../lib/clients";
 
 const page = (name: string) => `/lambda/${encodeURIComponent(name)}`;
 
+/** Form fields by API member, so validation errors MWS returns land on them. */
+const FIELDS = {
+  FunctionName: "name",
+  Runtime: "runtime",
+  Role: "role",
+  Handler: "handler",
+  MemorySize: "memory",
+  Timeout: "timeout",
+  "Environment.Variables": "env",
+};
+
+/** Lambda reports a bad role or environment as InvalidParameterValue with
+ * no member; its message says which field it means. */
+async function send<T>(run: () => Promise<T>): Promise<T> {
+  try {
+    return await run();
+  } catch (e) {
+    if (e instanceof Error && e.name === "InvalidParameterValueException") {
+      if (/role/i.test(e.message)) throw new FieldError("role", "Lambda can't assume this role", "missing");
+      if (/environment variables/i.test(e.message)) {
+        const reserved = e.message.match(/Reserved keys used in this request: (.+)$/)?.[1];
+        throw new FieldError("env", reserved ? `Reserved: ${reserved}` : "Over the 4 KB limit");
+      }
+      if (/runtime/i.test(e.message)) throw new FieldError("runtime", e.message);
+    }
+    throw e;
+  }
+}
+
 /** Invoke the function synchronously and show its response and log tail. */
 export async function invoke(name: string, _: ActionResult | null, form: FormData) {
   return act(async () => {
@@ -29,7 +58,7 @@ export async function invoke(name: string, _: ActionResult | null, form: FormDat
     try {
       JSON.parse(payload);
     } catch {
-      throw new Error("The payload must be JSON");
+      throw new FieldError("payload", "Invalid JSON", "format");
     }
     const out = await (await lambda()).send(new InvokeCommand({ FunctionName: name, Payload: new TextEncoder().encode(payload), LogType: "Tail" }));
     const response = out.Payload ? new TextDecoder().decode(out.Payload) : "";
@@ -53,18 +82,20 @@ export async function createFunction(_: ActionResult | null, form: FormData) {
     const name = required(form, "name", "Function name");
     const runtime = required(form, "runtime", "Runtime");
     const starter = STARTERS[family(runtime)] ?? STARTERS.nodejs;
-    await (await lambda()).send(
+    const client = await lambda();
+    const Role = await roleFrom(form, "role", ROLES.lambda(name));
+    await send(() => client.send(
       new CreateFunctionCommand({
         FunctionName: name,
         Runtime: runtime as Runtime,
-        Role: await roleFrom(form, "role", ROLES.lambda(name)),
+        Role,
         Handler: starter.handler,
         Code: { ZipFile: zipSync({ [starter.file]: strToU8(starter.code) }) },
         Architectures: [text(form, "arch") === "x86_64" ? "x86_64" : "arm64"],
       }),
-    );
+    ));
     redirect(page(name));
-  });
+  }, { fields: FIELDS });
 }
 
 /** Replace one file of the deployment package and redeploy. */
@@ -92,7 +123,8 @@ export async function saveConfiguration(name: string, _: ActionResult | null, fo
           return [k.trim(), v.join("=").trim()];
         }),
     );
-    await (await lambda()).send(
+    const client = await lambda();
+    await send(() => client.send(
       new UpdateFunctionConfigurationCommand({
         FunctionName: name,
         MemorySize: Number(text(form, "memory")) || undefined,
@@ -101,9 +133,9 @@ export async function saveConfiguration(name: string, _: ActionResult | null, fo
         Role: text(form, "role") || undefined,
         Environment: { Variables },
       }),
-    );
+    ));
     return "Saved";
-  }, page(name));
+  }, { revalidate: [page(name)], fields: FIELDS });
 }
 
 export async function publishVersion(name: string) {
