@@ -82,6 +82,7 @@ impl Iam {
         let arn = self.entity_arn("saml-provider", "/", &input.name);
         let tags = tags_from_wire(input.tags)?;
         self.authorize_with(ctx, "CreateSAMLProvider", &arn, request_tag_context(&tags))?;
+        self.authorize_tagging(ctx, "TagSAMLProvider", &arn, &tags)?;
         check_mode(&input.assertion_encryption_mode)?;
         let valid_until = parse_metadata(&input.saml_metadata_document)?;
         if let Some(k) = &input.add_private_key {
@@ -99,7 +100,7 @@ impl Iam {
                 "Cannot exceed quota for SAMLProvidersPerAccount: {MAX_SAML_PROVIDERS}"
             )));
         }
-        let now = Utc::now();
+        let now = ctx.received_at;
         let provider = SamlProvider {
             arn: arn.clone(),
             uuid: format!("a-{}", uuid::Uuid::new_v4().simple()),
@@ -196,7 +197,7 @@ impl Iam {
                     "Cannot exceed quota for PrivateKeysPerSAMLProvider: {MAX_PRIVATE_KEYS}"
                 )));
             }
-            keys.push((key_id(), k, Utc::now()));
+            keys.push((key_id(), k, ctx.received_at));
         }
         let mode = input.assertion_encryption_mode.or_else(|| p.assertion_encryption_mode.clone());
         if mode.as_deref() == Some("Required") && keys.is_empty() {

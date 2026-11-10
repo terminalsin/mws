@@ -4,9 +4,8 @@
 use std::collections::BTreeMap;
 
 use base64::Engine;
-use chrono::{TimeDelta, Utc};
+use chrono::TimeDelta;
 use mws_core::{Caller, CallerKind, ConditionContext, RequestContext, ServiceError, SessionInfo, SessionKind};
-use mws_iam_policy::{decide, Policy, PolicyKind, PolicySet, PrincipalInfo, Request, SourcedPolicy};
 
 use crate::generated::{errors, types};
 use crate::ops::{access_denied, validation, ROLE_DEFAULT_DURATION};
@@ -23,29 +22,36 @@ fn is_aws_saml_audience(a: &str) -> bool {
         || a.strip_prefix("https://").and_then(|r| r.strip_suffix(".signin.aws.amazon.com/saml")).is_some()
 }
 
-/// Whether a role's trust policy allows a federated principal.
-pub(crate) fn trust_allows(
-    trust_policy: &str,
-    action: &str,
-    role_arn: &str,
-    federated: &str,
-    cond: &ConditionContext,
-) -> bool {
-    let Ok(trust) = Policy::parse(trust_policy, PolicyKind::Trust) else { return false };
-    let principal = PrincipalInfo { federated: Some(federated.to_string()), ..Default::default() };
-    let set = PolicySet {
-        resource: Some(SourcedPolicy { source_id: "trust".into(), policy: trust }),
-        resource_required: true,
-        ..Default::default()
-    };
-    let mut context = mws_iam_policy::ConditionContext::new();
-    for (k, v) in cond {
-        context.insert(k, v.clone());
-    }
-    decide(&set, &Request { action, resource: role_arn, principal: &principal, context: &context }).allowed
+/// The global condition keys of a federated request. The caller is
+/// unsigned, so only the keys that describe the request itself apply: none
+/// that describe a signing principal.
+pub(crate) fn federated_request_keys(ctx: &RequestContext) -> ConditionContext {
+    const KEYS: &[&str] = &[
+        "aws:CurrentTime",
+        "aws:EpochTime",
+        "aws:SecureTransport",
+        "aws:RequestedRegion",
+        "aws:SourceIp",
+        "aws:ViaAWSService",
+        "aws:PrincipalIsAWSService",
+    ];
+    ctx.global_condition_context().into_iter().filter(|(k, _)| KEYS.contains(&k.as_str())).collect()
 }
 
 impl Sts {
+    /// Whether a role's trust policy (and the resource control policies of
+    /// the role's organization) allow a federated principal.
+    pub(crate) fn trust_allows(
+        &self,
+        trust_policy: &str,
+        action: &str,
+        role_arn: &str,
+        federated: &str,
+        cond: &ConditionContext,
+    ) -> bool {
+        self.iam().authorize_federated_trust(action, role_arn, trust_policy, federated, cond)
+    }
+
     /// Check `SerialNumber`/`TokenCode`. Returns whether the session is
     /// MFA-authenticated.
     pub(crate) fn check_mfa(
@@ -131,7 +137,7 @@ impl Sts {
         let account = role.account_id.clone();
         let provider_name = input.principal_arn.rsplit('/').next().unwrap_or_default().to_string();
         let qualifier = saml::name_qualifier(&assertion.issuer, &account, &provider_name);
-        let mut cond = ConditionContext::new();
+        let mut cond = federated_request_keys(ctx);
         cond.insert("SAML:aud".into(), vec![audience.clone()]);
         cond.insert("SAML:iss".into(), vec![assertion.issuer.clone()]);
         cond.insert("SAML:doc".into(), vec![format!("{account}/{provider_name}")]);
@@ -144,9 +150,6 @@ impl Sts {
         }
         cond.insert("sts:RoleSessionName".into(), vec![session_name.clone()]);
         cond.insert("aws:FederatedProvider".into(), vec![input.principal_arn.clone()]);
-        if !trust_allows(&role.trust_policy, "sts:AssumeRoleWithSAML", &role.arn, &input.principal_arn, &cond) {
-            return Err(denied());
-        }
         let mut tags = BTreeMap::new();
         for (name, values) in &assertion.attributes {
             if let (Some(key), Some(v)) = (name.strip_prefix(saml::ATTR_TAG_PREFIX), values.first()) {
@@ -155,14 +158,27 @@ impl Sts {
         }
         let transitive: Vec<String> =
             assertion.attribute(saml::ATTR_TRANSITIVE).map(<[String]>::to_vec).unwrap_or_default();
-        if !tags.is_empty() {
-            let mut tag_cond = cond.clone();
-            tag_cond.extend(Self::request_tag_context(&tags));
-            if !trust_allows(&role.trust_policy, "sts:TagSession", &role.arn, &input.principal_arn, &tag_cond) {
-                return Err(denied());
-            }
-        }
         let source_identity = assertion.attribute(saml::ATTR_SOURCE_IDENTITY).and_then(|v| v.first()).cloned();
+        cond.extend(Self::request_tag_context(&tags));
+        if !transitive.is_empty() {
+            cond.insert("sts:TransitiveTagKeys".into(), transitive.clone());
+        }
+        if let Some(si) = &source_identity {
+            cond.insert("sts:SourceIdentity".into(), vec![si.clone()]);
+        }
+        let allows =
+            |action: &str| self.trust_allows(&role.trust_policy, action, &role.arn, &input.principal_arn, &cond);
+        if !allows("sts:AssumeRoleWithSAML") {
+            return Err(denied());
+        }
+        // Tags and a source identity in the assertion need their own
+        // permissions in the trust policy.
+        if !tags.is_empty() && !allows("sts:TagSession") {
+            return Err(denied());
+        }
+        if source_identity.is_some() && !allows("sts:SetSourceIdentity") {
+            return Err(denied());
+        }
 
         let attr_duration = assertion
             .attribute(saml::ATTR_SESSION_DURATION)
@@ -398,7 +414,7 @@ impl Sts {
                 "Outbound web identity federation is not enabled for this account. Call iam:EnableOutboundWebIdentityFederation first.",
             )
         })?;
-        let now = Utc::now();
+        let now = ctx.received_at;
         let exp = now + TimeDelta::seconds(duration as i64);
         let aud = match input.audience.as_slice() {
             [one] => serde_json::Value::from(one.clone()),

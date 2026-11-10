@@ -74,7 +74,7 @@ pub fn policy(p: &ManagedPolicy, state: &State) -> types::Policy {
         default_version_id: Some(p.default_version.clone()),
         attachment_count: Some(state.attachment_count(&p.arn) as i32),
         permissions_boundary_usage_count: Some(state.boundary_usage_count(&p.arn) as i32),
-        is_attachable: true,
+        is_attachable: p.attachable,
         description: p.description.clone(),
         create_date: Some(p.created),
         update_date: Some(p.updated),

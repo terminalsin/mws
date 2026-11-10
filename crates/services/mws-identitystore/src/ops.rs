@@ -68,10 +68,15 @@ fn member_user(m: &types::MemberId) -> &str {
     }
 }
 
+/// IAM Identity Center's service principal, whose Organizations delegated
+/// administrator manages the organization instance.
+const SSO_PRINCIPAL: &str = "sso.amazonaws.com";
+
 /// How an operation may reach a store.
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum Access {
-    /// Only the account that owns the store.
+    /// The account that owns the store, or for the organization
+    /// instance's store, IAM Identity Center's delegated administrator.
     Write,
     /// The owner, or any account of its organization.
     Read,
@@ -104,19 +109,39 @@ impl IdentityStore {
         }
         let caller = ctx.caller.account_id.as_str();
         if caller != owner {
-            let same_org = || {
-                let mine = self.iam.organization_of(caller);
-                let theirs = self.iam.organization_of(&owner);
-                matches!((mine, theirs), (Some(a), Some(b)) if a.organization_id == b.organization_id)
+            let mine = self.iam.organization_of(caller);
+            let theirs = self.iam.organization_of(&owner);
+            let (same_org, delegated_admin) = match (&mine, &theirs) {
+                (Some(a), Some(b)) if a.organization_id == b.organization_id => {
+                    // The IAM Identity Center delegated administrator
+                    // manages the organization instance's store, the one
+                    // the management account owns.
+                    let admin = b.is_management(&owner) && a.delegated_admin_for.iter().any(|s| s == SSO_PRINCIPAL);
+                    (true, admin)
+                }
+                _ => (false, false),
             };
-            if access == Access::Write || !same_org() {
+            if (access == Access::Write && !delegated_admin) || !same_org {
                 return Err(errors::access_denied(format!(
                     "User: {} is not authorized to perform: {action} on resource: {arn}",
                     ctx.caller.arn
                 )));
             }
         }
-        ctx.authorize(action, &resource.unwrap_or(arn), ConditionContext::new())?;
+        let resource = resource.unwrap_or(arn);
+        if caller == owner {
+            ctx.authorize(action, &resource, ConditionContext::new())?;
+        } else {
+            // Another account of the organization reaches the store through
+            // the organization, not a policy of the store's account: its own
+            // identity policies decide, as for a resource policy granting
+            // its account.
+            let grant = format!(
+                r#"{{"Version":"2012-10-17","Statement":[{{"Effect":"Allow","Principal":{{"AWS":"arn:{}:iam::{caller}:root"}},"Action":"{action}","Resource":"*"}}]}}"#,
+                ctx.partition
+            );
+            ctx.authorize_with_resource_policy(action, &resource, Some(&grant), ConditionContext::new())?;
+        }
         Ok(id)
     }
 

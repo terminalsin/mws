@@ -181,6 +181,7 @@ impl Iam {
         let serial = self.arn(&format!("mfa{path}{}", input.virtual_mfa_device_name));
         let tags = tags_from_wire(input.tags)?;
         self.authorize_with(ctx, "CreateVirtualMFADevice", &serial, request_tag_context(&tags))?;
+        self.authorize_tagging(ctx, "TagMFADevice", &serial, &tags)?;
         let mut state = self.write();
         if state.mfa_devices.values().any(|d| d.name.eq_ignore_ascii_case(&input.virtual_mfa_device_name)) {
             return Err(errors::entity_already_exists("MFADevice entity at the same path and name already exists."));
@@ -258,7 +259,7 @@ impl Iam {
         let step = consecutive(&device.seed, &input.authentication_code1, &input.authentication_code2, ENABLE_WINDOW)
             .ok_or_else(|| invalid_code(&input.serial_number))?;
         device.user = Some(user_key);
-        device.enabled = Some(Utc::now());
+        device.enabled = Some(ctx.received_at);
         device.last_step = Some(step + 1);
         Ok(())
     }

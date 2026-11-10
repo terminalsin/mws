@@ -1,6 +1,5 @@
 //! Groups and membership.
 
-use chrono::Utc;
 use mws_core::{RequestContext, ServiceError};
 
 use crate::common::*;
@@ -17,17 +16,21 @@ impl Iam {
         let path = input.path.unwrap_or_else(|| "/".into());
         let arn = self.entity_arn("group", &path, &input.group_name);
         self.authorize(ctx, "CreateGroup", &arn)?;
+        let limit = self.limit(ctx, &GROUPS_PER_ACCOUNT);
         let mut state = self.write();
         let key = input.group_name.to_lowercase();
         if state.groups.contains_key(&key) {
             return Err(errors::entity_already_exists(format!("Group with name {} already exists.", input.group_name)));
+        }
+        if state.groups.len() >= limit {
+            return Err(quota_exceeded(GROUPS_PER_ACCOUNT.name, limit));
         }
         let group = Group {
             name: input.group_name,
             path,
             id: ids::unique_id("AGPA"),
             arn,
-            created: Utc::now(),
+            created: ctx.received_at,
             inline: Default::default(),
             attached: Default::default(),
             members: Default::default(),
@@ -128,8 +131,15 @@ impl Iam {
         self.authorize(ctx, "AddUserToGroup", &self.group_arn_or_default(&input.group_name))?;
         let mut state = self.write();
         state.user(&input.user_name).ok_or_else(|| no_such_user(&input.user_name))?;
+        state.group(&input.group_name).ok_or_else(|| no_such_group(&input.group_name))?;
+        let member = input.user_name.to_lowercase();
+        let groups = state.groups_for_user(&input.user_name);
+        let already = groups.iter().any(|g| g.name.eq_ignore_ascii_case(&input.group_name));
+        if !already && groups.len() >= GROUPS_PER_USER {
+            return Err(quota_exceeded("GroupsPerUser", GROUPS_PER_USER));
+        }
         let g = state.group_mut(&input.group_name).ok_or_else(|| no_such_group(&input.group_name))?;
-        g.members.insert(input.user_name.to_lowercase());
+        g.members.insert(member);
         Ok(())
     }
 

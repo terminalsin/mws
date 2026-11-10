@@ -95,8 +95,16 @@ fn resource_value<'a>(h: &'a HandshakeRec, ty: &str) -> Option<&'a str> {
     h.handshake.resources.iter().flatten().find(|r| r.r#type.as_deref() == Some(ty)).and_then(|r| r.value.as_deref())
 }
 
-fn is_open(h: &HandshakeRec) -> bool {
+pub(crate) fn is_open(h: &HandshakeRec) -> bool {
     matches!(h.handshake.state.as_deref(), Some("OPEN") | Some("REQUESTED"))
+}
+
+/// What counts toward an organization's account quota: its members and the
+/// invitations still open, as AWS counts them.
+pub(crate) fn accounts_toward_limit(state: &State, org: &Org) -> usize {
+    let open_invites =
+        state.handshakes.values().filter(|h| h.org_id == org.id && action_of(h) == INVITE && is_open(h)).count();
+    org.members.len() + open_invites
 }
 
 /// Whether `account` is the party a handshake asks to respond.
@@ -179,6 +187,14 @@ impl Organizations {
             };
             self.authorize_tagging(ctx, &arn, &tags)?;
         }
+        // Read the quota before taking the lock: Service Quotas may ask
+        // Organizations about the account.
+        let limit = {
+            let state = self.lock();
+            let org = self.caller_org(&state, ctx, "InviteAccountToOrganization", "*", Need::Management)?.clone();
+            drop(state);
+            self.account_limit(ctx, &org)
+        };
         let mut state = self.lock();
         Self::expire(&mut state, ctx.received_at);
         let org = self.caller_org(&state, ctx, "InviteAccountToOrganization", "*", Need::Management)?.clone();
@@ -218,6 +234,12 @@ impl Organizations {
             return Err(handshake_constraint(
                 "INVITE_DISABLED_DURING_ENABLE_ALL_FEATURES",
                 "You can't invite an account while the organization is migrating to all features.",
+            ));
+        }
+        if accounts_toward_limit(&state, &org) >= limit {
+            return Err(handshake_constraint(
+                "ACCOUNT_NUMBER_LIMIT_EXCEEDED",
+                "You have reached the limit on the number of accounts in your organization.",
             ));
         }
         let duplicate = state.handshakes.values().any(|h| {

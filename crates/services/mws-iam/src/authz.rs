@@ -1,6 +1,7 @@
 //! The IAM authorizer: evaluates the caller's policies for every request to
 //! every MWS service.
 
+use std::collections::{BTreeMap, BTreeSet};
 use std::sync::Arc;
 
 use mws_core::{Authorizer, AuthzDecision, AuthzRequest, Caller, CallerKind, ResourcePolicyMode};
@@ -173,54 +174,54 @@ fn parse_all(docs: impl IntoIterator<Item = (String, String)>) -> Vec<SourcedPol
         .collect()
 }
 
+/// A managed policy's default document, parsed. AWS managed documents are
+/// parsed once per process (`ReadOnlyAccess` alone is 170 KB).
+fn managed_policy(state: &State, arn: &str) -> Option<Policy> {
+    if let Some(p) = state.policies.parsed_aws(arn) {
+        return Some(p.clone());
+    }
+    let doc = state.policies.get(arn)?.default_document();
+    Policy::parse(doc, PolicyKind::Identity).ok()
+}
+
+fn inline_and_attached(
+    out: &mut Vec<SourcedPolicy>,
+    state: &State,
+    inline: &BTreeMap<String, String>,
+    attached: &BTreeSet<String>,
+) {
+    out.extend(parse_all(inline.iter().map(|(n, d)| (n.clone(), d.clone()))));
+    for arn in attached {
+        if let Some(policy) = managed_policy(state, arn) {
+            out.push(SourcedPolicy { source_id: arn.clone(), policy });
+        }
+    }
+}
+
 /// Identity-based policies of a user: inline, attached, and from groups.
-pub(crate) fn user_policy_docs(state: &State, name: &str) -> Vec<(String, String)> {
+pub(crate) fn user_policies(state: &State, name: &str) -> Vec<SourcedPolicy> {
     let mut out = Vec::new();
     let Some(user) = state.user(name) else { return out };
-    for (n, d) in &user.inline {
-        out.push((n.clone(), d.clone()));
-    }
-    for arn in &user.attached {
-        if let Some(p) = state.policies.get(arn) {
-            out.push((arn.clone(), p.default_document().to_string()));
-        }
-    }
+    inline_and_attached(&mut out, state, &user.inline, &user.attached);
     for g in state.groups_for_user(name) {
-        for (n, d) in &g.inline {
-            out.push((n.clone(), d.clone()));
-        }
-        for arn in &g.attached {
-            if let Some(p) = state.policies.get(arn) {
-                out.push((arn.clone(), p.default_document().to_string()));
-            }
-        }
+        inline_and_attached(&mut out, state, &g.inline, &g.attached);
     }
     out
 }
 
-pub(crate) fn role_policy_docs(state: &State, name: &str) -> Vec<(String, String)> {
+pub(crate) fn role_policies(state: &State, name: &str) -> Vec<SourcedPolicy> {
     let mut out = Vec::new();
-    let Some(role) = state.role(name) else { return out };
-    for (n, d) in &role.inline {
-        out.push((n.clone(), d.clone()));
-    }
-    for arn in &role.attached {
-        if let Some(p) = state.policies.get(arn) {
-            out.push((arn.clone(), p.default_document().to_string()));
-        }
+    if let Some(role) = state.role(name) {
+        inline_and_attached(&mut out, state, &role.inline, &role.attached);
     }
     out
 }
 
 pub(crate) fn boundary_doc(state: &State, arn: &Option<String>) -> Option<SourcedPolicy> {
     let arn = arn.as_ref()?;
-    let doc = state.policies.get(arn).map(|p| p.default_document().to_string()).unwrap_or_else(|| "{}".into());
     // A boundary that cannot be parsed allows nothing.
-    let policy = Policy::parse(&doc, PolicyKind::Identity).unwrap_or(Policy {
-        version: "2012-10-17".into(),
-        id: None,
-        statements: vec![],
-    });
+    let policy =
+        managed_policy(state, arn).unwrap_or(Policy { version: "2012-10-17".into(), id: None, statements: vec![] });
     Some(SourcedPolicy { source_id: arn.clone(), policy })
 }
 
@@ -240,7 +241,7 @@ pub(crate) fn principal_policies(
             principal.arns.push(format!("arn:aws:iam::{account_id}:root"));
         }
         CallerKind::User { name } => {
-            set.identity = parse_all(user_policy_docs(state, name));
+            set.identity = user_policies(state, name);
             if let Some(u) = state.user(name) {
                 set.boundary = boundary_doc(state, &u.permissions_boundary);
                 for (k, v) in &u.tags {
@@ -249,7 +250,7 @@ pub(crate) fn principal_policies(
             }
         }
         CallerKind::AssumedRole { role_name, .. } => {
-            set.identity = parse_all(role_policy_docs(state, role_name));
+            set.identity = role_policies(state, role_name);
             if let Some(r) = state.role(role_name) {
                 principal.role_arn = Some(r.arn.clone());
                 set.boundary = boundary_doc(state, &r.permissions_boundary);
@@ -261,7 +262,7 @@ pub(crate) fn principal_policies(
         CallerKind::FederatedUser { parent_user, .. } => {
             match parent_user {
                 Some(u) => {
-                    set.identity = parse_all(user_policy_docs(state, u));
+                    set.identity = user_policies(state, u);
                     if let Some(user) = state.user(u) {
                         set.boundary = boundary_doc(state, &user.permissions_boundary);
                         // A federated user's principal tags are its IAM
@@ -285,6 +286,13 @@ pub(crate) fn principal_policies(
     if let Some(session) = &caller.session {
         set.session =
             parse_all(session.policies.iter().enumerate().map(|(i, d)| (format!("session-policy-{i}"), d.clone())));
+        if session.kind == mws_core::SessionKind::AssumeRoot {
+            // Root task policies (`IAMAuditRootUserCredentials`, ...) are
+            // deny-only: they narrow what the root session may do rather
+            // than grant it, so only their denies apply.
+            let allow_all = r#"{"Version":"2012-10-17","Statement":[{"Effect":"Allow","Action":"*","Resource":"*"}]}"#;
+            set.session.extend(parse_all([("root-task".to_string(), allow_all.to_string())]));
+        }
         for (k, v) in &session.tags {
             ctx.insert(format!("aws:PrincipalTag/{k}"), vec![v.clone()]);
         }
@@ -293,4 +301,47 @@ pub(crate) fn principal_policies(
         }
     }
     (set, principal, ctx)
+}
+
+impl crate::Iam {
+    /// Evaluate a role trust policy for a federated principal (a web
+    /// identity or SAML provider), as `sts:AssumeRoleWithWebIdentity` and
+    /// `sts:AssumeRoleWithSAML` do. The caller is unsigned, so no identity
+    /// policies or SCPs apply, but the resource control policies of the
+    /// role's organization do, and the `aws:Resource*` keys are present.
+    /// `context` carries the request's own keys (provider claims, global
+    /// request keys).
+    pub fn authorize_federated_trust(
+        &self,
+        action: &str,
+        role_arn: &str,
+        trust_policy: &str,
+        federated: &str,
+        context: &mws_core::ConditionContext,
+    ) -> bool {
+        let Ok(trust) = Policy::parse(trust_policy, PolicyKind::Trust) else { return false };
+        let account = crate::arn_account(role_arn).map(str::to_string);
+        let org = account.as_deref().and_then(|a| self.inner.organizations.get().and_then(|o| o.account(a)));
+        let mut set = PolicySet {
+            resource: Some(SourcedPolicy { source_id: "trust".into(), policy: trust }),
+            resource_required: true,
+            ..Default::default()
+        };
+        let mut ctx = ConditionContext::new();
+        for (k, v) in context {
+            ctx.insert(k, v.clone());
+        }
+        if let Some(a) = &account {
+            ctx.insert("aws:ResourceAccount", vec![a.clone()]);
+        }
+        if let Some(o) = &org {
+            ctx.insert("aws:ResourceOrgID", vec![o.organization_id.clone()]);
+            ctx.insert("aws:ResourceOrgPaths", vec![o.org_path.clone()]);
+            if let Some(levels) = &o.resource_control_policies {
+                set.resource_control = Some(parse_levels(levels, PolicyKind::ResourceControl));
+            }
+        }
+        let principal = PrincipalInfo { federated: Some(federated.to_string()), ..Default::default() };
+        decide(&set, &Request { action, resource: role_arn, principal: &principal, context: &ctx }).allowed
+    }
 }

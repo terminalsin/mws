@@ -112,14 +112,18 @@ impl Iam {
     pub fn ensure_service_linked_role(&self, account_id: &str, service: &str, policy_name: &str) {
         let partition = self.inner.config.partition.clone();
         let mut state = self.inner.write_account(account_id);
-        let name = format!("AWSServiceRoleFor{}", crate::ops::service_roles::stem(service));
+        let name = match crate::ops::service_roles::service_linked_role(service) {
+            Some(spec) => spec.role_name.to_string(),
+            None => crate::ops::service_roles::legacy_name(service),
+        };
         let key = name.to_lowercase();
         if state.roles.contains_key(&key) {
             return;
         }
         let path = format!("/aws-service-role/{service}/");
-        let policy_arn = format!("arn:{partition}:iam::aws:policy/aws-service-role/{policy_name}");
-        let attached = state.policies.contains_key(&policy_arn).then_some(policy_arn).into_iter().collect();
+        // The service's AWS managed policy, wherever it lives (most are under
+        // /aws-service-role/, AWSOrganizationsServiceTrustPolicy too).
+        let attached = state.policies.aws().by_name(policy_name).map(|p| p.arn.clone()).into_iter().collect();
         state.roles.insert(
             key,
             Role {

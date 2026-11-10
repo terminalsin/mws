@@ -97,8 +97,13 @@ impl SsoAdmin {
         ctx: &RequestContext,
         input: types::CreateAccountAssignmentRequest,
     ) -> Result<types::CreateAccountAssignmentResponse, ServiceError> {
-        let r =
-            self.permission_set(ctx, &input.instance_arn, &input.permission_set_arn, "sso:CreateAccountAssignment")?;
+        let r = self.permission_set_for(
+            ctx,
+            &input.instance_arn,
+            &input.permission_set_arn,
+            "sso:CreateAccountAssignment",
+            std::slice::from_ref(&input.target_id),
+        )?;
         self.check_target(&r, &input.target_id)?;
         self.check_principal(&r, &input.principal_type, &input.principal_id)?;
         let a = Assignment {
@@ -140,8 +145,13 @@ impl SsoAdmin {
         ctx: &RequestContext,
         input: types::DeleteAccountAssignmentRequest,
     ) -> Result<types::DeleteAccountAssignmentResponse, ServiceError> {
-        let r =
-            self.permission_set(ctx, &input.instance_arn, &input.permission_set_arn, "sso:DeleteAccountAssignment")?;
+        let r = self.permission_set_for(
+            ctx,
+            &input.instance_arn,
+            &input.permission_set_arn,
+            "sso:DeleteAccountAssignment",
+            std::slice::from_ref(&input.target_id),
+        )?;
         self.check_target(&r, &input.target_id)?;
         let a = Assignment {
             account: input.target_id,
@@ -226,8 +236,13 @@ impl SsoAdmin {
         ctx: &RequestContext,
         input: types::ListAccountAssignmentsRequest,
     ) -> Result<types::ListAccountAssignmentsResponse, ServiceError> {
-        let r =
-            self.permission_set(ctx, &input.instance_arn, &input.permission_set_arn, "sso:ListAccountAssignments")?;
+        let r = self.permission_set_for(
+            ctx,
+            &input.instance_arn,
+            &input.permission_set_arn,
+            "sso:ListAccountAssignments",
+            std::slice::from_ref(&input.account_id),
+        )?;
         let all = self.with_instance(&r.arn, |i| {
             Ok(i.assignments
                 .iter()
@@ -274,8 +289,14 @@ impl SsoAdmin {
         ctx: &RequestContext,
         input: types::ProvisionPermissionSetRequest,
     ) -> Result<types::ProvisionPermissionSetResponse, ServiceError> {
-        let r =
-            self.permission_set(ctx, &input.instance_arn, &input.permission_set_arn, "sso:ProvisionPermissionSet")?;
+        let targets: Vec<String> = input.target_id.iter().cloned().collect();
+        let r = self.permission_set_for(
+            ctx,
+            &input.instance_arn,
+            &input.permission_set_arn,
+            "sso:ProvisionPermissionSet",
+            &targets,
+        )?;
         let ps = input.permission_set_arn.clone();
         let accounts: Vec<String> = match (input.target_type.as_str(), &input.target_id) {
             ("AWS_ACCOUNT", Some(id)) => {
@@ -395,7 +416,14 @@ impl SsoAdmin {
         ctx: &RequestContext,
         input: types::ListPermissionSetsProvisionedToAccountRequest,
     ) -> Result<types::ListPermissionSetsProvisionedToAccountResponse, ServiceError> {
-        let r = self.instance(ctx, &input.instance_arn, "sso:ListPermissionSetsProvisionedToAccount", None)?;
+        let account_arn = account_resource(&ctx.partition, &input.account_id);
+        let r = self.instance_on(
+            ctx,
+            &input.instance_arn,
+            "sso:ListPermissionSetsProvisionedToAccount",
+            &[&input.instance_arn, &account_arn],
+            mws_core::ConditionContext::new(),
+        )?;
         let account = input.account_id.clone();
         let want = input.provisioning_status.clone();
         let all = self.with_instance(&r.arn, |i| {

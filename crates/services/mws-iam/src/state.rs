@@ -91,6 +91,13 @@ pub struct ManagedPolicy {
     pub next_version: u32,
     pub tags: Tags,
     pub aws_managed: bool,
+    /// Only a few deprecated AWS managed policies are not attachable.
+    #[serde(default = "attachable_default")]
+    pub attachable: bool,
+}
+
+fn attachable_default() -> bool {
+    true
 }
 
 impl ManagedPolicy {
@@ -234,7 +241,20 @@ pub struct ReportJob {
 pub struct DeletionTask {
     pub id: String,
     pub role: String,
+    /// `IN_PROGRESS`, then `SUCCEEDED` or `FAILED`.
     pub status: String,
+    /// The unique id of the role being deleted.
+    #[serde(default)]
+    pub role_id: Option<String>,
+    /// When the task was started (emulated clock).
+    #[serde(default)]
+    pub started: Option<DateTime<Utc>>,
+    /// Why the task failed.
+    #[serde(default)]
+    pub reason: Option<String>,
+    /// Resources still using the role when it failed: (region, ARNs).
+    #[serde(default)]
+    pub usage: Vec<(String, Vec<String>)>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -255,8 +275,9 @@ pub struct State {
     pub users: BTreeMap<String, User>,
     pub groups: BTreeMap<String, Group>,
     pub roles: BTreeMap<String, Role>,
-    /// Keyed by ARN.
-    pub policies: BTreeMap<String, ManagedPolicy>,
+    /// Customer managed policies by ARN, plus (virtually) the AWS managed
+    /// ones.
+    pub policies: crate::managed::Policies,
     pub instance_profiles: BTreeMap<String, InstanceProfile>,
     /// Keyed by ARN.
     pub oidc_providers: BTreeMap<String, OidcProvider>,
@@ -360,6 +381,20 @@ impl State {
         self.users.values().filter(|u| u.attached.contains(arn)).count()
             + self.groups.values().filter(|g| g.attached.contains(arn)).count()
             + self.roles.values().filter(|r| r.attached.contains(arn)).count()
+    }
+
+    /// Every managed policy ARN attached to a user, group or role.
+    pub fn attached_policy_arns(&self) -> BTreeSet<&str> {
+        let users = self.users.values().flat_map(|u| u.attached.iter());
+        let groups = self.groups.values().flat_map(|g| g.attached.iter());
+        let roles = self.roles.values().flat_map(|r| r.attached.iter());
+        users.chain(groups).chain(roles).map(String::as_str).collect()
+    }
+
+    /// Every policy ARN used as a permissions boundary.
+    pub fn boundary_policy_arns(&self) -> BTreeSet<&str> {
+        let users = self.users.values().filter_map(|u| u.permissions_boundary.as_deref());
+        users.chain(self.roles.values().filter_map(|r| r.permissions_boundary.as_deref())).collect()
     }
 
     pub fn boundary_usage_count(&self, arn: &str) -> usize {

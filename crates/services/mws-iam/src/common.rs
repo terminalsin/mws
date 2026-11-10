@@ -19,6 +19,30 @@ pub const MANAGED_POLICY_MAX_SIZE: usize = 6144;
 /// Default quota for a role trust policy (`ACLSizePerRole`).
 pub const TRUST_POLICY_MAX_SIZE: usize = 2048;
 
+/// An account-level IAM quota: its name in `LimitExceeded` messages, its
+/// Service Quotas code and its default value.
+pub struct Quota {
+    pub name: &'static str,
+    pub code: &'static str,
+    pub default: usize,
+}
+
+pub const USERS_PER_ACCOUNT: Quota = Quota { name: "UsersPerAccount", code: "L-F55AF5E4", default: 5000 };
+pub const GROUPS_PER_ACCOUNT: Quota = Quota { name: "GroupsPerAccount", code: "L-F4A5425F", default: 300 };
+pub const ROLES_PER_ACCOUNT: Quota = Quota { name: "RolesPerAccount", code: "L-FE177D64", default: 1000 };
+pub const POLICIES_PER_ACCOUNT: Quota = Quota { name: "PoliciesPerAccount", code: "L-E95E4862", default: 1500 };
+pub const INSTANCE_PROFILES_PER_ACCOUNT: Quota =
+    Quota { name: "InstanceProfilesPerAccount", code: "L-6E65F664", default: 1000 };
+pub const OIDC_PROVIDERS_PER_ACCOUNT: Quota =
+    Quota { name: "OpenIdConnectProvidersPerAccount", code: "L-858F3967", default: 100 };
+/// Not adjustable.
+pub const GROUPS_PER_USER: usize = 10;
+pub const POLICY_VERSIONS_IN_USE: usize = 10000;
+
+pub fn quota_exceeded(name: &str, limit: usize) -> ServiceError {
+    errors::limit_exceeded(format!("Cannot exceed quota for {name}: {limit}"))
+}
+
 /// Read access to one account's IAM namespace.
 pub(crate) struct StateRead<'a> {
     guard: RwLockReadGuard<'a, BTreeMap<String, State>>,
@@ -103,6 +127,28 @@ impl Iam {
         extra: ConditionContext,
     ) -> Result<(), ServiceError> {
         ctx.authorize(&format!("iam:{action}"), resource, extra)
+    }
+
+    /// A create request that carries `Tags` also needs `iam:Tag<Entity>` on
+    /// the new resource, with the request's tag keys. Never call this while
+    /// holding the state lock.
+    pub(crate) fn authorize_tagging(
+        &self,
+        ctx: &RequestContext,
+        action: &str,
+        resource: &str,
+        tags: &Tags,
+    ) -> Result<(), ServiceError> {
+        if tags.is_empty() {
+            return Ok(());
+        }
+        self.authorize_with(ctx, action, resource, request_tag_context(tags))
+    }
+
+    /// The applied value of an account quota. Never call with the state
+    /// lock held.
+    pub(crate) fn limit(&self, ctx: &RequestContext, q: &Quota) -> usize {
+        self.quota(ctx, q.code, q.default)
     }
 
     pub(crate) fn entity_arn(&self, kind: &str, path: &str, name: &str) -> String {

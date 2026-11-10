@@ -1,6 +1,5 @@
 //! Users, login profiles and access keys.
 
-use chrono::Utc;
 use mws_core::{CallerKind, RequestContext, ServiceError};
 
 use crate::common::*;
@@ -56,23 +55,28 @@ impl Iam {
             cond.insert("iam:PermissionsBoundary".into(), vec![b.clone()]);
         }
         self.authorize_with(ctx, "CreateUser", &arn, cond)?;
+        self.authorize_tagging(ctx, "TagUser", &arn, &tags)?;
         if tags.len() > MAX_TAGS {
             return Err(errors::limit_exceeded(format!("Cannot exceed quota for TagsPerUser: {MAX_TAGS}")));
         }
         if let Some(b) = &input.permissions_boundary {
             self.check_boundary_exists(b)?;
         }
+        let limit = self.limit(ctx, &USERS_PER_ACCOUNT);
         let mut state = self.write();
         let key = input.user_name.to_lowercase();
         if state.users.contains_key(&key) {
             return Err(errors::entity_already_exists(format!("User with name {} already exists.", input.user_name)));
+        }
+        if state.users.len() >= limit {
+            return Err(quota_exceeded(USERS_PER_ACCOUNT.name, limit));
         }
         let user = User {
             name: input.user_name,
             path,
             id: ids::unique_id("AIDA"),
             arn,
-            created: Utc::now(),
+            created: ctx.received_at,
             permissions_boundary: input.permissions_boundary,
             tags,
             inline: Default::default(),
@@ -304,7 +308,7 @@ impl Iam {
         if let Some(pw) = &input.password {
             crate::ops::settings::check_password(policy.as_ref(), pw, &[])?;
         }
-        let now = Utc::now();
+        let now = ctx.received_at;
         let profile = LoginProfile {
             created: now,
             password: input.password.unwrap_or_default(),
@@ -363,7 +367,7 @@ impl Iam {
             let mut history = p.history.clone();
             history.push(p.password.clone());
             crate::ops::settings::check_password(policy.as_ref(), &pw, &history)?;
-            p.set_password(pw);
+            p.set_password(pw, ctx.received_at);
         }
         if let Some(r) = input.password_reset_required {
             p.reset_required = r;
@@ -412,7 +416,7 @@ impl Iam {
             secret: ids::secret_access_key(),
             user_name: user_name.clone(),
             active: true,
-            created: Utc::now(),
+            created: ctx.received_at,
             last_used: None,
         };
         let out = types::AccessKey {

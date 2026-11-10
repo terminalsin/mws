@@ -58,13 +58,13 @@ pub(crate) fn check_password(
 
 impl LoginProfile {
     /// Replace the password, keeping the old one for reuse checks.
-    pub(crate) fn set_password(&mut self, password: String) {
+    pub(crate) fn set_password(&mut self, password: String, now: DateTime<Utc>) {
         let old = std::mem::replace(&mut self.password, password);
         self.history.push(old);
         if self.history.len() > 24 {
             self.history.remove(0);
         }
-        self.changed = Some(Utc::now());
+        self.changed = Some(now);
     }
 }
 
@@ -236,7 +236,7 @@ impl Iam {
         let mut history = lp.history.clone();
         history.push(lp.password.clone());
         check_password(policy.as_ref(), &input.new_password, &history)?;
-        lp.set_password(input.new_password);
+        lp.set_password(input.new_password, ctx.received_at);
         lp.reset_required = false;
         Ok(())
     }
@@ -250,7 +250,7 @@ impl Iam {
     ) -> Result<types::GenerateCredentialReportResponse, ServiceError> {
         self.authorize(ctx, "GenerateCredentialReport", "*")?;
         let mut state = self.write();
-        let now = Utc::now();
+        let now = ctx.received_at;
         match state.credential_report {
             Some(t) if now - t < Duration::hours(REPORT_TTL_HOURS) => {
                 Ok(types::GenerateCredentialReportResponse { state: Some("COMPLETE".into()), description: None })
@@ -275,7 +275,7 @@ impl Iam {
         let generated = state.credential_report.ok_or_else(|| {
             errors::credential_report_not_present("Unable to find a credential report for this account. To generate a credential report, use GenerateCredentialReport.")
         })?;
-        if Utc::now() - generated >= Duration::hours(REPORT_TTL_HOURS) {
+        if ctx.received_at - generated >= Duration::hours(REPORT_TTL_HOURS) {
             return Err(errors::credential_report_expired(
                 "The credential report has expired. To generate a new credential report, use GenerateCredentialReport.",
             ));

@@ -1,6 +1,5 @@
 //! Roles and instance profiles.
 
-use chrono::Utc;
 use mws_core::{ConditionContext, RequestContext, ServiceError};
 use mws_iam_policy::PolicyKind;
 
@@ -83,6 +82,7 @@ impl Iam {
             cond.insert("iam:PermissionsBoundary".into(), vec![b.clone()]);
         }
         self.authorize_with(ctx, "CreateRole", &arn, cond)?;
+        self.authorize_tagging(ctx, "TagRole", &arn, &tags)?;
         self.validate_trust_policy(&input.assume_role_policy_document)?;
         if tags.len() > MAX_TAGS {
             return Err(errors::limit_exceeded(format!("Cannot exceed quota for TagsPerRole: {MAX_TAGS}")));
@@ -90,21 +90,21 @@ impl Iam {
         if let Some(b) = &input.permissions_boundary {
             self.check_boundary_exists(b)?;
         }
-        let limit = self.quota(ctx, ROLES_QUOTA);
+        let limit = self.limit(ctx, &ROLES_PER_ACCOUNT);
         let mut state = self.write();
         let key = input.role_name.to_lowercase();
         if state.roles.contains_key(&key) {
             return Err(errors::entity_already_exists(format!("Role with name {} already exists.", input.role_name)));
         }
         if state.roles.len() >= limit {
-            return Err(errors::limit_exceeded(format!("Cannot exceed quota for RolesPerAccount: {limit}")));
+            return Err(quota_exceeded(ROLES_PER_ACCOUNT.name, limit));
         }
         let role = Role {
             name: input.role_name,
             path,
             id: ids::unique_id("AROA"),
             arn,
-            created: Utc::now(),
+            created: ctx.received_at,
             trust_policy: input.assume_role_policy_document,
             description: input.description,
             max_session_duration: input.max_session_duration.unwrap_or(DEFAULT_MAX_SESSION),
@@ -309,6 +309,8 @@ impl Iam {
         let arn = self.entity_arn("instance-profile", &path, &input.instance_profile_name);
         let tags = tags_from_wire(input.tags)?;
         self.authorize_with(ctx, "CreateInstanceProfile", &arn, request_tag_context(&tags))?;
+        self.authorize_tagging(ctx, "TagInstanceProfile", &arn, &tags)?;
+        let limit = self.limit(ctx, &INSTANCE_PROFILES_PER_ACCOUNT);
         let mut state = self.write();
         let key = input.instance_profile_name.to_lowercase();
         if state.instance_profiles.contains_key(&key) {
@@ -317,12 +319,15 @@ impl Iam {
                 input.instance_profile_name
             )));
         }
+        if state.instance_profiles.len() >= limit {
+            return Err(quota_exceeded(INSTANCE_PROFILES_PER_ACCOUNT.name, limit));
+        }
         let ip = InstanceProfile {
             name: input.instance_profile_name,
             path,
             id: ids::unique_id("AIPA"),
             arn,
-            created: Utc::now(),
+            created: ctx.received_at,
             roles: vec![],
             tags,
         };
@@ -521,8 +526,6 @@ impl Iam {
     }
 }
 
-/// Service Quotas' "Roles per account".
-const ROLES_QUOTA: &str = "L-FE177D64";
 /// A role IAM Identity Center provisioned (`AWSReservedSSO_*`): only AWS may
 /// change it.
 pub(crate) fn is_reserved(role: &crate::state::Role) -> bool {

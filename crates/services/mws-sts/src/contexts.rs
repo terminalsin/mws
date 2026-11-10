@@ -34,14 +34,21 @@ impl Sts {
         aws_lc_rs::rand::fill(&mut bytes).expect("system randomness");
         let assertion = base64::engine::general_purpose::STANDARD.encode(bytes);
         let mut contexts = self.inner.contexts.lock().unwrap_or_else(|e| e.into_inner());
-        let now = Utc::now();
-        contexts.retain(|_, c| c.expires_at > now - chrono::Duration::hours(1));
+        // Expiry is judged on the emulated clock, which only requests know
+        // (see `provided_context`). Here, drop only what expired long before
+        // the new assertion expires, so wall time never decides.
+        let horizon = context.expires_at - chrono::Duration::days(1);
+        contexts.retain(|_, c| c.expires_at > horizon);
         contexts.insert(assertion.clone(), context);
         assertion
     }
 
-    pub(crate) fn context_for(&self, assertion: &str) -> Option<IdentityContext> {
-        self.inner.contexts.lock().unwrap_or_else(|e| e.into_inner()).get(assertion).cloned()
+    /// The context behind `assertion`, pruning those that expired over an
+    /// hour before `now` (the request's emulated time).
+    pub(crate) fn context_for(&self, assertion: &str, now: DateTime<Utc>) -> Option<IdentityContext> {
+        let mut contexts = self.inner.contexts.lock().unwrap_or_else(|e| e.into_inner());
+        contexts.retain(|_, c| c.expires_at > now - chrono::Duration::hours(1));
+        contexts.get(assertion).cloned()
     }
 }
 
@@ -60,7 +67,7 @@ impl Sts {
                 return Err(validation(format!("{provider} is not a valid context provider ARN.")));
             }
             let found = self
-                .context_for(assertion)
+                .context_for(assertion, ctx.received_at)
                 .filter(|x| x.provider_arn == provider)
                 .ok_or_else(|| validation("The provided context assertion is invalid."))?;
             if found.expires_at <= ctx.received_at {

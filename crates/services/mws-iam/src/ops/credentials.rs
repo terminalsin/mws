@@ -265,7 +265,7 @@ impl Iam {
             body: input.ssh_public_key_body.trim().to_string(),
             fingerprint,
             active: true,
-            uploaded: Utc::now(),
+            uploaded: ctx.received_at,
         };
         let out = ssh.wire(&name, "SSH");
         state.ssh_keys.insert(ssh.id.clone(), ssh);
@@ -398,7 +398,8 @@ impl Iam {
                 "Cannot exceed quota for CertificatesPerUser: {MAX_SIGNING_CERTS}"
             )));
         }
-        let cert = SigningCertificate { id: random_id("", 32), user: key, body, active: true, uploaded: Utc::now() };
+        let cert =
+            SigningCertificate { id: random_id("", 32), user: key, body, active: true, uploaded: ctx.received_at };
         let out = types::SigningCertificate {
             user_name: name,
             certificate_id: cert.id.clone(),
@@ -547,7 +548,7 @@ impl Iam {
             }
             _ => B64.encode(secret),
         };
-        let now = Utc::now();
+        let now = ctx.received_at;
         let cred = ServiceCredential {
             id: random_id("ACCA", 17),
             user: key,
@@ -685,6 +686,7 @@ impl Iam {
         let arn = self.entity_arn("server-certificate", &path, &input.server_certificate_name);
         let tags = tags_from_wire(input.tags)?;
         self.authorize_with(ctx, "UploadServerCertificate", &arn, request_tag_context(&tags))?;
+        self.authorize_tagging(ctx, "TagServerCertificate", &arn, &tags)?;
         let (spki, expiration) = parse_cert(&input.certificate_body)?;
         if let Some(chain) = &input.certificate_chain {
             for pem in Pem::iter_from_buffer(chain.as_bytes()) {
@@ -719,7 +721,7 @@ impl Iam {
             arn,
             body: input.certificate_body.trim().to_string(),
             chain: input.certificate_chain.map(|c| c.trim().to_string()),
-            uploaded: Utc::now(),
+            uploaded: ctx.received_at,
             expiration: Some(expiration),
             tags,
         };

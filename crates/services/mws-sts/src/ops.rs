@@ -294,7 +294,14 @@ impl Handler for Sts {
         }
         let packed_policy_size = Self::check_packed(packed, &request_tags)?;
 
+        // STS checks the MFA code before it evaluates any policy, and the
+        // policies then see an MFA-authenticated request.
+        let mfa = self.check_mfa(caller, input.serial_number.as_deref(), input.token_code.as_deref())?;
         let mut cond = Self::request_tag_context(&request_tags);
+        if mfa {
+            cond.insert("aws:MultiFactorAuthPresent".into(), vec!["true".into()]);
+            cond.insert("aws:MultiFactorAuthAge".into(), vec!["0".into()]);
+        }
         cond.insert("sts:RoleSessionName".into(), vec![input.role_session_name.clone()]);
         if let Some(e) = &input.external_id {
             cond.insert("sts:ExternalId".into(), vec![e.clone()]);
@@ -319,7 +326,6 @@ impl Handler for Sts {
                 .map_err(|_| not_authorized())?;
         }
 
-        let mfa = self.check_mfa(caller, input.serial_number.as_deref(), input.token_code.as_deref())?;
         let new_caller = self.assumed_role_caller(&role, &input.role_session_name);
         let assumed_role_user =
             types::AssumedRoleUser { assumed_role_id: new_caller.user_id.clone(), arn: new_caller.arn.clone() };
@@ -389,8 +395,9 @@ impl Handler for Sts {
         let denied = || access_denied("Not authorized to perform sts:AssumeRoleWithWebIdentity");
         let role = self.iam().role_by_arn(&input.role_arn).ok_or_else(denied)?;
 
-        // Only the trust policy decides: there is no calling IAM identity.
-        let mut cond = ConditionContext::new();
+        // There is no calling IAM identity: the trust policy decides, within
+        // the resource control policies of the role's organization.
+        let mut cond = crate::extra::federated_request_keys(ctx);
         cond.insert(format!("{}:aud", provider.url), vec![audience.clone()]);
         cond.insert(format!("{}:sub", provider.url), vec![claims.sub.clone()]);
         if let Some(amr) = claims.raw.get("amr").and_then(|v| v.as_array()) {
@@ -409,8 +416,7 @@ impl Handler for Sts {
         if let Some(si) = &session_tags.source_identity {
             cond.insert("sts:SourceIdentity".into(), vec![si.clone()]);
         }
-        let allows =
-            |action: &str| crate::extra::trust_allows(&role.trust_policy, action, &role.arn, &provider.arn, &cond);
+        let allows = |action: &str| self.trust_allows(&role.trust_policy, action, &role.arn, &provider.arn, &cond);
         if !allows("sts:AssumeRoleWithWebIdentity") {
             return Err(denied());
         }

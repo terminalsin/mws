@@ -131,7 +131,14 @@ impl SsoAdmin {
         ctx: &RequestContext,
         input: types::CreateApplicationRequest,
     ) -> Result<types::CreateApplicationResponse, ServiceError> {
-        let r = self.instance(ctx, &input.instance_arn, "sso:CreateApplication", None)?;
+        let tags = tags_from(input.tags.clone())?;
+        let r = self.instance_on(
+            ctx,
+            &input.instance_arn,
+            "sso:CreateApplication",
+            &[&input.instance_arn],
+            request_tag_context(&tags),
+        )?;
         let custom = format!("arn:{}:sso::aws:{CUSTOM_PROVIDER}", ctx.partition);
         if input.application_provider_arn != custom {
             if providers(&ctx.partition).iter().any(|p| p.application_provider_arn == input.application_provider_arn) {
@@ -141,7 +148,6 @@ impl SsoAdmin {
             }
             return Err(not_found(format!("Application provider {} doesn't exist.", input.application_provider_arn)));
         }
-        let tags = tags_from(input.tags)?;
         let store_arn = self.identity.store(&r.identity_store_id).map(|s| s.arn);
         self.with_instance(&r.arn, |i| {
             if i.applications.len() >= 3000 {
@@ -629,13 +635,19 @@ impl SsoAdmin {
         ctx: &RequestContext,
         input: types::CreateTrustedTokenIssuerRequest,
     ) -> Result<types::CreateTrustedTokenIssuerResponse, ServiceError> {
-        let r = self.instance(ctx, &input.instance_arn, "sso:CreateTrustedTokenIssuer", None)?;
+        let tags = tags_from(input.tags.clone())?;
+        let r = self.instance_on(
+            ctx,
+            &input.instance_arn,
+            "sso:CreateTrustedTokenIssuer",
+            &[&input.instance_arn],
+            request_tag_context(&tags),
+        )?;
         let types::TrustedTokenIssuerConfiguration::OidcJwtConfiguration(config) =
             input.trusted_token_issuer_configuration;
         if !config.issuer_url.starts_with("https://") {
             return Err(errors::validation("The issuer URL must use HTTPS."));
         }
-        let tags = tags_from(input.tags)?;
         self.with_instance(&r.arn, |i| {
             if i.token_issuers.values().any(|t| t.name == input.name) {
                 return Err(errors::conflict(format!("A trusted token issuer named {} already exists.", input.name)));
