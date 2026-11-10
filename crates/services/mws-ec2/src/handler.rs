@@ -1934,4 +1934,326 @@ impl Handler for Ec2 {
     ) -> Result<types::DescribeReservedInstancesResult, ServiceError> {
         self.describe_reserved_instances_op(ctx, input)
     }
+    async fn get_default_credit_specification(
+        &self,
+        ctx: &RequestContext,
+        input: types::GetDefaultCreditSpecificationRequest,
+    ) -> Result<types::GetDefaultCreditSpecificationResult, ServiceError> {
+        self.get_default_credit_specification_op(ctx, input)
+    }
+    async fn modify_default_credit_specification(
+        &self,
+        ctx: &RequestContext,
+        input: types::ModifyDefaultCreditSpecificationRequest,
+    ) -> Result<types::ModifyDefaultCreditSpecificationResult, ServiceError> {
+        self.modify_default_credit_specification_op(ctx, input)
+    }
+    async fn get_instance_metadata_defaults(
+        &self,
+        ctx: &RequestContext,
+        input: types::GetInstanceMetadataDefaultsRequest,
+    ) -> Result<types::GetInstanceMetadataDefaultsResult, ServiceError> {
+        self.get_instance_metadata_defaults_op(ctx, input)
+    }
+    async fn modify_instance_metadata_defaults(
+        &self,
+        ctx: &RequestContext,
+        input: types::ModifyInstanceMetadataDefaultsRequest,
+    ) -> Result<types::ModifyInstanceMetadataDefaultsResult, ServiceError> {
+        self.modify_instance_metadata_defaults_op(ctx, input)
+    }
+    async fn enable_serial_console_access(
+        &self,
+        ctx: &RequestContext,
+        input: types::EnableSerialConsoleAccessRequest,
+    ) -> Result<types::EnableSerialConsoleAccessResult, ServiceError> {
+        self.enable_serial_console_access_op(ctx, input)
+    }
+    async fn disable_serial_console_access(
+        &self,
+        ctx: &RequestContext,
+        input: types::DisableSerialConsoleAccessRequest,
+    ) -> Result<types::DisableSerialConsoleAccessResult, ServiceError> {
+        self.disable_serial_console_access_op(ctx, input)
+    }
+    async fn get_serial_console_access_status(
+        &self,
+        ctx: &RequestContext,
+        input: types::GetSerialConsoleAccessStatusRequest,
+    ) -> Result<types::GetSerialConsoleAccessStatusResult, ServiceError> {
+        self.get_serial_console_access_status_op(ctx, input)
+    }
+    async fn enable_image_block_public_access(
+        &self,
+        ctx: &RequestContext,
+        input: types::EnableImageBlockPublicAccessRequest,
+    ) -> Result<types::EnableImageBlockPublicAccessResult, ServiceError> {
+        self.enable_image_block_public_access_op(ctx, input)
+    }
+    async fn disable_image_block_public_access(
+        &self,
+        ctx: &RequestContext,
+        input: types::DisableImageBlockPublicAccessRequest,
+    ) -> Result<types::DisableImageBlockPublicAccessResult, ServiceError> {
+        self.disable_image_block_public_access_op(ctx, input)
+    }
+    async fn get_image_block_public_access_state(
+        &self,
+        ctx: &RequestContext,
+        input: types::GetImageBlockPublicAccessStateRequest,
+    ) -> Result<types::GetImageBlockPublicAccessStateResult, ServiceError> {
+        self.get_image_block_public_access_state_op(ctx, input)
+    }
+    async fn describe_id_format(
+        &self,
+        ctx: &RequestContext,
+        input: types::DescribeIdFormatRequest,
+    ) -> Result<types::DescribeIdFormatResult, ServiceError> {
+        self.describe_id_format_op(ctx, input)
+    }
+    async fn describe_identity_id_format(
+        &self,
+        ctx: &RequestContext,
+        input: types::DescribeIdentityIdFormatRequest,
+    ) -> Result<types::DescribeIdentityIdFormatResult, ServiceError> {
+        self.describe_identity_id_format_op(ctx, input)
+    }
+    async fn describe_principal_id_format(
+        &self,
+        ctx: &RequestContext,
+        input: types::DescribePrincipalIdFormatRequest,
+    ) -> Result<types::DescribePrincipalIdFormatResult, ServiceError> {
+        self.describe_principal_id_format_op(ctx, input)
+    }
+    async fn describe_aggregate_id_format(
+        &self,
+        ctx: &RequestContext,
+        input: types::DescribeAggregateIdFormatRequest,
+    ) -> Result<types::DescribeAggregateIdFormatResult, ServiceError> {
+        self.describe_aggregate_id_format_op(ctx, input)
+    }
+    async fn modify_id_format(
+        &self,
+        ctx: &RequestContext,
+        input: types::ModifyIdFormatRequest,
+    ) -> Result<(), ServiceError> {
+        self.modify_id_format_op(ctx, input)
+    }
+    async fn modify_identity_id_format(
+        &self,
+        ctx: &RequestContext,
+        input: types::ModifyIdentityIdFormatRequest,
+    ) -> Result<(), ServiceError> {
+        self.modify_identity_id_format_op(ctx, input)
+    }
+    async fn monitor_instances(
+        &self,
+        ctx: &RequestContext,
+        input: types::MonitorInstancesRequest,
+    ) -> Result<types::MonitorInstancesResult, ServiceError> {
+        self.monitor_instances_op(ctx, input)
+    }
+    async fn unmonitor_instances(
+        &self,
+        ctx: &RequestContext,
+        input: types::UnmonitorInstancesRequest,
+    ) -> Result<types::UnmonitorInstancesResult, ServiceError> {
+        self.unmonitor_instances_op(ctx, input)
+    }
+    async fn modify_instance_maintenance_options(
+        &self,
+        ctx: &RequestContext,
+        input: types::ModifyInstanceMaintenanceOptionsRequest,
+    ) -> Result<types::ModifyInstanceMaintenanceOptionsResult, ServiceError> {
+        self.modify_instance_maintenance_options_op(ctx, input)
+    }
+    async fn modify_instance_cpu_options(
+        &self,
+        ctx: &RequestContext,
+        input: types::ModifyInstanceCpuOptionsRequest,
+    ) -> Result<types::ModifyInstanceCpuOptionsResult, ServiceError> {
+        self.modify_instance_cpu_options_op(ctx, input)
+    }
+    async fn modify_instance_capacity_reservation_attributes(
+        &self,
+        ctx: &RequestContext,
+        input: types::ModifyInstanceCapacityReservationAttributesRequest,
+    ) -> Result<types::ModifyInstanceCapacityReservationAttributesResult, ServiceError> {
+        self.modify_instance_capacity_reservation_attributes_op(ctx, input)
+    }
+    async fn modify_private_dns_name_options(
+        &self,
+        ctx: &RequestContext,
+        input: types::ModifyPrivateDnsNameOptionsRequest,
+    ) -> Result<types::ModifyPrivateDnsNameOptionsResult, ServiceError> {
+        self.modify_private_dns_name_options_op(ctx, input)
+    }
+    async fn reset_instance_attribute(
+        &self,
+        ctx: &RequestContext,
+        input: types::ResetInstanceAttributeRequest,
+    ) -> Result<(), ServiceError> {
+        self.reset_instance_attribute_op(ctx, input)
+    }
+    async fn report_instance_status(
+        &self,
+        ctx: &RequestContext,
+        input: types::ReportInstanceStatusRequest,
+    ) -> Result<(), ServiceError> {
+        self.report_instance_status_op(ctx, input)
+    }
+    async fn send_diagnostic_interrupt(
+        &self,
+        ctx: &RequestContext,
+        input: types::SendDiagnosticInterruptRequest,
+    ) -> Result<(), ServiceError> {
+        self.send_diagnostic_interrupt_op(ctx, input)
+    }
+    async fn describe_instance_topology(
+        &self,
+        ctx: &RequestContext,
+        input: types::DescribeInstanceTopologyRequest,
+    ) -> Result<types::DescribeInstanceTopologyResult, ServiceError> {
+        self.describe_instance_topology_op(ctx, input)
+    }
+    async fn enable_image_deprecation(
+        &self,
+        ctx: &RequestContext,
+        input: types::EnableImageDeprecationRequest,
+    ) -> Result<types::EnableImageDeprecationResult, ServiceError> {
+        self.enable_image_deprecation_op(ctx, input)
+    }
+    async fn disable_image_deprecation(
+        &self,
+        ctx: &RequestContext,
+        input: types::DisableImageDeprecationRequest,
+    ) -> Result<types::DisableImageDeprecationResult, ServiceError> {
+        self.disable_image_deprecation_op(ctx, input)
+    }
+    async fn enable_image_deregistration_protection(
+        &self,
+        ctx: &RequestContext,
+        input: types::EnableImageDeregistrationProtectionRequest,
+    ) -> Result<types::EnableImageDeregistrationProtectionResult, ServiceError> {
+        self.enable_image_deregistration_protection_op(ctx, input)
+    }
+    async fn disable_image_deregistration_protection(
+        &self,
+        ctx: &RequestContext,
+        input: types::DisableImageDeregistrationProtectionRequest,
+    ) -> Result<types::DisableImageDeregistrationProtectionResult, ServiceError> {
+        self.disable_image_deregistration_protection_op(ctx, input)
+    }
+    async fn enable_image(
+        &self,
+        ctx: &RequestContext,
+        input: types::EnableImageRequest,
+    ) -> Result<types::EnableImageResult, ServiceError> {
+        self.enable_image_op(ctx, input)
+    }
+    async fn disable_image(
+        &self,
+        ctx: &RequestContext,
+        input: types::DisableImageRequest,
+    ) -> Result<types::DisableImageResult, ServiceError> {
+        self.disable_image_op(ctx, input)
+    }
+    async fn reset_image_attribute(
+        &self,
+        ctx: &RequestContext,
+        input: types::ResetImageAttributeRequest,
+    ) -> Result<(), ServiceError> {
+        self.reset_image_attribute_op(ctx, input)
+    }
+    async fn cancel_image_launch_permission(
+        &self,
+        ctx: &RequestContext,
+        input: types::CancelImageLaunchPermissionRequest,
+    ) -> Result<types::CancelImageLaunchPermissionResult, ServiceError> {
+        self.cancel_image_launch_permission_op(ctx, input)
+    }
+    async fn create_placement_group(
+        &self,
+        ctx: &RequestContext,
+        input: types::CreatePlacementGroupRequest,
+    ) -> Result<types::CreatePlacementGroupResult, ServiceError> {
+        self.create_placement_group_op(ctx, input)
+    }
+    async fn describe_placement_groups(
+        &self,
+        ctx: &RequestContext,
+        input: types::DescribePlacementGroupsRequest,
+    ) -> Result<types::DescribePlacementGroupsResult, ServiceError> {
+        self.describe_placement_groups_op(ctx, input)
+    }
+    async fn delete_placement_group(
+        &self,
+        ctx: &RequestContext,
+        input: types::DeletePlacementGroupRequest,
+    ) -> Result<(), ServiceError> {
+        self.delete_placement_group_op(ctx, input)
+    }
+    async fn create_capacity_reservation(
+        &self,
+        ctx: &RequestContext,
+        input: types::CreateCapacityReservationRequest,
+    ) -> Result<types::CreateCapacityReservationResult, ServiceError> {
+        self.create_capacity_reservation_op(ctx, input)
+    }
+    async fn describe_capacity_reservations(
+        &self,
+        ctx: &RequestContext,
+        input: types::DescribeCapacityReservationsRequest,
+    ) -> Result<types::DescribeCapacityReservationsResult, ServiceError> {
+        self.describe_capacity_reservations_op(ctx, input)
+    }
+    async fn modify_capacity_reservation(
+        &self,
+        ctx: &RequestContext,
+        input: types::ModifyCapacityReservationRequest,
+    ) -> Result<types::ModifyCapacityReservationResult, ServiceError> {
+        self.modify_capacity_reservation_op(ctx, input)
+    }
+    async fn cancel_capacity_reservation(
+        &self,
+        ctx: &RequestContext,
+        input: types::CancelCapacityReservationRequest,
+    ) -> Result<types::CancelCapacityReservationResult, ServiceError> {
+        self.cancel_capacity_reservation_op(ctx, input)
+    }
+    async fn get_capacity_reservation_usage(
+        &self,
+        ctx: &RequestContext,
+        input: types::GetCapacityReservationUsageRequest,
+    ) -> Result<types::GetCapacityReservationUsageResult, ServiceError> {
+        self.get_capacity_reservation_usage_op(ctx, input)
+    }
+    async fn reset_network_interface_attribute(
+        &self,
+        ctx: &RequestContext,
+        input: types::ResetNetworkInterfaceAttributeRequest,
+    ) -> Result<(), ServiceError> {
+        self.reset_network_interface_attribute_op(ctx, input)
+    }
+    async fn create_network_interface_permission(
+        &self,
+        ctx: &RequestContext,
+        input: types::CreateNetworkInterfacePermissionRequest,
+    ) -> Result<types::CreateNetworkInterfacePermissionResult, ServiceError> {
+        self.create_network_interface_permission_op(ctx, input)
+    }
+    async fn describe_network_interface_permissions(
+        &self,
+        ctx: &RequestContext,
+        input: types::DescribeNetworkInterfacePermissionsRequest,
+    ) -> Result<types::DescribeNetworkInterfacePermissionsResult, ServiceError> {
+        self.describe_network_interface_permissions_op(ctx, input)
+    }
+    async fn delete_network_interface_permission(
+        &self,
+        ctx: &RequestContext,
+        input: types::DeleteNetworkInterfacePermissionRequest,
+    ) -> Result<types::DeleteNetworkInterfacePermissionResult, ServiceError> {
+        self.delete_network_interface_permission_op(ctx, input)
+    }
 }

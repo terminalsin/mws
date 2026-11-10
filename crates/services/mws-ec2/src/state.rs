@@ -95,6 +95,20 @@ pub struct RegionState {
     pub reserved_instances: BTreeMap<String, t::ReservedInstances>,
     /// VPC endpoint services this account provides, by service id.
     pub endpoint_services: BTreeMap<String, EndpointServiceRecord>,
+    /// Account default credit option per burstable family, when changed.
+    pub default_credit_specs: BTreeMap<String, String>,
+    /// Account-level instance metadata defaults (unset fields: no preference).
+    pub metadata_defaults: t::InstanceMetadataDefaultsResponse,
+    pub serial_console_access: bool,
+    /// `block-new-sharing` or `unblocked`; `None` is the default (blocked).
+    pub image_block_public_access: Option<String>,
+    /// By group id.
+    pub placement_groups: BTreeMap<String, t::PlacementGroup>,
+    pub capacity_reservations: BTreeMap<String, t::CapacityReservation>,
+    /// `CreateCapacityReservation` client tokens, to their reservations.
+    pub capacity_reservation_tokens: BTreeMap<String, String>,
+    /// Network interface permissions, by permission id.
+    pub eni_permissions: BTreeMap<String, t::NetworkInterfacePermission>,
 }
 
 /// A PrivateLink endpoint service: its configuration, who may connect, and

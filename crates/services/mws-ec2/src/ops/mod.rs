@@ -13,6 +13,7 @@ pub mod launch_template;
 pub mod misc;
 pub mod peering;
 pub mod reserved;
+pub mod settings;
 pub mod sg;
 pub mod snapshot;
 pub mod spot;

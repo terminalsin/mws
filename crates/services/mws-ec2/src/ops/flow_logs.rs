@@ -24,7 +24,7 @@ fn unsuccessful(id: &str, code: &str, message: impl Into<String>) -> t::Unsucces
 }
 
 /// Whether an instance type earns CPU credits, and its default option.
-fn burstable_default(instance_type: &str) -> Option<&'static str> {
+pub(crate) fn burstable_default(instance_type: &str) -> Option<&'static str> {
     let family = instance_type.split('.').next().unwrap_or_default();
     match family {
         "t2" => Some("standard"),

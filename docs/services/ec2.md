@@ -2,7 +2,7 @@
 
 > Crate: [`mws-ec2`](../../crates/services/mws-ec2) · Tests: [`tests/e2e-rust/tests/e2e/ec2.rs`](../../tests/e2e-rust/tests/e2e/ec2.rs), [`ec2_gateways.rs`](../../tests/e2e-rust/tests/e2e/ec2_gateways.rs), [`ec2_capacity.rs`](../../tests/e2e-rust/tests/e2e/ec2_capacity.rs)
 
-279 of the model's 811 operations are generated (ec2Query) and implemented; the rest answer `NotImplemented`. Responses use EC2's filters, pagination, `DryRun`, id formats and `InvalidXxx.Malformed`/`.NotFound` errors.
+325 of the model's 811 operations are generated (ec2Query) and implemented; the rest answer `NotImplemented`. Responses use EC2's filters, pagination, `DryRun`, id formats and `InvalidXxx.Malformed`/`.NotFound` errors.
 
 ✅ supported · 🟡 partial · ❌ not supported
 
@@ -14,7 +14,7 @@
 | VPCs and subnets | ✅ | Secondary CIDR blocks, DNS attributes, CIDR checks against the VPC and its other subnets, five reserved addresses, `MapPublicIpOnLaunch`. |
 | Security groups | ✅ | Rules with `sgr-` ids, the legacy flat form and `IpPermissions`, group references, `ModifySecurityGroupRules`, descriptions, duplicate and limit errors. |
 | Route tables and gateways | ✅ | Routes to internet gateways, NAT gateways on Elastic IPs, interfaces and instances; main and subnet associations. |
-| Network ACLs, DHCP options, interfaces, Elastic IPs | ✅ | Managed with EC2's rules. |
+| Network ACLs, DHCP options, interfaces, Elastic IPs | ✅ | Managed with EC2's rules; interface permissions for other accounts and services, and attribute resets. |
 | NAT gateways | ✅ | On Elastic IPs; deleting one leaves blackhole routes, and deleted gateways stay listed for an hour. Internet gateways cannot be detached while the VPC has public addresses. |
 | Elastic IP reverse DNS | ✅ | `ModifyAddressAttribute`, `DescribeAddressesAttribute`, `ResetAddressAttribute`. |
 | Gateway endpoints | ✅ | S3 and DynamoDB: routes to the service's AWS-managed prefix list (`pl-63a5400a` for S3 in us-east-1, as in AWS) in the route tables named; one per service and VPC. |
@@ -55,6 +55,11 @@
 | Spot Fleet | 🟡 | `RequestSpotFleet` with launch specifications (comma-separated subnets and zones) or launch templates with overrides, weighted capacity, On-Demand capacity, the `lowestPrice`, `diversified`, capacity-optimized and prioritized strategies; `maintain` fleets replace instances that end; `ModifySpotFleetRequest` launches or terminates the difference; `CancelSpotFleetRequests` with or without terminating; history; `aws:ec2spot:fleet-request-id` tags. Load balancer registration and capacity rebalancing are not done. |
 | EC2 Fleet | 🟡 | `CreateFleet` of type `instant` (launches and reports instances and errors, honouring minimum target capacity), `request` and `maintain` (replaces instances that end), On-Demand and Spot capacity with weighted overrides and allocation strategies, `ModifyFleet`, `DeleteFleets`, `DescribeFleetInstances`, `DescribeFleetHistory`, `aws:ec2:fleet-id` tags. Capacity reservations and `InstanceRequirements` (attribute-based selection) are not supported. |
 | Instance extras | ✅ | Credit specifications for burstable types, `GetPasswordData` (empty without a Windows password), `GetInstanceUefiData` for UEFI instances. |
+| Account defaults | ✅ | Default credit specifications per burstable family and instance metadata defaults apply to new instances (launch parameters, then the AMI, then the account default); serial console access; AMI block public access (on by default, as for new accounts) refuses public launch permissions; id formats are always long. |
+| Instance settings | ✅ | Detailed monitoring, maintenance options, CPU options and resource-name hostnames (stopped instances only, as on AWS), `ResetInstanceAttribute`, `ReportInstanceStatus`, `SendDiagnosticInterrupt`, `DescribeInstanceTopology` for the families that have network topology. |
+| AMI controls | ✅ | Deprecation (deprecated images are hidden from other accounts unless asked for), deregistration protection with the 24-hour cooldown on the emulated clock, disabled images (hidden, unshared and not launchable), `ResetImageAttribute`, `CancelImageLaunchPermission`. |
+| Placement groups | ✅ | Cluster (one zone), spread (seven instances per zone) and partition groups (instances spread over partitions, or a chosen partition); groups in use can't be deleted. |
+| Capacity reservations | ✅ | Open reservations take matching launches, targeted ones only those that name them; available counts follow pending and running instances, `ReservationCapacityExceeded` when full, limited reservations expire on the emulated clock, `GetCapacityReservationUsage`, `ModifyInstanceCapacityReservationAttributes` for stopped instances. |
 | Dedicated Hosts | ✅ | `AllocateHosts` for an instance type or a whole family (sockets, cores and vCPUs of AWS's host sizes), auto-placement, `RunInstances` with `Placement.HostId` or `Tenancy: host`, capacity per instance type from the instances on the host, `ModifyHosts`, `ReleaseHosts` (refused while occupied; released hosts stay listed for an hour) and `ModifyInstancePlacement` for stopped instances. Host reservations and host resource groups are not supported. |
 | Reserved Instances | 🟡 | `DescribeReservedInstancesOfferings` from a catalogue priced off the On-Demand rates (Standard and Convertible, one and three years, No/Partial/All Upfront, Region or zone scope, default or dedicated tenancy), `PurchaseReservedInstancesOffering` (queued until `PurchaseTime`), `DescribeReservedInstances` (retired when the term ends on the emulated clock). Purchases skip `payment-pending`; no billing discount is applied and the Marketplace, modifications and exchanges are not supported. |
 

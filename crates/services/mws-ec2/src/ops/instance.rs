@@ -412,6 +412,9 @@ impl Ec2 {
         };
         let image_id = input.image_id.clone().ok_or_else(|| missing_parameter("ImageId"))?;
         let image = self.find_image(ctx, &image_id)?;
+        if image.record.image.state.as_deref() == Some("disabled") {
+            return Err(err("InvalidAMIID.Unavailable", format!("AMI '{image_id}' is disabled, and cannot be run")));
+        }
         if image.record.image.state.as_deref() != Some("available") {
             return Err(err("InvalidAMIID.Unavailable", format!("AMI '{image_id}' is pending, and cannot be run")));
         }
@@ -663,6 +666,43 @@ impl Ec2 {
             } else {
                 count
             };
+            let tenancy = if wants_host {
+                "host".to_string()
+            } else {
+                input.placement.as_ref().and_then(|p| p.tenancy.clone()).unwrap_or_else(|| "default".into())
+            };
+            let partitions = super::settings::check_placement_group(r, input.placement.as_ref(), &zone, count)?;
+            let reservation = super::settings::pick_reservation(
+                r,
+                input.capacity_reservation_specification.as_ref(),
+                &instance_type,
+                &zone,
+                &tenancy,
+                count,
+                now,
+            )?;
+            let defaults = r.metadata_defaults.clone();
+            let family = instance_type.split('.').next().unwrap_or_default().to_string();
+            let credits = super::flow_logs::burstable_default(&instance_type).map(|d| {
+                input
+                    .credit_specification
+                    .as_ref()
+                    .map(|c| c.cpu_credits.clone())
+                    .or_else(|| r.default_credit_specs.get(&family).cloned())
+                    .unwrap_or_else(|| d.to_string())
+            });
+            let default_threads = if itype.arch == "arm64" || itype.vcpus == 1 { 1 } else { 2 };
+            let threads = input.cpu_options.as_ref().and_then(|c| c.threads_per_core).unwrap_or(default_threads);
+            let cores = input.cpu_options.as_ref().and_then(|c| c.core_count).unwrap_or(itype.vcpus as i32 / default_threads.max(1));
+            if !(1..=2).contains(&threads) || cores < 1 || cores * threads > itype.vcpus as i32 {
+                return Err(invalid_parameter(format!(
+                    "The specified CPU options are not valid for instance type {instance_type}: {cores} cores with {threads} threads per core."
+                )));
+            }
+            let dns_opts = input.private_dns_name_options.clone().unwrap_or_default();
+            if let Some(h) = dns_opts.hostname_type.as_deref().filter(|h| !["ip-name", "resource-name"].contains(h)) {
+                return Err(invalid_parameter(format!("Value ({h}) for parameter PrivateDnsHostnameType is invalid.")));
+            }
             let plans = super::ebs::plan_block_devices(
                 ctx,
                 &account,
@@ -671,7 +711,7 @@ impl Ec2 {
                 input.block_device_mappings.as_deref().unwrap_or_default(),
             )?;
             let mut out = Vec::new();
-            for index in 0..count {
+            for (index, partition) in partitions.iter().copied().enumerate().take(count) {
                 let instance_id = new_id("i");
                 let host_id = if wants_host {
                     Some(super::hosts::place(r, input.placement.as_ref().expect("host placement"), &instance_type, &zone)?)
@@ -724,7 +764,18 @@ impl Ec2 {
                         });
                     }
                 }
-                let dns = private_dns(&region, &ip);
+                let dns = if dns_opts.hostname_type.as_deref() == Some("resource-name") {
+                    if region == "us-east-1" {
+                        format!("{instance_id}.ec2.internal")
+                    } else {
+                        format!("{instance_id}.{region}.compute.internal")
+                    }
+                } else {
+                    private_dns(&region, &ip)
+                };
+                if let Some(c) = &credits {
+                    r.instance_credit_specifications.insert(instance_id.clone(), c.clone());
+                }
                 let instance = t::Instance {
                     instance_id: Some(instance_id.clone()),
                     image_id: Some(image_id.clone()),
@@ -744,6 +795,7 @@ impl Ec2 {
                         tenancy: Some(if host_id.is_some() { "host".into() } else { input.placement.as_ref().and_then(|p| p.tenancy.clone()).unwrap_or_else(|| "default".into()) }),
                         host_id: host_id.clone(),
                         affinity: host_id.as_ref().map(|_| input.placement.as_ref().and_then(|p| p.affinity.clone()).unwrap_or_else(|| "default".into())),
+                        partition_number: partition,
                         ..Default::default()
                     }),
                     monitoring: Some(t::Monitoring {
@@ -762,24 +814,35 @@ impl Ec2 {
                     virtualization_type: Some("hvm".into()),
                     tags: some_tags(tags.iter().chain(&system_tags).cloned().collect()),
                     cpu_options: Some(t::CpuOptions {
-                        core_count: Some((itype.vcpus / if itype.arch == "arm64" || itype.vcpus == 1 { 1 } else { 2 }) as i32),
-                        threads_per_core: Some(if itype.arch == "arm64" || itype.vcpus == 1 { 1 } else { 2 }),
+                        core_count: Some(cores),
+                        threads_per_core: Some(threads),
+                        nested_virtualization: input.cpu_options.as_ref().and_then(|c| c.nested_virtualization.clone()),
                         ..Default::default()
                     }),
-                    capacity_reservation_specification: Some(t::CapacityReservationSpecificationResponse {
-                        capacity_reservation_preference: Some("open".into()),
-                        capacity_reservation_target: None,
+                    capacity_reservation_id: reservation.clone(),
+                    capacity_reservation_specification: Some({
+                        let spec = input.capacity_reservation_specification.clone().unwrap_or_default();
+                        t::CapacityReservationSpecificationResponse {
+                            capacity_reservation_preference: spec
+                                .capacity_reservation_preference
+                                .or_else(|| spec.capacity_reservation_target.is_none().then(|| "open".into())),
+                            capacity_reservation_target: spec.capacity_reservation_target.map(|t| t::CapacityReservationTargetResponse {
+                                capacity_reservation_id: t.capacity_reservation_id,
+                                capacity_reservation_resource_group_arn: t.capacity_reservation_resource_group_arn,
+                            }),
+                        }
                     }),
                     hibernation_options: Some(t::HibernationOptions { configured: Some(false) }),
                     metadata_options: Some({
                         let req = input.metadata_options.clone().unwrap_or_default();
                         t::InstanceMetadataOptionsResponse {
                             state: Some("pending".into()),
-                            http_tokens: Some(req.http_tokens.unwrap_or_else(|| if metadata_v2 { "required" } else { "optional" }.into())),
-                            http_put_response_hop_limit: Some(req.http_put_response_hop_limit.unwrap_or(if metadata_v2 { 2 } else { 1 })),
-                            http_endpoint: Some(req.http_endpoint.unwrap_or_else(|| "enabled".into())),
+                            // Request, then the AMI, then account defaults.
+                            http_tokens: Some(req.http_tokens.or_else(|| metadata_v2.then(|| "required".into())).or_else(|| defaults.http_tokens.clone()).unwrap_or_else(|| "optional".into())),
+                            http_put_response_hop_limit: Some(req.http_put_response_hop_limit.or(metadata_v2.then_some(2)).or(defaults.http_put_response_hop_limit).unwrap_or(1)),
+                            http_endpoint: Some(req.http_endpoint.or_else(|| defaults.http_endpoint.clone()).unwrap_or_else(|| "enabled".into())),
                             http_protocol_ipv6: Some(req.http_protocol_ipv6.unwrap_or_else(|| "disabled".into())),
-                            instance_metadata_tags: Some(req.instance_metadata_tags.unwrap_or_else(|| "disabled".into())),
+                            instance_metadata_tags: Some(req.instance_metadata_tags.or_else(|| defaults.instance_metadata_tags.clone()).unwrap_or_else(|| "disabled".into())),
                         }
                     }),
                     enclave_options: Some(t::EnclaveOptions { enabled: Some(false) }),
@@ -789,11 +852,14 @@ impl Ec2 {
                     usage_operation: Some("RunInstances".into()),
                     usage_operation_update_time: Some(now),
                     private_dns_name_options: Some(t::PrivateDnsNameOptionsResponse {
-                        hostname_type: Some("ip-name".into()),
-                        enable_resource_name_dns_a_record: Some(false),
-                        enable_resource_name_dns_aaaa_record: Some(false),
+                        hostname_type: Some(dns_opts.hostname_type.clone().unwrap_or_else(|| "ip-name".into())),
+                        enable_resource_name_dns_a_record: Some(dns_opts.enable_resource_name_dns_a_record.unwrap_or(false)),
+                        enable_resource_name_dns_aaaa_record: Some(dns_opts.enable_resource_name_dns_aaaa_record.unwrap_or(false)),
                     }),
-                    maintenance_options: Some(t::InstanceMaintenanceOptions { auto_recovery: Some("default".into()), ..Default::default() }),
+                    maintenance_options: Some(t::InstanceMaintenanceOptions {
+                        auto_recovery: Some(input.maintenance_options.as_ref().and_then(|m| m.auto_recovery.clone()).unwrap_or_else(|| "default".into())),
+                        ..Default::default()
+                    }),
                     network_performance_options: Some(t::InstanceNetworkPerformanceOptions { bandwidth_weighting: Some("default".into()) }),
                     instance_lifecycle: spot.then(|| "spot".to_string()),
                     spot_instance_request_id: spot.then(|| spot_request_id.clone().unwrap_or_else(|| new_id("sir")[..12].to_string())),
@@ -950,7 +1016,7 @@ impl Ec2 {
     }
 
     /// Authorize `action` on each instance, checking ids exist.
-    fn authorize_instances(
+    pub(crate) fn authorize_instances(
         &self,
         ctx: &RequestContext,
         action: &str,
