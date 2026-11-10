@@ -237,3 +237,130 @@ async fn providers_come_from_env_and_stored_settings() {
     assert_eq!(route(&mws, LLAMA).await, ("local".into(), "llama3:8b".into()));
     mws.stop().await;
 }
+
+/// Write an executable script.
+#[cfg(unix)]
+fn script(path: &std::path::Path, body: &str) {
+    use std::os::unix::fs::PermissionsExt;
+    std::fs::write(path, format!("#!/bin/sh\n{body}")).unwrap();
+    std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o755)).unwrap();
+}
+
+/// The local Claude Code and Codex CLIs as providers: MWS runs the CLI per
+/// request, passes the conversation on stdin and reads the answer (and tool
+/// calls) back. Fake CLIs record what they were given.
+#[cfg(unix)]
+#[tokio::test]
+async fn local_cli_providers_answer_converse() {
+    let dir = std::env::temp_dir().join(format!("mws-e2e-{}-bedrock-cli", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).unwrap();
+    let d = dir.display();
+    script(
+        &dir.join("claude"),
+        &format!(
+            r#"printf '%s\n' "$@" > {d}/claude.args
+cat > {d}/claude.stdin
+if grep -q weather {d}/claude.stdin; then
+  printf '%s' '{{"type":"result","is_error":false,"result":"{{\"tool_use\":{{\"name\":\"weather\",\"input\":{{\"city\":\"Oslo\"}}}}}}","usage":{{"input_tokens":11,"output_tokens":5}}}}'
+else
+  printf '%s' '{{"type":"result","is_error":false,"result":"hi from claude code","usage":{{"input_tokens":9,"cache_read_input_tokens":3,"output_tokens":4}}}}'
+fi
+"#
+        ),
+    );
+    script(
+        &dir.join("codex"),
+        &format!(
+            r#"printf '%s\n' "$@" > {d}/codex.args
+cat > {d}/codex.stdin
+while [ $# -gt 0 ]; do [ "$1" = "-o" ] && out="$2"; shift; done
+printf 'hi from codex' > "$out"
+echo '{{"type":"turn.completed","usage":{{"input_tokens":20,"output_tokens":3}}}}'
+"#
+        ),
+    );
+
+    let mws = Mws::start().await;
+    let r = Client::new(&mws.root_sdk_config().await);
+    let claude = json!({"kind": "claude-code", "command": dir.join("claude"), "models": ["anthropic.*"]});
+    let (status, v) = mws.control("PUT", "/_aws/bedrock/providers/claude-code", Some(&claude.to_string())).await;
+    assert_eq!(status, 200, "{v}");
+    assert_eq!(v["kind"], "claude-code");
+    assert_eq!(v["installed"], true);
+    let codex = json!({"command": dir.join("codex"), "model": "gpt-5-codex", "models": ["openai.*"]});
+    let (status, v) = mws.control("PUT", "/_aws/bedrock/providers/codex", Some(&codex.to_string())).await;
+    assert_eq!(status, 200, "{v}");
+    assert_eq!(v["kind"], "codex", "the kind follows from the name");
+
+    // Claude Code: system prompt as a flag, Bedrock id -> Claude model name.
+    let out = r
+        .converse()
+        .model_id(HAIKU)
+        .system(SystemContentBlock::Text("Be brief.".into()))
+        .messages(user("hello"))
+        .send()
+        .await
+        .unwrap();
+    let ConverseOutput::Message(m) = out.output().unwrap() else { panic!("no message") };
+    assert_eq!(m.content()[0].as_text().unwrap(), "hi from claude code");
+    assert_eq!(out.usage().unwrap().input_tokens(), 12);
+    assert_eq!(out.usage().unwrap().output_tokens(), 4);
+    let args = std::fs::read_to_string(dir.join("claude.args")).unwrap();
+    let args: Vec<&str> = args.lines().collect();
+    assert!(args.starts_with(&["-p", "--output-format", "json"]), "{args:?}");
+    let at = |flag: &str| args[args.iter().position(|a| *a == flag).unwrap() + 1];
+    assert_eq!(at("--system-prompt"), "Be brief.");
+    assert_eq!(at("--model"), "claude-3-haiku-20240307");
+    assert_eq!(std::fs::read_to_string(dir.join("claude.stdin")).unwrap(), "hello");
+
+    // Tools: the CLI's JSON answer comes back as a real tool call.
+    let schema = aws_smithy_types::Document::Object(
+        [("type".to_string(), aws_smithy_types::Document::String("object".into()))].into_iter().collect(),
+    );
+    let tool = Tool::ToolSpec(
+        ToolSpecification::builder().name("weather").input_schema(ToolInputSchema::Json(schema)).build().unwrap(),
+    );
+    let out = r
+        .converse()
+        .model_id(HAIKU)
+        .messages(user("what's the weather in Oslo?"))
+        .tool_config(ToolConfiguration::builder().tools(tool).build().unwrap())
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(out.stop_reason(), &StopReason::ToolUse);
+    let ConverseOutput::Message(m) = out.output().unwrap() else { panic!("no message") };
+    let call = m.content()[0].as_tool_use().unwrap();
+    assert_eq!(call.name(), "weather");
+    let system = std::fs::read_to_string(dir.join("claude.args")).unwrap();
+    assert!(system.contains("You can call these tools"), "{system}");
+
+    // Codex: the answer comes from its -o file, usage from its JSON events.
+    let out = r.converse().model_id("openai.gpt-oss-20b-1:0").messages(user("hey")).send().await.unwrap();
+    let ConverseOutput::Message(m) = out.output().unwrap() else { panic!("no message") };
+    assert_eq!(m.content()[0].as_text().unwrap(), "hi from codex");
+    assert_eq!(out.usage().unwrap().input_tokens(), 20);
+    let args = std::fs::read_to_string(dir.join("codex.args")).unwrap();
+    let args: Vec<&str> = args.lines().collect();
+    assert_eq!(args[0], "exec");
+    assert!(args.contains(&"--skip-git-repo-check") && args.contains(&"gpt-5-codex"), "{args:?}");
+    assert_eq!(args.last(), Some(&"-"), "prompt on stdin");
+
+    // A missing CLI is a model error, not a crash.
+    let gone = json!({"kind": "codex", "command": dir.join("nope"), "models": ["mistral.*"]});
+    mws.control("PUT", "/_aws/bedrock/providers/gone", Some(&gone.to_string())).await;
+    let err = r.converse().model_id("mistral.mistral-large-2402-v1:0").messages(user("x")).send().await.unwrap_err();
+    let err = err.into_service_error();
+    assert!(err.is_model_error_exception(), "{err:?}");
+    assert!(err.to_string().contains("not installed") || format!("{err:?}").contains("not installed"), "{err:?}");
+
+    // What is installed where MWS runs.
+    let (status, local) = mws.control("GET", "/_aws/bedrock/local", None).await;
+    assert_eq!(status, 200);
+    for k in ["claude-code", "codex", "ollama", "lmstudio"] {
+        assert!(local[k]["found"].is_boolean(), "{local}");
+    }
+    mws.stop().await;
+    let _ = std::fs::remove_dir_all(&dir);
+}

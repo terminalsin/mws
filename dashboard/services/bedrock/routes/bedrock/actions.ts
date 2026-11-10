@@ -36,9 +36,11 @@ export async function converse(_: ActionResult | null, form: FormData) {
     );
     const reply = (out.output?.message?.content ?? []).map((c) => c.text ?? (c.toolUse ? JSON.stringify(c.toolUse, null, 2) : "")).join("\n");
     const blocked = out.stopReason === "guardrail_intervened";
+    // Who answered, when it was a real provider rather than the echo.
+    const via = await mws<{ provider: string; kind: string }>(`/_aws/bedrock/providers/route?modelId=${encodeURIComponent(modelId.split("/").pop()!.replace(/^(us|eu|apac|global)\./, ""))}`).catch(() => null);
     return {
       ok: !blocked,
-      message: `${out.usage?.inputTokens ?? 0} → ${out.usage?.outputTokens ?? 0} tokens · ${out.metrics?.latencyMs ?? 0} ms${blocked ? " · blocked by guardrail" : ""}`,
+      message: `${out.usage?.inputTokens ?? 0} → ${out.usage?.outputTokens ?? 0} tokens · ${out.metrics?.latencyMs ?? 0} ms${via && via.kind !== "echo" ? ` · ${via.provider}` : ""}${blocked ? " · blocked by guardrail" : ""}`,
       detail: reply || "(empty)",
     };
   }, {
@@ -244,6 +246,8 @@ export async function saveProvider(existing: string | null, _: ActionResult | nu
       headers: pairs(form, "headers"),
       params,
       timeoutSeconds: timeout ? Number(timeout) : undefined,
+      command: text(form, "command") || undefined,
+      args: text(form, "args") ? text(form, "args").split(/\s+/).filter(Boolean) : undefined,
     };
     try {
       await mws(`/_aws/bedrock/providers/${encodeURIComponent(name)}`, { method: "PUT", json: config });
@@ -263,6 +267,7 @@ function providerError(e: unknown): unknown {
     [/^Provider URL/, "url"],
     [/^timeoutSeconds/, "timeout"],
     [/^Header/, "headers"],
+    [/^Command/, "command"],
   ].find(([re]) => (re as RegExp).test(message))?.[1] as string | undefined;
   return field ? new FieldError(field, message) : e;
 }

@@ -29,6 +29,11 @@ pub enum Kind {
     OpenAi,
     /// The Anthropic Messages API.
     Anthropic,
+    /// The local Claude Code CLI (`claude -p`), with its own login.
+    #[serde(rename = "claude-code")]
+    ClaudeCode,
+    /// The local Codex CLI (`codex exec`), with its own login.
+    Codex,
 }
 
 impl Kind {
@@ -37,6 +42,8 @@ impl Kind {
             "echo" => Some(Kind::Echo),
             "openai" | "openai-compatible" | "openai_compatible" => Some(Kind::OpenAi),
             "anthropic" => Some(Kind::Anthropic),
+            "claude-code" | "claude_code" | "claudecode" => Some(Kind::ClaudeCode),
+            "codex" => Some(Kind::Codex),
             _ => None,
         }
     }
@@ -46,7 +53,14 @@ impl Kind {
             Kind::Echo => "echo",
             Kind::OpenAi => "openai",
             Kind::Anthropic => "anthropic",
+            Kind::ClaudeCode => "claude-code",
+            Kind::Codex => "codex",
         }
+    }
+
+    /// Whether the provider is a local CLI rather than an HTTP API.
+    pub fn is_cli(self) -> bool {
+        matches!(self, Kind::ClaudeCode | Kind::Codex)
     }
 
     /// The kind a provider has when its settings do not say.
@@ -54,6 +68,8 @@ impl Kind {
         match name {
             "echo" => Kind::Echo,
             "anthropic" | "claude" => Kind::Anthropic,
+            "claude-code" | "claudecode" => Kind::ClaudeCode,
+            "codex" => Kind::Codex,
             _ => Kind::OpenAi,
         }
     }
@@ -84,6 +100,10 @@ pub struct ProviderConfig {
     pub timeout_seconds: Option<u64>,
     /// `anthropic-version` header (Anthropic only).
     pub anthropic_version: Option<String>,
+    /// The executable a CLI provider runs (`claude`, `codex` or a path).
+    pub command: Option<String>,
+    /// Extra arguments for a CLI provider.
+    pub args: Option<Vec<String>>,
 }
 
 impl ProviderConfig {
@@ -100,6 +120,8 @@ impl ProviderConfig {
             headers: over.headers.clone().or_else(|| self.headers.clone()),
             timeout_seconds: over.timeout_seconds.or(self.timeout_seconds),
             anthropic_version: over.anthropic_version.clone().or_else(|| self.anthropic_version.clone()),
+            command: over.command.clone().or_else(|| self.command.clone()),
+            args: over.args.clone().or_else(|| self.args.clone()),
         }
     }
 
@@ -111,6 +133,11 @@ impl ProviderConfig {
         if let Some(u) = self.url.as_deref().filter(|u| !u.is_empty()) {
             if !(u.starts_with("http://") || u.starts_with("https://")) {
                 return Err(format!("Provider URL {u:?} must start with http:// or https://."));
+            }
+        }
+        if let Some(c) = &self.command {
+            if c.contains(['\r', '\n', '\0']) {
+                return Err(format!("Command {c:?} is not a valid executable name."));
             }
         }
         if self.timeout_seconds == Some(0) {
@@ -148,6 +175,9 @@ pub struct Resolved {
     pub headers: BTreeMap<String, String>,
     pub timeout: Duration,
     pub anthropic_version: String,
+    /// CLI providers: the executable (`None` = the CLI's usual name).
+    pub command: Option<String>,
+    pub args: Vec<String>,
 }
 
 const DEFAULT_TIMEOUT: u64 = 300;
@@ -159,7 +189,7 @@ fn default_url(name: &str, kind: Kind) -> String {
         (Kind::OpenAi, "lmstudio" | "lm-studio") => "http://127.0.0.1:1234/v1".into(),
         (Kind::OpenAi, "vllm") => "http://127.0.0.1:8000/v1".into(),
         (Kind::OpenAi, _) => "https://api.openai.com/v1".into(),
-        (Kind::Echo, _) => String::new(),
+        (Kind::Echo | Kind::ClaudeCode | Kind::Codex, _) => String::new(),
     }
 }
 
@@ -203,8 +233,25 @@ impl Resolved {
         })
     }
 
+    /// The model a CLI provider asks for: the mapped or fixed model, else
+    /// the Claude model a Bedrock `anthropic.*` id names (Claude Code), else
+    /// the CLI's own default.
+    pub fn cli_model(&self, model_id: &str) -> Option<String> {
+        let mapped = self
+            .model_map
+            .iter()
+            .filter(|(p, _)| glob(p, model_id))
+            .max_by_key(|(p, _)| (!p.contains('*'), specificity(p)))
+            .map(|(_, m)| m.clone());
+        mapped.or_else(|| self.model.clone()).or_else(|| match self.kind {
+            Kind::ClaudeCode if model_id.starts_with("anthropic.") => Some(backend::anthropic_model_name(model_id)),
+            _ => None,
+        })
+    }
+
     pub fn backend(&self, script: Script) -> Arc<dyn Backend> {
         match self.kind {
+            Kind::ClaudeCode | Kind::Codex => Arc::new(crate::cli::Cli { provider: self.clone() }),
             Kind::Echo => Arc::new(backend::Echo { script }),
             Kind::OpenAi => Arc::new(backend::OpenAiCompatible { provider: self.clone() }),
             Kind::Anthropic => Arc::new(backend::Anthropic { provider: self.clone() }),
@@ -224,7 +271,12 @@ impl Resolved {
             "headers": self.headers.iter().map(|(k, v)| (k.clone(), redact_header(k, v))).collect::<BTreeMap<_, _>>(),
             "timeoutSeconds": self.timeout.as_secs(),
         });
-        if self.kind != Kind::Echo {
+        if self.kind.is_cli() {
+            let command = self.command.clone().unwrap_or_else(|| crate::cli::default_command(self.kind).to_string());
+            v["installed"] = json!(crate::cli::find(&command).is_some());
+            v["command"] = json!(command);
+            v["args"] = json!(self.args);
+        } else if self.kind != Kind::Echo {
             v["url"] = json!(self.url);
         }
         if let Some(k) = &self.api_key {
@@ -311,8 +363,9 @@ impl Providers {
         }
 
         // One variable per setting: MWS_BEDROCK_PROVIDER_<NAME>_<SETTING>.
-        const SETTINGS: [&str; 10] = [
+        const SETTINGS: [&str; 12] = [
             "ANTHROPIC_VERSION",
+            "COMMAND",
             "TIMEOUT_SECONDS",
             "MODEL_MAP",
             "API_KEY",
@@ -321,6 +374,7 @@ impl Providers {
             "PARAMS",
             "MODEL",
             "KIND",
+            "ARGS",
             "URL",
         ];
         for (k, v) in &vars {
@@ -355,6 +409,8 @@ impl Providers {
                         c.timeout_seconds = Some(v.parse().map_err(|_| format!("{v:?} is not a number"))?)
                     }
                     "ANTHROPIC_VERSION" => c.anthropic_version = Some(v.clone()),
+                    "COMMAND" => c.command = Some(v.clone()),
+                    "ARGS" => c.args = Some(v.split_whitespace().map(str::to_string).collect()),
                     _ => unreachable!(),
                 }
                 Ok(())
@@ -416,6 +472,8 @@ impl Providers {
             headers: c.headers.unwrap_or_default(),
             timeout: Duration::from_secs(c.timeout_seconds.unwrap_or(DEFAULT_TIMEOUT)),
             anthropic_version: c.anthropic_version.unwrap_or_else(|| "2023-06-01".into()),
+            command: c.command.filter(|c| !c.is_empty()),
+            args: c.args.unwrap_or_default(),
         })
     }
 

@@ -45,6 +45,35 @@ test("Bedrock: store a model provider", async ({ page, request }) => {
   await expect(row(page, name)).toHaveCount(0);
 });
 
+test("Bedrock: a preset fills in the provider, local CLIs included", async ({ page, request }) => {
+  await page.goto("/bedrock/settings");
+  const { form, control } = await sheet(page, "add-provider");
+  // A cloud preset: its URL and upstream model, the key is all that is asked.
+  await form.getByTestId("preset-groq").click();
+  await expect(form.getByTestId("preset-groq")).toHaveAttribute("aria-checked", "true");
+  await expect(control("kind")).toHaveValue("openai");
+  await expect(control("model")).toHaveValue("llama-3.3-70b-versatile");
+  await expect(control("apiKey")).toBeVisible();
+  await expect(control("url")).toBeHidden();
+  // A CLI preset: the command, no URL or key.
+  await form.getByTestId("preset-codex").click();
+  const name = await control("name").inputValue();
+  expect(name).toMatch(/^codex(-\d+)?$/);
+  await expect(control("kind")).toHaveValue("codex");
+  await expect(control("command")).toHaveValue("codex");
+  await expect(control("apiKey")).toHaveCount(0);
+  await control("models").fill(`dashcli${Date.now()}.*`);
+  const models = await control("models").inputValue();
+  await form.locator('button[type="submit"]').click();
+  await expect(form).toBeHidden();
+  const r = row(page, name);
+  await expect(r.locator('img[src="/icons/ai/codex.svg"]')).toBeVisible();
+  const route = await request.get(`${sdk.endpoint}/_aws/bedrock/providers/route?modelId=${models.replace("*", "x")}`);
+  expect(await route.json()).toMatchObject({ provider: name, kind: "codex" });
+  await rowAction(page, name, `Delete ${name}`);
+  await expect(row(page, name)).toHaveCount(0);
+});
+
 /** Open the sheet `testId` and return a way to reach its fields by name. */
 async function sheet(page: Page, testId: string) {
   const form = page.locator("dialog[open]").getByTestId(testId).and(page.locator("form"));

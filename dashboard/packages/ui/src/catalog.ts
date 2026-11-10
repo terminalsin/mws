@@ -274,7 +274,7 @@ export function navigation() {
 
 /** The URL of an icon served by the console (from the official AWS icon set). */
 export function iconUrl(icon: string) {
-  return icon.startsWith("brand/") ? `/icons/${icon}.svg` : `/icons/aws/${icon}.svg`;
+  return icon.startsWith("brand/") || icon.startsWith("ai/") ? `/icons/${icon}.svg` : `/icons/aws/${icon}.svg`;
 }
 
 /** The logo of a Lambda runtime ("python3.12", "nodejs20.x") or a language. */

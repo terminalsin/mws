@@ -4,7 +4,7 @@
 
 All 108 control plane operations (`bedrock`) and 10 of the 11 runtime operations (`bedrock-runtime`) are generated from the AWS models (restJson1) and implemented. Both sign as `bedrock`; MWS routes by path. Long-running work (Provisioned Throughput, customization and import jobs, Automated Reasoning builds, asynchronous invocations) moves on the emulated clock.
 
-Answers come from a pluggable backend. The default **echo** backend is deterministic: it replays queued scripted answers, calls a tool the request forces (or whose name the user mentions) with an input built from its JSON schema, summarizes tool results, and otherwise echoes the last user message, honouring `maxTokens` and stop sequences. Model providers send chosen models to a real OpenAI-compatible server or the Anthropic API instead (see [model providers](#model-providers)).
+Answers come from a pluggable backend. The default **echo** backend is deterministic: it replays queued scripted answers, calls a tool the request forces (or whose name the user mentions) with an input built from its JSON schema, summarizes tool results, and otherwise echoes the last user message, honouring `maxTokens` and stop sequences. Model providers send chosen models to a real OpenAI-compatible server, the Anthropic API, or the local Claude Code or Codex CLI instead (see [model providers](#model-providers)).
 
 ✅ supported · 🟡 partial · ❌ not supported
 
@@ -59,7 +59,11 @@ Answers come from a pluggable backend. The default **echo** backend is determini
 
 ## Model providers
 
-Each provider has an API (`openai` for any OpenAI-compatible chat completions server, `anthropic`, or `echo`), a URL, an API key, the Bedrock model ids it answers (`models`, `*` wildcards; the most specific pattern wins, then the default provider), how those ids map to upstream model names (`model`, `modelMap`), request-body defaults (`params`, used when the Bedrock request does not set the field), extra `headers` and a `timeoutSeconds`. The built-in `echo` provider is the default.
+Each provider has an API (`openai` for any OpenAI-compatible chat completions server, `anthropic`, `claude-code`, `codex`, or `echo`), a URL, an API key, the Bedrock model ids it answers (`models`, `*` wildcards; the most specific pattern wins, then the default provider), how those ids map to upstream model names (`model`, `modelMap`), request-body defaults (`params`, used when the Bedrock request does not set the field), extra `headers` and a `timeoutSeconds`. The built-in `echo` provider is the default.
+
+`claude-code` and `codex` run the CLI installed where MWS runs (`command`, default `claude` / `codex`, plus extra `args`), once per request, in an empty scratch directory with the CLI's own tools off, using the CLI's existing login. The conversation goes in on stdin as a transcript; Bedrock tools become an instruction to answer with a `{"tool_use": {...}}` JSON object, which comes back as a real tool call. Claude Code gets the system prompt as `--system-prompt` and the Claude model a Bedrock `anthropic.*` id names, unless `model`/`modelMap` say otherwise; Codex uses its configured model unless one is set. Token counts are the CLI's own.
+
+The console's Add provider sheet starts from presets (Claude Code, Codex, Ollama, LM Studio, vLLM, Anthropic, OpenAI, OpenRouter, Gemini, Mistral, Groq, DeepSeek, xAI, Together, Fireworks, Cerebras, Perplexity) that fill in the API, URL, models and upstream model; local tools MWS found are marked.
 
 Providers come from environment variables (see [configuration](../configuration.md#bedrock)) and from stored settings, which override them field by field and persist with MWS state (`MWS_DB`). The console edits them on Bedrock → Settings. The unsigned endpoint:
 
@@ -70,9 +74,10 @@ Providers come from environment variables (see [configuration](../configuration.
 | `DELETE /_aws/bedrock/providers/{name}` | Forget the stored settings; any environment settings apply again. |
 | `PUT /_aws/bedrock/providers` | `{"default": "name"}` sets the default provider (`""` returns to the environment's); `{"providers": {...}}` stores several. |
 | `GET /_aws/bedrock/providers/route?modelId=...` | Which provider answers a model, and the upstream model name it would use. |
+| `GET /_aws/bedrock/local` | Which local tools are on MWS's `PATH`: `claude-code`, `codex`, `ollama`, `lmstudio` (`lms`), each `{command, found, path}`. |
 
 ## Known gaps
 
-Bidirectional streaming (Nova Sonic), real token counts, and model-based guardrail detection (guardrail scores come from phrase lists and patterns). Every model is offered in every Region. Invocation logs do not use large data delivery. A revoked API key fails with `UnrecognizedClientException`, not Bedrock's own API key message. The passthrough backends call the provider without streaming and do not use an HTTP proxy.
+Bidirectional streaming (Nova Sonic), real token counts, and model-based guardrail detection (guardrail scores come from phrase lists and patterns). Every model is offered in every Region. Invocation logs do not use large data delivery. A revoked API key fails with `UnrecognizedClientException`, not Bedrock's own API key message. The passthrough backends call the provider without streaming and do not use an HTTP proxy. The CLI providers answer text and tool calls only (images and documents are named, not passed), and only when the CLI is installed where MWS runs (not inside the MWS container image).
 
 See also: [all services](README.md) · [authentication and authorization](../security.md).
