@@ -66,6 +66,20 @@ pub trait ManagedNodes: Send + Sync {
         instance_id: &str,
         script: &str,
     ) -> Result<Option<ShellOutput>, String>;
+
+    /// Open a Session Manager session on the node: a shell, a command
+    /// under a terminal, or a connection to a port. `Ok(None)` when the
+    /// node runs nothing.
+    async fn open_session(
+        &self,
+        account: &str,
+        region: &str,
+        instance_id: &str,
+        kind: &crate::SessionKind,
+    ) -> Result<Option<crate::SessionIo>, String> {
+        let _ = (account, region, instance_id, kind);
+        Ok(None)
+    }
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
@@ -409,7 +423,7 @@ fn iso(t: DateTime<Utc>) -> String {
 }
 
 impl Ssm {
-    fn managed(&self) -> Option<Arc<dyn ManagedNodes>> {
+    pub(crate) fn managed(&self) -> Option<Arc<dyn ManagedNodes>> {
         self.nodes.read().expect("SSM nodes lock poisoned").clone()
     }
 

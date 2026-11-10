@@ -91,6 +91,72 @@ impl mws_ssm::ManagedNodes for SsmNodes {
         let out = self.0.run_command_on_instance(account, region, instance_id, script).await?;
         Ok(out.map(|o| ShellOutput { exit_code: o.exit_code, stdout: o.stdout, stderr: o.stderr }))
     }
+
+    async fn open_session(
+        &self,
+        account: &str,
+        region: &str,
+        instance_id: &str,
+        kind: &mws_ssm::SessionKind,
+    ) -> Result<Option<mws_ssm::SessionIo>, String> {
+        let script = session_script(kind);
+        let stream = self.0.stream_on_instance(account, region, instance_id, &script).await?;
+        Ok(stream.map(|s| mws_ssm::SessionIo { reader: s.output, writer: s.input }))
+    }
+}
+
+fn sh_quote(s: &str) -> String {
+    format!("'{}'", s.replace('\'', "'\\''"))
+}
+
+/// What the SSM Agent runs for a session: shells and commands as
+/// `ssm-user` (created with sudo rights, as the agent does) under a
+/// terminal, and port sessions as a relay to the port.
+fn session_script(kind: &mws_ssm::SessionKind) -> String {
+    match kind {
+        mws_ssm::SessionKind::Shell { command } => {
+            let run = match command {
+                Some(c) => sh_quote(c),
+                None => "\"$S -l\"".into(),
+            };
+            format!(
+                r#"S=sh; command -v bash >/dev/null 2>&1 && S=bash
+export TERM=xterm-256color
+if ! id ssm-user >/dev/null 2>&1; then
+  (useradd -m -s /bin/$S ssm-user || adduser -D -s /bin/$S ssm-user) >/dev/null 2>&1
+  [ -d /etc/sudoers.d ] && echo 'ssm-user ALL=(ALL) NOPASSWD:ALL' > /etc/sudoers.d/ssm-agent-users 2>/dev/null
+fi
+export MWS_SESSION_COMMAND={run}
+CMD='eval "$MWS_SESSION_COMMAND"'
+if id ssm-user >/dev/null 2>&1 && command -v su >/dev/null 2>&1; then
+  CMD="su -s /bin/$S ssm-user -c 'cd ~; eval \"\$MWS_SESSION_COMMAND\"'"
+fi
+if command -v script >/dev/null 2>&1; then exec script -qfc "$CMD" /dev/null; else exec $S -ic "$CMD"; fi"#
+            )
+        }
+        mws_ssm::SessionKind::Port { host, port } => {
+            let host = sh_quote(host.as_deref().unwrap_or("127.0.0.1"));
+            format!(
+                r#"H={host}; P={port}
+if command -v socat >/dev/null 2>&1; then exec socat - "TCP:$H:$P"
+elif command -v nc >/dev/null 2>&1; then exec nc "$H" "$P"
+elif command -v python3 >/dev/null 2>&1; then exec python3 -c 'import socket,sys,threading
+s=socket.create_connection((sys.argv[1],int(sys.argv[2])))
+def up():
+    while True:
+        d=sys.stdin.buffer.read1(65536)
+        if not d: break
+        s.sendall(d)
+    s.shutdown(socket.SHUT_WR)
+threading.Thread(target=up,daemon=True).start()
+while True:
+    d=s.recv(65536)
+    if not d: break
+    sys.stdout.buffer.write(d); sys.stdout.buffer.flush()' "$H" "$P"
+else exec bash -c 'exec 3<>"/dev/tcp/$0/$1"; cat <&3 & cat >&3' "$H" "$P"; fi"#
+            )
+        }
+    }
 }
 
 /// Maintenance window Lambda tasks, run as the task's service role.

@@ -106,6 +106,33 @@ pub(crate) fn encrypt_with(
     }
 }
 
+/// A request to a key's external key store proxy.
+pub(crate) struct XksCall {
+    pub transport: crate::xks::XksTransport,
+    pub proxy: crate::xks::Proxy,
+    pub key: String,
+    pub meta: crate::xks::Meta,
+}
+
+fn meta(ctx: Option<&RequestContext>, operation: &str, key: &Key) -> crate::xks::Meta {
+    crate::xks::Meta {
+        principal: ctx.map(|c| c.caller.arn.clone()).unwrap_or_else(|| format!("arn:aws:iam::{}:root", key.account)),
+        operation: operation.into(),
+        request_id: ctx.map(|c| c.request_id.clone()).unwrap_or_else(|| uuid::Uuid::new_v4().to_string()),
+        key_arn: Some(key.arn.clone()),
+    }
+}
+
+/// A failed external key store request, as KMS reports it.
+fn xks_error(key: &Key, e: crate::xks::XksError) -> ServiceError {
+    use crate::xks::XksError;
+    match &e {
+        XksError::TimedOut => errors::dependency_timeout(format!("{}: {}", key.arn, e.describe())),
+        XksError::Proxy { name, .. } if name == "InvalidCiphertextException" => invalid_ciphertext(),
+        _ => errors::kms_invalid_state(format!("{} is unusable: {}.", key.arn, e.describe())),
+    }
+}
+
 /// Decrypt with `key` (already authorized and checked to be usable).
 pub(crate) fn decrypt_with(
     key: &Key,
@@ -139,6 +166,68 @@ pub(crate) fn decrypt_with(
 }
 
 impl Kms {
+    /// The external key store call for `key`, when it lives in one (the
+    /// store must be connected).
+    pub(crate) fn xks_for(&self, key: &Key, meta: crate::xks::Meta) -> Result<Option<XksCall>, ServiceError> {
+        let Some(xks_key) = key.xks_key_id.clone() else { return Ok(None) };
+        let st = self.lock();
+        let store = key.custom_key_store_id.as_ref().and_then(|id| st.custom_key_stores.get(id));
+        let Some(store) = store else {
+            return Err(errors::kms_invalid_state(format!("The custom key store of {} does not exist.", key.arn)));
+        };
+        if store.connection_state != "CONNECTED" {
+            return Err(errors::kms_invalid_state(format!(
+                "{} is unusable because its custom key store {} is not connected.",
+                key.arn, store.id
+            )));
+        }
+        let proxy = crate::ops::stores::proxy_of(store)
+            .ok_or_else(|| errors::kms_invalid_state(format!("The custom key store {} has no proxy.", store.id)))?;
+        Ok(Some(XksCall { transport: self.xks_transport(), proxy, key: xks_key, meta }))
+    }
+
+    /// Encrypt with `key`, through its external key store if it has one.
+    pub(crate) fn encrypt_key(
+        &self,
+        ctx: Option<&RequestContext>,
+        operation: &str,
+        key: &Key,
+        plaintext: &[u8],
+        context: &BTreeMap<String, String>,
+        algorithm: Option<&str>,
+    ) -> Result<Encrypted, ServiceError> {
+        let mut out = encrypt_with(key, plaintext, context, algorithm)?;
+        if let Some(x) = self.xks_for(key, meta(ctx, operation, key))? {
+            let (_, len) = crypto::parse_header(&out.ciphertext).ok_or_else(invalid_ciphertext)?;
+            let (head, inner) = out.ciphertext.split_at(len);
+            let outer = crate::xks::encrypt(&x.transport, &x.proxy, &x.key, &x.meta, inner, head)
+                .map_err(|e| xks_error(key, e))?;
+            out.ciphertext = [head.to_vec(), outer.encode()].concat();
+        }
+        Ok(out)
+    }
+
+    /// Decrypt with `key`, through its external key store if it has one.
+    pub(crate) fn decrypt_key(
+        &self,
+        ctx: Option<&RequestContext>,
+        operation: &str,
+        key: &Key,
+        blob: &[u8],
+        context: &BTreeMap<String, String>,
+        algorithm: Option<&str>,
+    ) -> Result<Decrypted, ServiceError> {
+        if let Some(x) = self.xks_for(key, meta(ctx, operation, key))? {
+            let (_, len) = crypto::parse_header(blob).ok_or_else(invalid_ciphertext)?;
+            let (head, rest) = blob.split_at(len);
+            let outer = crate::xks::Outer::decode(rest).ok_or_else(invalid_ciphertext)?;
+            let inner = crate::xks::decrypt(&x.transport, &x.proxy, &x.key, &x.meta, &outer, head)
+                .map_err(|e| xks_error(key, e))?;
+            return decrypt_with(key, &[head, inner.as_slice()].concat(), context, algorithm);
+        }
+        decrypt_with(key, blob, context, algorithm)
+    }
+
     /// Work out which key a `Decrypt`-style request uses: the `KeyId`
     /// parameter, or the key named in a symmetric ciphertext.
     fn decryption_key(
@@ -187,7 +276,7 @@ impl Kms {
             &input.key_id,
             Access::crypto("Encrypt").context(Some(&enc)).condition("kms:EncryptionAlgorithm", vec![alg.clone()]),
         )?;
-        let out = encrypt_with(&key, &input.plaintext, &enc, Some(&alg))?;
+        let out = self.encrypt_key(Some(ctx), "Encrypt", &key, &input.plaintext, &enc, Some(&alg))?;
         check_dry_run(input.dry_run)?;
         self.record_use(ctx, &key.arn, "Encrypt");
         Ok(types::EncryptResponse {
@@ -221,7 +310,7 @@ impl Kms {
             require_usage(&key, "ENCRYPT_DECRYPT", "Decrypt")?;
             return Err(super::dry_run());
         }
-        let out = decrypt_with(&key, &blob, &enc, Some(&alg))?;
+        let out = self.decrypt_key(Some(ctx), "Decrypt", &key, &blob, &enc, Some(&alg))?;
         check_dry_run(input.dry_run)?;
         self.record_use(ctx, &key.arn, "Decrypt");
         Ok(types::DecryptResponse {
@@ -270,8 +359,8 @@ impl Kms {
         if ignore {
             return Err(super::dry_run());
         }
-        let plain = decrypt_with(&src, &blob, &src_enc, Some(&src_alg))?;
-        let out = encrypt_with(&dst, &plain.plaintext, &dst_enc, Some(&dst_alg))?;
+        let plain = self.decrypt_key(Some(ctx), "ReEncrypt", &src, &blob, &src_enc, Some(&src_alg))?;
+        let out = self.encrypt_key(Some(ctx), "ReEncrypt", &dst, &plain.plaintext, &dst_enc, Some(&dst_alg))?;
         check_dry_run(input.dry_run)?;
         self.record_use(ctx, &src.arn, "ReEncrypt");
         self.record_use(ctx, &dst.arn, "ReEncrypt");
@@ -312,7 +401,7 @@ impl Kms {
             )));
         }
         let plaintext = crypto::random_bytes(len);
-        let out = encrypt_with(&key, &plaintext, enc, None)?;
+        let out = self.encrypt_key(Some(ctx), action, &key, &plaintext, enc, None)?;
         Ok((key, plaintext, out))
     }
 
@@ -386,7 +475,7 @@ impl Kms {
         }
         let s = Spec::parse(pair_spec).ok_or_else(|| validation(format!("Invalid KeyPairSpec {pair_spec}")))?;
         let (private, public) = crypto::data_key_pair(s)?;
-        let out = encrypt_with(&key, &private, enc, None)?;
+        let out = self.encrypt_key(Some(ctx), action, &key, &private, enc, None)?;
         Ok((key, private, public, out))
     }
 

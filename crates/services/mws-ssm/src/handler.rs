@@ -26,8 +26,42 @@ macro_rules! delegate {
     };
 }
 
+macro_rules! delegate_async {
+    ($($name:ident($input:ty) -> $output:ty;)*) => {
+        $(
+            fn $name<'life0, 'life1, 'async_trait>(
+                &'life0 self,
+                ctx: &'life1 RequestContext,
+                input: $input,
+            ) -> ::std::pin::Pin<Box<dyn ::std::future::Future<Output = Result<$output, ServiceError>> + Send + 'async_trait>>
+            where
+                'life0: 'async_trait,
+                'life1: 'async_trait,
+                Self: 'async_trait,
+            {
+                Box::pin(async move { Ssm::$name(self, ctx, input).await })
+            }
+        )*
+    };
+}
+
 impl Handler for Ssm {
+    delegate_async! {
+        start_session(types::StartSessionRequest) -> types::StartSessionResponse;
+        resume_session(types::ResumeSessionRequest) -> types::ResumeSessionResponse;
+        get_access_token(types::GetAccessTokenRequest) -> types::GetAccessTokenResponse;
+    }
     delegate! {
+        describe_sessions(types::DescribeSessionsRequest) -> types::DescribeSessionsResponse;
+        terminate_session(types::TerminateSessionRequest) -> types::TerminateSessionResponse;
+        get_connection_status(types::GetConnectionStatusRequest) -> types::GetConnectionStatusResponse;
+        start_access_request(types::StartAccessRequestRequest) -> types::StartAccessRequestResponse;
+        create_cloud_connector(types::CreateCloudConnectorRequest) -> types::CreateCloudConnectorResult;
+        get_cloud_connector(types::GetCloudConnectorRequest) -> types::GetCloudConnectorResult;
+        list_cloud_connectors(types::ListCloudConnectorsRequest) -> types::ListCloudConnectorsResult;
+        update_cloud_connector(types::UpdateCloudConnectorRequest) -> types::UpdateCloudConnectorResult;
+        delete_cloud_connector(types::DeleteCloudConnectorRequest) -> types::DeleteCloudConnectorResult;
+        validate_cloud_connector(types::ValidateCloudConnectorRequest) -> types::ValidateCloudConnectorResult;
         start_automation_execution(types::StartAutomationExecutionRequest) -> types::StartAutomationExecutionResult;
         start_change_request_execution(types::StartChangeRequestExecutionRequest) -> types::StartChangeRequestExecutionResult;
         get_automation_execution(types::GetAutomationExecutionRequest) -> types::GetAutomationExecutionResult;

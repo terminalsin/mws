@@ -262,7 +262,7 @@ fn catalogue() -> &'static BTreeMap<String, Document> {
     static DOCS: OnceLock<BTreeMap<String, Document>> = OnceLock::new();
     DOCS.get_or_init(|| {
         let created = DateTime::parse_from_rfc3339("2017-08-28T16:00:00Z").expect("valid date").with_timezone(&Utc);
-        let docs: [(&str, &str, &str); 12] = [
+        let docs: [(&str, &str, &str); 15] = [
             ("AWS-RunShellScript", "Command", RUN_SHELL_SCRIPT),
             ("AWS-RunPowerShellScript", "Command", RUN_POWERSHELL_SCRIPT),
             ("AWS-RunPatchBaseline", "Command", RUN_PATCH_BASELINE),
@@ -271,6 +271,9 @@ fn catalogue() -> &'static BTreeMap<String, Document> {
             ("AWS-ConfigureAWSPackage", "Command", CONFIGURE_PACKAGE),
             ("AWS-StartPortForwardingSession", "Session", PORT_FORWARDING),
             ("AWS-StartInteractiveCommand", "Session", INTERACTIVE_COMMAND),
+            ("AWS-StartPortForwardingSessionToRemoteHost", "Session", PORT_FORWARDING_REMOTE),
+            ("AWS-StartSSHSession", "Session", SSH_SESSION),
+            ("SSM-SessionManagerRunShell", "Session", RUN_SHELL),
             ("AWS-StopEC2Instance", "Automation", STOP_EC2_INSTANCE),
             ("AWS-StartEC2Instance", "Automation", START_EC2_INSTANCE),
             ("AWS-RestartEC2Instance", "Automation", RESTART_EC2_INSTANCE),
@@ -1062,6 +1065,48 @@ const PORT_FORWARDING: &str = r#"{
     "localPortNumber": {"type": "String", "description": "(Optional) Port number on local machine to forward traffic to. An open port is chosen at run-time if not provided", "allowedPattern": "^([0-9]|[1-9][0-9]{1,3}|[1-5][0-9]{4}|6[0-4][0-9]{3}|65[0-4][0-9]{2}|655[0-2][0-9]|6553[0-5])$", "default": "0"}
   },
   "properties": {"portNumber": "{{ portNumber }}", "type": "LocalPortForwarding", "localPortNumber": "{{ localPortNumber }}"}
+}"#;
+
+const PORT_FORWARDING_REMOTE: &str = r#"{
+  "schemaVersion": "1.0",
+  "description": "Document to start port forwarding session over Session Manager to a remote host",
+  "sessionType": "Port",
+  "parameters": {
+    "portNumber": {"type": "String", "description": "(Optional) Port number of the server on the remote host", "allowedPattern": "^([1-9]|[1-9][0-9]{1,3}|[1-5][0-9]{4}|6[0-4][0-9]{3}|65[0-4][0-9]{2}|655[0-2][0-9]|6553[0-5])$", "default": "80"},
+    "localPortNumber": {"type": "String", "description": "(Optional) Port number on local machine to forward traffic to. An open port is chosen at run-time if not provided", "allowedPattern": "^([0-9]|[1-9][0-9]{1,3}|[1-5][0-9]{4}|6[0-4][0-9]{3}|65[0-4][0-9]{2}|655[0-2][0-9]|6553[0-5])$", "default": "0"},
+    "host": {"type": "String", "description": "(Required) The IP address or DNS name of the remote host"}
+  },
+  "properties": {"portNumber": "{{ portNumber }}", "type": "LocalPortForwarding", "localPortNumber": "{{ localPortNumber }}", "host": "{{ host }}"}
+}"#;
+
+const SSH_SESSION: &str = r#"{
+  "schemaVersion": "1.0",
+  "description": "Document to start SSH session",
+  "sessionType": "Port",
+  "parameters": {
+    "portNumber": {"type": "String", "description": "(Optional) Port number of SSH server on the instance", "allowedPattern": "^([1-9]|[1-9][0-9]{1,3}|[1-5][0-9]{4}|6[0-4][0-9]{3}|65[0-4][0-9]{2}|655[0-2][0-9]|6553[0-5])$", "default": "22"}
+  },
+  "properties": {"portNumber": "{{ portNumber }}"}
+}"#;
+
+const RUN_SHELL: &str = r#"{
+  "schemaVersion": "1.0",
+  "description": "Document to hold regional settings for Session Manager",
+  "sessionType": "Standard_Stream",
+  "inputs": {
+    "s3BucketName": "",
+    "s3KeyPrefix": "",
+    "s3EncryptionEnabled": true,
+    "cloudWatchLogGroupName": "",
+    "cloudWatchEncryptionEnabled": true,
+    "cloudWatchStreamingEnabled": true,
+    "idleSessionTimeout": "20",
+    "maxSessionDuration": "",
+    "kmsKeyId": "",
+    "runAsEnabled": false,
+    "runAsDefaultUser": "",
+    "shellProfile": {"windows": "", "linux": ""}
+  }
 }"#;
 
 const INTERACTIVE_COMMAND: &str = r#"{

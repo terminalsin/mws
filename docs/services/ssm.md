@@ -1,8 +1,8 @@
 # AWS Systems Manager
 
-> Crate: [`mws-ssm`](../../crates/services/mws-ssm) · Tests: [`tests/e2e-rust/tests/e2e/ssm.rs`](../../tests/e2e-rust/tests/e2e/ssm.rs), [`ssm_run_command.rs`](../../tests/e2e-rust/tests/e2e/ssm_run_command.rs)
+> Crate: [`mws-ssm`](../../crates/services/mws-ssm) · Tests: [`tests/e2e-rust/tests/e2e/ssm.rs`](../../tests/e2e-rust/tests/e2e/ssm.rs), [`ssm_run_command.rs`](../../tests/e2e-rust/tests/e2e/ssm_run_command.rs), [`ssm_sessions.rs`](../../tests/e2e-rust/tests/e2e/ssm_sessions.rs)
 
-Parameter Store, documents, managed nodes, Run Command, maintenance windows, Patch Manager, State Manager, inventory, compliance, change calendars, resource data syncs, Automation, Change Manager and OpsCenter: 139 of the 152 SSM operations are generated from the AWS model (awsJson1.1) and implemented. The rest answer `NotImplemented`.
+Parameter Store, documents, managed nodes, Run Command, maintenance windows, Patch Manager, State Manager, inventory, compliance, change calendars, resource data syncs, Automation, Change Manager, OpsCenter, Session Manager, just-in-time node access and multicloud connectors: all 152 SSM operations are generated from the AWS model (awsJson1.1) and implemented.
 
 ✅ supported · 🟡 partial · ❌ not supported
 
@@ -27,7 +27,7 @@ Parameter Store, documents, managed nodes, Run Command, maintenance windows, Pat
 | Feature | Status | Details |
 | --- | :---: | --- |
 | Documents | ✅ | JSON and YAML content checked for its document type and schema version, versions with names, the default version, `GetDocument` in either format, `DuplicateDocumentContent`, deleting a version or the whole document, tags. |
-| AWS-owned documents | 🟡 | Every account sees `AWS-RunShellScript`, `AWS-RunPowerShellScript`, `AWS-RunPatchBaseline`, `AWS-UpdateSSMAgent`, `AWS-ConfigureAWSPackage`, `AWS-StartPortForwardingSession`, `AWS-StartInteractiveCommand`, `AWS-GatherSoftwareInventory`, `AWS-StopEC2Instance`, `AWS-StartEC2Instance`, `AWS-RestartEC2Instance` and `AWS-CreateImage`; the hundreds of others are missing. |
+| AWS-owned documents | 🟡 | Every account sees `AWS-RunShellScript`, `AWS-RunPowerShellScript`, `AWS-RunPatchBaseline`, `AWS-UpdateSSMAgent`, `AWS-ConfigureAWSPackage`, `AWS-StartPortForwardingSession`, `AWS-StartPortForwardingSessionToRemoteHost`, `AWS-StartSSHSession`, `AWS-StartInteractiveCommand`, `SSM-SessionManagerRunShell`, `AWS-GatherSoftwareInventory`, `AWS-StopEC2Instance`, `AWS-StartEC2Instance`, `AWS-RestartEC2Instance` and `AWS-CreateImage`; the hundreds of others are missing. |
 | Reviews | ✅ | `UpdateDocumentMetadata` review actions (send for review, comment, approve, reject) and `ListDocumentMetadataHistory`. |
 | Sharing | ✅ | `ModifyDocumentPermission` with accounts or `All`, and a shared version; shared documents are used by ARN. |
 
@@ -103,10 +103,21 @@ Parameter Store, documents, managed nodes, Run Command, maintenance windows, Pat
 | --- | :---: | --- |
 | Calendars | ✅ | `ChangeCalendar` documents (iCalendar, `DEFAULT_OPEN` or `DEFAULT_CLOSED`) and `GetCalendarState` at any time, with the next transition. Associations skip runs while a calendar they name is closed. |
 
-## Rest of Systems Manager
+## Session Manager
 
 | Feature | Status | Details |
 | --- | :---: | --- |
-| Session Manager, just-in-time access, multicloud connectors | ❌ | Not yet. |
+| Sessions | ✅ | `StartSession` on an `Online` managed node (`TargetNotConnected` otherwise) with a `Session` document (`SSM-SessionManagerRunShell` by default) and its parameters checked; `ResumeSession` (a new token), `TerminateSession`, `DescribeSessions` (`Active`/`History` with every filter) and `GetConnectionStatus`. |
+| Data channel | ✅ | The `StreamUrl` points at MWS's own WebSocket listener, which speaks the protocol `session-manager-plugin` speaks to `ssmmessages`: the open-channel token, agent messages with sequence numbers, SHA-256 digests and acknowledgements, the session type handshake, flags and `channel_closed`. `aws ssm start-session` works unchanged. |
+| Shells and commands | ✅ | `Standard_Stream` and `InteractiveCommands` sessions run in Docker-backed instances under a terminal (`script`) as `ssm-user`, created with sudo rights as the agent does. Metadata-backed nodes print a notice and close. |
+| Port forwarding | 🟡 | `Port` sessions (`AWS-StartPortForwardingSession`, `...ToRemoteHost`, `AWS-StartSSHSession`) relay each connection to the port from inside the instance (socat, nc, Python or bash). One connection at a time, as agents before 3.0.196 do (no multiplexing). |
+| Session preferences | 🟡 | Session logging to S3 or CloudWatch Logs, KMS encryption of the stream, idle timeouts and `runAsEnabled` are not applied. The listener binds next to the endpoint on a free port, or on `MWS_SSM_SESSION_LISTEN`. |
+
+## Just-in-time node access and multicloud
+
+| Feature | Status | Details |
+| --- | :---: | --- |
+| Access requests | ✅ | `StartAccessRequest` opens an `/aws/accessrequest` OpsItem; approving it (`UpdateOpsItem` status `Approved`) lets `GetAccessToken` hand the requester temporary STS credentials. Approval policies are not evaluated automatically. |
+| Cloud connectors | 🟡 | Azure connectors are created, read, updated, listed (by tenant or subscription) and deleted. `ValidateCloudConnector` really assumes the role as Systems Manager and reports `AwsRoleAssumptionFailed`; MWS never contacts Microsoft Entra ID, so a valid role reports `ProviderCredentialCreationFailed`. |
 
 See also: [all services](README.md) · [authentication and authorization](../security.md).

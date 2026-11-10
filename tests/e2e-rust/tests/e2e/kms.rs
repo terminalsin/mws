@@ -870,7 +870,7 @@ async fn external_key_stores_lifecycle() {
         c.create_custom_key_store()
             .custom_key_store_name(name)
             .custom_key_store_type(CustomKeyStoreType::ExternalKeyStore)
-            .xks_proxy_uri_endpoint("https://xks.example.com")
+            .xks_proxy_uri_endpoint("https://xks.mws.invalid")
             .xks_proxy_uri_path(path)
             .xks_proxy_connectivity(XksProxyConnectivityType::PublicEndpoint)
             .xks_proxy_authentication_credential(cred.clone())
@@ -902,9 +902,17 @@ async fn external_key_stores_lifecycle() {
     assert_eq!(xks.access_key_id(), Some("ABCDE22345673EXAMPLE"));
     assert_eq!(xks.uri_path(), Some("/kms/xks/v1"));
 
-    // MWS cannot reach the proxy, so connecting fails as an unreachable proxy does.
+    // The proxy's host does not exist, so connecting fails as an
+    // unreachable proxy does (asynchronously).
     c.connect_custom_key_store().custom_key_store_id(&id).send().await.unwrap();
-    let failed = c.describe_custom_key_stores().custom_key_store_name("store-a").send().await.unwrap();
+    let mut failed = c.describe_custom_key_stores().custom_key_store_name("store-a").send().await.unwrap();
+    for _ in 0..100 {
+        if failed.custom_key_stores()[0].connection_state() != Some(&ConnectionStateType::Connecting) {
+            break;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+        failed = c.describe_custom_key_stores().custom_key_store_name("store-a").send().await.unwrap();
+    }
     let store = &failed.custom_key_stores()[0];
     assert_eq!(store.connection_state(), Some(&ConnectionStateType::Failed));
     assert_eq!(store.connection_error_code(), Some(&ConnectionErrorCodeType::XksProxyNotReachable));
