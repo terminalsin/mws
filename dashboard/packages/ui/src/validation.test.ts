@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 
-import { check, closest, describePattern, fresh, parseServerIssues, repairJson, repairPolicy, ruleAt, sameMember, valid, type Rule } from "./validation.ts";
+import { check, closest, describePattern, fresh, listItems, parseServerIssues, repairJson, repairPolicy, ruleAt, sameMember, valid, type Rule } from "./validation.ts";
 
 const values = (r: Rule, v: string) => check(v, r)?.repairs.map((x) => x.value) ?? [];
 
@@ -132,6 +132,27 @@ test("JSON repair handles hand-written JSON", () => {
   assert.equal(repairJson("{'Version': '2012-10-17', Statement: [],}"), '{\n  "Version": "2012-10-17",\n  "Statement": []\n}');
   assert.equal(repairJson('"a": 1'), '{\n  "a": 1\n}');
   assert.equal(repairJson("not json at all"), null);
+});
+
+test("lists check each item and drop repeats", () => {
+  const rule: Rule = { format: "list", item: { pattern: "^[A-Za-z0-9_.-]+$", maxLength: 10 } };
+  assert.deepEqual(listItems(" users, requests  hosts,"), ["users", "requests", "hosts"]);
+  assert.equal(check("users, requests", rule), null);
+  const twice = check("users requests users", rule)!;
+  assert.equal(twice.message, "users is listed twice");
+  assert.deepEqual(twice.repairs.map((r) => [r.value, r.label]), [["users, requests", "Remove the second users"]]);
+  const bad = check("users api$calls", rule)!;
+  assert.match(bad.message, /^api\$calls: /);
+  assert.deepEqual(bad.repairs.map((r) => r.value), ["users, api-calls"]);
+  // Fixing one item must not collide with another.
+  assert.deepEqual(values(rule, "a-b a!b"), ["a-b"]);
+});
+
+test("account ids are generated as 12 digits", () => {
+  const rule: Rule = { required: true, pattern: "^\\d{12}$", generate: "account" };
+  const repair = check("", rule)!.repairs[0];
+  assert.equal(repair.kind, "generate");
+  assert.match(repair.value, /^[1-9]\d{11}$/);
 });
 
 test("patterns read as text", () => {
