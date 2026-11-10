@@ -245,3 +245,10 @@ test("S3 object locations are rewritten to s3:// URLs", () => {
   // A bucket without a key: the known objects in it are offered.
   assert.deepEqual(values({ ...rule, known: ["s3://lists/trusted.txt", "s3://other/x.csv"] }, "s3://lists"), ["s3://lists/trusted.txt"]);
 });
+
+test("taken numbers get the next free one, forbidden prefixes are dropped", () => {
+  assert.deepEqual(values({ type: "integer", min: 1, max: 65535, taken: ["80", "81"] }, "80"), ["82"]);
+  const lb: Rule = { pattern: "^(?!internal-)[A-Za-z0-9](?:[A-Za-z0-9-]{0,30}[A-Za-z0-9])?$" };
+  assert.deepEqual(values(lb, "internal-my api"), ["my-api"]);
+  assert.deepEqual(values({ pattern: "^/[\\S]*$" }, "health"), ["/health"]);
+});

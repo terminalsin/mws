@@ -285,7 +285,7 @@ export function repairs(value: string, rule: Rule, code: IssueCode): Repair[] {
       if (rule.enum?.length) for (const e of rule.enum.slice(0, MAX_REPAIRS)) offer({ value: e, label: `Use ${e}`, kind: "suggest" });
       break;
     case "taken":
-      offer(nextFree(value, rule));
+      offer(nextNumber(value, rule) ?? nextFree(value, rule));
       offer(fresh(rule));
       break;
     case "enum": {
@@ -372,6 +372,11 @@ function reshape(value: string, rule: Rule): Repair[] {
     seen.add(v);
     if (valid(v, rule)) out.push({ value: v, label, kind: "fix" });
   };
+  // A forbidden beginning (`^(?!internal-)`) is the problem: drop it.
+  for (const banned of forbiddenPrefixes(rule.pattern)) {
+    const v = value.trim();
+    if (v.startsWith(banned)) push(`Drop ${banned}`, clean(v.slice(banned.length), allowed, sep, false));
+  }
   for (const [label, step] of steps) {
     const v = step(value);
     push(label, v);
@@ -397,6 +402,11 @@ function reshape(value: string, rule: Rule): Repair[] {
     }
   }
   return out;
+}
+
+/** Literal beginnings a pattern rules out with a leading negative lookahead. */
+function forbiddenPrefixes(pattern: string | undefined): string[] {
+  return [...(pattern ?? "").matchAll(/(?:^|\|)\^\(\?!((?:\\.|[A-Za-z0-9_\-/:])+)\)/g)].map((m) => m[1].replace(/\\(.)/g, "$1"));
 }
 
 function clean(value: string, allowed: RegExp | null, sep: string, lower: boolean): string {
@@ -474,6 +484,16 @@ function isTaken(value: string, rule: Rule): boolean {
   if (!rule.takenIgnoreCase) return rule.taken.includes(value);
   const v = value.toLowerCase();
   return rule.taken.some((t) => t.toLowerCase() === v);
+}
+
+/** The next free number after a taken one (a listener port). */
+function nextNumber(value: string, rule: Rule): Repair | null {
+  if (!(rule.type === "integer" || rule.format === "port") || !/^\d+$/.test(value.trim())) return null;
+  const max = rule.max ?? 65535;
+  for (let n = Number(value) + 1; n <= max; n++) {
+    if (!isTaken(String(n), rule)) return { value: String(n), label: `Use ${n}`, kind: "fix" };
+  }
+  return null;
 }
 
 /** The next free variant of a taken name: queue → queue-2 → queue-3. */

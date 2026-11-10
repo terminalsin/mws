@@ -1,10 +1,12 @@
 import { DescribeVpcsCommand } from "@aws-sdk/client-ec2";
 import { ago, load } from "@mws-dashboard/aws";
 import { ActionForm, AwsIcon, Curated, Empty, ErrorNotice, Field, List, Page, Pill, Sheet, Status } from "@mws-dashboard/ui";
+import { CreateLoadBalancer, CreateTargetGroup } from "@mws-dashboard/ui/model/elbv2";
 import type { Metadata } from "next";
 
 import { ICONS, LB_ICON, ec2, nameTag } from "../../lib/clients";
 import { healthCounts, listLoadBalancers, listTargetGroups } from "../../lib/elb";
+import { HEALTH_PATH, LB_NAME, PORT, TG_NAME } from "../../lib/rules";
 import { createLoadBalancer, createTargetGroup } from "./actions";
 
 export const metadata: Metadata = { title: "Load balancers" };
@@ -24,13 +26,14 @@ export default async function LoadBalancers({ searchParams }: Props) {
 
   if (tab === "targets") {
     const groups = await load(listTargetGroups);
+    const names = groups.ok ? groups.value.map((g) => g.group.TargetGroupName!) : [];
     const create = (
       <Sheet title="Create target group" label="Create target group" testId="create-target-group">
         <ActionForm action={createTargetGroup} submit="Create target group" testId="create-target-group">
-          <Field label="Name">
-            <input name="name" required maxLength={32} pattern="[A-Za-z0-9\-]+" autoFocus />
+          <Field label="Name" rule={TG_NAME} taken={names} unique>
+            <input name="name" required maxLength={32} autoFocus />
           </Field>
-          <Field label="Target type">
+          <Field label="Target type" rule={CreateTargetGroup.TargetType}>
             <select name="targetType" defaultValue="instance">
               <option value="instance">Instances</option>
               <option value="ip">IP addresses</option>
@@ -39,21 +42,21 @@ export default async function LoadBalancers({ searchParams }: Props) {
             </select>
           </Field>
           <div className="form-row">
-            <Field label="Protocol">
+            <Field label="Protocol" rule={CreateTargetGroup.Protocol}>
               <select name="protocol" defaultValue="HTTP">
                 {["HTTP", "HTTPS", "TCP", "UDP", "TLS", "TCP_UDP"].map((p) => (
                   <option key={p}>{p}</option>
                 ))}
               </select>
             </Field>
-            <Field label="Port">
-              <input name="port" type="number" min={1} max={65535} defaultValue={80} />
+            <Field label="Port" rule={PORT} format="port">
+              <input name="port" type="number" defaultValue={80} />
             </Field>
           </div>
-          <Field label="VPC">
+          <Field label="VPC" member="VpcId">
             <select name="vpc">{vpcOptions}</select>
           </Field>
-          <Field label="Health check path">
+          <Field label="Health check path" rule={HEALTH_PATH}>
             <input name="healthPath" placeholder="/" />
           </Field>
         </ActionForm>
@@ -92,28 +95,29 @@ export default async function LoadBalancers({ searchParams }: Props) {
   }
 
   const lbs = await load(listLoadBalancers);
+  const names = lbs.ok ? lbs.value.map((l) => l.LoadBalancerName!) : [];
   const create = (
     <Sheet title="Create load balancer" label="Create load balancer" testId="create-load-balancer">
       <ActionForm action={createLoadBalancer} submit="Create load balancer" testId="create-load-balancer">
-        <Field label="Name">
-          <input name="name" required maxLength={32} pattern="[A-Za-z0-9\-]+" autoFocus />
+        <Field label="Name" rule={LB_NAME} taken={names} unique>
+          <input name="name" required maxLength={32} autoFocus />
         </Field>
         <div className="form-row">
-          <Field label="Type">
+          <Field label="Type" rule={CreateLoadBalancer.Type}>
             <select name="type" defaultValue="application">
               <option value="application">Application</option>
               <option value="network">Network</option>
               <option value="gateway">Gateway</option>
             </select>
           </Field>
-          <Field label="Scheme">
+          <Field label="Scheme" rule={CreateLoadBalancer.Scheme}>
             <select name="scheme" defaultValue="internet-facing">
               <option value="internet-facing">Internet-facing</option>
               <option value="internal">Internal</option>
             </select>
           </Field>
         </div>
-        <Field label="VPC">
+        <Field label="VPC" member="Subnets">
           <select name="vpc" required>
             {vpcOptions}
           </select>
