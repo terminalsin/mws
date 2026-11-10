@@ -1003,6 +1003,7 @@ async fn lambda_targets_receive_alb_events() {
         .function_arn()
         .unwrap()
         .to_string();
+    mws_e2e::function_active(&lambda, "alb-fn").await;
 
     let tg =
         elb.create_target_group().name("fn").target_type(TargetTypeEnum::Lambda).send().await.unwrap().target_groups()

@@ -380,6 +380,7 @@ async fn metric_alarms_evaluate_and_notify_sns_and_lambda() {
         .send()
         .await
         .unwrap();
+    mws_e2e::function_active(&lambda, "on-alarm").await;
     let fn_arn = f.function_arn().unwrap().to_string();
     let alarm_arn = "arn:aws:cloudwatch:us-east-1:123456789012:alarm:high-errors";
     lambda

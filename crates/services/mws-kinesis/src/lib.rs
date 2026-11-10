@@ -14,7 +14,8 @@
 //! reader's `kms:Decrypt` through MWS KMS. Every call is authorized through
 //! IAM together with stream and consumer resource policies. Reads and
 //! writes publish the `AWS/Kinesis` CloudWatch metrics, shard-level ones
-//! for the metrics enhanced monitoring enabled.
+//! for the metrics enhanced monitoring enabled. Shards enforce AWS's
+//! write and read throughput limits over wall time (`throughput`).
 //!
 //! Other services (CloudWatch Logs subscriptions, EventBridge targets,
 //! Firehose, Lambda event source mappings) act on streams as callers:
@@ -35,6 +36,7 @@ pub mod shards;
 mod state;
 mod streams;
 mod tags;
+mod throughput;
 
 use std::sync::{Arc, Mutex, MutexGuard};
 
@@ -56,6 +58,8 @@ pub struct Kinesis {
     subscriptions: consumers::Subscriptions,
     /// Where `AWS/Kinesis` metrics go.
     metric_publisher: Arc<std::sync::RwLock<Option<Arc<dyn MetricPublisher>>>>,
+    /// Per-shard throughput buckets, over wall time.
+    throughput: throughput::Throughput,
 }
 
 impl Kinesis {
@@ -137,6 +141,7 @@ impl Service for Kinesis {
     fn import_state(&self, state: serde_json::Value) -> Result<(), String> {
         let state: State = serde_json::from_value(state).map_err(|e| format!("invalid Kinesis state: {e}"))?;
         *self.lock() = state;
+        self.throughput.clear();
         self.arrivals.notify_waiters();
         Ok(())
     }
@@ -144,6 +149,7 @@ impl Service for Kinesis {
     fn reset_state(&self) {
         *self.lock() = State::default();
         self.subscriptions.clear();
+        self.throughput.clear();
         self.arrivals.notify_waiters();
     }
 }

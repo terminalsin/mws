@@ -21,6 +21,10 @@ pub(crate) const MAX_ASYNC_PAYLOAD: usize = 1_048_576;
 const LOG_TAIL: usize = 4096;
 /// Delays before the asynchronous retries, as in Lambda.
 const RETRY_DELAYS: [Duration; 2] = [Duration::from_secs(60), Duration::from_secs(120)];
+/// Throttled asynchronous invocations are retried after 1 second, then
+/// with exponential backoff up to 5 minutes.
+const THROTTLE_BACKOFF_START: Duration = Duration::from_secs(1);
+const THROTTLE_BACKOFF_MAX: Duration = Duration::from_secs(300);
 
 /// What a finished invocation produced.
 pub struct Ran {
@@ -81,11 +85,14 @@ impl Lambda {
         payload: Vec<u8>,
         client_context: Option<String>,
     ) -> Result<Ran, ServiceError> {
+        // A function still being created runs once it is `Active` (public
+        // `Invoke` calls fail before getting here).
+        self.wait_until_invocable(f).await;
         let (spec_parts, reserved, executed_version) = {
             let st = self.read();
             let func = Self::function(&st, f)?;
             let version = Self::pick_version(func, f.qualifier.as_deref()).ok_or_else(|| f.not_found())?;
-            let v = func.version_for(Some(&version)).ok_or_else(|| f.not_found())?.clone();
+            let v = crate::lifecycle::running_version(func, &version).ok_or_else(|| f.not_found())?.clone();
             (v, func.reserved_concurrency, version)
         };
         let config = &spec_parts.config;
@@ -166,6 +173,7 @@ impl Lambda {
             payload: if payload.is_empty() { b"{}".to_vec() } else { payload },
             invoked_arn: f.qualified_arn(),
             client_context,
+            trace_id: mws_core::trace_header::current(),
         };
         let started = std::time::Instant::now();
         match self.inner.runtimes.invoke(&spec, job, reserved).await {
@@ -427,6 +435,7 @@ impl Lambda {
             if func.version_for(f.qualifier.as_deref()).is_none() {
                 return Err(f.not_found());
             }
+            crate::lifecycle::check_invocable(func, f.qualifier.as_deref())?;
         }
         let payload = input.payload.unwrap_or_default();
         let kind = input.invocation_type.as_deref().unwrap_or("RequestResponse");
@@ -466,7 +475,7 @@ impl Lambda {
         self.authorize_function(ctx, "lambda:InvokeFunction", &f, ConditionContext::new())?;
         {
             let st = self.read();
-            Self::function(&st, &f)?;
+            crate::lifecycle::check_invocable(Self::function(&st, &f)?, None)?;
         }
         Self::check_payload(&input.invoke_args, MAX_ASYNC_PAYLOAD, "InvokeAsync")?;
         self.enqueue(ctx, &f, input.invoke_args);
@@ -480,6 +489,10 @@ impl Lambda {
     ) -> Result<types::InvokeWithResponseStreamResponse, ServiceError> {
         let f = names::parse_function(ctx, &input.function_name, input.qualifier.as_deref())?;
         self.authorize_function(ctx, "lambda:InvokeFunction", &f, ConditionContext::new())?;
+        {
+            let st = self.read();
+            crate::lifecycle::check_invocable(Self::function(&st, &f)?, f.qualifier.as_deref())?;
+        }
         let payload = input.payload.unwrap_or_default();
         Self::check_payload(&payload, MAX_SYNC_PAYLOAD, "InvokeWithResponseStream")?;
         if input.invocation_type.as_deref() == Some("DryRun") {
@@ -529,7 +542,8 @@ impl Lambda {
         let lambda = self.clone();
         let ctx = ctx.clone();
         let f = f.clone();
-        tokio::spawn(async move { lambda.process_event(ctx, f, payload).await });
+        // The event keeps the trace header of the request that queued it.
+        tokio::spawn(mws_core::trace_header::propagate(async move { lambda.process_event(ctx, f, payload).await }));
     }
 
     async fn process_event(&self, ctx: RequestContext, f: FunctionRef, payload: Vec<u8>) {
@@ -549,22 +563,43 @@ impl Lambda {
         let retries = config.as_ref().and_then(|c| c.maximum_retry_attempts).unwrap_or(2).clamp(0, 2) as usize;
         let max_age =
             Duration::from_secs(config.as_ref().and_then(|c| c.maximum_event_age_in_seconds).unwrap_or(21_600) as u64);
+        // The event's age, by the emulated clock (or the wall clock, if
+        // that is further along).
+        let age = |lambda: &Lambda| {
+            let emulated = (chrono::Utc::now() + lambda.clock_skew() - ctx.received_at).to_std().unwrap_or_default();
+            emulated.max(queued.elapsed())
+        };
         let mut attempts = 0;
         let mut last: Option<Ran> = None;
         let mut condition = "RetriesExhausted";
+        let mut throttle_backoff = THROTTLE_BACKOFF_START;
         loop {
-            if queued.elapsed() > max_age {
+            if age(self) > max_age {
                 condition = "EventAgeExceeded";
                 break;
             }
-            attempts += 1;
             match self.run(&ctx, &f, payload.clone(), None).await {
                 Ok(ran) if ran.outcome.function_error.is_none() => {
+                    attempts += 1;
                     self.deliver(&ctx, &f, config.as_ref(), &payload, &ran, attempts, "Success").await;
                     return;
                 }
-                Ok(ran) => last = Some(ran),
+                Ok(ran) => {
+                    attempts += 1;
+                    last = Some(ran);
+                }
+                // Throttles do not count against `MaximumRetryAttempts`:
+                // Lambda retries them with backoff (1 s, doubling, up to
+                // 5 minutes) until the event is too old.
+                Err(e) if e.code == errors::TOO_MANY_REQUESTS => {
+                    tracing::debug!(function = %f.qualified_arn(), "asynchronous invocation throttled; retrying");
+                    let remaining = max_age.saturating_sub(age(self));
+                    tokio::time::sleep(throttle_backoff.min(remaining + Duration::from_millis(10))).await;
+                    throttle_backoff = (throttle_backoff * 2).min(THROTTLE_BACKOFF_MAX);
+                    continue;
+                }
                 Err(e) => {
+                    attempts += 1;
                     tracing::warn!(function = %f.qualified_arn(), "asynchronous invocation failed: {e}");
                     let error = serde_json::json!({ "errorType": e.code, "errorMessage": e.message });
                     last = Some(Ran {
@@ -580,9 +615,18 @@ impl Lambda {
             if attempts > retries {
                 break;
             }
-            tokio::time::sleep(RETRY_DELAYS[(attempts - 1).min(RETRY_DELAYS.len() - 1)]).await;
+            let remaining = max_age.saturating_sub(age(self));
+            tokio::time::sleep(
+                RETRY_DELAYS[(attempts - 1).min(RETRY_DELAYS.len() - 1)].min(remaining + Duration::from_millis(10)),
+            )
+            .await;
         }
-        let Some(ran) = last else { return };
+        // An event that only ever met throttles and aged out still goes to
+        // the on-failure destination and dead-letter queue.
+        let ran = last.unwrap_or_else(|| Ran {
+            outcome: Outcome { payload: Vec::new(), function_error: None, logs: String::new() },
+            executed_version: f.qualifier.clone().unwrap_or_else(|| "$LATEST".into()),
+        });
         self.deliver(&ctx, &f, config.as_ref(), &payload, &ran, attempts, condition).await;
         if let Some(queue) = dead_letter {
             self.send_dead_letter(&ctx, &f, &queue, &payload, &ran).await;
@@ -592,7 +636,14 @@ impl Lambda {
     /// Send an event the function failed to its dead-letter queue or
     /// topic: the event itself, with `RequestID`, `ErrorCode` and
     /// `ErrorMessage` attributes.
-    async fn send_dead_letter(&self, ctx: &RequestContext, f: &FunctionRef, target: &str, request: &[u8], ran: &Ran) {
+    pub(crate) async fn send_dead_letter(
+        &self,
+        ctx: &RequestContext,
+        f: &FunctionRef,
+        target: &str,
+        request: &[u8],
+        ran: &Ran,
+    ) {
         let error: serde_json::Value = serde_json::from_slice(&ran.outcome.payload).unwrap_or_default();
         let mut error_message = error
             .get("errorMessage")
@@ -622,7 +673,7 @@ impl Lambda {
 
     /// Send an asynchronous invocation record to its destination.
     #[allow(clippy::too_many_arguments)]
-    async fn deliver(
+    pub(crate) async fn deliver(
         &self,
         ctx: &RequestContext,
         f: &FunctionRef,

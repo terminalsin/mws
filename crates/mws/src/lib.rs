@@ -554,6 +554,8 @@ fn build_with_store(config: Config, store: Option<Arc<Store>>) -> Mws {
     }));
     ses.set_credentials(vec![iam.credential_store(), sts.credential_store()]);
     ses.set_authorizer(iam.authorizer());
+    // Event source mappings in restored state poll before any request.
+    lambda.set_authorizer(iam.authorizer());
     let rds = Rds::new(
         config.rds_backend.resolve(config.rds_docker_cli.as_deref(), config.rds_bind.as_deref()),
         kms.clone(),

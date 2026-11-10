@@ -447,6 +447,7 @@ async fn rules_invoke_lambda_functions_allowed_by_their_policy() {
         .send()
         .await
         .unwrap();
+    mws_e2e::function_active(&lambda, "on-event").await;
     let fn_arn = f.function_arn().unwrap().to_string();
     let rule = eb.put_rule().name("to-fn").event_pattern(r#"{"source":["app"]}"#).send().await.unwrap();
     eb.put_targets().rule("to-fn").targets(target("fn", &fn_arn)).send().await.unwrap();

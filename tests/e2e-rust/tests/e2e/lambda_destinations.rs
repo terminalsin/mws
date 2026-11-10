@@ -90,6 +90,7 @@ async fn async_invocations_reach_their_destinations_and_dead_letter_queue() {
         .unwrap()
         .function_arn
         .unwrap();
+    mws_e2e::function_active(&lambda, "orders").await;
     lambda
         .put_function_event_invoke_config()
         .function_name("orders")
@@ -229,6 +230,7 @@ async fn kinesis_mapping_failures_reach_the_on_failure_destination() {
         .send()
         .await
         .unwrap();
+    mws_e2e::function_active(&lambda, "consumer").await;
     let mapping = lambda
         .create_event_source_mapping()
         .function_name("consumer")
@@ -309,6 +311,7 @@ async fn failed_async_invocations_land_in_an_s3_bucket_destination() {
         .send()
         .await
         .unwrap();
+    mws_e2e::function_active(&lambda, "charge").await;
     lambda
         .put_function_event_invoke_config()
         .function_name("charge")

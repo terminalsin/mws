@@ -204,7 +204,8 @@ export async function receiveMessages(name: string, _: PollResult | null, form: 
       new ReceiveMessageCommand({
         QueueUrl,
         MaxNumberOfMessages: 10,
-        WaitTimeSeconds: 0,
+        // Like the AWS console, long-poll: a short poll samples only some servers.
+        WaitTimeSeconds: 1,
         MessageSystemAttributeNames: ["All"],
         MessageAttributeNames: ["All"],
         ...(mode === "peek" ? { VisibilityTimeout: 0 } : {}),

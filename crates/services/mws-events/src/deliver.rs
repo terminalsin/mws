@@ -227,7 +227,10 @@ impl Events {
     /// attributes EventBridge adds.
     async fn dead_letter(&self, d: &Delivery, error: &TargetError, condition: &str, attempts: u32) {
         let Some(queue) = d.target.dead_letter_config.as_ref().and_then(|c| c.arn.clone()) else { return };
-        let Some(sink) = self.sink("sqs") else { return };
+        let Some(sink) = self.sink("sqs") else {
+            self.publish_rule_metric(d, "InvocationsFailedToBeSentToDlq", 1.0);
+            return;
+        };
         let attributes: BTreeMap<String, String> = [
             ("RULE_ARN", d.rule_arn.clone()),
             ("TARGET_ARN", d.target.arn.clone()),
@@ -257,8 +260,12 @@ impl Events {
                 sts: self.inner.sts.get(),
             })
             .await;
-        if let Err(e) = result {
-            tracing::info!(queue = %queue, "EventBridge could not send to the dead-letter queue: {}", e.message);
+        match result {
+            Ok(()) => self.publish_rule_metric(d, "InvocationsSentToDlq", 1.0),
+            Err(e) => {
+                tracing::info!(queue = %queue, "EventBridge could not send to the dead-letter queue: {}", e.message);
+                self.publish_rule_metric(d, "InvocationsFailedToBeSentToDlq", 1.0);
+            }
         }
     }
 
@@ -319,10 +326,14 @@ impl Events {
                     })
                     .await
                 }
-                None => {
-                    tracing::info!(target = %d.target.arn, "MWS does not emulate this EventBridge target; event dropped");
-                    Ok(())
-                }
+                // AWS would invoke the target; MWS has no such service, so
+                // the target resource cannot be found. Like AWS with a
+                // missing target resource, that is a failed invocation that
+                // is not retried and goes straight to the dead-letter queue.
+                None => Err(TargetError::permanent(
+                    "ResourceNotFoundException",
+                    format!("The target {} could not be reached: MWS does not emulate {other} targets.", d.target.arn),
+                )),
             },
         }
     }

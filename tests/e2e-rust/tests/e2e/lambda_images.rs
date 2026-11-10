@@ -69,6 +69,7 @@ async fn image_uris_resolve_against_ecr() {
         .send()
         .await
         .unwrap();
+    mws_e2e::function_active(&lambda, "img").await;
     assert_eq!(created.package_type(), Some(&PackageType::Image));
     assert_eq!(created.code_size(), 0);
     assert_eq!(created.code_sha256(), Some(d1.trim_start_matches("sha256:")));
@@ -94,6 +95,7 @@ async fn image_uris_resolve_against_ecr() {
     // New code resolves again; digests work as references too.
     let updated =
         lambda.update_function_code().function_name("img").image_uri(format!("{repo_uri}@{d2}")).send().await.unwrap();
+    mws_e2e::function_updated(&lambda, "img").await;
     assert_eq!(updated.code_sha256(), Some(d2.trim_start_matches("sha256:")));
     let got = lambda.get_function().function_name("img").send().await.unwrap();
     assert_eq!(got.code().unwrap().resolved_image_uri(), Some(format!("{repo_uri}@{d2}").as_str()));
@@ -138,6 +140,7 @@ async fn image_uris_resolve_against_ecr() {
         .send()
         .await
         .unwrap();
+    mws_e2e::function_active(&lambda, "multi").await;
     assert_eq!(multi.code_sha256(), Some(index_digest.trim_start_matches("sha256:")));
     let err = lambda
         .create_function()
@@ -200,6 +203,7 @@ async fn image_uris_resolve_against_ecr() {
         .send()
         .await
         .unwrap();
+    mws_e2e::function_active(&as_user, "allowed").await;
 
     // Zip functions take no image, and image functions need one.
     let err = lambda
@@ -388,6 +392,7 @@ async fn container_image_functions_run_in_docker() {
         .send()
         .await
         .unwrap();
+    mws_e2e::function_active(&lambda, "container").await;
     let (error, body, logs) = invoke(&lambda, "container", r#"{"n":1}"#).await;
     assert_eq!(error, None, "{body}");
     assert_eq!(body["args"], serde_json::json!(["/var/runtime/bootstrap", "custom.handler"]));
@@ -413,6 +418,7 @@ async fn container_image_functions_run_in_docker() {
 
     // New code runs the new image.
     lambda.update_function_code().function_name("container").image_uri(format!("{repo_uri}:v2")).send().await.unwrap();
+    mws_e2e::function_updated(&lambda, "container").await;
     let (_, body, _) = invoke(&lambda, "container", "{}").await;
     assert_eq!(body["image_version"], "2");
     assert_eq!(body["args"], serde_json::json!(["/var/runtime/bootstrap", "custom.handler"]));
@@ -425,6 +431,7 @@ async fn container_image_functions_run_in_docker() {
         .send()
         .await
         .unwrap();
+    mws_e2e::function_updated(&lambda, "container").await;
     let (_, body, _) = invoke(&lambda, "container", "{}").await;
     assert_eq!(body["args"], serde_json::json!(["/var/runtime/bootstrap", "--flag", "app.handler"]));
     assert_eq!(body["cwd"], "/var/task");
@@ -437,6 +444,7 @@ async fn container_image_functions_run_in_docker() {
         .send()
         .await
         .unwrap();
+    mws_e2e::function_updated(&lambda, "container").await;
     let (error, body, _) = invoke(&lambda, "container", "{}").await;
     assert_eq!(error.as_deref(), Some("Unhandled"));
     assert_eq!(body["errorType"], "Runtime.InvalidEntrypoint", "{body}");

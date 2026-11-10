@@ -4,6 +4,8 @@
 
 All 42 operations are generated from the AWS model (awsQuery) and implemented. Messages are really delivered and signed.
 
+As in SNS, delivery is asynchronous: `Publish` returns once the message is accepted, and each subscription receives it shortly after, so consumers must poll or wait (for SQS, long-poll). Each topic delivers its messages in the order they were published, which keeps FIFO message groups in order; data protection, filter policies and KMS run per subscription at delivery time.
+
 ✅ supported · 🟡 partial · ❌ not supported
 
 ## Topics and subscriptions

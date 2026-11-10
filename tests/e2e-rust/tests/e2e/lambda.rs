@@ -51,6 +51,7 @@ async fn create_and_invoke_a_python_function() {
         .send()
         .await
         .unwrap();
+    mws_e2e::function_active(&lambda, "echo").await;
     assert_eq!(created.function_arn(), Some("arn:aws:lambda:us-east-1:123456789012:function:echo"));
     assert_eq!(created.handler(), Some("app.handler"));
 
@@ -115,6 +116,7 @@ async fn invoke_needs_permission() {
         .send()
         .await
         .unwrap();
+    mws_e2e::function_active(&lambda, "private").await;
     let (_, user_cfg) = mws_e2e::user_with_policy(&mws, "dev", None).await;
     let as_user = aws_sdk_lambda::Client::new(&user_cfg);
     let denied = as_user.invoke().function_name("private").send().await.unwrap_err();

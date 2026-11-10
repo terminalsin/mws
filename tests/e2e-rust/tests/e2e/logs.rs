@@ -1253,6 +1253,7 @@ async fn lambda_function_logs_go_to_cloudwatch_logs() {
             .send()
             .await
             .unwrap();
+        mws_e2e::function_active(&lambda, &name).await;
         let out = lambda.invoke().function_name(&name).send().await.unwrap();
         assert_eq!(out.function_error(), None);
     }

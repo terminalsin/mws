@@ -118,6 +118,7 @@ async fn sqs_event_source_mapping_delivers_batches() {
         .send()
         .await
         .unwrap();
+    mws_e2e::function_active(&lambda, "worker").await;
 
     // The role may not read the queue yet.
     let e = lambda
@@ -267,6 +268,7 @@ async fn filter_criteria_drop_records_that_do_not_match() {
         .send()
         .await
         .unwrap();
+    mws_e2e::function_active(&lambda, "worker").await;
 
     let criteria = |pattern: &str| {
         aws_sdk_lambda::types::FilterCriteria::builder()

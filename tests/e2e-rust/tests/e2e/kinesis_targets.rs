@@ -43,8 +43,10 @@ async fn stream(k: &aws_sdk_kinesis::Client, name: &str) -> String {
 }
 
 /// Every record in the stream's single shard, waiting until there are `n`.
+/// Polls at most four times a second, within the shard's five `GetRecords`
+/// calls per second, and backs off when throttled.
 async fn records(k: &aws_sdk_kinesis::Client, name: &str, n: usize) -> Vec<aws_sdk_kinesis::types::Record> {
-    for _ in 0..50 {
+    for _ in 0..40 {
         let it = k
             .get_shard_iterator()
             .stream_name(name)
@@ -53,11 +55,13 @@ async fn records(k: &aws_sdk_kinesis::Client, name: &str, n: usize) -> Vec<aws_s
             .send()
             .await
             .unwrap();
-        let out = k.get_records().shard_iterator(it.shard_iterator().unwrap()).send().await.unwrap();
-        if out.records().len() >= n {
-            return out.records().to_vec();
+        match k.get_records().shard_iterator(it.shard_iterator().unwrap()).send().await {
+            Ok(out) if out.records().len() >= n => return out.records().to_vec(),
+            Ok(_) => {}
+            Err(e) if e.as_service_error().is_some_and(|e| e.is_provisioned_throughput_exceeded_exception()) => {}
+            Err(e) => panic!("GetRecords failed: {e:?}"),
         }
-        tokio::time::sleep(Duration::from_millis(100)).await;
+        tokio::time::sleep(Duration::from_millis(250)).await;
     }
     panic!("{name} never got {n} records");
 }

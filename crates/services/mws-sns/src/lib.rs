@@ -62,6 +62,9 @@ pub(crate) struct Inner {
     signer: signing::Signer,
     /// Where the `AWS/SNS` metrics go.
     metrics: mws_core::metrics::MetricOutlet,
+    /// Each topic's delivery worker, which delivers its messages in order
+    /// after `Publish` returns.
+    fan_out: Mutex<std::collections::HashMap<String, tokio::sync::mpsc::UnboundedSender<delivery::FanOut>>>,
 }
 
 /// The SNS service. Cheap to clone; clones share state.
@@ -90,6 +93,7 @@ impl Sns {
                 status_logs: OnceLock::new(),
                 signer: signing::Signer::default(),
                 metrics: Default::default(),
+                fan_out: Mutex::default(),
             }),
         }
     }

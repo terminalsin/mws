@@ -15,6 +15,7 @@ pub mod metrics;
 mod observe;
 mod service;
 pub mod shell;
+pub mod trace_header;
 pub mod trail;
 mod validate;
 

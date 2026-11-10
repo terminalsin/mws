@@ -50,6 +50,7 @@ async fn function_urls_serve_requests() {
         .send()
         .await
         .unwrap();
+    mws_e2e::function_active(&lambda, "web").await;
     let url = lambda
         .create_function_url_config()
         .function_name("web")

@@ -565,6 +565,7 @@ async fn lambda_processors_transform_records() {
         .send()
         .await
         .unwrap();
+    mws_e2e::function_active(&lambda, "transform").await;
     let config = ExtendedS3DestinationConfiguration::builder()
         .role_arn(&role)
         .bucket_arn("arn:aws:s3:::landing")
@@ -602,6 +603,9 @@ async fn lambda_processors_transform_records() {
         b = b.records(Record::builder().data(Blob::new(doc)).build().unwrap());
     }
     b.send().await.unwrap();
+    // The processor buffers for its default 60 s interval.
+    let (status, _) = mws.control("POST", "/_mws/clock", Some(r#"{"advanceSeconds": 61}"#)).await;
+    assert_eq!(status, 200);
     let out = objects(&mws, &f, "landing", "out/", 1).await;
     assert_eq!(String::from_utf8_lossy(&out[0].1), "HELLO\nWORLD\n");
     let failed = objects(&mws, &f, "landing", "processing-failed/", 1).await;
@@ -611,7 +615,7 @@ async fn lambda_processors_transform_records() {
     assert_eq!(line["lambdaArn"], function.function_arn().unwrap());
 }
 
-fn zip(files: &[(&str, &str)]) -> Vec<u8> {
+pub(crate) fn zip(files: &[(&str, &str)]) -> Vec<u8> {
     use std::io::Write;
     let mut buf = std::io::Cursor::new(Vec::new());
     {

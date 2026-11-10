@@ -140,7 +140,8 @@ impl Sqs {
                     (k, Attr { data_type: v.data_type, string_value: v.string_value, binary_value: v.binary_value })
                 })
                 .collect(),
-            trace_header: None,
+            // The X-Ray header of the request that caused the delivery.
+            trace_header: mws_core::trace_header::current(),
             delay: None,
             group_id: m.message_group_id,
             dedup_id: m.message_deduplication_id,

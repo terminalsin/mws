@@ -188,7 +188,7 @@ def transform_function(lam, iam):
     with zipfile.ZipFile(buf, "w") as z:
         z.writestr("app.py", TRANSFORM)
     name = f"upper-{uuid.uuid4().hex[:8]}"
-    return lam.create_function(
+    arn = lam.create_function(
         FunctionName=name,
         Runtime="python3.12",
         Role=role_arn,
@@ -196,6 +196,8 @@ def transform_function(lam, iam):
         Code={"ZipFile": buf.getvalue()},
         Timeout=30,
     )["FunctionArn"]
+    lam.get_waiter("function_active_v2").wait(FunctionName=name)
+    return arn
 
 
 def make_olap(s3control, bucket, function_arn, payload=""):

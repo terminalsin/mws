@@ -167,7 +167,7 @@ pub fn error_lines(failed: &[Failed], attempt_end: i64) -> Vec<u8> {
     let mut out = Vec::new();
     for f in failed {
         let mut v = json!({
-            "attemptsMade": 1,
+            "attemptsMade": f.attempts.max(1),
             "arrivalTimestamp": f.source.arrival,
             "errorCode": f.error_code,
             "errorMessage": f.error_message,

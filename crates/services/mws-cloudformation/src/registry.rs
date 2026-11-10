@@ -1836,13 +1836,24 @@ impl CloudFormation {
             )
             .await;
         match created {
-            Ok(_) => Ok(name),
-            Err(e) if e.code.contains("ResourceConflict") => Ok(name),
-            Err(e) => Err(HandlerError::handler(
-                "InternalFailure",
-                format!("The type's handlers could not be deployed: {}", e.message),
-            )),
+            Ok(_) => {}
+            Err(e) if e.code.contains("ResourceConflict") => {}
+            Err(e) => {
+                return Err(HandlerError::handler(
+                    "InternalFailure",
+                    format!("The type's handlers could not be deployed: {}", e.message),
+                ))
+            }
         }
+        // A new function is `Pending` for a moment: invoke it once `Active`.
+        for _ in 0..600 {
+            let function = self.call(&svc_ctx, "lambda", "GetFunction", json!({"FunctionName": name})).await;
+            if !matches!(&function, Ok(f) if f["Configuration"]["State"] == "Pending") {
+                break;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+        }
+        Ok(name)
     }
 
     /// Run the hooks that target a resource before it is provisioned.

@@ -19,7 +19,8 @@ All 23 operations are generated from the AWS model (awsJson1.0, `awsQueryCompati
 | --- | :---: | --- |
 | Standard queues | ✅ | Real messages, queue and per-message delays, retention on the emulated clock, message attribute and size validation. |
 | Visibility timeouts | ✅ | Fresh receipt handles per receive; stale handles stop acting, with SQS's error wording. |
-| Long polling | ✅ | Wakes as soon as a message arrives. |
+| Short and long polling | ✅ | A short poll (`WaitTimeSeconds` 0 and a queue `ReceiveMessageWaitTimeSeconds` of 0) on a standard queue samples a random subset of SQS's servers, as AWS does: it can return fewer messages than `MaxNumberOfMessages` even when more are visible, so receive in a loop or long-poll. Simplification: a short poll returns at least one message whenever one is visible, where SQS can return none. A long poll asks every server and returns what is visible, up to the maximum, and wakes as soon as a message arrives. |
+| Ordering | ✅ | Standard queues are best-effort ordered: a message can come back a couple of places before or after where it was sent. FIFO queues keep strict order per message group. Duplicates (at-least-once delivery) are not simulated. |
 | MD5 digests | ✅ | Of bodies and message attributes, computed as SQS does. |
 | FIFO queues | ✅ | Message groups (a group with a message in flight yields nothing further), deduplication (explicit or content-based, per queue or per group, five minutes), sequence numbers and `ReceiveRequestAttemptId` retries. |
 | Batch operations | ✅ | With SQS's entry rules. |

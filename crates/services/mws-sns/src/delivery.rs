@@ -60,6 +60,17 @@ impl Origin {
     }
 }
 
+/// A published message waiting for its topic's delivery worker, with the
+/// subscriptions the topic had when it was published.
+pub(crate) struct FanOut {
+    ctx: RequestContext,
+    topic: Topic,
+    subs: Vec<Subscription>,
+    msg: Outgoing,
+    /// The X-Ray header of the `Publish` request, which deliveries carry on.
+    trace: Option<String>,
+}
+
 impl Sns {
     fn signed(
         &self,
@@ -152,8 +163,14 @@ impl Sns {
 
     /// Send a message to every confirmed subscription whose filter policy
     /// it passes.
+    ///
+    /// As in SNS, delivery is asynchronous: `Publish` returns once the
+    /// message is accepted, and the subscriptions it has then receive it
+    /// shortly after. Each topic has one delivery worker, so messages leave
+    /// in the order they were published (which FIFO topics require, per
+    /// message group). Without a runtime (some unit tests), delivery
+    /// happens at once.
     pub(crate) fn fan_out(&self, ctx: &RequestContext, topic: &Topic, msg: Outgoing) {
-        let origin = Origin::of(topic);
         let subs: Vec<Subscription> = {
             let st = self.lock();
             st.subscriptions
@@ -162,6 +179,41 @@ impl Sns {
                 .cloned()
                 .collect()
         };
+        let job =
+            FanOut { ctx: ctx.clone(), topic: topic.clone(), subs, msg, trace: mws_core::trace_header::current() };
+        if tokio::runtime::Handle::try_current().is_err() {
+            return self.fan_out_now(job);
+        }
+        let mut workers = self.inner.fan_out.lock().expect("SNS fan-out lock poisoned");
+        let job = match workers.get(&topic.arn) {
+            Some(tx) => match tx.send(job) {
+                Ok(()) => return,
+                // The worker's runtime is gone: start a new one.
+                Err(e) => e.0,
+            },
+            None => job,
+        };
+        let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel::<FanOut>();
+        let _ = tx.send(job);
+        workers.insert(topic.arn.clone(), tx);
+        let inner = std::sync::Arc::downgrade(&self.inner);
+        tokio::spawn(async move {
+            while let Some(job) = rx.recv().await {
+                let Some(inner) = inner.upgrade() else { return };
+                Sns { inner }.fan_out_now(job);
+            }
+        });
+    }
+
+    fn fan_out_now(&self, job: FanOut) {
+        let trace = job.trace.clone();
+        mws_core::trace_header::scope_sync(trace, || self.fan_out_traced(job));
+    }
+
+    fn fan_out_traced(&self, job: FanOut) {
+        let FanOut { ctx, topic, subs, msg, .. } = job;
+        let (ctx, topic) = (&ctx, &topic);
+        let origin = Origin::of(topic);
         for sub in subs {
             if let Some(policy) = sub.attributes.get("FilterPolicy").filter(|p| !p.is_empty()) {
                 let body_scope = sub.attributes.get("FilterPolicyScope").is_some_and(|s| s == "MessageBody");

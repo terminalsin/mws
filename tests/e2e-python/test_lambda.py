@@ -80,6 +80,8 @@ def create(lam, role, name=None, **kw):
         Code={"ZipFile": package({"app.py": HANDLER})},
         **kw,
     )
+    # A new function is Pending for a moment, as on AWS.
+    lam.get_waiter("function_active_v2").wait(FunctionName=name)
     return name
 
 
@@ -165,6 +167,7 @@ def handler(event, context):
         Code={"ZipFile": package({"app.py": src})},
         Timeout=30,
     )
+    lam.get_waiter("function_active_v2").wait(FunctionName=name)
     out = lam.invoke(FunctionName=name)
     assert "FunctionError" not in out, out["Payload"].read()
     arn = json.loads(out["Payload"].read())

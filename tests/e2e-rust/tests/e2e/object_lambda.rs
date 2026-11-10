@@ -99,6 +99,7 @@ async fn access_points_and_object_lambda() {
         .send()
         .await
         .unwrap();
+    mws_e2e::function_active(&lambda, "redact").await;
 
     let olap = control
         .create_access_point_for_object_lambda()

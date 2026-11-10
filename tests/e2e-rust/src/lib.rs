@@ -45,7 +45,11 @@ impl Mws {
         let route53 = built.route53;
         let ses = built.ses;
         let codeartifact = built.codeartifact;
+        let lambda = built.lambda;
         let gateway = Arc::new(built.gateway);
+        // As the binary does: Lambda's background work learns the endpoint.
+        let weak = Arc::downgrade(&gateway);
+        lambda.set_endpoint_source(Arc::new(move || weak.upgrade().and_then(|g| g.endpoint().map(str::to_string))));
         let listener = tokio::net::TcpListener::bind(addr).await.unwrap();
         let endpoint = format!("http://127.0.0.1:{}", listener.local_addr().unwrap().port());
         let (tx, rx) = tokio::sync::oneshot::channel::<()>();
@@ -228,6 +232,30 @@ fn loopback_http_client() -> aws_smithy_runtime_api::client::http::SharedHttpCli
 
 /// Create a user with the given inline policy and return a client signed
 /// with that user's own new access key.
+/// Wait, with the SDK's `function_active_v2` waiter, until a new function
+/// is `Active` (Lambda keeps it `Pending` for a moment, as on AWS).
+pub async fn function_active(lambda: &aws_sdk_lambda::Client, name: &str) {
+    use aws_sdk_lambda::client::Waiters;
+    lambda
+        .wait_until_function_active_v2()
+        .function_name(name)
+        .wait(std::time::Duration::from_secs(60))
+        .await
+        .expect("function becomes Active");
+}
+
+/// Wait, with the SDK's `function_updated_v2` waiter, until a function's
+/// last update is `Successful`.
+pub async fn function_updated(lambda: &aws_sdk_lambda::Client, name: &str) {
+    use aws_sdk_lambda::client::Waiters;
+    lambda
+        .wait_until_function_updated_v2()
+        .function_name(name)
+        .wait(std::time::Duration::from_secs(60))
+        .await
+        .expect("function update completes");
+}
+
 pub async fn user_with_policy(mws: &Mws, name: &str, policy: Option<&str>) -> (aws_sdk_iam::Client, SdkConfig) {
     let root = aws_sdk_iam::Client::new(&mws.root_sdk_config().await);
     root.create_user().user_name(name).send().await.unwrap();
