@@ -13,8 +13,8 @@ checkout --OrderPlaced--> bus "orders"
 
 - [`src/functions/fraud-check.ts`](src/functions/fraud-check.ts) is the Lambda
   function. [`src/bundle.ts`](src/bundle.ts) bundles it with esbuild (SDK
-  included) and zips it in memory. MWS runs it on a local `node` with the
-  execution role's credentials and `AWS_ENDPOINT_URL` set, so the SDK inside
+  included) and zips it in memory. MWS runs it in the Lambda Node.js base image
+  (or on a local `node` without Docker) with the execution role's credentials and `AWS_ENDPOINT_URL` set, so the SDK inside
   the function talks to MWS too.
 - [`src/infrastructure.ts`](src/infrastructure.ts) creates the execution role,
   the function, the rules, `lambda:AddPermission` for EventBridge, and queue

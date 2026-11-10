@@ -66,8 +66,12 @@ Denials use AWS's message wording, so tests can assert on them.
 ### Root user and managed policies
 
 The account root user is allowed everything, as on AWS (except where SCPs or
-resource policies restrict it). AWS managed policies exist as a trimmed subset
-covering the services MWS emulates.
+resource policies restrict it). Every AWS managed policy (about 1,600, with
+their real names, paths and documents) exists in every account, so
+`ReadOnlyAccess`, `AdministratorAccess` and the service roles' policies
+behave as on AWS. Service-linked roles get their service's policy, and roles
+under the reserved `/aws-service-role/` and `/aws-reserved/` paths can only
+be made by AWS, as there.
 
 ## Federation
 
@@ -89,9 +93,12 @@ Test suites that hand-craft tokens can set
 When one service calls another (S3 delivering an event notification, Lambda
 reading an SQS queue, Firehose writing to S3, CloudWatch publishing an alarm
 to SNS), it does so as AWS does: either as the service principal, judged by
-the target's resource policy (for example `s3.amazonaws.com` against a topic
-policy), or by assuming the role you configured. A missing permission breaks
-the integration in MWS just as it would on AWS.
+the target's resource policy alone with `aws:SourceArn` and
+`aws:SourceAccount` (for example `s3.amazonaws.com` against a topic policy),
+or by assuming the role you configured through STS, which checks the role's
+trust policy. Configuring such a role needs `iam:PassRole`. A missing
+permission breaks the integration in MWS just as it would on AWS, and
+CloudTrail records the service's call as its own event.
 
 ## What is not protected
 

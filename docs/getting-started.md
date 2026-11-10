@@ -7,9 +7,12 @@ to calling as identities other than the root user.
 
 - Rust 1.85 or newer (`rustup` recommended).
 - Optional: Docker (or Podman) to run Lambda functions in AWS's own runtime
-  images (every managed runtime: Node.js, Python, Java, .NET, Ruby, custom)
-  and EC2 instances as containers. Without Docker, Lambda's Python and
-  Node.js functions run on the `python3` and `node` on `PATH`.
+  images (every managed runtime: Node.js, Python, Java, .NET, Ruby, custom),
+  and EC2 instances, ECS tasks, RDS databases, ElastiCache nodes and EKS API
+  servers (k3s) as containers. MWS uses Docker when a daemon answers; without
+  one these services keep their state and lifecycle but run nothing, and
+  Lambda's Python and Node.js functions run on the `python3` and `node` on
+  `PATH`.
 
 ## Build and run
 
@@ -175,3 +178,4 @@ an `OrganizationAccountAccessRole` you can assume. See
   emulated clock.
 - [Testing](testing.md): patterns for using MWS in a test suite.
 - [Services](services/README.md): what each service does and its known gaps.
+- [Web console](dashboard.md): browse and change resources in a browser.

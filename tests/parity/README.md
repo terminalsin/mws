@@ -56,10 +56,12 @@ last line of the output gives its path.
 | `--fail-on disparity\|mws` | exit 1 on any disparity, or only when MWS is likely wrong |
 | `--list` | list services, their MWS crates and scenarios |
 | `--mws-key/--mws-secret`, `--localstack-key/--localstack-secret` | credentials (MWS root and `test`/`test` by default) |
+| `--region` | Region both sides are called in (default `us-east-1`) |
+| `--self-test` | compare MWS with a second MWS at `--localstack` (what CI runs): the suite itself should report no differences |
 | `--start-mws`, `--mws-bin`, `--start-localstack`, `--localstack-image` | let the suite start the emulators |
 
-Lambda invocations need a Python runtime on the MWS side and the Docker
-socket mounted into LocalStack. MWS's EC2 Docker backend isn't needed:
+Lambda invocations need Docker or a local `python3` on the MWS side, and
+the Docker socket mounted into LocalStack. MWS's EC2 Docker backend isn't needed:
 nothing here starts instances, databases, caches or clusters.
 
 ## What runs

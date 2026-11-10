@@ -97,6 +97,12 @@ with one module per service. Every test binary links all the SDKs, which costs
 minutes of build time and gigabytes of disk, so new tests go into a module of
 that binary rather than a new file under `tests/`.
 
+Tests that need Docker (instances, containers, databases, caches, clusters)
+are named after it (`ec2_docker`, `..._docker_...`, `kubernetes`); they skip
+their Docker-only checks when no daemon answers, and under nextest they run
+one at a time ([`.config/nextest.toml`](../.config/nextest.toml)), because
+each test's MWS gives its default VPC the same network.
+
 The full workspace build is large. Building with
 `CARGO_PROFILE_DEV_DEBUG=line-tables-only CARGO_INCREMENTAL=0`, as CI does,
 keeps `target/` small enough for a typical laptop or CI runner.

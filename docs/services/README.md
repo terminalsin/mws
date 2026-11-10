@@ -1,9 +1,10 @@
 # Services
 
-MWS emulates 33 AWS services. Each is generated from AWS's official Smithy
-MWS emulates 30 AWS services. Each is generated from AWS's official Smithy
-model, so every operation in the model is routed and validated; operations
-outside the implemented set answer `NotImplemented`. Each service's page lists
+MWS emulates 46 AWS services, from 53 official Smithy models. Each is
+generated from its model, so every operation in it is routed and validated.
+Every operation is implemented except 486 of EC2's 811, S3 Control's 18
+Outposts bucket operations and Bedrock Runtime's
+`InvokeModelWithBidirectionalStream`, which answer `NotImplemented`. Each service's page lists
 its features in a table: ✅ supported, 🟡 partial, ❌ not supported yet.
 
 Every service shares the same foundations:
@@ -40,21 +41,21 @@ Every service shares the same foundations:
 
 | Service | Operations | What's emulated |
 | --- | --- | --- |
-| [S3](s3.md) | 111 / 112 | Objects, multipart, versioning, checksums, policies, SSE, lifecycle, replication, notifications, Select, directory buckets |
-| [S3 Control](s3control.md) | 97 / 97 | Access points, Object Lambda, Batch Operations, Access Grants, multi-Region access points, Storage Lens |
+| [S3](s3.md) | 112 / 112 | Objects, multipart, versioning, checksums, policies, SSE, lifecycle, replication, notifications, Select, directory buckets |
+| [S3 Control](s3control.md) | 79 / 97 | Access points, Object Lambda, Batch Operations, Access Grants, multi-Region access points, Storage Lens |
 | [EFS](efs.md) | 31 / 31 | File systems as real directories, mount targets in VPC subnets, access points, policies, replication, mounts from Docker instances |
 
 ## Compute and networking
 
 | Service | Operations | What's emulated |
 | --- | --- | --- |
-| [Lambda](lambda.md) | 68 / 88 | Python, Node.js and custom runtimes that really run, SQS and Kinesis event sources, destinations, function URLs |
+| [Lambda](lambda.md) | 88 / 88 | Every managed runtime in AWS's base images (or local Python and Node.js), container images from ECR, SQS and Kinesis event sources, destinations, function URLs, EFS mounts, durable executions |
 | [Global Accelerator](globalaccelerator.md) | 56 / 56 | Static anycast IPs, listeners, endpoint groups with health from EC2 and ELB, custom routing port mappings, BYOIP, cross-account attachments |
 | [EC2 and VPC](ec2.md) | 325 / 811 | Default VPCs, subnets, security groups, NAT gateways and VPC endpoints that filter and route real Docker traffic, peering, transit gateways and Site-to-Site VPN (control plane), AMIs, instances as Docker containers, instance metadata and profiles, Spot requests and a simulated Spot market, Spot Fleet and EC2 Fleet, Dedicated Hosts, Reserved Instances, placement groups, capacity reservations, PrivateLink endpoint services |
 | [EC2 Auto Scaling](autoscaling.md) | 68 / 68 | Groups that launch, replace and terminate real EC2 instances, lifecycle hooks, suspended processes, simple, step and target tracking policies driven by CloudWatch alarms, schedules, instance refreshes, warm pools, load balancer registration |
 | [EC2 Image Builder](imagebuilder.md) | 77 / 77 | Components, recipes and pipelines whose builds launch EC2 instances, run AWSTOE components and produce real AMIs, distribution, lifecycle policies |
 | [Elastic Load Balancing](elb.md) | 80 / 80 | Application, Network and Classic Load Balancers whose listeners really proxy: rules, stickiness, HTTPS with ACM certificates, mutual TLS, Lambda targets, health checks, metrics |
-| [RDS and Aurora](rds.md) | 103 / 168 | PostgreSQL, MySQL and MariaDB instances and Aurora clusters that really run in Docker, snapshots and restores, read replicas, global databases, managed master passwords |
+| [RDS and Aurora](rds.md) | 168 / 168 | PostgreSQL, MySQL and MariaDB instances and Aurora clusters that really run in Docker, snapshots and restores, read replicas, global databases, managed master passwords |
 | [EKS](eks.md) | 70 / 70 | Clusters in your VPC, managed node groups as Auto Scaling groups, add-ons, access entries, Pod Identity, OIDC providers |
 | [ECR](ecr.md) | 62 / 62 | A real Docker registry (`docker push`/`pull` with `GetAuthorizationToken`), lifecycle policies, replication, creation templates |
 | [ECR Public](ecr-public.md) | 23 / 23 | Public registries with aliases and catalog data, anonymous pulls, authenticated pushes |
@@ -110,12 +111,17 @@ Every service shares the same foundations:
 | Service | Operations | What's emulated |
 | --- | --- | --- |
 | [CodeArtifact](codeartifact.md) | 48 / 48 | Domains, repositories with upstreams and external connections, package groups, and npm, PyPI, Maven, Cargo, RubyGems, NuGet and Swift endpoints real clients use |
+
 ## Cost and usage management
 
+| Service | Operations | What's emulated |
+| --- | --- | --- |
 | [Service Quotas](servicequotas.md) | 26 / 26 | AWS's quota codes and defaults, increase requests that services enforce, `AWS/Usage` metrics for quota alarms |
 | [Cost Explorer](ce.md) | 47 / 47 | Seeded and derived cost data, grouping and filters, forecasts, cost categories, allocation tags, anomaly alerts |
 ## Management
 
+| Service | Operations | What's emulated |
+| --- | --- | --- |
 | [CloudFormation](cloudformation.md) | 90 / 90 | Stacks that create real resources in the other services, change sets (incl. IMPORT), StackSets, private registry types, modules and hooks, resource scans and generated templates, refactors |
 
 ## How services connect
@@ -142,8 +148,10 @@ with the permissions AWS would use:
   Manager references.
 - GuardDuty sends findings to EventBridge and S3 (under KMS) and registers
   its delegated administrator with Organizations.
-- EC2 instances and Lambda functions receive role credentials from STS.
 - EC2 instances, ECS tasks and Lambda functions receive role credentials from STS.
+- ECS tasks and Lambda functions pull container images from ECR; ECS
+  services register tasks with load balancers, and tasks log to CloudWatch
+  Logs and read secrets from Secrets Manager and SSM.
 - Amplify deploys sites from S3 buckets (as `amplify.amazonaws.com`) and
   verifies custom domains through Route 53.
 - Global Accelerator endpoints and custom routing subnets are checked against
@@ -189,4 +197,12 @@ with the permissions AWS would use:
 - CodeArtifact authorization tokens act as the IAM principal that requested
   them, and domains are encrypted with KMS keys.
 - CloudTrail records every API call and delivers it to S3 (log and signed
-  digest files), CloudWatch Logs, SNS and EventBridge.
+  digest files), CloudWatch Logs, SNS and EventBridge; GuardDuty analyses
+  those events for findings and Security Hub evaluates controls against the
+  resources.
+- IAM Identity Center provisions permission sets as `AWSReservedSSO_*` roles
+  in Organizations member accounts, and the access portal hands out their
+  credentials.
+- Systems Manager runs commands, sessions and automations on Docker-backed
+  EC2 instances whose instance profile may call SSM, and publishes the EKS
+  AMI parameters.

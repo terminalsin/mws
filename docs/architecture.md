@@ -78,12 +78,20 @@ crate per protocol and one generator module per protocol in `mws-codegen`.
 
 | Protocol | Runtime crate | Services |
 | --- | --- | --- |
-| awsQuery | `mws-proto-query` | IAM, STS, SNS; legacy SQS and CloudWatch requests |
-| awsJson 1.0 / 1.1 | `mws-proto-json` | KMS, Organizations, Private CA, ACM, Secrets Manager, SSM, SQS, EventBridge, Kinesis, Firehose, CloudWatch Logs, CloudWatch |
+| awsQuery | `mws-proto-query` | IAM, STS, SNS, SES v1, EC2 Auto Scaling, Elastic Load Balancing, RDS, ElastiCache, CloudFormation; legacy SQS and CloudWatch requests |
+| awsJson 1.0 / 1.1 | `mws-proto-json` | KMS, Organizations, Private CA, ACM, Secrets Manager, Systems Manager, SQS, EventBridge, Kinesis, Firehose, CloudWatch Logs, CloudWatch, CloudTrail, ECR, ECR Public, ECS, Global Accelerator, Service Quotas, Cost Explorer, Marketplace Metering and Entitlement, Identity Center admin and Identity Store |
 | restXml | `mws-proto-restxml` | Route 53, S3, S3 Control |
-| restJson1 | `mws-proto-restjson` | Lambda |
-| Smithy RPC v2 CBOR | `mws-proto-cbor` | CloudWatch |
+| restJson1 | `mws-proto-restjson` | Lambda, Bedrock, Bedrock Runtime, EKS, EFS, Amplify, Image Builder, CodeArtifact, GuardDuty, Security Hub, RAM, Connector for SCEP, SES v2, CloudTrail Data, Identity Center OIDC and portal |
+| Smithy RPC v2 CBOR | `mws-proto-cbor` | CloudWatch, Marketplace Entitlement |
 | ec2Query | `mws-proto-ec2` | EC2 |
+
+Some services also serve protocols of their own next to the AWS API, from
+the same port: ECR and ECR Public a Docker registry (the generic `mws-oci`
+crate), CodeArtifact the npm, PyPI, Maven, Cargo, RubyGems, NuGet and Swift
+endpoints, Connector for SCEP a SCEP server, and the instance and task
+metadata services, function URLs and Amplify sites their own paths under
+`/_aws/`. Load balancers, ElastiCache nodes, RDS databases and EKS API
+servers listen on ports of their own.
 
 Models with the `awsQueryCompatible` trait (SQS, CloudWatch) also get an
 awsQuery codec for the requests older SDKs still send, and their JSON errors
@@ -95,11 +103,13 @@ streaming) are generated too.
 
 ```
 crates/
-  mws                the binary; the only crate that knows which services exist
+  mws                the binary; the only crate that knows which services exist,
+                     and the cross-service glue (links.rs, wiring.rs, ...)
   mws-server         HTTP front door: authentication, routing, /_mws control API,
                      scenarios, snapshots and persistence
   mws-core           service-agnostic contracts: ServiceError, RequestContext,
-                     Caller, Authorizer, CredentialStore, Service, ApiCallObserver
+                     Caller, Authorizer, CredentialStore, Service, ServiceClient,
+                     the delivery outbox, settle windows, ApiCallObserver
   mws-sigv4          SigV4 verification (header and presigned query)
   mws-smithy         reads Smithy JSON AST models
   mws-codegen        generates server stubs from Smithy models (build time)
@@ -109,35 +119,63 @@ crates/
   mws-schedule       schedule expressions (rate(...), six-field cron(...))
   mws-parquet        a small Apache Parquet writer (S3 Inventory, RDS exports)
   mws-event-pattern  the AWS event pattern language (EventBridge, Lambda filters)
+  mws-oci            the OCI distribution (Docker registry v2) protocol
   services/
     mws-iam            IAM, multi-account, and the authorizer every service calls
     mws-iam-policy     the IAM policy language and evaluation logic (pure)
     mws-sts            temporary credentials over IAM identities
     mws-organizations  organizations, OUs, member accounts, SCPs and RCPs
+    mws-ssoadmin, mws-identitystore, mws-ssooidc, mws-ssoportal
+                       IAM Identity Center: permission sets, users and groups,
+                       OIDC sign-in, the access portal
     mws-kms            keys with real cryptography, key policies and grants
-    mws-s3             buckets and objects, policies, SSE, lifecycle, replication, Select
-    mws-s3control      access points, Object Lambda, Batch Operations, Access Grants
-    mws-lambda         functions that run on local runtimes via the Runtime API
-    mws-ec2            EC2 and VPC, instances run by a pluggable compute backend
-    mws-globalaccelerator static anycast IPs, listeners, endpoint groups, custom routing
-    mws-route53        hosted zones, record sets, health checks, DNS responder
     mws-acmpca         Private CA: CAs and real X.509 issuance
     mws-acm            public, private and imported certificates, DNS validation
+    mws-pca-connector-scep  SCEP endpoints issuing from a Private CA
+    mws-ram            resource shares that write real resource policies
     mws-secretsmanager KMS-sealed secret versions, rotation through Lambda
-    mws-ssm            Parameter Store: versioned parameters, SecureStrings
+    mws-guardduty      detectors and findings from CloudTrail events
+    mws-securityhub    ASFF/OCSF findings, standards and evaluated controls
+    mws-s3             buckets and objects, policies, SSE, lifecycle, replication, Select
+    mws-s3control      access points, Object Lambda, Batch Operations, Access Grants
+    mws-efs            file systems as host directories, mount targets in VPCs
+    mws-lambda         functions in AWS's base images or local runtimes
+    mws-ec2            EC2 and VPC, instances run by a pluggable compute backend
+    mws-autoscaling    groups that launch real EC2 instances
+    mws-imagebuilder   pipelines that build real AMIs
+    mws-elb            ALB, NLB and Classic load balancers that proxy; GWLB API
+    mws-ecs            clusters, services and tasks run as containers
+    mws-ecr, mws-ecr-public  private and public container registries
+    mws-eks            clusters with k3s API servers, node groups on Auto Scaling
+    mws-rds            PostgreSQL, MySQL and MariaDB in Docker, Aurora clusters
+    mws-elasticache    Valkey, Redis OSS and Memcached in Docker
+    mws-route53        hosted zones, record sets, health checks, DNS responder
+    mws-globalaccelerator static anycast IPs, listeners, endpoint groups, custom routing
+    mws-amplify        apps and branches whose sites are served
     mws-sqs            standard and FIFO queues
     mws-sns            topics, subscriptions, signed deliveries
+    mws-ses            SES v1 and v2: outbox, receipt rules, SMTP listener
     mws-events         EventBridge buses, rules and targets
+    mws-ssm            Parameter Store, Run Command, Automation, Session Manager, ...
     mws-kinesis        Kinesis Data Streams: shards, resharding, enhanced fan-out
     mws-firehose       buffered delivery to S3, HTTP endpoints, Splunk, OpenSearch
     mws-cloudwatch     metrics, metric math, alarms that act, dashboards
     mws-logs           CloudWatch Logs: events, filter patterns, Insights, live tail
     mws-cloudtrail     records every API call; trails, event history, Insights, Lake
     mws-cloudtrail-data PutAuditEvents into CloudTrail Lake channels
+    mws-cloudformation stacks deployed through the other services' APIs
+    mws-codeartifact   repositories behind real package manager endpoints
+    mws-bedrock, mws-bedrock-runtime  model catalog, guardrails, jobs; invocation
+                       through echo, OpenAI-compatible, Anthropic or CLI providers
+    mws-marketplace-metering, mws-marketplace-entitlement  one shared catalog
+    mws-servicequotas  quota values other services enforce
+    mws-ce             Cost Explorer over seeded and derived costs
 tests/
   e2e-rust           official Rust SDK against an in-process MWS
   e2e-python         boto3 against the mws binary
   e2e-ts             example applications on the AWS SDK for JavaScript v3
+  parity             boto3 calls compared between MWS and LocalStack
+dashboard/           the web console (Next.js), one package per service
 ```
 
 ## Cross-service behaviour
@@ -176,9 +214,12 @@ you configured. MWS is moving all of them to work the same way:
   follow `/_mws/clock` and survive a snapshot.
 
 S3, SNS and EventBridge deliveries to SQS and Lambda, S3 and EventBridge
-deliveries to SNS, and CloudWatch alarm actions on SNS and Lambda go
-through `ServiceClient`; those services no longer depend on the Lambda or
-SNS crates for it. Older integrations still call another
+deliveries to SNS, CloudWatch alarm actions on SNS and Lambda, Lambda
+destinations and SSM Automation steps go through `ServiceClient`, and so
+does every CloudFormation resource: `mws-cloudformation` depends on no
+other service crate and deploys stacks purely through the services'
+generated operations (`ServiceClient::call_with_agent`, so CloudTrail records
+`cloudformation.amazonaws.com` as the calls' user agent). Older integrations still call another
 crate's typed public API (for example `Kms::encrypt_via` from S3, or
 `Sts::assume_role_as_service` for service roles), or a small trait the
 producing service defines (such as `mws_s3::NotificationDestination` or

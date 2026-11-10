@@ -26,9 +26,11 @@ them.
   crate may depend on generic crates (`mws-core`, `mws-proto-*`, the code
   generator) and, only where AWS itself couples them, on another service's
   public API (for example STS on IAM identities). Generic crates must never
-  mention a specific service. Cross-service glue that would form a dependency
-  cycle goes in `crates/mws/src/links.rs` behind a trait the producing service
-  defines.
+  mention a specific service. A service that calls another the way AWS does
+  (a delivery, a service role's calls) should use `mws_core::ServiceClient`,
+  which runs the target's own generated operation and needs no crate
+  dependency; other cross-service glue goes in `crates/mws/src/` behind a
+  trait the producing service defines.
 - **The wire layer is generated.** Each service vendors its official Smithy
   JSON model from [`aws/api-models-aws`](https://github.com/aws/api-models-aws)
   in `model/` and runs `mws-codegen` from `build.rs`. Don't hand-write request
@@ -58,10 +60,10 @@ them.
 
    | Protocol | Entry point | Used by |
    | --- | --- | --- |
-   | awsQuery | `build_aws_query` | IAM, STS, SNS |
+   | awsQuery | `build_aws_query` | IAM, STS, SNS, SES v1, Auto Scaling, ELB, RDS, ElastiCache, CloudFormation |
    | restXml | `build_rest_xml` | Route 53, S3, S3 Control |
-   | awsJson | `build_aws_json` | KMS, Private CA, Logs, SQS, Kinesis, Firehose, CloudWatch, ... |
-   | restJson1 | `build_rest_json` | Lambda |
+   | awsJson | `build_aws_json` | KMS, Private CA, Logs, SQS, Kinesis, Firehose, CloudWatch, ECS, ECR, ... |
+   | restJson1 | `build_rest_json` | Lambda, Bedrock, EKS, EFS, GuardDuty, Security Hub, SES v2, ... (honours `@jsonName`) |
    | ec2Query | `build_ec2_query` | EC2 |
 
    `build_ec2_query` takes the list of operations to generate, because all

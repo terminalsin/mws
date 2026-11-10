@@ -16,7 +16,7 @@ client works.
 | Static IP addresses | ✅ | Two IPv4 addresses per accelerator, one from each network zone (`75.2.0.0/17`, `99.83.128.0/17`), never shared between accelerators or accounts, kept for the accelerator's life |
 | Dual stack | ✅ | `DUAL_STACK` adds two IPv6 addresses (`2600:9000:a...`) and a `DualStackDnsName`; switching back releases them |
 | DNS names | ✅ | `a<16 hex>.awsglobalaccelerator.com` and `a<16 hex>.dualstack.awsglobalaccelerator.com` |
-| Deployment status | ✅ | Every change sets `IN_PROGRESS`; it becomes `DEPLOYED` a second later on the emulated clock |
+| Deployment status | ✅ | Every change sets `IN_PROGRESS`; it becomes `DEPLOYED` a second later on the emulated clock (at once with `MWS_ASYNC_DELAY_MS=0`) |
 | Delete rules | ✅ | `AcceleratorNotDisabledException` until the accelerator is disabled and deployed, `AssociatedListenerFoundException` while it has listeners |
 | Idempotency tokens | ✅ | A repeated `IdempotencyToken` returns the resource it made |
 | Flow log attributes | 🟡 | Stored and validated (a bucket is required when enabled); no flow logs are written, since no traffic flows |
