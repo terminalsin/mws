@@ -341,22 +341,26 @@ impl Provider for Group {
             input.insert("Tags".into(), json!(tags));
         }
         cx.call("autoscaling", "CreateAutoScalingGroup", Value::Object(input)).await?;
-        for (topic, types) in notifications(props) {
-            cx.call(
-                "autoscaling",
-                "PutNotificationConfiguration",
-                json!({"AutoScalingGroupName": name, "TopicARN": topic, "NotificationTypes": types}),
-            )
-            .await?;
-        }
-        for (granularity, m) in metrics(props) {
-            let mut input = json!({"AutoScalingGroupName": name, "Granularity": granularity});
-            if !m.is_empty() {
-                input["Metrics"] = json!(m);
+        async {
+            for (topic, types) in notifications(props) {
+                cx.call(
+                    "autoscaling",
+                    "PutNotificationConfiguration",
+                    json!({"AutoScalingGroupName": name, "TopicARN": topic, "NotificationTypes": types}),
+                )
+                .await?;
             }
-            cx.call("autoscaling", "EnableMetricsCollection", input).await?;
+            for (granularity, m) in metrics(props) {
+                let mut input = json!({"AutoScalingGroupName": name, "Granularity": granularity});
+                if !m.is_empty() {
+                    input["Metrics"] = json!(m);
+                }
+                cx.call("autoscaling", "EnableMetricsCollection", input).await?;
+            }
+            wait_capacity(cx, &name).await
         }
-        wait_capacity(cx, &name).await?;
+        .await
+        .map_err(|e: HandlerError| e.created(&name))?;
         Ok(Created::new(name))
     }
 

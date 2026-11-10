@@ -318,9 +318,16 @@ impl CloudFormation {
         self.inner.signals.lock().expect("lock").remove(key);
     }
 
-    /// Wait for `count` signals under `key`, at most `timeout_secs`.
-    pub(crate) async fn wait_for_signals(&self, key: &str, count: usize, timeout_secs: u64) -> Result<Vec<Value>, ()> {
-        let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(timeout_secs.max(1));
+    /// Wait for `count` signals under `key`, at most `timeout_secs` on the
+    /// emulated clock, and no later than the stack operation's `deadline`.
+    pub(crate) async fn wait_for_signals(
+        &self,
+        key: &str,
+        count: usize,
+        timeout_secs: u64,
+        deadline: Option<chrono::DateTime<chrono::Utc>>,
+    ) -> Result<Vec<Value>, NoSignals> {
+        let until = self.now() + chrono::Duration::seconds(timeout_secs.max(1) as i64);
         loop {
             let notified = self.inner.signalled.notified();
             tokio::pin!(notified);
@@ -329,11 +336,25 @@ impl CloudFormation {
             if got.len() >= count || got.iter().any(|s| s.get("Status").and_then(Value::as_str) == Some("FAILURE")) {
                 return Ok(got);
             }
-            if tokio::time::timeout_at(deadline, notified).await.is_err() {
-                return Err(());
+            let now = self.now();
+            if deadline.is_some_and(|d| now >= d) {
+                return Err(NoSignals::Cancelled);
             }
+            if now >= until {
+                return Err(NoSignals::TimedOut);
+            }
+            // Poll, so that an advance of the emulated clock is noticed.
+            let _ = tokio::time::timeout(std::time::Duration::from_millis(250), notified).await;
         }
     }
+}
+
+/// Why a wait for signals ended without them.
+pub(crate) enum NoSignals {
+    /// The wait's own timeout passed.
+    TimedOut,
+    /// The stack operation timed out (`TimeoutInMinutes`).
+    Cancelled,
 }
 
 /// The key `SignalResource` and creation policies use.

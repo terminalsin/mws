@@ -486,7 +486,7 @@ impl Provider for Service {
         let out = cx.call("ecs", "CreateService", Value::Object(input)).await?;
         let arn = text(&out["service"]["serviceArn"]);
         if !external(props) {
-            wait_steady(cx, &cluster, &arn).await?;
+            wait_steady(cx, &cluster, &arn).await.map_err(|e| e.created(&arn))?;
         }
         Ok(Created::new(&arn).attr("ServiceArn", arn.clone()).attr("Name", name))
     }

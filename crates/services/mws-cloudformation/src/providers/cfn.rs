@@ -129,8 +129,11 @@ impl CustomResource {
             return Err(HandlerError::invalid(format!("Invalid service token: {token}")));
         }
         let timeout = super::int(props, "ServiceTimeout").map(|t| t as u64).unwrap_or(3600);
-        let got = cx.cfn.wait_for_signals(&key, 1, timeout).await;
+        let got = cx.cfn.wait_for_signals(&key, 1, timeout, cx.deadline).await;
         cx.cfn.forget_signals(&key);
+        if let Err(crate::NoSignals::Cancelled) = got {
+            return Err(HandlerError::invalid("Resource creation cancelled"));
+        }
         let Ok(got) = got else {
             return Err(HandlerError::invalid(
                 "CloudFormation did not receive a response from your Custom Resource. Please check your custom resource function's logs.",
@@ -222,9 +225,10 @@ impl Provider for WaitCondition {
             callback::token_of(&handle).ok_or_else(|| HandlerError::invalid("Invalid WaitConditionHandle URL"))?;
         let count = super::int(props, "Count").unwrap_or(1).max(1) as usize;
         let timeout = super::int(props, "Timeout").unwrap_or(43_200).max(1) as u64;
-        let got = match cx.cfn.wait_for_signals(&token, count, timeout).await {
+        let got = match cx.cfn.wait_for_signals(&token, count, timeout, cx.deadline).await {
             Ok(g) => g,
-            Err(()) => {
+            Err(crate::NoSignals::Cancelled) => return Err(HandlerError::invalid("Resource creation cancelled")),
+            Err(crate::NoSignals::TimedOut) => {
                 let n = cx.cfn.signals(&token).len();
                 return Err(HandlerError::invalid(format!(
                     "WaitCondition timed out. Received {n} conditions when expecting {count}"
@@ -324,6 +328,7 @@ impl NestedStack {
             ctx: cx.ctx.clone(),
             token: None,
             offset: cx.ctx.received_at - chrono::Utc::now(),
+            deadline: cx.deadline,
         };
         let imports = crate::ops_imports(&template, &data);
         match existing {
@@ -373,11 +378,14 @@ impl NestedStack {
         let st = cx.cfn.state();
         let s = &st.stacks[&id];
         if s.status != "CREATE_COMPLETE" && s.status != "UPDATE_COMPLETE" {
+            // The failed nested stack still exists (rolled back), so the
+            // parent's rollback deletes it.
             return Err(HandlerError::invalid(format!(
                 "Embedded stack {id} was not successfully {}: {}",
                 if existing.is_some() { "updated" } else { "created" },
                 s.status_reason.clone().unwrap_or_default()
-            )));
+            ))
+            .created(&id));
         }
         let mut created = Created::new(id.clone());
         for o in &s.outputs {
@@ -429,6 +437,7 @@ impl Provider for NestedStack {
             ctx: cx.ctx.clone(),
             token: None,
             offset: cx.ctx.received_at - chrono::Utc::now(),
+            deadline: None,
         };
         d.event(&name, STACK_TYPE, Some(physical_id), "DELETE_IN_PROGRESS", Some("User Initiated"), None).await;
         d.clone().delete(Default::default()).await;
