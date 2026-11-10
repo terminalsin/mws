@@ -13,14 +13,29 @@ import {
   SlidersHorizontal,
 } from "lucide-react";
 import Link from "next/link";
-import { Suspense, type ReactNode } from "react";
+import { Suspense, type CSSProperties, type ReactNode } from "react";
 
 import { navigation, iconUrl } from "./catalog";
-import { CommandPalette, NavLink, RegionPicker, ServicesMenu, SideNav, Toasts, type NavGroup } from "./client";
+import { CommandPalette, CopyButton, CountUp, NavLink, RegionPicker, RouteProgress, ServicesMenu, SideNav, Toasts, type NavGroup } from "./client";
 import { zoneHref, type ZoneId } from "./zones";
 
 export { AUTO } from "./zones";
-export { ActionForm, AutoPick, CommandPalette, NavLink, RegionPicker, Sheet, Toasts, type ActionResult, type FormAction, type SearchHit } from "./client";
+export {
+  ActionForm,
+  AutoPick,
+  CommandPalette,
+  CopyButton,
+  CountUp,
+  ErrorView,
+  NavLink,
+  RegionPicker,
+  RouteProgress,
+  Sheet,
+  Toasts,
+  type ActionResult,
+  type FormAction,
+  type SearchHit,
+} from "./client";
 export { CATEGORIES, SERVICES, iconUrl, navigation, runtimeIcon, service, type Category, type CategoryId, type NavItem, type Service } from "./catalog";
 export { ZONES, zone, zoneHref, REGION_COOKIE, type Zone, type ZoneId } from "./zones";
 
@@ -69,11 +84,19 @@ export function Frame({ zone: current, info, children }: { zone: ZoneId; info: F
     <Toasts>
       <div className="frame">
         <header className="topbar">
+          <Suspense>
+            <RouteProgress />
+          </Suspense>
           <ServicesMenu groups={groups} />
           {home}
           <CommandPalette />
           <div className="topbar-end">
-            <span className={info.error ? "health down" : "health up"} title={info.error ? `MWS unreachable at ${info.endpoint}` : `MWS at ${info.endpoint}`} />
+            <span
+              className={info.error ? "health down" : "health up"}
+              role="img"
+              aria-label={info.error ? "MWS unreachable" : "MWS connected"}
+              title={info.error ? `MWS unreachable at ${info.endpoint}` : `MWS at ${info.endpoint}`}
+            />
             {info.account && (
               <span className="account" title={info.principal ?? undefined}>
                 {info.account}
@@ -145,7 +168,12 @@ export function Page({
           {icon && <AwsIcon icon={icon} size={34} />}
           <div className="page-title-text">
             <h1>{title}</h1>
-            {subtitle && <div className="subtitle">{subtitle}</div>}
+            {subtitle && (
+              <div className="subtitle">
+                <span>{subtitle}</span>
+                {typeof subtitle === "string" && <CopyButton value={subtitle} label="Copy identifier" />}
+              </div>
+            )}
           </div>
           {actions && <div className="page-actions">{actions}</div>}
         </div>
@@ -208,7 +236,7 @@ export function List({ rows, label, empty }: { rows: Row[]; label?: string; empt
   if (rows.length === 0) return empty ? <>{empty}</> : null;
   return (
     <ul className="list" aria-label={label}>
-      {rows.map((r) => {
+      {rows.map((r, index) => {
         const body = (
           <>
             {r.icon && <span className="row-icon">{r.icon}</span>}
@@ -221,7 +249,7 @@ export function List({ rows, label, empty }: { rows: Row[]; label?: string; empt
           </>
         );
         return (
-          <li key={r.key} className="row">
+          <li key={r.key} className="row" style={index < 16 ? ({ "--i": index } as CSSProperties) : undefined}>
             {r.href ? (
               r.external ? (
                 <a className="row-main" href={r.href}>
@@ -315,10 +343,21 @@ export function Pill({ tone = "neutral", icon, children, title }: { tone?: Tone;
   );
 }
 
+/** States that are on their way somewhere ("creating", "pending",
+ * "UPDATE_IN_PROGRESS"): their dot pulses. Steady -ing words are not. */
+const TRANSITIONAL = /(ing|pending|progress|_in_progress)$/i;
+const STEADY = /^(running|missing|warning|existing|pending acceptance)$/i;
+
+export function transitional(word: string) {
+  const w = word.trim();
+  return TRANSITIONAL.test(w) && !STEADY.test(w);
+}
+
 /** A status as a colored dot with its word. */
 export function Status({ tone, children }: { tone: Tone; children: ReactNode }) {
+  const live = typeof children === "string" && transitional(children);
   return (
-    <span className={`status ${tone}`}>
+    <span className={`status ${tone}`} data-live={live || undefined}>
       <span className="dot" aria-hidden />
       {children}
     </span>
@@ -394,7 +433,7 @@ export function Metric({ label, value, tone, icon, href }: { label: string; valu
         {icon}
         {label}
       </div>
-      <div className={`metric-value ${tone ?? ""}`}>{value}</div>
+      <div className={`metric-value ${tone ?? ""}`}>{typeof value === "number" ? <CountUp value={value} /> : value}</div>
     </>
   );
   return href ? (
@@ -499,4 +538,94 @@ export function FileIcon({ name, folder, size = 18 }: { name: string; folder?: b
                   ? FileText
                   : File;
   return <Icon size={size} aria-hidden />;
+}
+
+/** A shimmering stand-in for content that is on its way. */
+export function Skeleton({ width, height, block }: { width?: number | string; height?: number | string; block?: boolean }) {
+  return <span className={block ? "skeleton-block" : "skeleton-line"} style={{ width, height }} aria-hidden />;
+}
+
+/** What a page looks like while it loads: its title row, then either a list
+ * (index pages), vital signs and facts (resource pages), or tiles (home).
+ * Every zone's `loading.tsx` renders one. */
+export function PageSkeleton({ variant = "list" }: { variant?: "list" | "detail" | "home" }) {
+  const rows = [62, 48, 70, 40, 56, 66, 44];
+  return (
+    <div className="page-skeleton" aria-busy="true" aria-live="polite" data-testid="page-skeleton">
+      <span className="sr-only">Loading</span>
+      <div className="page-head">
+        <div className="page-title">
+          <Skeleton block width={34} height={34} />
+          <div className="page-title-text">
+            <Skeleton width={variant === "detail" ? 280 : 180} height={28} />
+            {variant === "detail" && (
+              <div className="subtitle">
+                <Skeleton width={360} height={12} />
+              </div>
+            )}
+          </div>
+        </div>
+      </div>
+      {variant === "detail" && (
+        <>
+          <div className="specs">
+            {[110, 90, 130, 100].map((w, i) => (
+              <span key={i} className="skeleton-spec">
+                <Skeleton block width={16} height={16} />
+                <Skeleton width={w} />
+              </span>
+            ))}
+          </div>
+          <div className="segments">
+            {[72, 96, 64].map((w, i) => (
+              <span key={i} className="segment">
+                <Skeleton width={w} />
+              </span>
+            ))}
+          </div>
+          <div className="section">
+            <div className="section-body skeleton-facts">
+              {[0, 1, 2, 3, 4, 5].map((i) => (
+                <span key={i}>
+                  <Skeleton width={80} height={10} />
+                  <Skeleton width={`${50 + ((i * 17) % 40)}%`} />
+                </span>
+              ))}
+            </div>
+          </div>
+        </>
+      )}
+      {variant === "home" && (
+        <div className="tiles">
+          {[0, 1, 2, 3, 4, 5, 6, 7].map((i) => (
+            <span key={i} className="tile skeleton-tile" style={{ "--i": i } as CSSProperties}>
+              <Skeleton block width={32} height={32} />
+              <Skeleton width="60%" />
+              <Skeleton width={40} height={28} />
+            </span>
+          ))}
+        </div>
+      )}
+      {variant !== "detail" && (
+        <ul className="list skeleton-list">
+          {rows.slice(0, variant === "home" ? 4 : rows.length).map((w, i) => (
+            <li key={i} className="row" style={{ "--i": i } as CSSProperties}>
+              <span className="row-main">
+                <span className="row-icon">
+                  <Skeleton block width={24} height={24} />
+                </span>
+                <span className="row-text">
+                  <Skeleton width={`${w}%`} />
+                  <Skeleton width={`${w / 2}%`} height={10} />
+                </span>
+                <span className="row-meta">
+                  <Skeleton width={56} height={20} />
+                </span>
+              </span>
+            </li>
+          ))}
+        </ul>
+      )}
+    </div>
+  );
 }
