@@ -1,6 +1,7 @@
 import { ListPoliciesCommand, ListTargetsForPolicyCommand, type Account } from "@aws-sdk/client-organizations";
 import { load } from "@mws-dashboard/aws";
-import { ActionForm, AwsIcon, Empty, ErrorNotice, Field, List, Page, Pill, Section, Sheet, Status } from "@mws-dashboard/ui";
+import { ActionForm, AwsIcon, Empty, ErrorNotice, Field, List, Page, Pill, Section, Sheet, Status, type Rule } from "@mws-dashboard/ui";
+import { CreateAccount, CreateOrganizationalUnit, CreatePolicy } from "@mws-dashboard/ui/model/organizations";
 import { ArrowRightLeft, FolderPlus, Plus, Shield, Trash2, X } from "lucide-react";
 import type { Metadata } from "next";
 
@@ -20,6 +21,10 @@ const DENY_REGIONS = JSON.stringify(
   null,
   2,
 );
+
+// The model leaves policy content unbounded; AWS caps an SCP at 5,120
+// characters, whitespace included when sent through the API.
+const SCP_CONTENT: Rule = { ...CreatePolicy.Content, format: "json", maxLength: 5120 };
 
 function Tree({ node, all, management }: { node: OrgNode; all: OrgNode[]; management: string | undefined }) {
   const accountRow = (a: Account) => (
@@ -76,17 +81,17 @@ function Tree({ node, all, management }: { node: OrgNode; all: OrgNode[]; manage
   );
 }
 
-async function Policies({ targets }: { targets: OrgNode[] }) {
-  const policies = await load(async () => {
-    const client = await organizations();
-    const list = (await client.send(new ListPoliciesCommand({ Filter: "SERVICE_CONTROL_POLICY" }))).Policies ?? [];
-    return Promise.all(list.map(async (p) => ({ p, targets: (await client.send(new ListTargetsForPolicyCommand({ PolicyId: p.Id }))).Targets ?? [] })));
-  });
-  if (!policies.ok) return <ErrorNotice error={policies.error} />;
+async function scps() {
+  const client = await organizations();
+  const list = (await client.send(new ListPoliciesCommand({ Filter: "SERVICE_CONTROL_POLICY" }))).Policies ?? [];
+  return Promise.all(list.map(async (p) => ({ p, targets: (await client.send(new ListTargetsForPolicyCommand({ PolicyId: p.Id }))).Targets ?? [] })));
+}
+
+function Policies({ policies, targets }: { policies: Awaited<ReturnType<typeof scps>>; targets: OrgNode[] }) {
   return (
     <List
       label="Service control policies"
-      rows={policies.value.map(({ p, targets: attached }) => ({
+      rows={policies.map(({ p, targets: attached }) => ({
         key: p.Id!,
         icon: <AwsIcon icon={ICONS.policy} size={22} />,
         title: p.Name,
@@ -109,12 +114,12 @@ async function Policies({ targets }: { targets: OrgNode[] }) {
             <Sheet title={`Attach ${p.Name}`} label={`Attach ${p.Name}`} icon={<Plus size={15} />} testId={`attach-${p.Name}`}>
               <ActionForm action={attachPolicy.bind(null, p.Id!)} submit="Attach" testId={`attach-${p.Name}`}>
                 <Field label="Target">
-                  <select name="target">
+                  <select name="target" required>
                     {targets.flatMap((n) => [
-                      <option key={n.id} value={n.id}>
+                      <option key={n.id} value={n.id} disabled={attached.some((t) => t.TargetId === n.id)}>
                         {n.name}
                       </option>,
-                      ...n.accounts.map((a) => (
+                      ...n.accounts.filter((a) => !attached.some((t) => t.TargetId === a.Id)).map((a) => (
                         <option key={a.Id} value={a.Id}>
                           {"  "}
                           {a.Name}
@@ -146,25 +151,30 @@ export default async function Organization({ searchParams }: Props) {
   }
   const { org, tree } = data.value;
   const all = flatten(tree).map((x) => x.node);
+  const emails = all.flatMap((n) => n.accounts.map((a) => a.Email!)).filter(Boolean);
   if (tab === "policies") {
+    const policies = await load(scps);
+    const names = policies.ok ? policies.value.map(({ p }) => p.Name!) : [];
     return (
       <Page
         title="Service control policies"
         actions={
           <Sheet title="Create policy" label="Create policy" testId="create-scp">
             <ActionForm action={createPolicy} submit="Create policy" testId="create-scp">
-              <Field label="Name">
+              <Field label="Name" rule={CreatePolicy.Name} taken={names} generate="name" unique>
                 <input name="name" required autoFocus />
               </Field>
-              <Field label="Description">
+              <Field label="Description" rule={{ ...CreatePolicy.Description, required: false }}>
                 <input name="description" />
               </Field>
-              <textarea name="content" rows={12} aria-label="Policy" className="code-editor" defaultValue={DENY_REGIONS} />
+              <Field label="Policy" rule={SCP_CONTENT}>
+                <textarea name="content" rows={12} className="code-editor" defaultValue={DENY_REGIONS} />
+              </Field>
             </ActionForm>
           </Sheet>
         }
       >
-        <Policies targets={all} />
+        {policies.ok ? <Policies policies={policies.value} targets={all} /> : <ErrorNotice error={policies.error} />}
       </Page>
     );
   }
@@ -176,7 +186,7 @@ export default async function Organization({ searchParams }: Props) {
         <>
           <Sheet title="Create organizational unit" label="Create organizational unit" icon={<FolderPlus size={16} />} testId="create-ou">
             <ActionForm action={createOu} submit="Create" testId="create-ou">
-              <Field label="Name">
+              <Field label="Name" rule={CreateOrganizationalUnit.Name} generate="name" unique>
                 <input name="name" required autoFocus />
               </Field>
               <Field label="Parent">
@@ -192,10 +202,10 @@ export default async function Organization({ searchParams }: Props) {
           </Sheet>
           <Sheet title="Add an AWS account" label="Add an AWS account" testId="create-account">
             <ActionForm action={createAccount} submit="Create AWS account" testId="create-account">
-              <Field label="Account name">
+              <Field label="Account name" rule={CreateAccount.AccountName} generate="name">
                 <input name="name" required autoFocus />
               </Field>
-              <Field label="Email address of the account's owner">
+              <Field label="Email address of the account's owner" rule={CreateAccount.Email} format="email" taken={emails} unique>
                 <input name="email" type="email" required />
               </Field>
             </ActionForm>
