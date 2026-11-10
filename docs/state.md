@@ -70,6 +70,8 @@ Plain unsigned JSON over HTTP on the same port:
 | `DELETE /_mws/snapshots/{name}` | delete a snapshot |
 | `GET /_mws/clock` | the emulated time and its offset from the wall clock |
 | `POST /_mws/clock` | move the emulated time: `{"advanceSeconds": n}` or `{"offsetSeconds": n}` (time-based behaviour such as S3 lifecycle follows it; signatures still use the wall clock) |
+| `GET /_mws/deliveries` | service-to-service calls (S3 event notifications, ...) queued for retry after a retryable failure, pending and failed |
+| `POST /_mws/deliveries/drain` | retry every pending queued call now |
 
 A typical test suite starts MWS with a scenario and calls `POST /_mws/reset`
 before each test. Snapshots live in the database when `MWS_DB` is set, and in
