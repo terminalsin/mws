@@ -222,7 +222,10 @@ function clauses(text: string): string[] {
 function resourcesFor(svc: ServiceIntent, clause: string, known: ResourceOption[]): string[] {
   if (!svc.kind) return [];
   const words = new Set(clause.split(/[^a-z0-9._/-]+/).filter((w) => w.length >= 2));
-  const hits = known.filter((o) => o.kind === svc.kind && (words.has(o.name.toLowerCase()) || [...words].some((w) => w.length >= 3 && o.name.toLowerCase().includes(w) && !svc.words.test(w))));
+  const mine = known.filter((o) => o.kind === svc.kind);
+  // Names said exactly win; a partial match only counts when nothing matches exactly.
+  const exact = mine.filter((o) => words.has(o.name.toLowerCase()));
+  const hits = exact.length ? exact : mine.filter((o) => [...words].some((w) => w.length >= 3 && o.name.toLowerCase().includes(w) && !svc.words.test(w)));
   return hits.flatMap((o) => {
     const arn = o.arn ?? o.id ?? o.name;
     if (svc.kind === "s3-bucket") return [arn, `${arn}/*`];

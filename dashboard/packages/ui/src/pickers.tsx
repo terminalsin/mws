@@ -99,6 +99,8 @@ function score(o: ResourceOption, q: string): number {
 
 const MAX = 60;
 
+const plural = (noun: string) => (/(s|sh|ch|x)$/.test(noun) ? `${noun}es` : `${noun}s`);
+
 // ---------------------------------------------------------------------------
 // The picker.
 
@@ -225,7 +227,7 @@ export function ResourcePicker(props: ResourcePickerProps) {
       if (r.recent) return "Recent";
       const o = r.option;
       if (service && o.kind === "iam-role") return o.services?.includes(service) ? `Trusts ${service}` : "Other roles";
-      if (kinds.length > 1) return RESOURCE_KINDS[o.kind].noun.replace(/^./, (c) => c.toUpperCase()) + "s";
+      if (kinds.length > 1) return plural(RESOURCE_KINDS[o.kind].noun).replace(/^./, (c) => c.toUpperCase());
       return o.group ?? "";
     },
     [service, kinds.length],
@@ -372,7 +374,12 @@ export function ResourcePicker(props: ResourcePickerProps) {
         spellCheck={false}
         value={value}
         onChange={onChange}
-        onFocus={() => {
+        onFocus={(e) => {
+          // Several values: typing goes after the ones already there.
+          if (multiple) {
+            const el = e.currentTarget;
+            requestAnimationFrame(() => el.setSelectionRange(el.value.length, el.value.length));
+          }
           setTouched(true);
           setOpen(true);
         }}
@@ -382,7 +389,7 @@ export function ResourcePicker(props: ResourcePickerProps) {
         }}
         onKeyDown={onKey}
         required={required}
-        placeholder={placeholder ?? `Search ${kinds.map((k) => RESOURCE_KINDS[k].noun + "s").join(", ")} or paste ${use === "name" || (!use && first.value === "name") ? "a name" : use === "id" || (!use && first.value === "id") ? "an ID" : "an ARN"}`}
+        placeholder={placeholder ?? `Search ${kinds.length > 2 ? "resources" : kinds.map((k) => plural(RESOURCE_KINDS[k].noun)).join(" and ")} or paste ${use === "name" || (!use && first.value === "name") ? "a name" : use === "id" || (!use && first.value === "id") ? "an ID" : "an ARN"}`}
         autoFocus={autoFocus}
         disabled={disabled}
       />
@@ -399,7 +406,7 @@ export function ResourcePicker(props: ResourcePickerProps) {
       >
         {items === null ? (
           <div className="picker-empty">
-            <Loader2 size={14} className="spin" aria-hidden /> Loading {first.noun}s…
+            <Loader2 size={14} className="spin" aria-hidden /> Loading {plural(first.noun)}…
           </div>
         ) : null}
         {rows.map((r, i) => {
@@ -438,7 +445,7 @@ export function ResourcePicker(props: ResourcePickerProps) {
         {items !== null && rows.length === 0 && !canCreate && (
           <div className="picker-empty">
             <Search size={14} aria-hidden />
-            {query ? `No ${first.noun} matches. The value is used as typed.` : creatable ? `No ${first.noun}s yet. Type a name to create one.` : `No ${first.noun}s in this Region.`}
+            {query ? `No ${first.noun} matches. The value is used as typed.` : creatable ? `No ${plural(first.noun)} yet. Type a name to create one.` : `No ${plural(first.noun)} in this Region.`}
           </div>
         )}
         {canCreate && (

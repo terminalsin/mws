@@ -100,7 +100,10 @@ export function accessLevel(action: string): "List" | "Read" | "Write" | "Taggin
 function searchActions(q: string, limit = 40): string[] {
   const query = q.trim().toLowerCase();
   if (!query) return [];
-  const [p, rest] = query.includes(":") ? query.split(":", 2) : [null, query];
+  let [p, rest] = query.includes(":") ? query.split(":", 2) : [null, query];
+  // "kms gen": the first word names the service.
+  const first = query.split(/\s+/)[0];
+  if (p === null && query.includes(" ") && ALL_ACTIONS[first]) [p, rest] = [first, query.slice(first.length)];
   const words = (rest ?? "").split(/\s+/).filter(Boolean);
   const out: { a: string; s: number }[] = [];
   for (const [prefix, list] of Object.entries(ALL_ACTIONS)) {
@@ -354,14 +357,14 @@ const STATEMENT_SNIPPETS: { id: string; label: string; kinds: PolicyKind[]; make
 // ---------------------------------------------------------------------------
 // Small pieces.
 
-function Chips({ values, remove, mono = true, icon }: { values: string[]; remove: (v: string) => void; mono?: boolean; icon?: (v: string) => string | undefined }) {
+function Chips({ values, remove, mono = true, icon, levels }: { values: string[]; remove: (v: string) => void; mono?: boolean; icon?: (v: string) => string | undefined; levels?: boolean }) {
   if (!values.length) return null;
   return (
     <span className="policy-chips">
       {values.map((v) => {
         const i = icon?.(v);
         return (
-          <span key={v} className="policy-chip" data-level={v.includes(":") ? accessLevel(v) : undefined} title={v}>
+          <span key={v} className="policy-chip" data-level={levels && v.includes(":") ? accessLevel(v) : undefined} title={v}>
             {i && <img src={iconUrl(i)} alt="" width={14} height={14} />}
             <span className={mono ? "mono" : undefined}>{v}</span>
             <button type="button" aria-label={`Remove ${v}`} onClick={() => remove(v)}>
@@ -621,6 +624,8 @@ function Resources({ value, change, services }: { value: string[]; change: (r: s
 }
 
 function Conditions({ value, change }: { value: Condition[]; change: (c: Condition[]) => void }) {
+  // The helpers show on an empty statement; once it has a condition they wait behind one button.
+  const [open, setOpen] = useState(value.length === 0);
   const set = (i: number, c: Partial<Condition>) => change(value.map((x, j) => (j === i ? { ...x, ...c } : x)));
   return (
     <div className="policy-row">
@@ -640,9 +645,19 @@ function Conditions({ value, change }: { value: Condition[]; change: (c: Conditi
             </button>
           </span>
         ))}
+        {!open ? (
+          <span className="repairs">
+            <button type="button" className="repair" onClick={() => setOpen(true)}>
+              <Plus size={12} aria-hidden /> Condition
+            </button>
+          </span>
+        ) : (
         <span className="repairs">
           {CONDITION_PRESETS.filter((p) => !value.some((c) => c.key === p.cond.key)).map((p) => (
-            <button key={p.id} type="button" className="repair" data-kind="suggest" onClick={() => change([...value, { ...p.cond, values: [...p.cond.values] }])}>
+            <button key={p.id} type="button" className="repair" data-kind="suggest" onClick={() => {
+                change([...value, { ...p.cond, values: [...p.cond.values] }]);
+                setOpen(false);
+              }}>
               <Plus size={12} aria-hidden /> {p.label}
             </button>
           ))}
@@ -650,6 +665,7 @@ function Conditions({ value, change }: { value: Condition[]; change: (c: Conditi
             <Plus size={12} aria-hidden /> Other
           </button>
         </span>
+        )}
         <datalist id="policy-condition-keys">
           {CONDITION_KEYS.map((k) => (
             <option key={k} value={k} />
@@ -699,7 +715,7 @@ function StatementCard({ s, kind, change, remove, only }: { s: Statement; kind: 
       <div className="policy-row">
         <span className="policy-row-label">Actions</span>
         <div className="policy-row-body">
-          <Chips values={s.actions} remove={(v) => change({ ...s, actions: s.actions.filter((a) => a !== v) })} icon={(v) => (v.includes(":") ? serviceIcon(v.split(":")[0]) : undefined)} />
+          <Chips levels values={s.actions} remove={(v) => change({ ...s, actions: s.actions.filter((a) => a !== v) })} icon={(v) => (v.includes(":") ? serviceIcon(v.split(":")[0]) : undefined)} />
           <ActionSearch kind={kind} services={services} add={(a) => change({ ...s, actions: [...new Set([...s.actions, ...a])] })} />
         </div>
       </div>
@@ -797,9 +813,12 @@ export function PolicyEditor({
   const [mode, setMode] = useState<"visual" | "json">(startIn ?? (initial && (defaultValue ?? "").trim() ? "visual" : "json"));
   const [doc, setDoc] = useState(() => initial ?? { version: "2012-10-17", statements: [] });
   const [problem, setProblem] = useState<string | null>(null);
+  // Untouched, the starting document is only a template: a drafted policy replaces it.
+  const touched = useRef(false);
 
   const write = useCallback(
     (next: { version: string; statements: Statement[] }) => {
+      touched.current = true;
       setDoc(next);
       if (area.current) setControlValue(area.current, serialize(next.version, next.statements, kind));
     },
@@ -846,7 +865,10 @@ export function PolicyEditor({
         <div className="policy-statements">
           <PolicyAssistant
             kind={kind}
-            add={(drafted) => write({ ...doc, statements: [...statements.filter((s) => s.actions.length || s.raw), ...drafted.map((d) => ({ ...d, uid: ++uid }))] })}
+            add={(drafted) => {
+              const kept = touched.current ? statements.filter((s) => s.actions.length || s.raw) : [];
+              write({ ...doc, statements: [...kept, ...drafted.map((d) => ({ ...d, uid: ++uid }))] });
+            }}
           />
           {statements.map((s, i) => (
             <StatementCard
