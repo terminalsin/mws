@@ -314,6 +314,12 @@ impl Sns {
         if st.topics.remove(&input.topic_arn).is_some() {
             st.subscriptions.retain(|_, s| s.topic_arn != input.topic_arn);
         }
+        drop(st);
+        // The topic's fan-out worker ends once it has delivered what it
+        // has queued.
+        if let Ok(mut workers) = self.inner.fan_out.lock() {
+            workers.remove(&input.topic_arn);
+        }
         Ok(())
     }
 

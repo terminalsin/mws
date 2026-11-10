@@ -7,6 +7,20 @@ use mws_s3::{EventBridgeSink, ObjectEvent};
 
 use crate::links::{send_message, OutgoingMessage};
 
+/// The `MessageDeduplicationId` EventBridge gives a FIFO target: the same
+/// for every attempt at one event to one target, so a retry of a send that
+/// did arrive is deduplicated.
+fn fifo_dedup_id(inv: &TargetInvocation<'_>) -> String {
+    use sha2::Digest;
+    let mut h = sha2::Sha256::new();
+    // The partition key is the event's id for queue and topic targets.
+    for part in [inv.source_arn, inv.target_arn, inv.partition_key.unwrap_or_default(), inv.payload] {
+        h.update(part.as_bytes());
+        h.update([0]);
+    }
+    hex::encode(h.finalize())
+}
+
 /// EventBridge targets and dead-letter queues that are SQS queues:
 /// EventBridge calls SQS's own `SendMessage` as `events.amazonaws.com`.
 pub struct SqsTarget(pub ServiceClient);
@@ -23,7 +37,7 @@ impl TargetSink for SqsTarget {
                 .map(|(k, v)| (k.clone(), ("String".to_string(), Some(v.clone()), None)))
                 .collect(),
             group_id: inv.message_group_id.map(str::to_string),
-            dedup_id: fifo.then(|| uuid::Uuid::new_v4().to_string()),
+            dedup_id: fifo.then(|| fifo_dedup_id(&inv)),
         };
         let mut ctx = inv.ctx.as_service(inv.service_principal, inv.source_account, Some(inv.source_arn));
         ctx.received_at = inv.ctx.received_at;
@@ -38,6 +52,9 @@ impl TargetSink for SqsTarget {
             Err(e) if e.code == "AccessDenied" || e.status == 403 => {
                 Err(TargetError::permanent("AccessDeniedException", e.message.to_string()))
             }
+            // Throttles and server errors are retried under the target's
+            // RetryPolicy; only client errors go straight to the DLQ.
+            Err(e) if mws_core::outbox::retryable(&e) => Err(TargetError::retryable(&e.code, e.message.to_string())),
             Err(e) => Err(TargetError::permanent("SQSException", e.message.to_string())),
         }
     }
@@ -64,6 +81,9 @@ impl TargetSink for LambdaTarget {
                 "AccessDeniedException",
                 format!("EventBridge is not authorized to invoke {}", inv.target_arn),
             )),
+            // Throttles and server errors are retried under the target's
+            // RetryPolicy; only client errors go straight to the DLQ.
+            Err(e) if mws_core::outbox::retryable(&e) => Err(TargetError::retryable(&e.code, e.message.to_string())),
             Err(e) => Err(TargetError::permanent("InvalidParameterValueException", e.message.to_string())),
         }
     }
@@ -94,7 +114,7 @@ impl TargetSink for SnsTarget {
             input["MessageGroupId"] = g.into();
         }
         if fifo {
-            input["MessageDeduplicationId"] = uuid::Uuid::new_v4().to_string().into();
+            input["MessageDeduplicationId"] = fifo_dedup_id(&inv).into();
         }
         match self.0.call(&ctx, "sns", "Publish", input).await {
             Ok(_) => Ok(()),
@@ -109,6 +129,9 @@ impl TargetSink for SnsTarget {
                     inv.target_arn
                 ),
             )),
+            // Throttles and server errors are retried under the target's
+            // RetryPolicy; only client errors go straight to the DLQ.
+            Err(e) if mws_core::outbox::retryable(&e) => Err(TargetError::retryable(&e.code, e.message.to_string())),
             Err(e) => Err(TargetError::permanent("SNSException", e.message.to_string())),
         }
     }

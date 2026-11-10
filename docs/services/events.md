@@ -15,7 +15,7 @@ All 57 operations are generated from the AWS model (awsJson1.1) and implemented.
 | Event patterns | ✅ | The full pattern language (exact values, `prefix`, `suffix`, `equals-ignore-case`, `wildcard`, `anything-but`, `numeric`, `exists`, `cidr`, `$or`, arrays) with EventBridge's validation messages; `TestEventPattern`. |
 | Scheduled rules | ✅ | `rate()` and six-field `cron()` on the emulated clock. |
 | Input shaping | ✅ | `Input`, `InputPath` and `InputTransformer`. |
-| Retries and dead-letter queues | ✅ | Retry policies (`MaximumRetryAttempts`, `MaximumEventAgeInSeconds`); dead-letter messages carry EventBridge's attributes `RULE_ARN`, `TARGET_ARN`, `ERROR_CODE`, `ERROR_MESSAGE`, `EXHAUSTED_RETRY_CONDITION` (`MaximumRetryAttemptsExceeded` or `MaximumEventAgeExceeded`) and `RETRY_ATTEMPTS`. |
+| Retries and dead-letter queues | ✅ | Retry policies (`MaximumRetryAttempts`, `MaximumEventAgeInSeconds`) for throttled and failing targets (SQS, SNS, Lambda, Kinesis, Firehose); client errors such as `AccessDenied` go straight to the dead-letter queue. FIFO queue and topic targets get a deduplication id that is the same for every attempt at one event; dead-letter messages carry EventBridge's attributes `RULE_ARN`, `TARGET_ARN`, `ERROR_CODE`, `ERROR_MESSAGE`, `EXHAUSTED_RETRY_CONDITION` (`MaximumRetryAttemptsExceeded` or `MaximumEventAgeExceeded`) and `RETRY_ATTEMPTS`. |
 | Archives and replays | ✅ | Archives keep matching events through EventBridge's managed rule; replays send them back with `replay-name`. |
 | Global endpoints, partner sources, tags | ✅ | `PutEvents` with `EndpointId` goes to the primary bus; `PutPartnerEvents`. |
 | `iam:PassRole` | ✅ | Checked for rule and target roles. |

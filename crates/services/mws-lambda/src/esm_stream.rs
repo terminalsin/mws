@@ -256,21 +256,24 @@ impl Lambda {
 
     /// One round for a Kinesis mapping: from each shard, a batch for each
     /// of its `ParallelizationFactor` lanes that has records (or a tumbling
-    /// window to close), the lanes run concurrently.
+    /// window to close), the lanes run concurrently. Returns whether any
+    /// shard returned records (the poller then reads again at once, as
+    /// Lambda does while a shard has a backlog; otherwise it waits about a
+    /// second, leaving the shard's read limit to other consumers).
     pub(crate) async fn poll_stream(
         &self,
         uuid: &str,
         config: &types::EventSourceMappingConfiguration,
         account: &str,
         region: &str,
-    ) -> Result<(), ServiceError> {
+    ) -> Result<bool, ServiceError> {
         let (Some(source), Some(source_arn), Some(function_arn)) =
             (self.inner.streams.get().cloned(), config.event_source_arn.as_deref(), config.function_arn.as_deref())
         else {
-            return Ok(());
+            return Ok(false);
         };
         let stream = stream_of(source_arn).to_string();
-        let Some(ctx) = self.poller_context(account, region) else { return Ok(()) };
+        let Some(ctx) = self.poller_context(account, region) else { return Ok(false) };
         let role_ctx = self.role_context(&ctx, function_arn)?;
         let role = role_ctx.caller.arn.clone();
         let invoke_identity = self.function_role(&ctx, function_arn).unwrap_or(role);
@@ -285,6 +288,7 @@ impl Lambda {
         };
         let factor = config.parallelization_factor.unwrap_or(1).clamp(1, 10) as u32;
         let batch_size = config.batch_size.unwrap_or(100).max(1);
+        let mut busy = false;
         for shard in &shards {
             let mut progress = self.progress(uuid, &shard.shard_id);
             if progress.finished {
@@ -328,7 +332,13 @@ impl Lambda {
             } else {
                 batch_size.saturating_mul(factor as i32).min(10_000)
             };
-            let read = source.read(&role_ctx, &iterator, limit)?;
+            let read = match source.read(&role_ctx, &iterator, limit) {
+                Ok(read) => read,
+                // The shard's read limit is spent (other consumers share
+                // it): try this shard again next round, read the others.
+                Err(e) if e.code.contains("ProvisionedThroughputExceeded") => continue,
+                Err(e) => return Err(e),
+            };
             let mut lanes = Vec::new();
             for lane in 0..factor {
                 let lp = progress.lane(lane);
@@ -342,6 +352,7 @@ impl Lambda {
                 if pending.is_empty() && lp.window.is_none() {
                     continue;
                 }
+                busy |= !pending.is_empty();
                 let job = LaneJob {
                     ctx: ctx.clone(),
                     uuid: uuid.to_string(),
@@ -389,7 +400,7 @@ impl Lambda {
                 }
             });
         }
-        Ok(())
+        Ok(busy)
     }
 
     /// One batch of one lane of a shard: invoke the function with the

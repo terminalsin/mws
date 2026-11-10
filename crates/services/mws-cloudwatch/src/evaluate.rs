@@ -394,7 +394,7 @@ pub fn evaluate_metric_alarm(
             "ignore" => None,
             "notBreaching" => Some((
                 "OK".into(),
-                format!("Threshold Crossed: no datapoints were received for {n} period{} and {n} missing datapoint{} {} treated as [NonBreaching].", if n == 1 { "" } else { "s" }, if n == 1 { " was" } else { "s were" }, ""),
+                format!("Threshold Crossed: no datapoints were received for {n} period{} and {n} missing datapoint{} treated as [NonBreaching].", if n == 1 { "" } else { "s" }, if n == 1 { " was" } else { "s were" }),
                 data,
             )),
             "breaching" if breaching >= mdp => Some((
@@ -488,6 +488,37 @@ impl CloudWatch {
         let offset = (ctx.received_at - Utc::now()).num_milliseconds();
         self.inner.clock_offset_ms.store(offset.max(0), Ordering::Relaxed);
         *self.inner.template.lock().expect("template lock poisoned") = Some(ctx.clone());
+        self.start_evaluator();
+    }
+
+    /// The authorizer the evaluator uses before CloudWatch has seen a
+    /// request, as after restoring saved state.
+    pub fn set_authorizer(&self, authorizer: std::sync::Arc<dyn mws_core::Authorizer>) {
+        let _ = self.inner.authorizer.set(authorizer);
+    }
+
+    /// The last request's context, or (before any request) one made from
+    /// the authorizer set with [`CloudWatch::set_authorizer`].
+    pub(crate) fn background_template(&self) -> Option<RequestContext> {
+        if let Some(t) = self.inner.template.lock().expect("template lock poisoned").clone() {
+            return Some(t);
+        }
+        let authorizer = self.inner.authorizer.get()?.clone();
+        Some(RequestContext {
+            request_id: String::new(),
+            region: String::new(),
+            partition: "aws".into(),
+            received_at: self.clock_now(),
+            caller: mws_core::Caller::anonymous(),
+            source_ip: None,
+            secure_transport: true,
+            authorizer,
+            endpoint: None,
+        })
+    }
+
+    /// Start the evaluator (alarms, metric streams) once.
+    pub(crate) fn start_evaluator(&self) {
         if tokio::runtime::Handle::try_current().is_ok() && !self.inner.scheduler.swap(true, Ordering::SeqCst) {
             let me = self.clone();
             tokio::spawn(async move {
@@ -506,7 +537,7 @@ impl CloudWatch {
 
     /// Evaluate every alarm now.
     pub fn tick(&self) {
-        let Some(template) = self.inner.template.lock().expect("template lock poisoned").clone() else { return };
+        let Some(template) = self.background_template() else { return };
         let now = self.clock_now();
         let (mut transitions, due, batches) = {
             let mut st = self.lock();

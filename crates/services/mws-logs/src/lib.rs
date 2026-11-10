@@ -81,6 +81,9 @@ pub struct Logs {
     scheduler: Arc<std::sync::atomic::AtomicBool>,
     /// Import tasks read CloudTrail Lake event data stores here.
     lake: Arc<std::sync::RwLock<Option<Arc<dyn LakeSource>>>>,
+    /// The authorizer background work uses before Logs has seen a request
+    /// (after restoring saved state).
+    authorizer: Arc<std::sync::OnceLock<Arc<dyn mws_core::Authorizer>>>,
 }
 
 impl Logs {
@@ -113,6 +116,34 @@ impl Logs {
 
     fn lock(&self) -> MutexGuard<'_, State> {
         self.state.lock().expect("CloudWatch Logs state lock poisoned")
+    }
+
+    /// The authorizer scheduled queries and subscription deliveries use
+    /// before Logs has seen a request, as after restoring saved state.
+    pub fn set_authorizer(&self, authorizer: Arc<dyn mws_core::Authorizer>) {
+        let _ = self.authorizer.set(authorizer);
+    }
+
+    /// The context background work starts from: the last request's (and
+    /// how far its clock ran ahead), or one made from the authorizer set
+    /// with [`Logs::set_authorizer`] when no request has been seen.
+    pub(crate) fn background_template(&self) -> Option<(RequestContext, chrono::Duration)> {
+        if let Some(t) = self.template.lock().expect("Logs template lock poisoned").clone() {
+            return Some(t);
+        }
+        let authorizer = self.authorizer.get()?.clone();
+        let ctx = RequestContext {
+            request_id: String::new(),
+            region: String::new(),
+            partition: "aws".into(),
+            received_at: chrono::Utc::now(),
+            caller: mws_core::Caller::anonymous(),
+            source_ip: None,
+            secure_transport: true,
+            authorizer,
+            endpoint: None,
+        };
+        Some((ctx, chrono::Duration::zero()))
     }
 }
 
@@ -151,6 +182,15 @@ impl Service for Logs {
         operation: &str,
         input: serde_json::Value,
     ) -> Result<serde_json::Value, ServiceError> {
+        // Calls from other services and scenario files start background
+        // work (scheduled queries, subscription forwarding) too. Only HTTP
+        // requests move the clock: a service's background call may carry
+        // the wall clock.
+        if self.template.lock().expect("Logs template lock poisoned").is_none() {
+            self.observe(&ctx);
+        } else {
+            self.start_scheduler();
+        }
         generated::invoke(self, &ctx, operation, input).await
     }
 
@@ -163,6 +203,7 @@ impl Service for Logs {
         let state: State = serde_json::from_value(state).map_err(|e| format!("invalid CloudWatch Logs state: {e}"))?;
         *self.lock() = state;
         self.resume_background();
+        self.start_scheduler();
         Ok(())
     }
 

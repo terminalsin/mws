@@ -6,7 +6,7 @@ use std::time::Duration;
 
 use base64::Engine;
 use chrono::{DateTime, Utc};
-use mws_core::RequestContext;
+use mws_core::{RequestContext, ServiceError};
 use serde_json::{json, Map, Value};
 
 use crate::generated::types::MessageAttributeValue;
@@ -200,7 +200,12 @@ impl Sns {
         tokio::spawn(async move {
             while let Some(job) = rx.recv().await {
                 let Some(inner) = inner.upgrade() else { return };
-                Sns { inner }.fan_out_now(job);
+                // Run the deliveries this message defers (SQS sends,
+                // Lambda invokes, DLQ redrives) here, in order, before the
+                // next message: spawned, they would race and a FIFO
+                // queue would see the group out of order.
+                let sns = Sns { inner };
+                mws_core::deferred::run(async move { sns.fan_out_now(job) }).await;
             }
         });
     }
@@ -342,10 +347,21 @@ impl Sns {
                             sns.log_delivery(&ctx, &msg, sns.attempt(&origin, &sub, true, 200, response, 1));
                         }
                         Err(e) => {
-                            let response = json!({"ErrorCode": "AccessDenied", "ErrorMessage": e}).to_string();
-                            sns.log_delivery(&ctx, &msg, sns.attempt(&origin, &sub, false, 403, response, 1));
-                            tracing::warn!(subscription = %sub.arn, "SNS could not deliver to {}: {e}", sub.endpoint);
-                            sns.redrive(&ctx, &origin, &sub, &msg);
+                            let response =
+                                json!({"ErrorCode": e.code, "ErrorMessage": e.message.to_string()}).to_string();
+                            sns.log_delivery(&ctx, &msg, sns.attempt(&origin, &sub, false, e.status, response, 1));
+                            tracing::warn!(
+                                subscription = %sub.arn,
+                                "SNS could not deliver to {}: {}",
+                                sub.endpoint,
+                                e.message
+                            );
+                            // Server-side errors and throttles are retried
+                            // (the send is queued); only client errors go
+                            // to the dead-letter queue.
+                            if !mws_core::outbox::retryable(&e) {
+                                sns.redrive(&ctx, &origin, &sub, &msg);
+                            }
                         }
                     }
                 });
@@ -527,10 +543,10 @@ impl Sns {
             .map_err(|e| (e.status, format!("{}: {}", e.code, e.message)))
     }
 
-    async fn send_to_queue(&self, ctx: &RequestContext, m: QueueMessage) -> Result<String, String> {
+    async fn send_to_queue(&self, ctx: &RequestContext, m: QueueMessage) -> Result<String, ServiceError> {
         match self.inner.queues.get() {
             Some(q) => q.send(ctx, m).await,
-            None => Err("the queue service is not wired in".to_string()),
+            None => Err(ServiceError::internal("the queue service is not wired in")),
         }
     }
 
@@ -540,7 +556,7 @@ impl Sns {
         mws_core::deferred::defer(async move {
             let queue = m.queue_arn.clone();
             if let Err(e) = sns.send_to_queue(&ctx, m).await {
-                tracing::warn!(subscription, "SNS could not send {what} to {queue}: {e}");
+                tracing::warn!(subscription, "SNS could not send {what} to {queue}: {}", e.message);
             }
         });
     }
