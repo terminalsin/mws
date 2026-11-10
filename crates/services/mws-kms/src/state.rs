@@ -73,7 +73,7 @@ pub struct Key {
     /// `CUSTOMER`, or `AWS` for AWS managed keys (`alias/aws/...`).
     pub key_manager: String,
     /// `Enabled`, `Disabled`, `PendingDeletion`, `PendingImport`,
-    /// `PendingReplicaDeletion` or `Unavailable`.
+    /// `PendingReplicaDeletion`, `Unavailable`, `Creating` or `Updating`.
     pub state: String,
     /// The state to return to when imported material is (re)imported.
     #[serde(default)]
@@ -95,6 +95,21 @@ pub struct Key {
     pub xks_key_id: Option<String>,
     #[serde(default)]
     pub last_usage: Option<LastUsage>,
+    /// Work KMS is still doing on the key (`Creating`, `Updating`).
+    #[serde(default)]
+    pub transition: Option<Transition>,
+}
+
+/// A key in `Creating` or `Updating`: the state it settles into, and when
+/// the work started (see `mws_core::settle`).
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct Transition {
+    pub since: DateTime<Utc>,
+    /// The key state once the work is done.
+    pub to: String,
+    /// `UpdatePrimaryRegion`: the Region that becomes the primary.
+    #[serde(default)]
+    pub primary_region: Option<String>,
 }
 
 impl Key {

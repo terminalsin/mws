@@ -71,6 +71,7 @@ impl State {
     /// Apply everything that happens with the passage of time: scheduled
     /// deletions, automatic rotations and expiring imported material.
     pub(crate) fn sweep(&mut self, now: DateTime<Utc>) {
+        self.settle_transitions(now);
         // Primaries waiting for their replicas start their own window once
         // the last replica is gone.
         let waiting: Vec<String> =
@@ -131,6 +132,45 @@ impl State {
             self.sync_replicas(&arn);
         }
         self.imports.retain(|_, p| p.valid_to > now);
+    }
+
+    /// Finish `Creating` and `Updating` work whose settle window has passed.
+    pub(crate) fn settle_transitions(&mut self, now: DateTime<Utc>) {
+        let done: Vec<String> = self
+            .keys
+            .values()
+            .filter(|k| k.transition.as_ref().is_some_and(|t| mws_core::settle::settled(t.since, now)))
+            .map(|k| k.arn.clone())
+            .collect();
+        for arn in done {
+            let k = self.keys.get_mut(&arn).expect("listed");
+            let t = k.transition.take().expect("filtered");
+            k.state = t.to;
+            if let Some(region) = t.primary_region {
+                let (key_id, account) = (k.key_id.clone(), k.account.clone());
+                self.switch_primary(&key_id, &account, &region);
+            }
+        }
+    }
+
+    /// Make the key in `region` the primary of its multi-Region key: the
+    /// automatic rotation schedule moves with it.
+    fn switch_primary(&mut self, key_id: &str, account: &str, region: &str) {
+        let old = self
+            .keys
+            .values()
+            .find(|k| k.key_id == key_id && k.account == account && k.primary_region.as_deref() == Some(&k.region));
+        let (rotation, next) = old.map(|k| (k.rotation_period_days, k.next_rotation)).unwrap_or_default();
+        for k in self.keys.values_mut().filter(|k| k.key_id == key_id && k.account == account) {
+            k.primary_region = Some(region.to_string());
+            if k.region == region {
+                k.rotation_period_days = rotation;
+                k.next_rotation = next;
+            } else {
+                k.rotation_period_days = None;
+                k.next_rotation = None;
+            }
+        }
     }
 
     /// Remove a key and everything that refers to it.
@@ -245,7 +285,13 @@ fn alias_targets(alias: &crate::state::Alias, key_arn: &str) -> bool {
 
 /// Fail unless the key can be used for cryptographic operations.
 pub(crate) fn require_enabled(key: &Key) -> Result<(), ServiceError> {
-    match key.state.as_str() {
+    // Keys that are `Updating` (UpdatePrimaryRegion) stay usable as they
+    // were before the update started.
+    let state = match (key.state.as_str(), &key.transition) {
+        ("Updating", Some(t)) => t.to.as_str(),
+        (s, _) => s,
+    };
+    match state {
         "Enabled" => Ok(()),
         "Disabled" => Err(errors::disabled(format!("{} is disabled.", key.arn))),
         state => Err(invalid_state(key, state)),
@@ -260,15 +306,27 @@ pub(crate) fn invalid_state(key: &Key, state: &str) -> ServiceError {
         "Unavailable" => "unavailable",
         "Disabled" => "disabled",
         "Enabled" => "enabled",
+        "Creating" => "creating",
+        "Updating" => "updating",
         other => other,
     };
     errors::kms_invalid_state(format!("{} is {what}.", key.arn))
 }
 
-/// Fail for keys that are pending deletion (most management operations).
+/// Fail for keys that are pending deletion or still being created (most
+/// management operations).
 pub(crate) fn require_not_pending_deletion(key: &Key) -> Result<(), ServiceError> {
     match key.state.as_str() {
-        s @ ("PendingDeletion" | "PendingReplicaDeletion") => Err(invalid_state(key, s)),
+        s @ ("PendingDeletion" | "PendingReplicaDeletion" | "Creating") => Err(invalid_state(key, s)),
+        _ => Ok(()),
+    }
+}
+
+/// Fail while KMS is still creating or updating the key (operations that
+/// change its state or its multi-Region configuration).
+pub(crate) fn require_settled(key: &Key) -> Result<(), ServiceError> {
+    match key.state.as_str() {
+        s @ ("Creating" | "Updating") => Err(invalid_state(key, s)),
         _ => Ok(()),
     }
 }
@@ -507,7 +565,8 @@ pub(crate) fn metadata(st: &State, key: &Key) -> types::KeyMetadata {
         key_id: key.key_id.clone(),
         arn: Some(key.arn.clone()),
         creation_date: Some(key.created_at),
-        enabled: key.state == "Enabled",
+        enabled: key.state == "Enabled"
+            || (key.state == "Updating" && key.transition.as_ref().is_some_and(|t| t.to == "Enabled")),
         description: Some(key.description.clone()),
         key_usage: Some(key.key_usage.clone()),
         key_state: Some(key.state.clone()),

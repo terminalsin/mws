@@ -18,6 +18,7 @@ mws-iam-policy.workspace = true
 mws-proto-json.workspace = true
 mws-s3.workspace = true
 tracing.workspace = true
+tokio.workspace = true
 rand.workspace = true
 rcgen.workspace = true
 rustls-pki-types.workspace = true

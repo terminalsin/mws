@@ -2,6 +2,9 @@
 //! (`kms:GenerateDataKey`) and decrypts it on reads (`kms:Decrypt`), with
 //! the caller's permissions and `kms:ViaService` = `s3.<region>.amazonaws.com`,
 //! as AWS does. The object bytes themselves are kept as written.
+//!
+//! Multipart uploads need `kms:GenerateDataKey` to start and `kms:Decrypt`
+//! for every part and to complete, as in S3.
 
 use std::collections::BTreeMap;
 
@@ -15,23 +18,23 @@ fn b64() -> base64::engine::GeneralPurpose {
     base64::engine::general_purpose::STANDARD
 }
 
-/// The encryption context S3 uses: the caller's, or the object (bucket,
-/// with S3 Bucket Keys) ARN.
-fn encryption_context(sse: &Sse, partition: &str, bucket: &str, key: &str) -> BTreeMap<String, String> {
-    if let Some(map) = sse
+/// The encryption context S3 uses: `aws:s3:arn` (the object's ARN, or the
+/// bucket's with S3 Bucket Keys) plus any context the caller gave in
+/// `x-amz-server-side-encryption-context`, which is additional.
+pub(crate) fn encryption_context(sse: &Sse, partition: &str, bucket: &str, key: &str) -> BTreeMap<String, String> {
+    let mut map = sse
         .kms_context
         .as_deref()
         .and_then(|c| b64().decode(c).ok())
         .and_then(|j| serde_json::from_slice::<BTreeMap<String, String>>(&j).ok())
-    {
-        return map;
-    }
+        .unwrap_or_default();
     let arn = if sse.bucket_key {
         format!("arn:{partition}:s3:::{bucket}")
     } else {
         format!("arn:{partition}:s3:::{bucket}/{key}")
     };
-    BTreeMap::from([("aws:s3:arn".to_string(), arn)])
+    map.insert("aws:s3:arn".to_string(), arn);
+    map
 }
 
 /// KMS errors as S3 reports them.

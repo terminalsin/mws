@@ -29,6 +29,11 @@ pub struct Connector {
     pub ra_cert: Vec<u8>,
     /// Certificates issued, by SCEP transaction id (for `GetCertInitial`).
     pub issued: BTreeMap<String, Vec<u8>>,
+    /// While `CREATING` or `DELETING`: when that started (the change
+    /// completes after `mws_core::settle`'s window).
+    pub transition_since: Option<DateTime<Utc>>,
+    /// The status (and reason) a `CREATING` connector settles into.
+    pub settles_to: Option<(String, Option<String>)>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]

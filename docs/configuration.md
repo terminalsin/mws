@@ -16,6 +16,7 @@ MWS is configured entirely through environment variables. All are optional.
 | `MWS_ACCOUNT_ID` | `123456789012` | The id of the account MWS starts with. |
 | `MWS_ROOT_ACCESS_KEY_ID` | `AKIAMWSROOTEXAMPLE00` | Access key id of that account's root user. |
 | `MWS_ROOT_SECRET_ACCESS_KEY` | `mwsRootSecretAccessKeyEXAMPLEKEY00000000` | Its secret access key. |
+| `MWS_ASYNC_DELAY_MS` | `500` | How long work that AWS does asynchronously stays pending on the emulated clock: S3 replication, Private CA issuance and CA creation, ACM private certificates and DNS validation records, KMS replica keys, Secrets Manager replicas and forced deletions. Code that skips the SDK waiters fails here as it would on AWS. `0` completes such work inside the call that starts it. |
 | `MWS_SKIP_FEDERATION_SIGNATURE_VERIFICATION` | unset | `1` accepts web identity tokens and SAML responses without checking their signatures, for test suites that hand-craft them. By default signatures are verified as AWS verifies them. |
 
 ## State

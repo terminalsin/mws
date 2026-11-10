@@ -43,6 +43,12 @@ pub struct ObjectEvent {
     pub time: DateTime<Utc>,
     /// For removals: `Permanently Deleted` or `Delete Marker Created`.
     pub deletion_type: Option<String>,
+    /// An extra member of the notification record, such as
+    /// `lifecycleEventData`, `glacierEventData` or `replicationEventData`.
+    pub record_data: Option<(&'static str, serde_json::Value)>,
+    /// Extra members of the EventBridge `detail`, such as
+    /// `destination-storage-class` or `restore-expiry-time`.
+    pub eventbridge_detail: Option<serde_json::Value>,
 }
 
 /// The bucket a notification is about, as destinations judge access
@@ -302,6 +308,31 @@ impl S3 {
     }
 }
 
+/// An event about an object, before it is addressed to destinations.
+#[derive(Debug, Clone, Default)]
+pub(crate) struct Emit {
+    pub bucket: String,
+    pub key: String,
+    pub version_id: Option<String>,
+    /// The notification event name without `s3:`.
+    pub event_name: String,
+    /// The API call behind it (EventBridge's `reason`).
+    pub reason: String,
+    pub deletion_type: Option<String>,
+    pub size: Option<i64>,
+    pub etag: Option<String>,
+    /// S3 itself caused the event (lifecycle, replication, a restore
+    /// finishing): the requester is `s3.amazonaws.com`.
+    pub by_s3: bool,
+    /// An extra member of the event record, e.g. `lifecycleEventData`.
+    pub record_data: Option<(&'static str, serde_json::Value)>,
+    /// Extra members of the EventBridge `detail`.
+    pub eventbridge_detail: Option<serde_json::Value>,
+}
+
+/// The principal and source address S3 reports for events it causes.
+pub(crate) const S3_PRINCIPAL: &str = "s3.amazonaws.com";
+
 impl Call {
     /// Emit an object event for `key` in `bucket`, looking up its size and
     /// ETag. `version_id` names the version (none for unversioned).
@@ -316,68 +347,117 @@ impl Call {
         what: (&str, &str, Option<&str>),
     ) {
         let (event_name, reason, deletion_type) = what;
-        let (config, region, owner, size, etag, eventbridge) = {
+        let (size, etag) = {
             let st = self.read();
             let Some(b) = st.buckets.get(bucket) else { return };
+            let v = match version_id {
+                Some(id) => b.version(key, id),
+                None => b.latest(key),
+            };
+            match v {
+                Some(v) if !v.delete_marker && deletion_type.is_none() => {
+                    (Some(v.data.len() as i64), Some(v.etag.trim_matches('"').to_string()))
+                }
+                _ => (None, None),
+            }
+        };
+        self.emit(
+            ctx,
+            Emit {
+                bucket: bucket.to_string(),
+                key: key.to_string(),
+                version_id: version_id.map(str::to_string),
+                event_name: event_name.to_string(),
+                reason: reason.to_string(),
+                deletion_type: deletion_type.map(str::to_string),
+                size,
+                etag,
+                ..Emit::default()
+            },
+        );
+    }
+}
+
+impl S3 {
+    /// Send an object event to the bucket's destinations and, with
+    /// EventBridge enabled, to EventBridge.
+    pub(crate) fn emit(&self, ctx: &RequestContext, e: Emit) {
+        let (config, region, owner, eventbridge) = {
+            let st = self.read();
+            let Some(b) = st.buckets.get(&e.bucket) else { return };
             let has_targets = !targets(&b.notification).is_empty();
             let eventbridge = b.notification.event_bridge_configuration.is_some();
             if !has_targets && !eventbridge {
                 return;
             }
-            let v = match version_id {
-                Some(id) => b.version(key, id),
-                None => b.latest(key),
-            };
-            let (size, etag) = match v {
-                Some(v) if !v.delete_marker && deletion_type.is_none() => {
-                    (Some(v.data.len() as i64), Some(v.etag.trim_matches('"').to_string()))
-                }
-                _ => (None, None),
-            };
-            (b.notification.clone(), b.region.clone(), b.owner.clone(), size, etag, eventbridge)
+            (b.notification.clone(), b.region.clone(), b.owner.clone(), eventbridge)
         };
-        let requester = match ctx.caller.kind {
-            CallerKind::Root => ctx.caller.account_id.clone(),
-            CallerKind::Anonymous => "Anonymous".to_string(),
-            _ => format!("AWS:{}", ctx.caller.user_id),
+        let requester = if e.by_s3 {
+            S3_PRINCIPAL.to_string()
+        } else {
+            match ctx.caller.kind {
+                CallerKind::Root => ctx.caller.account_id.clone(),
+                CallerKind::Anonymous => "Anonymous".to_string(),
+                _ => format!("AWS:{}", ctx.caller.user_id),
+            }
+        };
+        let source_ip = if e.by_s3 {
+            S3_PRINCIPAL.to_string()
+        } else {
+            ctx.source_ip.clone().unwrap_or_else(|| "127.0.0.1".to_string())
         };
         let event = ObjectEvent {
-            event_name: event_name.to_string(),
-            reason: reason.to_string(),
+            event_name: e.event_name.clone(),
+            reason: e.reason.clone(),
             partition: ctx.partition.clone(),
             region,
-            bucket: bucket.to_string(),
+            bucket: e.bucket.clone(),
             bucket_owner: owner,
-            key: key.to_string(),
-            size,
-            etag,
-            version_id: version_id.filter(|v| *v != "null").map(str::to_string),
+            key: e.key.clone(),
+            size: e.size,
+            etag: e.etag.clone(),
+            version_id: e.version_id.clone().filter(|v| v != "null"),
             sequencer: sequencer(&ctx.received_at),
             requester,
-            source_ip: ctx.source_ip.clone().unwrap_or_else(|| "127.0.0.1".to_string()),
+            source_ip,
             request_id: ctx.request_id.clone(),
             host_id: crate::host_id(&ctx.request_id),
             time: ctx.received_at,
-            deletion_type: deletion_type.map(str::to_string),
+            deletion_type: e.deletion_type.clone(),
+            record_data: e.record_data.clone(),
+            eventbridge_detail: e.eventbridge_detail.clone(),
         };
         if eventbridge {
             if let Some(sink) = self.notifications.eventbridge.get() {
                 sink.object_event(ctx, &event);
             }
         }
-        let bucket_arn = format!("arn:{}:s3:::{bucket}", ctx.partition);
+        let bucket_arn = format!("arn:{}:s3:::{}", ctx.partition, e.bucket);
         let source = NotificationSource { bucket_arn: &bucket_arn, bucket_owner: &event.bucket_owner };
         for t in targets(&config) {
-            if !t.events.iter().any(|e| covers(e, event_name)) {
+            if !t.events.iter().any(|c| covers(c, &e.event_name)) {
                 continue;
             }
             let (prefix, suffix) = key_filter(t.filter);
-            if !key.starts_with(&prefix) || !key.ends_with(&suffix) {
+            if !e.key.starts_with(&prefix) || !e.key.ends_with(&suffix) {
                 continue;
             }
             let Some(d) = self.destination(t.service) else { continue };
             d.deliver(ctx, t.arn, &source, event_message(&event, t.id));
         }
+    }
+}
+
+/// The record `eventVersion` of an event: 2.2 for replication events, 2.3
+/// for the lifecycle, Intelligent-Tiering, ACL, tagging and restore-expiry
+/// events added with it, 2.1 for the rest.
+fn event_version(name: &str) -> &'static str {
+    let group = name.split(':').next().unwrap_or(name);
+    match group {
+        "Replication" => "2.2",
+        "LifecycleExpiration" | "LifecycleTransition" | "IntelligentTiering" | "ObjectTagging" | "ObjectAcl" => "2.3",
+        "ObjectRestore" if name == "ObjectRestore:Delete" => "2.3",
+        _ => "2.1",
     }
 }
 
@@ -402,9 +482,8 @@ pub fn event_message(e: &ObjectEvent, configuration_id: &str) -> String {
         object.insert("versionId".into(), json!(v));
     }
     object.insert("sequencer".into(), json!(e.sequencer));
-    json!({
-        "Records": [{
-            "eventVersion": "2.1",
+    let mut record = json!({
+            "eventVersion": event_version(&e.event_name),
             "eventSource": "aws:s3",
             "awsRegion": e.region,
             "eventTime": e.time.format("%Y-%m-%dT%H:%M:%S%.3fZ").to_string(),
@@ -422,9 +501,11 @@ pub fn event_message(e: &ObjectEvent, configuration_id: &str) -> String {
                 },
                 "object": object,
             }
-        }]
-    })
-    .to_string()
+    });
+    if let Some((name, data)) = &e.record_data {
+        record[*name] = data.clone();
+    }
+    json!({ "Records": [record] }).to_string()
 }
 
 #[cfg(test)]

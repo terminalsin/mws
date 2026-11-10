@@ -227,6 +227,7 @@ impl Kms {
                 custom_key_store_id: None,
                 xks_key_id: None,
                 last_usage: None,
+                transition: None,
             },
         );
         st.aliases.insert(

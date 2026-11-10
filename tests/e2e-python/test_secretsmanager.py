@@ -98,9 +98,16 @@ def test_versions_labels_and_listing(sm):
     assert code(e) == "InvalidRequestException"
     sm.restore_secret(SecretId=name)
     sm.delete_secret(SecretId=name, ForceDeleteWithoutRecovery=True)
-    with pytest.raises(ClientError) as e:
-        sm.describe_secret(SecretId=name)
-    assert code(e) == "ResourceNotFoundException"
+    # Forced deletion is asynchronous: the name stays taken for a moment.
+    for _ in range(100):
+        try:
+            sm.describe_secret(SecretId=name)
+        except ClientError as e:
+            assert e.response["Error"]["Code"] == "ResourceNotFoundException"
+            break
+        time.sleep(0.05)
+    else:
+        raise AssertionError("secret was never deleted")
 
 
 def test_binary_secrets_and_passwords(sm):
@@ -219,7 +226,13 @@ def test_replication(endpoint, session_for, sm):
     name = unique("multi")
     sm.create_secret(Name=name, SecretString="v1")
     out = sm.replicate_secret_to_regions(SecretId=name, AddReplicaRegions=[{"Region": "us-west-2"}])
-    assert out["ReplicationStatus"][0]["Status"] == "InSync"
+    assert out["ReplicationStatus"][0]["Status"] == "InProgress"
+    for _ in range(100):
+        if sm.describe_secret(SecretId=name)["ReplicationStatus"][0]["Status"] == "InSync":
+            break
+        time.sleep(0.05)
+    else:
+        raise AssertionError("replica never reached InSync")
     assert west.get_secret_value(SecretId=name)["SecretString"] == "v1"
     sm.put_secret_value(SecretId=name, SecretString="v2")
     assert west.get_secret_value(SecretId=name)["SecretString"] == "v2"

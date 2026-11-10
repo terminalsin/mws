@@ -15,6 +15,7 @@ pub mod metrics;
 mod observe;
 pub mod outbox;
 mod service;
+pub mod settle;
 pub mod shell;
 pub mod trace_header;
 pub mod trail;

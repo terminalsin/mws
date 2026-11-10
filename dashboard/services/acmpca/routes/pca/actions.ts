@@ -87,6 +87,19 @@ const REVOCATION_FIELDS = {
   InsufficientPermissionsException: "crlBucket",
 };
 
+/** The CA's CSR, once Private CA has made it (the CA is CREATING first). */
+async function csrOf(CertificateAuthorityArn: string) {
+  const client = await pca();
+  for (let i = 0; ; i++) {
+    try {
+      return (await client.send(new GetCertificateAuthorityCsrCommand({ CertificateAuthorityArn }))).Csr!;
+    } catch (e) {
+      if (i >= 20 || (e as Error).name !== "RequestInProgressException") throw e;
+      await new Promise((r) => setTimeout(r, 250));
+    }
+  }
+}
+
 export async function createAuthority(_: ActionResult | null, form: FormData) {
   return act(async () => {
     const key = (text(form, "key") || "RSA_2048") as KeyAlgorithm;
@@ -122,7 +135,7 @@ export async function createAuthority(_: ActionResult | null, form: FormData) {
 export async function activateRoot(arn: string, _: ActionResult | null, form: FormData) {
   return act(async () => {
     const client = await pca();
-    const csr = (await client.send(new GetCertificateAuthorityCsrCommand({ CertificateAuthorityArn: arn }))).Csr!;
+    const csr = await csrOf(arn);
     const years = Number(text(form, "years") || 10);
     const { CertificateArn } = await client.send(
       new IssueCertificateCommand({
@@ -154,7 +167,7 @@ export async function signSubordinate(child: string, _: ActionResult | null, for
     if (days > left) throw new FieldError("days", `The parent expires in ${left + 1} days`, "range", { min: 1, max: left });
     const pathLen = text(form, "pathLen") || "0";
     const key = p.CertificateAuthorityConfiguration?.KeyAlgorithm ?? "RSA_2048";
-    const csr = (await client.send(new GetCertificateAuthorityCsrCommand({ CertificateAuthorityArn: child }))).Csr!;
+    const csr = await csrOf(child);
     const { CertificateArn } = await client.send(
       new IssueCertificateCommand({
         CertificateAuthorityArn: parent,

@@ -698,6 +698,25 @@ async fn lifecycle_rules_run_on_the_emulated_clock() {
     assert!(versions.delete_markers().is_empty());
 }
 
+/// The replication status of `key` once it is no longer `PENDING`, as
+/// code waiting on asynchronous replication polls for it.
+pub(crate) async fn replication_settled(
+    s3: &aws_sdk_s3::Client,
+    bucket: &str,
+    key: &str,
+) -> aws_sdk_s3::types::ReplicationStatus {
+    use aws_sdk_s3::types::ReplicationStatus;
+    for _ in 0..100 {
+        let head = s3.head_object().bucket(bucket).key(key).send().await.unwrap();
+        match head.replication_status() {
+            Some(ReplicationStatus::Pending) => tokio::time::sleep(Duration::from_millis(100)).await,
+            Some(s) => return s.clone(),
+            None => panic!("{bucket}/{key} has no replication status"),
+        }
+    }
+    panic!("{bucket}/{key} is still replicating");
+}
+
 #[tokio::test]
 async fn replication_copies_versions_as_the_role() {
     use aws_sdk_s3::types::{
@@ -742,8 +761,8 @@ async fn replication_copies_versions_as_the_role() {
     let put =
         s3.put_object().bucket("repl-src").key("docs/a").body(ByteStream::from_static(b"doc")).send().await.unwrap();
     s3.put_object().bucket("repl-src").key("other").body(ByteStream::from_static(b"x")).send().await.unwrap();
-    let src = s3.head_object().bucket("repl-src").key("docs/a").send().await.unwrap();
-    assert_eq!(src.replication_status(), Some(&ReplicationStatus::Completed));
+    // Replication is asynchronous: wait for the source to settle.
+    assert_eq!(replication_settled(&s3, "repl-src", "docs/a").await, ReplicationStatus::Completed);
     let dst = s3.get_object().bucket("repl-dst").key("docs/a").send().await.unwrap();
     assert_eq!(dst.replication_status(), Some(&ReplicationStatus::Replica));
     assert_eq!(dst.version_id(), put.version_id());
@@ -753,14 +772,21 @@ async fn replication_copies_versions_as_the_role() {
 
     // Delete markers follow; replicas do not replicate back.
     s3.delete_object().bucket("repl-src").key("docs/a").send().await.unwrap();
-    let err = s3.get_object().bucket("repl-dst").key("docs/a").send().await.unwrap_err();
-    assert_eq!(err.code(), Some("NoSuchKey"));
+    let mut code = None;
+    for _ in 0..50 {
+        let err = s3.get_object().bucket("repl-dst").key("docs/a").send().await.err();
+        code = err.and_then(|e| e.code().map(str::to_string));
+        if code.is_some() {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(100)).await;
+    }
+    assert_eq!(code.as_deref(), Some("NoSuchKey"));
 
     // Without the role's permission the source reports FAILED.
     iam.delete_role_policy().role_name("replicator").policy_name("p").send().await.unwrap();
     s3.put_object().bucket("repl-src").key("docs/b").body(ByteStream::from_static(b"b")).send().await.unwrap();
-    let src = s3.head_object().bucket("repl-src").key("docs/b").send().await.unwrap();
-    assert_eq!(src.replication_status(), Some(&ReplicationStatus::Failed));
+    assert_eq!(replication_settled(&s3, "repl-src", "docs/b").await, ReplicationStatus::Failed);
     let err = s3.head_object().bucket("repl-dst").key("docs/b").send().await.unwrap_err();
     assert_eq!(err.raw_response().unwrap().status().as_u16(), 404);
 }

@@ -34,6 +34,8 @@ pub struct AccessPoint {
     pub alias: String,
     /// `Internet` or `VPC`.
     pub network_origin: String,
+    /// The VPC a `VPC` access point serves.
+    pub vpc_id: Option<String>,
     pub policy: Option<String>,
     /// The access point's own Block Public Access settings.
     pub restrict_public_buckets: bool,

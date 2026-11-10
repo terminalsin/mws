@@ -730,37 +730,67 @@ impl Call {
         if config.rules.is_empty() || config.rules.len() > 1000 {
             return Err(errors::malformed_xml());
         }
-        let destinations: Vec<String> = config.rules.iter().map(|r| r.destination.bucket.clone()).collect();
-        {
-            let st = self.read();
-            for d in &destinations {
-                let name = d.rsplit(":::").next().unwrap_or(d);
-                match st.buckets.get(name) {
-                    None => {
-                        return Err(errors::invalid_request("Destination bucket must exist."));
-                    }
-                    Some(b) if !b.versioning_enabled() => {
-                        return Err(errors::invalid_request("Destination bucket must have versioning enabled."));
-                    }
-                    Some(_) => {}
-                }
+        // Authorize first, so callers learn nothing about other buckets,
+        // then the role S3 is to act as (iam:PassRole), then the rules.
+        let mut st = self.write();
+        let b = st.buckets.get(&input.bucket).ok_or_else(|| errors::no_such_bucket(&input.bucket))?;
+        crate::buckets::check_owner(b, input.expected_bucket_owner.as_deref())?;
+        self.authorize(
+            ctx,
+            "s3:PutReplicationConfiguration",
+            b,
+            crate::auth::Resource::Bucket,
+            mws_core::ConditionContext::new(),
+        )?;
+        let mut pass = mws_core::ConditionContext::new();
+        pass.insert("iam:PassedToService".into(), vec!["s3.amazonaws.com".into()]);
+        ctx.authorize("iam:PassRole", &config.role, pass).map_err(|_| {
+            errors::access_denied(format!(
+                "User: {} is not authorized to perform: iam:PassRole on resource: {}",
+                ctx.caller.arn, config.role
+            ))
+        })?;
+        for r in &config.rules {
+            let sse_kms = r
+                .source_selection_criteria
+                .as_ref()
+                .and_then(|c| c.sse_kms_encrypted_objects.as_ref())
+                .is_some_and(|s| s.status == "Enabled");
+            let replica_key =
+                r.destination.encryption_configuration.as_ref().and_then(|e| e.replica_kms_key_id.as_ref());
+            if sse_kms && replica_key.is_none() {
+                return Err(errors::invalid_request(
+                    "ReplicaKmsKeyID must be specified if SseKmsEncryptedObjects tag is present.",
+                ));
+            }
+            let sse_kms_given =
+                r.source_selection_criteria.as_ref().and_then(|c| c.sse_kms_encrypted_objects.as_ref()).is_some();
+            if replica_key.is_some() && !sse_kms_given {
+                return Err(errors::invalid_request(
+                    "SseKmsEncryptedObjects must be specified if EncryptionConfiguration is present.",
+                ));
             }
         }
-        self.bucket_write(
-            ctx,
-            &input.bucket,
-            input.expected_bucket_owner.as_deref(),
-            "s3:PutReplicationConfiguration",
-            |b| {
-                if !b.versioning_enabled() {
-                    return Err(errors::invalid_request(
-                        "Versioning must be 'Enabled' on the bucket to apply a replication configuration",
-                    ));
+        if !b.versioning_enabled() {
+            return Err(errors::invalid_request(
+                "Versioning must be 'Enabled' on the bucket to apply a replication configuration",
+            ));
+        }
+        for r in &config.rules {
+            let d = &r.destination.bucket;
+            let name = d.rsplit(":::").next().unwrap_or(d);
+            match st.buckets.get(name) {
+                None => return Err(errors::invalid_request("Destination bucket must exist.")),
+                Some(b) if !b.versioning_enabled() => {
+                    return Err(errors::invalid_request("Destination bucket must have versioning enabled."));
                 }
-                b.replication = Some(config);
-                Ok(())
-            },
-        )
+                Some(_) => {}
+            }
+        }
+        if let Some(b) = st.buckets.get_mut(&input.bucket) {
+            b.replication = Some(config);
+        }
+        Ok(())
     }
 
     pub fn delete_bucket_replication(

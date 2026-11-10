@@ -3,7 +3,7 @@
 //! validated, timeouts, expiry and managed renewal.
 
 use chrono::{DateTime, Duration, Utc};
-use mws_core::RequestContext;
+use mws_core::{settle, RequestContext};
 use sha2::{Digest, Sha256};
 
 use crate::generated::types;
@@ -153,8 +153,12 @@ impl Acm {
         followups: &mut Followups,
     ) {
         let account = c.account.clone();
+        // A private certificate Private CA has finished issuing.
+        if settle_private(c, now) {
+            st.pending_events.extend(events::available(c, "ISSUANCE", now));
+        }
         // DNS validation.
-        if c.status == "PENDING_VALIDATION" {
+        if c.status == "PENDING_VALIDATION" && c.ty != "PRIVATE" {
             for v in c.validations.iter_mut().filter(|v| v.status == "PENDING_VALIDATION") {
                 if v.method.as_deref() == Some("DNS") && is_published(&dns_record(&account, &v.domain).name) {
                     v.status = "SUCCESS".into();
@@ -256,6 +260,32 @@ impl Acm {
                 let e = events::renewal_action_required(c, now);
                 st.pending_events.extend(e);
             }
+        }
+    }
+}
+
+/// Finish a private certificate request once the settle window has passed:
+/// `ISSUED` with the certificate Private CA issued, or `FAILED`. Returns
+/// whether the certificate was issued.
+pub fn settle_private(c: &mut Certificate, now: DateTime<Utc>) -> bool {
+    let Some(pending) = c.private_issue.as_ref() else { return false };
+    if !settle::settled(pending.requested_at, now) {
+        return false;
+    }
+    let pending = c.private_issue.take().expect("checked");
+    match pending.outcome {
+        Ok(issued) => {
+            c.cert_pem = Some(issued.cert_pem);
+            c.chain_pem = Some(issued.chain_pem);
+            c.pca_certificate_arn = Some(issued.pca_certificate_arn);
+            c.status = "ISSUED".into();
+            c.issued_at = Some(settle::settles_at(pending.requested_at).min(now).max(pending.requested_at));
+            true
+        }
+        Err(reason) => {
+            c.status = "FAILED".into();
+            c.failure_reason = Some(reason);
+            false
         }
     }
 }

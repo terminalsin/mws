@@ -24,6 +24,17 @@ pub fn check_live(s: &Secret) -> Result<(), ServiceError> {
     Ok(())
 }
 
+/// Secrets another service owns (`OwningService`) change only through that
+/// service (its public API in `managed.rs`).
+pub fn check_not_managed(s: &Secret, verb: &str) -> Result<(), ServiceError> {
+    match &s.owning_service {
+        Some(owner) => {
+            Err(errors::invalid_request(format!("You can't {verb} secret {} because it's managed by {owner}.", s.arn)))
+        }
+        None => Ok(()),
+    }
+}
+
 pub fn check_primary(s: &Secret) -> Result<(), ServiceError> {
     if s.primary_region.is_some() {
         return Err(replica_read_only());
@@ -374,6 +385,7 @@ impl SecretsManager {
         let s = self.find(ctx, &input.secret_id, "secretsmanager:PutSecretValue", ConditionContext::new())?;
         check_live(&s)?;
         check_primary(&s)?;
+        check_not_managed(&s, "modify")?;
         let value = Plain::from_input(input.secret_string, input.secret_binary)?
             .ok_or_else(|| errors::invalid_request("You must provide either SecretString or SecretBinary."))?;
         let token = input.client_request_token.unwrap_or_else(names::new_token);
@@ -594,6 +606,7 @@ impl SecretsManager {
         let s = self.find(ctx, &input.secret_id, "secretsmanager:UpdateSecret", c)?;
         check_live(&s)?;
         check_primary(&s)?;
+        check_not_managed(&s, "modify")?;
         let value = Plain::from_input(input.secret_string, input.secret_binary)?;
         let new_key = input.kms_key_id.as_deref().map(|k| self.reported_key(ctx, Some(k)));
         let now = ctx.received_at;
@@ -664,6 +677,7 @@ impl SecretsManager {
         let s = self.find(ctx, &input.secret_id, "secretsmanager:UpdateSecretVersionStage", c)?;
         check_live(&s)?;
         check_primary(&s)?;
+        check_not_managed(&s, "modify")?;
         let stage = input.version_stage.clone();
         if input.move_to_version_id.is_some() {
             check_quotas(&s, None, std::slice::from_ref(&stage), ctx.received_at)?;
@@ -769,6 +783,7 @@ impl SecretsManager {
             ));
         }
         check_primary(&s)?;
+        check_not_managed(&s, "delete")?;
         if !s.replicas.is_empty() {
             return Err(errors::invalid_request(format!(
                 "You can't delete secret {} that still has replica regions [{}]",
@@ -780,14 +795,24 @@ impl SecretsManager {
             return Err(marked_for_deletion());
         }
         let now = ctx.received_at;
-        let deletion_date = if force { now } else { now + chrono::Duration::days(days) };
+        let deletion_date = match s.force_deleted {
+            Some(at) => at,
+            None if force => now,
+            None => now + chrono::Duration::days(days),
+        };
         {
             let mut st = self.lock();
-            if force {
-                st.secrets.remove(&s.arn);
-            } else if let Some(x) = st.secrets.get_mut(&s.arn) {
+            if let Some(x) = st.secrets.get_mut(&s.arn) {
+                // A forced deletion is asynchronous: the secret is marked for
+                // deletion, and its name stays taken, until it settles.
+                if force && x.force_deleted.is_none() {
+                    x.force_deleted = Some(now);
+                }
                 x.deletion_date = Some(deletion_date);
                 x.last_changed = now;
+            }
+            if force {
+                st.sweep(now);
             }
         }
         Ok(types::DeleteSecretResponse { arn: Some(s.arn), name: Some(s.name), deletion_date: Some(deletion_date) })
@@ -800,6 +825,10 @@ impl SecretsManager {
     ) -> Result<types::RestoreSecretResponse, ServiceError> {
         let s = self.find(ctx, &input.secret_id, "secretsmanager:RestoreSecret", ConditionContext::new())?;
         check_primary(&s)?;
+        if s.force_deleted.is_some() {
+            // Deleted without recovery: nothing to restore.
+            return Err(marked_for_deletion());
+        }
         let now = ctx.received_at;
         self.update(&s.arn, |st| {
             st.deletion_date = None;

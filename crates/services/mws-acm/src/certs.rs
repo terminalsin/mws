@@ -1,13 +1,13 @@
 //! Certificate operations.
 
-use chrono::{Duration, Utc};
-use mws_core::{ConditionContext, RequestContext, ServiceError};
+use chrono::{DateTime, Duration, Utc};
+use mws_core::{settle, ConditionContext, RequestContext, ServiceError};
 
 use crate::common::{self, check_certificate_arn, is_local, Tags};
 use crate::events;
 use crate::generated::{errors, types};
 use crate::pki::{self, CertInfo};
-use crate::state::{Certificate, DomainValidation, MethodUpdate};
+use crate::state::{Certificate, DomainValidation, MethodUpdate, PrivateIssue, PrivateIssued};
 use crate::validation::{self, dns_record, validation_emails};
 use crate::Acm;
 
@@ -26,7 +26,7 @@ fn describe_key_algorithm(k: &str) -> String {
     k.replacen('_', "-", 1)
 }
 
-fn renewal_eligibility(c: &Certificate) -> &'static str {
+pub(crate) fn renewal_eligibility(c: &Certificate) -> &'static str {
     let eligible = match c.ty.as_str() {
         "IMPORTED" => false,
         _ => c.status == "ISSUED" && c.origin != "ACME",
@@ -38,7 +38,14 @@ fn renewal_eligibility(c: &Certificate) -> &'static str {
     }
 }
 
-fn dv_wire(c: &Certificate, v: &DomainValidation) -> types::DomainValidation {
+/// Whether ACM has worked out the DNS validation record of a certificate
+/// requested at `requested_at`: it appears a moment after the request, as
+/// in AWS, so tools poll `DescribeCertificate` for it.
+fn record_ready(requested_at: Option<DateTime<Utc>>, now: DateTime<Utc>) -> bool {
+    requested_at.is_none_or(|t| settle::settled(t, now))
+}
+
+fn dv_wire(c: &Certificate, v: &DomainValidation, now: DateTime<Utc>) -> types::DomainValidation {
     let mut out = types::DomainValidation { domain_name: v.domain.clone(), ..Default::default() };
     if c.ty != "AMAZON_ISSUED" || c.origin == "ACME" {
         return out;
@@ -48,7 +55,7 @@ fn dv_wire(c: &Certificate, v: &DomainValidation) -> types::DomainValidation {
     out.validation_method = v.method.clone();
     match v.method.as_deref() {
         Some("EMAIL") => out.validation_emails = Some(validation_emails(&v.validation_domain)),
-        Some("DNS") => out.resource_record = Some(dns_record(&c.account, &v.domain)),
+        Some("DNS") if record_ready(c.created_at, now) => out.resource_record = Some(dns_record(&c.account, &v.domain)),
         _ => {}
     }
     out
@@ -77,7 +84,7 @@ fn options_wire(c: &Certificate) -> types::CertificateOptions {
     }
 }
 
-pub(crate) fn detail(c: &Certificate) -> types::CertificateDetail {
+pub(crate) fn detail(c: &Certificate, now: DateTime<Utc>) -> types::CertificateDetail {
     let info = c.cert_pem.as_deref().and_then(pki::inspect_pem);
     let mut d = types::CertificateDetail {
         certificate_arn: Some(c.arn.clone()),
@@ -103,7 +110,7 @@ pub(crate) fn detail(c: &Certificate) -> types::CertificateDetail {
         ..Default::default()
     };
     if c.ty != "IMPORTED" {
-        d.domain_validation_options = Some(c.validations.iter().map(|v| dv_wire(c, v)).collect());
+        d.domain_validation_options = Some(c.validations.iter().map(|v| dv_wire(c, v, now)).collect());
     }
     if let Some(info) = &info {
         d.serial = Some(info.serial.clone());
@@ -122,7 +129,7 @@ pub(crate) fn detail(c: &Certificate) -> types::CertificateDetail {
                 .validations
                 .iter()
                 .map(|v| {
-                    let mut w = dv_wire(c, v);
+                    let mut w = dv_wire(c, v, now);
                     if let (Some(s), Some(_)) = (&v.renewal_status, &w.validation_status) {
                         w.validation_status = Some(s.clone());
                     }
@@ -253,6 +260,12 @@ impl Acm {
             cond.insert("acm:CertificateAuthority".into(), vec![ca.clone()]);
         }
         ctx.authorize("acm:RequestCertificate", "*", cond)?;
+        let id = uuid::Uuid::new_v4().to_string();
+        let arn = format!("arn:{}:acm:{}:{}:certificate/{id}", ctx.partition, ctx.region, ctx.caller.account_id);
+        if !tags.is_empty() {
+            // Tagging on create is authorized as tagging too.
+            ctx.authorize("acm:AddTagsToCertificate", &arn, common::request_tag_context(&tags))?;
+        }
         self.refresh(ctx);
 
         let now = ctx.received_at;
@@ -309,8 +322,6 @@ impl Acm {
             }
         }
 
-        let id = uuid::Uuid::new_v4().to_string();
-        let arn = format!("arn:{}:acm:{}:{}:certificate/{id}", ctx.partition, ctx.region, ctx.caller.account_id);
         let validations = names
             .iter()
             .map(|n| {
@@ -366,6 +377,7 @@ impl Acm {
             in_use_by: Vec::new(),
             expiry_event_at: None,
             metric_at: None,
+            private_issue: None,
         };
         if !private {
             if let Some(reason) = names.iter().find_map(|n| validation::public_domain_problem(n)) {
@@ -375,6 +387,7 @@ impl Acm {
         }
         if let Some(ca_arn) = &input.certificate_authority_arn {
             self.issue_private(ctx, &mut cert, ca_arn)?;
+            validation::settle_private(&mut cert, now);
         }
         let emails = cert.validations.iter().any(|v| v.method.as_deref() == Some("EMAIL"));
         {
@@ -393,11 +406,14 @@ impl Acm {
         Ok(types::RequestCertificateResponse { certificate_arn: Some(arn) })
     }
 
-    /// Have Private CA issue `cert` with the requester's permissions.
+    /// Have Private CA issue `cert` with the requester's permissions. The
+    /// outcome is held back: the certificate stays `PENDING_VALIDATION`
+    /// until [`validation::settle_private`] finds the settle window over.
     fn issue_private(&self, ctx: &RequestContext, cert: &mut Certificate, ca_arn: &str) -> Result<(), ServiceError> {
+        let now = ctx.received_at;
         let Some(pca) = &self.pca else {
-            cert.status = "FAILED".into();
-            cert.failure_reason = Some("PCA_RESOURCE_NOT_FOUND".into());
+            cert.private_issue =
+                Some(PrivateIssue { requested_at: now, outcome: Err("PCA_RESOURCE_NOT_FOUND".into()) });
             return Ok(());
         };
         let pca_prefix = format!("arn:{}:acm-pca:", ctx.partition);
@@ -407,24 +423,21 @@ impl Acm {
         let key_der = pki::generate_key(&cert.key_algorithm)?;
         let key = pki::load_key(&key_der, &cert.key_algorithm)?;
         let csr = pki::csr_pem(&key, &cert.domain_name, &cert.sans)?;
-        let now = ctx.received_at;
         let not_after = validation::private_not_after(pca, ca_arn, now);
-        match pca.issue_for_acm(ctx, ca_arn, &csr, not_after, mws_acmpca::AcmIssuer::Caller, &cert.account) {
-            Ok(issued) => {
-                cert.cert_pem = Some(issued.certificate_pem);
-                cert.chain_pem = Some(issued.chain_pem);
-                cert.pca_certificate_arn = Some(issued.certificate_arn);
-                cert.key_der = Some(key_der);
-                cert.status = "ISSUED".into();
-                cert.issued_at = Some(now);
-            }
-            Err(e) => {
-                tracing::debug!(arn = %cert.arn, error = %e.message, "private certificate request failed");
-                cert.key_der = Some(key_der);
-                cert.status = "FAILED".into();
-                cert.failure_reason = Some(validation::pca_failure(&e));
-            }
-        }
+        let outcome =
+            match pca.issue_for_acm(ctx, ca_arn, &csr, not_after, mws_acmpca::AcmIssuer::Caller, &cert.account) {
+                Ok(issued) => Ok(PrivateIssued {
+                    cert_pem: issued.certificate_pem,
+                    chain_pem: issued.chain_pem,
+                    pca_certificate_arn: issued.certificate_arn,
+                }),
+                Err(e) => {
+                    tracing::debug!(arn = %cert.arn, error = %e.message, "private certificate request failed");
+                    Err(validation::pca_failure(&e))
+                }
+            };
+        cert.key_der = Some(key_der);
+        cert.private_issue = Some(PrivateIssue { requested_at: now, outcome });
         Ok(())
     }
 
@@ -434,7 +447,7 @@ impl Acm {
         input: types::DescribeCertificateRequest,
     ) -> Result<types::DescribeCertificateResponse, ServiceError> {
         let c = self.begin(ctx, "DescribeCertificate", &input.certificate_arn)?;
-        Ok(types::DescribeCertificateResponse { certificate: Some(detail(&c)) })
+        Ok(types::DescribeCertificateResponse { certificate: Some(detail(&c, ctx.received_at)) })
     }
 
     pub(crate) fn get_certificate(
@@ -544,6 +557,17 @@ impl Acm {
             }
             None => ctx.authorize("acm:ImportCertificate", "*", common::request_tag_context(&tags))?,
         }
+        let new_arn = format!(
+            "arn:{}:acm:{}:{}:certificate/{}",
+            ctx.partition,
+            ctx.region,
+            ctx.caller.account_id,
+            uuid::Uuid::new_v4()
+        );
+        if reimport.is_none() && !tags.is_empty() {
+            // Tagging on import is authorized as tagging too.
+            ctx.authorize("acm:AddTagsToCertificate", &new_arn, common::request_tag_context(&tags))?;
+        }
         self.refresh(ctx);
         let now = ctx.received_at;
         let certs = pki::pem_blocks(&input.certificate, "CERTIFICATE");
@@ -628,13 +652,7 @@ impl Acm {
         if tags.len() > common::MAX_TAGS {
             return Err(errors::too_many_tags(format!("A certificate can have at most {} tags.", common::MAX_TAGS)));
         }
-        let arn = format!(
-            "arn:{}:acm:{}:{}:certificate/{}",
-            ctx.partition,
-            ctx.region,
-            ctx.caller.account_id,
-            uuid::Uuid::new_v4()
-        );
+        let arn = new_arn;
         let cert = Certificate {
             arn: arn.clone(),
             account: ctx.caller.account_id.clone(),
@@ -671,6 +689,7 @@ impl Acm {
             in_use_by: Vec::new(),
             expiry_event_at: None,
             metric_at: None,
+            private_issue: None,
         };
         let mut st = self.lock();
         st.pending_events.extend(events::available(&cert, "IMPORT", now));
@@ -876,38 +895,44 @@ impl Acm {
         input: types::ListCertificateDomainValidationsRequest,
     ) -> Result<types::ListCertificateDomainValidationsResponse, ServiceError> {
         let c = self.begin(ctx, "ListCertificateDomainValidations", &input.certificate_arn)?;
-        let config =
-            |method: Option<&str>, status: Option<&str>, v: &DomainValidation| -> types::ValidationConfiguration {
-                let challenge = match method {
-                    Some("EMAIL") => {
-                        Some(types::ValidationChallenge::EmailValidationChallenge(types::EmailValidationChallenge {
-                            validation_emails: Some(validation_emails(&v.validation_domain)),
-                            validation_domain: Some(v.validation_domain.clone()),
-                        }))
-                    }
-                    Some("DNS") => {
-                        Some(types::ValidationChallenge::DnsValidationChallenge(types::DnsValidationChallenge {
-                            resource_record: Some(dns_record(&c.account, &v.domain)),
-                        }))
-                    }
-                    _ => None,
-                };
-                types::ValidationConfiguration {
-                    validation_method: method.map(str::to_string),
-                    validation_challenge: challenge,
-                    validation_status: status.map(str::to_string),
+        let now = ctx.received_at;
+        let since =
+            |requested: bool| if requested { c.method_update.as_ref().map(|u| u.requested_at) } else { c.created_at };
+        let config = |method: Option<&str>,
+                      status: Option<&str>,
+                      v: &DomainValidation,
+                      requested: bool|
+         -> types::ValidationConfiguration {
+            let challenge = match method {
+                Some("EMAIL") => {
+                    Some(types::ValidationChallenge::EmailValidationChallenge(types::EmailValidationChallenge {
+                        validation_emails: Some(validation_emails(&v.validation_domain)),
+                        validation_domain: Some(v.validation_domain.clone()),
+                    }))
                 }
+                Some("DNS") => {
+                    Some(types::ValidationChallenge::DnsValidationChallenge(types::DnsValidationChallenge {
+                        resource_record: record_ready(since(requested), now).then(|| dns_record(&c.account, &v.domain)),
+                    }))
+                }
+                _ => None,
             };
+            types::ValidationConfiguration {
+                validation_method: method.map(str::to_string),
+                validation_challenge: challenge,
+                validation_status: status.map(str::to_string),
+            }
+        };
         let summaries: Vec<types::DomainValidationSummary> = c
             .validations
             .iter()
             .map(|v| types::DomainValidationSummary {
                 domain_name: v.domain.clone(),
-                active_validation_configuration: Some(config(v.method.as_deref(), Some(&v.status), v)),
+                active_validation_configuration: Some(config(v.method.as_deref(), Some(&v.status), v, false)),
                 requested_validation_configuration: v
                     .requested_method
                     .as_deref()
-                    .map(|m| config(Some(m), v.requested_status.as_deref(), v)),
+                    .map(|m| config(Some(m), v.requested_status.as_deref(), v, true)),
             })
             .collect();
         let (page, next) = common::paginate(summaries, input.max_items, 1000, input.next_token.as_deref())?;

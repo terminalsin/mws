@@ -702,6 +702,7 @@ impl Acm {
             in_use_by: Vec::new(),
             expiry_event_at: None,
             metric_at: None,
+            private_issue: None,
         };
         st.certificates.insert(arn.clone(), cert);
         let o = st.acme_orders.get_mut(&order.id).expect("order exists");

@@ -721,6 +721,10 @@ impl Handler for Call {
         let (bucket, key, v) = (input.bucket.clone(), input.key.clone(), input.version_id.clone());
         let out = Call::restore_object(self, ctx, input)?;
         self.object_event(ctx, &bucket, &key, v.as_deref(), ("ObjectRestore:Post", "RestoreObject", None));
+        // A restore that started finishes in the background.
+        if self.status.lock().ok().and_then(|s| *s) == Some(http::StatusCode::ACCEPTED) {
+            self.pending_work_started(ctx);
+        }
         Ok(out)
     }
     async fn update_object_encryption(

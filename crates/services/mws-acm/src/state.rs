@@ -96,6 +96,26 @@ pub struct Certificate {
     /// When the `DaysToExpiry` metric was last published (daily).
     #[serde(default)]
     pub metric_at: Option<DateTime<Utc>>,
+    /// A private certificate Private CA is still issuing (the certificate
+    /// stays `PENDING_VALIDATION` until the settle window has passed).
+    #[serde(default)]
+    pub private_issue: Option<PrivateIssue>,
+}
+
+/// The outcome of a private certificate request, held back until ACM
+/// would have finished issuing it.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct PrivateIssue {
+    pub requested_at: DateTime<Utc>,
+    /// The issued certificate, or the `FailureReason` it fails with.
+    pub outcome: Result<PrivateIssued, String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct PrivateIssued {
+    pub cert_pem: String,
+    pub chain_pem: String,
+    pub pca_certificate_arn: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

@@ -13,6 +13,11 @@ pub const CURRENT: &str = "AWSCURRENT";
 pub const PREVIOUS: &str = "AWSPREVIOUS";
 pub const PENDING: &str = "AWSPENDING";
 
+/// Replication status values.
+pub const IN_SYNC: &str = "InSync";
+pub const IN_PROGRESS: &str = "InProgress";
+pub const FAILED: &str = "Failed";
+
 /// A secret value sealed under a KMS data key: the data key as KMS
 /// encrypted it (with the secret ARN and version id as encryption context)
 /// and the value as AES-256-GCM ciphertext under that data key.
@@ -49,6 +54,9 @@ pub struct Replica {
     pub kms_key_id: Option<String>,
     pub status: String,
     pub status_message: String,
+    /// When replication started: `InProgress` until it settles (see
+    /// `mws_core::settle`), then `InSync`.
+    pub since: Option<DateTime<Utc>>,
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
@@ -85,6 +93,10 @@ pub struct Secret {
     pub last_accessed: Option<DateTime<Utc>>,
     /// When a scheduled deletion takes effect.
     pub deletion_date: Option<DateTime<Utc>>,
+    /// Deleted with `ForceDeleteWithoutRecovery` at this time: the secret
+    /// is gone once the deletion settles (see `mws_core::settle`); until
+    /// then it is marked for deletion and its name stays taken.
+    pub force_deleted: Option<DateTime<Utc>>,
     pub tags: Vec<types::Tag>,
     /// In creation order.
     pub versions: Vec<Version>,
@@ -169,8 +181,21 @@ pub struct State {
 }
 
 impl State {
-    /// Remove secrets whose recovery window has ended.
+    /// Remove secrets whose recovery window has ended or whose forced
+    /// deletion has settled, and finish replication that has settled.
     pub fn sweep(&mut self, now: DateTime<Utc>) {
-        self.secrets.retain(|_, s| s.deletion_date.is_none_or(|d| d > now));
+        self.secrets.retain(|_, s| match s.force_deleted {
+            Some(at) => !mws_core::settle::settled(at, now),
+            None => s.deletion_date.is_none_or(|d| d > now),
+        });
+        for s in self.secrets.values_mut() {
+            for r in &mut s.replicas {
+                if r.status == IN_PROGRESS && r.since.is_none_or(|t| mws_core::settle::settled(t, now)) {
+                    r.status = IN_SYNC.into();
+                    r.status_message = "Replication succeeded".into();
+                    r.since = None;
+                }
+            }
+        }
     }
 }

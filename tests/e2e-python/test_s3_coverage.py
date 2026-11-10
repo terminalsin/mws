@@ -5,6 +5,7 @@ storage classes."""
 import datetime
 import hashlib
 import json
+import time
 import uuid
 
 import pytest
@@ -378,6 +379,11 @@ def test_object_attributes_tagging_copy_parts_restore_and_encryption(s3, bucket,
         s3.restore_object(Bucket=bucket, Key="big", RestoreRequest={"Days": 1})
     assert code(e) == "InvalidObjectState"
     s3.restore_object(Bucket=bucket, Key="cold", RestoreRequest={"Days": 2})
+    # Restores finish in the background, as on AWS.
+    for _ in range(100):
+        if 'ongoing-request="false"' in s3.head_object(Bucket=bucket, Key="cold").get("Restore", ""):
+            break
+        time.sleep(0.1)
     assert s3.get_object(Bucket=bucket, Key="cold")["Body"].read() == b"frozen"
     assert 'ongoing-request="false"' in s3.head_object(Bucket=bucket, Key="cold")["Restore"]
 

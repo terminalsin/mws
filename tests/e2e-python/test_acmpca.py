@@ -24,6 +24,11 @@ def make_root(pca):
         },
         CertificateAuthorityType="ROOT",
     )["CertificateAuthorityArn"]
+    # The CA is CREATING until its CSR exists.
+    assert pca.describe_certificate_authority(CertificateAuthorityArn=arn)["CertificateAuthority"]["Status"] == "CREATING"
+    pca.get_waiter("certificate_authority_csr_created").wait(
+        CertificateAuthorityArn=arn, WaiterConfig={"Delay": 1, "MaxAttempts": 10}
+    )
     csr = pca.get_certificate_authority_csr(CertificateAuthorityArn=arn)["Csr"]
     cert_arn = pca.issue_certificate(
         CertificateAuthorityArn=arn,
@@ -33,7 +38,7 @@ def make_root(pca):
         Validity={"Value": 10, "Type": "YEARS"},
     )["CertificateArn"]
     pca.get_waiter("certificate_issued").wait(
-        CertificateAuthorityArn=arn, CertificateArn=cert_arn, WaiterConfig={"Delay": 1, "MaxAttempts": 3}
+        CertificateAuthorityArn=arn, CertificateArn=cert_arn, WaiterConfig={"Delay": 1, "MaxAttempts": 10}
     )
     pem = pca.get_certificate(CertificateAuthorityArn=arn, CertificateArn=cert_arn)["Certificate"]
     pca.import_certificate_authority_certificate(CertificateAuthorityArn=arn, Certificate=pem.encode())
@@ -58,6 +63,13 @@ def test_issue_and_verify(pca):
         SigningAlgorithm="SHA256WITHECDSA",
         Validity={"Value": 30, "Type": "DAYS"},
     )["CertificateArn"]
+    # Issuance is asynchronous.
+    with pytest.raises(ClientError) as e:
+        pca.get_certificate(CertificateAuthorityArn=arn, CertificateArn=cert_arn)
+    assert e.value.response["Error"]["Code"] == "RequestInProgressException"
+    pca.get_waiter("certificate_issued").wait(
+        CertificateAuthorityArn=arn, CertificateArn=cert_arn, WaiterConfig={"Delay": 1, "MaxAttempts": 10}
+    )
     out = pca.get_certificate(CertificateAuthorityArn=arn, CertificateArn=cert_arn)
     leaf = x509.load_pem_x509_certificate(out["Certificate"].encode())
     leaf.verify_directly_issued_by(root)
@@ -148,6 +160,9 @@ def test_crl_ocsp_and_audit_report(pca, endpoint, session_for):
         SigningAlgorithm="SHA256WITHECDSA",
         Validity={"Value": 30, "Type": "DAYS"},
     )["CertificateArn"]
+    pca.get_waiter("certificate_issued").wait(
+        CertificateAuthorityArn=arn, CertificateArn=cert_arn, WaiterConfig={"Delay": 1, "MaxAttempts": 10}
+    )
     leaf = x509.load_pem_x509_certificate(
         pca.get_certificate(CertificateAuthorityArn=arn, CertificateArn=cert_arn)["Certificate"].encode()
     )

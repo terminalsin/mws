@@ -108,6 +108,14 @@ impl Call {
         context: ConditionContext,
         ap: &crate::AccessPoint,
     ) -> bool {
+        // A VPC-only access point serves only requests from its VPC
+        // (`aws:SourceVpc`). Nothing reaches MWS through a VPC, so it
+        // refuses everything, as AWS does for requests from outside.
+        if ap.network_origin.eq_ignore_ascii_case("VPC")
+            && context.get("aws:SourceVpc").is_none_or(|v| v.iter().all(|v| Some(v) != ap.vpc_id.as_ref()))
+        {
+            return false;
+        }
         let ap_arn = self.resource_arn(ctx, bucket, resource);
         let outsider = ctx.caller.kind == CallerKind::Anonymous || ctx.caller.account_id != ap.account_id;
         let ap_policy = ap.policy.clone().filter(|p| !(ap.restrict_public_buckets && outsider && policy_is_public(p)));
@@ -202,6 +210,14 @@ impl Call {
         context.extend(extra);
         if let Some(ap) = &self.access_point {
             return self.allowed_via_access_point(ctx, action, bucket, resource, context, ap);
+        }
+        // The bucket owner's root user can always manage the bucket policy,
+        // even one that denies everyone, so it cannot lock itself out.
+        if matches!(action, "s3:GetBucketPolicy" | "s3:PutBucketPolicy" | "s3:DeleteBucketPolicy")
+            && ctx.caller.kind == CallerKind::Root
+            && ctx.caller.account_id == bucket.owner
+        {
+            return true;
         }
         let policy = self.effective_policy(ctx, bucket);
         match ctx.check(action, &arn, policy.as_deref(), mws_core::ResourcePolicyMode::Optional, context.clone()) {

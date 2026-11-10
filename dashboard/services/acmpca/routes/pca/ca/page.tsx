@@ -76,7 +76,8 @@ export default async function Authority({ searchParams }: Props) {
   const cfg = ca.CertificateAuthorityConfiguration;
   const subject = cfg?.Subject;
   const name = subject?.CommonName ?? arn.split("/").pop();
-  const pending = ca.Status === "PENDING_CERTIFICATE";
+  const pending = ca.Status === "PENDING_CERTIFICATE" || ca.Status === "CREATING";
+  // A CA that is still CREATING gets its CSR in a moment; the actions wait for it.
   const self = `/pca/ca?arn=${encodeURIComponent(arn)}`;
   const crl = ca.RevocationConfiguration?.CrlConfiguration;
   const ocsp = ca.RevocationConfiguration?.OcspConfiguration;

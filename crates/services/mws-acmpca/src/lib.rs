@@ -104,7 +104,23 @@ impl Service for PrivateCa {
         input: serde_json::Value,
     ) -> Result<serde_json::Value, ServiceError> {
         self.advance(ctx.received_at);
-        generated::invoke(self, &ctx, operation, input).await
+        // Scenario steps (and other in-process callers) wait out the
+        // settle window like an SDK waiter would, so a scenario can fetch
+        // the CSR or certificate the step before it asked for.
+        let mut ctx = ctx;
+        let mut waited = chrono::Duration::zero();
+        loop {
+            match generated::invoke(self, &ctx, operation, input.clone()).await {
+                Err(e) if e.code == "RequestInProgressException" && waited <= mws_core::settle::delay() => {
+                    let step = chrono::Duration::milliseconds(50);
+                    tokio::time::sleep(step.to_std().expect("positive")).await;
+                    waited += step;
+                    ctx.received_at += step;
+                    self.advance(ctx.received_at);
+                }
+                r => return r,
+            }
+        }
     }
 
     fn export_state(&self) -> Option<serde_json::Value> {

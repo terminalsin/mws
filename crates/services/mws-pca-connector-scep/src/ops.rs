@@ -2,9 +2,9 @@
 
 use std::collections::BTreeMap;
 
-use chrono::Duration;
+use chrono::{DateTime, Duration, Utc};
 use mws_acmpca::{ServiceIssue, ServiceIssueError};
-use mws_core::{ConditionContext, ErrorValue, RequestContext, ServiceError};
+use mws_core::{settle, ConditionContext, ErrorValue, RequestContext, ServiceError};
 use rand::Rng;
 
 use crate::generated::{errors, types};
@@ -112,6 +112,29 @@ fn pem_to_der(pem: &str) -> Option<Vec<u8>> {
 }
 
 impl ScepConnector {
+    /// Finish connector creations and deletions whose settle window has
+    /// passed: `CREATING` becomes `ACTIVE` (or `FAILED`), and a `DELETING`
+    /// connector disappears with its challenges.
+    pub(crate) fn advance(&self, now: DateTime<Utc>) {
+        let mut st = self.lock();
+        let mut gone = Vec::new();
+        for c in st.connectors.values_mut() {
+            let Some(since) = c.transition_since.filter(|t| settle::settled(*t, now)) else { continue };
+            c.transition_since = None;
+            if c.status == "DELETING" {
+                gone.push(c.arn.clone());
+            } else if let Some((status, reason)) = c.settles_to.take() {
+                c.status = status;
+                c.status_reason = reason;
+                c.updated = Some(settle::settles_at(since).min(now).max(since));
+            }
+        }
+        for arn in gone {
+            st.connectors.remove(&arn);
+            st.challenges.retain(|_, c| c.connector_arn != arn);
+        }
+    }
+
     fn owned_connector<'s>(
         &self,
         st: &'s State,
@@ -243,8 +266,9 @@ impl ScepConnector {
             ty: ty.into(),
             mdm: input.mobile_device_management,
             openid,
-            status: status.into(),
-            status_reason: reason.map(str::to_string),
+            // The connector is CREATING until the settle window passes.
+            status: "CREATING".into(),
+            status_reason: None,
             endpoint: format!("{base}/_aws/pca-connector-scep/{id}"),
             created: Some(now),
             updated: Some(now),
@@ -252,12 +276,16 @@ impl ScepConnector {
             ra_key,
             ra_cert,
             issued: BTreeMap::new(),
+            transition_since: Some(now),
+            settles_to: Some((status.into(), reason.map(str::to_string))),
         };
         let mut st = self.lock();
         if let Some(t) = token {
             st.client_tokens.insert(t, arn.clone());
         }
         st.connectors.insert(arn.clone(), connector);
+        drop(st);
+        self.advance(now);
         Ok(types::CreateConnectorResponse { connector_arn: Some(arn) })
     }
 
@@ -297,10 +325,23 @@ impl ScepConnector {
     ) -> Result<(), ServiceError> {
         let arn = &input.connector_arn;
         self.authorize_on(ctx, "DeleteConnector", arn)?;
-        let mut st = self.lock();
-        self.owned_connector(&st, ctx, arn)?;
-        st.connectors.remove(arn);
-        st.challenges.retain(|_, c| &c.connector_arn != arn);
+        let now = ctx.received_at;
+        {
+            let mut st = self.lock();
+            let status = self.owned_connector(&st, ctx, arn)?.status.clone();
+            if matches!(status.as_str(), "CREATING" | "DELETING") {
+                return Err(errors::conflict(format!("The connector {arn} is {status}. Try again later."))
+                    .with_field("ResourceId", ErrorValue::String(arn.clone()))
+                    .with_field("ResourceType", ErrorValue::String("Connector".into())));
+            }
+            // Deletion is asynchronous: DELETING, then gone.
+            let c = st.connectors.get_mut(arn).expect("owned");
+            c.status = "DELETING".into();
+            c.status_reason = None;
+            c.updated = Some(now);
+            c.transition_since = Some(now);
+        }
+        self.advance(now);
         Ok(())
     }
 

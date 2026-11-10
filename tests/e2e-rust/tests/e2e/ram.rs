@@ -140,7 +140,7 @@ async fn sharing_a_ca_with_another_account_grants_and_revokes_access() {
     // permission's template only.
     let cert = try_issue(&member_pca, &ca).await.expect("the share grants IssueCertificate");
     assert!(cert.starts_with(&ca));
-    let got = member_pca.get_certificate().certificate_authority_arn(&ca).certificate_arn(&cert).send().await.unwrap();
+    let got = crate::acmpca::wait_cert(&member_pca, &ca, &cert).await;
     assert!(got.certificate().unwrap().contains("BEGIN CERTIFICATE"));
     let err = member_pca
         .issue_certificate()
