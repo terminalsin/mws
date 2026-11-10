@@ -934,7 +934,9 @@ function schedule() {
     live.timer = undefined;
     if (!live.watchers.size || Date.now() - live.since > 600_000) return;
     const typing = document.activeElement?.matches?.("input, textarea, select, [contenteditable]");
-    if (!document.hidden && !typing) {
+    // A refresh would close an open sheet or dialog: wait until it closes.
+    const open = document.querySelector("dialog[open]");
+    if (!document.hidden && !typing && !open) {
       const [w] = live.watchers;
       w?.refresh();
     }
