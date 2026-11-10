@@ -384,6 +384,9 @@ impl Call {
                     ));
                 }
             }
+            if b.mfa_delete.as_deref() == Some("Enabled") && input.mfa.is_none() {
+                return Err(errors::access_denied("Mfa Authentication must be used for this request"));
+            }
             if let Some(m) = &config.mfa_delete {
                 if m == "Enabled" && input.mfa.is_none() {
                     return Err(errors::invalid_request(

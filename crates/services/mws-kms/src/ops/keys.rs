@@ -952,6 +952,10 @@ impl Kms {
         require_settled(&key)?;
         require_enabled(&key).or_else(|e| if key.state == "Disabled" { Ok(()) } else { Err(e) })?;
         let new_arn = key_arn(&ctx.partition, &input.primary_region, &key.account, &key.key_id);
+        if new_arn == t.arn {
+            // Already the primary in that Region: nothing to switch.
+            return Ok(());
+        }
         let replica =
             st.keys.get(&new_arn).ok_or_else(|| errors::not_found(format!("Key '{new_arn}' does not exist")))?;
         require_settled(replica)?;

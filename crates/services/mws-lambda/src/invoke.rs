@@ -433,8 +433,10 @@ impl Lambda {
         }
         env.insert("LANG".into(), "en_US.UTF-8".into());
         env.insert("TZ".into(), ":UTC".into());
-        if let Some(endpoint) = &ctx.endpoint {
-            env.insert("AWS_ENDPOINT_URL".into(), endpoint.clone());
+        // Background work (retries, scheduled rotations) may carry no
+        // endpoint of its own: fall back to the one MWS serves on.
+        if let Some(endpoint) = ctx.endpoint.clone().or_else(|| self.background_endpoint()) {
+            env.insert("AWS_ENDPOINT_URL".into(), endpoint);
             // Host prefixes (S3 WriteGetObjectResponse's request route) do
             // not resolve against a local endpoint.
             env.insert("AWS_DISABLE_HOST_PREFIX_INJECTION".into(), "true".into());

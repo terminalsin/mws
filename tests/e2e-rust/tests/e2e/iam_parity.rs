@@ -273,3 +273,21 @@ async fn web_identity_tokens_carry_session_tags() {
     let iam = aws_sdk_iam::Client::new(&sts_config(&mws, out.credentials().unwrap()).await);
     iam.list_roles().send().await.unwrap();
 }
+
+#[tokio::test]
+async fn create_role_refuses_aws_reserved_paths() {
+    let mws = Mws::start().await;
+    let iam = aws_sdk_iam::Client::new(&mws.root_sdk_config().await);
+    let doc = trust(r#"{"Service":"lambda.amazonaws.com"}"#, "sts:AssumeRole");
+    for path in ["/aws-service-role/lambda.amazonaws.com/", "/aws-reserved/sso.amazonaws.com/"] {
+        let err = iam
+            .create_role()
+            .role_name("sneaky")
+            .path(path)
+            .assume_role_policy_document(&doc)
+            .send()
+            .await
+            .unwrap_err();
+        assert_eq!(err.code(), Some("InvalidInput"), "{path}");
+    }
+}

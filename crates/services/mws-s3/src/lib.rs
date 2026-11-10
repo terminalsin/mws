@@ -70,6 +70,7 @@ pub use billing::BucketStorage;
 pub use checksum::compute as compute_checksum;
 pub use notifications::{event_message, EventBridgeSink, NotificationDestination, NotificationSource, ObjectEvent};
 pub use public::{ServicePutError, ServicePutObject, ServicePutOptions, ServiceRead};
+pub use replication::ReplicationRoles;
 use state::State;
 
 /// A Signature Version 2 presigned URL or `Authorization: AWS ...` header.
@@ -181,6 +182,14 @@ impl S3 {
     /// The number of general purpose buckets `account` owns.
     pub fn bucket_count(&self, account: &str) -> usize {
         self.read().buckets.values().filter(|b| b.owner == account).count()
+    }
+
+    /// Catch background work up to `ctx.received_at` without a request to
+    /// S3: lifecycle rules that came due and settled replications and
+    /// restores, with their event notifications. The emulator calls it as
+    /// the emulated clock moves.
+    pub fn catch_up(&self, ctx: &RequestContext) {
+        self.sweep(ctx);
     }
 
     /// The work S3 does in the background, caught up to the request's

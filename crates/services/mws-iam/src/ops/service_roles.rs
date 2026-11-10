@@ -114,7 +114,7 @@ const SERVICE_LINKED_ROLES: &[SlrSpec] = &[
     ),
     slr("compute-optimizer.amazonaws.com", "AWSServiceRoleForComputeOptimizer", "ComputeOptimizerServiceRolePolicy"),
     slr("config.amazonaws.com", "AWSServiceRoleForConfig", "AWSConfigServiceRolePolicy"),
-    slr("dax.amazonaws.com", "AWSServiceRoleForDAX", "AmazonDAXServiceRolePolicy"),
+    slr("dax.amazonaws.com", "AWSServiceRoleForDAX", "DAXServiceRolePolicy"),
     slr("ec2fleet.amazonaws.com", "AWSServiceRoleForEC2Fleet", "AWSEC2FleetServiceRolePolicy"),
     slr("spot.amazonaws.com", "AWSServiceRoleForEC2Spot", "AWSEC2SpotServiceRolePolicy"),
     slr("spotfleet.amazonaws.com", "AWSServiceRoleForEC2SpotFleet", "AWSEC2SpotFleetServiceRolePolicy"),
@@ -141,7 +141,7 @@ const SERVICE_LINKED_ROLES: &[SlrSpec] = &[
     ),
     slr("elasticmapreduce.amazonaws.com", "AWSServiceRoleForEMRCleanup", "AmazonEMRCleanupPolicy"),
     slr("es.amazonaws.com", "AWSServiceRoleForAmazonElasticsearchService", "AmazonElasticsearchServiceRolePolicy"),
-    slr("fms.amazonaws.com", "AWSServiceRoleForFMS", "AWSFMSServiceRolePolicy"),
+    slr("fms.amazonaws.com", "AWSServiceRoleForFMS", "FMSServiceRolePolicy"),
     slr("fsx.amazonaws.com", "AWSServiceRoleForAmazonFSx", "AmazonFSxServiceRolePolicy"),
     slr("globalaccelerator.amazonaws.com", "AWSServiceRoleForGlobalAccelerator", "AWSGlobalAcceleratorSLRPolicy"),
     slr("guardduty.amazonaws.com", "AWSServiceRoleForAmazonGuardDuty", "AmazonGuardDutyServiceRolePolicy"),
@@ -164,7 +164,7 @@ const SERVICE_LINKED_ROLES: &[SlrSpec] = &[
         "AWSKeyManagementServiceMultiRegionKeysServiceRolePolicy",
     ),
     slr("replicator.lambda.amazonaws.com", "AWSServiceRoleForLambdaReplicator", "AWSLambdaReplicator"),
-    slr("delivery.logs.amazonaws.com", "AWSServiceRoleForLogDelivery", "AWSLogDeliveryServiceRolePolicy"),
+    slr("delivery.logs.amazonaws.com", "AWSServiceRoleForLogDelivery", "AWSServiceRoleForLogDeliveryPolicy"),
     slr("macie.amazonaws.com", "AWSServiceRoleForAmazonMacie", "AmazonMacieServiceRolePolicy"),
     slr(
         "opensearchservice.amazonaws.com",
@@ -437,7 +437,9 @@ impl Iam {
             let mut due = vec![];
             for (account, state) in accounts.iter() {
                 for t in state.deletion_tasks.values() {
-                    let ready = t.started.is_none_or(|s| now - s >= Duration::seconds(DELETION_SECONDS));
+                    let ready = t.started.is_none_or(|s| {
+                        now - s >= Duration::milliseconds(mws_core::settle::window_ms(DELETION_SECONDS * 1000))
+                    });
                     if t.status != "IN_PROGRESS" || !ready {
                         continue;
                     }

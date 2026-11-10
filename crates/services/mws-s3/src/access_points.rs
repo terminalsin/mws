@@ -153,6 +153,7 @@ pub(crate) struct Links {
     directory: OnceLock<Arc<dyn AccessPointDirectory>>,
     invoker: OnceLock<Arc<dyn ObjectLambdaInvoker>>,
     pub(crate) quotas: OnceLock<mws_servicequotas::ServiceQuotas>,
+    pub(crate) replication_roles: OnceLock<Arc<dyn crate::replication::ReplicationRoles>>,
     pending: Mutex<HashMap<String, Pending>>,
     input_sessions: Arc<Mutex<HashMap<String, InputSession>>>,
 }

@@ -2687,3 +2687,35 @@ impl mws_imagebuilder::InstanceRoles for ImageBuilderInstanceRoles {
         Ok(RequestContext { caller: resolved.caller, ..base.clone() })
     }
 }
+
+/// S3 assumes bucket replication roles through STS as `s3.amazonaws.com`.
+pub(crate) struct S3ReplicationRoles(pub mws_sts::Sts);
+
+impl mws_s3::ReplicationRoles for S3ReplicationRoles {
+    fn assume(
+        &self,
+        ctx: &RequestContext,
+        role_arn: &str,
+        bucket_arn: &str,
+        source_account: &str,
+    ) -> Option<mws_core::Caller> {
+        let creds = self
+            .0
+            .assume_role_as_service(&mws_sts::ServiceAssume {
+                role_arn,
+                service_principal: "s3.amazonaws.com",
+                session_name: "s3-replication",
+                duration_seconds: 3600,
+                source_account: Some(source_account),
+                source_arn: Some(bucket_arn),
+                now: ctx.received_at,
+            })
+            .ok()?;
+        self.0
+            .credential_store()
+            .resolve(&creds.access_key_id, Some(&creds.session_token), ctx.received_at)
+            .ok()
+            .flatten()
+            .map(|r| r.caller)
+    }
+}

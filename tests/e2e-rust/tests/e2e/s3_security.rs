@@ -168,3 +168,55 @@ async fn vpc_only_access_points_refuse_requests_from_outside_the_vpc() {
     let err = s3.list_objects_v2().bucket(inside.alias().unwrap()).send().await.unwrap_err();
     assert_eq!(err.code(), Some("AccessDenied"));
 }
+
+#[tokio::test]
+async fn mfa_delete_and_lifecycle_minimums_are_enforced() {
+    use aws_sdk_s3::types::{
+        BucketLifecycleConfiguration, BucketVersioningStatus, ExpirationStatus, LifecycleRule, LifecycleRuleFilter,
+        MfaDeleteStatus, Transition, TransitionStorageClass, VersioningConfiguration,
+    };
+    let mws = Mws::start().await;
+    let s3 = Mws::s3(&mws.root_sdk_config().await);
+    s3.create_bucket().bucket("mfa-guarded").send().await.unwrap();
+    s3.put_bucket_versioning()
+        .bucket("mfa-guarded")
+        .mfa("arn:aws:iam::123456789012:mfa/root 123456")
+        .versioning_configuration(
+            VersioningConfiguration::builder()
+                .status(BucketVersioningStatus::Enabled)
+                .mfa_delete(MfaDeleteStatus::Enabled)
+                .build(),
+        )
+        .send()
+        .await
+        .unwrap();
+    let put = s3.put_object().bucket("mfa-guarded").key("k").body(ByteStream::from_static(b"x")).send().await.unwrap();
+    let version = put.version_id().unwrap();
+    // Without the MFA header a permanent delete is refused.
+    let err = s3.delete_object().bucket("mfa-guarded").key("k").version_id(version).send().await.unwrap_err();
+    assert_eq!(err.code(), Some("AccessDenied"));
+    assert_eq!(err.message(), Some("Mfa Authentication must be used for this request"));
+    // A delete marker needs no MFA.
+    s3.delete_object().bucket("mfa-guarded").key("k").send().await.unwrap();
+
+    // Infrequent Access transitions need at least 30 days.
+    let rule = LifecycleRule::builder()
+        .id("ia")
+        .status(ExpirationStatus::Enabled)
+        .filter(LifecycleRuleFilter::builder().prefix("").build())
+        .transitions(Transition::builder().days(7).storage_class(TransitionStorageClass::StandardIa).build())
+        .build()
+        .unwrap();
+    let err = s3
+        .put_bucket_lifecycle_configuration()
+        .bucket("mfa-guarded")
+        .lifecycle_configuration(BucketLifecycleConfiguration::builder().rules(rule).build().unwrap())
+        .send()
+        .await
+        .unwrap_err();
+    assert_eq!(err.code(), Some("InvalidArgument"));
+    assert_eq!(
+        err.message(),
+        Some("'Days' in Transition action must be greater than or equal to 30 for storageClass 'STANDARD_IA'")
+    );
+}

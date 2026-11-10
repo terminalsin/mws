@@ -1,6 +1,7 @@
 //! Composition root. This is the only crate that knows which services exist.
 
 mod autoscaling;
+mod clock_catch_up;
 mod cloudwatch_ssm;
 mod ec2_signals;
 mod eks;
@@ -435,6 +436,7 @@ fn build_with_store(config: Config, store: Option<Arc<Store>>) -> Mws {
         events: sinks::S3ToEvents(events.clone()),
         guardduty: guardduty.clone(),
     }));
+    s3.set_replication_roles(Arc::new(links::S3ReplicationRoles(sts.clone())));
     guardduty.set_malware_object_store(Arc::new(links::GuardDutyMalwareObjects { sts: sts.clone(), s3: s3.clone() }));
     ssm.set_change_sink(Arc::new(sinks::SsmChangeEvents(events.clone())));
     events.register_clock_source(Arc::new(sinks::SsmPolicyEvents {
@@ -778,6 +780,14 @@ fn build_with_store(config: Config, store: Option<Arc<Store>>) -> Mws {
         .request_observer(Arc::new(servicequotas.clone()))
         .request_observer(Arc::new(ce.clone()))
         .request_observer(ec2_clock)
+        // S3 lifecycle and Secrets Manager schedules follow the clock.
+        .request_observer(Arc::new(clock_catch_up::Observer(clock_catch_up::CatchUp::new(
+            s3.clone(),
+            secretsmanager.clone(),
+            client.clone(),
+            config.iam.partition.clone(),
+            "us-east-1".into(),
+        ))))
         // The delivery queue follows the emulated clock requests carry.
         .request_observer(Arc::new(client.clone()))
         // CloudTrail records every API call the gateway dispatches.

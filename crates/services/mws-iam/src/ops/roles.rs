@@ -75,6 +75,11 @@ impl Iam {
         input: types::CreateRoleRequest,
     ) -> Result<types::CreateRoleResponse, ServiceError> {
         let path = input.path.unwrap_or_else(|| "/".into());
+        // Only AWS creates roles under its reserved paths (service-linked
+        // and Identity Center roles); SCPs and protections key off them.
+        if path.starts_with("/aws-service-role/") || path.starts_with("/aws-reserved/") {
+            return Err(errors::invalid_input(format!("The specified value for path is reserved for AWS use: {path}")));
+        }
         let arn = self.entity_arn("role", &path, &input.role_name);
         let tags = tags_from_wire(input.tags)?;
         let mut cond = request_tag_context(&tags);

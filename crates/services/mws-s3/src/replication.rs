@@ -73,7 +73,31 @@ fn kms_opt_in(rule: &types::ReplicationRule) -> bool {
         .is_some_and(|s| s.status == "Enabled")
 }
 
-/// The caller S3 acts as: a session of the replication role.
+/// How S3 assumes a bucket's replication role: STS, as
+/// `s3.amazonaws.com`, so the role's trust policy decides.
+pub trait ReplicationRoles: Send + Sync {
+    /// A session of `role_arn` for replicating out of `bucket_arn`
+    /// (owned by `source_account`), or `None` when the role does not
+    /// exist or does not trust S3.
+    fn assume(&self, ctx: &RequestContext, role_arn: &str, bucket_arn: &str, source_account: &str) -> Option<Caller>;
+}
+
+impl S3 {
+    /// Assume replication roles through STS.
+    pub fn set_replication_roles(&self, roles: std::sync::Arc<dyn ReplicationRoles>) {
+        let _ = self.links.replication_roles.set(roles);
+    }
+
+    fn replication_caller(&self, role_arn: &str, ctx: &RequestContext, bucket: &str, owner: &str) -> Option<Caller> {
+        match self.links.replication_roles.get() {
+            Some(roles) => roles.assume(ctx, role_arn, &format!("arn:{}:s3:::{bucket}", ctx.partition), owner),
+            None => role_caller(role_arn, ctx),
+        }
+    }
+}
+
+/// The caller S3 acts as when no STS is wired in (unit tests): a
+/// session of the replication role, taken on trust.
 fn role_caller(role_arn: &str, ctx: &RequestContext) -> Option<Caller> {
     let mut parts = role_arn.splitn(6, ':');
     let (_, _, _, _, account, resource) =
@@ -328,7 +352,8 @@ impl S3 {
             failure: None,
         };
         let result = (|| -> Result<(ObjectVersion, String), &'static str> {
-            let role = role_caller(&config.role, ctx).ok_or("AssumeRoleNotPermitted")?;
+            let role =
+                self.replication_caller(&config.role, ctx, bucket, &src.owner).ok_or("AssumeRoleNotPermitted")?;
             let mut role_ctx = ctx.clone();
             role_ctx.caller = role;
             let dest = st.buckets.get(&dest_name).ok_or("DstBucketNotFound")?;

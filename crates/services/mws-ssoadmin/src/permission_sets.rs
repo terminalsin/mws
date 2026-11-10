@@ -221,6 +221,11 @@ impl SsoAdmin {
             "sso:AttachManagedPolicyToPermissionSet",
         )?;
         let arn = input.managed_policy_arn;
+        if !arn.starts_with(&format!("arn:{}:iam::aws:policy/", ctx.partition))
+            || !self.iam.aws_managed_policy_exists(&arn)
+        {
+            return Err(errors::validation(format!("The managed policy {arn} does not exist.")));
+        }
         self.edit(&r, &input.permission_set_arn, |p| {
             if p.managed.contains(&arn) {
                 return Err(errors::conflict(format!(

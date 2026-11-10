@@ -164,3 +164,17 @@ async fn update_primary_region_puts_both_keys_in_updating() {
     assert_eq!(mrc.multi_region_key_type().map(|t| t.as_str()), Some("PRIMARY"));
     assert_eq!(mrc.primary_key().unwrap().region(), Some("eu-west-1"));
 }
+
+#[tokio::test]
+async fn update_primary_region_to_its_own_region_leaves_the_key_usable() {
+    let mws = Mws::start().await;
+    let cfg = mws.root_sdk_config().await;
+    let c = in_region(&cfg, "us-east-1");
+    let key = c.create_key().multi_region(true).send().await.unwrap();
+    let id = key.key_metadata().unwrap().key_id().to_string();
+    wait_key_state(&c, &id, KeyState::Enabled).await;
+    c.update_primary_region().key_id(&id).primary_region("us-east-1").send().await.unwrap();
+    let md = c.describe_key().key_id(&id).send().await.unwrap();
+    assert_eq!(md.key_metadata().unwrap().key_state(), Some(&KeyState::Enabled));
+    c.encrypt().key_id(&id).plaintext(Blob::new(b"x".to_vec())).send().await.unwrap();
+}

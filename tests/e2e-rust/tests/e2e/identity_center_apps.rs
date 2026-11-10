@@ -230,6 +230,16 @@ async fn instance_settings_regions_tags_and_permission_set_policies() {
         .await
         .unwrap_err();
     assert_eq!(err.code(), Some("ConflictException"));
+    // Only AWS managed policies that exist can be attached.
+    let err = a
+        .attach_managed_policy_to_permission_set()
+        .instance_arn(inst)
+        .permission_set_arn(&ps)
+        .managed_policy_arn("arn:aws:iam::aws:policy/NoSuchPolicyAnywhere")
+        .send()
+        .await
+        .unwrap_err();
+    assert_eq!(err.code(), Some("ValidationException"));
     let managed = a.list_managed_policies_in_permission_set().instance_arn(inst).permission_set_arn(&ps).send().await;
     let managed = managed.unwrap();
     assert_eq!(managed.attached_managed_policies()[0].name(), Some("ReadOnlyAccess"));

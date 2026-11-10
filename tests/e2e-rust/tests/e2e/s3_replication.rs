@@ -292,3 +292,80 @@ async fn sse_kms_objects_are_reencrypted_under_the_replica_key() {
     let source = s3.head_object().bucket("kms-src").key("second").send().await.unwrap();
     assert_eq!(source.ssekms_key_id(), Some(source_key.as_str()));
 }
+
+#[tokio::test]
+async fn replication_assumes_the_role_and_validates_v2_rules() {
+    let mws = Mws::start().await;
+    let cfg = mws.root_sdk_config().await;
+    let s3 = Mws::s3(&cfg);
+    let iam = aws_sdk_iam::Client::new(&cfg);
+    versioned_buckets(&s3, &["trust-src", "trust-dst"]).await;
+    // A role that does not trust S3: S3 cannot assume it, so replication
+    // fails although the role's permissions would allow it.
+    let lambda_trust = r#"{"Version":"2012-10-17","Statement":[{"Effect":"Allow","Principal":{"Service":"lambda.amazonaws.com"},"Action":"sts:AssumeRole"}]}"#;
+    let arn = iam
+        .create_role()
+        .role_name("not-for-s3")
+        .assume_role_policy_document(lambda_trust)
+        .send()
+        .await
+        .unwrap()
+        .role()
+        .unwrap()
+        .arn()
+        .to_string();
+    iam.put_role_policy()
+        .role_name("not-for-s3")
+        .policy_name("p")
+        .policy_document(r#"{"Version":"2012-10-17","Statement":[{"Effect":"Allow","Action":"s3:*","Resource":"*"}]}"#)
+        .send()
+        .await
+        .unwrap();
+    s3.put_bucket_replication()
+        .bucket("trust-src")
+        .replication_configuration(config(&arn, rule("trust-dst").build().unwrap()))
+        .send()
+        .await
+        .unwrap();
+    s3.put_object().bucket("trust-src").key("k").body(ByteStream::from_static(b"x")).send().await.unwrap();
+    assert_eq!(replication_settled(&s3, "trust-src", "k").await, ReplicationStatus::Failed);
+
+    // V2 rules (with a Filter) must name a priority and the delete marker
+    // setting.
+    let no_priority = ReplicationRule::builder()
+        .id("r")
+        .status(ReplicationRuleStatus::Enabled)
+        .filter(ReplicationRuleFilter::builder().prefix("").build())
+        .delete_marker_replication(
+            DeleteMarkerReplication::builder().status(DeleteMarkerReplicationStatus::Disabled).build(),
+        )
+        .destination(Destination::builder().bucket("arn:aws:s3:::trust-dst").build().unwrap())
+        .build()
+        .unwrap();
+    let err = s3
+        .put_bucket_replication()
+        .bucket("trust-src")
+        .replication_configuration(config(&arn, no_priority))
+        .send()
+        .await
+        .unwrap_err();
+    assert_eq!(err.code(), Some("InvalidRequest"));
+    assert!(err.message().unwrap().starts_with("Priority must be specified"));
+    let no_marker = ReplicationRule::builder()
+        .id("r")
+        .priority(1)
+        .status(ReplicationRuleStatus::Enabled)
+        .filter(ReplicationRuleFilter::builder().prefix("").build())
+        .destination(Destination::builder().bucket("arn:aws:s3:::trust-dst").build().unwrap())
+        .build()
+        .unwrap();
+    let err = s3
+        .put_bucket_replication()
+        .bucket("trust-src")
+        .replication_configuration(config(&arn, no_marker))
+        .send()
+        .await
+        .unwrap_err();
+    assert_eq!(err.code(), Some("InvalidRequest"));
+    assert!(err.message().unwrap().starts_with("DeleteMarkerReplication must be specified"));
+}
