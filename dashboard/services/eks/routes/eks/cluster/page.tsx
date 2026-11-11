@@ -27,6 +27,7 @@ import {
   upgradeCluster,
 } from "../actions";
 import { UpdateRows } from "../updates.tsx";
+import { ResourcePicker } from "@mws-dashboard/ui/pickers";
 
 export const metadata: Metadata = { title: "Cluster" };
 
@@ -585,7 +586,7 @@ export default async function Cluster({ searchParams }: Props) {
                 <Sheet title="Create access entry" label="Create access entry" icon={<UserPlus size={16} />} testId="create-access-entry">
                   <ActionForm action={createAccessEntry.bind(null, name)} submit="Create" testId="create-access-entry">
                     <Field label="IAM principal ARN" rule={PRINCIPAL} taken={entries?.ok ? entries.value.map((e) => e.principalArn!) : []} unique>
-                      <input name="principal" required autoFocus spellCheck={false} placeholder="arn:aws:iam::123456789012:role/dev" />
+                      <ResourcePicker kind={["iam-role", "iam-user"]} use="arn" name="principal" required />
                     </Field>
                     <div className="form-row">
                       <Field label="Type">

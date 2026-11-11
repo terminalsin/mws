@@ -17,6 +17,7 @@ import { useMemo, useState } from "react";
 
 import { PROTOCOLS } from "./acl";
 import { KNOWN_SERVICES, serviceKey } from "./endpoint-services";
+import { ResourcePicker } from "@mws-dashboard/ui/pickers";
 
 const IPV4: Rule = { ...CreateRoute.DestinationCidrBlock, format: "cidr" };
 const OTHER: Rule = {
@@ -275,7 +276,7 @@ export function PeeringFields({ vpcs, regions, region }: { vpcs: Choice[]; regio
             </Field>
           </div>
           <Field label="Accepter VPC ID" rule={VPC_ID} member="PeerVpcId">
-            <input name="peer" required spellCheck={false} />
+            <ResourcePicker kind="vpc" name="peer" required />
           </Field>
         </>
       )}

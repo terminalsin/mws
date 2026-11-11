@@ -405,10 +405,10 @@ export const instancesTab: Tab = async ({ g, name }) => {
                   <input name="timeout" defaultValue={3600} />
                 </Field>
                 <Field label="Notification target" rule={PutLifecycleHook.NotificationTargetARN} format="arn" member="NotificationTargetARN" hint="An SNS topic or SQS queue ARN">
-                  <input name="target" spellCheck={false} />
+                  <ResourcePicker kind={["sns-topic", "sqs-queue"]} use="arn" name="target" />
                 </Field>
                 <Field label="Role" rule={PutLifecycleHook.RoleARN} format="arn" member="RoleARN" hint="Needed with a notification target">
-                  <input name="role" spellCheck={false} />
+                  <ResourcePicker kind="iam-role" name="role" service="autoscaling.amazonaws.com" />
                 </Field>
                 <Field label="Notification metadata" rule={PutLifecycleHook.NotificationMetadata} member="NotificationMetadata">
                   <input name="metadata" />

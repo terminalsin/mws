@@ -99,7 +99,7 @@ export function QueueSettings({
       </FieldShell>
       {allow === "byQueue" && (
         <FieldShell label="Source queues" rule={rules.sources} known={queues.map((q) => q.arn)}>
-          <textarea name="allowSources" rows={2} defaultValue={current?.allowSources?.join("\n")} spellCheck={false} />
+          <ResourcePicker kind="sqs-queue" use="arn" multiple name="allowSources" defaultValue={current?.allowSources?.length ? `${current.allowSources.join(", ")}, ` : undefined} />
         </FieldShell>
       )}
       <div className="form-row">

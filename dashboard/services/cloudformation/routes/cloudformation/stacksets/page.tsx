@@ -13,6 +13,7 @@ import { CloudFormationNav } from "../../../lib/nav";
 import { ADMIN_ROLE, EXECUTION_ROLE } from "../../../lib/stacksets";
 import { Capabilities } from "../forms";
 import { createStackSet } from "./actions";
+import { ResourcePicker } from "@mws-dashboard/ui/pickers";
 
 export const metadata: Metadata = { title: "StackSets" };
 
@@ -48,7 +49,7 @@ function CreateStackSet({ names, roles, here }: { names: string[]; roles: { valu
             <MoreFields label="Roles">
               <AutoPick name="adminRole" label="Administration role" options={roles} creates={ADMIN_ROLE} testId="admin-role" />
               <Field label="Execution role name" rule={Rules.ExecutionRoleName}>
-                <input name="executionRole" defaultValue={EXECUTION_ROLE} />
+                <ResourcePicker kind="iam-role" use="name" name="executionRole" defaultValue={EXECUTION_ROLE} />
               </Field>
             </MoreFields>
           </Section>

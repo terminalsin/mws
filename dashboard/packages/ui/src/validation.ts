@@ -23,6 +23,8 @@ import { CERT_FORMATS } from "./certs.ts";
 
 /** A member's constraints, as generated from the model or written by hand. */
 export interface Rule {
+  /** The model member this rule came from (`<model>/<Operation>.<Member>`), for its documentation. */
+  $id?: string;
   type?:
     | "string"
     | "integer"

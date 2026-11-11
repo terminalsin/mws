@@ -33,6 +33,7 @@ import {
   updatePermissionSet,
 } from "../actions";
 import { PolicyEditor } from "@mws-dashboard/ui/policy";
+import { ResourcePicker } from "@mws-dashboard/ui/pickers";
 
 type Props = { searchParams: Promise<{ arn?: string; tab?: string }> };
 
@@ -147,7 +148,7 @@ export default async function PermissionSet({ searchParams }: Props) {
             <Sheet title="Attach AWS managed policy" label="Attach AWS managed policy" icon={<Link2 size={16} />} testId="attach-managed-policy">
               <ActionForm action={attachManagedPolicy.bind(null, instance, arn)} submit="Attach" testId="attach-managed-policy">
                 <Field label="Policy ARN" rule={{ ...AttachManagedPolicyToPermissionSet.ManagedPolicyArn, format: "arn" }} known={POLICIES.filter((p) => !managed.some((m) => m.Arn === p))}>
-                  <input name="policy" list="managed-policies" required placeholder="arn:aws:iam::aws:policy/ReadOnlyAccess" />
+                  <ResourcePicker kind="iam-policy" name="policy" required placeholder="Search AWS managed policies" testId="managed-policy" />
                 </Field>
                 <datalist id="managed-policies">
                   {POLICIES.map((p) => (

@@ -460,7 +460,7 @@ async function grants(): Promise<View> {
                 <input name="subprefix" />
               </Field>
               <Field label="Grantee (IAM user or role ARN)" format="arn">
-                <input name="grantee" required />
+                <ResourcePicker kind={["iam-user", "iam-role"]} use="arn" name="grantee" required />
               </Field>
               <Field label="Permission">
                 <select name="permission" defaultValue="READ">

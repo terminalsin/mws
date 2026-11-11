@@ -693,6 +693,18 @@
   .action-form {
     @apply grid gap-4;
   }
+  /* Fields wrapped in a plain container (a preset's fields, a step, a
+     More fold) keep the form's rhythm: a gap between each and the next. */
+  .action-form :where(div, section):not(.form-row, .form-grid, .field, .field-control, .picker, .presets, .preset-grid, .form-actions):has(> :is(.field, .form-row, .form-grid, fieldset, .check, .more-fields)) {
+    @apply grid gap-4;
+  }
+  .action-form .more-fields::details-content {
+    display: grid;
+    gap: 1rem;
+  }
+  .action-form .more-fields[open] > summary {
+    margin-bottom: 0.25rem;
+  }
   .action-form.inline {
     @apply flex flex-wrap items-end gap-px;
   }
@@ -759,8 +771,12 @@
   .repair-value {
     @apply truncate font-mono;
   }
+  /* A checkbox and its label: the whole row is the target. */
   .check {
-    @apply inline-flex items-center gap-2;
+    @apply inline-flex min-h-8 cursor-pointer items-center gap-2.5 justify-self-start text-left select-none;
+  }
+  .check:has(input:disabled) {
+    @apply cursor-not-allowed opacity-60;
   }
   /* Existing resource, or "create automatically". */
   .auto-pick-row {
@@ -808,7 +824,7 @@
   }
   input[type="checkbox"],
   input[type="radio"] {
-    @apply h-4 w-4 accent-[var(--text)];
+    @apply h-[18px] w-[18px] shrink-0 cursor-pointer accent-[var(--text)];
   }
   fieldset.checks {
     @apply m-0 grid max-h-60 grid-cols-[repeat(auto-fill,minmax(180px,1fr))] gap-x-3 gap-y-1 overflow-auto border-0 bg-transparent p-0;
@@ -868,11 +884,17 @@
   }
 
   /* Modals and the command palette. */
+  /* A dialog inherits text-align from wherever it sits in the DOM (a
+     centred empty state, a toolbar); forms are left-aligned everywhere. */
+  dialog,
+  [popover] {
+    text-align: left;
+  }
   dialog {
     @apply rounded-none border-0 bg-layer p-0 text-inherit shadow-[0_2px_6px_rgba(0,0,0,0.3)];
   }
   .sheet {
-    @apply m-auto w-[min(640px,calc(100vw-32px))] px-4 pt-0 pb-6;
+    @apply m-auto p-0;
   }
   .sheet-head {
     @apply -mx-4 mb-6 flex items-center justify-between py-4 pr-2 pl-4;
@@ -2167,12 +2189,9 @@
     align-items: center;
     gap: 0.25rem;
   }
-  .policy-hits {
+  .policy-hits:popover-open {
     display: grid;
-    max-height: 15rem;
-    overflow-y: auto;
-    border: 1px solid var(--separator);
-    background: var(--surface);
+    padding: 0;
   }
   .policy-hits button {
     display: flex;
@@ -2312,9 +2331,9 @@
     z-index: 2;
     background: var(--surface);
   }
-  .sheet .action-form > .form-actions {
+  .sheet-main > .action-form > .form-actions {
     position: sticky;
-    bottom: -1.5rem;
+    bottom: 0;
     z-index: 2;
     margin: 0.5rem -1rem -1.5rem;
     padding: 0.75rem 1rem 1.5rem;
@@ -2506,5 +2525,184 @@
   }
   .presets section[hidden] {
     display: none;
+  }
+
+  /* Every form's primary button sits at the right of its action bar; a
+     stepper's Back and Next and the help button take the left. */
+  .action-form:not(.inline) > .form-actions {
+    display: flex;
+    align-items: center;
+    gap: 1px;
+  }
+  .action-form:not(.inline) > .form-actions > button[type="submit"] {
+    margin-left: auto;
+  }
+  /* Sheet footers: a quiet bar, buttons sized to their label. */
+  .sheet-main > .action-form > .form-actions {
+    padding: 0.75rem 1rem;
+  }
+  .sheet .form-actions .button {
+    min-width: 7.5rem;
+    height: 2.5rem;
+    justify-content: center;
+    gap: 0.5rem;
+    padding: 0 1.25rem;
+  }
+  .sheet .form-actions .button-glyph:empty {
+    display: none;
+  }
+  .form-help {
+    color: var(--secondary);
+  }
+  .form-help[aria-pressed="true"] {
+    color: var(--accent);
+    background: var(--accent-soft);
+  }
+  .form-help + .form-actions-lead .step-nav {
+    margin-left: 0.5rem;
+  }
+
+  /* The guide: the sheet widens (a morph, both ways) and the guide fills
+     the new room beside the form, which stays where it was. */
+  dialog.sheet {
+    --sheet-w: min(640px, calc(100vw - 32px));
+    --guide-w: 320px;
+    width: var(--sheet-w);
+    padding: 0;
+    overflow-x: hidden;
+  }
+  dialog.sheet[open] {
+    transition: width var(--duration-moderate, 240ms) var(--ease-standard, ease);
+  }
+  dialog.sheet[data-guide] {
+    width: min(calc(640px + var(--guide-w)), calc(100vw - 32px));
+  }
+  .sheet-main {
+    padding: 0 1rem 1.5rem;
+    width: var(--sheet-w);
+  }
+  dialog.sheet:has(.sheet-guide) {
+    display: grid;
+    grid-template-columns: var(--sheet-w) var(--guide-w);
+    align-items: stretch;
+  }
+  /* Beside a taller guide, the form's action bar stays at the bottom. */
+  dialog.sheet:has(.sheet-guide) .sheet-main {
+    display: flex;
+    flex-direction: column;
+  }
+  dialog.sheet:has(.sheet-guide) .sheet-main > .action-form {
+    flex: 1;
+    grid-template-rows: auto;
+    align-content: start;
+  }
+  dialog.sheet:has(.sheet-guide) .sheet-main > .action-form > .form-actions {
+    align-self: end;
+  }
+  .sheet-guide {
+    position: sticky;
+    top: 0;
+    align-self: start;
+    max-height: calc(100dvh - 2rem);
+    overflow-y: auto;
+    padding: 1rem 1rem 1.5rem;
+    border-left: 1px solid var(--separator);
+    background: var(--surface-2);
+    font-size: 0.8125rem;
+  }
+  .sheet-guide-head {
+    display: flex;
+    align-items: center;
+    gap: 0.5rem;
+    margin-bottom: 0.75rem;
+    color: var(--secondary);
+  }
+  .sheet-guide-head h3 {
+    flex: 1;
+    margin: 0;
+    font-size: 0.875rem;
+    font-weight: 500;
+    color: var(--text);
+  }
+  .sheet-guide-head .icon-button {
+    width: 1.75rem;
+    height: 1.75rem;
+  }
+  .sheet-guide-about {
+    margin: 0 0 1rem;
+    color: var(--secondary);
+    line-height: 1.5;
+  }
+  .sheet-guide-list {
+    display: grid;
+    gap: 2px;
+    margin: 0;
+    padding: 0;
+    list-style: none;
+  }
+  .sheet-guide-list h4 {
+    margin: 0.75rem 0 0.25rem;
+    font-size: 0.6875rem;
+    font-weight: 500;
+    letter-spacing: 0.32px;
+    text-transform: uppercase;
+    color: var(--secondary);
+  }
+  .sheet-guide-list button {
+    display: grid;
+    gap: 0.2rem;
+    width: 100%;
+    padding: 0.5rem 0.625rem;
+    border: 0;
+    background: transparent;
+    color: var(--text);
+    font: inherit;
+    text-align: left;
+    cursor: pointer;
+  }
+  .sheet-guide-list button:hover {
+    background: var(--hover);
+  }
+  .sheet-guide-list strong {
+    font-weight: 500;
+  }
+  .sheet-guide-list span {
+    color: var(--secondary);
+    line-height: 1.45;
+  }
+  .sheet-guide-list small {
+    color: var(--tertiary, var(--secondary));
+    font-size: 0.75rem;
+  }
+  @media (max-width: 960px) {
+    dialog.sheet[data-guide] {
+      width: var(--sheet-w);
+    }
+    dialog.sheet:has(.sheet-guide) {
+      display: block;
+    }
+    .sheet-guide {
+      position: static;
+      max-height: none;
+      border-left: 0;
+      border-top: 1px solid var(--separator);
+    }
+  }
+
+  /* Selects draw their own chevron inside the field's padding (the native
+     one hugs the right edge). */
+  select:where(:not([multiple], [size])) {
+    appearance: none;
+    padding-right: 2.5rem;
+    background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='16' height='16' viewBox='0 0 24 24' fill='none' stroke='%238d8d8d' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='m6 9 6 6 6-6'/%3E%3C/svg%3E");
+    background-repeat: no-repeat;
+    background-position: right 0.875rem center;
+    background-size: 16px;
+    cursor: pointer;
+    text-align: left;
+  }
+  .region select {
+    padding-right: 0;
+    background-image: none;
   }
 }

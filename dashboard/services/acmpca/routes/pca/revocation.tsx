@@ -1,5 +1,6 @@
 import { Field } from "@mws-dashboard/ui";
 import { CreateCertificateAuthority } from "@mws-dashboard/ui/model/acm-pca";
+import { ResourcePicker } from "@mws-dashboard/ui/pickers";
 
 const CRL = CreateCertificateAuthority.RevocationConfiguration.fields!.CrlConfiguration.fields!;
 const OCSP = CreateCertificateAuthority.RevocationConfiguration.fields!.OcspConfiguration.fields!;
@@ -23,7 +24,7 @@ export function RevocationFields({ d = {}, buckets = [] }: { d?: RevocationDefau
       </label>
       <div className="form-row">
         <Field label="CRL bucket" rule={{ ...CRL.S3BucketName, format: "bucket" }} known={buckets} member="RevocationConfiguration.CrlConfiguration.S3BucketName">
-          <input name="crlBucket" defaultValue={d.bucket} />
+          <ResourcePicker kind="s3-bucket" use="name" name="crlBucket" defaultValue={d.bucket} />
         </Field>
         <Field label="CRL valid (days)" rule={CRL.ExpirationInDays} member="RevocationConfiguration.CrlConfiguration.ExpirationInDays">
           <input name="crlDays" type="number" defaultValue={d.days ?? 7} />

@@ -17,7 +17,7 @@ import { iconUrl } from "./catalog";
 import { FieldShell, setControlValue, type FieldRules } from "./fields";
 import { ACTIONS, ACTION_SERVICES } from "./model/actions";
 import { draftPolicy, kindsIn, type DraftStatement } from "./intent";
-import { ResourcePicker, useResources } from "./pickers";
+import { ResourcePicker, useFloating, useResources } from "./pickers";
 import type { ResourceKind } from "./resources";
 
 // ---------------------------------------------------------------------------
@@ -35,7 +35,7 @@ const EXTRA_ACTIONS: Record<string, string[]> = {
   states: ["StartExecution", "DescribeExecution", "StopExecution", "ListExecutions", "SendTaskSuccess", "SendTaskFailure"],
   "execute-api": ["Invoke", "ManageConnections"],
   ssmmessages: ["CreateControlChannel", "CreateDataChannel", "OpenControlChannel", "OpenDataChannel"],
-  "ec2messages": ["AcknowledgeMessage", "GetMessages", "SendReply"],
+  ec2messages: ["AcknowledgeMessage", "GetMessages", "SendReply"],
 };
 
 const ALL_ACTIONS: Record<string, string[]> = (() => {
@@ -92,8 +92,14 @@ export function accessLevel(action: string): "List" | "Read" | "Write" | "Taggin
   if (/^(Tag|Untag)/.test(a)) return "Tagging";
   if (/(Policy|Permission|Grant|Acl)s?$|^(Attach|Detach)(Role|User|Group)Policy|^PassRole$|^(Create|Retire|Revoke)Grant/.test(a)) return "Permissions";
   if (/^List/.test(a)) return "List";
-  if (/^(Get|Describe|Head|Lookup|Search|Select|BatchGet|Query|Scan|Check|Validate|Estimate|Simulate|Preview|Test|Receive|Download|Export|View|Filter|Decrypt|Verify|GenerateDataKey|Invoke|Retrieve|Read|Discover|Poll|Batch(Check|Describe)|Sign|Encrypt|Assume)/.test(a))
-    return a.startsWith("Invoke") || a.startsWith("Assume") || a.startsWith("Encrypt") || a.startsWith("Sign") || a.startsWith("Decrypt") || a.startsWith("GenerateDataKey") || a.startsWith("Receive") ? "Write" : "Read";
+  if (
+    /^(Get|Describe|Head|Lookup|Search|Select|BatchGet|Query|Scan|Check|Validate|Estimate|Simulate|Preview|Test|Receive|Download|Export|View|Filter|Decrypt|Verify|GenerateDataKey|Invoke|Retrieve|Read|Discover|Poll|Batch(Check|Describe)|Sign|Encrypt|Assume)/.test(
+      a,
+    )
+  )
+    return a.startsWith("Invoke") || a.startsWith("Assume") || a.startsWith("Encrypt") || a.startsWith("Sign") || a.startsWith("Decrypt") || a.startsWith("GenerateDataKey") || a.startsWith("Receive")
+      ? "Write"
+      : "Read";
   return "Write";
 }
 
@@ -118,7 +124,10 @@ function searchActions(q: string, limit = 40): string[] {
       if (s) out.push({ a: `${prefix}:${a}`, s });
     }
   }
-  return out.sort((x, y) => y.s - x.s || x.a.localeCompare(y.a)).slice(0, limit).map((x) => x.a);
+  return out
+    .sort((x, y) => y.s - x.s || x.a.localeCompare(y.a))
+    .slice(0, limit)
+    .map((x) => x.a);
 }
 
 /** The resource kind whose ARNs a service's actions take, for the picker. */
@@ -304,25 +313,53 @@ const STATEMENT_SNIPPETS: { id: string; label: string; kinds: PolicyKind[]; make
     id: "deny-insecure",
     label: "Deny insecure transport",
     kinds: ["identity", "resource"],
-    make: () => ({ sid: "DenyInsecureTransport", effect: "Deny", actions: ["*"], resources: ["*"], principals: [{ type: "*", values: [] }], conditions: [{ op: "Bool", key: "aws:SecureTransport", values: ["false"] }] }),
+    make: () => ({
+      sid: "DenyInsecureTransport",
+      effect: "Deny",
+      actions: ["*"],
+      resources: ["*"],
+      principals: [{ type: "*", values: [] }],
+      conditions: [{ op: "Bool", key: "aws:SecureTransport", values: ["false"] }],
+    }),
   },
   {
     id: "deny-regions",
     label: "Deny other Regions",
     kinds: ["identity"],
-    make: () => ({ sid: "DenyOutsideRegions", effect: "Deny", actions: ["*"], resources: ["*"], principals: [], conditions: [{ op: "StringNotEquals", key: "aws:RequestedRegion", values: ["us-east-1", "us-west-2"] }] }),
+    make: () => ({
+      sid: "DenyOutsideRegions",
+      effect: "Deny",
+      actions: ["*"],
+      resources: ["*"],
+      principals: [],
+      conditions: [{ op: "StringNotEquals", key: "aws:RequestedRegion", values: ["us-east-1", "us-west-2"] }],
+    }),
   },
   {
     id: "deny-no-mfa",
     label: "Deny without MFA",
     kinds: ["identity"],
-    make: () => ({ sid: "DenyWithoutMFA", effect: "Deny", actions: ["*"], resources: ["*"], principals: [], conditions: [{ op: "BoolIfExists", key: "aws:MultiFactorAuthPresent", values: ["false"] }] }),
+    make: () => ({
+      sid: "DenyWithoutMFA",
+      effect: "Deny",
+      actions: ["*"],
+      resources: ["*"],
+      principals: [],
+      conditions: [{ op: "BoolIfExists", key: "aws:MultiFactorAuthPresent", values: ["false"] }],
+    }),
   },
   {
     id: "pass-role",
     label: "Pass a role to a service",
     kinds: ["identity"],
-    make: () => ({ sid: "PassRole", effect: "Allow", actions: ["iam:PassRole"], resources: ["*"], principals: [], conditions: [{ op: "StringEquals", key: "iam:PassedToService", values: ["lambda.amazonaws.com"] }] }),
+    make: () => ({
+      sid: "PassRole",
+      effect: "Allow",
+      actions: ["iam:PassRole"],
+      resources: ["*"],
+      principals: [],
+      conditions: [{ op: "StringEquals", key: "iam:PassedToService", values: ["lambda.amazonaws.com"] }],
+    }),
   },
   {
     id: "assume",
@@ -334,7 +371,14 @@ const STATEMENT_SNIPPETS: { id: string; label: string; kinds: PolicyKind[]; make
     id: "external-id",
     label: "Another account, with external ID",
     kinds: ["trust"],
-    make: () => ({ sid: "", effect: "Allow", actions: ["sts:AssumeRole"], resources: [], principals: [{ type: "AWS", values: ["arn:aws:iam::123456789012:root"] }], conditions: [{ op: "StringEquals", key: "sts:ExternalId", values: ["unique-external-id"] }] }),
+    make: () => ({
+      sid: "",
+      effect: "Allow",
+      actions: ["sts:AssumeRole"],
+      resources: [],
+      principals: [{ type: "AWS", values: ["arn:aws:iam::123456789012:root"] }],
+      conditions: [{ op: "StringEquals", key: "sts:ExternalId", values: ["unique-external-id"] }],
+    }),
   },
   {
     id: "github",
@@ -380,6 +424,9 @@ function Chips({ values, remove, mono = true, icon, levels }: { values: string[]
 function ActionSearch({ add, kind, services }: { add: (actions: string[]) => void; kind: PolicyKind; services: string[] }) {
   const [q, setQ] = useState("");
   const [active, setActive] = useState(0);
+  const [focused, setFocused] = useState(false);
+  const field = useRef<HTMLInputElement>(null);
+  const pop = useRef<HTMLDivElement>(null);
   const hits = useMemo(() => {
     if (kind === "trust") {
       const all = ["sts:AssumeRole", "sts:AssumeRoleWithWebIdentity", "sts:AssumeRoleWithSAML", "sts:TagSession", "sts:SetSourceIdentity"];
@@ -388,6 +435,8 @@ function ActionSearch({ add, kind, services }: { add: (actions: string[]) => voi
     return searchActions(q);
   }, [q, kind]);
   useEffect(() => setActive(0), [q]);
+  // The matches float over the statement rather than pushing it down.
+  useFloating(focused && !!q && hits.length > 0, field, pop, hits.length);
   const onKey = (e: KeyboardEvent<HTMLInputElement>) => {
     if (e.key === "ArrowDown" || e.key === "ArrowUp") {
       e.preventDefault();
@@ -412,8 +461,11 @@ function ActionSearch({ add, kind, services }: { add: (actions: string[]) => voi
   return (
     <div className="policy-search">
       <input
+        ref={field}
         value={q}
         onChange={(e) => setQ(e.target.value)}
+        onFocus={() => setFocused(true)}
+        onBlur={() => setFocused(false)}
         onKeyDown={onKey}
         placeholder={kind === "trust" ? "sts:AssumeRole" : "Search actions: s3 get, sqs:Send, kms…"}
         aria-label="Add actions"
@@ -433,9 +485,9 @@ function ActionSearch({ add, kind, services }: { add: (actions: string[]) => voi
           </button>
         </span>
       )}
-      {q && hits.length > 0 && (
-        <div className="policy-hits" role="listbox" aria-label="Matching actions">
-          {hits.map((h, i) => (
+      <div ref={pop} popover="manual" className="policy-hits picker-pop" role="listbox" aria-label="Matching actions" onMouseDown={(e) => e.preventDefault()}>
+        {q &&
+          hits.map((h, i) => (
             <button
               key={h}
               type="button"
@@ -454,8 +506,7 @@ function ActionSearch({ add, kind, services }: { add: (actions: string[]) => voi
               <span className="policy-level">{accessLevel(h)}</span>
             </button>
           ))}
-        </div>
-      )}
+      </div>
     </div>
   );
 }
@@ -531,7 +582,15 @@ function Principals({ value, change }: { value: Statement["principals"]; change:
             </button>
           ) : type === "AWS" ? (
             <span className="policy-grow">
-              <ResourcePicker kind={["iam-role", "iam-user"]} name="" value={draft} onValueChange={(v, o) => (o ? add(v) : setDraft(v))} placeholder="Account ID, role or user ARN" aria-label="AWS principal" create={false} />
+              <ResourcePicker
+                kind={["iam-role", "iam-user"]}
+                name=""
+                value={draft}
+                onValueChange={(v, o) => (o ? add(v) : setDraft(v))}
+                placeholder="Account ID, role or user ARN"
+                aria-label="AWS principal"
+                create={false}
+              />
             </span>
           ) : (
             <input
@@ -610,7 +669,14 @@ function Resources({ value, change, services }: { value: string[]; change: (r: s
                   }}
                 />
               ) : (
-                <input value={draft} onChange={(e) => setDraft(e.target.value)} placeholder="arn:aws:…" aria-label="Add a resource" spellCheck={false} onKeyDown={(e) => e.key === "Enter" && (e.preventDefault(), add([draft.trim()]))} />
+                <input
+                  value={draft}
+                  onChange={(e) => setDraft(e.target.value)}
+                  placeholder="arn:aws:…"
+                  aria-label="Add a resource"
+                  spellCheck={false}
+                  onKeyDown={(e) => e.key === "Enter" && (e.preventDefault(), add([draft.trim()]))}
+                />
               )}
             </span>
             <button type="button" className="icon-button plain" aria-label="Add resource" title="Add resource" onClick={() => add([draft.trim()])}>
@@ -639,7 +705,20 @@ function Conditions({ value, change }: { value: Condition[]; change: (c: Conditi
                 <option key={o}>{o}</option>
               ))}
             </select>
-            <input value={c.values.join(", ")} onChange={(e) => set(i, { values: e.target.value.split(",").map((v) => v.trim()).filter((v, k, a) => v || k === a.length - 1) })} aria-label="Values" placeholder="value, value" spellCheck={false} />
+            <input
+              value={c.values.join(", ")}
+              onChange={(e) =>
+                set(i, {
+                  values: e.target.value
+                    .split(",")
+                    .map((v) => v.trim())
+                    .filter((v, k, a) => v || k === a.length - 1),
+                })
+              }
+              aria-label="Values"
+              placeholder="value, value"
+              spellCheck={false}
+            />
             <button type="button" className="icon-button plain" aria-label="Remove condition" title="Remove condition" onClick={() => change(value.filter((_, j) => j !== i))}>
               <X size={14} aria-hidden />
             </button>
@@ -652,19 +731,25 @@ function Conditions({ value, change }: { value: Condition[]; change: (c: Conditi
             </button>
           </span>
         ) : (
-        <span className="repairs">
-          {CONDITION_PRESETS.filter((p) => !value.some((c) => c.key === p.cond.key)).map((p) => (
-            <button key={p.id} type="button" className="repair" data-kind="suggest" onClick={() => {
-                change([...value, { ...p.cond, values: [...p.cond.values] }]);
-                setOpen(false);
-              }}>
-              <Plus size={12} aria-hidden /> {p.label}
+          <span className="repairs">
+            {CONDITION_PRESETS.filter((p) => !value.some((c) => c.key === p.cond.key)).map((p) => (
+              <button
+                key={p.id}
+                type="button"
+                className="repair"
+                data-kind="suggest"
+                onClick={() => {
+                  change([...value, { ...p.cond, values: [...p.cond.values] }]);
+                  setOpen(false);
+                }}
+              >
+                <Plus size={12} aria-hidden /> {p.label}
+              </button>
+            ))}
+            <button type="button" className="repair" onClick={() => change([...value, { op: "StringEquals", key: "", values: [""] }])}>
+              <Plus size={12} aria-hidden /> Other
             </button>
-          ))}
-          <button type="button" className="repair" onClick={() => change([...value, { op: "StringEquals", key: "", values: [""] }])}>
-            <Plus size={12} aria-hidden /> Other
-          </button>
-        </span>
+          </span>
         )}
         <datalist id="policy-condition-keys">
           {CONDITION_KEYS.map((k) => (
@@ -704,7 +789,14 @@ function StatementCard({ s, kind, change, remove, only }: { s: Statement; kind: 
             </button>
           ))}
         </span>
-        <input className="policy-sid" value={s.sid} onChange={(e) => change({ ...s, sid: e.target.value.replace(/[^A-Za-z0-9]/g, "") })} placeholder="Statement ID (optional)" aria-label="Statement ID" spellCheck={false} />
+        <input
+          className="policy-sid"
+          value={s.sid}
+          onChange={(e) => change({ ...s, sid: e.target.value.replace(/[^A-Za-z0-9]/g, "") })}
+          placeholder="Statement ID (optional)"
+          aria-label="Statement ID"
+          spellCheck={false}
+        />
         {!only && (
           <button type="button" className="icon-button plain" aria-label="Remove statement" title="Remove statement" onClick={remove}>
             <Trash2 size={15} aria-hidden />
@@ -885,7 +977,13 @@ export function PolicyEditor({
               <Plus size={14} aria-hidden /> Statement
             </button>
             {STATEMENT_SNIPPETS.filter((x) => x.kinds.includes(kind)).map((x) => (
-              <button key={x.id} type="button" className="repair" data-kind="suggest" onClick={() => write({ ...doc, statements: [...statements.filter((s) => s.actions.length || s.raw), { ...x.make(), uid: ++uid }] })}>
+              <button
+                key={x.id}
+                type="button"
+                className="repair"
+                data-kind="suggest"
+                onClick={() => write({ ...doc, statements: [...statements.filter((s) => s.actions.length || s.raw), { ...x.make(), uid: ++uid }] })}
+              >
                 <Plus size={12} aria-hidden /> {x.label}
               </button>
             ))}

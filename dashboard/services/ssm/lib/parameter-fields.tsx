@@ -13,6 +13,7 @@ import { Braces, List } from "lucide-react";
 import { useState } from "react";
 
 import type { ParameterDefaults } from "./parameter-form";
+import { ResourcePicker } from "@mws-dashboard/ui/pickers";
 
 // The model only bounds the name's length; the rest is Parameter Store's
 // documented naming rules (MWS enforces the same): a name or a /path of up
@@ -116,7 +117,7 @@ export function ParameterFields({ defaults, keys }: { defaults: ParameterDefault
           </div>
           {(secure || edit) && (
             <FieldShell label="KMS key (SecureString)" rule={PutParameter.KeyId} known={keys} hint="Empty: alias/aws/ssm">
-              <input name="keyId" defaultValue={defaults.keyId} placeholder="alias/aws/ssm" />
+              <ResourcePicker kind="kms-key" name="keyId" defaultValue={defaults.keyId} placeholder="alias/aws/ssm" />
             </FieldShell>
           )}
           <FieldShell label="Allowed pattern" rule={PutParameter.AllowedPattern}>

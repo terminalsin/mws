@@ -8,6 +8,7 @@ import type { ReactNode } from "react";
 
 import { bucketHref, downloadHref, links, objectHref, s3 } from "../../../../lib/s3";
 import { copyObject, deleteObject, editMetadata, presign, restoreVersion, saveObjectTags } from "../../actions";
+import { ResourcePicker } from "@mws-dashboard/ui/pickers";
 
 type Props = { params: Promise<{ bucket: string }>; searchParams: Promise<{ key?: string; version?: string }> };
 
@@ -116,7 +117,7 @@ export default async function S3Object({ params, searchParams }: Props) {
               <ActionForm action={copyObject.bind(null, bucket, key, version ?? null)} submit="Copy" testId="copy-object">
                 <div className="form-row">
                   <Field label="Destination bucket" format="bucket" known={buckets.ok ? buckets.value : []}>
-                    <input name="bucket" required defaultValue={bucket} />
+                    <ResourcePicker kind="s3-bucket" use="name" name="bucket" required defaultValue={bucket} />
                   </Field>
                   <Field label="Destination key" rule={KEY}>
                     <input name="key" required defaultValue={key} />

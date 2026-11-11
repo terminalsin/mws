@@ -25,6 +25,7 @@ import {
   sendMessage,
 } from "../actions";
 import { PolicyEditor } from "@mws-dashboard/ui/policy";
+import { ResourcePicker } from "@mws-dashboard/ui/pickers";
 
 type Props = { params: Promise<{ name: string }> };
 
@@ -201,7 +202,7 @@ export default async function Queue({ params }: Props) {
               <Sheet title="Start DLQ redrive" label="Start DLQ redrive" icon={<Undo2 size={15} aria-hidden />} testId="redrive">
                 <ActionForm action={redrive.bind(null, name, q.arn)} submit="Redrive" testId="redrive">
                   <Field label="Destination" hint="Empty: back to each message's source queue" format="arn" known={candidates.map((c) => c.arn)}>
-                    <input name="destination" spellCheck={false} />
+                    <ResourcePicker kind="sqs-queue" use="arn" name="destination" placeholder="Each message's source queue" />
                   </Field>
                   <Field label="Velocity (messages/s)" rule={MOVE_RATE}>
                     <input name="rate" inputMode="numeric" />

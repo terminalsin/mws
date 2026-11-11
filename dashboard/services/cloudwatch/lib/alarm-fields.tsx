@@ -17,6 +17,7 @@ import { useState } from "react";
 
 import { OP, PERIODS, STATISTICS, period } from "./alarm-consts";
 import { ALARM_PRESETS, type AlarmPreset } from "./alarm-presets";
+import { ResourcePicker } from "@mws-dashboard/ui/pickers";
 
 const NAMESPACE: Rule = { ...Rules.Namespace, required: true, hint: "Can't start with :" };
 const METRIC: Rule = { ...Rules.MetricName, required: true };
@@ -50,17 +51,17 @@ export function ActionFields({
   const rest = (
     <>
       <FieldShell label="OK" rule={actionsRule(Rules.OKActions, topics, topicArn)}>
-        <textarea name="ok" rows={1} defaultValue={alarm?.OKActions?.join("\n")} />
+        <ResourcePicker kind={["sns-topic", "lambda-function"]} multiple use="arn" name="ok" defaultValue={alarm?.OKActions?.length ? `${alarm.OKActions.join(", ")}, ` : undefined} />
       </FieldShell>
       <FieldShell label="Insufficient data" rule={actionsRule(Rules.InsufficientDataActions, topics, topicArn)}>
-        <textarea name="insufficient" rows={1} defaultValue={alarm?.InsufficientDataActions?.join("\n")} />
+        <ResourcePicker kind={["sns-topic", "lambda-function"]} multiple use="arn" name="insufficient" defaultValue={alarm?.InsufficientDataActions?.length ? `${alarm.InsufficientDataActions.join(", ")}, ` : undefined} />
       </FieldShell>
     </>
   );
   return (
     <>
       <FieldShell label="In alarm" rule={actionsRule(Rules.AlarmActions, topics, topicArn)} hint="SNS topic, Lambda function or Auto Scaling policy ARNs">
-        <textarea name="action" rows={2} placeholder={topics[0] ?? "arn:aws:sns:…"} defaultValue={alarm?.AlarmActions?.join("\n")} />
+        <ResourcePicker kind={["sns-topic", "lambda-function"]} multiple use="arn" name="action" defaultValue={alarm?.AlarmActions?.length ? `${alarm.AlarmActions.join(", ")}, ` : undefined} testId="alarm-actions" />
       </FieldShell>
       {fold ? null : rest}
     </>
@@ -71,10 +72,10 @@ function OtherActions({ topics, topicArn }: { topics: string[]; topicArn?: strin
   return (
     <>
       <FieldShell label="OK" rule={actionsRule(Rules.OKActions, topics, topicArn)}>
-        <textarea name="ok" rows={1} />
+        <ResourcePicker kind={["sns-topic", "lambda-function"]} multiple use="arn" name="ok" />
       </FieldShell>
       <FieldShell label="Insufficient data" rule={actionsRule(Rules.InsufficientDataActions, topics, topicArn)}>
-        <textarea name="insufficient" rows={1} />
+        <ResourcePicker kind={["sns-topic", "lambda-function"]} multiple use="arn" name="insufficient" />
       </FieldShell>
     </>
   );

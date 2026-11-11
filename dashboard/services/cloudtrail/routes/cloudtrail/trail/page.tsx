@@ -78,10 +78,10 @@ export default async function TrailPage({ searchParams }: Props) {
                     <ResourcePicker kind="kms-key" name="kms" exclude="AWS managed" defaultValue={t.KmsKeyId} />
                   </Field>
                   <Field label="CloudWatch Logs log group ARN" rule={ARN_RULE}>
-                    <input name="logGroup" defaultValue={t.CloudWatchLogsLogGroupArn} placeholder="arn:aws:logs:region:account:log-group:name:*" />
+                    <ResourcePicker kind="log-group" use="arn" name="logGroup" defaultValue={t.CloudWatchLogsLogGroupArn} />
                   </Field>
                   <Field label="CloudWatch Logs role ARN" rule={ARN_RULE}>
-                    <input name="logRole" defaultValue={t.CloudWatchLogsRoleArn} />
+                    <ResourcePicker kind="iam-role" name="logRole" service="cloudtrail.amazonaws.com" defaultValue={t.CloudWatchLogsRoleArn} />
                   </Field>
                 </MoreFields>
                 <label className="check">

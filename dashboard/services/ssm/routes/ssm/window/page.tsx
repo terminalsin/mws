@@ -17,6 +17,7 @@ import { ICONS, ssm } from "../../../lib/clients";
 import { RUNNING, targetsText, tone, words } from "../../../lib/status";
 import { cancelExecution, deleteWindow, deregisterTarget, deregisterTask, registerTarget, registerTask, setWindowEnabled, updateWindow } from "../windows/actions";
 import { WindowFields } from "../windows/fields";
+import { ResourcePicker } from "@mws-dashboard/ui/pickers";
 
 export const metadata: Metadata = { title: "Maintenance window" };
 
@@ -130,7 +131,7 @@ export default async function Window({ searchParams }: Props) {
                 </Field>
               </div>
               <Field label="Service role ARN" rule={TASK.ServiceRoleArn} format="arn">
-                <input name="role" />
+                <ResourcePicker kind="iam-role" name="role" service="ssm.amazonaws.com" />
               </Field>
             </ActionForm>
           </Sheet>

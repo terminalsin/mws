@@ -5,6 +5,7 @@ import { MoreFields, PresetGallery, type PresetItem } from "@mws-dashboard/ui/pr
 import type { Rule, Rules } from "@mws-dashboard/ui/validation";
 import { Plug, Sigma } from "lucide-react";
 import { useState } from "react";
+import { ResourcePicker } from "@mws-dashboard/ui/pickers";
 
 export type HealthKind = "http" | "TCP" | "CALCULATED" | "CLOUDWATCH_METRIC";
 
@@ -109,7 +110,7 @@ export function HealthFields({
         <>
           <div className="form-row">
             <Field label="Alarm name" rule={{ required: true, minLength: 1, maxLength: 256 }} member="AlarmIdentifier.Name">
-              <input name="alarm" defaultValue={defaults.alarm} />
+              <ResourcePicker kind="cloudwatch-alarm" use="name" name="alarm" defaultValue={defaults.alarm} />
             </Field>
             <Field label="Alarm Region" member="AlarmIdentifier.Region">
               <input name="alarmRegion" defaultValue={defaults.alarmRegion ?? "us-east-1"} />
