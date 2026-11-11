@@ -61,6 +61,134 @@ real Rust, Python and JavaScript SDKs.
   that never name a service, and cross-service behaviour only where AWS itself
   couples services.
 
+## A look inside
+
+MWS ships with a [web console](docs/dashboard.md) in the AWS console's layout.
+Everything below is MWS answering the same SDK calls AWS would; the
+screenshots come from [a seeded demo account](docs/screenshots/seed.py).
+
+<table>
+  <tr>
+    <td width="33%" valign="top">
+      <a href="docs/screenshots/home.webp"><img src="docs/screenshots/home.webp" alt="Every resource at a glance"></a>
+      <br><b>Every resource at a glance</b>
+      <br><sub>Resources grouped into applications by tag, with anything that needs attention first.</sub>
+    </td>
+    <td width="33%" valign="top">
+      <a href="docs/screenshots/search.webp"><img src="docs/screenshots/search.webp" alt="⌘K search"></a>
+      <br><b>⌘K search</b>
+      <br><sub>One search box across every resource in every service.</sub>
+    </td>
+    <td width="33%" valign="top">
+      <a href="docs/screenshots/create-form.webp"><img src="docs/screenshots/create-form.webp" alt="Forms that repair themselves"></a>
+      <br><b>Forms that repair themselves</b>
+      <br><sub>Smithy constraints checked as you type, with a one-click fix.</sub>
+    </td>
+  </tr>
+  <tr>
+    <td width="33%" valign="top">
+      <a href="docs/screenshots/iam-policy.webp"><img src="docs/screenshots/iam-policy.webp" alt="Real IAM policies"></a>
+      <br><b>Real IAM policies</b>
+      <br><sub>Customer managed policies, versions and attachments, as AWS stores them.</sub>
+    </td>
+    <td width="33%" valign="top">
+      <a href="docs/screenshots/iam-simulator.webp"><img src="docs/screenshots/iam-simulator.webp" alt="Policy simulator"></a>
+      <br><b>Policy simulator</b>
+      <br><sub>The same engine that authorizes every call explains each decision.</sub>
+    </td>
+    <td width="33%" valign="top">
+      <a href="docs/screenshots/organizations.webp"><img src="docs/screenshots/organizations.webp" alt="Organizations"></a>
+      <br><b>Organizations</b>
+      <br><sub>Member accounts, OUs and SCPs that are enforced on every request.</sub>
+    </td>
+  </tr>
+  <tr>
+    <td width="33%" valign="top">
+      <a href="docs/screenshots/kms-key.webp"><img src="docs/screenshots/kms-key.webp" alt="KMS"></a>
+      <br><b>KMS</b>
+      <br><sub>Real cryptography, key policies, grants and automatic rotation.</sub>
+    </td>
+    <td width="33%" valign="top">
+      <a href="docs/screenshots/pca.webp"><img src="docs/screenshots/pca.webp" alt="Private CA"></a>
+      <br><b>Private CA</b>
+      <br><sub>Real X.509 hierarchies with CRLs, OCSP and audit reports.</sub>
+    </td>
+    <td width="33%" valign="top">
+      <a href="docs/screenshots/lambda-test.webp"><img src="docs/screenshots/lambda-test.webp" alt="Lambda that runs"></a>
+      <br><b>Lambda that runs</b>
+      <br><sub>Functions execute in AWS's runtime images and log to CloudWatch.</sub>
+    </td>
+  </tr>
+  <tr>
+    <td width="33%" valign="top">
+      <a href="docs/screenshots/ec2.webp"><img src="docs/screenshots/ec2.webp" alt="EC2"></a>
+      <br><b>EC2</b>
+      <br><sub>Instances with lifecycle states, and real containers when Docker is up.</sub>
+    </td>
+    <td width="33%" valign="top">
+      <a href="docs/screenshots/vpc-map.webp"><img src="docs/screenshots/vpc-map.webp" alt="VPC resource map"></a>
+      <br><b>VPC resource map</b>
+      <br><sub>Subnets, route tables and gateways, with routing enforced in Docker.</sub>
+    </td>
+    <td width="33%" valign="top">
+      <a href="docs/screenshots/route53.webp"><img src="docs/screenshots/route53.webp" alt="Route 53"></a>
+      <br><b>Route 53</b>
+      <br><sub>Hosted zones and record sets, optionally served over real DNS.</sub>
+    </td>
+  </tr>
+  <tr>
+    <td width="33%" valign="top">
+      <a href="docs/screenshots/s3-bucket.webp"><img src="docs/screenshots/s3-bucket.webp" alt="S3"></a>
+      <br><b>S3</b>
+      <br><sub>Buckets with versioning, SSE-KMS, lifecycle rules and notifications.</sub>
+    </td>
+    <td width="33%" valign="top">
+      <a href="docs/screenshots/sqs-queue.webp"><img src="docs/screenshots/sqs-queue.webp" alt="SQS"></a>
+      <br><b>SQS</b>
+      <br><sub>Queues with dead-letter redrive and Lambda event source mappings.</sub>
+    </td>
+    <td width="33%" valign="top">
+      <a href="docs/screenshots/metrics.webp"><img src="docs/screenshots/metrics.webp" alt="CloudWatch metrics"></a>
+      <br><b>CloudWatch metrics</b>
+      <br><sub>Every statistic and period, with alarm thresholds drawn in.</sub>
+    </td>
+  </tr>
+  <tr>
+    <td width="33%" valign="top">
+      <a href="docs/screenshots/alarms.webp"><img src="docs/screenshots/alarms.webp" alt="Alarms"></a>
+      <br><b>Alarms</b>
+      <br><sub>Evaluated on the emulated clock and delivered through SNS.</sub>
+    </td>
+    <td width="33%" valign="top">
+      <a href="docs/screenshots/logs.webp"><img src="docs/screenshots/logs.webp" alt="CloudWatch Logs"></a>
+      <br><b>CloudWatch Logs</b>
+      <br><sub>Structured log events with filter patterns, live tail and Insights.</sub>
+    </td>
+    <td width="33%" valign="top">
+      <a href="docs/screenshots/cloudformation.webp"><img src="docs/screenshots/cloudformation.webp" alt="CloudFormation"></a>
+      <br><b>CloudFormation</b>
+      <br><sub>Templates deploy real resources across services, with drift and change sets.</sub>
+    </td>
+  </tr>
+  <tr>
+    <td width="33%" valign="top">
+      <a href="docs/screenshots/bedrock.webp"><img src="docs/screenshots/bedrock.webp" alt="Bedrock"></a>
+      <br><b>Bedrock</b>
+      <br><sub>The model catalog, a playground, guardrails and a pluggable backend.</sub>
+    </td>
+    <td width="33%" valign="top">
+      <a href="docs/screenshots/control.webp"><img src="docs/screenshots/control.webp" alt="Control plane"></a>
+      <br><b>Control plane</b>
+      <br><sub>Move the clock, save snapshots, export state and reset.</sub>
+    </td>
+    <td width="33%" valign="top">
+      <a href="docs/screenshots/home-dark.webp"><img src="docs/screenshots/home-dark.webp" alt="Dark mode"></a>
+      <br><b>Dark mode</b>
+      <br><sub>The whole console follows the system theme.</sub>
+    </td>
+  </tr>
+</table>
+
 ## Quickstart
 
 Build and run the emulator (Rust 1.85 or newer):
