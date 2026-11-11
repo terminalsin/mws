@@ -30,6 +30,10 @@ is: *would this code work against AWS?* Fidelity beats breadth, so every
 service is generated from AWS's official Smithy model and verified with the
 real Rust, Python and JavaScript SDKs.
 
+
+> [!NOTE]
+> Open sourcing this since it is completely pointless as it has been replaced by [AWS Emulator](https://github.com/aws/aws-emulator) 
+
 ## Highlights
 
 - **No mocks, no patches.** Your code uses the stock SDK. The only change is
