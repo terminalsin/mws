@@ -5,6 +5,7 @@ import {
   ArrowUp,
   Check,
   ChevronDown,
+  CircleHelp,
   CloudOff,
   Command,
   Copy,
@@ -33,6 +34,7 @@ import {
   useState,
   useTransition,
   type ReactNode,
+  type RefObject,
 } from "react";
 import { useFormStatus } from "react-dom";
 
@@ -273,6 +275,8 @@ export interface ActionResult {
 export type FormAction = (previous: ActionResult | null, form: FormData) => Promise<ActionResult>;
 
 const SheetContext = createContext<(() => void) | null>(null);
+/** The open sheet's help panel: whether it shows, and its toggle. */
+const GuideContext = createContext<{ open: boolean; toggle: () => void } | null>(null);
 
 /** The element at the start of a form's action bar, where a stepper puts
  * its Back and Next buttons (see sections.tsx). */
@@ -364,6 +368,7 @@ export function ActionForm({
   const [phase, send] = useMachine(submission);
   const form = useRef<HTMLFormElement>(null);
   const close = useContext(SheetContext);
+  const guide = useContext(GuideContext);
   const toast = useToast();
   const issues = useFormIssues();
   const { publish, unclaimed } = issues;
@@ -439,6 +444,19 @@ export function ActionForm({
         <FormFooterContext.Provider value={footer}>{children}</FormFooterContext.Provider>
       </FormIssuesContext.Provider>
       <div className="form-actions">
+        {guide && !quiet && (
+          <button
+            type="button"
+            className="icon-button plain form-help"
+            aria-label={guide.open ? "Hide the guide" : "What do these fields mean?"}
+            title={guide.open ? "Hide the guide" : "What do these fields mean?"}
+            aria-pressed={guide.open}
+            onClick={guide.toggle}
+            data-testid="form-help"
+          >
+            <CircleHelp size={18} aria-hidden />
+          </button>
+        )}
         {!quiet && <span className="form-actions-lead" ref={setFooter} />}
         <Submit label={submit} icon={icon} tone={tone} confirm={confirm} phase={phase} />
       </div>
@@ -488,6 +506,18 @@ export function Sheet({
   const close = useCallback(() => dialog.current?.close(), []);
   // Each opening starts fresh: forms remount without the last outcome.
   const [opened, setOpened] = useState(0);
+  // The help panel: the sheet widens to make room for it (a morph, both
+  // ways); it stays mounted while the sheet narrows again.
+  const [guide, setGuide] = useState<"shown" | "leaving" | null>(null);
+  useEffect(() => {
+    if (guide !== "leaving") return;
+    const t = setTimeout(() => setGuide(null), 240);
+    return () => clearTimeout(t);
+  }, [guide]);
+  const guideState = useMemo(
+    () => ({ open: guide === "shown", toggle: () => setGuide((g) => (g === "shown" ? "leaving" : "shown")) }),
+    [guide],
+  );
   return (
     <>
       <button
@@ -498,6 +528,7 @@ export function Sheet({
         data-testid={testId ? `${testId}-open` : undefined}
         onClick={() => {
           setOpened((n) => n + 1);
+          setGuide(null);
           dialog.current?.showModal();
         }}
       >
@@ -508,21 +539,170 @@ export function Sheet({
         ref={dialog}
         className="sheet"
         aria-label={title}
+        data-guide={guide === "shown" ? "" : undefined}
         onClick={(e) => {
           if (e.target === dialog.current) close();
         }}
       >
-        <div className="sheet-head">
-          <h2>{title}</h2>
-          <button type="button" className="icon-button plain" aria-label="Close" onClick={close}>
-            <X size={16} aria-hidden />
-          </button>
+        <div className="sheet-main">
+          <div className="sheet-head">
+            <h2>{title}</h2>
+            <button type="button" className="icon-button plain" aria-label="Close" onClick={close}>
+              <X size={16} aria-hidden />
+            </button>
+          </div>
+          <GuideContext.Provider value={guideState}>
+            <SheetContext.Provider key={opened} value={close}>
+              {children}
+            </SheetContext.Provider>
+          </GuideContext.Provider>
         </div>
-        <SheetContext.Provider key={opened} value={close}>
-          {children}
-        </SheetContext.Provider>
+        {guide && <SheetGuide sheet={dialog} title={title} close={() => setGuide("leaving")} />}
       </dialog>
     </>
+  );
+}
+
+interface GuideItem {
+  label: string;
+  section?: string;
+  doc?: string;
+  hint?: string;
+  facts: string[];
+  field: HTMLElement;
+}
+
+const docCache = new Map<string, Promise<Record<string, string>>>();
+function modelDocs(model: string): Promise<Record<string, string>> {
+  if (!docCache.has(model)) {
+    docCache.set(
+      model,
+      fetch(`/docs/${encodeURIComponent(model)}.json`)
+        .then((r) => (r.ok ? r.json() : {}))
+        .catch(() => ({})),
+    );
+  }
+  return docCache.get(model)!;
+}
+
+/** What a field's control asks for, read from the control itself. */
+function facts(control: HTMLInputElement | HTMLSelectElement | HTMLTextAreaElement | null): string[] {
+  if (!control) return [];
+  const out: string[] = [];
+  if (control.required) out.push("Required");
+  if (control instanceof HTMLSelectElement) {
+    const options = [...control.options].map((o) => o.textContent?.trim() ?? "").filter(Boolean);
+    if (options.length) out.push(options.length <= 4 ? options.join(" · ") : `${options.length} choices`);
+    return out;
+  }
+  if (control instanceof HTMLInputElement && control.type === "number") {
+    if (control.min && control.max) out.push(`${control.min} to ${control.max}`);
+    else if (control.min) out.push(`At least ${control.min}`);
+  }
+  if (control.maxLength > 0) out.push(`Up to ${control.maxLength} characters`);
+  const example = control.placeholder;
+  if (example && !/^(search|optional|blank|empty)/i.test(example) && example.length < 60) out.push(`e.g. ${example}`);
+  return out;
+}
+
+/** The sheet's help panel: what the form makes (from the AWS model's own
+ * documentation) and each of its fields, by step. Picking one takes you to
+ * it. Built from the form as it stands, so it fits every sheet. */
+function SheetGuide({ sheet, title, close }: { sheet: RefObject<HTMLDialogElement | null>; title: string; close: () => void }) {
+  const [items, setItems] = useState<GuideItem[]>([]);
+  const [about, setAbout] = useState<string>();
+  useEffect(() => {
+    const root = sheet.current?.querySelector<HTMLElement>(".sheet-main");
+    if (!root) return;
+    const tabs = (panel: Element) => {
+      const host = panel.parentElement;
+      if (!host) return undefined;
+      const i = [...host.querySelectorAll(":scope > .section-panel")].indexOf(panel);
+      return host.querySelectorAll(':scope > [role="tablist"] > [role="tab"]')[i]?.textContent?.replace(/^\d+/, "").trim();
+    };
+    const found: GuideItem[] = [];
+    const seen = new Set<string>();
+    for (const field of root.querySelectorAll<HTMLElement>(".action-form .field")) {
+      const label = field.querySelector(".field-label")?.textContent?.trim();
+      if (!label) continue;
+      const panel = field.closest(".section-panel");
+      const section = panel ? tabs(panel) : undefined;
+      const key = `${section}/${label}`;
+      if (seen.has(key)) continue;
+      seen.add(key);
+      found.push({
+        label,
+        section,
+        hint: field.querySelector(".field-hint")?.textContent?.trim() || undefined,
+        facts: facts(field.querySelector("input:not([type=hidden]), select, textarea")),
+        field,
+      });
+    }
+    setItems(found);
+    // The model's words, where the fields came from it.
+    const ids = [...root.querySelectorAll<HTMLElement>(".field[data-doc]")].map((f) => f.dataset.doc!);
+    const models = [...new Set(ids.map((id) => id.split("/")[0]))];
+    let live = true;
+    Promise.all(models.map((m) => modelDocs(m).then((d) => [m, d] as const))).then((loaded) => {
+      if (!live) return;
+      const docs = new Map(loaded);
+      const docFor = (id?: string) => {
+        if (!id) return undefined;
+        const [model, key] = id.split("/");
+        return docs.get(model)?.[key];
+      };
+      const op = ids[0]?.split("/")[1]?.split(".")[0];
+      setAbout(op ? docFor(`${ids[0].split("/")[0]}/${op}`) : undefined);
+      setItems((list) => list.map((it) => ({ ...it, doc: docFor(it.field.dataset.doc) })));
+    });
+    return () => {
+      live = false;
+    };
+  }, [sheet]);
+
+  const go = (it: GuideItem) => {
+    const panel = it.field.closest<HTMLElement>(".section-panel");
+    if (panel?.hidden) {
+      const host = panel.parentElement!;
+      const i = [...host.querySelectorAll(":scope > .section-panel")].indexOf(panel);
+      host.querySelectorAll<HTMLElement>(':scope > [role="tablist"] > [role="tab"]')[i]?.click();
+    }
+    const fold = it.field.closest("details");
+    if (fold && !fold.open) fold.open = true;
+    requestAnimationFrame(() => {
+      it.field.scrollIntoView({ block: "center" });
+      it.field.querySelector<HTMLElement>("input:not([type=hidden]), select, textarea")?.focus();
+    });
+  };
+
+  let last: string | undefined;
+  return (
+    <aside className="sheet-guide" aria-label={`About ${title}`}>
+      <div className="sheet-guide-head">
+        <CircleHelp size={16} aria-hidden />
+        <h3>Guide</h3>
+        <button type="button" className="icon-button plain" aria-label="Hide the guide" onClick={close}>
+          <X size={14} aria-hidden />
+        </button>
+      </div>
+      {about && <p className="sheet-guide-about">{about}</p>}
+      <ol className="sheet-guide-list">
+        {items.map((it) => {
+          const heading = it.section && it.section !== last ? it.section : undefined;
+          last = it.section;
+          return (
+            <li key={`${it.section}/${it.label}`}>
+              {heading && <h4>{heading}</h4>}
+              <button type="button" onClick={() => go(it)}>
+                <strong>{it.label}</strong>
+                {(it.doc ?? it.hint) && <span>{it.doc ?? it.hint}</span>}
+                {it.facts.length > 0 && <small>{it.facts.join(" · ")}</small>}
+              </button>
+            </li>
+          );
+        })}
+      </ol>
+    </aside>
   );
 }
 

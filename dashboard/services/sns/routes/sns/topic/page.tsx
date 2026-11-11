@@ -151,10 +151,10 @@ export default async function Topic({ searchParams }: Props) {
               </Field>
               <div className="form-row">
                 <Field label="Success role" format="arn" known={endpoints.roles}>
-                  <input name="successRole" spellCheck={false} />
+                  <ResourcePicker kind="iam-role" name="successRole" service="sns.amazonaws.com" />
                 </Field>
                 <Field label="Failure role" format="arn" known={endpoints.roles}>
-                  <input name="failureRole" spellCheck={false} />
+                  <ResourcePicker kind="iam-role" name="failureRole" service="sns.amazonaws.com" />
                 </Field>
                 <Field label="Success sample rate (%)" rule={SAMPLE_RATE}>
                   <input name="sampleRate" inputMode="numeric" placeholder="0" />

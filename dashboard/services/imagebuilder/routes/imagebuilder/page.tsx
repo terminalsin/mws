@@ -310,7 +310,7 @@ function InfrastructureFields({ profiles, types, i, d }: { profiles: string[]; t
       </div>
       <div className="form-row">
         <Field label="Log bucket" format="bucket">
-          <input name="logBucket" spellCheck={false} defaultValue={d?.logging?.s3Logs?.s3BucketName} />
+          <ResourcePicker kind="s3-bucket" use="name" name="logBucket" defaultValue={d?.logging?.s3Logs?.s3BucketName} />
         </Field>
         <Field label="Log prefix">
           <input name="logPrefix" spellCheck={false} defaultValue={d?.logging?.s3Logs?.s3KeyPrefix} />

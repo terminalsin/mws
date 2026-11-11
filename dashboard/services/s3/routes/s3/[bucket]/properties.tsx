@@ -222,7 +222,7 @@ export async function Properties({ bucket }: { bucket: string }) {
                   </select>
                 </Field>
                 <Field label="Destination ARN" format="arn">
-                  <input name="arn" required placeholder="arn:aws:sqs:us-east-1:123456789012:queue" />
+                  <ResourcePicker kind={["sqs-queue", "sns-topic", "lambda-function"]} use="arn" name="arn" required />
                 </Field>
               </ActionForm>
             </Sheet>

@@ -11,7 +11,7 @@
 //   </Field>
 
 import { Check, Loader2, Plus, Search } from "lucide-react";
-import { useCallback, useEffect, useId, useLayoutEffect, useMemo, useRef, useState, type ChangeEvent, type KeyboardEvent } from "react";
+import { useCallback, useEffect, useId, useLayoutEffect, useMemo, useRef, useState, type ChangeEvent, type KeyboardEvent, type RefObject } from "react";
 
 import { iconUrl } from "./catalog";
 import { setControlValue } from "./fields";
@@ -139,27 +139,50 @@ export interface ResourcePickerProps {
 
 type Row = { option: ResourceOption; value: string; recent?: boolean } | { extra: { value: string; label: string; detail?: string } };
 
+/** A list that floats over the page under its input, in the top layer (so
+ * neither a sheet's scroll box clips it nor does it push the fields below):
+ * `pop` is a `popover="manual"` element, placed under `anchor` (or above it
+ * when there is no room) while `open`. */
+export function useFloating(open: boolean, anchor: RefObject<HTMLElement | null>, pop: RefObject<HTMLElement | null>, key?: unknown) {
+  const place = useCallback(() => {
+    const el = anchor.current;
+    const p = pop.current;
+    if (!el || !p) return;
+    const r = el.getBoundingClientRect();
+    const below = window.innerHeight - r.bottom;
+    const up = below < 240 && r.top > below;
+    p.style.left = `${r.left}px`;
+    p.style.width = `${Math.max(r.width, 280)}px`;
+    p.style.maxHeight = `${Math.min(320, (up ? r.top : below) - 12)}px`;
+    p.style.top = up ? "" : `${r.bottom + 2}px`;
+    p.style.bottom = up ? `${window.innerHeight - r.top + 2}px` : "";
+  }, [anchor, pop]);
+
+  useLayoutEffect(() => {
+    const p = pop.current;
+    if (!p) return;
+    if (open && !p.matches(":popover-open")) {
+      try {
+        p.showPopover();
+      } catch {
+        /* not connected yet */
+      }
+    }
+    if (!open && p.matches(":popover-open")) p.hidePopover();
+    if (!open) return;
+    place();
+    const onMove = () => place();
+    window.addEventListener("resize", onMove);
+    window.addEventListener("scroll", onMove, true);
+    return () => {
+      window.removeEventListener("resize", onMove);
+      window.removeEventListener("scroll", onMove, true);
+    };
+  }, [open, place, pop, key]);
+}
+
 export function ResourcePicker(props: ResourcePickerProps) {
-  const {
-    kind,
-    name,
-    use,
-    defaultValue,
-    value: controlled,
-    onValueChange,
-    required,
-    placeholder,
-    autoFocus,
-    disabled,
-    multiple,
-    separator = ",",
-    service,
-    vpc,
-    exclude,
-    extra,
-    id,
-    testId,
-  } = props;
+  const { kind, name, use, defaultValue, value: controlled, onValueChange, required, placeholder, autoFocus, disabled, multiple, separator = ",", service, vpc, exclude, extra, id, testId } = props;
   const kinds = useMemo(() => (Array.isArray(kind) ? kind : [kind]), [kind]);
   const first = RESOURCE_KINDS[kinds[0]];
   const creatable = kinds.length === 1 && !!first.create && props.create !== false;
@@ -234,48 +257,12 @@ export function ResourcePicker(props: ResourcePickerProps) {
   );
 
   const pattern = first.create?.pattern ? new RegExp(first.create.pattern) : null;
-  const canCreate =
-    creatable && !!query && !query.startsWith("arn:") && (!pattern || pattern.test(query)) && !(items ?? []).some((o) => o.name === query || optionValues(o).includes(query));
+  const canCreate = creatable && !!query && !query.startsWith("arn:") && (!pattern || pattern.test(query)) && !(items ?? []).some((o) => o.name === query || optionValues(o).includes(query));
   const count = rows.length + (canCreate ? 1 : 0);
 
   useEffect(() => setActive(0), [query, open]);
 
-  // The list floats in the top layer, so a sheet's scroll box never clips it.
-  const place = useCallback(() => {
-    const el = input.current;
-    const p = pop.current;
-    if (!el || !p) return;
-    const r = el.getBoundingClientRect();
-    const below = window.innerHeight - r.bottom;
-    const up = below < 240 && r.top > below;
-    p.style.left = `${r.left}px`;
-    p.style.width = `${Math.max(r.width, 280)}px`;
-    p.style.maxHeight = `${Math.min(320, (up ? r.top : below) - 12)}px`;
-    p.style.top = up ? "" : `${r.bottom + 2}px`;
-    p.style.bottom = up ? `${window.innerHeight - r.top + 2}px` : "";
-  }, []);
-
-  useLayoutEffect(() => {
-    const p = pop.current;
-    if (!p) return;
-    if (open && !p.matches(":popover-open")) {
-      try {
-        p.showPopover();
-      } catch {
-        /* not connected yet */
-      }
-    }
-    if (!open && p.matches(":popover-open")) p.hidePopover();
-    if (!open) return;
-    place();
-    const onMove = () => place();
-    window.addEventListener("resize", onMove);
-    window.addEventListener("scroll", onMove, true);
-    return () => {
-      window.removeEventListener("resize", onMove);
-      window.removeEventListener("scroll", onMove, true);
-    };
-  }, [open, place, rows.length]);
+  useFloating(open, input, pop, rows.length);
 
   const write = (next: string, option?: ResourceOption) => {
     const el = input.current;
@@ -287,7 +274,10 @@ export function ResourcePicker(props: ResourcePickerProps) {
   const pick = (v: string, option?: ResourceOption) => {
     if (option) remember(option.kind, v);
     if (multiple) {
-      const kept = parts.slice(0, -1).map((p) => p.trim()).filter(Boolean);
+      const kept = parts
+        .slice(0, -1)
+        .map((p) => p.trim())
+        .filter(Boolean);
       const next = kept.includes(v) ? kept.filter((k) => k !== v) : [...kept, v];
       write(next.join(`${separator} `) + (next.length ? `${separator} ` : ""), option);
       input.current?.focus();
@@ -389,21 +379,15 @@ export function ResourcePicker(props: ResourcePickerProps) {
         }}
         onKeyDown={onKey}
         required={required}
-        placeholder={placeholder ?? `Search ${kinds.length > 2 ? "resources" : kinds.map((k) => plural(RESOURCE_KINDS[k].noun)).join(" and ")} or paste ${use === "name" || (!use && first.value === "name") ? "a name" : use === "id" || (!use && first.value === "id") ? "an ID" : "an ARN"}`}
+        placeholder={
+          placeholder ??
+          `Search ${kinds.length > 2 ? "resources" : kinds.map((k) => plural(RESOURCE_KINDS[k].noun)).join(" and ")} or paste ${use === "name" || (!use && first.value === "name") ? "a name" : use === "id" || (!use && first.value === "id") ? "an ID" : "an ARN"}`
+        }
         autoFocus={autoFocus}
         disabled={disabled}
       />
       {match && match.name !== value && <span className="picker-name">{match.name}</span>}
-      <div
-        ref={pop}
-        popover="manual"
-        className="picker-pop"
-        id={listId}
-        role="listbox"
-        aria-multiselectable={multiple || undefined}
-        onMouseDown={(e) => e.preventDefault()}
-        tabIndex={-1}
-      >
+      <div ref={pop} popover="manual" className="picker-pop" id={listId} role="listbox" aria-multiselectable={multiple || undefined} onMouseDown={(e) => e.preventDefault()} tabIndex={-1}>
         {items === null ? (
           <div className="picker-empty">
             <Loader2 size={14} className="spin" aria-hidden /> Loading {plural(first.noun)}…

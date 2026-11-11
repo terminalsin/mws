@@ -202,7 +202,14 @@ const POLICY_FIELDS = { ResourcePolicy: "policy", MalformedPolicyDocumentExcepti
 export async function savePolicy(id: string, _: ActionResult | null, form: FormData) {
   return act(async () => {
     const ResourcePolicy = required(form, "policy", "Policy");
-    await (await secrets()).send(new PutResourcePolicyCommand({ SecretId: id, ResourcePolicy, BlockPublicPolicy: text(form, "block") === "on" }));
+    const client = await secrets();
+    // Validate first (AWS's own checks), so a problem lands on the policy
+    // field rather than as a failed save.
+    const check = await client.send(new ValidateResourcePolicyCommand({ SecretId: id, ResourcePolicy }));
+    const errors = check.ValidationErrors ?? [];
+    if (!check.PolicyValidationPassed || errors.length)
+      throw new FieldError("policy", errors.map((e) => `${e.CheckName}: ${e.ErrorMessage}`).join("; ") || "Validation failed");
+    await client.send(new PutResourcePolicyCommand({ SecretId: id, ResourcePolicy, BlockPublicPolicy: text(form, "block") === "on" }));
     return "Resource policy saved";
   }, { revalidate: [PAGE], fields: POLICY_FIELDS });
 }

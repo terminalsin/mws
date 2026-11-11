@@ -11,7 +11,10 @@ import { CloudWatchLogsClient, CreateLogGroupCommand, DescribeLogGroupsCommand }
 import { DescribeInstancesCommand, DescribeSecurityGroupsCommand, DescribeSubnetsCommand, DescribeVpcsCommand, EC2Client, type Tag } from "@aws-sdk/client-ec2";
 import { DescribeRepositoriesCommand, ECRClient } from "@aws-sdk/client-ecr";
 import { DescribeLoadBalancersCommand, DescribeTargetGroupsCommand, ElasticLoadBalancingV2Client } from "@aws-sdk/client-elastic-load-balancing-v2";
-import { CreateEventBusCommand, EventBridgeClient, ListEventBusesCommand } from "@aws-sdk/client-eventbridge";
+import { CloudWatchClient, DescribeAlarmsCommand } from "@aws-sdk/client-cloudwatch";
+import { ECSClient, ListClustersCommand } from "@aws-sdk/client-ecs";
+import { DescribeFileSystemsCommand, EFSClient } from "@aws-sdk/client-efs";
+import { CreateEventBusCommand, EventBridgeClient, ListEventBusesCommand, ListRulesCommand } from "@aws-sdk/client-eventbridge";
 import { FirehoseClient, ListDeliveryStreamsCommand } from "@aws-sdk/client-firehose";
 import {
   CreateRoleCommand,
@@ -26,6 +29,7 @@ import {
 import { CreateStreamCommand, KinesisClient, ListStreamsCommand } from "@aws-sdk/client-kinesis";
 import { CreateAliasCommand, CreateKeyCommand, KMSClient, ListAliasesCommand, ListKeysCommand } from "@aws-sdk/client-kms";
 import { LambdaClient, ListFunctionsCommand } from "@aws-sdk/client-lambda";
+import { DescribeDBInstancesCommand, RDSClient } from "@aws-sdk/client-rds";
 import { CreateBucketCommand, ListBucketsCommand, S3Client } from "@aws-sdk/client-s3";
 import { ListSecretsCommand, SecretsManagerClient } from "@aws-sdk/client-secrets-manager";
 import { CreateTopicCommand, ListTopicsCommand, SNSClient } from "@aws-sdk/client-sns";
@@ -233,6 +237,39 @@ const LISTERS: Record<ResourceKind, () => Promise<Omit<ResourceOption, "kind">[]
     const elb = await client(ElasticLoadBalancingV2Client);
     const lbs = await collect((Marker) => elb.send(new DescribeLoadBalancersCommand({ Marker })), (r) => r.LoadBalancers, (r) => r.NextMarker);
     return lbs.map((l) => ({ name: l.LoadBalancerName!, arn: l.LoadBalancerArn, vpc: l.VpcId, detail: [l.Type, l.Scheme].filter(Boolean).join(" · ") }));
+  },
+  "event-rule": async () => {
+    const events = await client(EventBridgeClient);
+    const buses = await collect((NextToken) => events.send(new ListEventBusesCommand({ NextToken })), (r) => r.EventBuses, (r) => r.NextToken);
+    const rules = await Promise.all(
+      buses.map((b) => collect((NextToken) => events.send(new ListRulesCommand({ NextToken, EventBusName: b.Name })), (r) => r.Rules, (r) => r.NextToken)),
+    );
+    return rules.flat().map((r) => ({
+      name: r.Name!,
+      arn: r.Arn,
+      detail: r.ScheduleExpression ?? (r.State === "DISABLED" ? "disabled" : undefined),
+      group: r.EventBusName && r.EventBusName !== "default" ? r.EventBusName : undefined,
+    }));
+  },
+  "cloudwatch-alarm": async () => {
+    const cw = await client(CloudWatchClient);
+    const out = await collect((NextToken) => cw.send(new DescribeAlarmsCommand({ NextToken, AlarmTypes: ["MetricAlarm", "CompositeAlarm"] })), (r) => [...(r.MetricAlarms ?? []), ...(r.CompositeAlarms ?? [])], (r) => r.NextToken);
+    return out.map((a) => ({ name: a.AlarmName!, arn: a.AlarmArn, detail: a.StateValue?.toLowerCase() }));
+  },
+  "ecs-cluster": async () => {
+    const ecs = await client(ECSClient);
+    const arns = await collect((nextToken) => ecs.send(new ListClustersCommand({ nextToken })), (r) => r.clusterArns, (r) => r.nextToken);
+    return arns.map((arn) => ({ name: arn.split("/").pop()!, arn }));
+  },
+  "rds-instance": async () => {
+    const rds = await client(RDSClient);
+    const dbs = await collect((Marker) => rds.send(new DescribeDBInstancesCommand({ Marker })), (r) => r.DBInstances, (r) => r.Marker);
+    return dbs.map((d) => ({ name: d.DBInstanceIdentifier!, arn: d.DBInstanceArn, id: d.DbiResourceId, detail: [d.Engine, d.DBInstanceStatus].filter(Boolean).join(" · ") }));
+  },
+  "efs-file-system": async () => {
+    const efs = await client(EFSClient);
+    const fss = await collect((Marker) => efs.send(new DescribeFileSystemsCommand({ Marker })), (r) => r.FileSystems, (r) => r.NextMarker);
+    return fss.map((f) => ({ name: f.Name ?? f.FileSystemId!, id: f.FileSystemId, arn: f.FileSystemArn, detail: f.Name ? f.FileSystemId : f.LifeCycleState, also: [f.FileSystemId!] }));
   },
 };
 

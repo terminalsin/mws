@@ -28,7 +28,12 @@ export type ResourceKind =
   | "ec2-instance"
   | "ecr-repository"
   | "target-group"
-  | "load-balancer";
+  | "load-balancer"
+  | "event-rule"
+  | "cloudwatch-alarm"
+  | "ecs-cluster"
+  | "rds-instance"
+  | "efs-file-system";
 
 /** Which value of a resource a field takes. */
 export type ResourceValue = "arn" | "name" | "id" | "url";
@@ -70,6 +75,11 @@ export const RESOURCE_KINDS: Record<ResourceKind, ResourceKindInfo> = {
   "ecr-repository": { noun: "repository", icon: "resource/AmazonElasticContainerRegistryRegistry", value: "name", href: "/ecr" },
   "target-group": { noun: "target group", icon: "resource/ElasticLoadBalancingApplicationLoadBalancer", value: "arn", href: "/elb" },
   "load-balancer": { noun: "load balancer", icon: "resource/ElasticLoadBalancingApplicationLoadBalancer", value: "arn", href: "/elb" },
+  "event-rule": { noun: "rule", icon: "resource/AmazonEventBridgeRule", value: "arn", href: "/events" },
+  "cloudwatch-alarm": { noun: "alarm", icon: "resource/AmazonCloudWatchAlarm", value: "arn", href: "/alarms" },
+  "ecs-cluster": { noun: "cluster", icon: "service/AmazonElasticContainerService", value: "arn", href: "/ecs" },
+  "rds-instance": { noun: "database", icon: "service/AmazonRDS", value: "arn", href: "/rds" },
+  "efs-file-system": { noun: "file system", icon: "service/AmazonEFS", value: "id", href: "/efs" },
 };
 
 export const isResourceKind = (k: string): k is ResourceKind => k in RESOURCE_KINDS;

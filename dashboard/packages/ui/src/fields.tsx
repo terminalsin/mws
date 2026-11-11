@@ -269,7 +269,7 @@ export function FieldShell({
   const visible = shown ? issue : null;
   const note = visible ?? (shown ? leaving : null);
   return (
-    <div ref={box} className="field" data-invalid={visible ? visible.code : undefined}>
+    <div ref={box} className="field" data-invalid={visible ? visible.code : undefined} data-doc={extras.$id}>
       <label className="field-control">
         <span className="field-label">{label}</span>
         {children}

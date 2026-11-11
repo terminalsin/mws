@@ -16,6 +16,7 @@ import type { Metadata } from "next";
 import { ICONS, permissionHref, principalHref, ram, resourceHref, shareTargets } from "../../../lib/clients";
 import { shareRules } from "../../../lib/rules";
 import { addShareTag, associate, associatePermission, deleteShare, disassociate, disassociatePermission, removeShareTag, updateShare } from "../actions";
+import { ResourcePicker } from "@mws-dashboard/ui/pickers";
 
 export const metadata: Metadata = { title: "Resource share" };
 
@@ -112,7 +113,7 @@ export default async function Share({ searchParams }: Props) {
       <ActionForm action={associate.bind(null, arn)} submit="Add" testId={`add-${focus}`}>
         {focus === "resources" ? (
           <Field label="Resource ARNs" rule={RULES.resources} member="resourceArns">
-            <textarea name="resources" rows={3} defaultValue={targets?.resources.find((r) => !resourceRows.some((x) => x.arn === r))} placeholder="arn:aws:acm-pca:…" autoFocus />
+            <ResourcePicker kind={["private-ca", "subnet"]} use="arn" multiple name="resources" defaultValue={((v) => (v ? `${v}, ` : undefined))(targets?.resources.find((r) => !resourceRows.some((x) => x.arn === r)))} />
           </Field>
         ) : (
           <Field label="Principals" rule={RULES.principals} member="principals">

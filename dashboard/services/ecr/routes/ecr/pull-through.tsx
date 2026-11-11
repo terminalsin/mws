@@ -8,6 +8,7 @@ import { useState } from "react";
 
 import { UPSTREAM_PRESETS, type UpstreamPreset } from "../../lib/presets";
 import { createPullThrough } from "./actions";
+import { ResourcePicker } from "@mws-dashboard/ui/pickers";
 
 /** The pull through cache rule form: it opens on the upstream registries'
  * logos. Public ones need one click; those that need a login ask for the
@@ -34,7 +35,7 @@ export function PullThroughForm({ prefixes, upstreams }: { prefixes: string[]; u
         )}
         {preset.login && (
           <Field label="Credentials (Secrets Manager ARN)" rule={{ ...CreatePullThroughCacheRule.credentialArn, required: true }} member="credentialArn" hint="A secret named ecr-pullthroughcache/… with username and accessToken">
-            <input name="credential" required />
+            <ResourcePicker kind="secret" name="credential" required />
           </Field>
         )}
         {!preset.own && (
@@ -44,7 +45,7 @@ export function PullThroughForm({ prefixes, upstreams }: { prefixes: string[]; u
             </Field>
             {!preset.login && (
               <Field label="Credentials (Secrets Manager ARN)" rule={{ ...CreatePullThroughCacheRule.credentialArn, required: false }} member="credentialArn">
-                <input name="credential" />
+                <ResourcePicker kind="secret" name="credential" />
               </Field>
             )}
           </MoreFields>

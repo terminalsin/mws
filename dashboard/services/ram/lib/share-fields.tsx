@@ -11,6 +11,7 @@ import { Wrench } from "lucide-react";
 import { useState, type ReactNode } from "react";
 
 import { shareRules } from "./rules";
+import { ResourcePicker } from "@mws-dashboard/ui/pickers";
 
 type Targets = Parameters<typeof shareRules>[0];
 
@@ -37,7 +38,7 @@ export function ShareFields({ targets, names, orgSharing, children }: { targets:
           <input name="name" required defaultValue={ca ? freeName(`${slug(ca.name)}-share`, names) : undefined} />
         </FieldShell>
         <FieldShell label="Resource ARNs" rule={rules.resources} member="resourceArns">
-          <textarea name="resources" rows={ca ? 1 : 3} defaultValue={ca?.arn} placeholder="arn:aws:acm-pca:…:certificate-authority/…" />
+          <ResourcePicker kind={["private-ca", "subnet"]} use="arn" multiple name="resources" defaultValue={ca?.arn ? `${ca.arn}, ` : undefined} />
         </FieldShell>
         <FieldShell label="Principals" rule={rules.principals} member="principals">
           <textarea name="principals" rows={2} defaultValue={org} placeholder="111122223333 or an OU / organization ARN" />

@@ -8,6 +8,7 @@ import { ICONS, tone } from "../../lib/clients";
 import * as lists from "../../lib/lists";
 import { versionOf } from "../../lib/lists";
 import { createContainerRecipe, createDistribution, createLifecyclePolicy, createWorkflow, deleteResource } from "./actions";
+import { ResourcePicker } from "@mws-dashboard/ui/pickers";
 
 const named = (rule: Rule): Rule => ({ ...rule, hint: "Letters, digits, spaces, - and _", generate: "name" });
 
@@ -66,7 +67,7 @@ export async function ContainerRecipes() {
           <input name="parent" required defaultValue="amazonlinux:latest" spellCheck={false} />
         </Field>
         <Field label="ECR repository" rule={CreateContainerRecipe.targetRepository?.fields?.repositoryName} member="repositoryName">
-          <input name="repository" required spellCheck={false} />
+          <ResourcePicker kind="ecr-repository" use="name" name="repository" required />
         </Field>
         <fieldset className="checks">
           <legend>Components</legend>

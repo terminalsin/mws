@@ -6,7 +6,9 @@
 
 import type { Rule } from "@mws-dashboard/ui";
 import { FieldShell as Field } from "@mws-dashboard/ui/fields";
+import { ResourcePicker } from "@mws-dashboard/ui/pickers";
 import { MoreFields, PresetGallery, freeName } from "@mws-dashboard/ui/presets";
+import type { ResourceKind } from "@mws-dashboard/ui/resources";
 import { useState } from "react";
 
 interface Caller {
@@ -16,15 +18,17 @@ interface Caller {
   principal: string;
   /** The ARN's service, to offer only matching sources. */
   arn?: string;
+  /** The resources a picker offers as the source. */
+  kind?: ResourceKind;
 }
 
 const CALLERS: Caller[] = [
-  { id: "sns", label: "SNS", icon: "service/AmazonSimpleNotificationService", principal: "sns.amazonaws.com", arn: "sns" },
-  { id: "events", label: "EventBridge", icon: "service/AmazonEventBridge", principal: "events.amazonaws.com", arn: "events" },
-  { id: "s3", label: "S3", icon: "service/AmazonSimpleStorageService", principal: "s3.amazonaws.com", arn: "s3" },
+  { id: "sns", label: "SNS", icon: "service/AmazonSimpleNotificationService", principal: "sns.amazonaws.com", arn: "sns", kind: "sns-topic" },
+  { id: "events", label: "EventBridge", icon: "service/AmazonEventBridge", principal: "events.amazonaws.com", arn: "events", kind: "event-rule" },
+  { id: "s3", label: "S3", icon: "service/AmazonSimpleStorageService", principal: "s3.amazonaws.com", arn: "s3", kind: "s3-bucket" },
   { id: "apigateway", label: "API Gateway", icon: "service/AmazonAPIGateway", principal: "apigateway.amazonaws.com", arn: "execute-api" },
-  { id: "logs", label: "CloudWatch Logs", icon: "service/AmazonCloudWatch", principal: "logs.amazonaws.com", arn: "logs" },
-  { id: "elb", label: "Load balancer", icon: "service/ElasticLoadBalancing", principal: "elasticloadbalancing.amazonaws.com", arn: "elasticloadbalancing" },
+  { id: "logs", label: "CloudWatch Logs", icon: "service/AmazonCloudWatch", principal: "logs.amazonaws.com", arn: "logs", kind: "log-group" },
+  { id: "elb", label: "Load balancer", icon: "service/ElasticLoadBalancing", principal: "elasticloadbalancing.amazonaws.com", arn: "elasticloadbalancing", kind: "target-group" },
   { id: "cognito", label: "Cognito", icon: "service/AmazonCognito", principal: "cognito-idp.amazonaws.com", arn: "cognito-idp" },
   { id: "iot", label: "IoT Core", icon: "service/AWSIoTCore", principal: "iot.amazonaws.com", arn: "iot" },
   { id: "account", label: "Account", icon: "service/AWSIdentityandAccessManagement", principal: "" },
@@ -64,7 +68,11 @@ export function PermissionFields({
         </datalist>
         {caller.arn && (
           <Field label="Source ARN" rule={rules.sourceArn} known={matching} member="SourceArn">
-            <input name="sourceArn" spellCheck={false} list="permission-sources" defaultValue={matching.length === 1 ? matching[0] : undefined} placeholder={`arn:aws:${caller.arn}:…`} />
+            {caller.kind ? (
+              <ResourcePicker kind={caller.kind} name="sourceArn" use="arn" defaultValue={matching.length === 1 ? matching[0] : undefined} testId="permission-source" />
+            ) : (
+              <input name="sourceArn" spellCheck={false} list="permission-sources" defaultValue={matching.length === 1 ? matching[0] : undefined} placeholder={`arn:aws:${caller.arn}:…`} />
+            )}
           </Field>
         )}
         <datalist id="permission-sources">
@@ -75,7 +83,12 @@ export function PermissionFields({
         <MoreFields>
           {!caller.arn && (
             <Field label="Source ARN" rule={rules.sourceArn} known={sources} member="SourceArn">
-              <input name="sourceArn" spellCheck={false} placeholder="arn:aws:…" />
+              <ResourcePicker
+                kind={["sns-topic", "event-rule", "s3-bucket", "log-group", "target-group", "sqs-queue", "kinesis-stream"]}
+                name="sourceArn"
+                use="arn"
+                placeholder="Search resources or paste an ARN"
+              />
             </Field>
           )}
           <div className="form-row">

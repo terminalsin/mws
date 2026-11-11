@@ -28,7 +28,6 @@ import {
   savePolicy,
   saveTags,
   updateSecret,
-  validatePolicy,
 } from "../actions";
 import { ResourcePicker } from "@mws-dashboard/ui/pickers";
 import { PolicyEditor } from "@mws-dashboard/ui/policy";
@@ -350,9 +349,6 @@ export default async function Secret({ searchParams }: Props) {
                   <label className="check">
                     <input type="checkbox" name="block" defaultChecked /> Block public access
                   </label>
-                </ActionForm>
-                <ActionForm action={validatePolicy.bind(null, id)} submit="Validate" testId="validate-policy">
-                  <PolicyEditor label="Policy to validate" rule={POLICY} member="ResourcePolicy" kind="resource" name="policy" rows={6} defaultValue={pretty(policy.value) || template(account)} />
                 </ActionForm>
               </Sheet>
               {policy.value && <ActionForm action={deletePolicy.bind(null, id)} submit="Delete resource policy" icon={<Trash2 size={16} />} tone="danger" confirm="Delete the resource policy?" testId="delete-policy" />}

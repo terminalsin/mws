@@ -75,7 +75,8 @@ export async function updateTrail(trail: string, _: ActionResult | null, form: F
         S3KeyPrefix: text(form, "prefix"),
         SnsTopicName: text(form, "topic"),
         KmsKeyId: text(form, "kms"),
-        CloudWatchLogsLogGroupArn: text(form, "logGroup"),
+        // CloudTrail wants the log group ARN with its ":*" suffix; the picker gives it without.
+        CloudWatchLogsLogGroupArn: ((v) => (v && !v.endsWith(":*") ? `${v}:*` : v))(text(form, "logGroup")),
         CloudWatchLogsRoleArn: text(form, "logRole"),
         IsMultiRegionTrail: multi,
         IncludeGlobalServiceEvents: global,
